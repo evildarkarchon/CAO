@@ -1,7 +1,7 @@
 #include <io.h>
 #include "hkxutils.h"
 #include <windows.h>
-#include <stdio.h>
+#include <cstdio>
 #include <dbghelp.h>
 
 /* ----------FILE* COMPATIBLITY VS2008---------------*/
@@ -10,7 +10,7 @@
 
 #define GET_CURRENT_CONTEXT(c, contextFlags) \
     do { \
-    c.ContextFlags = contextFlags; \
+    (c).ContextFlags = contextFlags; \
     __asm    call x \
     __asm x: pop eax \
     __asm    mov c.Eip, eax \
@@ -23,10 +23,8 @@
 extern "C" FILE * __cdecl __iob_func(void)
 {
     CONTEXT c = { 0 };
-    STACKFRAME64 s = { 0 };
+    STACKFRAME64 s = {{0}};
     DWORD imageType;
-    HANDLE hThread = GetCurrentThread();
-    HANDLE hProcess = GetCurrentProcess();
 
     GET_CURRENT_CONTEXT(c, CONTEXT_FULL);
 
@@ -49,7 +47,7 @@ extern "C" FILE * __cdecl __iob_func(void)
         return nullptr;
 
     {
-        unsigned char const * assembly = (unsigned char const *)(s.AddrReturn.Offset);
+        auto const * assembly = (unsigned char const *)(s.AddrReturn.Offset);
 
         if (*assembly == 0x83 && *(assembly + 1) == 0xC0 && (*(assembly + 2) == 0x20 || *(assembly + 2) == 0x40))
         {

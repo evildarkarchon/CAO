@@ -56,7 +56,7 @@ hkResource* hkSerializeUtilLoad( hkStreamReader* stream
     }
     catch(...)
     {
-        if (detailsOut == nullptr)
+        if (detailsOut != nullptr)
             detailsOut->id = hkSerializeUtil::ErrorDetails::ERRORID_LOAD_FAILED;
         return nullptr;
     }
@@ -82,23 +82,6 @@ hkResult hkSerializeUtilSave( hkPackFormat pkFormat, hkVariant &root, hkOstream 
     return res;
 }
 
-hkResult LoadDefaultRegistry()
-{
-    hkVersionPatchManager patchManager;
-    {
-        extern void HK_CALL CustomRegisterPatches(hkVersionPatchManager& patchManager);
-        CustomRegisterPatches(patchManager);
-    }
-    hkDefaultClassNameRegistry &defaultRegistry = hkDefaultClassNameRegistry::getInstance();
-    {
-        extern void HK_CALL CustomRegisterDefaultClasses();
-        extern void HK_CALL ValidateClassSignatures();
-        CustomRegisterDefaultClasses();
-        ValidateClassSignatures();
-    }
-    return HK_SUCCESS;
-}
-
 hkResult hkSerializeLoad(hkStreamReader *reader
                          , hkVariant &root
                          , hkResource *&resource)
@@ -115,8 +98,8 @@ hkResult hkSerializeLoad(hkStreamReader *reader
 
     if (!isLoadable && formatDetails.m_formatType != hkSerializeUtil::FORMAT_TAGFILE_XML)
         return HK_FAILURE;
-    else
-    {
+    
+    
         switch ( formatDetails.m_formatType )
         {
         case hkSerializeUtil::FORMAT_PACKFILE_BINARY:
@@ -167,18 +150,10 @@ hkResult hkSerializeLoad(hkStreamReader *reader
             resource = hkSerializeUtilLoad(reader, &detailsOut, &defaultRegistry, loadflags);
             root.m_object = resource->getContents<hkRootLevelContainer>();
             if (root.m_object != nullptr)
-                root.m_class = &(static_cast<hkRootLevelContainer*>(root.m_object))->staticClass();
+                root.m_class = &hkRootLevelContainer::staticClass();
         }
             break;
         }
-    }
+    
     return root.m_object != nullptr ? HK_SUCCESS : HK_FAILURE;
-}
-
-hkResource *hkSerializeLoadResource(hkStreamReader *reader)
-{
-    hkResource *resource = nullptr;
-    hkVariant root;
-    hkSerializeLoad(reader, root, resource);
-    return resource;
 }

@@ -6,7 +6,7 @@
 #pragma once
 
 // _WIN32 will detect windows on most compilers
-#include <stdio.h>
+#include <cstdio>
 #include <tchar.h>
 
 #include <iomanip>
@@ -15,7 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
-#include <string.h>
+#include <cstring>
 
 #define WIN32_LEAN_AND_MEAN
 #include "windows.h"
