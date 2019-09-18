@@ -47,3 +47,4 @@ extern hkResult hkSerializeUtilSave( hkPackFormat pkFormat, hkVariant &root, hkO
                                     , hkSerializeUtil::SaveOptionBits flags
                                     , const hkPackfileWriter::Options& packFileOptions );
 extern hkResult hkSerializeLoad(hkStreamReader *reader, hkVariant &root, hkResource *&resource);
+extern hkResult LoadDefaultRegistry();

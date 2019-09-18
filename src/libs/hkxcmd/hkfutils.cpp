@@ -1,18 +1,5 @@
 #include "hkfutils.h"
 
-EnumLookupType PackFlags[] = 
-{
-    {HKPF_XML,   "XML"},
-    {HKPF_DEFAULT, "DEFAULT"},
-    {HKPF_WIN32, "WIN32"},
-    {HKPF_AMD64, "AMD64"},
-    {HKPF_XBOX,  "XBOX"},
-    {HKPF_XBOX360, "XBOX360"},
-    {HKPF_TAGFILE, "TAGFILE"},
-    {HKPF_TAGXML, "TAGXML"},
-    {0, nullptr}
-};
-
 hkPackfileWriter::Options GetWriteOptionsFromFormat(hkPackFormat format)
 {
     hkPackfileWriter::Options options;
@@ -156,4 +143,21 @@ hkResult hkSerializeLoad(hkStreamReader *reader
         }
     
     return root.m_object != nullptr ? HK_SUCCESS : HK_FAILURE;
+}
+
+hkResult LoadDefaultRegistry()
+{
+    hkVersionPatchManager patchManager;
+    {
+        extern void HK_CALL CustomRegisterPatches(hkVersionPatchManager & patchManager);
+        CustomRegisterPatches(patchManager);
+    }
+    hkDefaultClassNameRegistry &defaultRegistry = hkDefaultClassNameRegistry::getInstance();
+    {
+        extern void HK_CALL CustomRegisterDefaultClasses();
+        extern void HK_CALL ValidateClassSignatures();
+        CustomRegisterDefaultClasses();
+        ValidateClassSignatures();
+    }
+    return HK_SUCCESS;
 }
