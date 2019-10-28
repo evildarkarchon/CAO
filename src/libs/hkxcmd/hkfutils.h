@@ -1,24 +1,6 @@
 #pragma once
 #include "hkxutils.h"
 
-#include <Common/Base/hkBase.h>
-#include <Common/Base/Memory/System/Util/hkMemoryInitUtil.h>
-#include <Common/Base/Memory/Allocator/Malloc/hkMallocAllocator.h>
-#include <Common/Base/System/Io/IStream/hkIStream.h>
-#include <Common/Base/Reflection/Registry/hkDynamicClassNameRegistry.h>
-#include <Common/Base/Reflection/Registry/hkDefaultClassNameRegistry.h>
-
-// Scene
-#include <Common/Serialize/Util/hkSerializeUtil.h>
-#include <Common/Serialize/Util/hkRootLevelContainer.h>
-#include <Common/Serialize/Util/hkNativePackfileUtils.h>
-#include <Common/Serialize/Util/hkLoader.h>
-#include <Common/Serialize/Version/hkVersionPatchManager.h>
-#include <Common/Compat/Deprecated/Packfile/Binary/hkBinaryPackfileReader.h>
-#include <Common/Compat/Deprecated/Packfile/Xml/hkXmlPackfileReader.h>
-
-#include <iostream>
-
 enum hkPackFormat
 {
    HKPF_XML,
