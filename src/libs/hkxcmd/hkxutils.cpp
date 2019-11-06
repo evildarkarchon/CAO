@@ -1,8 +1,4 @@
-#include <io.h>
 #include "hkxutils.h"
-#include <windows.h>
-#include <cstdio>
-#include <dbghelp.h>
 
 /* ----------FILE* COMPATIBLITY VS2008---------------*/
 
@@ -26,7 +22,7 @@ extern "C" FILE * __cdecl __iob_func(void)
     STACKFRAME64 s = {{0}};
     DWORD imageType;
 
-    GET_CURRENT_CONTEXT(c, CONTEXT_FULL);
+    GET_CURRENT_CONTEXT(c, CONTEXT_FULL)
 
 #ifdef _M_IX86
     imageType = IMAGE_FILE_MACHINE_I386;

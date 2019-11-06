@@ -52,24 +52,6 @@
 #include <Common/Base/Reflection/hkClassMemberAccessor.h>
 #include <Common/Base/Reflection/hkInternalClassMember.h>
 
-//#pragma comment (lib, "hkBase.lib")
-//#pragma comment (lib, "hkSerialize.lib")
-//#pragma comment (lib, "hkSceneData.lib")
-//#pragma comment (lib, "hkInternal.lib")
-//#pragma comment (lib, "hkGeometryUtilities.lib")
-//#pragma comment (lib, "hkVisualize.lib")
-//#pragma comment (lib, "hkCompat.lib")
-//#pragma comment (lib, "hkpCollide.lib")
-//#pragma comment (lib, "hkpConstraintSolver.lib")
-//#pragma comment (lib, "hkpDynamics.lib")
-//#pragma comment (lib, "hkpInternal.lib")
-//#pragma comment (lib, "hkpUtilities.lib")
-//#pragma comment (lib, "hkpVehicle.lib")
-//#pragma comment (lib, "hkaAnimation.lib")
-//#pragma comment (lib, "hkaRagdoll.lib")
-//#pragma comment (lib, "hkaInternal.lib")
-//#pragma comment (lib, "hkgBridge.lib")
-
 #define RETURN_FAIL_IF(COND, MSG) \
     HK_MULTILINE_MACRO_BEGIN \
     if (COND) \
@@ -99,10 +81,7 @@
 // If the demo was reading content saved from a previous version of the Havok content tools (common in real world Applications)
 // RegisterVersionPatches and perhaps SerializeDeprecatedPre700 are needed.
 
-//#define HK_CLASSES_FILE <Common/Serialize/Classlist/hkKeyCodeClasses.h>
-//#define HK_CLASSES_FILE "d:/Development/Projects/niftools/hkxcmd/hkxcore.h"
 #define HK_CLASSES_FILE "hkxreg.h"
-//#include <Common/Serialize/Util/hkBuiltinTypeRegistry.cxx>
 #include <Common/Base/Config/hkProductFeatures.cxx>
 #undef HK_CLASSES_FILE
 
