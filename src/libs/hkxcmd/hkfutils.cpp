@@ -25,8 +25,22 @@ hkPackfileWriter::Options GetWriteOptionsFromFormat(hkPackFormat format)
     return options;
 }
 
+hkPackFormat GetFormatFromLayout(const hkStructureLayout::LayoutRules &rules)
+{
+    hkPackFormat format = HKPF_WIN32;
+    if (rules == hkStructureLayout::MsvcWin32LayoutRules)
+        format = HKPF_WIN32;
+    else if (rules == hkStructureLayout::MsvcAmd64LayoutRules)
+        format = HKPF_AMD64;
+    else if (rules == hkStructureLayout::MsvcXboxLayoutRules)
+        format = HKPF_XBOX;
+    else if (rules == hkStructureLayout::Xbox360LayoutRules)
+        format = HKPF_XBOX360;
 
-void HK_CALL errorReport(const char* msg, void* userContext)
+    return format;
+}
+
+void HK_CALL errorReport(const char *msg, void *userContext)
 {
     std::cout << msg << std::endl;
 }
@@ -49,10 +63,11 @@ hkResource* hkSerializeUtilLoad( hkStreamReader* stream
     }
 }
 
-
-hkResult hkSerializeUtilSave( hkPackFormat pkFormat, hkVariant &root, hkOstream &stream
-                              , hkSerializeUtil::SaveOptionBits flags
-                              , const hkPackfileWriter::Options& packFileOptions )
+hkResult hkSerializeUtilSave(hkPackFormat pkFormat,
+                             const hkVariant &root,
+                             hkOstream &stream,
+                             hkSerializeUtil::SaveOptionBits flags,
+                             const hkPackfileWriter::Options &packFileOptions)
 {
     hkResult res;
     try
@@ -81,14 +96,13 @@ hkResult hkSerializeLoad(hkStreamReader *reader
     resource = nullptr;
     hkSerializeUtil::FormatDetails formatDetails;
     hkSerializeUtil::detectFormat( reader, formatDetails );
-    hkBool32 isLoadable = hkSerializeUtil::isLoadable( reader );
+    hkBool32 isLoadable = hkSerializeUtil::isLoadable(reader);
 
     if (!isLoadable && formatDetails.m_formatType != hkSerializeUtil::FORMAT_TAGFILE_XML)
         return HK_FAILURE;
-    
-    
-        switch ( formatDetails.m_formatType )
-        {
+
+    switch (formatDetails.m_formatType)
+    {
         case hkSerializeUtil::FORMAT_PACKFILE_BINARY:
         {
             bpkreader.loadEntireFile(reader);
@@ -140,8 +154,8 @@ hkResult hkSerializeLoad(hkStreamReader *reader
                 root.m_class = &hkRootLevelContainer::staticClass();
         }
             break;
-        }
-    
+    }
+
     return root.m_object != nullptr ? HK_SUCCESS : HK_FAILURE;
 }
 

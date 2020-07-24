@@ -79,4 +79,5 @@
 #include <Common/Base/Reflection/Registry/hkDynamicClassNameRegistry.h>
 #include <Common/Compat/Deprecated/Packfile/Binary/hkBinaryPackfileReader.h>
 #include <Common/Compat/Deprecated/Packfile/Xml/hkXmlPackfileReader.h>
+#include <Common/Serialize/Packfile/Binary/hkBinaryPackfileWriter.h>
 #include <Common/Serialize/Util/hkNativePackfileUtils.h>
