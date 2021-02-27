@@ -13,7 +13,7 @@
 #include <Common/Serialize/Version/hkVersionPatchManager.h>
 
 #ifdef HK_FEATURE_PRODUCT_PHYSICS
-#include <Physics/Utilities/VisualDebugger/Viewer/hkpShapeDisplayBuilder.h>
+//#include <Physics/Utilities/VisualDebugger/Viewer/hkpShapeDisplayBuilder.h>
 #endif
 
 // Register libraries with the memory tracker, if it is enabled.
