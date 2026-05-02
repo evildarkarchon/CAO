@@ -497,4 +497,5 @@ MigrationBackup/
 
 # End of https://www.gitignore.io/api/qt,git,vim,qtcreator,visualstudio,visualstudiocode
 *.pri
-/q
+build/
+.cocoindex_code/
