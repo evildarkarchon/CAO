@@ -10,23 +10,7 @@
       "cmakeCommandArgs": "",
       "buildCommandArgs": "",
       "ctestCommandArgs": "",
-      "variables": [
-        {
-          "name": "Qt5Core_DIR",
-          "value": "C:/IT/Qt/5.15.2/msvc2019_64/lib/cmake/Qt5Core",
-          "type": "PATH"
-        },
-        {
-          "name": "Qt5Widgets_DIR",
-          "value": "C:/IT/Qt/5.15.2/msvc2019_64/lib/cmake/Qt5Widgets",
-          "type": "PATH"
-        },
-        {
-          "name": "Qt5Gui_DIR",
-          "value": "C:/IT/Qt/5.15.2/msvc2019_64/lib/cmake/Qt5Gui",
-          "type": "PATH"
-        }
-      ]
+      "variables": []
     },
     {
       "name": "x64-Release",

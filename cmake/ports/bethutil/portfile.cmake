@@ -6,9 +6,6 @@ vcpkg_from_github(
     SHA512 4c0e6ce892bd292972832e8e808ee8761a331a73c9062adc4b4655f2e531c2a8afd67163cc1995fbae2968e632b9b1e6caf9f651fb560926c9987e2312f44ce6
     HEAD_REF main
 )
-
-set(SOURCE_PATH "C:/IT/Code_perso/bethutil")
-
 vcpkg_cmake_configure(
 	SOURCE_PATH "${SOURCE_PATH}"
 	OPTIONS

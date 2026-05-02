@@ -3,8 +3,10 @@
   "version-string": "1",
   "dependencies": [
     "bethutil",
-	"directxtex",
-	"nifly",
-	"plog"
+    "directxtex",
+    "nifly",
+    "plog",
+    "qt5-base",
+    "qt5-tools"
   ]
 }

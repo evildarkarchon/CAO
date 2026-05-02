@@ -354,13 +354,15 @@ bool TexturesOptimizer::open(const void *pSource, const size_t &size, const Text
         return false;
 
     modifiedCurrentTexture = false;
+    // DirectXTex memory loaders operate on byte buffers, while archive callers pass untyped data.
+    const auto bytes = static_cast<const uint8_t *>(pSource);
 
     switch (type)
     {
-    case TGA: return LoadFromTGAMemory(pSource, size, &_info, *_image);
+    case TGA: return LoadFromTGAMemory(bytes, size, &_info, *_image);
     case DDS:
         const auto ddsFlags = DirectX::DDS_FLAGS_NONE;
-        const HRESULT hr = LoadFromDDSMemory(pSource, size, ddsFlags, &_info, *_image);
+        const HRESULT hr = LoadFromDDSMemory(bytes, size, ddsFlags, &_info, *_image);
         if (FAILED(hr))
             return false;
 

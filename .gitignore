@@ -74,6 +74,10 @@ ui_*.h
 Makefile*
 *build-*
 
+# OpenSpec capability names may include "build"; keep spec artifacts trackable.
+!openspec/
+!openspec/**
+
 # Qt unit tests
 target_wrapper.*
 

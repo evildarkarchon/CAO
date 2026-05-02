@@ -1,0 +1,7 @@
+{
+  "name": "libflow",
+  "version-semver": "0.0.1",
+  "description": "A C++17/20 functional-style pipeline library.",
+  "homepage": "https://github.com/Guekka/libflow",
+  "license": "BSL-1.0"
+}
