@@ -1,4 +1,10 @@
 {
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "binaryDir": "${sourceDir}/build",
@@ -33,8 +39,8 @@
     {
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": {
-          "type": "STRING",
-          "value": "$env{VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake"
+          "type": "FILEPATH",
+          "value": "${sourceDir}/cmake/VcpkgToolchain.cmake"
         },
         "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": {
           "type": "BOOL",
@@ -50,9 +56,13 @@
     },
     {
       "cacheVariables": {
+        "CMAKE_PROJECT_INCLUDE_BEFORE": {
+          "type": "FILEPATH",
+          "value": "${sourceDir}/cmake/ImportVisualStudioEnvironment.cmake"
+        },
         "CMAKE_EXE_LINKER_FLAGS_RELEASE": {
           "type": "STRING",
-          "value": "/DEBUG:FASTLINK"
+          "value": "/INCREMENTAL:NO"
         },
         "CMAKE_MSVC_RUNTIME_LIBRARY": {
           "type": "STRING",
@@ -101,6 +111,9 @@
         "CMAKE_CXX_FLAGS": "/EHsc /MP /W4"
       },
       "generator": "Visual Studio 17 2022",
+      "environment": {
+        "CAO_VISUAL_STUDIO_MAJOR_VERSION": "17"
+      },
       "inherits": [
         "cmake-dev",
         "vcpkg",
@@ -110,8 +123,32 @@
       "toolset": "v143"
     },
     {
+      "architecture": {
+        "strategy": "set",
+        "value": "x64"
+      },
       "cacheVariables": {
-        "CMAKE_CXX_FLAGS": "/EHsc /MP /W4 /WX /external:anglebrackets /external:W0"
+        "CMAKE_CXX_FLAGS": "/EHsc /MP /W4"
+      },
+      "generator": "Visual Studio 18 2026",
+      "environment": {
+        "CAO_VISUAL_STUDIO_MAJOR_VERSION": "18"
+      },
+      "inherits": [
+        "cmake-dev",
+        "vcpkg",
+        "windows"
+      ],
+      "name": "vs2026-windows",
+      "toolset": "v145"
+    },
+    {
+      "cacheVariables": {
+        "CMAKE_CXX_FLAGS": "/EHsc /MP /W4 /WX /external:anglebrackets /external:W0",
+        "CMAKE_MAKE_PROGRAM": {
+          "type": "FILEPATH",
+          "value": "${sourceDir}/scripts/Invoke-VsNinja.cmd"
+        }
       },
       "generator": "Ninja",
       "inherits": [
@@ -130,6 +167,5 @@
       ],
       "name": "ninja-linux"
     }
-  ],
-  "version": 3
+  ]
 }

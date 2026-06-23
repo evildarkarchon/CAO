@@ -12,7 +12,13 @@ See [the wiki](https://gitlab.com/G_ka/sse-assets-optimiser/wikis/Build-instruct
 
 ## Windows Visual Studio environment
 
-If CMake or vcpkg cannot find the Visual Studio build system files from a plain PowerShell session, load the x64 developer environment first:
+The Windows CMake presets load the Visual Studio x64 developer environment during configure. The `ninja-windows` preset also uses a small wrapper so CMake can find Visual Studio's bundled `ninja.exe` from a plain shell.
+
+The vcpkg toolchain is resolved automatically from `CAO_VCPKG_ROOT`, `VCPKG_INSTALLATION_ROOT`, `VCPKG_ROOT`, `vcpkg.exe` on the original `PATH`, or `vcpkg.exe` on the Visual Studio developer `PATH`, in that order.
+
+For custom Visual Studio installs, set `CAO_VISUAL_STUDIO_PATH` to the installation root or `CAO_VSWHERE_PATH` to a custom `vswhere.exe`. To bypass the automatic import, set `CAO_SKIP_VISUAL_STUDIO_ENVIRONMENT=ON`.
+
+You can still load the x64 developer environment manually for ad hoc commands:
 
 ```powershell
 .\scripts\Invoke-VcVars64.ps1

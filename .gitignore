@@ -503,3 +503,4 @@ MigrationBackup/
 *.pri
 build/
 .cocoindex_code/
+install/

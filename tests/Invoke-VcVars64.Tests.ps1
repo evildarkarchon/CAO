@@ -10,9 +10,11 @@ if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
 
 $originalEnvironment = @{
   Path = $env:Path
+  CAO_TEST_SEMICOLON = $env:CAO_TEST_SEMICOLON
   CAO_COMMAND_CAPTURE_PATH = $env:CAO_COMMAND_CAPTURE_PATH
   VCToolsInstallDir = $env:VCToolsInstallDir
   VSINSTALLDIR = $env:VSINSTALLDIR
+  VisualStudioVersion = $env:VisualStudioVersion
   WindowsSdkDir = $env:WindowsSdkDir
 }
 
@@ -22,6 +24,7 @@ $vcvarsDirectory = Join-Path $fakeVisualStudioPath 'VC\Auxiliary\Build'
 $markerPath = Join-Path $tempRoot 'vcvars-called.txt'
 $fakeToolsPath = Join-Path $fakeVisualStudioPath 'VC\Tools\MSVC\14.99.99999'
 $fakeSdkPath = Join-Path $tempRoot 'Windows Kits\10'
+$vsWhereArgumentsPath = Join-Path $tempRoot 'vswhere-arguments.txt'
 
 try {
   New-Item -ItemType Directory -Path $vcvarsDirectory -Force | Out-Null
@@ -33,6 +36,7 @@ try {
     '@echo off'
     "echo called> `"$markerPath`""
     "set VSINSTALLDIR=$fakeVisualStudioPath\"
+    'set VisualStudioVersion=17.0'
     "set VCToolsInstallDir=$fakeToolsPath\"
     "set WindowsSdkDir=$fakeSdkPath\"
     "set PATH=$fakeToolsPath\bin\Hostx64\x64;%PATH%"
@@ -62,6 +66,48 @@ try {
 
   if (-not $env:Path.StartsWith((Join-Path $fakeToolsPath 'bin\Hostx64\x64'), [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Expected vcvars64.bat to prepend the fake MSVC tools path to PATH."
+  }
+
+  $env:CAO_TEST_SEMICOLON = 'left;right'
+  $exportPath = Join-Path $tempRoot 'environment.cmake'
+  & $scriptPath -VisualStudioPath $fakeVisualStudioPath -Quiet -Force -ExportCMakeEnvironment $exportPath
+
+  if ($LASTEXITCODE -ne 0) {
+    throw "Expected CMake environment export to exit successfully, got $LASTEXITCODE."
+  }
+
+  if (-not (Test-Path -LiteralPath $exportPath -PathType Leaf)) {
+    throw "Expected CMake environment export at $exportPath."
+  }
+
+  $exportedEnvironment = Get-Content -LiteralPath $exportPath -Raw
+  if (-not $exportedEnvironment.Contains("set(ENV{VCToolsInstallDir} [[$fakeToolsPath\]])")) {
+    throw 'Expected exported CMake environment to include VCToolsInstallDir.'
+  }
+
+  if (-not $exportedEnvironment.Contains('set(ENV{CAO_TEST_SEMICOLON} [[left;right]])')) {
+    throw 'Expected exported CMake environment to preserve semicolons.'
+  }
+
+  $fakeVsWherePath = Join-Path $tempRoot 'vswhere.cmd'
+  @(
+    '@echo off'
+    "echo %*> `"$vsWhereArgumentsPath`""
+    "echo $fakeVisualStudioPath"
+  ) | Set-Content -LiteralPath $fakeVsWherePath -Encoding ASCII
+
+  Remove-Item -LiteralPath 'Env:VSINSTALLDIR' -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath 'Env:VisualStudioVersion' -ErrorAction SilentlyContinue
+
+  & $scriptPath -VsWherePath $fakeVsWherePath -VisualStudioMajorVersion 17 -Quiet -Force
+
+  if ($LASTEXITCODE -ne 0) {
+    throw "Expected version-filtered vswhere lookup to exit successfully, got $LASTEXITCODE."
+  }
+
+  $vsWhereArguments = Get-Content -LiteralPath $vsWhereArgumentsPath -Raw
+  if (-not $vsWhereArguments.Contains('-version [17.0,18.0)')) {
+    throw "Expected vswhere arguments to request the VS 17 version range, got '$vsWhereArguments'."
   }
 
   $commandCapturePath = Join-Path $tempRoot 'command-environment.txt'

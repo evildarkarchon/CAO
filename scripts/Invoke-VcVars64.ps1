@@ -16,6 +16,14 @@ VC\Auxiliary\Build\vcvars64.bat.
 .PARAMETER VsWherePath
 Optional path to vswhere.exe. Defaults to the Visual Studio Installer location.
 
+.PARAMETER VisualStudioMajorVersion
+Optional Visual Studio major version to require when searching with vswhere.exe.
+Use 17 for Visual Studio 2022 or 18 for Visual Studio 2026.
+
+.PARAMETER ExportCMakeEnvironment
+Optional path to a CMake script that will receive set(ENV{...}) commands for
+the loaded developer environment.
+
 .PARAMETER Force
 Reload vcvars64.bat even when an x64 Visual Studio developer environment already
 appears to be active.
@@ -29,10 +37,12 @@ Suppress status output.
 .EXAMPLE
 .\scripts\Invoke-VcVars64.ps1 --% cmake --preset ninja-windows
 #>
-[CmdletBinding(PositionalBinding = $false)]
 param(
   [string] $VisualStudioPath,
   [string] $VsWherePath,
+  [ValidatePattern('^\d+$')]
+  [string] $VisualStudioMajorVersion,
+  [string] $ExportCMakeEnvironment,
   [switch] $Force,
   [switch] $Quiet,
   [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
@@ -90,6 +100,26 @@ function Test-X64MsvcEnvironment {
   return $true
 }
 
+function Test-RequestedVisualStudioVersion {
+  <#
+  .SYNOPSIS
+  Checks whether the active Visual Studio environment matches the requested major version.
+  #>
+  param(
+    [string] $RequestedVisualStudioMajorVersion
+  )
+
+  if ([string]::IsNullOrWhiteSpace($RequestedVisualStudioMajorVersion)) {
+    return $true
+  }
+
+  if ([string]::IsNullOrWhiteSpace($env:VisualStudioVersion)) {
+    return $false
+  }
+
+  return $env:VisualStudioVersion.StartsWith("$RequestedVisualStudioMajorVersion.", [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function Get-VcVars64PathFromVisualStudio {
   <#
   .SYNOPSIS
@@ -117,14 +147,15 @@ function Find-VcVars64Path {
   #>
   param(
     [string] $RequestedVisualStudioPath,
-    [string] $RequestedVsWherePath
+    [string] $RequestedVsWherePath,
+    [string] $RequestedVisualStudioMajorVersion
   )
 
   if (-not [string]::IsNullOrWhiteSpace($RequestedVisualStudioPath)) {
     return Get-VcVars64PathFromVisualStudio -InstallationPath $RequestedVisualStudioPath
   }
 
-  if (-not [string]::IsNullOrWhiteSpace($env:VSINSTALLDIR)) {
+  if ((Test-RequestedVisualStudioVersion -RequestedVisualStudioMajorVersion $RequestedVisualStudioMajorVersion) -and -not [string]::IsNullOrWhiteSpace($env:VSINSTALLDIR)) {
     $candidateFromEnvironment = Join-Path $env:VSINSTALLDIR 'VC\Auxiliary\Build\vcvars64.bat'
     if (Test-Path -LiteralPath $candidateFromEnvironment -PathType Leaf) {
       return $candidateFromEnvironment
@@ -140,8 +171,23 @@ function Find-VcVars64Path {
     throw "Could not find vswhere.exe. Pass -VisualStudioPath or install Visual Studio Installer so the helper can locate vcvars64.bat."
   }
 
+  $vsWhereArguments = @(
+    '-latest',
+    '-products',
+    '*',
+    '-requires',
+    'Microsoft.VisualStudio.Component.VC.Tools.x86.x64'
+  )
+
+  if (-not [string]::IsNullOrWhiteSpace($RequestedVisualStudioMajorVersion)) {
+    $nextMajorVersion = [int] $RequestedVisualStudioMajorVersion + 1
+    $vsWhereArguments += @('-version', "[$RequestedVisualStudioMajorVersion.0,$nextMajorVersion.0)")
+  }
+
+  $vsWhereArguments += @('-property', 'installationPath')
+
   $global:LASTEXITCODE = 0
-  $installationPath = & $effectiveVsWherePath -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath |
+  $installationPath = & $effectiveVsWherePath @vsWhereArguments |
     Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
     Select-Object -First 1
 
@@ -213,7 +259,7 @@ function Invoke-LoadedCommand {
   if ($null -ne $Arguments) {
     $effectiveArguments = @($Arguments)
   }
-  if ($effectiveArguments.Count -gt 0 -and $effectiveArguments[0] -eq '--') {
+  if ($effectiveArguments.Count -gt 0 -and ($effectiveArguments[0] -eq '--' -or $effectiveArguments[0] -eq '--%')) {
     $effectiveArguments = @($effectiveArguments | Select-Object -Skip 1)
   }
 
@@ -235,13 +281,75 @@ function Invoke-LoadedCommand {
   $script:CommandExitCode = $global:LASTEXITCODE
 }
 
-if (-not $Force -and [string]::IsNullOrWhiteSpace($VisualStudioPath) -and (Test-X64MsvcEnvironment)) {
+function ConvertTo-CMakeBracketArgument {
+  <#
+  .SYNOPSIS
+  Converts a string to a CMake bracket argument without escaping semicolons.
+  #>
+  param(
+    [AllowNull()]
+    [string] $Value
+  )
+
+  if ($null -eq $Value) {
+    $Value = ''
+  }
+
+  $equals = ''
+  while ($Value.Contains("]$equals]")) {
+    $equals += '='
+  }
+
+  return ('[{0}[{1}]{0}]' -f $equals, $Value)
+}
+
+function Export-CMakeEnvironment {
+  <#
+  .SYNOPSIS
+  Writes the current process environment as CMake set(ENV{...}) commands.
+  #>
+  param(
+    [Parameter(Mandatory)]
+    [string] $Path
+  )
+
+  $resolvedParent = Split-Path -Parent $Path
+  if (-not [string]::IsNullOrWhiteSpace($resolvedParent) -and -not (Test-Path -LiteralPath $resolvedParent -PathType Container)) {
+    New-Item -ItemType Directory -Path $resolvedParent -Force | Out-Null
+  }
+
+  $lines = [System.Collections.Generic.List[string]]::new()
+  $lines.Add('# Generated by scripts/Invoke-VcVars64.ps1. Do not edit.')
+
+  [System.Environment]::GetEnvironmentVariables('Process').GetEnumerator() |
+    Sort-Object Name |
+    ForEach-Object {
+      $name = [string] $_.Name
+
+      # cmd.exe pseudo-variables such as "=C:=C:\..." are not valid CMake ENV names.
+      if ($name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
+        return
+      }
+
+      $value = ConvertTo-CMakeBracketArgument -Value ([string] $_.Value)
+      $lines.Add("set(ENV{$name} $value)")
+    }
+
+  $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+  [System.IO.File]::WriteAllLines($Path, $lines, $utf8NoBom)
+}
+
+if (-not $Force -and [string]::IsNullOrWhiteSpace($VisualStudioPath) -and (Test-X64MsvcEnvironment) -and (Test-RequestedVisualStudioVersion -RequestedVisualStudioMajorVersion $VisualStudioMajorVersion)) {
   Write-Status "Visual Studio x64 developer environment is already active."
 }
 else {
-  $vcvars64Path = Find-VcVars64Path -RequestedVisualStudioPath $VisualStudioPath -RequestedVsWherePath $VsWherePath
+  $vcvars64Path = Find-VcVars64Path -RequestedVisualStudioPath $VisualStudioPath -RequestedVsWherePath $VsWherePath -RequestedVisualStudioMajorVersion $VisualStudioMajorVersion
   $importedCount = Import-VcVars64Environment -VcVars64Path $vcvars64Path
   Write-Status "Imported Visual Studio x64 developer environment from $vcvars64Path ($importedCount variables)."
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ExportCMakeEnvironment)) {
+  Export-CMakeEnvironment -Path $ExportCMakeEnvironment
 }
 
 $script:CommandExitCode = 0
