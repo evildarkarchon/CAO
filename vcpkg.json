@@ -4,6 +4,7 @@
   "dependencies": [
     "bethutil",
     "directxtex",
+    "catch2",
     "nifly",
     "plog",
     "qt5-base",

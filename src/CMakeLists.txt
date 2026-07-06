@@ -22,6 +22,8 @@ set(GUI true)
 set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/AnimationsOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AnimationsOptimizer.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlan.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlan.h
     ${CMAKE_CURRENT_SOURCE_DIR}/BSAOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/BSAOptimizer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/FilesystemOperations.cpp

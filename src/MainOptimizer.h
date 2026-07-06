@@ -5,6 +5,7 @@
 #pragma once
 
 #include "AnimationsOptimizer.h"
+#include "AssetWorkPlan.h"
 #include "BsaOptimizer.h"
 #include "MeshesOptimizer.h"
 #include "OptionsCAO.h"
@@ -20,14 +21,26 @@ class MainOptimizer final : public QObject
 public:
     explicit MainOptimizer(const OptionsCAO &optOptions);
 
-    void process(const QString &file);
-    void packBsa(const QString& folder);
+    /*!
+     * \brief Extracts one planned BSA archive work item.
+     * \param workItem The archive extraction work item to execute.
+     */
+    void extractArchive(const ArchiveExtractionWorkItem &workItem);
+    /*!
+     * \brief Processes one planned loose asset work item.
+     * \param workItem The classified loose asset work item to execute.
+     */
+    void processLooseAsset(const LooseAssetWorkItem &workItem);
+    /*!
+     * \brief Packs one planned archive target.
+     * \param workItem The archive packing work item to execute.
+     */
+    void packArchive(const ArchivePackingWorkItem &workItem);
 
   private:
     void addLandscapeTextures();
     void addHeadparts();
 
-    void processBsa(const QString &file) const;
     void processNif(const QString &file);
     void processTexture(const QString &file, const TexturesOptimizer::TextureType &type);
     void processHkx(const QString &file);

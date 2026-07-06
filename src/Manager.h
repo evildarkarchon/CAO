@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
+#include "AssetWorkPlan.h"
 #include "MainOptimizer.h"
 #include "pch.h"
 
@@ -34,22 +35,14 @@ public:
    */
   void init();
   /*!
-   * \brief List all the directories to process
-   */
-  void listDirectories();
-  /*!
-   * \brief List all the files in the modsToProcess list and store them. Also
-   * add their weights to filesWeight
-   */
-  void listFiles();
-  /*!
    * \brief Read ignoredMods.txt and store it to a list
    */
   void readIgnoredMods();
   /*!
-   * \brief The number of all files. Used to determine progress
+   * \brief Builds the planner request from the current options and profile.
+   * \return The request used to plan asset work.
    */
-  int _numberFiles = 0;
+  AssetWorkPlanRequest createAssetWorkPlanRequest() const;
   /*!
    * \brief The number of completed files. Used to determine progress
    */
@@ -59,25 +52,9 @@ public:
    */
   const OptionsCAO& _options;
   /*!
-   * \brief The list of directories to process
-   */
-  QStringList _modsToProcess;
-  /*!
    * \brief Mods on this list won't be processed
    */
   QStringList _ignoredMods;
-  /*!
-   * \brief Used to read the INI
-   */
-  QSettings* _settings;
-  /*!
-   * \brief The files to process
-   */
-  QStringList _files;
-  /*!
-   * \brief The BSAs to extract
-   */
-  QStringList BSAs;
 
   bool _isCancelled = false;
 

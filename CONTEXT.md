@@ -1,0 +1,33 @@
+# Cathedral Assets Optimizer
+
+Language for CAO's Bethesda game asset optimization workflow.
+
+## Language
+
+**Asset**:
+A file in a mod that CAO can inspect or transform, such as a texture, mesh, animation, or BSA archive.
+_Avoid_: Resource
+
+**Mod**:
+A directory of Bethesda game assets selected for CAO to optimize.
+_Avoid_: Folder
+
+**Ignored Mod**:
+A mod intentionally excluded from an Asset Work Plan when CAO is processing several mods.
+_Avoid_: Excluded folder, skipped directory
+
+**Profile**:
+The selected Bethesda game configuration that determines which asset kinds and archive rules CAO applies.
+_Avoid_: Preset
+
+**Asset Work Plan**:
+The ordered description of asset work CAO intends for a selected input path, including selected mods, archive extraction, loose asset discovery, loose asset processing, and archive packing. It is a plan, not execution.
+_Avoid_: Processing pipeline, optimization run
+
+**Loose Asset Discovery**:
+The pass that classifies loose assets after archive extraction has had a chance to add files to the selected input path.
+_Avoid_: File scan
+
+**Asset Work Item**:
+One classified piece of intended asset work inside an Asset Work Plan. It identifies what asset or folder is involved, not the optimization policy used to perform the work.
+_Avoid_: Task, job

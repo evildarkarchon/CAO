@@ -1,0 +1,106 @@
+/* Copyright (C) 2019 G'k
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+#pragma once
+
+#include <QString>
+#include <QStringList>
+#include <QVector>
+#include <optional>
+
+enum class AssetWorkMode
+{
+    SingleMod,
+    SeveralMods
+};
+
+enum class LooseAssetKind
+{
+    TextureDds,
+    TextureTga,
+    Mesh,
+    Animation
+};
+
+struct ProfilePlanningSnapshot
+{
+    bool bsaEnabled = false;
+    bool meshesEnabled = false;
+    bool animationsEnabled = false;
+    bool texturesEnabled = false;
+    bool texturesConvertTga = false;
+    QString bsaExtension;
+};
+
+struct AssetWorkPlanRequest
+{
+    QString selectedPath;
+    AssetWorkMode mode = AssetWorkMode::SingleMod;
+    QStringList ignoredMods;
+    ProfilePlanningSnapshot profile;
+    bool extractBsa = false;
+    bool createBsa = false;
+    bool optimizeMeshes = false;
+    bool optimizeTextures = false;
+    bool optimizeAnimations = false;
+};
+
+struct ArchiveExtractionWorkItem
+{
+    QString path;
+};
+
+struct LooseAssetWorkItem
+{
+    QString path;
+    LooseAssetKind kind = LooseAssetKind::TextureDds;
+};
+
+struct ArchivePackingWorkItem
+{
+    QString folder;
+};
+
+struct AssetWorkPlan
+{
+    QStringList modsToProcess;
+    QVector<ArchiveExtractionWorkItem> archivesToExtract;
+    QVector<LooseAssetWorkItem> looseAssetsToOptimize;
+    QVector<ArchivePackingWorkItem> archivesToPack;
+};
+
+class AssetWorkPlanner final
+{
+public:
+    /*!
+     * \brief Creates a planner for one optimization request.
+     * \param request The selected path, profile capabilities, ignored mods, and enabled work categories.
+     */
+    explicit AssetWorkPlanner(AssetWorkPlanRequest request);
+
+    /*!
+     * \brief Plans archive extraction and packing targets before archive extraction mutates the filesystem.
+     * \return An Asset Work Plan containing selected mods, BSA archives to extract, and folders to pack.
+     */
+    [[nodiscard]] AssetWorkPlan planArchives() const;
+
+    /*!
+     * \brief Plans loose assets after archive extraction has had a chance to add files.
+     * \param modsToProcess The selected mods from the archive plan.
+     * \return An Asset Work Plan containing loose assets to optimize, preserving filesystem traversal order.
+     */
+    [[nodiscard]] AssetWorkPlan planLooseAssets(const QStringList &modsToProcess) const;
+
+private:
+    [[nodiscard]] QStringList selectMods() const;
+    [[nodiscard]] bool isIgnoredMod(const QString &modName) const;
+    [[nodiscard]] bool shouldPlanBsaArchives() const;
+    [[nodiscard]] bool shouldPlanBsaPacking() const;
+    [[nodiscard]] bool shouldPlanMeshes() const;
+    [[nodiscard]] bool shouldPlanTextures() const;
+    [[nodiscard]] bool shouldPlanAnimations() const;
+    [[nodiscard]] std::optional<LooseAssetKind> classifyLooseAsset(const QString &fileName) const;
+
+    AssetWorkPlanRequest _request;
+};

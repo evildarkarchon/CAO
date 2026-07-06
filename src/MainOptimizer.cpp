@@ -48,39 +48,12 @@ void MainOptimizer::addLandscapeTextures()
     }
 }
 
-void MainOptimizer::process(const QString &file)
-{
-    const auto u8BsaExt = btu::bsa::Settings::get(Profiles::bsaGame()).extension;
-    const auto asciiBsaExt = btu::common::as_ascii(u8BsaExt);
-    const auto bsaExt = QString::fromUtf8(asciiBsaExt.data(), static_cast<int>(asciiBsaExt.size()));
-    const bool nif = file.endsWith(".nif", Qt::CaseInsensitive)
-                     || file.endsWith(".btr", Qt::CaseInsensitive)
-                     || file.endsWith(".bto", Qt::CaseInsensitive);
-    try {
-        if (file.endsWith(".dds", Qt::CaseInsensitive))
-            processTexture(file, TexturesOptimizer::DDS);
-        else if (nif)
-            processNif(file);
-        else if (file.endsWith(".tga", Qt::CaseInsensitive) && Profiles::texturesConvertTga())
-            processTexture(file, TexturesOptimizer::TGA);
-        else if (file.endsWith(bsaExt, Qt::CaseInsensitive))
-            processBsa(file);
-        else if (file.endsWith(".hkx", Qt::CaseInsensitive))
-            processHkx(file);
-        else
-            PLOG_ERROR << "Cannot process: " + file;
-    } catch (const std::exception &e) {
-        PLOG_ERROR << "Cannot process: " + file
-                   << "\nAn exception occurred: " << e.what();
-        handleBadFile(file);
-    }
-}
-
-void MainOptimizer::processBsa(const QString &file) const
+void MainOptimizer::extractArchive(const ArchiveExtractionWorkItem &workItem)
 {
     if (_optOptions.bDryRun)
         return; //TODO if "dry run" run dry run on the assets in the BSA
 
+    const QString &file = workItem.path;
     if (_optOptions.bBsaExtract && QFileInfo(file).isFile())
     {
         PLOG_INFO << "BSA found ! Extracting...(this may take a long time, do not force close the program): " + file;
@@ -90,9 +63,33 @@ void MainOptimizer::processBsa(const QString &file) const
     //TODO if(options.bBsaOptimizeAssets)
 }
 
-void
-MainOptimizer::packBsa(const QString& folder)
+void MainOptimizer::processLooseAsset(const LooseAssetWorkItem &workItem)
 {
+    try {
+        switch (workItem.kind) {
+        case LooseAssetKind::TextureDds:
+            processTexture(workItem.path, TexturesOptimizer::DDS);
+            break;
+        case LooseAssetKind::TextureTga:
+            processTexture(workItem.path, TexturesOptimizer::TGA);
+            break;
+        case LooseAssetKind::Mesh:
+            processNif(workItem.path);
+            break;
+        case LooseAssetKind::Animation:
+            processHkx(workItem.path);
+            break;
+        }
+    } catch (const std::exception &e) {
+        PLOG_ERROR << "Cannot process: " + workItem.path
+                   << "\nAn exception occurred: " << e.what();
+        handleBadFile(workItem.path);
+    }
+}
+
+void MainOptimizer::packArchive(const ArchivePackingWorkItem &workItem)
+{
+    const QString &folder = workItem.folder;
     if (_optOptions.bBsaCreate && QDir(folder).exists())
     {
         PLOG_INFO << "Creating BSA...";
