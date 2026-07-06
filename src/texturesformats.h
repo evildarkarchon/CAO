@@ -106,7 +106,7 @@ namespace Detail
         // No support for legacy paletted video formats (AI44, IA44, P8, A8P8)
         DEFFMT(B4G4R4A4_UNORM),
     };
-#undef DEFMTT //cleanup
+#undef DEFFMT //cleanup
 } // namespace Detail
 
 inline DXGI_FORMAT stringToDxgiFormat(const QString &string)

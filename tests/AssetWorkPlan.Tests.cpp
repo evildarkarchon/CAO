@@ -139,6 +139,49 @@ TEST_CASE("Asset work planner matches archive extensions case-insensitively")
     REQUIRE(containsArchiveExtraction(plan, root.filePath("Alpha/ALPHA.BSA")));
 }
 
+TEST_CASE("Asset work planner keeps several-mod archive work in selected mod order")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Beta"));
+    REQUIRE(root.mkpath("Alpha/nested"));
+    createFile(root.filePath("Beta/Beta.bsa"));
+    createFile(root.filePath("Alpha/nested/Alpha.bsa"));
+
+    const AssetWorkPlanner planner(defaultRequest(tempDir.path()));
+    const auto plan = planner.planArchives();
+
+    const QStringList expectedMods{root.filePath("Alpha"), root.filePath("Beta")};
+    REQUIRE(plan.modsToProcess == expectedMods);
+    REQUIRE(plan.archivesToPack.size() == expectedMods.size());
+    REQUIRE(plan.archivesToPack[0].folder == expectedMods[0]);
+    REQUIRE(plan.archivesToPack[1].folder == expectedMods[1]);
+    REQUIRE(containsArchiveExtraction(plan, root.filePath("Alpha/nested/Alpha.bsa")));
+    REQUIRE(containsArchiveExtraction(plan, root.filePath("Beta/Beta.bsa")));
+}
+
+TEST_CASE("Asset work planner requires a profile archive extension for extraction but not packing")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Alpha"));
+    createFile(root.filePath("Alpha/Alpha.bsa"));
+
+    auto request = defaultRequest(tempDir.path());
+    request.profile.bsaExtension.clear();
+
+    const AssetWorkPlanner planner(request);
+    const auto plan = planner.planArchives();
+
+    REQUIRE(plan.archivesToExtract.isEmpty());
+    REQUIRE(plan.archivesToPack.size() == 1);
+    REQUIRE(plan.archivesToPack[0].folder == root.filePath("Alpha"));
+}
+
 TEST_CASE("Asset work planner filters loose assets by options and profile capabilities")
 {
     QTemporaryDir tempDir;
@@ -164,6 +207,27 @@ TEST_CASE("Asset work planner filters loose assets by options and profile capabi
     REQUIRE(loosePlan.looseAssetsToOptimize.size() == 2);
     REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/textures/diffuse.dds"), LooseAssetKind::TextureDds));
     REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/meshes/body.nif"), LooseAssetKind::Mesh));
+}
+
+TEST_CASE("Asset work planner loose asset discovery only scans supplied mods")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Alpha/textures"));
+    REQUIRE(root.mkpath("Beta/meshes"));
+
+    createFile(root.filePath("Alpha/textures/diffuse.dds"));
+    createFile(root.filePath("Beta/meshes/body.nif"));
+
+    const AssetWorkPlanner planner(defaultRequest(tempDir.path()));
+    const auto plan = planner.planLooseAssets(QStringList{root.filePath("Beta")});
+
+    REQUIRE(plan.modsToProcess == QStringList{root.filePath("Beta")});
+    REQUIRE(plan.looseAssetsToOptimize.size() == 1);
+    REQUIRE(containsLooseAsset(plan, root.filePath("Beta/meshes/body.nif"), LooseAssetKind::Mesh));
+    REQUIRE_FALSE(containsLooseAsset(plan, root.filePath("Alpha/textures/diffuse.dds"), LooseAssetKind::TextureDds));
 }
 
 TEST_CASE("Asset work planner profile capability flags suppress enabled work")
@@ -341,6 +405,31 @@ TEST_CASE("Asset work planner classifies supported loose asset extensions")
     REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/textures/source.tga"), LooseAssetKind::TextureTga));
     REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/animation.hkx"), LooseAssetKind::Animation));
     REQUIRE(looseAssetCount(loosePlan, LooseAssetKind::Mesh) == 3);
+}
+
+TEST_CASE("Asset work planner classifies loose asset extensions case-insensitively")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Alpha/textures"));
+    REQUIRE(root.mkpath("Alpha/meshes"));
+
+    createFile(root.filePath("Alpha/textures/DIFFUSE.DDS"));
+    createFile(root.filePath("Alpha/textures/SOURCE.TGA"));
+    createFile(root.filePath("Alpha/meshes/BODY.NIF"));
+    createFile(root.filePath("Alpha/ANIMATION.HKX"));
+
+    const AssetWorkPlanner planner(defaultRequest(tempDir.path()));
+    const auto archivePlan = planner.planArchives();
+    const auto loosePlan = planner.planLooseAssets(archivePlan.modsToProcess);
+
+    REQUIRE(loosePlan.looseAssetsToOptimize.size() == 4);
+    REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/textures/DIFFUSE.DDS"), LooseAssetKind::TextureDds));
+    REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/textures/SOURCE.TGA"), LooseAssetKind::TextureTga));
+    REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/meshes/BODY.NIF"), LooseAssetKind::Mesh));
+    REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/ANIMATION.HKX"), LooseAssetKind::Animation));
 }
 
 TEST_CASE("Asset work planner characterizes packing-only and extraction-only archive requests")

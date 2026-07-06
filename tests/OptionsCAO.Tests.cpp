@@ -99,6 +99,61 @@ TEST_CASE("OptionsCAO saveToIni and readFromIni round-trip representative option
     REQUIRE(loaded.bAnimationsOptimization);
 }
 
+TEST_CASE("OptionsCAO readFromIni leaves defaults unchanged when the settings file is missing")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+
+    OptionsCAO options;
+    options.bDryRun = true;
+    options.userPath = tempDir.path();
+    options.iMeshesOptimizationLevel = 2;
+
+    QSettings reader(root.filePath("missing.ini"), QSettings::IniFormat);
+    options.readFromIni(&reader);
+
+    REQUIRE(options.bDryRun);
+    REQUIRE(options.userPath == tempDir.path());
+    REQUIRE(options.iMeshesOptimizationLevel == 2);
+}
+
+TEST_CASE("OptionsCAO readFromIni preserves an existing user path when the settings value is empty")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    const QString iniPath = root.filePath("settings.ini");
+
+    {
+        QSettings writer(iniPath, QSettings::IniFormat);
+        writer.setValue("userPath", "");
+        writer.sync();
+        REQUIRE(writer.status() == QSettings::NoError);
+    }
+
+    OptionsCAO options;
+    options.userPath = tempDir.path();
+
+    QSettings reader(iniPath, QSettings::IniFormat);
+    options.readFromIni(&reader);
+
+    REQUIRE(options.userPath == tempDir.path());
+}
+
+TEST_CASE("OptionsCAO parseArguments rejects invalid argument shapes before loading profiles")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    OptionsCAO options;
+
+    REQUIRE_THROWS_AS(options.parseArguments(QStringList{"cao.exe", "only", "two"}), std::runtime_error);
+    REQUIRE_THROWS_AS(options.parseArguments(QStringList{"cao.exe", tempDir.path(), "bad", "SSE"}), std::runtime_error);
+}
+
 TEST_CASE("OptionsCAO isValid accepts an existing plausible user path")
 {
     QTemporaryDir tempDir;

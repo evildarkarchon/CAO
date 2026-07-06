@@ -6,6 +6,33 @@
 #include "FilesystemOperations.h"
 #include "PluginsOperations.h"
 
+namespace
+{
+QMap<QString, QString> folderSnapshot(const QString &folder, const bool includeFileSize)
+{
+    QMap<QString, QString> entries;
+    const QDir root(folder);
+    QDirIterator it(folder, QDirIterator::Subdirectories);
+
+    while (it.hasNext())
+    {
+        it.next();
+
+        const QFileInfo entry = it.fileInfo();
+        QString descriptor = entry.isDir() ? "dir" : "file";
+
+        // Compare sizes from the iterator's absolute entry, not a relative path
+        // that depends on the caller's current working directory.
+        if (includeFileSize && entry.isFile())
+            descriptor += ":" + QString::number(entry.size());
+
+        entries.insert(root.relativeFilePath(entry.filePath()), descriptor);
+    }
+
+    return entries;
+}
+}
+
 void FilesystemOperations::deleteEmptyDirectories(const QString &folderPath)
 {
     QDirIterator dirIt(folderPath, QDirIterator::Subdirectories);
@@ -37,46 +64,7 @@ void FilesystemOperations::deleteEmptyDirectories(const QString &folderPath)
 
 bool FilesystemOperations::compareFolders(const QString &folder1, const QString &folder2, const bool &checkFileSize)
 {
-    QDirIterator it1(folder1, QDirIterator::Subdirectories);
-    QDirIterator it2(folder2, QDirIterator::Subdirectories);
-
-    QStringList files1;
-    QStringList files2;
-
-    const QDir dir1(folder1);
-    const QDir dir2(folder2);
-
-    QVector<qint64> filesSize1;
-    QVector<qint64> filesSize2;
-
-    while (it1.hasNext())
-    {
-        QString currentFile = dir1.relativeFilePath(it1.next());
-        files1 << currentFile;
-
-        if (checkFileSize)
-            filesSize1 << QFile(currentFile).size();
-    }
-
-    while (it2.hasNext())
-    {
-        QString currentFile = dir2.relativeFilePath(it2.next());
-        files2 << currentFile;
-
-        if (checkFileSize)
-            filesSize2 << QFile(currentFile).size();
-    }
-
-    if (files1.size() != files2.size())
-        return false;
-
-    if (files1 != files2)
-        return false;
-
-    if (checkFileSize && filesSize1 != filesSize2)
-        return false;
-
-    return true;
+    return folderSnapshot(folder1, checkFileSize) == folderSnapshot(folder2, checkFileSize);
 }
 
 void FilesystemOperations::copyDir(const QString &source, const QString &destination, const bool overwriteExisting)
