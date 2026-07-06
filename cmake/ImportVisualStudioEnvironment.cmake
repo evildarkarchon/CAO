@@ -73,9 +73,15 @@ include("${_cao_environment_script}")
 set(ENV{CAO_ORIGINAL_PATH} "${_cao_original_path}")
 if(NOT "${_cao_original_vcpkg_installation_root}" STREQUAL "")
   set(ENV{VCPKG_INSTALLATION_ROOT} "${_cao_original_vcpkg_installation_root}")
+else()
+  # vcvars64.bat can add Visual Studio's bundled vcpkg; preserve the caller's original resolution order.
+  unset(ENV{VCPKG_INSTALLATION_ROOT})
 endif()
 if(NOT "${_cao_original_vcpkg_root}" STREQUAL "")
   set(ENV{VCPKG_ROOT} "${_cao_original_vcpkg_root}")
+else()
+  # vcvars64.bat can add Visual Studio's bundled vcpkg; preserve the caller's original resolution order.
+  unset(ENV{VCPKG_ROOT})
 endif()
 
 message(STATUS "Imported Visual Studio x64 developer environment")
