@@ -3,21 +3,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #include "Manager.h"
+#include "ManagerPlanning.h"
 
 namespace
 {
-AssetWorkMode toAssetWorkMode(const OptionsCAO::OptimizationMode mode)
-{
-    switch (mode) {
-    case OptionsCAO::SingleMod:
-        return AssetWorkMode::SingleMod;
-    case OptionsCAO::SeveralMods:
-        return AssetWorkMode::SeveralMods;
-    }
-
-    return AssetWorkMode::SingleMod;
-}
-
 QString currentBsaExtension()
 {
     const auto u8BsaExt = btu::bsa::Settings::get(Profiles::bsaGame()).extension;
@@ -33,12 +22,6 @@ ProfilePlanningSnapshot currentProfilePlanningSnapshot()
                                    Profiles::texturesEnabled(),
                                    Profiles::texturesConvertTga(),
                                    currentBsaExtension()};
-}
-
-bool texturesEnabledByOptions(const OptionsCAO &options)
-{
-    return options.bTexturesMipmaps || options.bTexturesCompress || options.bTexturesNecessary
-           || options.bTexturesResizeSize || options.bTexturesResizeRatio;
 }
 }
 
@@ -94,15 +77,7 @@ void Manager::readIgnoredMods()
 
 AssetWorkPlanRequest Manager::createAssetWorkPlanRequest() const
 {
-    return AssetWorkPlanRequest{_options.userPath,
-                                toAssetWorkMode(_options.mode),
-                                _ignoredMods,
-                                currentProfilePlanningSnapshot(),
-                                _options.bBsaExtract,
-                                _options.bBsaCreate,
-                                _options.iMeshesOptimizationLevel > 0,
-                                texturesEnabledByOptions(_options),
-                                _options.bAnimationsOptimization};
+    return ManagerPlanning::createAssetWorkPlanRequest(_options, _ignoredMods, currentProfilePlanningSnapshot());
 }
 
 void Manager::runOptimization()

@@ -37,6 +37,45 @@ bool containsLooseAsset(const AssetWorkPlan &plan, const QString &path, const Lo
                            return item.path == path && item.kind == kind;
                        });
 }
+
+bool containsArchiveExtraction(const AssetWorkPlan &plan, const QString &path)
+{
+    return std::any_of(plan.archivesToExtract.begin(),
+                       plan.archivesToExtract.end(),
+                       [&](const ArchiveExtractionWorkItem &item) {
+                           return item.path == path;
+                       });
+}
+
+qsizetype looseAssetCount(const AssetWorkPlan &plan, const LooseAssetKind kind)
+{
+    return std::count_if(plan.looseAssetsToOptimize.begin(),
+                         plan.looseAssetsToOptimize.end(),
+                         [&](const LooseAssetWorkItem &item) {
+                             return item.kind == kind;
+                         });
+}
+}
+
+TEST_CASE("Asset work planner single-mod mode selects the chosen mod directly")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Chosen"));
+    REQUIRE(root.mkpath("Ignored"));
+
+    auto request = defaultRequest(root.filePath("Chosen"));
+    request.mode = AssetWorkMode::SingleMod;
+    request.ignoredMods = QStringList{"Chosen"};
+
+    const AssetWorkPlanner planner(request);
+    const auto plan = planner.planArchives();
+
+    REQUIRE(plan.modsToProcess == QStringList{root.filePath("Chosen")});
+    REQUIRE(plan.archivesToPack.size() == 1);
+    REQUIRE(plan.archivesToPack[0].folder == root.filePath("Chosen"));
 }
 
 TEST_CASE("Asset work planner excludes ignored mods and Mod Organizer separators")
@@ -66,6 +105,40 @@ TEST_CASE("Asset work planner excludes ignored mods and Mod Organizer separators
     REQUIRE(plan.archivesToPack[0].folder == root.filePath("Alpha"));
 }
 
+TEST_CASE("Asset work planner excludes ignored mods case-insensitively in several-mod mode")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Alpha"));
+    REQUIRE(root.mkpath("NeMeSiS"));
+
+    auto request = defaultRequest(tempDir.path());
+    request.ignoredMods = QStringList{"nemesis"};
+
+    const AssetWorkPlanner planner(request);
+    const auto plan = planner.planArchives();
+
+    REQUIRE(plan.modsToProcess == QStringList{root.filePath("Alpha")});
+}
+
+TEST_CASE("Asset work planner matches archive extensions case-insensitively")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Alpha"));
+    createFile(root.filePath("Alpha/ALPHA.BSA"));
+
+    const AssetWorkPlanner planner(defaultRequest(tempDir.path()));
+    const auto plan = planner.planArchives();
+
+    REQUIRE(plan.archivesToExtract.size() == 1);
+    REQUIRE(containsArchiveExtraction(plan, root.filePath("Alpha/ALPHA.BSA")));
+}
+
 TEST_CASE("Asset work planner filters loose assets by options and profile capabilities")
 {
     QTemporaryDir tempDir;
@@ -91,4 +164,211 @@ TEST_CASE("Asset work planner filters loose assets by options and profile capabi
     REQUIRE(loosePlan.looseAssetsToOptimize.size() == 2);
     REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/textures/diffuse.dds"), LooseAssetKind::TextureDds));
     REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/meshes/body.nif"), LooseAssetKind::Mesh));
+}
+
+TEST_CASE("Asset work planner profile capability flags suppress enabled work")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Alpha/textures"));
+    REQUIRE(root.mkpath("Alpha/meshes"));
+
+    createFile(root.filePath("Alpha/Alpha.bsa"));
+    createFile(root.filePath("Alpha/textures/diffuse.dds"));
+    createFile(root.filePath("Alpha/meshes/body.nif"));
+    createFile(root.filePath("Alpha/anim.hkx"));
+
+    auto request = defaultRequest(tempDir.path());
+
+    SECTION("BSA profile support disables archive extraction and packing")
+    {
+        request.profile.bsaEnabled = false;
+
+        const AssetWorkPlanner planner(request);
+        const auto archivePlan = planner.planArchives();
+        const auto loosePlan = planner.planLooseAssets(archivePlan.modsToProcess);
+
+        REQUIRE(archivePlan.modsToProcess == QStringList{root.filePath("Alpha")});
+        REQUIRE(archivePlan.archivesToExtract.isEmpty());
+        REQUIRE(archivePlan.archivesToPack.isEmpty());
+        REQUIRE(loosePlan.looseAssetsToOptimize.size() == 3);
+    }
+
+    SECTION("mesh profile support disables mesh work")
+    {
+        request.profile.meshesEnabled = false;
+
+        const AssetWorkPlanner planner(request);
+        const auto archivePlan = planner.planArchives();
+        const auto loosePlan = planner.planLooseAssets(archivePlan.modsToProcess);
+
+        REQUIRE_FALSE(containsLooseAsset(loosePlan, root.filePath("Alpha/meshes/body.nif"), LooseAssetKind::Mesh));
+        REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/textures/diffuse.dds"), LooseAssetKind::TextureDds));
+        REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/anim.hkx"), LooseAssetKind::Animation));
+    }
+
+    SECTION("texture profile support disables texture work")
+    {
+        request.profile.texturesEnabled = false;
+
+        const AssetWorkPlanner planner(request);
+        const auto archivePlan = planner.planArchives();
+        const auto loosePlan = planner.planLooseAssets(archivePlan.modsToProcess);
+
+        REQUIRE_FALSE(containsLooseAsset(loosePlan, root.filePath("Alpha/textures/diffuse.dds"), LooseAssetKind::TextureDds));
+        REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/meshes/body.nif"), LooseAssetKind::Mesh));
+        REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/anim.hkx"), LooseAssetKind::Animation));
+    }
+
+    SECTION("animation profile support disables animation work")
+    {
+        request.profile.animationsEnabled = false;
+
+        const AssetWorkPlanner planner(request);
+        const auto archivePlan = planner.planArchives();
+        const auto loosePlan = planner.planLooseAssets(archivePlan.modsToProcess);
+
+        REQUIRE_FALSE(containsLooseAsset(loosePlan, root.filePath("Alpha/anim.hkx"), LooseAssetKind::Animation));
+        REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/textures/diffuse.dds"), LooseAssetKind::TextureDds));
+        REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/meshes/body.nif"), LooseAssetKind::Mesh));
+    }
+}
+
+TEST_CASE("Asset work planner work-option flags suppress profile-enabled work")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Alpha/textures"));
+    REQUIRE(root.mkpath("Alpha/meshes"));
+
+    createFile(root.filePath("Alpha/Alpha.bsa"));
+    createFile(root.filePath("Alpha/textures/diffuse.dds"));
+    createFile(root.filePath("Alpha/meshes/body.nif"));
+    createFile(root.filePath("Alpha/anim.hkx"));
+
+    auto request = defaultRequest(tempDir.path());
+
+    SECTION("archive extraction option disables extraction only")
+    {
+        request.extractBsa = false;
+
+        const AssetWorkPlanner planner(request);
+        const auto archivePlan = planner.planArchives();
+
+        REQUIRE(archivePlan.modsToProcess == QStringList{root.filePath("Alpha")});
+        REQUIRE(archivePlan.archivesToExtract.isEmpty());
+        REQUIRE(archivePlan.archivesToPack.size() == 1);
+    }
+
+    SECTION("archive creation option disables packing only")
+    {
+        request.createBsa = false;
+
+        const AssetWorkPlanner planner(request);
+        const auto archivePlan = planner.planArchives();
+
+        REQUIRE(archivePlan.modsToProcess == QStringList{root.filePath("Alpha")});
+        REQUIRE(archivePlan.archivesToExtract.size() == 1);
+        REQUIRE(archivePlan.archivesToPack.isEmpty());
+    }
+
+    SECTION("mesh option disables mesh work")
+    {
+        request.optimizeMeshes = false;
+
+        const AssetWorkPlanner planner(request);
+        const auto archivePlan = planner.planArchives();
+        const auto loosePlan = planner.planLooseAssets(archivePlan.modsToProcess);
+
+        REQUIRE_FALSE(containsLooseAsset(loosePlan, root.filePath("Alpha/meshes/body.nif"), LooseAssetKind::Mesh));
+        REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/textures/diffuse.dds"), LooseAssetKind::TextureDds));
+        REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/anim.hkx"), LooseAssetKind::Animation));
+    }
+
+    SECTION("texture option disables texture work")
+    {
+        request.optimizeTextures = false;
+
+        const AssetWorkPlanner planner(request);
+        const auto archivePlan = planner.planArchives();
+        const auto loosePlan = planner.planLooseAssets(archivePlan.modsToProcess);
+
+        REQUIRE_FALSE(containsLooseAsset(loosePlan, root.filePath("Alpha/textures/diffuse.dds"), LooseAssetKind::TextureDds));
+        REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/meshes/body.nif"), LooseAssetKind::Mesh));
+        REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/anim.hkx"), LooseAssetKind::Animation));
+    }
+
+    SECTION("animation option disables animation work")
+    {
+        request.optimizeAnimations = false;
+
+        const AssetWorkPlanner planner(request);
+        const auto archivePlan = planner.planArchives();
+        const auto loosePlan = planner.planLooseAssets(archivePlan.modsToProcess);
+
+        REQUIRE_FALSE(containsLooseAsset(loosePlan, root.filePath("Alpha/anim.hkx"), LooseAssetKind::Animation));
+        REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/textures/diffuse.dds"), LooseAssetKind::TextureDds));
+        REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/meshes/body.nif"), LooseAssetKind::Mesh));
+    }
+}
+
+TEST_CASE("Asset work planner classifies supported loose asset extensions")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Alpha/textures"));
+    REQUIRE(root.mkpath("Alpha/meshes"));
+
+    createFile(root.filePath("Alpha/textures/diffuse.dds"));
+    createFile(root.filePath("Alpha/textures/source.tga"));
+    createFile(root.filePath("Alpha/meshes/body.nif"));
+    createFile(root.filePath("Alpha/meshes/tree.btr"));
+    createFile(root.filePath("Alpha/meshes/object.bto"));
+    createFile(root.filePath("Alpha/animation.hkx"));
+
+    const AssetWorkPlanner planner(defaultRequest(tempDir.path()));
+    const auto archivePlan = planner.planArchives();
+    const auto loosePlan = planner.planLooseAssets(archivePlan.modsToProcess);
+
+    REQUIRE(loosePlan.looseAssetsToOptimize.size() == 6);
+    REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/textures/diffuse.dds"), LooseAssetKind::TextureDds));
+    REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/textures/source.tga"), LooseAssetKind::TextureTga));
+    REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/animation.hkx"), LooseAssetKind::Animation));
+    REQUIRE(looseAssetCount(loosePlan, LooseAssetKind::Mesh) == 3);
+}
+
+TEST_CASE("Asset work planner characterizes packing-only and extraction-only archive requests")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Alpha"));
+    createFile(root.filePath("Alpha/Alpha.bsa"));
+
+    auto packingOnly = defaultRequest(tempDir.path());
+    packingOnly.extractBsa = false;
+
+    const AssetWorkPlanner packingPlanner(packingOnly);
+    const auto packingPlan = packingPlanner.planArchives();
+
+    REQUIRE(packingPlan.archivesToExtract.isEmpty());
+    REQUIRE(packingPlan.archivesToPack.size() == 1);
+    REQUIRE(packingPlan.archivesToPack[0].folder == root.filePath("Alpha"));
+
+    auto extractionOnly = defaultRequest(tempDir.path());
+    extractionOnly.createBsa = false;
+
+    const AssetWorkPlanner extractionPlanner(extractionOnly);
+    const auto extractionPlan = extractionPlanner.planArchives();
+
+    REQUIRE(extractionPlan.archivesToPack.isEmpty());
+    REQUIRE(extractionPlan.archivesToExtract.size() == 1);
+    REQUIRE(extractionPlan.archivesToExtract[0].path == root.filePath("Alpha/Alpha.bsa"));
 }

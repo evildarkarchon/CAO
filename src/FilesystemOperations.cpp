@@ -168,7 +168,7 @@ QStringList FilesystemOperations::readFile(QFile &file)
 QStringList FilesystemOperations::listPlugins(QDirIterator &it)
 {
     QStringList plugins;
-    const QRegularExpression pluginsExt("\\.es[plm]$");
+    const QRegularExpression pluginsExt("\\.es[plm]$", QRegularExpression::CaseInsensitiveOption);
     while (it.hasNext())
     {
         it.next();
