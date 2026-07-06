@@ -7,8 +7,8 @@ if defined CAO_VISUAL_STUDIO_PATH (
 )
 
 if defined VSINSTALLDIR (
-  if exist "%VSINSTALLDIR%\VC\Auxiliary\Build\vcvars64.bat" (
-    set "CAO_VSINSTALLDIR=%VSINSTALLDIR%"
+  call :TryUseActiveVisualStudioEnvironment
+  if not errorlevel 1 (
     goto :FoundVisualStudio
   )
 )
@@ -21,8 +21,12 @@ if not exist "%CAO_EFFECTIVE_VSWHERE%" (
   exit /b 1
 )
 
-for /f "usebackq delims=" %%I in (`"%CAO_EFFECTIVE_VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
-  if not defined CAO_VSINSTALLDIR set "CAO_VSINSTALLDIR=%%I"
+if defined CAO_VISUAL_STUDIO_MAJOR_VERSION (
+  call :SetVsWhereVersionRange
+  if errorlevel 1 exit /b 1
+  call :FindVisualStudioWithVersion
+) else (
+  call :FindLatestVisualStudio
 )
 
 :FoundVisualStudio
@@ -49,3 +53,44 @@ if errorlevel 1 (
 
 ninja.exe %*
 exit /b %ERRORLEVEL%
+
+:TryUseActiveVisualStudioEnvironment
+rem Reuse VSINSTALLDIR only when it matches the configure-time major-version request.
+if defined CAO_VISUAL_STUDIO_MAJOR_VERSION (
+  if not defined VisualStudioVersion exit /b 1
+
+  for /f "tokens=1 delims=." %%I in ("%VisualStudioVersion%") do set "CAO_ACTIVE_VISUAL_STUDIO_MAJOR_VERSION=%%I"
+  if not "%CAO_ACTIVE_VISUAL_STUDIO_MAJOR_VERSION%"=="%CAO_VISUAL_STUDIO_MAJOR_VERSION%" exit /b 1
+)
+
+if exist "%VSINSTALLDIR%\VC\Auxiliary\Build\vcvars64.bat" (
+  set "CAO_VSINSTALLDIR=%VSINSTALLDIR%"
+  exit /b 0
+)
+
+exit /b 1
+
+:SetVsWhereVersionRange
+rem vswhere accepts half-open ranges such as [17.0,18.0) to select one VS major line.
+echo(%CAO_VISUAL_STUDIO_MAJOR_VERSION%| findstr /r "^[0-9][0-9]*$" >nul
+if errorlevel 1 (
+  echo CAO_VISUAL_STUDIO_MAJOR_VERSION must contain only digits. 1>&2
+  exit /b 1
+)
+
+set /a "CAO_NEXT_VISUAL_STUDIO_MAJOR_VERSION=%CAO_VISUAL_STUDIO_MAJOR_VERSION% + 1" >nul
+exit /b 0
+
+:FindVisualStudioWithVersion
+rem Run vswhere with the requested Visual Studio major-version range.
+for /f "delims=" %%I in ('""%CAO_EFFECTIVE_VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -version "[%CAO_VISUAL_STUDIO_MAJOR_VERSION%.0^,%CAO_NEXT_VISUAL_STUDIO_MAJOR_VERSION%.0^)" -property installationPath"') do (
+  if not defined CAO_VSINSTALLDIR set "CAO_VSINSTALLDIR=%%I"
+)
+exit /b 0
+
+:FindLatestVisualStudio
+rem Preserve the previous latest-instance behavior when no major version is requested.
+for /f "delims=" %%I in ('""%CAO_EFFECTIVE_VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath"') do (
+  if not defined CAO_VSINSTALLDIR set "CAO_VSINSTALLDIR=%%I"
+)
+exit /b 0

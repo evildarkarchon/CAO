@@ -3,9 +3,14 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')
 $scriptPath = Join-Path $repoRoot 'scripts\Invoke-VcVars64.ps1'
+$ninjaWrapperPath = Join-Path $repoRoot 'scripts\Invoke-VsNinja.cmd'
 
 if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
   throw "Expected Visual Studio environment helper at $scriptPath."
+}
+
+if (-not (Test-Path -LiteralPath $ninjaWrapperPath -PathType Leaf)) {
+  throw "Expected Visual Studio Ninja wrapper at $ninjaWrapperPath."
 }
 
 $originalEnvironment = @{
@@ -19,11 +24,15 @@ $originalEnvironment = @{
   VCPKG_INSTALLATION_ROOT = $env:VCPKG_INSTALLATION_ROOT
   VCPKG_ROOT = $env:VCPKG_ROOT
   CAO_VISUAL_STUDIO_PATH = $env:CAO_VISUAL_STUDIO_PATH
+  CAO_VISUAL_STUDIO_MAJOR_VERSION = $env:CAO_VISUAL_STUDIO_MAJOR_VERSION
+  CAO_VSWHERE_PATH = $env:CAO_VSWHERE_PATH
 }
 
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) "cao-vcvars64-test-$([System.Guid]::NewGuid())"
 $fakeVisualStudioPath = Join-Path $tempRoot 'Microsoft Visual Studio\2022\Community'
+$fakeVisualStudio2026Path = Join-Path $tempRoot 'Microsoft Visual Studio\2026\Preview'
 $vcvarsDirectory = Join-Path $fakeVisualStudioPath 'VC\Auxiliary\Build'
+$vcvars2026Directory = Join-Path $fakeVisualStudio2026Path 'VC\Auxiliary\Build'
 $markerPath = Join-Path $tempRoot 'vcvars-called.txt'
 $fakeToolsPath = Join-Path $fakeVisualStudioPath 'VC\Tools\MSVC\14.99.99999'
 $fakeSdkPath = Join-Path $tempRoot 'Windows Kits\10'
@@ -34,6 +43,7 @@ $vsWhereArgumentsPath = Join-Path $tempRoot 'vswhere-arguments.txt'
 
 try {
   New-Item -ItemType Directory -Path $vcvarsDirectory -Force | Out-Null
+  New-Item -ItemType Directory -Path $vcvars2026Directory -Force | Out-Null
   New-Item -ItemType Directory -Path (Join-Path $fakeToolsPath 'bin\Hostx64\x64') -Force | Out-Null
   New-Item -ItemType Directory -Path $fakeSdkPath -Force | Out-Null
   New-Item -ItemType Directory -Path (Join-Path $fakeVisualStudioVcpkgRoot 'scripts\buildsystems') -Force | Out-Null
@@ -41,6 +51,7 @@ try {
   Set-Content -LiteralPath (Join-Path $fakeVisualStudioVcpkgRoot 'scripts\buildsystems\vcpkg.cmake') -Value 'set(CAO_FAKE_VS_VCPKG_TOOLCHAIN_INCLUDED TRUE)' -Encoding ASCII
   Set-Content -LiteralPath (Join-Path $fakeUserVcpkgRoot 'scripts\buildsystems\vcpkg.cmake') -Value 'set(CAO_FAKE_USER_VCPKG_TOOLCHAIN_INCLUDED TRUE)' -Encoding ASCII
   Set-Content -LiteralPath $fakeUserVcpkgExe -Value '@echo off' -Encoding ASCII
+  Copy-Item -LiteralPath $env:ComSpec -Destination (Join-Path $fakeToolsPath 'bin\Hostx64\x64\ninja.exe')
 
   $vcvars64Path = Join-Path $vcvarsDirectory 'vcvars64.bat'
   @(
@@ -54,6 +65,16 @@ try {
     "set VCPKG_ROOT=$fakeVisualStudioVcpkgRoot"
     "set PATH=$fakeToolsPath\bin\Hostx64\x64;%PATH%"
   ) | Set-Content -LiteralPath $vcvars64Path -Encoding ASCII
+
+  $vcvars2026Path = Join-Path $vcvars2026Directory 'vcvars64.bat'
+  @(
+    '@echo off'
+    "set VSINSTALLDIR=$fakeVisualStudio2026Path\"
+    'set VisualStudioVersion=18.0'
+    "set VCToolsInstallDir=$fakeToolsPath\"
+    "set WindowsSdkDir=$fakeSdkPath\"
+    "set PATH=$fakeToolsPath\bin\Hostx64\x64;%PATH%"
+  ) | Set-Content -LiteralPath $vcvars2026Path -Encoding ASCII
 
   & $scriptPath -VisualStudioPath $fakeVisualStudioPath -Quiet
 
@@ -121,6 +142,44 @@ try {
   $vsWhereArguments = Get-Content -LiteralPath $vsWhereArgumentsPath -Raw
   if (-not $vsWhereArguments.Contains('-version [17.0,18.0)')) {
     throw "Expected vswhere arguments to request the VS 17 version range, got '$vsWhereArguments'."
+  }
+
+  Remove-Item -LiteralPath $vsWhereArgumentsPath -ErrorAction SilentlyContinue
+  $env:CAO_VSWHERE_PATH = $fakeVsWherePath
+  $env:CAO_VISUAL_STUDIO_MAJOR_VERSION = '17'
+  $env:VSINSTALLDIR = "$fakeVisualStudio2026Path\"
+  $env:VisualStudioVersion = '18.0'
+
+  & $ninjaWrapperPath /d /s /c 'exit 0'
+
+  if ($LASTEXITCODE -ne 0) {
+    throw "Expected Visual Studio Ninja wrapper to exit successfully, got $LASTEXITCODE."
+  }
+
+  if (-not (Test-Path -LiteralPath $vsWhereArgumentsPath -PathType Leaf)) {
+    throw 'Expected Visual Studio Ninja wrapper to query vswhere when the active Visual Studio major version does not match the request.'
+  }
+
+  $vsWhereArguments = Get-Content -LiteralPath $vsWhereArgumentsPath -Raw
+  if (-not ($vsWhereArguments.Contains('-version') -and $vsWhereArguments.Contains('[17.0,18.0)'))) {
+    throw "Expected Visual Studio Ninja wrapper to request the VS 17 version range, got '$vsWhereArguments'."
+  }
+
+  Remove-Item -LiteralPath $vsWhereArgumentsPath -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath 'Env:CAO_VISUAL_STUDIO_MAJOR_VERSION' -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath 'Env:VSINSTALLDIR' -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath 'Env:VisualStudioVersion' -ErrorAction SilentlyContinue
+  $env:CAO_VSWHERE_PATH = $fakeVsWherePath
+
+  & $ninjaWrapperPath /d /s /c 'exit 0'
+
+  if ($LASTEXITCODE -ne 0) {
+    throw "Expected Visual Studio Ninja wrapper latest lookup to exit successfully, got $LASTEXITCODE."
+  }
+
+  $vsWhereArguments = Get-Content -LiteralPath $vsWhereArgumentsPath -Raw
+  if ($vsWhereArguments.Contains('-version')) {
+    throw "Expected Visual Studio Ninja wrapper latest lookup to omit -version, got '$vsWhereArguments'."
   }
 
   $commandCapturePath = Join-Path $tempRoot 'command-environment.txt'
