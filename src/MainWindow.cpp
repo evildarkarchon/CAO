@@ -340,6 +340,9 @@ void MainWindow::setGameMode(const QString &mode) {
 }
 
 void MainWindow::setAdvancedSettingsEnabled(const bool &value) {
+  // Re-presenting the full options UI needs a fresh snapshot so this toggle
+  // does not discard unsaved edits in unrelated widgets.
+  _options.readFromUi(_ui);
   _ui->advancedSettingsCheckbox->setChecked(value);
   _options.saveToUi(_ui);
 }
