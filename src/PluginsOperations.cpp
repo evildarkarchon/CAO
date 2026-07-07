@@ -157,19 +157,24 @@ QStringList PluginsOperations::listLandscapeTextures(const QString &filepath) {
             strncmp(pluginFieldHeader.type, GROUP_TNAM, sizeof GROUP_TNAM) ==
                 0) {
           uint32_t formId = 0;
-          if (pluginFieldHeader.dataSize > sizeof formId) {
+          if (pluginFieldHeader.dataSize != sizeof formId) {
             PLOG_WARNING << "Skipping malformed TNAM field in " << filepath
-                         << ": data size " << pluginFieldHeader.dataSize
-                         << " exceeds " << sizeof formId << " bytes";
+                          << ": data size " << pluginFieldHeader.dataSize
+                          << " does not match " << sizeof formId << " bytes";
             file.seekg(pluginFieldHeader.dataSize, std::ios::cur);
             continue;
           }
 
           file.read(reinterpret_cast<char *>(&formId),
-                    static_cast<std::streamsize>(pluginFieldHeader.dataSize));
-          if (file.gcount() ==
-              static_cast<std::streamsize>(pluginFieldHeader.dataSize))
-            firstSet.push_back(formId);
+                    static_cast<std::streamsize>(sizeof formId));
+          if (file.gcount() != static_cast<std::streamsize>(sizeof formId)) {
+            PLOG_WARNING << "Skipping malformed TNAM field in " << filepath
+                          << ": expected " << sizeof formId << " bytes, read "
+                          << file.gcount();
+            continue;
+          }
+
+          firstSet.push_back(formId);
         }
         // read diffuse texture name from TXST record
         else if (strncmp(signatureGroup, GROUP_TXST, sizeof GROUP_TXST) == 0 &&

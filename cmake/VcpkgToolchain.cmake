@@ -16,25 +16,19 @@ if(_cao_vcpkg_in_try_compile AND NOT "${_cao_resolved_vcpkg_root}" STREQUAL "")
 endif()
 
 set(_cao_vcpkg_candidate_roots)
-set(_cao_vcpkg_environment_candidate_roots)
-set(_cao_vcpkg_variable_candidate_roots)
 
 foreach(_cao_vcpkg_root_name IN ITEMS CAO_VCPKG_ROOT VCPKG_INSTALLATION_ROOT VCPKG_ROOT)
-  if(NOT "$ENV{${_cao_vcpkg_root_name}}" STREQUAL "")
-    file(TO_CMAKE_PATH "$ENV{${_cao_vcpkg_root_name}}" _cao_vcpkg_env_root)
-    list(APPEND _cao_vcpkg_environment_candidate_roots "${_cao_vcpkg_env_root}")
-  endif()
-
+  # Keep the documented root-name priority even when candidates come from mixed cache and environment sources.
   if(DEFINED ${_cao_vcpkg_root_name} AND NOT "${${_cao_vcpkg_root_name}}" STREQUAL "")
     file(TO_CMAKE_PATH "${${_cao_vcpkg_root_name}}" _cao_vcpkg_var_root)
-    list(APPEND _cao_vcpkg_variable_candidate_roots "${_cao_vcpkg_var_root}")
+    list(APPEND _cao_vcpkg_candidate_roots "${_cao_vcpkg_var_root}")
+  endif()
+
+  if(NOT "$ENV{${_cao_vcpkg_root_name}}" STREQUAL "")
+    file(TO_CMAKE_PATH "$ENV{${_cao_vcpkg_root_name}}" _cao_vcpkg_env_root)
+    list(APPEND _cao_vcpkg_candidate_roots "${_cao_vcpkg_env_root}")
   endif()
 endforeach()
-
-set(_cao_vcpkg_candidate_roots
-  ${_cao_vcpkg_environment_candidate_roots}
-  ${_cao_vcpkg_variable_candidate_roots}
-)
 
 if(NOT "$ENV{CAO_ORIGINAL_PATH}" STREQUAL "")
   file(TO_CMAKE_PATH "$ENV{CAO_ORIGINAL_PATH}" _cao_original_path)

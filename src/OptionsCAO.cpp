@@ -156,6 +156,8 @@ void OptionsCAO::parseArguments(const QStringList &args) {
   parser.process(args);
 
   const QStringList positionalArguments = parser.positionalArguments();
+  if (positionalArguments.size() < 3)
+    throw std::runtime_error("Not enough arguments");
 
   const QString path = QDir::cleanPath(positionalArguments.at(0));
   userPath = path;
@@ -211,7 +213,11 @@ QString OptionsCAO::isValid() const {
     return ("This meshes optimization level does not exist. Level: " +
             QString::number(iMeshesOptimizationLevel));
 
-  if (iTexturesTargetWidth % 2 != 0 || iTexturesTargetHeight % 2 != 0)
+  const auto isPowerOfTwo = [](const size_t value) {
+    return value != 0 && (value & (value - 1)) == 0;
+  };
+  if (bTexturesResizeSize && (!isPowerOfTwo(iTexturesTargetWidth) ||
+                              !isPowerOfTwo(iTexturesTargetHeight)))
     return ("Textures target size has to be a power of two");
 
   if (bTexturesResizeRatio &&

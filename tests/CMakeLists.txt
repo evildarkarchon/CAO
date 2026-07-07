@@ -10,6 +10,7 @@ add_executable(Cathedral_Assets_Optimizer_Tests
     ${CMAKE_CURRENT_SOURCE_DIR}/ManagerPlanning.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ModAssetMetadata.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/OptionsCAO.Tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/PluginsOperations.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesFormats.Tests.cpp
 )
 

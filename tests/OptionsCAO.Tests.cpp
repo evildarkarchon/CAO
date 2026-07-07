@@ -158,6 +158,7 @@ TEST_CASE("OptionsCAO parseArguments rejects invalid argument shapes before load
     OptionsCAO options;
 
     REQUIRE_THROWS_AS(options.parseArguments(QStringList{"cao.exe", "only", "two"}), std::runtime_error);
+    REQUIRE_THROWS_AS(options.parseArguments(QStringList{"cao.exe", "--dr", tempDir.path(), "om"}), std::runtime_error);
     REQUIRE_THROWS_AS(options.parseArguments(QStringList{"cao.exe", tempDir.path(), "bad", "SSE"}), std::runtime_error);
 }
 
@@ -230,7 +231,7 @@ TEST_CASE("OptionsCAO isValid rejects invalid mesh optimization levels")
     }
 }
 
-TEST_CASE("OptionsCAO texture target-size validation follows the current evenness check")
+TEST_CASE("OptionsCAO texture target-size validation requires powers of two only for fixed-size resizing")
 {
     QTemporaryDir tempDir;
     REQUIRE(tempDir.isValid());
@@ -255,6 +256,14 @@ TEST_CASE("OptionsCAO texture target-size validation follows the current evennes
     REQUIRE(options.isValid() == "Textures target ratios have to be greater than zero");
 
     options.iTexturesTargetHeightRatio = 5;
+
+    options.bTexturesResizeRatio = false;
+    options.bTexturesResizeSize = true;
+    REQUIRE(options.isValid() == "Textures target size has to be a power of two");
+
+    options.iTexturesTargetWidth = 1024;
+    options.iTexturesTargetHeight = 1024;
+    REQUIRE(options.isValid().isEmpty());
 
     options.iTexturesTargetWidth = 1025;
     options.iTexturesTargetHeight = 1024;
