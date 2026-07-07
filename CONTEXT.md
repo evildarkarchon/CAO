@@ -24,6 +24,10 @@ _Avoid_: Preset
 The ordered description of asset work CAO intends for a selected input path, including selected mods, archive extraction, loose asset discovery, loose asset processing, and archive packing. It is a plan, not execution.
 _Avoid_: Processing pipeline, optimization run
 
+**Asset Work Plan Execution**:
+The act of carrying out an Asset Work Plan against the selected Mod or Mods. It is execution, not planning; Loose Asset Discovery may happen during it after archive extraction changes the available Assets.
+_Avoid_: Optimization run, processing pipeline, manager orchestration
+
 **Loose Asset Discovery**:
 The pass that classifies loose assets after archive extraction has had a chance to add files to the selected input path.
 _Avoid_: File scan

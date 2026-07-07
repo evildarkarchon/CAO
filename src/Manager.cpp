@@ -3,6 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #include "Manager.h"
+#include "AssetWorkPlanExecutor.h"
 #include "ManagerPlanning.h"
 
 namespace
@@ -23,6 +24,48 @@ ProfilePlanningSnapshot currentProfilePlanningSnapshot()
                                    Profiles::texturesConvertTga(),
                                    currentBsaExtension()};
 }
+
+class MainOptimizerExecutionAdapter final : public AssetWorkPlanExecutionAdapter
+{
+public:
+    /*!
+     * \brief Creates the production adapter used for Asset Work Plan Execution.
+     * \param options Optimization options consumed by MainOptimizer while executing work items.
+     */
+    explicit MainOptimizerExecutionAdapter(const OptionsCAO &options)
+        : _optimizer(options)
+    {}
+
+    /*!
+     * \brief Delegates archive extraction to MainOptimizer.
+     * \param workItem The planned archive extraction work item.
+     */
+    void extractArchive(const ArchiveExtractionWorkItem &workItem) override
+    {
+        _optimizer.extractArchive(workItem);
+    }
+
+    /*!
+     * \brief Delegates loose Asset processing to MainOptimizer.
+     * \param workItem The planned loose Asset Work Item.
+     */
+    void processLooseAsset(const LooseAssetWorkItem &workItem) override
+    {
+        _optimizer.processLooseAsset(workItem);
+    }
+
+    /*!
+     * \brief Delegates archive packing to MainOptimizer.
+     * \param workItem The planned archive packing work item.
+     */
+    void packArchive(const ArchivePackingWorkItem &workItem) override
+    {
+        _optimizer.packArchive(workItem);
+    }
+
+private:
+    MainOptimizer _optimizer;
+};
 }
 
 Manager::Manager(const OptionsCAO& opt)
@@ -86,66 +129,33 @@ void Manager::runOptimization()
     PLOG_INFO << "Processing: " + _options.userPath;
     PLOG_INFO << "Beginning...";
 
-    MainOptimizer optimizer(_options);
+    MainOptimizerExecutionAdapter adapter(_options);
     PLOG_INFO << "Listing files and directories...";
-    const AssetWorkPlanner planner(createAssetWorkPlanRequest());
-    const auto archivePlan = planner.planArchives();
+    AssetWorkPlanExecutor executor(createAssetWorkPlanRequest(), adapter);
+    const auto result = executor.execute(AssetWorkPlanExecutionCallbacks{
+        [this](const AssetWorkPlanProgress &progress) {
+            _numberCompletedFiles = progress.completed;
 
-    //Extracting BSAs
-    _numberCompletedFiles = 0;
-    for (const auto &archive : archivePlan.archivesToExtract) {
-        if (_isCancelled)
-            return;
+            switch (progress.phase) {
+            case AssetWorkPlanExecutionPhase::ArchiveExtraction:
+                printProgress(progress.total, "Extracting BSAs");
+                break;
+            case AssetWorkPlanExecutionPhase::LooseAssetProcessing:
+                printProgress(progress.total, "Processing files");
+                break;
+            case AssetWorkPlanExecutionPhase::ArchivePacking:
+                if (progress.currentLabel.isEmpty())
+                    printProgress(progress.total, "Packing BSAs");
+                else
+                    printProgress(progress.total, "Packing BSAs - Folder:  " + progress.currentLabel);
+                break;
+            }
+        },
+        [this]() { return _isCancelled; }});
 
-        optimizer.extractArchive(archive);
-        ++_numberCompletedFiles;
-        printProgress(static_cast<int>(archivePlan.archivesToExtract.size()), "Extracting BSAs");
-    }
+    if (result == AssetWorkPlanExecutionResult::Cancelled)
+        return;
 
-    //Listing newly extracted files
-    const auto loosePlan = planner.planLooseAssets(archivePlan.modsToProcess);
-
-    _numberCompletedFiles = 0;
-    printProgress(static_cast<int>(loosePlan.looseAssetsToOptimize.size()));
-
-    //Using time in order to prevent printing progress too often
-    QDateTime time1 = QDateTime::currentDateTime();
-    QDateTime time2;
-    for (const auto &asset : loosePlan.looseAssetsToOptimize)
-    {
-        if (_isCancelled)
-            return;
-
-        optimizer.processLooseAsset(asset);
-        ++_numberCompletedFiles;
-        if (_isCancelled)
-            return;
-
-        time2 = QDateTime::currentDateTime();
-        if (time2 > time1.addMSecs(2000)) {
-            printProgress(static_cast<int>(loosePlan.looseAssetsToOptimize.size()));
-            time1 = time2;
-        }
-    }
-
-    _numberCompletedFiles = 0;
-
-    //Packing BSAs
-    if (!archivePlan.archivesToPack.isEmpty())
-        printProgress(static_cast<int>(archivePlan.archivesToPack.size()), "Packing BSAs");
-
-    for (const auto &archive : archivePlan.archivesToPack)
-    {
-        if (_isCancelled)
-            return;
-
-        optimizer.packArchive(archive);
-        ++_numberCompletedFiles;
-        printProgress(static_cast<int>(archivePlan.archivesToPack.size()),
-                      "Packing BSAs - Folder:  " + QFileInfo(archive.folder).fileName());
-    }
-
-    FilesystemOperations::deleteEmptyDirectories(_options.userPath);
     PLOG_INFO << "Process completed<br><br><br>";
     emit end();
 }

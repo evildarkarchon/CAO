@@ -24,6 +24,8 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/AnimationsOptimizer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlan.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlan.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlanExecutor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlanExecutor.h
     ${CMAKE_CURRENT_SOURCE_DIR}/BSAOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/BSAOptimizer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/FilesystemOperations.cpp
