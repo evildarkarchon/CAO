@@ -6,12 +6,15 @@ find_package(nifly CONFIG REQUIRED)
 find_package(directxtex CONFIG REQUIRED)
 
 add_executable(Cathedral_Assets_Optimizer_Tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPolicy.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlan.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlanExecutor.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/FilesystemOperations.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ManagerPlanning.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/OptionsCAO.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesFormats.Tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/AssetWorkPolicy.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/AssetWorkPolicy.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/AssetWorkPlan.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/AssetWorkPlan.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/AssetWorkPlanExecutor.cpp

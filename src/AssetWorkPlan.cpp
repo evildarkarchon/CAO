@@ -17,12 +17,12 @@ AssetWorkPlan AssetWorkPlanner::planArchives() const
     AssetWorkPlan plan;
     plan.modsToProcess = selectMods();
 
-    if (shouldPlanBsaPacking()) {
+    if (_request.policy.allowsArchivePacking()) {
         for (const auto &mod : plan.modsToProcess)
             plan.archivesToPack.push_back(ArchivePackingWorkItem{mod});
     }
 
-    if (!shouldPlanBsaArchives())
+    if (!_request.policy.allowsArchiveExtraction())
         return plan;
 
     for (const auto &mod : plan.modsToProcess) {
@@ -32,7 +32,7 @@ AssetWorkPlan AssetWorkPlanner::planArchives() const
             if (it.fileInfo().isDir())
                 continue;
 
-            if (it.fileName().endsWith(_request.profile.bsaExtension, Qt::CaseInsensitive))
+            if (_request.policy.allowsArchiveExtractionFor(it.fileName()))
                 plan.archivesToExtract.push_back(ArchiveExtractionWorkItem{it.filePath()});
         }
     }
@@ -85,47 +85,21 @@ bool AssetWorkPlanner::isIgnoredMod(const QString &modName) const
     return _request.ignoredMods.contains(modName, Qt::CaseInsensitive);
 }
 
-bool AssetWorkPlanner::shouldPlanBsaArchives() const
-{
-    return _request.extractBsa && _request.profile.bsaEnabled && !_request.profile.bsaExtension.isEmpty();
-}
-
-bool AssetWorkPlanner::shouldPlanBsaPacking() const
-{
-    return _request.createBsa && _request.profile.bsaEnabled;
-}
-
-bool AssetWorkPlanner::shouldPlanMeshes() const
-{
-    return _request.optimizeMeshes && _request.profile.meshesEnabled;
-}
-
-bool AssetWorkPlanner::shouldPlanTextures() const
-{
-    return _request.optimizeTextures && _request.profile.texturesEnabled;
-}
-
-bool AssetWorkPlanner::shouldPlanAnimations() const
-{
-    return _request.optimizeAnimations && _request.profile.animationsEnabled;
-}
-
 std::optional<LooseAssetKind> AssetWorkPlanner::classifyLooseAsset(const QString &fileName) const
 {
-    if (shouldPlanTextures() && fileName.endsWith(".dds", Qt::CaseInsensitive))
+    if (_request.policy.allowsDdsTextureOptimization() && fileName.endsWith(".dds", Qt::CaseInsensitive))
         return LooseAssetKind::TextureDds;
 
-    if (shouldPlanMeshes()
+    if (_request.policy.allowsMeshOptimization()
         && (fileName.endsWith(".nif", Qt::CaseInsensitive)
             || fileName.endsWith(".btr", Qt::CaseInsensitive)
             || fileName.endsWith(".bto", Qt::CaseInsensitive)))
         return LooseAssetKind::Mesh;
 
-    if (shouldPlanTextures() && _request.profile.texturesConvertTga
-        && fileName.endsWith(".tga", Qt::CaseInsensitive))
+    if (_request.policy.allowsTgaTextureConversion() && fileName.endsWith(".tga", Qt::CaseInsensitive))
         return LooseAssetKind::TextureTga;
 
-    if (shouldPlanAnimations() && fileName.endsWith(".hkx", Qt::CaseInsensitive))
+    if (_request.policy.allowsAnimationOptimization() && fileName.endsWith(".hkx", Qt::CaseInsensitive))
         return LooseAssetKind::Animation;
 
     return std::nullopt;

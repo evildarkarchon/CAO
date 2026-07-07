@@ -24,6 +24,15 @@ bool texturesEnabledByOptions(const OptionsCAO &options)
     return options.bTexturesMipmaps || options.bTexturesCompress || options.bTexturesNecessary
            || options.bTexturesResizeSize || options.bTexturesResizeRatio;
 }
+
+RequestedAssetWork requestedAssetWorkFromOptions(const OptionsCAO &options)
+{
+    return RequestedAssetWork{options.bBsaExtract,
+                              options.bBsaCreate,
+                              options.iMeshesOptimizationLevel > 0,
+                              texturesEnabledByOptions(options),
+                              options.bAnimationsOptimization};
+}
 }
 
 AssetWorkPlanRequest ManagerPlanning::createAssetWorkPlanRequest(const OptionsCAO &options,
@@ -33,10 +42,5 @@ AssetWorkPlanRequest ManagerPlanning::createAssetWorkPlanRequest(const OptionsCA
     return AssetWorkPlanRequest{options.userPath,
                                 toAssetWorkMode(options.mode),
                                 ignoredMods,
-                                profile,
-                                options.bBsaExtract,
-                                options.bBsaCreate,
-                                options.iMeshesOptimizationLevel > 0,
-                                texturesEnabledByOptions(options),
-                                options.bAnimationsOptimization};
+                                AssetWorkPolicy::resolve(requestedAssetWorkFromOptions(options), profile)};
 }

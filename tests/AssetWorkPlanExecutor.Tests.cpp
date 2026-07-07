@@ -18,15 +18,12 @@ void createFile(const QString &path)
 
 AssetWorkPlanRequest defaultRequest(const QString &selectedPath)
 {
+    const auto profile = ProfilePlanningSnapshot{true, true, true, true, true, ".bsa"};
+    const auto requested = RequestedAssetWork{true, true, true, true, true};
     return AssetWorkPlanRequest{selectedPath,
                                 AssetWorkMode::SeveralMods,
                                 {},
-                                ProfilePlanningSnapshot{true, true, true, true, true, ".bsa"},
-                                true,
-                                true,
-                                true,
-                                true,
-                                true};
+                                AssetWorkPolicy::resolve(requested, profile)};
 }
 
 struct RecordedWorkAdapter final : AssetWorkPlanExecutionAdapter

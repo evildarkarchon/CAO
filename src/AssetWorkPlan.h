@@ -4,6 +4,8 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
+#include "AssetWorkPolicy.h"
+
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -23,27 +25,12 @@ enum class LooseAssetKind
     Animation
 };
 
-struct ProfilePlanningSnapshot
-{
-    bool bsaEnabled = false;
-    bool meshesEnabled = false;
-    bool animationsEnabled = false;
-    bool texturesEnabled = false;
-    bool texturesConvertTga = false;
-    QString bsaExtension;
-};
-
 struct AssetWorkPlanRequest
 {
     QString selectedPath;
     AssetWorkMode mode = AssetWorkMode::SingleMod;
     QStringList ignoredMods;
-    ProfilePlanningSnapshot profile;
-    bool extractBsa = false;
-    bool createBsa = false;
-    bool optimizeMeshes = false;
-    bool optimizeTextures = false;
-    bool optimizeAnimations = false;
+    AssetWorkPolicy policy;
 };
 
 struct ArchiveExtractionWorkItem
@@ -95,11 +82,6 @@ public:
 private:
     [[nodiscard]] QStringList selectMods() const;
     [[nodiscard]] bool isIgnoredMod(const QString &modName) const;
-    [[nodiscard]] bool shouldPlanBsaArchives() const;
-    [[nodiscard]] bool shouldPlanBsaPacking() const;
-    [[nodiscard]] bool shouldPlanMeshes() const;
-    [[nodiscard]] bool shouldPlanTextures() const;
-    [[nodiscard]] bool shouldPlanAnimations() const;
     [[nodiscard]] std::optional<LooseAssetKind> classifyLooseAsset(const QString &fileName) const;
 
     AssetWorkPlanRequest _request;

@@ -16,17 +16,31 @@ void createFile(const QString &path)
     REQUIRE(file.open(QIODevice::WriteOnly));
 }
 
+ProfilePlanningSnapshot defaultProfile()
+{
+    return ProfilePlanningSnapshot{true, true, true, true, true, ".bsa"};
+}
+
+RequestedAssetWork defaultRequestedWork()
+{
+    return RequestedAssetWork{true, true, true, true, true};
+}
+
+AssetWorkPolicy defaultPolicy()
+{
+    return AssetWorkPolicy::resolve(defaultRequestedWork(), defaultProfile());
+}
+
+void setPolicy(AssetWorkPlanRequest &request,
+               const RequestedAssetWork &requested,
+               const ProfilePlanningSnapshot &profile)
+{
+    request.policy = AssetWorkPolicy::resolve(requested, profile);
+}
+
 AssetWorkPlanRequest defaultRequest(const QString &selectedPath)
 {
-    return AssetWorkPlanRequest{selectedPath,
-                                AssetWorkMode::SeveralMods,
-                                {},
-                                ProfilePlanningSnapshot{true, true, true, true, true, ".bsa"},
-                                true,
-                                true,
-                                true,
-                                true,
-                                true};
+    return AssetWorkPlanRequest{selectedPath, AssetWorkMode::SeveralMods, {}, defaultPolicy()};
 }
 
 bool containsLooseAsset(const AssetWorkPlan &plan, const QString &path, const LooseAssetKind kind)
@@ -172,7 +186,9 @@ TEST_CASE("Asset work planner requires a profile archive extension for extractio
     createFile(root.filePath("Alpha/Alpha.bsa"));
 
     auto request = defaultRequest(tempDir.path());
-    request.profile.bsaExtension.clear();
+    auto profile = defaultProfile();
+    profile.bsaExtension.clear();
+    setPolicy(request, defaultRequestedWork(), profile);
 
     const AssetWorkPlanner planner(request);
     const auto plan = planner.planArchives();
@@ -197,8 +213,11 @@ TEST_CASE("Asset work planner filters loose assets by options and profile capabi
     createFile(root.filePath("Alpha/anim.hkx"));
 
     auto request = defaultRequest(tempDir.path());
-    request.profile.texturesConvertTga = false;
-    request.optimizeAnimations = false;
+    auto profile = defaultProfile();
+    profile.texturesConvertTga = false;
+    auto requested = defaultRequestedWork();
+    requested.optimizeAnimations = false;
+    setPolicy(request, requested, profile);
 
     const AssetWorkPlanner planner(request);
     const auto archivePlan = planner.planArchives();
@@ -248,7 +267,9 @@ TEST_CASE("Asset work planner profile capability flags suppress enabled work")
 
     SECTION("BSA profile support disables archive extraction and packing")
     {
-        request.profile.bsaEnabled = false;
+        auto profile = defaultProfile();
+        profile.bsaEnabled = false;
+        setPolicy(request, defaultRequestedWork(), profile);
 
         const AssetWorkPlanner planner(request);
         const auto archivePlan = planner.planArchives();
@@ -262,7 +283,9 @@ TEST_CASE("Asset work planner profile capability flags suppress enabled work")
 
     SECTION("mesh profile support disables mesh work")
     {
-        request.profile.meshesEnabled = false;
+        auto profile = defaultProfile();
+        profile.meshesEnabled = false;
+        setPolicy(request, defaultRequestedWork(), profile);
 
         const AssetWorkPlanner planner(request);
         const auto archivePlan = planner.planArchives();
@@ -275,7 +298,9 @@ TEST_CASE("Asset work planner profile capability flags suppress enabled work")
 
     SECTION("texture profile support disables texture work")
     {
-        request.profile.texturesEnabled = false;
+        auto profile = defaultProfile();
+        profile.texturesEnabled = false;
+        setPolicy(request, defaultRequestedWork(), profile);
 
         const AssetWorkPlanner planner(request);
         const auto archivePlan = planner.planArchives();
@@ -288,7 +313,9 @@ TEST_CASE("Asset work planner profile capability flags suppress enabled work")
 
     SECTION("animation profile support disables animation work")
     {
-        request.profile.animationsEnabled = false;
+        auto profile = defaultProfile();
+        profile.animationsEnabled = false;
+        setPolicy(request, defaultRequestedWork(), profile);
 
         const AssetWorkPlanner planner(request);
         const auto archivePlan = planner.planArchives();
@@ -318,7 +345,9 @@ TEST_CASE("Asset work planner work-option flags suppress profile-enabled work")
 
     SECTION("archive extraction option disables extraction only")
     {
-        request.extractBsa = false;
+        auto requested = defaultRequestedWork();
+        requested.extractArchives = false;
+        setPolicy(request, requested, defaultProfile());
 
         const AssetWorkPlanner planner(request);
         const auto archivePlan = planner.planArchives();
@@ -330,7 +359,9 @@ TEST_CASE("Asset work planner work-option flags suppress profile-enabled work")
 
     SECTION("archive creation option disables packing only")
     {
-        request.createBsa = false;
+        auto requested = defaultRequestedWork();
+        requested.packArchives = false;
+        setPolicy(request, requested, defaultProfile());
 
         const AssetWorkPlanner planner(request);
         const auto archivePlan = planner.planArchives();
@@ -342,7 +373,9 @@ TEST_CASE("Asset work planner work-option flags suppress profile-enabled work")
 
     SECTION("mesh option disables mesh work")
     {
-        request.optimizeMeshes = false;
+        auto requested = defaultRequestedWork();
+        requested.optimizeMeshes = false;
+        setPolicy(request, requested, defaultProfile());
 
         const AssetWorkPlanner planner(request);
         const auto archivePlan = planner.planArchives();
@@ -355,7 +388,9 @@ TEST_CASE("Asset work planner work-option flags suppress profile-enabled work")
 
     SECTION("texture option disables texture work")
     {
-        request.optimizeTextures = false;
+        auto requested = defaultRequestedWork();
+        requested.optimizeTextures = false;
+        setPolicy(request, requested, defaultProfile());
 
         const AssetWorkPlanner planner(request);
         const auto archivePlan = planner.planArchives();
@@ -368,7 +403,9 @@ TEST_CASE("Asset work planner work-option flags suppress profile-enabled work")
 
     SECTION("animation option disables animation work")
     {
-        request.optimizeAnimations = false;
+        auto requested = defaultRequestedWork();
+        requested.optimizeAnimations = false;
+        setPolicy(request, requested, defaultProfile());
 
         const AssetWorkPlanner planner(request);
         const auto archivePlan = planner.planArchives();
@@ -442,7 +479,9 @@ TEST_CASE("Asset work planner characterizes packing-only and extraction-only arc
     createFile(root.filePath("Alpha/Alpha.bsa"));
 
     auto packingOnly = defaultRequest(tempDir.path());
-    packingOnly.extractBsa = false;
+    auto requestedPackingOnly = defaultRequestedWork();
+    requestedPackingOnly.extractArchives = false;
+    setPolicy(packingOnly, requestedPackingOnly, defaultProfile());
 
     const AssetWorkPlanner packingPlanner(packingOnly);
     const auto packingPlan = packingPlanner.planArchives();
@@ -452,7 +491,9 @@ TEST_CASE("Asset work planner characterizes packing-only and extraction-only arc
     REQUIRE(packingPlan.archivesToPack[0].folder == root.filePath("Alpha"));
 
     auto extractionOnly = defaultRequest(tempDir.path());
-    extractionOnly.createBsa = false;
+    auto requestedExtractionOnly = defaultRequestedWork();
+    requestedExtractionOnly.packArchives = false;
+    setPolicy(extractionOnly, requestedExtractionOnly, defaultProfile());
 
     const AssetWorkPlanner extractionPlanner(extractionOnly);
     const auto extractionPlan = extractionPlanner.planArchives();
