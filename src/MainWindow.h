@@ -9,55 +9,54 @@
 #include "pch.h"
 #include "ui_mainWindow.h"
 
-namespace Ui
-{
+namespace Ui {
 class MainWindow;
 }
 
-class MainWindow final : public QMainWindow
-{
-    Q_DECLARE_TR_FUNCTIONS(MainWindow)
+class MainWindow final : public QMainWindow {
+  Q_DECLARE_TR_FUNCTIONS(MainWindow)
 
 public:
-    MainWindow();
-    ~MainWindow();
+  MainWindow();
+  ~MainWindow();
 
 private:
-    Ui::MainWindow *_ui;
+  Ui::MainWindow *_ui;
 
-    bool _bLockVariables = false;
+  bool _bLockVariables = false;
 
-    void saveUi();
-    void loadUi();
-    void refreshProfiles();
-    void createProfile();
+  void saveUi();
+  void loadUi();
+  void refreshProfiles();
+  void createProfile();
 
-    void setDarkTheme(const bool &enabled);
+  void setDarkTheme(const bool &enabled);
 
-    void resetUi() const;
+  void resetUi() const;
 
-    void setGameMode(const QString &mode);
+  void setGameMode(const QString &mode);
 
-    void showTutorialWindow(const QString &title, const QString &text);
+  void showTutorialWindow(const QString &title, const QString &text);
 
-    void updateLog() const;
-    void initProcess();
-    void endProcess();
-    void readProgress(const QString &text, const int &max, const int &value) const;
+  void updateLog() const;
+  void initProcess();
+  void endProcess();
+  void readProgress(const QString &text, const int &max,
+                    const int &value) const;
 
-    void setAdvancedSettingsEnabled(const bool &value);
+  void setAdvancedSettingsEnabled(const bool &value);
 
-    void closeEvent(QCloseEvent *event);
-    void dragEnterEvent(QDragEnterEvent *e);
-    void dropEvent(QDropEvent *e);
+  void closeEvent(QCloseEvent *event);
+  void dragEnterEvent(QDragEnterEvent *e);
+  void dropEvent(QDropEvent *e);
 
-    void firstStart();
+  void firstStart();
 
-    int _progressBarValue{};
+  int _progressBarValue{};
 
-    OptionsCAO _options;
-    std::unique_ptr<Manager> _caoProcess;
-    bool _showTutorials;
-    TexturesFormatSelectDialog *texturesFormatDialog;
-    QTimer logTimer;
+  OptionsCAO _options;
+  std::unique_ptr<Manager> _caoProcess;
+  bool _showTutorials;
+  TexturesFormatSelectDialog *texturesFormatDialog;
+  QTimer logTimer;
 };

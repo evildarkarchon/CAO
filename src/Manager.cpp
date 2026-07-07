@@ -6,161 +6,151 @@
 #include "AssetWorkPlanExecutor.h"
 #include "ManagerPlanning.h"
 
-namespace
-{
-QString currentBsaExtension()
-{
-    const auto u8BsaExt = btu::bsa::Settings::get(Profiles::bsaGame()).extension;
-    const auto asciiBsaExt = btu::common::as_ascii(u8BsaExt);
-    return QString::fromUtf8(asciiBsaExt.data(), static_cast<int>(asciiBsaExt.size()));
+namespace {
+QString currentBsaExtension() {
+  const auto u8BsaExt = btu::bsa::Settings::get(Profiles::bsaGame()).extension;
+  const auto asciiBsaExt = btu::common::as_ascii(u8BsaExt);
+  return QString::fromUtf8(asciiBsaExt.data(),
+                           static_cast<int>(asciiBsaExt.size()));
 }
 
-ProfilePlanningSnapshot currentProfilePlanningSnapshot()
-{
-    return ProfilePlanningSnapshot{Profiles::bsaEnabled(),
-                                   Profiles::meshesEnabled(),
-                                   Profiles::animationsEnabled(),
-                                   Profiles::texturesEnabled(),
-                                   Profiles::texturesConvertTga(),
-                                   currentBsaExtension()};
+ProfilePlanningSnapshot currentProfilePlanningSnapshot() {
+  return ProfilePlanningSnapshot{
+      Profiles::bsaEnabled(),         Profiles::meshesEnabled(),
+      Profiles::animationsEnabled(),  Profiles::texturesEnabled(),
+      Profiles::texturesConvertTga(), currentBsaExtension()};
 }
 
-class MainOptimizerExecutionAdapter final : public AssetWorkPlanExecutionAdapter
-{
+class MainOptimizerExecutionAdapter final
+    : public AssetWorkPlanExecutionAdapter {
 public:
-    /*!
-     * \brief Creates the production adapter used for Asset Work Plan Execution.
-     * \param options Optimization options consumed by MainOptimizer while executing work items.
-     */
-    explicit MainOptimizerExecutionAdapter(const OptionsCAO &options)
-        : _optimizer(options)
-    {}
+  /*!
+   * \brief Creates the production adapter used for Asset Work Plan Execution.
+   * \param options Optimization options consumed by MainOptimizer while
+   * executing work items.
+   */
+  explicit MainOptimizerExecutionAdapter(const OptionsCAO &options)
+      : _optimizer(options) {}
 
-    /*!
-     * \brief Delegates archive extraction to MainOptimizer.
-     * \param workItem The planned archive extraction work item.
-     */
-    void extractArchive(const ArchiveExtractionWorkItem &workItem) override
-    {
-        _optimizer.extractArchive(workItem);
-    }
+  /*!
+   * \brief Delegates archive extraction to MainOptimizer.
+   * \param workItem The planned archive extraction work item.
+   */
+  void extractArchive(const ArchiveExtractionWorkItem &workItem) override {
+    _optimizer.extractArchive(workItem);
+  }
 
-    /*!
-     * \brief Delegates loose Asset processing to MainOptimizer.
-     * \param workItem The planned loose Asset Work Item.
-     * \param metadata Metadata derived from selected Mods for this execution.
-     */
-    void processLooseAsset(const LooseAssetWorkItem &workItem,
-                           const ModAssetMetadata &metadata) override
-    {
-        _optimizer.processLooseAsset(workItem, metadata);
-    }
+  /*!
+   * \brief Delegates loose Asset processing to MainOptimizer.
+   * \param workItem The planned loose Asset Work Item.
+   * \param metadata Metadata derived from selected Mods for this execution.
+   */
+  void processLooseAsset(const LooseAssetWorkItem &workItem,
+                         const ModAssetMetadata &metadata) override {
+    _optimizer.processLooseAsset(workItem, metadata);
+  }
 
-    /*!
-     * \brief Delegates archive packing to MainOptimizer.
-     * \param workItem The planned archive packing work item.
-     */
-    void packArchive(const ArchivePackingWorkItem &workItem) override
-    {
-        _optimizer.packArchive(workItem);
-    }
+  /*!
+   * \brief Delegates archive packing to MainOptimizer.
+   * \param workItem The planned archive packing work item.
+   */
+  void packArchive(const ArchivePackingWorkItem &workItem) override {
+    _optimizer.packArchive(workItem);
+  }
 
 private:
-    MainOptimizer _optimizer;
+  MainOptimizer _optimizer;
 };
-}
+} // namespace
 
-Manager::Manager(const OptionsCAO& opt)
-  : _options(opt)
+Manager::Manager(const OptionsCAO &opt)
+    : _options(opt)
 
 {
-    init();
+  init();
 }
 
-void Manager::init()
-{
-    //Preparing logging
-    initCustomLogger(Profiles::logPath(), _options.bDebugLog);
+void Manager::init() {
+  // Preparing logging
+  initCustomLogger(Profiles::logPath(), _options.bDebugLog);
 
-    PLOG_VERBOSE << "Checking settings...";
-    const QString error = _options.isValid();
-    if (!error.isEmpty())
-    {
-        PLOG_FATAL << error;
-        throw std::runtime_error("Options are not valid." + error.toStdString());
-    }
+  PLOG_VERBOSE << "Checking settings...";
+  const QString error = _options.isValid();
+  if (!error.isEmpty()) {
+    PLOG_FATAL << error;
+    throw std::runtime_error("Options are not valid." + error.toStdString());
+  }
 
-    readIgnoredMods();
+  readIgnoredMods();
 }
 
-void Manager::printProgress(const int &total, const QString &text = "Processing files")
-{
+void Manager::printProgress(const int &total,
+                            const QString &text = "Processing files") {
 #ifndef GUI
-    QTextStream(stdout) << "PROGRESS:|" << text << " - %v/%m - %p%|" << _numberCompletedFiles << '|' << total << endl;
+  QTextStream(stdout) << "PROGRESS:|" << text << " - %v/%m - %p%|"
+                      << _numberCompletedFiles << '|' << total << endl;
 #endif
 #ifdef GUI
-    emit progressBarTextChanged(text + "- %v/%m - %p%", total, _numberCompletedFiles);
+  emit progressBarTextChanged(text + "- %v/%m - %p%", total,
+                              _numberCompletedFiles);
 #endif
 }
 
-void Manager::cancelProcess()
-{
-    _isCancelled = true;
+void Manager::cancelProcess() { _isCancelled = true; }
+
+void Manager::readIgnoredMods() {
+  QFile &&ignoredModsFile = Profiles::getFile("ignoredMods.txt");
+  _ignoredMods = FilesystemOperations::readFile(ignoredModsFile);
+
+  if (_ignoredMods.isEmpty()) {
+    PLOG_WARNING << "ignoredMods.txt not found. All mods will be processed, "
+                    "including tools such as Nemesis or "
+                    "Bodyslide studio.";
+  }
 }
 
-void Manager::readIgnoredMods()
-{
-    QFile &&ignoredModsFile = Profiles::getFile("ignoredMods.txt");
-    _ignoredMods = FilesystemOperations::readFile(ignoredModsFile);
-
-    if (_ignoredMods.isEmpty())
-    {
-        PLOG_WARNING << "ignoredMods.txt not found. All mods will be processed, including tools such as Nemesis or "
-                        "Bodyslide studio.";
-    }
+AssetWorkPlanRequest Manager::createAssetWorkPlanRequest() const {
+  return ManagerPlanning::createAssetWorkPlanRequest(
+      _options, _ignoredMods, currentProfilePlanningSnapshot());
 }
 
-AssetWorkPlanRequest Manager::createAssetWorkPlanRequest() const
-{
-    return ManagerPlanning::createAssetWorkPlanRequest(_options, _ignoredMods, currentProfilePlanningSnapshot());
-}
+void Manager::runOptimization() {
+  PLOG_DEBUG << "Game: " << Profiles::currentProfile();
+  PLOG_INFO << "Processing: " + _options.userPath;
+  PLOG_INFO << "Beginning...";
 
-void Manager::runOptimization()
-{
-    PLOG_DEBUG << "Game: " << Profiles::currentProfile();
-    PLOG_INFO << "Processing: " + _options.userPath;
-    PLOG_INFO << "Beginning...";
+  MainOptimizerExecutionAdapter adapter(_options);
+  ProfileFileAssetReferenceProvider profileReferences;
+  PluginOperationsAssetReferenceReader pluginReferences;
+  ModAssetMetadataBuilder metadataBuilder(profileReferences, pluginReferences);
+  PLOG_INFO << "Listing files and directories...";
+  AssetWorkPlanExecutor executor(createAssetWorkPlanRequest(), metadataBuilder,
+                                 adapter);
+  const auto result = executor.execute(AssetWorkPlanExecutionCallbacks{
+      [this](const AssetWorkPlanProgress &progress) {
+        _numberCompletedFiles = progress.completed;
 
-    MainOptimizerExecutionAdapter adapter(_options);
-    ProfileFileAssetReferenceProvider profileReferences;
-    PluginOperationsAssetReferenceReader pluginReferences;
-    ModAssetMetadataBuilder metadataBuilder(profileReferences, pluginReferences);
-    PLOG_INFO << "Listing files and directories...";
-    AssetWorkPlanExecutor executor(createAssetWorkPlanRequest(), metadataBuilder, adapter);
-    const auto result = executor.execute(AssetWorkPlanExecutionCallbacks{
-        [this](const AssetWorkPlanProgress &progress) {
-            _numberCompletedFiles = progress.completed;
+        switch (progress.phase) {
+        case AssetWorkPlanExecutionPhase::ArchiveExtraction:
+          printProgress(progress.total, "Extracting BSAs");
+          break;
+        case AssetWorkPlanExecutionPhase::LooseAssetProcessing:
+          printProgress(progress.total, "Processing files");
+          break;
+        case AssetWorkPlanExecutionPhase::ArchivePacking:
+          if (progress.currentLabel.isEmpty())
+            printProgress(progress.total, "Packing BSAs");
+          else
+            printProgress(progress.total,
+                          "Packing BSAs - Folder:  " + progress.currentLabel);
+          break;
+        }
+      },
+      [this]() { return _isCancelled; }});
 
-            switch (progress.phase) {
-            case AssetWorkPlanExecutionPhase::ArchiveExtraction:
-                printProgress(progress.total, "Extracting BSAs");
-                break;
-            case AssetWorkPlanExecutionPhase::LooseAssetProcessing:
-                printProgress(progress.total, "Processing files");
-                break;
-            case AssetWorkPlanExecutionPhase::ArchivePacking:
-                if (progress.currentLabel.isEmpty())
-                    printProgress(progress.total, "Packing BSAs");
-                else
-                    printProgress(progress.total, "Packing BSAs - Folder:  " + progress.currentLabel);
-                break;
-            }
-        },
-        [this]() { return _isCancelled; }});
+  if (result == AssetWorkPlanExecutionResult::Cancelled)
+    return;
 
-    if (result == AssetWorkPlanExecutionResult::Cancelled)
-        return;
-
-    PLOG_INFO << "Process completed<br><br><br>";
-    emit end();
+  PLOG_INFO << "Process completed<br><br><br>";
+  emit end();
 }

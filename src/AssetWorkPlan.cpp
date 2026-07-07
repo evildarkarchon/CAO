@@ -9,98 +9,100 @@
 #include <QDirIterator>
 
 AssetWorkPlanner::AssetWorkPlanner(AssetWorkPlanRequest request)
-    : _request(std::move(request))
-{}
+    : _request(std::move(request)) {}
 
-AssetWorkPlan AssetWorkPlanner::planArchives() const
-{
-    AssetWorkPlan plan;
-    plan.modsToProcess = selectMods();
+AssetWorkPlan AssetWorkPlanner::planArchives() const {
+  AssetWorkPlan plan;
+  plan.modsToProcess = selectMods();
 
-    if (_request.policy.allowsArchivePacking()) {
-        for (const auto &mod : plan.modsToProcess)
-            plan.archivesToPack.push_back(ArchivePackingWorkItem{mod});
-    }
+  if (_request.policy.allowsArchivePacking()) {
+    for (const auto &mod : plan.modsToProcess)
+      plan.archivesToPack.push_back(ArchivePackingWorkItem{mod});
+  }
 
-    if (!_request.policy.allowsArchiveExtraction())
-        return plan;
-
-    for (const auto &mod : plan.modsToProcess) {
-        QDirIterator it(mod, QDirIterator::Subdirectories);
-        while (it.hasNext()) {
-            it.next();
-            if (it.fileInfo().isDir())
-                continue;
-
-            if (_request.policy.allowsArchiveExtractionFor(it.fileName()))
-                plan.archivesToExtract.push_back(ArchiveExtractionWorkItem{it.filePath()});
-        }
-    }
-
+  if (!_request.policy.allowsArchiveExtraction())
     return plan;
+
+  for (const auto &mod : plan.modsToProcess) {
+    QDirIterator it(mod, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+      it.next();
+      if (it.fileInfo().isDir())
+        continue;
+
+      if (_request.policy.allowsArchiveExtractionFor(it.fileName()))
+        plan.archivesToExtract.push_back(
+            ArchiveExtractionWorkItem{it.filePath()});
+    }
+  }
+
+  return plan;
 }
 
-AssetWorkPlan AssetWorkPlanner::planLooseAssets(const QStringList &modsToProcess) const
-{
-    AssetWorkPlan plan;
-    plan.modsToProcess = modsToProcess;
+AssetWorkPlan
+AssetWorkPlanner::planLooseAssets(const QStringList &modsToProcess) const {
+  AssetWorkPlan plan;
+  plan.modsToProcess = modsToProcess;
 
-    for (const auto &mod : plan.modsToProcess) {
-        QDirIterator it(mod, QDirIterator::Subdirectories);
-        while (it.hasNext()) {
-            it.next();
-            if (it.fileInfo().isDir())
-                continue;
+  for (const auto &mod : plan.modsToProcess) {
+    QDirIterator it(mod, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+      it.next();
+      if (it.fileInfo().isDir())
+        continue;
 
-            const auto kind = classifyLooseAsset(it.fileName());
-            if (kind.has_value())
-                plan.looseAssetsToOptimize.push_back(LooseAssetWorkItem{it.filePath(), kind.value()});
-        }
+      const auto kind = classifyLooseAsset(it.fileName());
+      if (kind.has_value())
+        plan.looseAssetsToOptimize.push_back(
+            LooseAssetWorkItem{it.filePath(), kind.value()});
     }
+  }
 
-    return plan;
+  return plan;
 }
 
-QStringList AssetWorkPlanner::selectMods() const
-{
-    QStringList mods;
+QStringList AssetWorkPlanner::selectMods() const {
+  QStringList mods;
 
-    if (_request.mode == AssetWorkMode::SingleMod) {
-        mods << _request.selectedPath;
-        return mods;
-    }
-
-    const QDir dir(_request.selectedPath);
-    for (const auto &subDir : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-        // Separators are empty directories used by Mod Organizer 2.
-        if (!subDir.contains("separator", Qt::CaseInsensitive) && !isIgnoredMod(subDir))
-            mods << dir.filePath(subDir);
-    }
-
+  if (_request.mode == AssetWorkMode::SingleMod) {
+    mods << _request.selectedPath;
     return mods;
+  }
+
+  const QDir dir(_request.selectedPath);
+  for (const auto &subDir : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+    // Separators are empty directories used by Mod Organizer 2.
+    if (!subDir.contains("separator", Qt::CaseInsensitive) &&
+        !isIgnoredMod(subDir))
+      mods << dir.filePath(subDir);
+  }
+
+  return mods;
 }
 
-bool AssetWorkPlanner::isIgnoredMod(const QString &modName) const
-{
-    return _request.ignoredMods.contains(modName, Qt::CaseInsensitive);
+bool AssetWorkPlanner::isIgnoredMod(const QString &modName) const {
+  return _request.ignoredMods.contains(modName, Qt::CaseInsensitive);
 }
 
-std::optional<LooseAssetKind> AssetWorkPlanner::classifyLooseAsset(const QString &fileName) const
-{
-    if (_request.policy.allowsDdsTextureOptimization() && fileName.endsWith(".dds", Qt::CaseInsensitive))
-        return LooseAssetKind::TextureDds;
+std::optional<LooseAssetKind>
+AssetWorkPlanner::classifyLooseAsset(const QString &fileName) const {
+  if (_request.policy.allowsDdsTextureOptimization() &&
+      fileName.endsWith(".dds", Qt::CaseInsensitive))
+    return LooseAssetKind::TextureDds;
 
-    if (_request.policy.allowsMeshOptimization()
-        && (fileName.endsWith(".nif", Qt::CaseInsensitive)
-            || fileName.endsWith(".btr", Qt::CaseInsensitive)
-            || fileName.endsWith(".bto", Qt::CaseInsensitive)))
-        return LooseAssetKind::Mesh;
+  if (_request.policy.allowsMeshOptimization() &&
+      (fileName.endsWith(".nif", Qt::CaseInsensitive) ||
+       fileName.endsWith(".btr", Qt::CaseInsensitive) ||
+       fileName.endsWith(".bto", Qt::CaseInsensitive)))
+    return LooseAssetKind::Mesh;
 
-    if (_request.policy.allowsTgaTextureConversion() && fileName.endsWith(".tga", Qt::CaseInsensitive))
-        return LooseAssetKind::TextureTga;
+  if (_request.policy.allowsTgaTextureConversion() &&
+      fileName.endsWith(".tga", Qt::CaseInsensitive))
+    return LooseAssetKind::TextureTga;
 
-    if (_request.policy.allowsAnimationOptimization() && fileName.endsWith(".hkx", Qt::CaseInsensitive))
-        return LooseAssetKind::Animation;
+  if (_request.policy.allowsAnimationOptimization() &&
+      fileName.endsWith(".hkx", Qt::CaseInsensitive))
+    return LooseAssetKind::Animation;
 
-    return std::nullopt;
+  return std::nullopt;
 }

@@ -5,170 +5,167 @@
 
 #include "PluginsOperations.h"
 
-QStringList PluginsOperations::listHeadparts(const QString &filepath)
-{
-    std::fstream file;
-    file.open(filepath.toStdString(), std::ios::binary | std::ios::in);
+QStringList PluginsOperations::listHeadparts(const QString &filepath) {
+  std::fstream file;
+  file.open(filepath.toStdString(), std::ios::binary | std::ios::in);
 
-    if (!file.is_open())
-        return QStringList();
+  if (!file.is_open())
+    return QStringList();
 
-    PluginRecordHeader header{};
-    PluginFieldHeader pluginFieldHeader{};
+  PluginRecordHeader header{};
+  PluginFieldHeader pluginFieldHeader{};
 
-    QStringList headparts;
+  QStringList headparts;
 
-    const auto readHeaders = [&]() { file.read(reinterpret_cast<char *>(&header), sizeof header); };
+  const auto readHeaders = [&]() {
+    file.read(reinterpret_cast<char *>(&header), sizeof header);
+  };
 
-    const auto readFieldPluginHeader = [&]() {
-        file.read(reinterpret_cast<char *>(&pluginFieldHeader), sizeof pluginFieldHeader);
-    };
+  const auto readFieldPluginHeader = [&]() {
+    file.read(reinterpret_cast<char *>(&pluginFieldHeader),
+              sizeof pluginFieldHeader);
+  };
 
+  readHeaders();
+  if (strncmp(header.plugin.type, GROUP_TES4, sizeof GROUP_TES4) != 0)
+    return QStringList(); // Not a plugin file
+
+  // Skip TES4 record
+  file.seekg(header.record.dataSize, std::ios::cur);
+
+  // Reading all groups
+  do {
     readHeaders();
-    if (strncmp(header.plugin.type, GROUP_TES4, sizeof GROUP_TES4) != 0)
-        return QStringList(); //Not a plugin file
 
-    //Skip TES4 record
-    file.seekg(header.record.dataSize, std::ios::cur);
+    // skip non headpart groups
+    if (strncmp(header.plugin.label, GROUP_HDPT, sizeof GROUP_HDPT) != 0) {
+      file.seekg(header.plugin.groupSize - sizeof header, std::ios::cur);
+      continue;
+    }
 
-    //Reading all groups
-    do
-    {
-        readHeaders();
+    // Reading all headpart records
+    const int64_t groupEndPos =
+        header.plugin.groupSize - sizeof header + file.tellg();
+    while (file.tellg() < groupEndPos) {
+      readHeaders();
 
-        // skip non headpart groups
-        if (strncmp(header.plugin.label, GROUP_HDPT, sizeof GROUP_HDPT) != 0)
-        {
-            file.seekg(header.plugin.groupSize - sizeof header, std::ios::cur);
-            continue;
+      // reading all record fields
+      const int64_t recEndPos = header.record.dataSize + file.tellg();
+      while (file.tellg() < recEndPos) {
+        readFieldPluginHeader();
+        // skip everything but MODL
+        if (strncmp(pluginFieldHeader.type, GROUP_MODL, sizeof GROUP_MODL) !=
+            0) {
+          file.seekg(pluginFieldHeader.dataSize, std::ios::cur);
+          continue;
         }
 
-        //Reading all headpart records
-        const int64_t groupEndPos = header.plugin.groupSize - sizeof header + file.tellg();
-        while (file.tellg() < groupEndPos)
-        {
-            readHeaders();
+        char buffer[1024];
+        file.read(buffer, pluginFieldHeader.dataSize);
 
-            // reading all record fields
-            const int64_t recEndPos = header.record.dataSize + file.tellg();
-            while (file.tellg() < recEndPos)
-            {
-                readFieldPluginHeader();
-                // skip everything but MODL
-                if (strncmp(pluginFieldHeader.type, GROUP_MODL, sizeof GROUP_MODL) != 0)
-                {
-                    file.seekg(pluginFieldHeader.dataSize, std::ios::cur);
-                    continue;
-                }
+        QString headpart = buffer;
+        // make sure that nif path starts with meshes
+        if (!headpart.startsWith("meshes", Qt::CaseInsensitive))
+          headpart = "meshes/" + headpart;
 
-                char buffer[1024];
-                file.read(buffer, pluginFieldHeader.dataSize);
+        // Adding headparts to the list
+        headparts << QDir::cleanPath(headpart);
+      }
+    }
+  } while (strncmp(header.plugin.type, GROUP_GRUP, sizeof GROUP_GRUP) == 0 &&
+           file.good());
 
-                QString headpart = buffer;
-                // make sure that nif path starts with meshes
-                if (!headpart.startsWith("meshes", Qt::CaseInsensitive))
-                    headpart = "meshes/" + headpart;
-
-                //Adding headparts to the list
-                headparts << QDir::cleanPath(headpart);
-            }
-        }
-    } while (strncmp(header.plugin.type, GROUP_GRUP, sizeof GROUP_GRUP) == 0 && file.good());
-
-    return headparts;
+  return headparts;
 }
 
-QStringList PluginsOperations::listLandscapeTextures(const QString &filepath)
-{
-    std::fstream file;
-    file.open(filepath.toStdString(), std::ios::binary | std::ios::in);
+QStringList PluginsOperations::listLandscapeTextures(const QString &filepath) {
+  std::fstream file;
+  file.open(filepath.toStdString(), std::ios::binary | std::ios::in);
 
-    if (!file.is_open())
-        return QStringList();
+  if (!file.is_open())
+    return QStringList();
 
-    PluginRecordHeader header{};
-    PluginFieldHeader pluginFieldHeader{};
+  PluginRecordHeader header{};
+  PluginFieldHeader pluginFieldHeader{};
 
-    const auto readHeaders = [&]() {
-        file.read(reinterpret_cast<char *>(&header), sizeof header);
-        return strncmp(header.plugin.type, GROUP_GRUP, sizeof GROUP_GRUP) == 0;
-    };
+  const auto readHeaders = [&]() {
+    file.read(reinterpret_cast<char *>(&header), sizeof header);
+    return strncmp(header.plugin.type, GROUP_GRUP, sizeof GROUP_GRUP) == 0;
+  };
 
-    const auto readFieldPluginHeader = [&]() {
-        file.read(reinterpret_cast<char *>(&pluginFieldHeader), sizeof pluginFieldHeader);
-    };
+  const auto readFieldPluginHeader = [&]() {
+    file.read(reinterpret_cast<char *>(&pluginFieldHeader),
+              sizeof pluginFieldHeader);
+  };
 
-    readHeaders();
-    if (strncmp(header.plugin.type, GROUP_TES4, sizeof GROUP_TES4) != 0)
-        return QStringList(); //Not a plugin file
+  readHeaders();
+  if (strncmp(header.plugin.type, GROUP_TES4, sizeof GROUP_TES4) != 0)
+    return QStringList(); // Not a plugin file
 
-    //Skip TES4 record
-    file.seekg(header.record.dataSize, std::ios::cur);
+  // Skip TES4 record
+  file.seekg(header.record.dataSize, std::ios::cur);
 
-    std::vector<uint32_t> firstSet;
-    QMap<uint32_t, QString> slTextures;
-    QStringList finalTextures;
+  std::vector<uint32_t> firstSet;
+  QMap<uint32_t, QString> slTextures;
+  QStringList finalTextures;
 
-    //Reading all groups
-    while (readHeaders() && file.good())
-    {
-        // skip other groups
-        if (strncmp(header.plugin.label, GROUP_LTEX, sizeof GROUP_LTEX) != 0
-            && strncmp(header.plugin.label, GROUP_TXST, sizeof GROUP_TXST) != 0)
-        {
-            file.seekg(header.plugin.groupSize - sizeof header, std::ios::cur);
-            continue;
-        }
-
-        char signatureGroup[4];
-        memcpy(signatureGroup, header.plugin.label, 4);
-
-        //Reading all records
-        const int64_t groupEndPos = header.plugin.groupSize - sizeof header + file.tellg();
-        while (file.tellg() < groupEndPos)
-        {
-            readHeaders();
-
-            // reading all record fields
-            const int64_t recEndPos = header.record.dataSize + file.tellg();
-            while (file.tellg() < recEndPos)
-            {
-                readFieldPluginHeader();
-                // read FormID of landscape TXST record
-                if (strncmp(signatureGroup, GROUP_LTEX, sizeof GROUP_LTEX) == 0
-                    && strncmp(pluginFieldHeader.type, GROUP_TNAM, sizeof GROUP_TNAM) == 0)
-                {
-                    uint32_t formId = 0;
-                    file.read(reinterpret_cast<char *>(&formId), pluginFieldHeader.dataSize);
-                    firstSet.push_back(formId);
-                }
-                // read diffuse texture name from TXST record
-                else if (strncmp(signatureGroup, GROUP_TXST, sizeof GROUP_TXST) == 0
-                         && strncmp(pluginFieldHeader.type, GROUP_TX00, sizeof GROUP_TX00) == 0)
-                {
-                    char buffer[1024];
-                    file.read(buffer, pluginFieldHeader.dataSize);
-                    QString string = QDir::cleanPath(buffer);
-                    if (!string.startsWith("textures/"))
-                        string.insert(0, "textures/");
-
-                    slTextures.insert(header.record.id, string);
-                }
-
-                //Skip other fields
-                else
-                    file.seekg(pluginFieldHeader.dataSize, std::ios::cur);
-            }
-        }
+  // Reading all groups
+  while (readHeaders() && file.good()) {
+    // skip other groups
+    if (strncmp(header.plugin.label, GROUP_LTEX, sizeof GROUP_LTEX) != 0 &&
+        strncmp(header.plugin.label, GROUP_TXST, sizeof GROUP_TXST) != 0) {
+      file.seekg(header.plugin.groupSize - sizeof header, std::ios::cur);
+      continue;
     }
 
-    // go over landscape texture set FormIDs and find matching diffuse textures
-    for (const auto &id : firstSet)
-    {
-        const auto &idx = slTextures.value(id);
-        if (!idx.isEmpty())
-            finalTextures << idx;
-    }
+    char signatureGroup[4];
+    memcpy(signatureGroup, header.plugin.label, 4);
 
-    return finalTextures;
+    // Reading all records
+    const int64_t groupEndPos =
+        header.plugin.groupSize - sizeof header + file.tellg();
+    while (file.tellg() < groupEndPos) {
+      readHeaders();
+
+      // reading all record fields
+      const int64_t recEndPos = header.record.dataSize + file.tellg();
+      while (file.tellg() < recEndPos) {
+        readFieldPluginHeader();
+        // read FormID of landscape TXST record
+        if (strncmp(signatureGroup, GROUP_LTEX, sizeof GROUP_LTEX) == 0 &&
+            strncmp(pluginFieldHeader.type, GROUP_TNAM, sizeof GROUP_TNAM) ==
+                0) {
+          uint32_t formId = 0;
+          file.read(reinterpret_cast<char *>(&formId),
+                    pluginFieldHeader.dataSize);
+          firstSet.push_back(formId);
+        }
+        // read diffuse texture name from TXST record
+        else if (strncmp(signatureGroup, GROUP_TXST, sizeof GROUP_TXST) == 0 &&
+                 strncmp(pluginFieldHeader.type, GROUP_TX00,
+                         sizeof GROUP_TX00) == 0) {
+          char buffer[1024];
+          file.read(buffer, pluginFieldHeader.dataSize);
+          QString string = QDir::cleanPath(buffer);
+          if (!string.startsWith("textures/"))
+            string.insert(0, "textures/");
+
+          slTextures.insert(header.record.id, string);
+        }
+
+        // Skip other fields
+        else
+          file.seekg(pluginFieldHeader.dataSize, std::ios::cur);
+      }
+    }
+  }
+
+  // go over landscape texture set FormIDs and find matching diffuse textures
+  for (const auto &id : firstSet) {
+    const auto &idx = slTextures.value(id);
+    if (!idx.isEmpty())
+      finalTextures << idx;
+  }
+
+  return finalTextures;
 }

@@ -7,16 +7,18 @@
 #include "AssetWorkPlan.h"
 #include "OptionsCAO.h"
 
-namespace ManagerPlanning
-{
+namespace ManagerPlanning {
 /*!
  * \brief Builds the asset-work planner request without constructing a Manager.
  * \param options The UI or CLI options for the Asset Work Plan.
- * \param ignoredMods Mod names read from the active profile that should be skipped in several-mod mode.
- * \param profile The already-captured profile capability snapshot for planning decisions.
+ * \param ignoredMods Mod names read from the active profile that should be
+ * skipped in several-mod mode.
+ * \param profile The already-captured profile capability snapshot for planning
+ * decisions.
  * \return The request consumed by AssetWorkPlanner.
  */
-[[nodiscard]] AssetWorkPlanRequest createAssetWorkPlanRequest(const OptionsCAO &options,
-                                                              const QStringList &ignoredMods,
-                                                              const ProfilePlanningSnapshot &profile);
-}
+[[nodiscard]] AssetWorkPlanRequest
+createAssetWorkPlanRequest(const OptionsCAO &options,
+                           const QStringList &ignoredMods,
+                           const ProfilePlanningSnapshot &profile);
+} // namespace ManagerPlanning

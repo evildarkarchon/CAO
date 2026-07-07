@@ -11,78 +11,69 @@
 #include <QVector>
 #include <optional>
 
-enum class AssetWorkMode
-{
-    SingleMod,
-    SeveralMods
+enum class AssetWorkMode { SingleMod, SeveralMods };
+
+enum class LooseAssetKind { TextureDds, TextureTga, Mesh, Animation };
+
+struct AssetWorkPlanRequest {
+  QString selectedPath;
+  AssetWorkMode mode = AssetWorkMode::SingleMod;
+  QStringList ignoredMods;
+  AssetWorkPolicy policy;
 };
 
-enum class LooseAssetKind
-{
-    TextureDds,
-    TextureTga,
-    Mesh,
-    Animation
+struct ArchiveExtractionWorkItem {
+  QString path;
 };
 
-struct AssetWorkPlanRequest
-{
-    QString selectedPath;
-    AssetWorkMode mode = AssetWorkMode::SingleMod;
-    QStringList ignoredMods;
-    AssetWorkPolicy policy;
+struct LooseAssetWorkItem {
+  QString path;
+  LooseAssetKind kind = LooseAssetKind::TextureDds;
 };
 
-struct ArchiveExtractionWorkItem
-{
-    QString path;
+struct ArchivePackingWorkItem {
+  QString folder;
 };
 
-struct LooseAssetWorkItem
-{
-    QString path;
-    LooseAssetKind kind = LooseAssetKind::TextureDds;
+struct AssetWorkPlan {
+  QStringList modsToProcess;
+  QVector<ArchiveExtractionWorkItem> archivesToExtract;
+  QVector<LooseAssetWorkItem> looseAssetsToOptimize;
+  QVector<ArchivePackingWorkItem> archivesToPack;
 };
 
-struct ArchivePackingWorkItem
-{
-    QString folder;
-};
-
-struct AssetWorkPlan
-{
-    QStringList modsToProcess;
-    QVector<ArchiveExtractionWorkItem> archivesToExtract;
-    QVector<LooseAssetWorkItem> looseAssetsToOptimize;
-    QVector<ArchivePackingWorkItem> archivesToPack;
-};
-
-class AssetWorkPlanner final
-{
+class AssetWorkPlanner final {
 public:
-    /*!
-     * \brief Creates a planner for one optimization request.
-     * \param request The selected path, profile capabilities, ignored mods, and enabled work categories.
-     */
-    explicit AssetWorkPlanner(AssetWorkPlanRequest request);
+  /*!
+   * \brief Creates a planner for one optimization request.
+   * \param request The selected path, profile capabilities, ignored mods, and
+   * enabled work categories.
+   */
+  explicit AssetWorkPlanner(AssetWorkPlanRequest request);
 
-    /*!
-     * \brief Plans archive extraction and packing targets before archive extraction mutates the filesystem.
-     * \return An Asset Work Plan containing selected mods, BSA archives to extract, and folders to pack.
-     */
-    [[nodiscard]] AssetWorkPlan planArchives() const;
+  /*!
+   * \brief Plans archive extraction and packing targets before archive
+   * extraction mutates the filesystem.
+   * \return An Asset Work Plan containing selected mods, BSA archives to
+   * extract, and folders to pack.
+   */
+  [[nodiscard]] AssetWorkPlan planArchives() const;
 
-    /*!
-     * \brief Plans loose assets after archive extraction has had a chance to add files.
-     * \param modsToProcess The selected mods from the archive plan.
-     * \return An Asset Work Plan containing loose assets to optimize, preserving filesystem traversal order.
-     */
-    [[nodiscard]] AssetWorkPlan planLooseAssets(const QStringList &modsToProcess) const;
+  /*!
+   * \brief Plans loose assets after archive extraction has had a chance to add
+   * files.
+   * \param modsToProcess The selected mods from the archive plan.
+   * \return An Asset Work Plan containing loose assets to optimize, preserving
+   * filesystem traversal order.
+   */
+  [[nodiscard]] AssetWorkPlan
+  planLooseAssets(const QStringList &modsToProcess) const;
 
 private:
-    [[nodiscard]] QStringList selectMods() const;
-    [[nodiscard]] bool isIgnoredMod(const QString &modName) const;
-    [[nodiscard]] std::optional<LooseAssetKind> classifyLooseAsset(const QString &fileName) const;
+  [[nodiscard]] QStringList selectMods() const;
+  [[nodiscard]] bool isIgnoredMod(const QString &modName) const;
+  [[nodiscard]] std::optional<LooseAssetKind>
+  classifyLooseAsset(const QString &fileName) const;
 
-    AssetWorkPlanRequest _request;
+  AssetWorkPlanRequest _request;
 };

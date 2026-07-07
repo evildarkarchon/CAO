@@ -13,129 +13,152 @@
 #include <plog/Log.h>
 
 namespace plog {
-class CustomDebugFormatter
-{
+class CustomDebugFormatter {
 public:
-    static util::nstring header()
-    {
-        //For spacing
-        return util::nstring(L"<style>html{line-height:1.5rem}pre{line-height:1rem}</style>");
+  static util::nstring header() {
+    // For spacing
+    return util::nstring(
+        L"<style>html{line-height:1.5rem}pre{line-height:1rem}</style>");
+  }
+
+  static util::nstring format(const Record &record) {
+    util::nostringstream ss;
+
+    util::nstring color;
+
+    switch (record.getSeverity()) {
+    case none:
+      break;
+    case fatal:
+      color = L"<font color=DarkRed>";
+      break;
+    case error:
+      color = L"<font color=Red>";
+      break;
+    case warning:
+      color = L"<font color=Orange>";
+      break;
+    case info:
+      color = L"<font color=Green>";
+      break;
+    case debug:
+      color = L"<font color=Blue>";
+      break;
+    case verbose:
+      color = L"<font color=Purple>";
+      break;
     }
 
-    static util::nstring format(const Record &record)
-    {
-        util::nostringstream ss;
+    tm t;
+    util::localtime_s(&t, &record.getTime().time);
 
-        util::nstring color;
+    std::wstring message = record.getMessage();
 
-        switch (record.getSeverity())
-        {
-            case none: break;
-            case fatal: color = L"<font color=DarkRed>"; break;
-            case error: color = L"<font color=Red>"; break;
-            case warning: color = L"<font color=Orange>"; break;
-            case info: color = L"<font color=Green>"; break;
-            case debug: color = L"<font color=Blue>"; break;
-            case verbose: color = L"<font color=Purple>"; break;
-        }
+    ss << PLOG_NSTR("<br>")
+       << color
+       // Time
+       << t.tm_year + 1900 << "-" << std::setfill(PLOG_NSTR('0'))
+       << std::setw(2) << t.tm_mon + 1 << PLOG_NSTR("-")
+       << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_mday
+       << PLOG_NSTR(" ") << std::setfill(PLOG_NSTR('0')) << std::setw(2)
+       << t.tm_hour << PLOG_NSTR(":") << std::setfill(PLOG_NSTR('0'))
+       << std::setw(2) << t.tm_min << PLOG_NSTR(":")
+       << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_sec
+       << PLOG_NSTR(".") << std::setfill(PLOG_NSTR('0')) << std::setw(3)
+       << record.getTime().millitm << PLOG_NSTR(" ")
+       << std::setfill(PLOG_NSTR(' ')) << std::setw(5)
+       << std::left
+       // Actual message
+       << severityToString(record.getSeverity()) << PLOG_NSTR('{')
+       << record.getFunc() << PLOG_NSTR('@') << record.getLine()
+       << PLOG_NSTR("} ") << message << PLOG_NSTR("</font>");
 
-        tm t;
-        util::localtime_s(&t, &record.getTime().time);
-
-        std::wstring message = record.getMessage();
-
-        ss << PLOG_NSTR("<br>")
-           << color
-           //Time
-           << t.tm_year + 1900 << "-" << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_mon + 1
-           << PLOG_NSTR("-") << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_mday << PLOG_NSTR(" ")
-           << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_hour << PLOG_NSTR(":")
-           << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_min << PLOG_NSTR(":")
-           << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_sec << PLOG_NSTR(".")
-           << std::setfill(PLOG_NSTR('0')) << std::setw(3) << record.getTime().millitm << PLOG_NSTR(" ")
-           << std::setfill(PLOG_NSTR(' ')) << std::setw(5)
-           << std::left
-           //Actual message
-           << severityToString(record.getSeverity()) << PLOG_NSTR('{') << record.getFunc() << PLOG_NSTR('@')
-           << record.getLine() << PLOG_NSTR("} ") << message << PLOG_NSTR("</font>");
-
-        return ss.str();
-    }
+    return ss.str();
+  }
 };
 
-class CustomInfoFormatter
-{
+class CustomInfoFormatter {
 public:
-    static util::nstring header()
-    {
-        //For spacing
-        return util::nstring(L"<style>html{line-height:1.5rem}pre{line-height:1rem}</style>");
+  static util::nstring header() {
+    // For spacing
+    return util::nstring(
+        L"<style>html{line-height:1.5rem}pre{line-height:1rem}</style>");
+  }
+
+  static util::nstring format(const Record &record) {
+    util::nostringstream ss;
+
+    util::nstring color;
+
+    switch (record.getSeverity()) {
+    case none:
+      break;
+    case fatal:
+      color = L"<font color=DarkRed>";
+      break;
+    case error:
+      color = L"<font color=Red>";
+      break;
+    case warning:
+      color = L"<font color=Orange>";
+      break;
+    case info:
+      color = L"<font color=Green>";
+      break;
+    case debug:
+      color = L"<font color=Blue>";
+      break;
+    case verbose:
+      color = L"<font color=Purple>";
+      break;
     }
 
-    static util::nstring format(const Record &record)
-    {
-        util::nostringstream ss;
+    tm t;
+    util::localtime_s(&t, &record.getTime().time);
 
-        util::nstring color;
+    ss << PLOG_NSTR("<br>")
+       << color
+       // Time
+       << t.tm_year + 1900 << "-" << std::setfill(PLOG_NSTR('0'))
+       << std::setw(2) << t.tm_mon + 1 << PLOG_NSTR("-")
+       << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_mday
+       << PLOG_NSTR(" ") << std::setfill(PLOG_NSTR('0')) << std::setw(2)
+       << t.tm_hour << PLOG_NSTR(":") << std::setfill(PLOG_NSTR('0'))
+       << std::setw(2) << t.tm_min << PLOG_NSTR(":")
+       << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_sec
+       << std::left
+       // Actual message
+       << PLOG_NSTR(" [") << severityToString(record.getSeverity())
+       << PLOG_NSTR("] ") << record.getMessage() << PLOG_NSTR("</font>");
 
-        switch (record.getSeverity())
-        {
-            case none: break;
-            case fatal: color = L"<font color=DarkRed>"; break;
-            case error: color = L"<font color=Red>"; break;
-            case warning: color = L"<font color=Orange>"; break;
-            case info: color = L"<font color=Green>"; break;
-            case debug: color = L"<font color=Blue>"; break;
-            case verbose: color = L"<font color=Purple>"; break;
-        }
-
-        tm t;
-        util::localtime_s(&t, &record.getTime().time);
-
-        ss << PLOG_NSTR("<br>")
-           << color
-           //Time
-           << t.tm_year + 1900 << "-" << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_mon + 1 << PLOG_NSTR("-")
-           << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_mday << PLOG_NSTR(" ")
-           << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_hour << PLOG_NSTR(":")
-           << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_min << PLOG_NSTR(":") << std::setfill(PLOG_NSTR('0'))
-           << std::setw(2) << t.tm_sec
-           << std::left
-           //Actual message
-           << PLOG_NSTR(" [") << severityToString(record.getSeverity()) << PLOG_NSTR("] ") << record.getMessage()
-           << PLOG_NSTR("</font>");
-
-        return ss.str();
-    }
+    return ss.str();
+  }
 };
 } // namespace plog
 
-inline void initCustomLogger(const QString &logPath, bool debugLog)
-{
-    //Cancelling if logger is already ready
-    if (plog::get())
-        return;
+inline void initCustomLogger(const QString &logPath, bool debugLog) {
+  // Cancelling if logger is already ready
+  if (plog::get())
+    return;
 
-    //Creating log folder
-    const QDir dir;
-    dir.mkpath(QFileInfo(logPath).path());
+  // Creating log folder
+  const QDir dir;
+  dir.mkpath(QFileInfo(logPath).path());
 
-    //Creating log file
-    QFile file(logPath);
+  // Creating log file
+  QFile file(logPath);
 
-    if (!file.open(QFile::ReadWrite | QFile::Append))
-        throw std::runtime_error("Cannot open log file: " + logPath.toStdString());
+  if (!file.open(QFile::ReadWrite | QFile::Append))
+    throw std::runtime_error("Cannot open log file: " + logPath.toStdString());
 
-    static plog::RollingFileAppender<plog::CustomDebugFormatter> debugAppender(qPrintable(logPath),
-                                                                               250'000,
-                                                                               1'000);
+  static plog::RollingFileAppender<plog::CustomDebugFormatter> debugAppender(
+      qPrintable(logPath), 250'000, 1'000);
 
-    static plog::RollingFileAppender<plog::CustomInfoFormatter> infoAppender(qPrintable(logPath),
-                                                                             250'000,
-                                                                             1'000);
+  static plog::RollingFileAppender<plog::CustomInfoFormatter> infoAppender(
+      qPrintable(logPath), 250'000, 1'000);
 
-    if (debugLog)
-        plog::init(plog::Severity::verbose, &debugAppender);
-    else
-        plog::init(plog::Severity::info, &infoAppender);
+  if (debugLog)
+    plog::init(plog::Severity::verbose, &debugAppender);
+  else
+    plog::init(plog::Severity::info, &infoAppender);
 }

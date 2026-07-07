@@ -11,72 +11,69 @@
 #include <QDir>
 #include <QDirIterator>
 
-namespace
-{
+namespace {
 constexpr auto CustomHeadpartsFile = "customHeadparts.txt";
 
-QString normalizeAssetPath(QString path)
-{
-    path = QDir::fromNativeSeparators(QDir::cleanPath(path));
+QString normalizeAssetPath(QString path) {
+  path = QDir::fromNativeSeparators(QDir::cleanPath(path));
 
-    // Metadata sources store game-relative paths, while Asset Work Items carry
-    // absolute filesystem paths. Normalize both to the relative mesh Asset path.
-    const QString lowerPath = path.toLower();
-    const QString meshesMarker = "/meshes/";
-    const int meshesMarkerIndex = lowerPath.indexOf(meshesMarker);
-    if (meshesMarkerIndex >= 0)
-        path = path.mid(meshesMarkerIndex + 1);
+  // Metadata sources store game-relative paths, while Asset Work Items carry
+  // absolute filesystem paths. Normalize both to the relative mesh Asset path.
+  const QString lowerPath = path.toLower();
+  const QString meshesMarker = "/meshes/";
+  const int meshesMarkerIndex = lowerPath.indexOf(meshesMarker);
+  if (meshesMarkerIndex >= 0)
+    path = path.mid(meshesMarkerIndex + 1);
 
-    return path.toLower();
+  return path.toLower();
 }
-}
+} // namespace
 
-ModAssetMetadata::ModAssetMetadata(const QStringList &headpartMeshPaths)
-{
-    for (const auto &path : headpartMeshPaths)
-        _headpartMeshPaths.insert(normalizeAssetPath(path));
+ModAssetMetadata::ModAssetMetadata(const QStringList &headpartMeshPaths) {
+  for (const auto &path : headpartMeshPaths)
+    _headpartMeshPaths.insert(normalizeAssetPath(path));
 }
 
-bool ModAssetMetadata::isHeadpartMesh(const QString &assetPath) const
-{
-    const QString normalizedPath = normalizeAssetPath(assetPath);
-    return normalizedPath.contains("facegen") || _headpartMeshPaths.contains(normalizedPath);
+bool ModAssetMetadata::isHeadpartMesh(const QString &assetPath) const {
+  const QString normalizedPath = normalizeAssetPath(assetPath);
+  return normalizedPath.contains("facegen") ||
+         _headpartMeshPaths.contains(normalizedPath);
 }
 
 ModAssetMetadataBuilder::ModAssetMetadataBuilder(
     const ProfileAssetReferenceProvider &profileReferences,
     const PluginAssetReferenceReader &pluginReferences)
-    : _profileReferences(profileReferences)
-    , _pluginReferences(pluginReferences)
-{}
+    : _profileReferences(profileReferences),
+      _pluginReferences(pluginReferences) {}
 
-ModAssetMetadata ModAssetMetadataBuilder::buildForMods(const QStringList &selectedMods) const
-{
-    QStringList headpartMeshPaths = _profileReferences.readReferenceList(CustomHeadpartsFile);
-    if (headpartMeshPaths.isEmpty()) {
-        PLOG_ERROR << "customHeadparts.txt not found. This can cause issue when optimizing meshes, "
-                      "as some headparts won't be detected.";
-    }
+ModAssetMetadata
+ModAssetMetadataBuilder::buildForMods(const QStringList &selectedMods) const {
+  QStringList headpartMeshPaths =
+      _profileReferences.readReferenceList(CustomHeadpartsFile);
+  if (headpartMeshPaths.isEmpty()) {
+    PLOG_ERROR << "customHeadparts.txt not found. This can cause issue when "
+                  "optimizing meshes, "
+                  "as some headparts won't be detected.";
+  }
 
-    for (const auto &mod : selectedMods) {
-        QDirIterator it(mod, QDirIterator::Subdirectories);
-        for (const auto &plugin : FilesystemOperations::listPlugins(it))
-            headpartMeshPaths += _pluginReferences.listHeadparts(plugin);
-    }
+  for (const auto &mod : selectedMods) {
+    QDirIterator it(mod, QDirIterator::Subdirectories);
+    for (const auto &plugin : FilesystemOperations::listPlugins(it))
+      headpartMeshPaths += _pluginReferences.listHeadparts(plugin);
+  }
 
-    headpartMeshPaths.removeDuplicates();
-    return ModAssetMetadata(headpartMeshPaths);
+  headpartMeshPaths.removeDuplicates();
+  return ModAssetMetadata(headpartMeshPaths);
 }
 
-QStringList ProfileFileAssetReferenceProvider::readReferenceList(const QString &fileName) const
-{
-    QFile file = Profiles::getFile(fileName);
-    return FilesystemOperations::readFile(file, [](QString &line) {
-        line = QDir::cleanPath(line);
-    });
+QStringList ProfileFileAssetReferenceProvider::readReferenceList(
+    const QString &fileName) const {
+  QFile file = Profiles::getFile(fileName);
+  return FilesystemOperations::readFile(
+      file, [](QString &line) { line = QDir::cleanPath(line); });
 }
 
-QStringList PluginOperationsAssetReferenceReader::listHeadparts(const QString &pluginPath) const
-{
-    return PluginsOperations::listHeadparts(pluginPath);
+QStringList PluginOperationsAssetReferenceReader::listHeadparts(
+    const QString &pluginPath) const {
+  return PluginsOperations::listHeadparts(pluginPath);
 }

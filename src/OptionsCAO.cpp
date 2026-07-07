@@ -4,8 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #include "OptionsCAO.h"
 
-void OptionsCAO::saveToIni(QSettings *settings)
-{
+void OptionsCAO::saveToIni(QSettings *settings) {
   // General
   settings->setValue("bDryRun", bDryRun);
   settings->setValue("bDebugLog", bDebugLog);
@@ -53,9 +52,7 @@ void OptionsCAO::saveToIni(QSettings *settings)
                      bAnimationsOptimization);
 }
 
-void
-OptionsCAO::readFromIni(QSettings* settings)
-{
+void OptionsCAO::readFromIni(QSettings *settings) {
   if (!QFile(settings->fileName()).exists())
     return;
 
@@ -91,14 +88,14 @@ OptionsCAO::readFromIni(QSettings* settings)
 
   bTexturesResizeRatio = settings->value("bTexturesResizeRatio").toBool();
   iTexturesTargetWidthRatio =
-    settings->value("iTexturesTargetWidthRatio").toUInt();
+      settings->value("iTexturesTargetWidthRatio").toUInt();
   iTexturesTargetHeightRatio =
-    settings->value("iTexturesTargetHeightRatio").toUInt();
+      settings->value("iTexturesTargetHeightRatio").toUInt();
   settings->endGroup();
 
   // Meshes
   iMeshesOptimizationLevel =
-    settings->value("Meshes/iMeshesOptimizationLevel").toInt();
+      settings->value("Meshes/iMeshesOptimizationLevel").toInt();
 
   // Meshes advanced
   bMeshesHeadparts = settings->value("Meshes/bMeshesHeadparts").toBool();
@@ -106,13 +103,11 @@ OptionsCAO::readFromIni(QSettings* settings)
 
   // Animations
   bAnimationsOptimization =
-    settings->value("Animations/bAnimationsOptimization").toBool();
+      settings->value("Animations/bAnimationsOptimization").toBool();
 }
 
 #ifdef GUI
-void
-OptionsCAO::saveToUi(Ui::MainWindow* ui)
-{
+void OptionsCAO::saveToUi(Ui::MainWindow *ui) {
   // BSA
   ui->bsaExtractCheckBox->setChecked(bBsaExtract);
   ui->bsaCreateCheckbox->setChecked(bBsaCreate);
@@ -125,7 +120,7 @@ OptionsCAO::saveToUi(Ui::MainWindow* ui)
 
   // Textures
   const bool texturesOpt =
-    bTexturesMipmaps || bTexturesCompress || bTexturesNecessary;
+      bTexturesMipmaps || bTexturesCompress || bTexturesNecessary;
   if (!texturesOpt)
     ui->texturesGroupBox->setChecked(false);
   else {
@@ -141,32 +136,32 @@ OptionsCAO::saveToUi(Ui::MainWindow* ui)
 
   ui->texturesResizingBySizeRadioButton->setChecked(bTexturesResizeSize);
   ui->texturesResizingBySizeWidth->setValue(
-    static_cast<int>(iTexturesTargetWidth));
+      static_cast<int>(iTexturesTargetWidth));
   ui->texturesResizingBySizeHeight->setValue(
-    static_cast<int>(iTexturesTargetHeight));
+      static_cast<int>(iTexturesTargetHeight));
 
   ui->texturesResizingByRatioRadioButton->setChecked(bTexturesResizeRatio);
   ui->texturesResizingByRatioWidth->setValue(
-    static_cast<int>(iTexturesTargetWidthRatio));
+      static_cast<int>(iTexturesTargetWidthRatio));
   ui->texturesResizingByRatioHeight->setValue(
-    static_cast<int>(iTexturesTargetHeightRatio));
+      static_cast<int>(iTexturesTargetHeightRatio));
 
   // Meshes
 
   ui->meshesGroupBox->setChecked(true);
   switch (iMeshesOptimizationLevel) {
-    case 0:
-      ui->meshesGroupBox->setChecked(false);
-      break;
-    case 1:
-      ui->meshesNecessaryOptimizationRadioButton->setChecked(true);
-      break;
-    case 2:
-      ui->meshesMediumOptimizationRadioButton->setChecked(true);
-      break;
-    case 3:
-      ui->meshesFullOptimizationRadioButton->setChecked(true);
-      break;
+  case 0:
+    ui->meshesGroupBox->setChecked(false);
+    break;
+  case 1:
+    ui->meshesNecessaryOptimizationRadioButton->setChecked(true);
+    break;
+  case 2:
+    ui->meshesMediumOptimizationRadioButton->setChecked(true);
+    break;
+  case 3:
+    ui->meshesFullOptimizationRadioButton->setChecked(true);
+    break;
   }
 
   ui->meshesResaveCheckBox->setChecked(bMeshesResave);
@@ -174,7 +169,7 @@ OptionsCAO::saveToUi(Ui::MainWindow* ui)
 
   // Animations
   ui->animationsNecessaryOptimizationCheckBox->setChecked(
-    bAnimationsOptimization);
+      bAnimationsOptimization);
 
   // Log level
   ui->actionEnable_debug_log->setChecked(bDebugLog);
@@ -182,16 +177,14 @@ OptionsCAO::saveToUi(Ui::MainWindow* ui)
   // General and GUI
   ui->dryRunCheckBox->setChecked(bDryRun);
   ui->modeChooserComboBox->setCurrentIndex(
-    ui->modeChooserComboBox->findData(mode));
+      ui->modeChooserComboBox->findData(mode));
   ui->userPathTextEdit->setText(userPath);
 }
 
-void
-OptionsCAO::readFromUi(Ui::MainWindow* ui)
-{
+void OptionsCAO::readFromUi(Ui::MainWindow *ui) {
   // BSA
   const bool bsaEnabled =
-    ui->bsaTab->isEnabled() && ui->bsaBaseGroupBox->isEnabled();
+      ui->bsaTab->isEnabled() && ui->bsaBaseGroupBox->isEnabled();
   bBsaExtract = bsaEnabled && ui->bsaExtractCheckBox->isChecked();
   bBsaCreate = bsaEnabled && ui->bsaCreateCheckbox->isChecked();
   bBsaDeleteBackup = bsaEnabled && ui->bsaDeleteBackupsCheckbox->isChecked();
@@ -203,29 +196,29 @@ OptionsCAO::readFromUi(Ui::MainWindow* ui)
 
   // Textures
   const bool texturesEnabled =
-    ui->texturesGroupBox->isChecked() && ui->texturesTab->isEnabled();
+      ui->texturesGroupBox->isChecked() && ui->texturesTab->isEnabled();
   bTexturesNecessary =
-    texturesEnabled && ui->texturesNecessaryOptimizationCheckBox->isChecked();
+      texturesEnabled && ui->texturesNecessaryOptimizationCheckBox->isChecked();
   bTexturesMipmaps = texturesEnabled && ui->texturesMipmapCheckBox->isChecked();
   bTexturesCompress =
-    texturesEnabled && ui->texturesCompressCheckBox->isChecked();
+      texturesEnabled && ui->texturesCompressCheckBox->isChecked();
 
   // Textures resizing
   const bool texturesResizing =
-    ui->texturesResizingGroupBox->isChecked() && ui->texturesTab->isEnabled();
+      ui->texturesResizingGroupBox->isChecked() && ui->texturesTab->isEnabled();
   bTexturesResizeSize =
-    ui->texturesResizingBySizeRadioButton->isChecked() && texturesResizing;
+      ui->texturesResizingBySizeRadioButton->isChecked() && texturesResizing;
   iTexturesTargetWidth =
-    static_cast<size_t>(ui->texturesResizingBySizeWidth->value());
+      static_cast<size_t>(ui->texturesResizingBySizeWidth->value());
   iTexturesTargetHeight =
-    static_cast<size_t>(ui->texturesResizingBySizeHeight->value());
+      static_cast<size_t>(ui->texturesResizingBySizeHeight->value());
 
   bTexturesResizeRatio =
-    ui->texturesResizingByRatioRadioButton->isChecked() && texturesResizing;
+      ui->texturesResizingByRatioRadioButton->isChecked() && texturesResizing;
   iTexturesTargetWidthRatio =
-    static_cast<size_t>(ui->texturesResizingByRatioWidth->value());
+      static_cast<size_t>(ui->texturesResizingByRatioWidth->value());
   iTexturesTargetHeightRatio =
-    static_cast<size_t>(ui->texturesResizingByRatioHeight->value());
+      static_cast<size_t>(ui->texturesResizingByRatioHeight->value());
 
   // Meshes base
   const bool meshesEnabled = ui->meshesTab->isEnabled();
@@ -244,8 +237,8 @@ OptionsCAO::readFromUi(Ui::MainWindow* ui)
 
   // Animations
   bAnimationsOptimization =
-    ui->AnimationsTab->isEnabled() &&
-    ui->animationsNecessaryOptimizationCheckBox->isChecked();
+      ui->AnimationsTab->isEnabled() &&
+      ui->animationsNecessaryOptimizationCheckBox->isChecked();
 
   // General
   bDryRun = ui->dryRunCheckBox->isChecked();
@@ -255,9 +248,7 @@ OptionsCAO::readFromUi(Ui::MainWindow* ui)
 }
 #endif
 
-void
-OptionsCAO::parseArguments(const QStringList& args)
-{
+void OptionsCAO::parseArguments(const QStringList &args) {
   if (args.count() < 4)
     throw std::runtime_error("Not enough arguments");
   QCommandLineParser parser;
@@ -265,49 +256,48 @@ OptionsCAO::parseArguments(const QStringList& args)
   parser.addHelpOption();
 
   parser.addPositionalArgument(
-    "folder", "The folder to process, surrounded with quotes.");
+      "folder", "The folder to process, surrounded with quotes.");
   parser.addPositionalArgument("mode",
                                "Either om (one mod) or sm (several mods)");
   parser.addPositionalArgument("profile",
                                "One of the profile located in CAO/profiles");
 
   parser.addOptions({
-    { "dr", "Enables dry run" },
-    { "l", "Enables debug log" },
-    { "m",
-      "Mesh processing level: 0 (default) to disable optimization, 1 for "
-      "necessary optimization, "
-      "2 for medium optimization, 3 for full optimization.",
-      "value",
-      "0" },
+      {"dr", "Enables dry run"},
+      {"l", "Enables debug log"},
+      {"m",
+       "Mesh processing level: 0 (default) to disable optimization, 1 for "
+       "necessary optimization, "
+       "2 for medium optimization, 3 for full optimization.",
+       "value", "0"},
 
-    { "t0", "Enables textures necessary optimization" },
-    { "t1", "Enables textures compression" },
-    { "t2", "Enables textures mipmaps generation" },
+      {"t0", "Enables textures necessary optimization"},
+      {"t1", "Enables textures compression"},
+      {"t2", "Enables textures mipmaps generation"},
 
-    { "trr", "Enables textures resizing by ratio" },
-    { "trrw", "The width ratio" },
-    { "trrh", "The height ratio" },
+      {"trr", "Enables textures resizing by ratio"},
+      {"trrw", "The width ratio"},
+      {"trrh", "The height ratio"},
 
-    { "trs", "Enables textures resizing by fixed size" },
-    { "trsw", "The width size" },
-    { "trsh", "The height size" },
+      {"trs", "Enables textures resizing by fixed size"},
+      {"trsw", "The width size"},
+      {"trsh", "The height size"},
 
-    { "a", "Enables animations processing" },
-    { "mh", "Enables headparts detection and processing" },
-    { "mr", "Enables meshes resaving" },
-    { "be", "Enables BSA extraction." },
-    { "bc", "Enables BSA creation." },
-    { "bd", "Enables deletion of BSA backups." },
-    /*{"bo",
-     "NOT WORKING. Enables BSA optimization. The files inside the "
-     "BSA will be extracted to memory and processed according to the provided
-     settings "},*/
+      {"a", "Enables animations processing"},
+      {"mh", "Enables headparts detection and processing"},
+      {"mr", "Enables meshes resaving"},
+      {"be", "Enables BSA extraction."},
+      {"bc", "Enables BSA creation."},
+      {"bd", "Enables deletion of BSA backups."},
+      /*{"bo",
+       "NOT WORKING. Enables BSA optimization. The files inside the "
+       "BSA will be extracted to memory and processed according to the provided
+       settings "},*/
   });
 
   parser.process(args);
 
-  const QString& path = QDir::cleanPath(parser.positionalArguments().at(0));
+  const QString &path = QDir::cleanPath(parser.positionalArguments().at(0));
   userPath = path;
 
   const QString readMode = parser.positionalArguments().at(1);
@@ -318,7 +308,7 @@ OptionsCAO::parseArguments(const QStringList& args)
   else
     throw std::runtime_error("Invalid argument for mode");
 
-  const QString& readGame = parser.positionalArguments().at(2);
+  const QString &readGame = parser.positionalArguments().at(2);
   Profiles::setCurrentProfile(readGame);
 
   bDryRun = parser.isSet("dr");
@@ -348,13 +338,11 @@ OptionsCAO::parseArguments(const QStringList& args)
   bBsaProcessContent = parser.isSet("bo");
 }
 
-QString
-OptionsCAO::isValid() const
-{
+QString OptionsCAO::isValid() const {
   if (!QDir(userPath).exists() || userPath.size() < 5)
     return (
-      "This path does not exist or is shorter than 5 characters. Path: '" +
-      userPath + "'");
+        "This path does not exist or is shorter than 5 characters. Path: '" +
+        userPath + "'");
 
   if (mode != SingleMod && mode != SeveralMods)
     return "This mode does not exist.";

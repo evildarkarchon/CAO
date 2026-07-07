@@ -9,21 +9,19 @@
 #include <QListWidgetItem>
 
 namespace Ui {
-    class TexturesFormatSelectDialog;
+class TexturesFormatSelectDialog;
 }
 
-class TexturesFormatSelectDialog : public QDialog
-{   
+class TexturesFormatSelectDialog : public QDialog {
 public:
-    explicit TexturesFormatSelectDialog(QWidget *parent = nullptr);
-    ~TexturesFormatSelectDialog();
+  explicit TexturesFormatSelectDialog(QWidget *parent = nullptr);
+  ~TexturesFormatSelectDialog();
 
-    void search(const QString &text);
-    QStringList getChoices();
-    void setCheckedItems(const QString &text);
-    void setCheckedItems(const QStringList &textList);
+  void search(const QString &text);
+  QStringList getChoices();
+  void setCheckedItems(const QString &text);
+  void setCheckedItems(const QStringList &textList);
 
 private:
-    Ui::TexturesFormatSelectDialog *_ui;
+  Ui::TexturesFormatSelectDialog *_ui;
 };
-

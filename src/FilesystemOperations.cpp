@@ -6,163 +6,156 @@
 #include "FilesystemOperations.h"
 #include "PluginsOperations.h"
 
-namespace
-{
-QMap<QString, QString> folderSnapshot(const QString &folder, const bool includeFileSize)
-{
-    QMap<QString, QString> entries;
-    const QDir root(folder);
-    QDirIterator it(folder, QDirIterator::Subdirectories);
+namespace {
+QMap<QString, QString> folderSnapshot(const QString &folder,
+                                      const bool includeFileSize) {
+  QMap<QString, QString> entries;
+  const QDir root(folder);
+  QDirIterator it(folder, QDirIterator::Subdirectories);
 
-    while (it.hasNext())
-    {
-        it.next();
+  while (it.hasNext()) {
+    it.next();
 
-        const QFileInfo entry = it.fileInfo();
-        QString descriptor = entry.isDir() ? "dir" : "file";
+    const QFileInfo entry = it.fileInfo();
+    QString descriptor = entry.isDir() ? "dir" : "file";
 
-        // Compare sizes from the iterator's absolute entry, not a relative path
-        // that depends on the caller's current working directory.
-        if (includeFileSize && entry.isFile())
-            descriptor += ":" + QString::number(entry.size());
+    // Compare sizes from the iterator's absolute entry, not a relative path
+    // that depends on the caller's current working directory.
+    if (includeFileSize && entry.isFile())
+      descriptor += ":" + QString::number(entry.size());
 
-        entries.insert(root.relativeFilePath(entry.filePath()), descriptor);
-    }
+    entries.insert(root.relativeFilePath(entry.filePath()), descriptor);
+  }
 
-    return entries;
+  return entries;
 }
-}
+} // namespace
 
-void FilesystemOperations::deleteEmptyDirectories(const QString &folderPath)
-{
-    QDirIterator dirIt(folderPath, QDirIterator::Subdirectories);
-    QMap<int, QStringList> dirs;
+void FilesystemOperations::deleteEmptyDirectories(const QString &folderPath) {
+  QDirIterator dirIt(folderPath, QDirIterator::Subdirectories);
+  QMap<int, QStringList> dirs;
 
-    while (dirIt.hasNext())
-    {
-        QString path = QDir::cleanPath(dirIt.next());
-        int size = path.size();
+  while (dirIt.hasNext()) {
+    QString path = QDir::cleanPath(dirIt.next());
+    int size = path.size();
 
-        const bool alreadyExist = dirs[size].contains(path);
-        const bool isSeparator = path.contains("separator", Qt::CaseInsensitive);
+    const bool alreadyExist = dirs[size].contains(path);
+    const bool isSeparator = path.contains("separator", Qt::CaseInsensitive);
 
-        if (!alreadyExist && !isSeparator)
-            dirs[size].append(path);
-    }
+    if (!alreadyExist && !isSeparator)
+      dirs[size].append(path);
+  }
 
-    const QDir dir(folderPath);
-    QMapIterator<int, QStringList> i(dirs);
+  const QDir dir(folderPath);
+  QMapIterator<int, QStringList> i(dirs);
 
-    i.toBack();
-    while (i.hasPrevious())
-    {
-        i.previous();
-        for (int j = 0; j < i.value().size(); ++j)
-            dir.rmpath(i.value().at(j));
-    }
+  i.toBack();
+  while (i.hasPrevious()) {
+    i.previous();
+    for (int j = 0; j < i.value().size(); ++j)
+      dir.rmpath(i.value().at(j));
+  }
 }
 
-bool FilesystemOperations::compareFolders(const QString &folder1, const QString &folder2, const bool &checkFileSize)
-{
-    return folderSnapshot(folder1, checkFileSize) == folderSnapshot(folder2, checkFileSize);
+bool FilesystemOperations::compareFolders(const QString &folder1,
+                                          const QString &folder2,
+                                          const bool &checkFileSize) {
+  return folderSnapshot(folder1, checkFileSize) ==
+         folderSnapshot(folder2, checkFileSize);
 }
 
-void FilesystemOperations::copyDir(const QString &source, const QString &destination, const bool overwriteExisting)
-{
-    const QDir sourceDir(source);
-    QDir destinationDir(destination);
-    QDirIterator it(source, QDirIterator::Subdirectories);
+void FilesystemOperations::copyDir(const QString &source,
+                                   const QString &destination,
+                                   const bool overwriteExisting) {
+  const QDir sourceDir(source);
+  QDir destinationDir(destination);
+  QDirIterator it(source, QDirIterator::Subdirectories);
 
-    PLOG_VERBOSE << "Entering " + QString(__FUNCTION__) + " function";
-    PLOG_DEBUG << "dest folder: " + destination + "\nsource folder: " + source;
+  PLOG_VERBOSE << "Entering " + QString(__FUNCTION__) + " function";
+  PLOG_DEBUG << "dest folder: " + destination + "\nsource folder: " + source;
 
-    QStringList oldFiles;
+  QStringList oldFiles;
 
-    const QString currentDir = QDir::currentPath();
-    QDir::setCurrent(destination);
+  const QString currentDir = QDir::currentPath();
+  QDir::setCurrent(destination);
 
-    while (it.hasNext())
-    {
-        it.next();
-        if (!it.fileInfo().isDir()) //Skipping all directories
-            oldFiles << it.filePath();
+  while (it.hasNext()) {
+    it.next();
+    if (!it.fileInfo().isDir()) // Skipping all directories
+      oldFiles << it.filePath();
+  }
+
+  oldFiles.removeDuplicates();
+
+  for (const auto &oldFile : oldFiles) {
+    QString relativeFilename = sourceDir.relativeFilePath(oldFile);
+    QString newFile =
+        QDir::cleanPath(destination + QDir::separator() + relativeFilename);
+
+    if (newFile.size() >= 255) {
+      PLOG_ERROR << "An error occurred while moving files. Try reducing path "
+                    "size (260 characters is the maximum)";
+      return;
     }
 
-    oldFiles.removeDuplicates();
+    destinationDir.mkpath(QFileInfo(newFile).path());
 
-    for (const auto &oldFile : oldFiles)
-    {
-        QString relativeFilename = sourceDir.relativeFilePath(oldFile);
-        QString newFile = QDir::cleanPath(destination + QDir::separator() + relativeFilename);
+    if (overwriteExisting)
+      destinationDir.remove(newFile);
 
-        if (newFile.size() >= 255)
-        {
-            PLOG_ERROR
-                << "An error occurred while moving files. Try reducing path size (260 characters is the maximum)";
-            return;
-        }
+    QFile::copy(oldFile, newFile);
+  }
+  PLOG_VERBOSE << "Exiting moveFiles function";
 
-        destinationDir.mkpath(QFileInfo(newFile).path());
-
-        if (overwriteExisting)
-            destinationDir.remove(newFile);
-
-        QFile::copy(oldFile, newFile);
-    }
-    PLOG_VERBOSE << "Exiting moveFiles function";
-
-    QDir::setCurrent(currentDir);
+  QDir::setCurrent(currentDir);
 }
 
-QStringList FilesystemOperations::readFile(QFile &file, std::function<void(QString &line)> function)
-{
-    QStringList list;
+QStringList
+FilesystemOperations::readFile(QFile &file,
+                               std::function<void(QString &line)> function) {
+  QStringList list;
 
-    file.open(QFile::ReadOnly);
-    if (!file.isOpen())
-        return list;
-
-    while (!file.atEnd())
-    {
-        QString &&line = file.readLine().simplified();
-        if (line.startsWith("#") || line.isEmpty())
-            continue;
-
-        function(line);
-        list << line;
-    }
+  file.open(QFile::ReadOnly);
+  if (!file.isOpen())
     return list;
+
+  while (!file.atEnd()) {
+    QString &&line = file.readLine().simplified();
+    if (line.startsWith("#") || line.isEmpty())
+      continue;
+
+    function(line);
+    list << line;
+  }
+  return list;
 }
 
-QStringList FilesystemOperations::readFile(QFile &file)
-{
-    QStringList list;
+QStringList FilesystemOperations::readFile(QFile &file) {
+  QStringList list;
 
-    file.open(QFile::ReadOnly);
-    if (!file.isOpen())
-        return list;
-
-    while (!file.atEnd())
-    {
-        QString &&line = file.readLine().simplified();
-        if (line.startsWith("#") || line.isEmpty())
-            continue;
-
-        list << line;
-    }
+  file.open(QFile::ReadOnly);
+  if (!file.isOpen())
     return list;
+
+  while (!file.atEnd()) {
+    QString &&line = file.readLine().simplified();
+    if (line.startsWith("#") || line.isEmpty())
+      continue;
+
+    list << line;
+  }
+  return list;
 }
 
-QStringList FilesystemOperations::listPlugins(QDirIterator &it)
-{
-    QStringList plugins;
-    const QRegularExpression pluginsExt("\\.es[plm]$", QRegularExpression::CaseInsensitiveOption);
-    while (it.hasNext())
-    {
-        it.next();
-        if (it.fileName().contains(pluginsExt) && !it.fileInfo().isDir())
-            plugins << it.filePath();
-    }
+QStringList FilesystemOperations::listPlugins(QDirIterator &it) {
+  QStringList plugins;
+  const QRegularExpression pluginsExt(
+      "\\.es[plm]$", QRegularExpression::CaseInsensitiveOption);
+  while (it.hasNext()) {
+    it.next();
+    if (it.fileName().contains(pluginsExt) && !it.fileInfo().isDir())
+      plugins << it.filePath();
+  }
 
-    return plugins;
+  return plugins;
 }

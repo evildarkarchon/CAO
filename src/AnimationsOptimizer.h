@@ -7,22 +7,23 @@
 #include "pch.h"
 
 /*!
- * \brief The AnimationsOptimizer class will handle all operations related to animations (hkx files)
+ * \brief The AnimationsOptimizer class will handle all operations related to
+ * animations (hkx files)
  */
 
-class AnimationsOptimizer final : public QObject
-{
+class AnimationsOptimizer final : public QObject {
 public:
-    /*!
-   * \brief Port an Oldrim animation to Skyrim Special Edition using Bethesda Havok Post Processing Tool
+  /*!
+   * \brief Port an Oldrim animation to Skyrim Special Edition using Bethesda
+   * Havok Post Processing Tool
    * \param filePath The path of the file to optimize
    * \param pkFormat The format to use
    */
-    void convert(const QString &filePath);
+  void convert(const QString &filePath);
 
 private:
-    bool hkxcmdFound = false;
-    std::once_flag onceFlag;
+  bool hkxcmdFound = false;
+  std::once_flag onceFlag;
 
-    constexpr static inline auto hkxcmdPath = "bin/hkxcmd.exe";
+  constexpr static inline auto hkxcmdPath = "bin/hkxcmd.exe";
 };

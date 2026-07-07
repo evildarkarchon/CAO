@@ -8,192 +8,192 @@
 
 using namespace nifly;
 
-std::string to_string(const std::vector<std::string> &source)
-{
-    std::string res = "[";
-    bool first = true;
-    for (const auto &s : source) {
-        if (!first)
-            res += ", ";
-        res += s;
-        first = false;
-    }
-    return res + "]";
+std::string to_string(const std::vector<std::string> &source) {
+  std::string res = "[";
+  bool first = true;
+  for (const auto &s : source) {
+    if (!first)
+      res += ", ";
+    res += s;
+    first = false;
+  }
+  return res + "]";
 }
 
-std::string to_string(bool source)
-{
-    return source ? "true" : "false";
-}
+std::string to_string(bool source) { return source ? "true" : "false"; }
 
-MeshesOptimizer::MeshesOptimizer(bool processHeadparts, int optimizationLevel, bool resaveMeshes)
+MeshesOptimizer::MeshesOptimizer(bool processHeadparts, int optimizationLevel,
+                                 bool resaveMeshes)
     : bMeshesHeadparts(processHeadparts), bMeshesResave(resaveMeshes),
-      iMeshesOptimizationLevel(optimizationLevel)
-{}
+      iMeshesOptimizationLevel(optimizationLevel) {}
 
-ScanResult MeshesOptimizer::scan(NifFile &nif) const
-{
-    if (!nif.IsValid())
-        return doNotProcess;
+ScanResult MeshesOptimizer::scan(NifFile &nif) const {
+  if (!nif.IsValid())
+    return doNotProcess;
 
-    NiVersion version;
-    version.SetFile(Profiles::meshesFileVersion());
-    version.SetStream(Profiles::meshesStream());
-    version.SetUser(Profiles::meshesUser());
+  NiVersion version;
+  version.SetFile(Profiles::meshesFileVersion());
+  version.SetStream(Profiles::meshesStream());
+  version.SetUser(Profiles::meshesUser());
 
-    if (!nif.IsSSECompatible() || version.IsSK())
-        return criticalIssue;
-    else
-        return good;
+  if (!nif.IsSSECompatible() || version.IsSK())
+    return criticalIssue;
+  else
+    return good;
 }
 
-bool MeshesOptimizer::optimize(const QString &filepath, const MeshAssetRole role)
+bool MeshesOptimizer::optimize(const QString &filepath,
+                               const MeshAssetRole role)
 // Optimize the selected mesh
 {
-    auto [loadResult, nif] = loadMesh(filepath);
-    if (!loadResult)
-        return false;
+  auto [loadResult, nif] = loadMesh(filepath);
+  if (!loadResult)
+    return false;
 
-    OptOptions options;
-    options.targetVersion.SetFile(Profiles::meshesFileVersion());
-    options.targetVersion.SetStream(Profiles::meshesStream());
-    options.targetVersion.SetUser(Profiles::meshesUser());
-    options.removeParallax = false;
+  OptOptions options;
+  options.targetVersion.SetFile(Profiles::meshesFileVersion());
+  options.targetVersion.SetStream(Profiles::meshesStream());
+  options.targetVersion.SetUser(Profiles::meshesUser());
+  options.removeParallax = false;
 
-    const ScanResult scanResult = scan(nif);
+  const ScanResult scanResult = scan(nif);
 
-    auto print_res = [](nifly::OptResult res) {
-        std::string str = "Details of mesh optimization:";
+  auto print_res = [](nifly::OptResult res) {
+    std::string str = "Details of mesh optimization:";
 #define PRINT(x) str += "\n" #x ": " + to_string(x);
-        PRINT(res.dupesRenamed);
-        PRINT(res.shapesNormalsRemoved);
-        PRINT(res.shapesParallaxRemoved);
-        PRINT(res.shapesVColorsRemoved);
-        PRINT(res.shapesPartTriangulated);
-        PRINT(res.shapesTangentsAdded);
-        PLOGV << str;
+    PRINT(res.dupesRenamed);
+    PRINT(res.shapesNormalsRemoved);
+    PRINT(res.shapesParallaxRemoved);
+    PRINT(res.shapesVColorsRemoved);
+    PRINT(res.shapesPartTriangulated);
+    PRINT(res.shapesTangentsAdded);
+    PLOGV << str;
 #undef PRINT
-    };
+  };
 
-    bool processedHeadpart = false;
-    //Headparts have to get a special optimization
-    if (iMeshesOptimizationLevel >= 1 && role == MeshAssetRole::Headpart) {
-        if (bMeshesHeadparts) {
-            options.headParts = true;
-            PLOG_INFO << "Optimizing: " + filepath
-                             + " as an headpart due to necessary optimization";
-            print_res(nif.OptimizeFor(options));
-            processedHeadpart = true;
-        } else
-            PLOG_VERBOSE << "Headpart mesh ignored: " + filepath;
-    } else {
-        switch (scanResult) {
-        case doNotProcess:
-            return true;
-        case good:
-        case lightIssue:
-            if (iMeshesOptimizationLevel >= 3) {
-                PLOG_INFO << "Optimizing: " + filepath + " due to full optimization";
-                print_res(nif.OptimizeFor(options));
-            }
-            break;
-        case criticalIssue:
-            if (iMeshesOptimizationLevel >= 1) {
-                PLOG_INFO << "Optimizing: " + filepath + " due to necessary optimization";
-                print_res(nif.OptimizeFor(options));
-            }
-            break;
-        }
+  bool processedHeadpart = false;
+  // Headparts have to get a special optimization
+  if (iMeshesOptimizationLevel >= 1 && role == MeshAssetRole::Headpart) {
+    if (bMeshesHeadparts) {
+      options.headParts = true;
+      PLOG_INFO << "Optimizing: " + filepath +
+                       " as an headpart due to necessary optimization";
+      print_res(nif.OptimizeFor(options));
+      processedHeadpart = true;
+    } else
+      PLOG_VERBOSE << "Headpart mesh ignored: " + filepath;
+  } else {
+    switch (scanResult) {
+    case doNotProcess:
+      return true;
+    case good:
+    case lightIssue:
+      if (iMeshesOptimizationLevel >= 3) {
+        PLOG_INFO << "Optimizing: " + filepath + " due to full optimization";
+        print_res(nif.OptimizeFor(options));
+      }
+      break;
+    case criticalIssue:
+      if (iMeshesOptimizationLevel >= 1) {
+        PLOG_INFO << "Optimizing: " + filepath +
+                         " due to necessary optimization";
+        print_res(nif.OptimizeFor(options));
+      }
+      break;
     }
+  }
 
-    const auto modifiedMesh = bMeshesResave
-                              || (iMeshesOptimizationLevel >= 1 && scanResult >= criticalIssue)
-                              || iMeshesOptimizationLevel >= 2;
+  const auto modifiedMesh =
+      bMeshesResave ||
+      (iMeshesOptimizationLevel >= 1 && scanResult >= criticalIssue) ||
+      iMeshesOptimizationLevel >= 2;
 
-    //Renaming textures referenced in mesh if TGA were converted to DDS
-    const auto renamedReferencedTextures = Profiles::texturesConvertTga()
-                                           && renameReferencedTexturesExtension(nif);
-    PLOG_VERBOSE_IF(renamedReferencedTextures)
-        << "Renamed referenced textures from TGA to DDS in " + filepath;
+  // Renaming textures referenced in mesh if TGA were converted to DDS
+  const auto renamedReferencedTextures =
+      Profiles::texturesConvertTga() && renameReferencedTexturesExtension(nif);
+  PLOG_VERBOSE_IF(renamedReferencedTextures)
+      << "Renamed referenced textures from TGA to DDS in " + filepath;
 
-    if (modifiedMesh || renamedReferencedTextures || processedHeadpart)
-        saveMesh(nif, filepath);
-    PLOG_VERBOSE << "Closing mesh: " + filepath;
-    return true;
+  if (modifiedMesh || renamedReferencedTextures || processedHeadpart)
+    saveMesh(nif, filepath);
+  PLOG_VERBOSE << "Closing mesh: " + filepath;
+  return true;
 }
 
-void MeshesOptimizer::dryOptimize(const QString &filepath, const MeshAssetRole role) const
-{
-    auto [loadResult, nif] = loadMesh(filepath);
-    if (!loadResult)
-        return;
+void MeshesOptimizer::dryOptimize(const QString &filepath,
+                                  const MeshAssetRole role) const {
+  auto [loadResult, nif] = loadMesh(filepath);
+  if (!loadResult)
+    return;
 
-    const ScanResult scanResult = scan(nif);
+  const ScanResult scanResult = scan(nif);
 
-    //Headparts have to get a special optimization
-    if (iMeshesOptimizationLevel >= 1 && bMeshesHeadparts && role == MeshAssetRole::Headpart)
-        PLOG_INFO << filepath + " would be optimized as an headpart due to necessary optimization";
-    else {
-        switch (scanResult) {
-        case doNotProcess:
-            return;
-        case good:
-        case lightIssue:
-            if (iMeshesOptimizationLevel >= 3)
-                PLOG_INFO << filepath + " would be optimized due to full optimization";
+  // Headparts have to get a special optimization
+  if (iMeshesOptimizationLevel >= 1 && bMeshesHeadparts &&
+      role == MeshAssetRole::Headpart)
+    PLOG_INFO << filepath + " would be optimized as an headpart due to "
+                            "necessary optimization";
+  else {
+    switch (scanResult) {
+    case doNotProcess:
+      return;
+    case good:
+    case lightIssue:
+      if (iMeshesOptimizationLevel >= 3)
+        PLOG_INFO << filepath + " would be optimized due to full optimization";
 
-            else if (iMeshesOptimizationLevel >= 2) {
-                PLOG_INFO << filepath + " would be optimized due to medium optimization";
-            }
-            break;
-        case criticalIssue:
-            PLOG_INFO << filepath + " would be optimized due to necessary optimization";
-            break;
-        }
+      else if (iMeshesOptimizationLevel >= 2) {
+        PLOG_INFO << filepath +
+                         " would be optimized due to medium optimization";
+      }
+      break;
+    case criticalIssue:
+      PLOG_INFO << filepath +
+                       " would be optimized due to necessary optimization";
+      break;
     }
+  }
 }
 
-bool MeshesOptimizer::renameReferencedTexturesExtension(NifFile &file)
-{
-    bool meshChanged = false;
-    for (auto shape : file.GetShapes()) {
-        for (auto tex : file.GetTexturePathRefs(shape)) {
-            if (tex.get().empty())
-                continue;
+bool MeshesOptimizer::renameReferencedTexturesExtension(NifFile &file) {
+  bool meshChanged = false;
+  for (auto shape : file.GetShapes()) {
+    for (auto tex : file.GetTexturePathRefs(shape)) {
+      if (tex.get().empty())
+        continue;
 
-            QString qsTex = QString::fromStdString(tex.get());
-            if (qsTex.contains(".tga", Qt::CaseInsensitive)) {
-                qsTex.replace(".tga", ".dds", Qt::CaseInsensitive);
-                tex.get() = qsTex.toStdString();
-                meshChanged = true;
-            }
-        }
+      QString qsTex = QString::fromStdString(tex.get());
+      if (qsTex.contains(".tga", Qt::CaseInsensitive)) {
+        qsTex.replace(".tga", ".dds", Qt::CaseInsensitive);
+        tex.get() = qsTex.toStdString();
+        meshChanged = true;
+      }
     }
-    return meshChanged;
+  }
+  return meshChanged;
 }
 
-std::tuple<bool, NifFile> MeshesOptimizer::loadMesh(const QString &filepath) const
-{
-    PLOG_VERBOSE << "Loading mesh: " + filepath;
+std::tuple<bool, NifFile>
+MeshesOptimizer::loadMesh(const QString &filepath) const {
+  PLOG_VERBOSE << "Loading mesh: " + filepath;
 
-    NifLoadOptions loadOptions;
-    loadOptions.isTerrain = (filepath.endsWith("btr", Qt::CaseInsensitive)
-                             || filepath.endsWith("bto", Qt::CaseInsensitive));
+  NifLoadOptions loadOptions;
+  loadOptions.isTerrain = (filepath.endsWith("btr", Qt::CaseInsensitive) ||
+                           filepath.endsWith("bto", Qt::CaseInsensitive));
 
-    NifFile nif;
-    if (nif.Load(filepath.toStdU16String(), loadOptions)) {
-        PLOG_ERROR << "Cannot load mesh: " + filepath;
-        return std::make_tuple(false, std::move(nif));
-    }
-    return std::make_tuple(true, std::move(nif));
+  NifFile nif;
+  if (nif.Load(filepath.toStdU16String(), loadOptions)) {
+    PLOG_ERROR << "Cannot load mesh: " + filepath;
+    return std::make_tuple(false, std::move(nif));
+  }
+  return std::make_tuple(true, std::move(nif));
 }
 
-bool MeshesOptimizer::saveMesh(NifFile &nif, const QString &filepath) const
-{
-    PLOG_VERBOSE << "Saving mesh: " + filepath;
-    if (nif.Save(filepath.toStdU16String())) {
-        PLOG_ERROR << "Cannot save mesh: " + filepath;
-        return false;
-    }
-    return true;
+bool MeshesOptimizer::saveMesh(NifFile &nif, const QString &filepath) const {
+  PLOG_VERBOSE << "Saving mesh: " + filepath;
+  if (nif.Save(filepath.toStdU16String())) {
+    PLOG_ERROR << "Cannot save mesh: " + filepath;
+    return false;
+  }
+  return true;
 }

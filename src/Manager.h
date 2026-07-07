@@ -8,14 +8,13 @@
 #include "MainOptimizer.h"
 #include "pch.h"
 
-class Manager final : public QObject
-{
+class Manager final : public QObject {
   Q_OBJECT
 public:
   /*!
    * \brief Constructor that will perform a number of functions
    */
-  explicit Manager(const OptionsCAO& opt);
+  explicit Manager(const OptionsCAO &opt);
   /*!
    * \brief The main process
    */
@@ -29,7 +28,7 @@ public:
 
   void cancelProcess();
 
-  private:
+private:
   /*!
    * \brief Initializes the manager
    */
@@ -50,7 +49,7 @@ public:
   /*!
    * \brief The optimization options, that will be given to the MainOptimizer
    */
-  const OptionsCAO& _options;
+  const OptionsCAO &_options;
   /*!
    * \brief Mods on this list won't be processed
    */
@@ -58,7 +57,7 @@ public:
 
   bool _isCancelled = false;
 
-  signals:
+signals:
   void progressBarTextChanged(QString, int, int);
   void end();
 };

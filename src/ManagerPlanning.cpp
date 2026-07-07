@@ -5,42 +5,37 @@
 
 #include "ManagerPlanning.h"
 
-namespace
-{
-AssetWorkMode toAssetWorkMode(const OptionsCAO::OptimizationMode mode)
-{
-    switch (mode) {
-    case OptionsCAO::SingleMod:
-        return AssetWorkMode::SingleMod;
-    case OptionsCAO::SeveralMods:
-        return AssetWorkMode::SeveralMods;
-    }
-
+namespace {
+AssetWorkMode toAssetWorkMode(const OptionsCAO::OptimizationMode mode) {
+  switch (mode) {
+  case OptionsCAO::SingleMod:
     return AssetWorkMode::SingleMod;
+  case OptionsCAO::SeveralMods:
+    return AssetWorkMode::SeveralMods;
+  }
+
+  return AssetWorkMode::SingleMod;
 }
 
-bool texturesEnabledByOptions(const OptionsCAO &options)
-{
-    return options.bTexturesMipmaps || options.bTexturesCompress || options.bTexturesNecessary
-           || options.bTexturesResizeSize || options.bTexturesResizeRatio;
+bool texturesEnabledByOptions(const OptionsCAO &options) {
+  return options.bTexturesMipmaps || options.bTexturesCompress ||
+         options.bTexturesNecessary || options.bTexturesResizeSize ||
+         options.bTexturesResizeRatio;
 }
 
-RequestedAssetWork requestedAssetWorkFromOptions(const OptionsCAO &options)
-{
-    return RequestedAssetWork{options.bBsaExtract,
-                              options.bBsaCreate,
-                              options.iMeshesOptimizationLevel > 0,
-                              texturesEnabledByOptions(options),
-                              options.bAnimationsOptimization};
+RequestedAssetWork requestedAssetWorkFromOptions(const OptionsCAO &options) {
+  return RequestedAssetWork{options.bBsaExtract, options.bBsaCreate,
+                            options.iMeshesOptimizationLevel > 0,
+                            texturesEnabledByOptions(options),
+                            options.bAnimationsOptimization};
 }
-}
+} // namespace
 
-AssetWorkPlanRequest ManagerPlanning::createAssetWorkPlanRequest(const OptionsCAO &options,
-                                                                 const QStringList &ignoredMods,
-                                                                 const ProfilePlanningSnapshot &profile)
-{
-    return AssetWorkPlanRequest{options.userPath,
-                                toAssetWorkMode(options.mode),
-                                ignoredMods,
-                                AssetWorkPolicy::resolve(requestedAssetWorkFromOptions(options), profile)};
+AssetWorkPlanRequest ManagerPlanning::createAssetWorkPlanRequest(
+    const OptionsCAO &options, const QStringList &ignoredMods,
+    const ProfilePlanningSnapshot &profile) {
+  return AssetWorkPlanRequest{
+      options.userPath, toAssetWorkMode(options.mode), ignoredMods,
+      AssetWorkPolicy::resolve(requestedAssetWorkFromOptions(options),
+                               profile)};
 }
