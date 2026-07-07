@@ -4,12 +4,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
+#include "AssetWorkExecutionPolicy.h"
 #include "FilesystemOperations.h"
-#include "Profiles.h"
-#include "TexturesOptimizer.h"
 #include "pch.h"
-
-class OptionsCAO;
 
 /*!
  * \brief Manages BSA : extract and create them
@@ -21,7 +18,7 @@ public:
   /*!
    * \brief Default constructor
    */
-  BSAOptimizer();
+  BSAOptimizer() = default;
   /*!
    * \brief Extracts a BSA
    * \param bsaPath The path of the BSA to extract
@@ -38,8 +35,10 @@ public:
   /*!
    * \brief Packs all the loose files in the directory into BSAs
    * \param folderPath The folder to process
+   * \param policy The archive execution rules and resolved BSA settings.
    */
-  void packAll(const QString &folderPath, const OptionsCAO &options) const;
+  void packAll(const QString &folderPath,
+               const ArchiveExecutionPolicy &policy) const;
 
 private:
   /*!
@@ -55,11 +54,7 @@ private:
    * \return a bool indicating the state of the file. True if is allowed, false
    * otherwise
    */
-  bool isAllowedFile(const btu::Path &dir,
+  bool isAllowedFile(const std::vector<std::u8string> &filesToNotPack,
+                     const btu::Path &dir,
                      const std::filesystem::directory_entry &fileinfo) const;
-  /*!
-   * \brief A list containing the files present in filesToNotPack.txt. If a
-   * filename contains a member of this list, it won't be added to the BSA.
-   */
-  std::vector<std::u8string> filesToNotPack;
 };

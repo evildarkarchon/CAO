@@ -4,8 +4,8 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
+#include "AssetWorkExecutionPolicy.h"
 #include "PluginsOperations.h"
-#include "Profiles.h"
 #include "pch.h"
 
 enum ScanResult {
@@ -23,9 +23,9 @@ class MeshesOptimizer final : public QObject {
 public:
   /*!
    * \brief Creates a mesh optimizer from the selected mesh options.
+   * \param policy The mesh execution rules and target Profile version.
    */
-  MeshesOptimizer(bool processHeadparts, int optimizationLevel,
-                  bool resaveMeshes);
+  explicit MeshesOptimizer(MeshExecutionPolicy policy);
   /*!
    * \brief Scans the selected meshes for issues
    * \param nif The mesh to scan
@@ -55,7 +55,5 @@ public:
   bool saveMesh(nifly::NifFile &nif, const QString &filepath) const;
 
 private:
-  bool bMeshesHeadparts;
-  bool bMeshesResave;
-  int iMeshesOptimizationLevel;
+  MeshExecutionPolicy _policy;
 };

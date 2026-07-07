@@ -4,8 +4,10 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "TexturesOptimizer.h"
+#include "Profiles.h"
 
-TexturesOptimizer::TexturesOptimizer() {
+TexturesOptimizer::TexturesOptimizer(TextureExecutionPolicy policy)
+    : _policy(std::move(policy)) {
   PLOG_WARNING_IF(!createDevice(0, _pDevice.GetAddressOf()))
       << "DirectCompute is not available, using BC6H / BC7 CPU codec."
          " Textures compression will be slower";
@@ -157,7 +159,7 @@ TexturesOptimizer::TexOptOptionsResult TexturesOptimizer::processArguments(
 
   result.bNeedsCompress = (bNecessary && (isIncompatible() || _type == TGA)) ||
                           (bCompress && canBeCompressed() &&
-                           _info.format != Profiles::texturesFormat());
+                           _info.format != _policy.outputFormat);
 
   result.bNeedsMipmaps = bMipmaps &&
                          _info.mipLevels != calculateOptimalMipMapsNumber() &&
@@ -166,13 +168,12 @@ TexturesOptimizer::TexOptOptionsResult TexturesOptimizer::processArguments(
   return result;
 }
 
-bool TexturesOptimizer::optimize(const bool &bNecessary, const bool &bCompress,
-                                 const bool &bMipmaps,
-                                 const std::optional<size_t> &tWidth,
+bool TexturesOptimizer::optimize(const std::optional<size_t> &tWidth,
                                  const std::optional<size_t> &tHeight) {
   PLOG_VERBOSE << "Processing arguments for: " << _name;
-  auto options =
-      processArguments(bNecessary, bCompress, bMipmaps, tWidth, tHeight);
+  auto options = processArguments(_policy.necessaryOptimization,
+                                  _policy.compress, _policy.mipmaps, tWidth,
+                                  tHeight);
 
   DXGI_FORMAT targetFormat = _info.format;
 
@@ -198,8 +199,8 @@ bool TexturesOptimizer::optimize(const bool &bNecessary, const bool &bCompress,
       return false;
 
     options.bNeedsMipmaps =
-        bMipmaps && _info.mipLevels != calculateOptimalMipMapsNumber() &&
-        canHaveMipMaps();
+        _policy.mipmaps &&
+        _info.mipLevels != calculateOptimalMipMapsNumber() && canHaveMipMaps();
   }
 
   // Generating mipmaps
@@ -212,7 +213,7 @@ bool TexturesOptimizer::optimize(const bool &bNecessary, const bool &bCompress,
   // Converting to the new format, or the compressing back into the original
   // format
   if (options.bNeedsCompress) {
-    targetFormat = Profiles::texturesFormat();
+    targetFormat = _policy.outputFormat;
     PLOG_VERBOSE << "Converting this texture to format: "
                  << dxgiFormatToString(targetFormat);
   }
@@ -228,23 +229,22 @@ bool TexturesOptimizer::optimize(const bool &bNecessary, const bool &bCompress,
   return true;
 }
 
-void TexturesOptimizer::dryOptimize(const bool &bNecessary,
-                                    const bool &bCompress, const bool &bMipmaps,
-                                    const std::optional<size_t> &tWidth,
+void TexturesOptimizer::dryOptimize(const std::optional<size_t> &tWidth,
                                     const std::optional<size_t> &tHeight) {
   const size_t newWidth = tWidth.has_value() ? tWidth.value() : _info.width;
   const size_t newHeight = tHeight.has_value() ? tHeight.value() : _info.height;
 
   const bool needsResize =
-      bNecessary && (newHeight != _info.height || newWidth != _info.width);
+      _policy.necessaryOptimization &&
+      (newHeight != _info.height || newWidth != _info.width);
 
   const bool needsConversion =
-      (bNecessary && (isIncompatible() || _type == TGA)) ||
-      (bCompress && canBeCompressed() &&
-       _info.format != Profiles::texturesFormat());
+      (_policy.necessaryOptimization && (isIncompatible() || _type == TGA)) ||
+      (_policy.compress && canBeCompressed() &&
+       _info.format != _policy.outputFormat);
 
   const bool needsMipMaps =
-      bMipmaps && _info.mipLevels != calculateOptimalMipMapsNumber() &&
+      _policy.mipmaps && _info.mipLevels != calculateOptimalMipMapsNumber() &&
       canHaveMipMaps();
 
   PLOG_INFO << "Analyzing texture: " << _name;
@@ -265,7 +265,7 @@ void TexturesOptimizer::dryOptimize(const bool &bNecessary,
   // Converting or compressing to the new format
   if (needsConversion) {
     PLOG_VERBOSE << "This texture would be converted to format: "
-                 << dxgiFormatToString(Profiles::texturesFormat());
+                 << dxgiFormatToString(_policy.outputFormat);
   }
 }
 
@@ -276,7 +276,7 @@ bool TexturesOptimizer::canBeCompressed() const {
   const bool isPow2 = isPowerOfTwo();
 
   const bool interfaceOkay =
-      Profiles::texturesCompressInterface() || !isInterface;
+      _policy.compressInterface || !isInterface;
 
   return interfaceOkay && !already && !badSize && isPow2;
 }
@@ -441,8 +441,7 @@ bool TexturesOptimizer::resize(size_t targetWidth, size_t targetHeight) {
 
 bool TexturesOptimizer::canHaveMipMaps() {
   const bool isInterface = _name.contains("interface", Qt::CaseInsensitive);
-  const bool interfaceOkay =
-      !isInterface || Profiles::texturesCompressInterface();
+  const bool interfaceOkay = !isInterface || _policy.compressInterface;
   const bool sizeOkay = _info.width >= 4 && _info.height >= 4;
 
   return interfaceOkay && sizeOkay;
@@ -651,7 +650,7 @@ bool TexturesOptimizer::saveToFile(const QString &filePath) const {
 bool TexturesOptimizer::isIncompatible() const {
   // Checking incompatibility with file format
   const DXGI_FORMAT fileFormat = _info.format;
-  for (const auto &f : Profiles::texturesUnwantedFormats())
+  for (const auto &f : _policy.unwantedFormats)
     if (f == fileFormat)
       return true;
 

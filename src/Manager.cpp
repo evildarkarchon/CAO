@@ -3,6 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #include "Manager.h"
+#include "AssetWorkExecutionPolicy.h"
 #include "AssetWorkPlanExecutor.h"
 #include "ManagerPlanning.h"
 
@@ -26,11 +27,12 @@ class MainOptimizerExecutionAdapter final
 public:
   /*!
    * \brief Creates the production adapter used for Asset Work Plan Execution.
-   * \param options Optimization options consumed by MainOptimizer while
+   * \param executionPolicy Resolved policy consumed by MainOptimizer while
    * executing work items.
    */
-  explicit MainOptimizerExecutionAdapter(const OptionsCAO &options)
-      : _optimizer(options) {}
+  explicit MainOptimizerExecutionAdapter(
+      const AssetWorkExecutionPolicy &executionPolicy)
+      : _optimizer(executionPolicy) {}
 
   /*!
    * \brief Delegates archive extraction to MainOptimizer.
@@ -119,7 +121,8 @@ void Manager::runOptimization() {
   PLOG_INFO << "Processing: " + _options.userPath;
   PLOG_INFO << "Beginning...";
 
-  MainOptimizerExecutionAdapter adapter(_options);
+  const auto executionPolicy = AssetWorkExecutionPolicy::resolve(_options);
+  MainOptimizerExecutionAdapter adapter(executionPolicy);
   ProfileFileAssetReferenceProvider profileReferences;
   PluginOperationsAssetReferenceReader pluginReferences;
   ModAssetMetadataBuilder metadataBuilder(profileReferences, pluginReferences);

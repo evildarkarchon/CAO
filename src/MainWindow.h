@@ -5,6 +5,7 @@
 #pragma once
 
 #include "Manager.h"
+#include "OptionsCAO.h"
 #include "TexturesFormatSelectDialog.h"
 #include "pch.h"
 #include "ui_mainWindow.h"

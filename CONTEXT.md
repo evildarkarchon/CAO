@@ -28,6 +28,10 @@ _Avoid_: Processing pipeline, optimization run
 The resolved rules that decide which kinds of asset work are allowed for a selected Profile and requested options before CAO creates an Asset Work Plan. It is policy, not the ordered work itself.
 _Avoid_: Profile snapshot, settings policy, option flags
 
+**Asset Work Execution Policy**:
+The resolved rules and parameters used while carrying out an Asset Work Plan for a selected Profile and requested options. It is execution policy, not the decision of which Asset Work Items exist.
+_Avoid_: Optimizer settings, runtime options, execution config
+
 **Asset Work Plan Execution**:
 The act of carrying out an Asset Work Plan against the selected Mod or Mods. It is execution, not planning; Loose Asset Discovery may happen during it after archive extraction changes the available Assets.
 _Avoid_: Optimization run, processing pipeline, manager orchestration

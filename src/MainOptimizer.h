@@ -5,11 +5,11 @@
 #pragma once
 
 #include "AnimationsOptimizer.h"
+#include "AssetWorkExecutionPolicy.h"
 #include "AssetWorkPlan.h"
 #include "BsaOptimizer.h"
 #include "MeshesOptimizer.h"
 #include "ModAssetMetadata.h"
-#include "OptionsCAO.h"
 #include "TexturesOptimizer.h"
 
 /*!
@@ -20,7 +20,12 @@ class MainOptimizer final : public QObject {
   Q_DECLARE_TR_FUNCTIONS(MainOptimizer)
 
 public:
-  explicit MainOptimizer(const OptionsCAO &optOptions);
+  /*!
+   * \brief Creates an optimizer from resolved Asset Work Execution Policy.
+   * \param executionPolicy The already-resolved rules used while carrying out
+   * planned Asset Work Items.
+   */
+  explicit MainOptimizer(const AssetWorkExecutionPolicy &executionPolicy);
 
   /*!
    * \brief Extracts one planned BSA archive work item.
@@ -46,7 +51,7 @@ private:
                       const TexturesOptimizer::TextureType &type);
   void processHkx(const QString &file);
 
-  const OptionsCAO &_optOptions;
+  AssetWorkExecutionPolicy _executionPolicy;
 
   BSAOptimizer _bsaOpt;
   MeshesOptimizer _meshesOpt;

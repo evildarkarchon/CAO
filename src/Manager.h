@@ -6,6 +6,7 @@
 
 #include "AssetWorkPlan.h"
 #include "MainOptimizer.h"
+#include "OptionsCAO.h"
 #include "pch.h"
 
 class Manager final : public QObject {
@@ -47,7 +48,8 @@ private:
    */
   int _numberCompletedFiles = 0;
   /*!
-   * \brief The optimization options, that will be given to the MainOptimizer
+   * \brief The optimization options used to build planning and execution
+   * policy.
    */
   const OptionsCAO &_options;
   /*!

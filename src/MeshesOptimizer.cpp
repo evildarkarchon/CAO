@@ -22,19 +22,17 @@ std::string to_string(const std::vector<std::string> &source) {
 
 std::string to_string(bool source) { return source ? "true" : "false"; }
 
-MeshesOptimizer::MeshesOptimizer(bool processHeadparts, int optimizationLevel,
-                                 bool resaveMeshes)
-    : bMeshesHeadparts(processHeadparts), bMeshesResave(resaveMeshes),
-      iMeshesOptimizationLevel(optimizationLevel) {}
+MeshesOptimizer::MeshesOptimizer(MeshExecutionPolicy policy)
+    : _policy(std::move(policy)) {}
 
 ScanResult MeshesOptimizer::scan(NifFile &nif) const {
   if (!nif.IsValid())
     return doNotProcess;
 
   NiVersion version;
-  version.SetFile(Profiles::meshesFileVersion());
-  version.SetStream(Profiles::meshesStream());
-  version.SetUser(Profiles::meshesUser());
+  version.SetFile(_policy.targetFileVersion);
+  version.SetStream(_policy.targetStream);
+  version.SetUser(_policy.targetUser);
 
   if (!nif.IsSSECompatible() || version.IsSK())
     return criticalIssue;
@@ -51,9 +49,9 @@ bool MeshesOptimizer::optimize(const QString &filepath,
     return false;
 
   OptOptions options;
-  options.targetVersion.SetFile(Profiles::meshesFileVersion());
-  options.targetVersion.SetStream(Profiles::meshesStream());
-  options.targetVersion.SetUser(Profiles::meshesUser());
+  options.targetVersion.SetFile(_policy.targetFileVersion);
+  options.targetVersion.SetStream(_policy.targetStream);
+  options.targetVersion.SetUser(_policy.targetUser);
   options.removeParallax = false;
 
   const ScanResult scanResult = scan(nif);
@@ -73,8 +71,8 @@ bool MeshesOptimizer::optimize(const QString &filepath,
 
   bool processedHeadpart = false;
   // Headparts have to get a special optimization
-  if (iMeshesOptimizationLevel >= 1 && role == MeshAssetRole::Headpart) {
-    if (bMeshesHeadparts) {
+  if (_policy.optimizationLevel >= 1 && role == MeshAssetRole::Headpart) {
+    if (_policy.processHeadparts) {
       options.headParts = true;
       PLOG_INFO << "Optimizing: " + filepath +
                        " as an headpart due to necessary optimization";
@@ -88,13 +86,13 @@ bool MeshesOptimizer::optimize(const QString &filepath,
       return true;
     case good:
     case lightIssue:
-      if (iMeshesOptimizationLevel >= 3) {
+      if (_policy.optimizationLevel >= 3) {
         PLOG_INFO << "Optimizing: " + filepath + " due to full optimization";
         print_res(nif.OptimizeFor(options));
       }
       break;
     case criticalIssue:
-      if (iMeshesOptimizationLevel >= 1) {
+      if (_policy.optimizationLevel >= 1) {
         PLOG_INFO << "Optimizing: " + filepath +
                          " due to necessary optimization";
         print_res(nif.OptimizeFor(options));
@@ -104,13 +102,13 @@ bool MeshesOptimizer::optimize(const QString &filepath,
   }
 
   const auto modifiedMesh =
-      bMeshesResave ||
-      (iMeshesOptimizationLevel >= 1 && scanResult >= criticalIssue) ||
-      iMeshesOptimizationLevel >= 2;
+      _policy.resaveMeshes ||
+      (_policy.optimizationLevel >= 1 && scanResult >= criticalIssue) ||
+      _policy.optimizationLevel >= 2;
 
   // Renaming textures referenced in mesh if TGA were converted to DDS
   const auto renamedReferencedTextures =
-      Profiles::texturesConvertTga() && renameReferencedTexturesExtension(nif);
+      _policy.renameTgaReferences && renameReferencedTexturesExtension(nif);
   PLOG_VERBOSE_IF(renamedReferencedTextures)
       << "Renamed referenced textures from TGA to DDS in " + filepath;
 
@@ -129,7 +127,7 @@ void MeshesOptimizer::dryOptimize(const QString &filepath,
   const ScanResult scanResult = scan(nif);
 
   // Headparts have to get a special optimization
-  if (iMeshesOptimizationLevel >= 1 && bMeshesHeadparts &&
+  if (_policy.optimizationLevel >= 1 && _policy.processHeadparts &&
       role == MeshAssetRole::Headpart)
     PLOG_INFO << filepath + " would be optimized as an headpart due to "
                             "necessary optimization";
@@ -139,10 +137,10 @@ void MeshesOptimizer::dryOptimize(const QString &filepath,
       return;
     case good:
     case lightIssue:
-      if (iMeshesOptimizationLevel >= 3)
+      if (_policy.optimizationLevel >= 3)
         PLOG_INFO << filepath + " would be optimized due to full optimization";
 
-      else if (iMeshesOptimizationLevel >= 2) {
+      else if (_policy.optimizationLevel >= 2) {
         PLOG_INFO << filepath +
                          " would be optimized due to medium optimization";
       }

@@ -4,16 +4,20 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
+#include "AssetWorkExecutionPolicy.h"
 #include "FilesystemOperations.h"
 #include "PluginsOperations.h"
-#include "Profiles.h"
 #include "pch.h"
 
 class TexturesOptimizer final : public QObject {
   Q_DECLARE_TR_FUNCTIONS(TexturesOptimizer)
 
 public:
-  TexturesOptimizer();
+  /*!
+   * \brief Creates a texture optimizer from resolved texture execution rules.
+   * \param policy The texture execution rules and target Profile format.
+   */
+  explicit TexturesOptimizer(TextureExecutionPolicy policy);
 
   enum TextureType { DDS, TGA };
 
@@ -51,14 +55,20 @@ public:
   [[nodiscard]] bool canBeCompressed() const;
   /*!
    * \brief Perform various optimizations on the current texture
+   * \param tWidth Optional resolved width target for the current texture.
+   * \param tHeight Optional resolved height target for the current texture.
    * \return False if an error happens
    */
-  bool optimize(const bool &bNecessary, const bool &bCompress,
-                const bool &bMipmaps, const std::optional<size_t> &tWidth,
+  bool optimize(const std::optional<size_t> &tWidth,
                 const std::optional<size_t> &tHeight);
 
-  void dryOptimize(const bool &bNecessary, const bool &bCompress,
-                   const bool &bMipmaps, const std::optional<size_t> &tWidth,
+  /*!
+   * \brief Reports the texture operations that would run for the current
+   * texture.
+   * \param tWidth Optional resolved width target for the current texture.
+   * \param tHeight Optional resolved height target for the current texture.
+   */
+  void dryOptimize(const std::optional<size_t> &tWidth,
                    const std::optional<size_t> &tHeight);
 
   bool resize(size_t targetWidth, size_t targetHeight);
@@ -96,6 +106,7 @@ public:
   bool modifiedCurrentTexture = false;
 
 private:
+  TextureExecutionPolicy _policy;
   std::unique_ptr<DirectX::ScratchImage> _image{};
   DirectX::TexMetadata _info{};
   QString _name;

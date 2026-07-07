@@ -4,40 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "BsaOptimizer.h"
-#include "OptionsCAO.h"
 #include "PluginsOperations.h"
-
-BSAOptimizer::BSAOptimizer() {
-  // Reading filesToNotPack to add them to the list.
-  // Done in the constructor since the file won't change at runtime.
-
-  QFile &&filesToNotPackFile = Profiles::getFile("FilesToNotPack.txt");
-
-  auto lines =
-      FilesystemOperations::readFile(filesToNotPackFile, [](QString &line) {
-        line = QDir::toNativeSeparators(line);
-      });
-
-  for (auto &&line : lines)
-    filesToNotPack.emplace_back(
-        btu::common::as_utf8_string(std::move(line).toStdString()));
-
-  if (filesToNotPack.empty()) {
-    PLOG_ERROR << "FilesToNotPack.txt not found. This can cause a number of "
-                  "issues. For "
-                  "example, for Skyrim, "
-                  "animations will be packed to BSA, preventing them from "
-                  "being detected "
-                  "by FNIS and Nemesis.";
-  }
-}
-
-btu::bsa::Settings getSettings() {
-  auto sets = btu::bsa::Settings::get(Profiles::bsaGame());
-  if (Profiles::maxBsaUncompressedSize() > sets.max_size)
-    sets.max_size = Profiles::maxBsaUncompressedSize();
-  return sets;
-}
 
 void BSAOptimizer::extract(QString bsaPath, const bool deleteBackup) const {
   if (!deleteBackup)
@@ -72,12 +39,12 @@ void handle_errors(std::vector<std::pair<btu::Path, std::string>> errs) {
 }
 
 void BSAOptimizer::packAll(const QString &folderPath,
-                           const OptionsCAO &options) const {
+                           const ArchiveExecutionPolicy &policy) const {
   using dir_it = std::filesystem::directory_iterator;
 
   PLOG_VERBOSE << "Packing all loose files into BSAs";
 
-  const auto game = getSettings();
+  const auto game = policy.settings;
   const std::filesystem::path dir = folderPath.toStdU16String();
 
   auto plugins = btu::bsa::list_plugins(dir_it(dir), {}, game);
@@ -85,17 +52,18 @@ void BSAOptimizer::packAll(const QString &folderPath,
 
   auto bsas = btu::bsa::split(
       dir, game,
-      [this](const btu::Path &dir, btu::fs::directory_entry const &fileinfo) {
+      [this, &policy](const btu::Path &dir,
+                      btu::fs::directory_entry const &fileinfo) {
         return btu::bsa::default_is_allowed_path(dir, fileinfo) &&
-               isAllowedFile(dir, fileinfo);
+               isAllowedFile(policy.filesToNotPack, dir, fileinfo);
       });
 
-  if (options.bBsaMergeIncomp || options.bBsaMergeTexture) {
+  if (policy.mergeIncompressible || policy.mergeTextures) {
     const auto msets = [&] {
       btu::bsa::MergeSettings sets = static_cast<btu::bsa::MergeSettings>(0);
-      if (options.bBsaMergeIncomp)
+      if (policy.mergeIncompressible)
         sets |= btu::bsa::MergeSettings::MergeIncompressible;
-      if (options.bBsaMergeTexture)
+      if (policy.mergeTextures)
         sets |= btu::bsa::MergeSettings::MergeTextures;
       return sets;
     }();
@@ -115,9 +83,9 @@ void BSAOptimizer::packAll(const QString &folderPath,
       bsa.set_out_path(std::move(name).full_path());
 
       const auto errs =
-          btu::bsa::write(options.bBsaCompress, std::move(bsa), dir);
+          btu::bsa::write(policy.compress, std::move(bsa), dir);
       handle_errors(std::move(errs));
-      if (options.bBsaDeleteSource) {
+      if (policy.deleteSource) {
         std::for_each(files.begin(), files.end(), [](auto &&p) {
           try {
             std::filesystem::remove(p);
@@ -133,7 +101,7 @@ void BSAOptimizer::packAll(const QString &folderPath,
     }
   }
 
-  if (options.bBsaCreateDummies) {
+  if (policy.createDummies) {
     const auto archives = btu::bsa::list_archive(dir_it(dir), {}, game);
     btu::bsa::make_dummy_plugins(archives, game);
   }
@@ -161,6 +129,7 @@ QString BSAOptimizer::backup(const QString &bsaPath) const {
 }
 
 bool BSAOptimizer::isAllowedFile(
+    const std::vector<std::u8string> &filesToNotPack,
     [[maybe_unused]] btu::Path const &dir,
     btu::fs::directory_entry const &fileinfo) const {
   const auto &path = fileinfo.path().u8string();

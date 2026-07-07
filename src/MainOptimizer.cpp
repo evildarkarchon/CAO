@@ -4,15 +4,11 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "MainOptimizer.h"
-#include "PluginsOperations.h"
-#include "Profiles.h"
-#include "TexturesOptimizer.h"
 
-MainOptimizer::MainOptimizer(const OptionsCAO &optOptions)
-    : _optOptions(optOptions),
-      _meshesOpt(MeshesOptimizer(_optOptions.bMeshesHeadparts,
-                                 optOptions.iMeshesOptimizationLevel,
-                                 optOptions.bMeshesResave)) {}
+MainOptimizer::MainOptimizer(
+    const AssetWorkExecutionPolicy &executionPolicy)
+    : _executionPolicy(executionPolicy), _meshesOpt(_executionPolicy.mesh),
+      _texturesOpt(_executionPolicy.texture) {}
 
 void handleBadFile(const QString &path) {
   if (QFile::rename(path, path + ".caobad")) {
@@ -23,18 +19,19 @@ void handleBadFile(const QString &path) {
 }
 
 void MainOptimizer::extractArchive(const ArchiveExtractionWorkItem &workItem) {
-  if (_optOptions.bDryRun)
+  if (_executionPolicy.dryRun)
     return; // TODO if "dry run" run dry run on the assets in the BSA
 
   const QString &file = workItem.path;
-  if (_optOptions.bBsaExtract && QFileInfo(file).isFile()) {
+  if (QFileInfo(file).isFile()) {
     PLOG_INFO << "BSA found ! Extracting...(this may take a long time, do not "
                  "force close the program): " +
                      file;
-    _bsaOpt.extract(file, _optOptions.bBsaDeleteBackup);
+    _bsaOpt.extract(file, _executionPolicy.archive.deleteBackup);
   }
 
-  // TODO if(options.bBsaOptimizeAssets)
+  // TODO if BSA content optimization is added, route it through execution
+  // policy rather than raw options.
 }
 
 void MainOptimizer::processLooseAsset(const LooseAssetWorkItem &workItem,
@@ -65,21 +62,14 @@ void MainOptimizer::processLooseAsset(const LooseAssetWorkItem &workItem,
 
 void MainOptimizer::packArchive(const ArchivePackingWorkItem &workItem) {
   const QString &folder = workItem.folder;
-  if (_optOptions.bBsaCreate && QDir(folder).exists()) {
+  if (QDir(folder).exists()) {
     PLOG_INFO << "Creating BSA...";
-    _bsaOpt.packAll(folder, _optOptions);
+    _bsaOpt.packAll(folder, _executionPolicy.archive);
   }
 }
 
 void MainOptimizer::processTexture(const QString &file,
                                    const TexturesOptimizer::TextureType &type) {
-  const bool processTextures =
-      _optOptions.bTexturesMipmaps || _optOptions.bTexturesCompress ||
-      _optOptions.bTexturesNecessary || _optOptions.bTexturesResizeSize ||
-      _optOptions.bTexturesResizeRatio;
-  if (!processTextures)
-    return;
-
   if (!_texturesOpt.open(file, type)) {
     PLOG_ERROR << "Failed to open: " << file;
     handleBadFile(file);
@@ -90,24 +80,20 @@ void MainOptimizer::processTexture(const QString &file,
   std::optional<size_t> width;
   std::optional<size_t> height;
 
-  if (_optOptions.bTexturesResizeRatio) {
+  if (_executionPolicy.texture.resizeByRatio) {
     width =
-        _texturesOpt.getInfo().width / _optOptions.iTexturesTargetWidthRatio;
+        _texturesOpt.getInfo().width / _executionPolicy.texture.targetWidthRatio;
     height =
-        _texturesOpt.getInfo().height / _optOptions.iTexturesTargetHeightRatio;
-  } else if (_optOptions.bTexturesResizeSize) {
-    width = _optOptions.iTexturesTargetWidth;
-    height = _optOptions.iTexturesTargetHeight;
+        _texturesOpt.getInfo().height / _executionPolicy.texture.targetHeightRatio;
+  } else if (_executionPolicy.texture.resizeBySize) {
+    width = _executionPolicy.texture.targetWidth;
+    height = _executionPolicy.texture.targetHeight;
   }
 
-  if (_optOptions.bDryRun)
-    _texturesOpt.dryOptimize(_optOptions.bTexturesNecessary,
-                             _optOptions.bTexturesCompress,
-                             _optOptions.bTexturesMipmaps, width, height);
+  if (_executionPolicy.dryRun)
+    _texturesOpt.dryOptimize(width, height);
   else {
-    if (!_texturesOpt.optimize(_optOptions.bTexturesNecessary,
-                               _optOptions.bTexturesCompress,
-                               _optOptions.bTexturesMipmaps, width, height)) {
+    if (!_texturesOpt.optimize(width, height)) {
       PLOG_ERROR << "Failed to optimize: " + file;
       return;
     }
@@ -127,22 +113,18 @@ void MainOptimizer::processTexture(const QString &file,
 }
 
 void MainOptimizer::processHkx(const QString &file) {
-  if (!_optOptions.bAnimationsOptimization)
-    return;
-
-  if (_optOptions.bAnimationsOptimization && _optOptions.bDryRun)
+  if (_executionPolicy.dryRun)
     PLOG_INFO << file + " would be converted to the appropriate format.";
-  else if (_optOptions.bAnimationsOptimization)
+  else
     _animOpt.convert(file);
 }
 
 void MainOptimizer::processNif(const QString &file, const MeshAssetRole role) {
-  if (_optOptions.iMeshesOptimizationLevel == 0)
+  if (_executionPolicy.mesh.optimizationLevel == 0)
     return;
 
-  if (_optOptions.iMeshesOptimizationLevel >= 1 && _optOptions.bDryRun)
+  if (_executionPolicy.dryRun)
     _meshesOpt.dryOptimize(file, role);
-  else if (_optOptions.iMeshesOptimizationLevel >= 1 && !_optOptions.bDryRun)
-    if (!_meshesOpt.optimize(file, role))
-      handleBadFile(file);
+  else if (!_meshesOpt.optimize(file, role))
+    handleBadFile(file);
 }
