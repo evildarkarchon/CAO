@@ -47,27 +47,7 @@ ScanResult MeshesOptimizer::scan(NifFile &nif) const
         return good;
 }
 
-void MeshesOptimizer::listHeadparts(const QString &directory)
-{
-    QFile &&customHeadpartsFile = Profiles::getFile("customHeadparts.txt");
-    headparts = FilesystemOperations::readFile(customHeadpartsFile, [](QString &string) {
-        return QDir::cleanPath(string);
-    });
-
-    if (headparts.isEmpty()) {
-        PLOG_ERROR << "customHeadparts.txt not found. This can cause issue when optimizing meshes, "
-                      "as some headparts "
-                      "won't be detected.";
-    }
-
-    QDirIterator it(directory, QDirIterator::Subdirectories);
-    for (const auto &plugin : FilesystemOperations::listPlugins(it))
-        headparts += PluginsOperations::listHeadparts(plugin);
-
-    headparts.removeDuplicates();
-}
-
-bool MeshesOptimizer::optimize(const QString &filepath)
+bool MeshesOptimizer::optimize(const QString &filepath, const MeshAssetRole role)
 // Optimize the selected mesh
 {
     auto [loadResult, nif] = loadMesh(filepath);
@@ -81,8 +61,6 @@ bool MeshesOptimizer::optimize(const QString &filepath)
     options.removeParallax = false;
 
     const ScanResult scanResult = scan(nif);
-    const QString relativeFilePath = filepath.mid(filepath.indexOf("/meshes/", Qt::CaseInsensitive)
-                                                  + 1);
 
     auto print_res = [](nifly::OptResult res) {
         std::string str = "Details of mesh optimization:";
@@ -99,9 +77,7 @@ bool MeshesOptimizer::optimize(const QString &filepath)
 
     bool processedHeadpart = false;
     //Headparts have to get a special optimization
-    if (iMeshesOptimizationLevel >= 1
-        && (headparts.contains(relativeFilePath, Qt::CaseInsensitive)
-            || relativeFilePath.contains("facegen", Qt::CaseInsensitive))) {
+    if (iMeshesOptimizationLevel >= 1 && role == MeshAssetRole::Headpart) {
         if (bMeshesHeadparts) {
             options.headParts = true;
             PLOG_INFO << "Optimizing: " + filepath
@@ -146,19 +122,16 @@ bool MeshesOptimizer::optimize(const QString &filepath)
     return true;
 }
 
-void MeshesOptimizer::dryOptimize(const QString &filepath) const
+void MeshesOptimizer::dryOptimize(const QString &filepath, const MeshAssetRole role) const
 {
     auto [loadResult, nif] = loadMesh(filepath);
     if (!loadResult)
         return;
 
     const ScanResult scanResult = scan(nif);
-    const QString relativeFilePath = filepath.mid(filepath.indexOf("/meshes/", Qt::CaseInsensitive)
-                                                  + 1);
 
     //Headparts have to get a special optimization
-    if (iMeshesOptimizationLevel >= 1 && bMeshesHeadparts
-        && headparts.contains(relativeFilePath, Qt::CaseInsensitive))
+    if (iMeshesOptimizationLevel >= 1 && bMeshesHeadparts && role == MeshAssetRole::Headpart)
         PLOG_INFO << filepath + " would be optimized as an headpart due to necessary optimization";
     else {
         switch (scanResult) {

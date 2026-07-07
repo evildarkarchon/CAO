@@ -48,10 +48,12 @@ public:
     /*!
      * \brief Delegates loose Asset processing to MainOptimizer.
      * \param workItem The planned loose Asset Work Item.
+     * \param metadata Metadata derived from selected Mods for this execution.
      */
-    void processLooseAsset(const LooseAssetWorkItem &workItem) override
+    void processLooseAsset(const LooseAssetWorkItem &workItem,
+                           const ModAssetMetadata &metadata) override
     {
-        _optimizer.processLooseAsset(workItem);
+        _optimizer.processLooseAsset(workItem, metadata);
     }
 
     /*!
@@ -130,8 +132,11 @@ void Manager::runOptimization()
     PLOG_INFO << "Beginning...";
 
     MainOptimizerExecutionAdapter adapter(_options);
+    ProfileFileAssetReferenceProvider profileReferences;
+    PluginOperationsAssetReferenceReader pluginReferences;
+    ModAssetMetadataBuilder metadataBuilder(profileReferences, pluginReferences);
     PLOG_INFO << "Listing files and directories...";
-    AssetWorkPlanExecutor executor(createAssetWorkPlanRequest(), adapter);
+    AssetWorkPlanExecutor executor(createAssetWorkPlanRequest(), metadataBuilder, adapter);
     const auto result = executor.execute(AssetWorkPlanExecutionCallbacks{
         [this](const AssetWorkPlanProgress &progress) {
             _numberCompletedFiles = progress.completed;

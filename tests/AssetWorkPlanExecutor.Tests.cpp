@@ -38,14 +38,36 @@ struct RecordedWorkAdapter final : AssetWorkPlanExecutionAdapter
             onExtractArchive(workItem);
     }
 
-    void processLooseAsset(const LooseAssetWorkItem &workItem) override
+    void processLooseAsset(const LooseAssetWorkItem &workItem,
+                           const ModAssetMetadata &metadata) override
     {
         events << "process:" + workItem.path;
+        if (metadata.isHeadpartMesh(workItem.path))
+            events << "headpart:" + workItem.path;
     }
 
     void packArchive(const ArchivePackingWorkItem &workItem) override
     {
         events << "pack:" + workItem.folder;
+    }
+};
+
+struct RecordedMetadataProvider final : ModAssetMetadataProvider
+{
+    mutable int buildCount = 0;
+    mutable QStringList selectedMods;
+    QStringList *events = nullptr;
+    std::function<ModAssetMetadata(const QStringList &mods)> onBuild;
+
+    ModAssetMetadata buildForMods(const QStringList &mods) const override
+    {
+        ++buildCount;
+        selectedMods = mods;
+        if (events)
+            *events << "metadata:" + mods.join("|");
+        if (onBuild)
+            return onBuild(mods);
+        return ModAssetMetadata();
     }
 };
 }
@@ -64,20 +86,27 @@ TEST_CASE("AssetWorkPlanExecutor runs extraction before post-extraction Loose As
     createFile(root.filePath("Alpha/meshes/body.nif"));
 
     RecordedWorkAdapter adapter;
+    RecordedMetadataProvider metadataProvider;
+    metadataProvider.events = &adapter.events;
     adapter.onExtractArchive = [&](const ArchiveExtractionWorkItem &) {
         createFile(root.filePath("Alpha/textures/extracted.dds"));
     };
 
-    AssetWorkPlanExecutor executor(defaultRequest(tempDir.path()), adapter);
+    AssetWorkPlanExecutor executor(defaultRequest(tempDir.path()), metadataProvider, adapter);
     const auto result = executor.execute();
 
     const QString extractEvent = "extract:" + root.filePath("Alpha/Alpha.bsa");
+    const QString metadataEvent = "metadata:" + root.filePath("Alpha");
     const QString existingAssetEvent = "process:" + root.filePath("Alpha/meshes/body.nif");
     const QString extractedAssetEvent = "process:" + root.filePath("Alpha/textures/extracted.dds");
     const QString packEvent = "pack:" + root.filePath("Alpha");
 
     REQUIRE(result == AssetWorkPlanExecutionResult::Completed);
     REQUIRE(adapter.events.first() == extractEvent);
+    REQUIRE(metadataProvider.buildCount == 1);
+    REQUIRE(metadataProvider.selectedMods == QStringList{root.filePath("Alpha")});
+    REQUIRE(adapter.events.indexOf(metadataEvent) > adapter.events.indexOf(extractEvent));
+    REQUIRE(adapter.events.indexOf(metadataEvent) < adapter.events.indexOf(existingAssetEvent));
     REQUIRE(adapter.events.contains(existingAssetEvent));
     REQUIRE(adapter.events.contains(extractedAssetEvent));
     REQUIRE(adapter.events.last() == packEvent);
@@ -95,9 +124,10 @@ TEST_CASE("AssetWorkPlanExecutor reports semantic progress")
     createFile(root.filePath("Alpha/Alpha.bsa"));
 
     RecordedWorkAdapter adapter;
+    RecordedMetadataProvider metadataProvider;
     std::vector<AssetWorkPlanProgress> progress;
 
-    AssetWorkPlanExecutor executor(defaultRequest(tempDir.path()), adapter);
+    AssetWorkPlanExecutor executor(defaultRequest(tempDir.path()), metadataProvider, adapter);
     const auto result = executor.execute(AssetWorkPlanExecutionCallbacks{
         [&](const AssetWorkPlanProgress &entry) { progress.push_back(entry); },
         {}});
@@ -129,14 +159,42 @@ TEST_CASE("AssetWorkPlanExecutor stops before Loose Asset Discovery when cancell
     createFile(root.filePath("Alpha/Alpha.bsa"));
 
     RecordedWorkAdapter adapter;
+    RecordedMetadataProvider metadataProvider;
     const QString extractEvent = "extract:" + root.filePath("Alpha/Alpha.bsa");
 
-    AssetWorkPlanExecutor executor(defaultRequest(tempDir.path()), adapter);
+    AssetWorkPlanExecutor executor(defaultRequest(tempDir.path()), metadataProvider, adapter);
     const auto result = executor.execute(AssetWorkPlanExecutionCallbacks{
         {},
         [&]() { return adapter.events.contains(extractEvent); }});
 
     REQUIRE(result == AssetWorkPlanExecutionResult::Cancelled);
     REQUIRE(adapter.events == QStringList{extractEvent});
+    REQUIRE(metadataProvider.buildCount == 0);
+    REQUIRE(root.exists("Alpha/empty"));
+}
+
+TEST_CASE("AssetWorkPlanExecutor stops before Loose Asset Discovery when cancellation follows metadata build")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Alpha/empty/nested"));
+    REQUIRE(root.mkpath("Alpha/meshes"));
+    createFile(root.filePath("Alpha/meshes/body.nif"));
+
+    RecordedWorkAdapter adapter;
+    RecordedMetadataProvider metadataProvider;
+    metadataProvider.events = &adapter.events;
+    const QString metadataEvent = "metadata:" + root.filePath("Alpha");
+
+    AssetWorkPlanExecutor executor(defaultRequest(tempDir.path()), metadataProvider, adapter);
+    const auto result = executor.execute(AssetWorkPlanExecutionCallbacks{
+        {},
+        [&]() { return adapter.events.contains(metadataEvent); }});
+
+    REQUIRE(result == AssetWorkPlanExecutionResult::Cancelled);
+    REQUIRE(adapter.events == QStringList{metadataEvent});
+    REQUIRE(metadataProvider.buildCount == 1);
     REQUIRE(root.exists("Alpha/empty"));
 }

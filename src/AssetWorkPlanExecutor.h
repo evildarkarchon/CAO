@@ -5,6 +5,7 @@
 #pragma once
 
 #include "AssetWorkPlan.h"
+#include "ModAssetMetadata.h"
 
 #include <functional>
 
@@ -48,8 +49,10 @@ public:
     /*!
      * \brief Executes one loose Asset Work Item.
      * \param workItem The classified loose Asset Work Item from Loose Asset Discovery.
+     * \param metadata Metadata derived from the selected Mods and active Profile.
      */
-    virtual void processLooseAsset(const LooseAssetWorkItem &workItem) = 0;
+    virtual void processLooseAsset(const LooseAssetWorkItem &workItem,
+                                   const ModAssetMetadata &metadata) = 0;
     /*!
      * \brief Executes one archive packing Asset Work Item.
      * \param workItem The archive packing work item from the Asset Work Plan.
@@ -63,9 +66,12 @@ public:
     /*!
      * \brief Creates an executor for one Asset Work Plan request.
      * \param request The selected Mod or Mods and profile/options snapshot used for planning.
+     * \param metadataProvider Builds Mod Asset Metadata after archive extraction has completed.
      * \param adapter The adapter that carries out archive, loose Asset, and archive packing work.
      */
-    AssetWorkPlanExecutor(AssetWorkPlanRequest request, AssetWorkPlanExecutionAdapter &adapter);
+    AssetWorkPlanExecutor(AssetWorkPlanRequest request,
+                          const ModAssetMetadataProvider &metadataProvider,
+                          AssetWorkPlanExecutionAdapter &adapter);
 
     /*!
      * \brief Carries out Asset Work Plan Execution from planning through cleanup.
@@ -83,5 +89,6 @@ private:
                         const QString &currentLabel = {}) const;
 
     AssetWorkPlanRequest _request;
+    const ModAssetMetadataProvider &_metadataProvider;
     AssetWorkPlanExecutionAdapter &_adapter;
 };

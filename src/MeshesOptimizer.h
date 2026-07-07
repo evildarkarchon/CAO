@@ -16,13 +16,19 @@ enum ScanResult
     criticalIssue = 2
 };
 
+enum class MeshAssetRole
+{
+    Regular,
+    Headpart
+};
+
 class MeshesOptimizer final : public QObject
 {
     Q_DECLARE_TR_FUNCTIONS(MeshesOptimizer)
 
 public:
     /*!
-   * \brief Constructor that will read CustomHeadparts.txt and read settings from file
+   * \brief Creates a mesh optimizer from the selected mesh options.
    */
     MeshesOptimizer(bool processHeadparts, int optimizationLevel, bool resaveMeshes);
     /*!
@@ -34,17 +40,18 @@ public:
     /*!
    * \brief Optimize the providen mesh according to its type
    * \param filePath The path of the mesh to optimize
+   * \param role The mesh role derived from Mod Asset Metadata.
    */
-    bool optimize(const QString &filepath);
+    bool optimize(const QString &filepath, MeshAssetRole role);
     /*!
    * \brief Report the optimization that would be made on the file
    * \param filePath The path of the mesh to optimize
+   * \param role The mesh role derived from Mod Asset Metadata.
    */
-    void dryOptimize(const QString &filepath) const;
+    void dryOptimize(const QString &filepath, MeshAssetRole role) const;
 
-    void listHeadparts(const QString &directory);
     /*!
-     * \brief If the mesh references a TGA texture, it will replace it with DDS. 
+     * \brief If the mesh references a TGA texture, it will replace it with DDS.
      * \param file The mesh to process
      */
     bool renameReferencedTexturesExtension(nifly::NifFile &file);
@@ -53,8 +60,6 @@ public:
     bool saveMesh(nifly::NifFile &nif, const QString &filepath) const;
 
 private:
-    QStringList headparts;
-
     bool bMeshesHeadparts;
     bool bMeshesResave;
     int iMeshesOptimizationLevel;

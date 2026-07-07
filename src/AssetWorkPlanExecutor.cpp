@@ -12,8 +12,10 @@
 #include <utility>
 
 AssetWorkPlanExecutor::AssetWorkPlanExecutor(AssetWorkPlanRequest request,
+                                             const ModAssetMetadataProvider &metadataProvider,
                                              AssetWorkPlanExecutionAdapter &adapter)
     : _request(std::move(request))
+    , _metadataProvider(metadataProvider)
     , _adapter(adapter)
 {}
 
@@ -42,6 +44,11 @@ AssetWorkPlanExecutionResult AssetWorkPlanExecutor::execute(
     if (isCancelled(callbacks))
         return AssetWorkPlanExecutionResult::Cancelled;
 
+    const ModAssetMetadata metadata = _metadataProvider.buildForMods(archivePlan.modsToProcess);
+
+    if (isCancelled(callbacks))
+        return AssetWorkPlanExecutionResult::Cancelled;
+
     const auto loosePlan = planner.planLooseAssets(archivePlan.modsToProcess);
     reportProgress(callbacks,
                    AssetWorkPlanExecutionPhase::LooseAssetProcessing,
@@ -56,7 +63,7 @@ AssetWorkPlanExecutionResult AssetWorkPlanExecutor::execute(
         if (isCancelled(callbacks))
             return AssetWorkPlanExecutionResult::Cancelled;
 
-        _adapter.processLooseAsset(asset);
+        _adapter.processLooseAsset(asset, metadata);
         ++completedLooseAssets;
 
         if (isCancelled(callbacks))

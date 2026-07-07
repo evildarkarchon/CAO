@@ -39,3 +39,11 @@ _Avoid_: File scan
 **Asset Work Item**:
 One classified piece of intended asset work inside an Asset Work Plan. It identifies what asset or folder is involved, not the optimization policy used to perform the work.
 _Avoid_: Task, job
+
+**Mod Asset Metadata**:
+Facts CAO derives from selected Mod contents and Profile-provided reference lists to interpret Assets during Asset Work Plan Execution, such as whether a mesh is a headpart.
+_Avoid_: Preparation data, plugin scan results
+
+**Headpart**:
+A mesh Asset used for character head or face parts that CAO treats as a special mesh case during Asset Work Plan Execution.
+_Avoid_: Headpart path, headpart file

@@ -41,6 +41,8 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/ManagerPlanning.h
     ${CMAKE_CURRENT_SOURCE_DIR}/MeshesOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/MeshesOptimizer.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ModAssetMetadata.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ModAssetMetadata.h
     ${CMAKE_CURRENT_SOURCE_DIR}/OptionsCAO.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/OptionsCAO.h
     ${CMAKE_CURRENT_SOURCE_DIR}/PluginsOperations.cpp

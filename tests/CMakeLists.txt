@@ -11,6 +11,7 @@ add_executable(Cathedral_Assets_Optimizer_Tests
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlanExecutor.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/FilesystemOperations.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ManagerPlanning.Tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ModAssetMetadata.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/OptionsCAO.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesFormats.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/AssetWorkPolicy.cpp
@@ -23,8 +24,12 @@ add_executable(Cathedral_Assets_Optimizer_Tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/FilesystemOperations.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/ManagerPlanning.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/ManagerPlanning.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ModAssetMetadata.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ModAssetMetadata.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/OptionsCAO.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/OptionsCAO.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/PluginsOperations.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/PluginsOperations.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Profiles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Profiles.h
 )
@@ -48,20 +53,20 @@ target_compile_features(Cathedral_Assets_Optimizer_Tests PRIVATE cxx_std_20)
 include(Catch)
 catch_discover_tests(Cathedral_Assets_Optimizer_Tests)
 
-find_program(POWERSHELL_EXECUTABLE NAMES pwsh pwsh.exe powershell powershell.exe REQUIRED)
-set(POWERSHELL_TEST_ARGS -NoProfile)
 if(WIN32)
+    find_program(POWERSHELL_EXECUTABLE NAMES pwsh pwsh.exe powershell powershell.exe REQUIRED)
+    set(POWERSHELL_TEST_ARGS -NoProfile)
     list(APPEND POWERSHELL_TEST_ARGS -ExecutionPolicy Bypass)
-endif()
 
-# Visual Studio generators guard add_test() entries by configuration, but the
-# project's canonical CTest command intentionally omits -C. Register this
-# script through a CTest include so it remains available to that command.
-set(POWERSHELL_CTEST_FILE "${CMAKE_CURRENT_BINARY_DIR}/Invoke-VcVars64.Tests.cmake")
-set(POWERSHELL_CTEST_CONTENT "add_test([=[Invoke-VcVars64.Tests]=] [=[${POWERSHELL_EXECUTABLE}]=]")
-foreach(POWERSHELL_TEST_ARG IN LISTS POWERSHELL_TEST_ARGS)
-    string(APPEND POWERSHELL_CTEST_CONTENT " [=[${POWERSHELL_TEST_ARG}]=]")
-endforeach()
-string(APPEND POWERSHELL_CTEST_CONTENT " [=[-File]=] [=[${CMAKE_CURRENT_SOURCE_DIR}/Invoke-VcVars64.Tests.ps1]=])\n")
-file(GENERATE OUTPUT "${POWERSHELL_CTEST_FILE}" CONTENT "${POWERSHELL_CTEST_CONTENT}")
-set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES "${POWERSHELL_CTEST_FILE}")
+    # Visual Studio generators guard add_test() entries by configuration, but the
+    # project's canonical CTest command intentionally omits -C. Register this
+    # script through a CTest include so it remains available to that command.
+    set(POWERSHELL_CTEST_FILE "${CMAKE_CURRENT_BINARY_DIR}/Invoke-VcVars64.Tests.cmake")
+    set(POWERSHELL_CTEST_CONTENT "add_test([=[Invoke-VcVars64.Tests]=] [=[${POWERSHELL_EXECUTABLE}]=]")
+    foreach(POWERSHELL_TEST_ARG IN LISTS POWERSHELL_TEST_ARGS)
+        string(APPEND POWERSHELL_CTEST_CONTENT " [=[${POWERSHELL_TEST_ARG}]=]")
+    endforeach()
+    string(APPEND POWERSHELL_CTEST_CONTENT " [=[-File]=] [=[${CMAKE_CURRENT_SOURCE_DIR}/Invoke-VcVars64.Tests.ps1]=])\n")
+    file(GENERATE OUTPUT "${POWERSHELL_CTEST_FILE}" CONTENT "${POWERSHELL_CTEST_CONTENT}")
+    set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES "${POWERSHELL_CTEST_FILE}")
+endif()

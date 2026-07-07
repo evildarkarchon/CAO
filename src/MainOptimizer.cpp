@@ -12,10 +12,7 @@ MainOptimizer::MainOptimizer(const OptionsCAO &optOptions)
     : _optOptions(optOptions)
     , _meshesOpt(
           MeshesOptimizer(_optOptions.bMeshesHeadparts, optOptions.iMeshesOptimizationLevel, optOptions.bMeshesResave))
-{
-    addHeadparts();
-    addLandscapeTextures();
-}
+{}
 
 void handleBadFile(const QString &path)
 {
@@ -23,28 +20,6 @@ void handleBadFile(const QString &path)
         PLOG_ERROR << QString("%1 was renamed to %2").arg(path, path + ".caobad");
     } else {
         PLOG_ERROR << QString("Please remove %1").arg(path);
-    }
-}
-
-void MainOptimizer::addHeadparts()
-{
-    _meshesOpt.listHeadparts(_optOptions.userPath);
-    if (_optOptions.mode == OptionsCAO::SeveralMods)
-    {
-        const QDir dir(_optOptions.userPath);
-        for (const auto &directory : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
-            _meshesOpt.listHeadparts(dir.filePath(directory));
-    }
-}
-
-void MainOptimizer::addLandscapeTextures()
-{
-    _meshesOpt.listHeadparts(_optOptions.userPath);
-    if (_optOptions.mode == OptionsCAO::SeveralMods)
-    {
-        const QDir dir(_optOptions.userPath);
-        for (const auto &directory : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
-            _meshesOpt.listHeadparts(dir.filePath(directory));
     }
 }
 
@@ -63,7 +38,7 @@ void MainOptimizer::extractArchive(const ArchiveExtractionWorkItem &workItem)
     //TODO if(options.bBsaOptimizeAssets)
 }
 
-void MainOptimizer::processLooseAsset(const LooseAssetWorkItem &workItem)
+void MainOptimizer::processLooseAsset(const LooseAssetWorkItem &workItem, const ModAssetMetadata &metadata)
 {
     try {
         switch (workItem.kind) {
@@ -74,7 +49,9 @@ void MainOptimizer::processLooseAsset(const LooseAssetWorkItem &workItem)
             processTexture(workItem.path, TexturesOptimizer::TGA);
             break;
         case LooseAssetKind::Mesh:
-            processNif(workItem.path);
+            processNif(workItem.path,
+                       metadata.isHeadpartMesh(workItem.path) ? MeshAssetRole::Headpart
+                                                              : MeshAssetRole::Regular);
             break;
         case LooseAssetKind::Animation:
             processHkx(workItem.path);
@@ -172,14 +149,14 @@ void MainOptimizer::processHkx(const QString &file)
         _animOpt.convert(file);
 }
 
-void MainOptimizer::processNif(const QString &file)
+void MainOptimizer::processNif(const QString &file, const MeshAssetRole role)
 {
     if (_optOptions.iMeshesOptimizationLevel == 0)
         return;
 
     if (_optOptions.iMeshesOptimizationLevel >= 1 && _optOptions.bDryRun)
-        _meshesOpt.dryOptimize(file);
+        _meshesOpt.dryOptimize(file, role);
     else if (_optOptions.iMeshesOptimizationLevel >= 1 && !_optOptions.bDryRun)
-        if (!_meshesOpt.optimize(file))
+        if (!_meshesOpt.optimize(file, role))
             handleBadFile(file);
 }

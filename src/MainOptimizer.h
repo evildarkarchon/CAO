@@ -8,6 +8,7 @@
 #include "AssetWorkPlan.h"
 #include "BsaOptimizer.h"
 #include "MeshesOptimizer.h"
+#include "ModAssetMetadata.h"
 #include "OptionsCAO.h"
 #include "TexturesOptimizer.h"
 
@@ -29,8 +30,9 @@ public:
     /*!
      * \brief Processes one planned loose asset work item.
      * \param workItem The classified loose asset work item to execute.
+     * \param metadata Metadata derived from the selected Mods and active Profile.
      */
-    void processLooseAsset(const LooseAssetWorkItem &workItem);
+    void processLooseAsset(const LooseAssetWorkItem &workItem, const ModAssetMetadata &metadata);
     /*!
      * \brief Packs one planned archive target.
      * \param workItem The archive packing work item to execute.
@@ -38,10 +40,7 @@ public:
     void packArchive(const ArchivePackingWorkItem &workItem);
 
   private:
-    void addLandscapeTextures();
-    void addHeadparts();
-
-    void processNif(const QString &file);
+    void processNif(const QString &file, MeshAssetRole role);
     void processTexture(const QString &file, const TexturesOptimizer::TextureType &type);
     void processHkx(const QString &file);
 
