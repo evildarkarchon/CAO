@@ -9,6 +9,7 @@
 #include <QDateTime>
 #include <QFileInfo>
 
+#include <algorithm>
 #include <utility>
 
 AssetWorkPlanExecutor::AssetWorkPlanExecutor(
@@ -41,15 +42,29 @@ AssetWorkPlanExecutionResult AssetWorkPlanExecutor::execute(
   if (isCancelled(callbacks))
     return AssetWorkPlanExecutionResult::Cancelled;
 
-  const ModAssetMetadata metadata =
-      _metadataProvider.buildForMods(archivePlan.modsToProcess);
-
-  if (isCancelled(callbacks))
-    return AssetWorkPlanExecutionResult::Cancelled;
-
   const auto loosePlan = planner.planLooseAssets(archivePlan.modsToProcess);
   reportProgress(callbacks, AssetWorkPlanExecutionPhase::LooseAssetProcessing,
                  0, static_cast<int>(loosePlan.looseAssetsToOptimize.size()));
+
+  ModAssetMetadata metadata;
+  const bool meshWorkPlanned = std::any_of(
+      loosePlan.looseAssetsToOptimize.begin(),
+      loosePlan.looseAssetsToOptimize.end(),
+      [](const LooseAssetWorkItem &asset) {
+        return asset.kind == LooseAssetKind::Mesh;
+      });
+
+  if (meshWorkPlanned) {
+    if (isCancelled(callbacks))
+      return AssetWorkPlanExecutionResult::Cancelled;
+
+    // Headpart metadata is only consumed while processing meshes, and building
+    // it may recursively parse every selected plugin.
+    metadata = _metadataProvider.buildForMods(archivePlan.modsToProcess);
+
+    if (isCancelled(callbacks))
+      return AssetWorkPlanExecutionResult::Cancelled;
+  }
 
   // Large Mods can contain many thousands of Assets, so preserve the existing
   // throttled loose Asset progress cadence instead of reporting every file.

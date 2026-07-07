@@ -114,6 +114,36 @@ TEST_CASE("AssetWorkPlanExecutor runs extraction before post-extraction Loose As
     REQUIRE_FALSE(root.exists("Alpha/empty"));
 }
 
+TEST_CASE("AssetWorkPlanExecutor skips metadata scans for non-mesh loose work")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Alpha/animations"));
+    REQUIRE(root.mkpath("Alpha/textures"));
+
+    createFile(root.filePath("Alpha/animations/idle.hkx"));
+    createFile(root.filePath("Alpha/textures/diffuse.dds"));
+
+    const auto profile = ProfilePlanningSnapshot{true, true, true, true, true, ".bsa"};
+    const auto requested = RequestedAssetWork{false, false, false, true, true};
+    const auto request = AssetWorkPlanRequest{tempDir.path(),
+                                             AssetWorkMode::SeveralMods,
+                                             {},
+                                             AssetWorkPolicy::resolve(requested, profile)};
+    RecordedWorkAdapter adapter;
+    RecordedMetadataProvider metadataProvider;
+
+    AssetWorkPlanExecutor executor(request, metadataProvider, adapter);
+    const auto result = executor.execute();
+
+    REQUIRE(result == AssetWorkPlanExecutionResult::Completed);
+    REQUIRE(metadataProvider.buildCount == 0);
+    REQUIRE(adapter.events.contains("process:" + root.filePath("Alpha/animations/idle.hkx")));
+    REQUIRE(adapter.events.contains("process:" + root.filePath("Alpha/textures/diffuse.dds")));
+}
+
 TEST_CASE("AssetWorkPlanExecutor reports semantic progress")
 {
     QTemporaryDir tempDir;
@@ -133,6 +163,7 @@ TEST_CASE("AssetWorkPlanExecutor reports semantic progress")
         {}});
 
     REQUIRE(result == AssetWorkPlanExecutionResult::Completed);
+    REQUIRE(metadataProvider.buildCount == 0);
     REQUIRE(progress.size() == 4);
     REQUIRE(progress[0].phase == AssetWorkPlanExecutionPhase::ArchiveExtraction);
     REQUIRE(progress[0].completed == 1);
@@ -173,7 +204,7 @@ TEST_CASE("AssetWorkPlanExecutor stops before Loose Asset Discovery when cancell
     REQUIRE(root.exists("Alpha/empty"));
 }
 
-TEST_CASE("AssetWorkPlanExecutor stops before Loose Asset Discovery when cancellation follows metadata build")
+TEST_CASE("AssetWorkPlanExecutor stops before loose asset processing when cancellation follows metadata build")
 {
     QTemporaryDir tempDir;
     REQUIRE(tempDir.isValid());
