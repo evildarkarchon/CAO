@@ -20,6 +20,10 @@ _Avoid_: Excluded folder, skipped directory
 The selected Bethesda game configuration that determines which asset kinds and archive rules CAO applies.
 _Avoid_: Preset
 
+**Asset Work Options**:
+The user selections that request asset work before CAO resolves them against the selected Profile.
+_Avoid_: Settings, UI state, OptionsCAO
+
 **Asset Work Plan**:
 The ordered description of asset work CAO intends for a selected input path, including selected mods, archive extraction, loose asset discovery, loose asset processing, and archive packing. It is a plan, not execution.
 _Avoid_: Processing pipeline, optimization run

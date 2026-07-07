@@ -2,146 +2,166 @@
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+#include "AssetWorkOptionsUiState.h"
 #include "OptionsCAO.h"
 
 #ifdef GUI
-void OptionsCAO::saveToUi(Ui::MainWindow *ui) {
-  // BSA
-  ui->bsaExtractCheckBox->setChecked(bBsaExtract);
-  ui->bsaCreateCheckbox->setChecked(bBsaCreate);
-  ui->bsaDeleteBackupsCheckbox->setChecked(bBsaDeleteBackup);
-  ui->bBsaCreateIncompressible->setChecked(!bBsaMergeIncomp);
-  ui->bBsaCreateTexture->setChecked(!bBsaMergeTexture);
-  ui->bsaCreateDummiesCheckbox->setChecked(bBsaCreateDummies);
-  ui->bsaCompressBsaCheckbox->setChecked(bBsaCompress);
-  ui->bsaDeleteSourceCheckbox->setChecked(bBsaDeleteSource);
+namespace {
+AssetWorkOptionsUiContext contextFromUi(Ui::MainWindow *ui) {
+  return AssetWorkOptionsUiContext{
+      .bsaAvailable = Profiles::bsaEnabled(),
+      .meshesAvailable = Profiles::meshesEnabled(),
+      .animationsAvailable = Profiles::animationsEnabled(),
+      .texturesAvailable = Profiles::texturesEnabled(),
+      .advancedSettingsVisible = ui->advancedSettingsCheckbox->isChecked(),
+      .advancedSettingsEditable = !Profiles::isBaseProfile()};
+}
 
-  // Textures
-  const bool texturesOpt =
-      bTexturesMipmaps || bTexturesCompress || bTexturesNecessary;
-  if (!texturesOpt)
-    ui->texturesGroupBox->setChecked(false);
-  else {
-    ui->texturesGroupBox->setChecked(true);
-    ui->texturesNecessaryOptimizationCheckBox->setChecked(bTexturesNecessary);
-    ui->texturesCompressCheckBox->setChecked(bTexturesCompress);
-    ui->texturesMipmapCheckBox->setChecked(bTexturesMipmaps);
-  }
+void setTabEnabled(Ui::MainWindow *ui, QWidget *tab, const bool enabled) {
+  ui->tabWidget->setTabEnabled(ui->tabWidget->indexOf(tab), enabled);
+}
 
-  // Textures resizing
-  ui->texturesResizingGroupBox->setChecked(bTexturesResizeSize ||
-                                           bTexturesResizeRatio);
+AssetWorkOptionsUiState stateFromUi(Ui::MainWindow *ui) {
+  AssetWorkOptionsUiState state;
 
-  ui->texturesResizingBySizeRadioButton->setChecked(bTexturesResizeSize);
-  ui->texturesResizingBySizeWidth->setValue(
-      static_cast<int>(iTexturesTargetWidth));
-  ui->texturesResizingBySizeHeight->setValue(
-      static_cast<int>(iTexturesTargetHeight));
+  state.dryRun = ui->dryRunCheckBox->isChecked();
+  state.debugLog = ui->actionEnable_debug_log->isChecked();
+  state.userPath = QDir::cleanPath(ui->userPathTextEdit->text());
+  state.mode = ui->modeChooserComboBox->currentData()
+                   .value<OptionsCAO::OptimizationMode>();
 
-  ui->texturesResizingByRatioRadioButton->setChecked(bTexturesResizeRatio);
-  ui->texturesResizingByRatioWidth->setValue(
-      static_cast<int>(iTexturesTargetWidthRatio));
-  ui->texturesResizingByRatioHeight->setValue(
-      static_cast<int>(iTexturesTargetHeightRatio));
+  state.archive.tabEnabled = ui->bsaTab->isEnabled();
+  state.archive.controlsEnabled = ui->bsaBaseGroupBox->isEnabled();
+  state.archive.extract = ui->bsaExtractCheckBox->isChecked();
+  state.archive.create = ui->bsaCreateCheckbox->isChecked();
+  state.archive.deleteBackup = ui->bsaDeleteBackupsCheckbox->isChecked();
+  state.archive.mergeIncompressible =
+      !ui->bBsaCreateIncompressible->isChecked();
+  state.archive.mergeTextures = !ui->bBsaCreateTexture->isChecked();
+  state.archive.createDummies = ui->bsaCreateDummiesCheckbox->isChecked();
+  state.archive.compress = ui->bsaCompressBsaCheckbox->isChecked();
+  state.archive.deleteSource = ui->bsaDeleteSourceCheckbox->isChecked();
 
-  // Meshes
+  state.textures.tabEnabled = ui->texturesTab->isEnabled();
+  state.textures.enabled = ui->texturesGroupBox->isChecked();
+  state.textures.necessary =
+      ui->texturesNecessaryOptimizationCheckBox->isChecked();
+  state.textures.compress = ui->texturesCompressCheckBox->isChecked();
+  state.textures.mipmaps = ui->texturesMipmapCheckBox->isChecked();
+  state.textures.resizingEnabled = ui->texturesResizingGroupBox->isChecked();
+  state.textures.resizeBySize =
+      ui->texturesResizingBySizeRadioButton->isChecked();
+  state.textures.targetWidth =
+      static_cast<size_t>(ui->texturesResizingBySizeWidth->value());
+  state.textures.targetHeight =
+      static_cast<size_t>(ui->texturesResizingBySizeHeight->value());
+  state.textures.resizeByRatio =
+      ui->texturesResizingByRatioRadioButton->isChecked();
+  state.textures.targetWidthRatio =
+      static_cast<uint>(ui->texturesResizingByRatioWidth->value());
+  state.textures.targetHeightRatio =
+      static_cast<uint>(ui->texturesResizingByRatioHeight->value());
 
-  ui->meshesGroupBox->setChecked(true);
-  switch (iMeshesOptimizationLevel) {
-  case 0:
-    ui->meshesGroupBox->setChecked(false);
-    break;
-  case 1:
-    ui->meshesNecessaryOptimizationRadioButton->setChecked(true);
-    break;
-  case 2:
-    ui->meshesMediumOptimizationRadioButton->setChecked(true);
-    break;
-  case 3:
-    ui->meshesFullOptimizationRadioButton->setChecked(true);
-    break;
-  }
+  state.meshes.tabEnabled = ui->meshesTab->isEnabled();
+  state.meshes.optimizationEnabled = ui->meshesGroupBox->isChecked();
+  if (ui->meshesNecessaryOptimizationRadioButton->isChecked())
+    state.meshes.optimizationLevel = 1;
+  else if (ui->meshesMediumOptimizationRadioButton->isChecked())
+    state.meshes.optimizationLevel = 2;
+  else if (ui->meshesFullOptimizationRadioButton->isChecked())
+    state.meshes.optimizationLevel = 3;
+  state.meshes.mediumAndFullOptimizationEnabled =
+      ui->meshesMediumOptimizationRadioButton->isEnabled() &&
+      ui->meshesFullOptimizationRadioButton->isEnabled();
+  state.meshes.processHeadparts = ui->meshesHeadpartsCheckBox->isChecked();
+  state.meshes.resave = ui->meshesResaveCheckBox->isChecked();
 
-  ui->meshesResaveCheckBox->setChecked(bMeshesResave);
-  ui->meshesHeadpartsCheckBox->setChecked(bMeshesHeadparts);
+  state.animations.tabEnabled = ui->AnimationsTab->isEnabled();
+  state.animations.optimize =
+      ui->animationsNecessaryOptimizationCheckBox->isChecked();
 
-  // Animations
-  ui->animationsNecessaryOptimizationCheckBox->setChecked(
-      bAnimationsOptimization);
+  state.advanced.visible = ui->bsaAdvancedGroupBox->isVisible();
+  state.advanced.editable = ui->bsaAdvancedGroupBox->isEnabled();
 
-  // Log level
-  ui->actionEnable_debug_log->setChecked(bDebugLog);
+  return state;
+}
 
-  // General and GUI
-  ui->dryRunCheckBox->setChecked(bDryRun);
+void applyStateToUi(Ui::MainWindow *ui, const AssetWorkOptionsUiState &state) {
+  setTabEnabled(ui, ui->AnimationsTab, state.animations.tabEnabled);
+  setTabEnabled(ui, ui->meshesTab, state.meshes.tabEnabled);
+  setTabEnabled(ui, ui->bsaTab, state.archive.tabEnabled);
+  setTabEnabled(ui, ui->texturesTab, state.textures.tabEnabled);
+
+  ui->dryRunCheckBox->setChecked(state.dryRun);
+  ui->actionEnable_debug_log->setChecked(state.debugLog);
   ui->modeChooserComboBox->setCurrentIndex(
-      ui->modeChooserComboBox->findData(mode));
-  ui->userPathTextEdit->setText(userPath);
+      ui->modeChooserComboBox->findData(state.mode));
+  ui->userPathTextEdit->setText(state.userPath);
+
+  ui->bsaBaseGroupBox->setEnabled(state.archive.controlsEnabled);
+  ui->bsaExtractCheckBox->setEnabled(state.archive.controlsEnabled);
+  ui->bsaCreateCheckbox->setEnabled(state.archive.controlsEnabled);
+  ui->bsaDeleteBackupsCheckbox->setEnabled(state.archive.controlsEnabled);
+  ui->bsaExtractCheckBox->setChecked(state.archive.extract);
+  ui->bsaCreateCheckbox->setChecked(state.archive.create);
+  ui->bsaDeleteBackupsCheckbox->setChecked(state.archive.deleteBackup);
+  ui->bBsaCreateIncompressible->setChecked(!state.archive.mergeIncompressible);
+  ui->bBsaCreateTexture->setChecked(!state.archive.mergeTextures);
+  ui->bsaCreateDummiesCheckbox->setChecked(state.archive.createDummies);
+  ui->bsaCompressBsaCheckbox->setChecked(state.archive.compress);
+  ui->bsaDeleteSourceCheckbox->setChecked(state.archive.deleteSource);
+
+  ui->texturesGroupBox->setChecked(state.textures.enabled);
+  ui->texturesNecessaryOptimizationCheckBox->setChecked(
+      state.textures.necessary);
+  ui->texturesCompressCheckBox->setChecked(state.textures.compress);
+  ui->texturesMipmapCheckBox->setChecked(state.textures.mipmaps);
+  ui->texturesResizingGroupBox->setChecked(state.textures.resizingEnabled);
+  ui->texturesResizingBySizeRadioButton->setChecked(
+      state.textures.resizeBySize);
+  ui->texturesResizingBySizeWidth->setValue(
+      static_cast<int>(state.textures.targetWidth));
+  ui->texturesResizingBySizeHeight->setValue(
+      static_cast<int>(state.textures.targetHeight));
+  ui->texturesResizingByRatioRadioButton->setChecked(
+      state.textures.resizeByRatio);
+  ui->texturesResizingByRatioWidth->setValue(
+      static_cast<int>(state.textures.targetWidthRatio));
+  ui->texturesResizingByRatioHeight->setValue(
+      static_cast<int>(state.textures.targetHeightRatio));
+
+  ui->meshesGroupBox->setChecked(state.meshes.optimizationEnabled);
+  ui->meshesNecessaryOptimizationRadioButton->setChecked(
+      state.meshes.optimizationLevel == 1);
+  ui->meshesMediumOptimizationRadioButton->setChecked(
+      state.meshes.optimizationLevel == 2);
+  ui->meshesFullOptimizationRadioButton->setChecked(
+      state.meshes.optimizationLevel == 3);
+  ui->meshesMediumOptimizationRadioButton->setEnabled(
+      state.meshes.mediumAndFullOptimizationEnabled);
+  ui->meshesFullOptimizationRadioButton->setEnabled(
+      state.meshes.mediumAndFullOptimizationEnabled);
+  ui->meshesResaveCheckBox->setChecked(state.meshes.resave);
+  ui->meshesHeadpartsCheckBox->setChecked(state.meshes.processHeadparts);
+
+  ui->animationsNecessaryOptimizationCheckBox->setChecked(
+      state.animations.optimize);
+
+  QWidgetList advancedSettings = {
+      ui->bsaAdvancedGroupBox, ui->meshesVeryAdvancedGroupBox,
+      ui->texturesAdvancedGroupBox, ui->animationsAdvancedGroupBox};
+  for (auto *window : advancedSettings) {
+    window->setVisible(state.advanced.visible);
+    window->setDisabled(!state.advanced.editable);
+  }
+}
+} // namespace
+
+void OptionsCAO::saveToUi(Ui::MainWindow *ui) {
+  applyStateToUi(ui, AssetWorkOptionsUi::present(*this, contextFromUi(ui)));
 }
 
 void OptionsCAO::readFromUi(Ui::MainWindow *ui) {
-  // BSA
-  const bool bsaEnabled =
-      ui->bsaTab->isEnabled() && ui->bsaBaseGroupBox->isEnabled();
-  bBsaExtract = bsaEnabled && ui->bsaExtractCheckBox->isChecked();
-  bBsaCreate = bsaEnabled && ui->bsaCreateCheckbox->isChecked();
-  bBsaDeleteBackup = bsaEnabled && ui->bsaDeleteBackupsCheckbox->isChecked();
-  bBsaMergeIncomp = bsaEnabled && !ui->bBsaCreateIncompressible->isChecked();
-  bBsaMergeTexture = bsaEnabled && !ui->bBsaCreateTexture->isChecked();
-  bBsaCreateDummies = bsaEnabled && ui->bsaCreateDummiesCheckbox->isChecked();
-  bBsaCompress = bsaEnabled && ui->bsaCompressBsaCheckbox->isChecked();
-  bBsaDeleteSource = bsaEnabled && ui->bsaDeleteSourceCheckbox->isChecked();
-
-  // Textures
-  const bool texturesEnabled =
-      ui->texturesGroupBox->isChecked() && ui->texturesTab->isEnabled();
-  bTexturesNecessary =
-      texturesEnabled && ui->texturesNecessaryOptimizationCheckBox->isChecked();
-  bTexturesMipmaps = texturesEnabled && ui->texturesMipmapCheckBox->isChecked();
-  bTexturesCompress =
-      texturesEnabled && ui->texturesCompressCheckBox->isChecked();
-
-  // Textures resizing
-  const bool texturesResizing =
-      ui->texturesResizingGroupBox->isChecked() && ui->texturesTab->isEnabled();
-  bTexturesResizeSize =
-      ui->texturesResizingBySizeRadioButton->isChecked() && texturesResizing;
-  iTexturesTargetWidth =
-      static_cast<size_t>(ui->texturesResizingBySizeWidth->value());
-  iTexturesTargetHeight =
-      static_cast<size_t>(ui->texturesResizingBySizeHeight->value());
-
-  bTexturesResizeRatio =
-      ui->texturesResizingByRatioRadioButton->isChecked() && texturesResizing;
-  iTexturesTargetWidthRatio =
-      static_cast<size_t>(ui->texturesResizingByRatioWidth->value());
-  iTexturesTargetHeightRatio =
-      static_cast<size_t>(ui->texturesResizingByRatioHeight->value());
-
-  // Meshes base
-  const bool meshesEnabled = ui->meshesTab->isEnabled();
-  if (ui->meshesNecessaryOptimizationRadioButton->isChecked())
-    iMeshesOptimizationLevel = 1;
-  else if (ui->meshesMediumOptimizationRadioButton->isChecked())
-    iMeshesOptimizationLevel = 2;
-  else if (ui->meshesFullOptimizationRadioButton->isChecked())
-    iMeshesOptimizationLevel = 3;
-  if (!ui->meshesGroupBox->isChecked() || !meshesEnabled)
-    iMeshesOptimizationLevel = 0;
-
-  // Meshes advanced
-  bMeshesHeadparts = meshesEnabled && ui->meshesHeadpartsCheckBox->isChecked();
-  bMeshesResave = meshesEnabled && ui->meshesResaveCheckBox->isChecked();
-
-  // Animations
-  bAnimationsOptimization =
-      ui->AnimationsTab->isEnabled() &&
-      ui->animationsNecessaryOptimizationCheckBox->isChecked();
-
-  // General
-  bDryRun = ui->dryRunCheckBox->isChecked();
-  userPath = QDir::cleanPath(ui->userPathTextEdit->text());
-  mode = ui->modeChooserComboBox->currentData().value<OptimizationMode>();
-  bDebugLog = ui->actionEnable_debug_log->isChecked();
+  AssetWorkOptionsUi::capture(stateFromUi(ui), *this);
 }
 #endif

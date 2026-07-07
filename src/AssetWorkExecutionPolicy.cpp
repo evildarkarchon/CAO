@@ -27,6 +27,16 @@ btu::bsa::Settings currentArchiveSettings() {
 std::vector<std::u8string> currentFilesToNotPack() {
   QFile &&filesToNotPackFile = Profiles::getFile(FilesToNotPackFile);
 
+  if (!filesToNotPackFile.exists()) {
+    PLOG_ERROR << "FilesToNotPack.txt not found. This can cause a number of "
+                  "issues. For "
+                  "example, for Skyrim, "
+                  "animations will be packed to BSA, preventing them from "
+                  "being detected "
+                  "by FNIS and Nemesis.";
+    return {};
+  }
+
   auto lines =
       FilesystemOperations::readFile(filesToNotPackFile, [](QString &line) {
         line = QDir::toNativeSeparators(line);
@@ -39,12 +49,10 @@ std::vector<std::u8string> currentFilesToNotPack() {
         btu::common::as_utf8_string(std::move(line).toStdString()));
 
   if (filesToNotPack.empty()) {
-    PLOG_ERROR << "FilesToNotPack.txt not found. This can cause a number of "
-                  "issues. For "
-                  "example, for Skyrim, "
+    PLOG_ERROR << "FilesToNotPack.txt is empty or only contains comments. This "
+                  "can cause a number of issues. For example, for Skyrim, "
                   "animations will be packed to BSA, preventing them from "
-                  "being detected "
-                  "by FNIS and Nemesis.";
+                  "being detected by FNIS and Nemesis.";
   }
 
   return filesToNotPack;

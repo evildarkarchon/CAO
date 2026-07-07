@@ -233,39 +233,28 @@ bool TexturesOptimizer::optimize(const std::optional<size_t> &tWidth,
 
 void TexturesOptimizer::dryOptimize(const std::optional<size_t> &tWidth,
                                     const std::optional<size_t> &tHeight) {
-  const size_t newWidth = tWidth.has_value() ? tWidth.value() : _info.width;
-  const size_t newHeight = tHeight.has_value() ? tHeight.value() : _info.height;
-
-  const bool needsResize =
-      _policy.necessaryOptimization &&
-      (newHeight != _info.height || newWidth != _info.width);
-
-  const bool needsConversion =
-      (_policy.necessaryOptimization && (isIncompatible() || _type == TGA)) ||
-      (_policy.compress && canBeCompressed() &&
-       _info.format != _policy.outputFormat);
-
-  const bool needsMipMaps =
-      _policy.mipmaps && _info.mipLevels != calculateOptimalMipMapsNumber() &&
-      canHaveMipMaps();
+  const auto options =
+      processArguments(_policy.necessaryOptimization, _policy.compress,
+                       _policy.mipmaps, tWidth, tHeight);
 
   PLOG_INFO << "Analyzing texture: " << _name;
 
-  if (!needsConversion && !needsMipMaps && !needsResize) {
+  if (!options.bNeedsCompress && !options.bNeedsMipmaps &&
+      !options.bNeedsResize) {
     PLOG_VERBOSE << "This texture does not need optimization.";
   }
 
   // Fitting to a power of two or resizing
-  if (needsResize) {
+  if (options.bNeedsResize) {
     PLOG_VERBOSE << "This texture would be resized.";
   }
 
-  if (needsMipMaps) {
+  if (options.bNeedsMipmaps) {
     PLOG_VERBOSE << "This texture would have mipmaps generated.";
   }
 
   // Converting or compressing to the new format
-  if (needsConversion) {
+  if (options.bNeedsCompress) {
     PLOG_VERBOSE << "This texture would be converted to format: "
                  << dxgiFormatToString(_policy.outputFormat);
   }

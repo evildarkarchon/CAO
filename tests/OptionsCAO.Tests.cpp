@@ -247,6 +247,15 @@ TEST_CASE("OptionsCAO texture target-size validation follows the current evennes
     options.iTexturesTargetHeightRatio = 5;
     REQUIRE(options.isValid().isEmpty());
 
+    options.iTexturesTargetWidthRatio = 0;
+    REQUIRE(options.isValid() == "Textures target ratios have to be greater than zero");
+
+    options.iTexturesTargetWidthRatio = 3;
+    options.iTexturesTargetHeightRatio = 0;
+    REQUIRE(options.isValid() == "Textures target ratios have to be greater than zero");
+
+    options.iTexturesTargetHeightRatio = 5;
+
     options.iTexturesTargetWidth = 1025;
     options.iTexturesTargetHeight = 1024;
     REQUIRE(options.isValid() == "Textures target size has to be a power of two");

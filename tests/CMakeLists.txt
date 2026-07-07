@@ -2,6 +2,7 @@ find_package(Catch2 CONFIG REQUIRED)
 
 add_executable(Cathedral_Assets_Optimizer_Tests
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkExecutionPolicy.Tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptionsUiState.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPolicy.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlan.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlanExecutor.Tests.cpp

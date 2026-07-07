@@ -28,6 +28,8 @@ set(CMAKE_AUTORCC ON)
 set(CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkExecutionPolicy.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkExecutionPolicy.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptionsUiState.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptionsUiState.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPolicy.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPolicy.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlan.cpp

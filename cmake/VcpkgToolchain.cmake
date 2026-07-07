@@ -1,7 +1,13 @@
 get_property(_cao_vcpkg_in_try_compile GLOBAL PROPERTY IN_TRY_COMPILE)
-if(_cao_vcpkg_in_try_compile AND DEFINED CAO_RESOLVED_VCPKG_ROOT AND
-   NOT "${CAO_RESOLVED_VCPKG_ROOT}" STREQUAL "")
-  file(TO_CMAKE_PATH "${CAO_RESOLVED_VCPKG_ROOT}" _cao_vcpkg_root)
+set(_cao_resolved_vcpkg_root "")
+if(DEFINED CAO_RESOLVED_VCPKG_ROOT AND NOT "${CAO_RESOLVED_VCPKG_ROOT}" STREQUAL "")
+  set(_cao_resolved_vcpkg_root "${CAO_RESOLVED_VCPKG_ROOT}")
+elseif(NOT "$ENV{CAO_RESOLVED_VCPKG_ROOT}" STREQUAL "")
+  set(_cao_resolved_vcpkg_root "$ENV{CAO_RESOLVED_VCPKG_ROOT}")
+endif()
+
+if(_cao_vcpkg_in_try_compile AND NOT "${_cao_resolved_vcpkg_root}" STREQUAL "")
+  file(TO_CMAKE_PATH "${_cao_resolved_vcpkg_root}" _cao_vcpkg_root)
   set(_cao_vcpkg_toolchain "${_cao_vcpkg_root}/scripts/buildsystems/vcpkg.cmake")
   if(EXISTS "${_cao_vcpkg_toolchain}")
     include("${_cao_vcpkg_toolchain}")
@@ -77,6 +83,7 @@ endif()
 
 set(CAO_RESOLVED_VCPKG_ROOT "${_cao_vcpkg_root}" CACHE PATH "Resolved vcpkg root used by the repository toolchain wrapper" FORCE)
 set(VCPKG_ROOT "${_cao_vcpkg_root}" CACHE PATH "Resolved vcpkg root" FORCE)
+set(ENV{CAO_RESOLVED_VCPKG_ROOT} "${_cao_vcpkg_root}")
 set(ENV{VCPKG_ROOT} "${_cao_vcpkg_root}")
 set(ENV{VCPKG_INSTALLATION_ROOT} "${_cao_vcpkg_root}")
 

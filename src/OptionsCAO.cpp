@@ -155,10 +155,12 @@ void OptionsCAO::parseArguments(const QStringList &args) {
 
   parser.process(args);
 
-  const QString &path = QDir::cleanPath(parser.positionalArguments().at(0));
+  const QStringList positionalArguments = parser.positionalArguments();
+
+  const QString path = QDir::cleanPath(positionalArguments.at(0));
   userPath = path;
 
-  const QString readMode = parser.positionalArguments().at(1);
+  const QString readMode = positionalArguments.at(1);
   if (readMode == "om")
     mode = SingleMod;
   else if (readMode == "sm")
@@ -166,7 +168,7 @@ void OptionsCAO::parseArguments(const QStringList &args) {
   else
     throw std::runtime_error("Invalid argument for mode");
 
-  const QString &readGame = parser.positionalArguments().at(2);
+  const QString readGame = positionalArguments.at(2);
   Profiles::setCurrentProfile(readGame);
 
   bDryRun = parser.isSet("dr");
@@ -211,6 +213,10 @@ QString OptionsCAO::isValid() const {
 
   if (iTexturesTargetWidth % 2 != 0 || iTexturesTargetHeight % 2 != 0)
     return ("Textures target size has to be a power of two");
+
+  if (bTexturesResizeRatio &&
+      (iTexturesTargetWidthRatio == 0 || iTexturesTargetHeightRatio == 0))
+    return "Textures target ratios have to be greater than zero";
 
   return QString();
 }

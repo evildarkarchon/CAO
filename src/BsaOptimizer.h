@@ -46,7 +46,8 @@ private:
    * are compared. If the size is the same, the current bsa is removed.
    * Otherwise, the bak file is also renamed.
    * \param bsaPath The BSA to backup
-   * \return a QString containing the name of the backup-ed bsa
+   * \return a QString containing the name of the backup-ed bsa, or an empty
+   * QString if the backup could not be created.
    */
   QString backup(const QString &bsaPath) const;
   /*!

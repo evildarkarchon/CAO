@@ -7,8 +7,17 @@
 #include "PluginsOperations.h"
 
 void BSAOptimizer::extract(QString bsaPath, const bool deleteBackup) const {
-  if (!deleteBackup)
-    bsaPath = backup(bsaPath);
+  if (!deleteBackup) {
+    const QString backupPath = backup(bsaPath);
+    if (backupPath.isEmpty()) {
+      PLOG_ERROR << "BSA extraction skipped because backup could not be "
+                    "created for: " +
+                        bsaPath;
+      return;
+    }
+
+    bsaPath = backupPath;
+  }
 
   PLOG_VERBOSE << bsaPath;
 
@@ -96,7 +105,7 @@ void BSAOptimizer::packAll(const QString &folderPath,
       }
 
     } catch (const std::exception &e) {
-      PLOG_ERROR << QString("An error occurred while packing BSAs: \n%2")
+      PLOG_ERROR << QString("An error occurred while packing BSAs: \n%1")
                         .arg(e.what());
     }
   }
@@ -119,7 +128,11 @@ QString BSAOptimizer::backup(const QString &bsaPath) const {
     bsaBackupFile.setFileName(bsaBackupFile.fileName() + ".bak");
   }
 
-  QFile::rename(bsaPath, bsaBackupFile.fileName());
+  if (!QFile::rename(bsaPath, bsaBackupFile.fileName())) {
+    PLOG_ERROR << "Failed to backup BSA : " << bsaPath << " to "
+               << bsaBackupFile.fileName();
+    return {};
+  }
 
   PLOG_VERBOSE << "Backuping BSA : " << bsaPath << " to "
                << bsaBackupFile.fileName();

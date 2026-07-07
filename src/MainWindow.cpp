@@ -45,15 +45,11 @@ MainWindow::MainWindow() : _ui(new Ui::MainWindow) {
   // Connecting widgets
   connect(_ui->dryRunCheckBox, &QCheckBox::clicked, this,
           [&](const bool &checked) {
-            // Disabling BSA options if dry run is enabled
-            _ui->bsaBaseGroupBox->setDisabled(checked);
-            _ui->bsaExtractCheckBox->setDisabled(checked);
-            _ui->bsaCreateCheckbox->setDisabled(checked);
-            _ui->bsaDeleteBackupsCheckbox->setDisabled(checked);
-
-            _ui->bsaExtractCheckBox->setChecked(false);
-            _ui->bsaCreateCheckbox->setChecked(false);
-            _ui->bsaDeleteBackupsCheckbox->setChecked(false);
+            // Re-present through the Asset Work Options state module so click
+            // behavior matches initial load and Profile changes.
+            _options.readFromUi(_ui);
+            _options.bDryRun = checked;
+            _options.saveToUi(_ui);
           });
 
   connect(_ui->advancedSettingsCheckbox, &QCheckBox::clicked, this,
@@ -78,13 +74,13 @@ MainWindow::MainWindow() : _ui(new Ui::MainWindow) {
                 (_ui->modeChooserComboBox->currentData() ==
                  OptionsCAO::SeveralMods);
 
-            // Disabling some meshes options when several mods mode is enabled
-            _ui->meshesMediumOptimizationRadioButton->setDisabled(
-                severalModsEnabled);
-            _ui->meshesFullOptimizationRadioButton->setDisabled(
-                severalModsEnabled);
-            _ui->meshesNecessaryOptimizationRadioButton->setChecked(
-                severalModsEnabled);
+            // Re-present through the Asset Work Options state module so mode
+            // constraints are identical for clicks and loaded settings.
+            _options.readFromUi(_ui);
+            _options.mode =
+                _ui->modeChooserComboBox->currentData()
+                    .value<OptionsCAO::OptimizationMode>();
+            _options.saveToUi(_ui);
 
             if (severalModsEnabled) {
               this->showTutorialWindow(
@@ -340,29 +336,12 @@ void MainWindow::setGameMode(const QString &mode) {
   Profiles::getInstance().saveToUi(_ui);
   loadUi();
 
-  const int &animTabIndex = _ui->tabWidget->indexOf(_ui->AnimationsTab);
-  const int &meshesTabIndex = _ui->tabWidget->indexOf(_ui->meshesTab);
-  const int &bsaTabIndex = _ui->tabWidget->indexOf(_ui->bsaTab);
-  const int &TexturesTabIndex = _ui->tabWidget->indexOf(_ui->texturesTab);
-
-  _ui->tabWidget->setTabEnabled(animTabIndex, Profiles::animationsEnabled());
-  _ui->tabWidget->setTabEnabled(meshesTabIndex, Profiles::meshesEnabled());
-  _ui->tabWidget->setTabEnabled(bsaTabIndex, Profiles::bsaEnabled());
-  _ui->tabWidget->setTabEnabled(TexturesTabIndex, Profiles::texturesEnabled());
-
-  setAdvancedSettingsEnabled(_ui->advancedSettingsCheckbox->isChecked());
+  _options.saveToUi(_ui);
 }
 
 void MainWindow::setAdvancedSettingsEnabled(const bool &value) {
-  QWidgetList advancedSettings = {
-      _ui->bsaAdvancedGroupBox, _ui->meshesVeryAdvancedGroupBox,
-      _ui->texturesAdvancedGroupBox, _ui->animationsAdvancedGroupBox};
-
-  const bool readOnly = Profiles::isBaseProfile();
-  for (auto &window : advancedSettings) {
-    window->setVisible(value);
-    window->setDisabled(readOnly);
-  }
+  _ui->advancedSettingsCheckbox->setChecked(value);
+  _options.saveToUi(_ui);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {

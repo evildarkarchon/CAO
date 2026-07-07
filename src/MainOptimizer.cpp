@@ -19,11 +19,13 @@ void handleBadFile(const QString &path) {
 }
 
 void MainOptimizer::extractArchive(const ArchiveExtractionWorkItem &workItem) {
-  if (_executionPolicy.dryRun)
-    return; // TODO if "dry run" run dry run on the assets in the BSA
-
   const QString &file = workItem.path;
   if (QFileInfo(file).isFile()) {
+    if (_executionPolicy.dryRun) {
+      PLOG_INFO << file + " would be extracted from BSA.";
+      return;
+    }
+
     PLOG_INFO << "BSA found ! Extracting...(this may take a long time, do not "
                  "force close the program): " +
                      file;
@@ -82,10 +84,18 @@ void MainOptimizer::processTexture(const QString &file,
   std::optional<size_t> height;
 
   if (_executionPolicy.texture.resizeByRatio) {
-    width =
-        _texturesOpt.getInfo().width / _executionPolicy.texture.targetWidthRatio;
-    height =
-        _texturesOpt.getInfo().height / _executionPolicy.texture.targetHeightRatio;
+    if (_executionPolicy.texture.targetWidthRatio == 0 ||
+        _executionPolicy.texture.targetHeightRatio == 0) {
+      PLOG_ERROR << "Cannot resize texture by ratio because target ratios must "
+                    "be greater than zero: " +
+                        file;
+      return;
+    }
+
+    width = _texturesOpt.getInfo().width /
+            _executionPolicy.texture.targetWidthRatio;
+    height = _texturesOpt.getInfo().height /
+             _executionPolicy.texture.targetHeightRatio;
   } else if (_executionPolicy.texture.resizeBySize) {
     width = _executionPolicy.texture.targetWidth;
     height = _executionPolicy.texture.targetHeight;

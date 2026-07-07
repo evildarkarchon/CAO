@@ -148,8 +148,9 @@ void MeshesOptimizer::dryOptimize(const QString &filepath,
       }
       break;
     case criticalIssue:
-      PLOG_INFO << filepath +
-                       " would be optimized due to necessary optimization";
+      if (_policy.optimizationLevel >= 1)
+        PLOG_INFO << filepath +
+                         " would be optimized due to necessary optimization";
       break;
     }
   }
