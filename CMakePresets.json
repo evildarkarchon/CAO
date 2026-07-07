@@ -1,8 +1,8 @@
 {
   "version": 3,
   "cmakeMinimumRequired": {
-    "major": 3,
-    "minor": 24,
+    "major": 4,
+    "minor": 2,
     "patch": 0
   },
   "configurePresets": [
@@ -41,6 +41,10 @@
         "CMAKE_TOOLCHAIN_FILE": {
           "type": "FILEPATH",
           "value": "${sourceDir}/cmake/VcpkgToolchain.cmake"
+        },
+        "VCPKG_MANIFEST_FEATURES": {
+          "type": "STRING",
+          "value": "tests"
         },
         "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": {
           "type": "BOOL",
@@ -89,10 +93,6 @@
         "CMAKE_EXPORT_COMPILE_COMMANDS": {
           "type": "BOOL",
           "value": "ON"
-        },
-        "VCPKG_MANIFEST_FEATURES": {
-          "type": "STRING",
-          "value": "tests"
         },
         "VCPKG_TARGET_TRIPLET": {
           "type": "STRING",

@@ -72,7 +72,7 @@ public:
   /*!
    * \brief The optimization mode
    */
-  enum OptimizationMode { SingleMod = 0, SeveralMods = 1 } mode;
+  enum OptimizationMode { SingleMod = 0, SeveralMods = 1 } mode = SingleMod;
 
   Q_ENUM(OptimizationMode)
 

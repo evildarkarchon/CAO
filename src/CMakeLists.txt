@@ -13,15 +13,19 @@ find_package(Qt5 COMPONENTS Core Widgets REQUIRED)
 find_package(Qt5LinguistTools REQUIRED)
 
 #Setting GUI
-#Comment out the next lines to create a CLI version instead (untested)
-add_compile_definitions(GUI)
+#Comment out the next line to create a CLI version instead (untested)
 set(GUI true)
+
+# Instruct CMake to run moc automatically when needed
+set(CMAKE_AUTOMOC ON)
+# Create code from a list of Qt designer ui files
+set(CMAKE_AUTOUIC ON)
+#Ressources
+set(CMAKE_AUTORCC ON)
 
 #SOURCES
 
-set(SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/AnimationsOptimizer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/AnimationsOptimizer.h
+set(CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkExecutionPolicy.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkExecutionPolicy.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPolicy.cpp
@@ -30,19 +34,11 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlan.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlanExecutor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlanExecutor.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/BSAOptimizer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/BSAOptimizer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/FilesystemOperations.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/FilesystemOperations.h
     ${CMAKE_CURRENT_SOURCE_DIR}/Logger.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/MainOptimizer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/MainOptimizer.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Manager.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Manager.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ManagerPlanning.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ManagerPlanning.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/MeshesOptimizer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/MeshesOptimizer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ModAssetMetadata.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ModAssetMetadata.h
     ${CMAKE_CURRENT_SOURCE_DIR}/OptionsCAO.cpp
@@ -52,6 +48,22 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Profiles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Profiles.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesFormats.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/pch.h
+    )
+
+set(APP_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/AnimationsOptimizer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AnimationsOptimizer.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/BsaOptimizer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/BsaOptimizer.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/MainOptimizer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/MainOptimizer.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/Manager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Manager.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/MeshesOptimizer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/MeshesOptimizer.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/OptionsCAOUi.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ProfilesUi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesOptimizer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
@@ -60,7 +72,7 @@ set(SOURCES
 
 #Ui
 if(GUI)
-    list (APPEND SOURCES
+    list (APPEND APP_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/MainWindow.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/MainWindow.h
         ${CMAKE_CURRENT_SOURCE_DIR}/MainWindow.ui
@@ -90,7 +102,7 @@ set(TS_FILES
     )
 
 message("Updating translations files")
-qt5_create_translation(QM_FILES ${TS_FILES} ${SOURCES})
+qt5_create_translation(QM_FILES ${TS_FILES} ${CORE_SOURCES} ${APP_SOURCES})
 
 #plog
 message("Adding Plog library")
@@ -103,22 +115,24 @@ find_package(nifly CONFIG REQUIRED)
 # DirectXTex
 find_package(directxtex CONFIG REQUIRED)
 
-# Instruct CMake to run moc automatically when needed
-set(CMAKE_AUTOMOC ON)
-# Create code from a list of Qt designer ui files
-set(CMAKE_AUTOUIC ON)
-#Ressources
-set(CMAKE_AUTORCC ON)
-
-
 #Build
-message("Adding CAO.exe")
-add_executable(Cathedral_Assets_Optimizer WIN32 ${SOURCES} ${RESOURCES} ${QM_FILES})
-#Windows 7 compatibility
-target_link_libraries(Cathedral_Assets_Optimizer PRIVATE
+message("Adding CAO core library")
+add_library(Cathedral_Assets_Optimizer_Core STATIC ${CORE_SOURCES})
+target_link_libraries(Cathedral_Assets_Optimizer_Core PUBLIC
     Qt5::Core Qt5::Widgets
     nifly Microsoft::DirectXTex btu::bethutil)
-target_include_directories(Cathedral_Assets_Optimizer PRIVATE ${PLOG_INCLUDE_DIRS})
+target_include_directories(Cathedral_Assets_Optimizer_Core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${PLOG_INCLUDE_DIRS})
+target_precompile_headers(Cathedral_Assets_Optimizer_Core PRIVATE "pch.h")
+target_compile_features(Cathedral_Assets_Optimizer_Core PUBLIC cxx_std_20)
+
+message("Adding CAO.exe")
+add_executable(Cathedral_Assets_Optimizer WIN32 ${APP_SOURCES} ${RESOURCES} ${QM_FILES})
+#Windows 7 compatibility
+target_compile_definitions(Cathedral_Assets_Optimizer PRIVATE GUI)
+target_link_libraries(Cathedral_Assets_Optimizer PRIVATE
+    Cathedral_Assets_Optimizer_Core)
 
 # PCH
 target_precompile_headers(Cathedral_Assets_Optimizer PRIVATE "pch.h")

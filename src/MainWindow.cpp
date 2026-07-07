@@ -284,7 +284,8 @@ void MainWindow::initProcess() {
     _caoProcess = std::make_unique<Manager>(_options);
     connect(&*_caoProcess, &Manager::progressBarTextChanged, this,
             &MainWindow::readProgress);
-    connect(&logTimer, &QTimer::timeout, this, &MainWindow::updateLog);
+    connect(&logTimer, &QTimer::timeout, this, &MainWindow::updateLog,
+            Qt::UniqueConnection);
     logTimer.start(5000); // Refresh log every 5 seconds
     connect(&*_caoProcess, &Manager::end, this, &MainWindow::endProcess);
     QtConcurrent::run(&*_caoProcess, &Manager::runOptimization);
@@ -299,6 +300,8 @@ void MainWindow::initProcess() {
 }
 
 void MainWindow::endProcess() {
+  logTimer.stop();
+
   _ui->processButton->setDisabled(false);
   _bLockVariables = false;
 

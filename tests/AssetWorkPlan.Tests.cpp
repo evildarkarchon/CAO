@@ -43,7 +43,7 @@ AssetWorkPlanRequest defaultRequest(const QString &selectedPath)
     return AssetWorkPlanRequest{selectedPath, AssetWorkMode::SeveralMods, {}, defaultPolicy()};
 }
 
-bool containsLooseAsset(const AssetWorkPlan &plan, const QString &path, const LooseAssetKind kind)
+bool containsLooseAsset(const LooseAssetWorkPlan &plan, const QString &path, const LooseAssetKind kind)
 {
     return std::any_of(plan.looseAssetsToOptimize.begin(),
                        plan.looseAssetsToOptimize.end(),
@@ -52,7 +52,7 @@ bool containsLooseAsset(const AssetWorkPlan &plan, const QString &path, const Lo
                        });
 }
 
-bool containsArchiveExtraction(const AssetWorkPlan &plan, const QString &path)
+bool containsArchiveExtraction(const ArchiveAssetWorkPlan &plan, const QString &path)
 {
     return std::any_of(plan.archivesToExtract.begin(),
                        plan.archivesToExtract.end(),
@@ -61,7 +61,7 @@ bool containsArchiveExtraction(const AssetWorkPlan &plan, const QString &path)
                        });
 }
 
-qsizetype looseAssetCount(const AssetWorkPlan &plan, const LooseAssetKind kind)
+qsizetype looseAssetCount(const LooseAssetWorkPlan &plan, const LooseAssetKind kind)
 {
     return std::count_if(plan.looseAssetsToOptimize.begin(),
                          plan.looseAssetsToOptimize.end(),

@@ -119,6 +119,13 @@ TEST_CASE("OptionsCAO readFromIni leaves defaults unchanged when the settings fi
     REQUIRE(options.iMeshesOptimizationLevel == 2);
 }
 
+TEST_CASE("OptionsCAO defaults to single-mod mode")
+{
+    const OptionsCAO options;
+
+    REQUIRE(options.mode == OptionsCAO::SingleMod);
+}
+
 TEST_CASE("OptionsCAO readFromIni preserves an existing user path when the settings value is empty")
 {
     QTemporaryDir tempDir;

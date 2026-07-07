@@ -4,10 +4,23 @@
   "dependencies": [
     "bethutil",
     "directxtex",
-    "catch2",
     "nifly",
     "plog",
-    "qt5-base",
-    "qt5-tools"
-  ]
+    {
+      "name": "qt5-base",
+      "default-features": false
+    },
+    {
+      "name": "qt5-tools",
+      "default-features": false
+    }
+  ],
+  "features": {
+    "tests": {
+      "description": "Dependencies required to build and run the CTest suite.",
+      "dependencies": [
+        "catch2"
+      ]
+    }
+  }
 }

@@ -9,6 +9,8 @@
 #include "OptionsCAO.h"
 #include "pch.h"
 
+#include <atomic>
+
 class Manager final : public QObject {
   Q_OBJECT
 public:
@@ -57,7 +59,7 @@ private:
    */
   QStringList _ignoredMods;
 
-  bool _isCancelled = false;
+  std::atomic<bool> _isCancelled = false;
 
 signals:
   void progressBarTextChanged(QString, int, int);

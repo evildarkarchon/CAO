@@ -36,7 +36,7 @@ int main(int argc, char *argv[]) {
   QCoreApplication::installTranslator(&qtTranslator);
 
   QTranslator AssetsOptTranslator;
-  qtTranslator.load(QLocale(), "AssetsOpt", "_", "translations");
+  AssetsOptTranslator.load(QLocale(), "AssetsOpt", "_", "translations");
   QCoreApplication::installTranslator(&AssetsOptTranslator);
 
 #ifdef GUI

@@ -6,6 +6,8 @@
 #include "TexturesOptimizer.h"
 #include "Profiles.h"
 
+#include <string>
+
 TexturesOptimizer::TexturesOptimizer(TextureExecutionPolicy policy)
     : _policy(std::move(policy)) {
   PLOG_WARNING_IF(!createDevice(0, _pDevice.GetAddressOf()))
@@ -284,9 +286,8 @@ bool TexturesOptimizer::canBeCompressed() const {
 bool TexturesOptimizer::open(const QString &filePath, const TextureType &type) {
   PLOG_VERBOSE << "Opening " << filePath << " with textures type " << type;
 
-  wchar_t fileName[1024];
-  QDir::toNativeSeparators(filePath).toWCharArray(fileName);
-  fileName[filePath.length()] = '\0';
+  const std::wstring fileName =
+      QDir::toNativeSeparators(filePath).toStdWString();
 
   _image.reset(new (std::nothrow) DirectX::ScratchImage);
   if (!_image)
@@ -297,11 +298,11 @@ bool TexturesOptimizer::open(const QString &filePath, const TextureType &type) {
   HRESULT hr = S_FALSE;
   switch (type) {
   case TGA:
-    hr = LoadFromTGAFile(fileName, &_info, *_image);
+    hr = LoadFromTGAFile(fileName.c_str(), &_info, *_image);
     break;
   case DDS:
     const auto ddsFlags = DirectX::DDS_FLAGS_NONE;
-    hr = LoadFromDDSFile(fileName, ddsFlags, &_info, *_image);
+    hr = LoadFromDDSFile(fileName.c_str(), ddsFlags, &_info, *_image);
     if (FAILED(hr))
       return false;
 
@@ -638,12 +639,12 @@ bool TexturesOptimizer::saveToFile(const QString &filePath) const {
   const size_t nimg = _image->GetImageCount();
 
   // Write texture
-  wchar_t wFilePath[1024];
-  QDir::toNativeSeparators(filePath).toWCharArray(wFilePath);
-  wFilePath[filePath.length()] = '\0';
+  const std::wstring nativeFilePath =
+      QDir::toNativeSeparators(filePath).toStdWString();
 
   const HRESULT hr =
-      SaveToDDSFile(img, nimg, _info, DirectX::DDS_FLAGS_NONE, wFilePath);
+      SaveToDDSFile(img, nimg, _info, DirectX::DDS_FLAGS_NONE,
+                    nativeFilePath.c_str());
   return SUCCEEDED(hr);
 }
 
@@ -689,9 +690,9 @@ bool TexturesOptimizer::isPowerOfTwo() const {
 bool TexturesOptimizer::compareInfo(const DirectX::TexMetadata &info1,
                                     const DirectX::TexMetadata &info2) {
   const bool isSame =
-      info1.width == info2.width || info1.height == info2.height ||
-      info1.depth == info2.depth || info1.arraySize == info2.arraySize ||
-      info1.miscFlags == info2.miscFlags || info1.format == info2.format ||
+      info1.width == info2.width && info1.height == info2.height &&
+      info1.depth == info2.depth && info1.arraySize == info2.arraySize &&
+      info1.miscFlags == info2.miscFlags && info1.format == info2.format &&
       info1.dimension == info2.dimension;
 
   return isSame;

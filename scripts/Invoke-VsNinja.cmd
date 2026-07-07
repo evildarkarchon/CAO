@@ -15,6 +15,8 @@ if defined VSINSTALLDIR (
 
 set "CAO_EFFECTIVE_VSWHERE=%CAO_VSWHERE_PATH%"
 if not defined CAO_EFFECTIVE_VSWHERE set "CAO_EFFECTIVE_VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+rem Use the short path so Program Files (x86) does not break parsed FOR /F commands below.
+for %%I in ("%CAO_EFFECTIVE_VSWHERE%") do set "CAO_EFFECTIVE_VSWHERE=%%~sI"
 
 if not exist "%CAO_EFFECTIVE_VSWHERE%" (
   echo Could not find vswhere.exe. Set CAO_VSWHERE_PATH or install Visual Studio Installer. 1>&2

@@ -35,11 +35,15 @@ struct ArchivePackingWorkItem {
   QString folder;
 };
 
-struct AssetWorkPlan {
+struct ArchiveAssetWorkPlan {
   QStringList modsToProcess;
   QVector<ArchiveExtractionWorkItem> archivesToExtract;
-  QVector<LooseAssetWorkItem> looseAssetsToOptimize;
   QVector<ArchivePackingWorkItem> archivesToPack;
+};
+
+struct LooseAssetWorkPlan {
+  QStringList modsToProcess;
+  QVector<LooseAssetWorkItem> looseAssetsToOptimize;
 };
 
 class AssetWorkPlanner final {
@@ -54,19 +58,19 @@ public:
   /*!
    * \brief Plans archive extraction and packing targets before archive
    * extraction mutates the filesystem.
-   * \return An Asset Work Plan containing selected mods, BSA archives to
+   * \return An Archive Asset Work Plan containing selected mods, BSA archives to
    * extract, and folders to pack.
    */
-  [[nodiscard]] AssetWorkPlan planArchives() const;
+  [[nodiscard]] ArchiveAssetWorkPlan planArchives() const;
 
   /*!
    * \brief Plans loose assets after archive extraction has had a chance to add
    * files.
    * \param modsToProcess The selected mods from the archive plan.
-   * \return An Asset Work Plan containing loose assets to optimize, preserving
-   * filesystem traversal order.
+   * \return A Loose Asset Work Plan containing loose assets to optimize,
+   * preserving filesystem traversal order.
    */
-  [[nodiscard]] AssetWorkPlan
+  [[nodiscard]] LooseAssetWorkPlan
   planLooseAssets(const QStringList &modsToProcess) const;
 
 private:

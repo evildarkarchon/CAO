@@ -5,6 +5,30 @@
 
 #include "PluginsOperations.h"
 
+#include <string>
+
+namespace {
+/*!
+ * \brief Reads one length-prefixed plugin field into a QString without relying
+ * on fixed buffers or trailing NUL bytes.
+ */
+QString readPluginString(std::fstream &file, const uint16_t dataSize) {
+  if (dataSize == 0)
+    return {};
+
+  std::string fieldData(dataSize, '\0');
+  file.read(fieldData.data(), static_cast<std::streamsize>(fieldData.size()));
+  fieldData.resize(static_cast<size_t>(file.gcount()));
+
+  const auto nulPosition = fieldData.find('\0');
+  if (nulPosition != std::string::npos)
+    fieldData.resize(nulPosition);
+
+  return QString::fromUtf8(fieldData.data(),
+                           static_cast<int>(fieldData.size()));
+}
+} // namespace
+
 QStringList PluginsOperations::listHeadparts(const QString &filepath) {
   std::fstream file;
   file.open(filepath.toStdString(), std::ios::binary | std::ios::in);
@@ -60,10 +84,7 @@ QStringList PluginsOperations::listHeadparts(const QString &filepath) {
           continue;
         }
 
-        char buffer[1024];
-        file.read(buffer, pluginFieldHeader.dataSize);
-
-        QString headpart = buffer;
+        QString headpart = readPluginString(file, pluginFieldHeader.dataSize);
         // make sure that nif path starts with meshes
         if (!headpart.startsWith("meshes", Qt::CaseInsensitive))
           headpart = "meshes/" + headpart;
@@ -144,9 +165,9 @@ QStringList PluginsOperations::listLandscapeTextures(const QString &filepath) {
         else if (strncmp(signatureGroup, GROUP_TXST, sizeof GROUP_TXST) == 0 &&
                  strncmp(pluginFieldHeader.type, GROUP_TX00,
                          sizeof GROUP_TX00) == 0) {
-          char buffer[1024];
-          file.read(buffer, pluginFieldHeader.dataSize);
-          QString string = QDir::cleanPath(buffer);
+          QString string =
+              QDir::cleanPath(readPluginString(file,
+                                               pluginFieldHeader.dataSize));
           if (!string.startsWith("textures/"))
             string.insert(0, "textures/");
 

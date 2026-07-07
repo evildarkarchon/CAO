@@ -164,20 +164,23 @@ TEST_CASE("AssetWorkPlanExecutor reports semantic progress")
 
     REQUIRE(result == AssetWorkPlanExecutionResult::Completed);
     REQUIRE(metadataProvider.buildCount == 0);
-    REQUIRE(progress.size() == 4);
+    REQUIRE(progress.size() == 5);
     REQUIRE(progress[0].phase == AssetWorkPlanExecutionPhase::ArchiveExtraction);
-    REQUIRE(progress[0].completed == 1);
+    REQUIRE(progress[0].completed == 0);
     REQUIRE(progress[0].total == 1);
-    REQUIRE(progress[1].phase == AssetWorkPlanExecutionPhase::LooseAssetProcessing);
-    REQUIRE(progress[1].completed == 0);
-    REQUIRE(progress[1].total == 0);
-    REQUIRE(progress[2].phase == AssetWorkPlanExecutionPhase::ArchivePacking);
+    REQUIRE(progress[1].phase == AssetWorkPlanExecutionPhase::ArchiveExtraction);
+    REQUIRE(progress[1].completed == 1);
+    REQUIRE(progress[1].total == 1);
+    REQUIRE(progress[2].phase == AssetWorkPlanExecutionPhase::LooseAssetProcessing);
     REQUIRE(progress[2].completed == 0);
-    REQUIRE(progress[2].total == 1);
+    REQUIRE(progress[2].total == 0);
     REQUIRE(progress[3].phase == AssetWorkPlanExecutionPhase::ArchivePacking);
-    REQUIRE(progress[3].completed == 1);
+    REQUIRE(progress[3].completed == 0);
     REQUIRE(progress[3].total == 1);
-    REQUIRE(progress[3].currentLabel == "Alpha");
+    REQUIRE(progress[4].phase == AssetWorkPlanExecutionPhase::ArchivePacking);
+    REQUIRE(progress[4].completed == 1);
+    REQUIRE(progress[4].total == 1);
+    REQUIRE(progress[4].currentLabel == "Alpha");
 }
 
 TEST_CASE("AssetWorkPlanExecutor stops before Loose Asset Discovery when cancellation follows extraction")

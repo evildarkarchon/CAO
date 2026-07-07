@@ -127,11 +127,13 @@ void MeshesOptimizer::dryOptimize(const QString &filepath,
   const ScanResult scanResult = scan(nif);
 
   // Headparts have to get a special optimization
-  if (_policy.optimizationLevel >= 1 && _policy.processHeadparts &&
-      role == MeshAssetRole::Headpart)
-    PLOG_INFO << filepath + " would be optimized as an headpart due to "
-                            "necessary optimization";
-  else {
+  if (_policy.optimizationLevel >= 1 && role == MeshAssetRole::Headpart) {
+    if (_policy.processHeadparts)
+      PLOG_INFO << filepath + " would be optimized as an headpart due to "
+                              "necessary optimization";
+    else
+      PLOG_VERBOSE << "Headpart mesh ignored: " + filepath;
+  } else {
     switch (scanResult) {
     case doNotProcess:
       return;

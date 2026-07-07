@@ -8,7 +8,9 @@ if(DEFINED CMAKE_HOST_WIN32 AND NOT CMAKE_HOST_WIN32)
   return()
 endif()
 
-if("$ENV{CAO_SKIP_VISUAL_STUDIO_ENVIRONMENT}" MATCHES "^(1|ON|TRUE|YES)$")
+set(_cao_skip_visual_studio_environment "$ENV{CAO_SKIP_VISUAL_STUDIO_ENVIRONMENT}")
+string(TOUPPER "${_cao_skip_visual_studio_environment}" _cao_skip_visual_studio_environment)
+if(_cao_skip_visual_studio_environment MATCHES "^(1|ON|TRUE|YES)$")
   message(STATUS "Skipping Visual Studio developer environment import because CAO_SKIP_VISUAL_STUDIO_ENVIRONMENT is set")
   return()
 endif()
@@ -53,15 +55,22 @@ if(NOT "$ENV{CAO_VISUAL_STUDIO_MAJOR_VERSION}" STREQUAL "")
   list(APPEND _cao_vcvars_arguments -VisualStudioMajorVersion "$ENV{CAO_VISUAL_STUDIO_MAJOR_VERSION}")
 endif()
 
+set(_cao_vcvars_timeout_seconds 120)
 execute_process(
   COMMAND "${CAO_POWERSHELL_EXECUTABLE}" ${_cao_vcvars_arguments}
   RESULT_VARIABLE _cao_vcvars_result
   OUTPUT_VARIABLE _cao_vcvars_output
   ERROR_VARIABLE _cao_vcvars_error
+  TIMEOUT ${_cao_vcvars_timeout_seconds}
 )
 
-if(NOT _cao_vcvars_result EQUAL 0)
-  message(FATAL_ERROR "Failed to import the Visual Studio developer environment.\n${_cao_vcvars_output}${_cao_vcvars_error}")
+if(NOT _cao_vcvars_result STREQUAL "0")
+  string(TOLOWER "${_cao_vcvars_result}" _cao_vcvars_result_lower)
+  if(_cao_vcvars_result_lower MATCHES "timeout")
+    message(FATAL_ERROR "Timed out after ${_cao_vcvars_timeout_seconds} seconds while importing the Visual Studio developer environment.\n${_cao_vcvars_output}${_cao_vcvars_error}")
+  endif()
+
+  message(FATAL_ERROR "Failed to import the Visual Studio developer environment (result: ${_cao_vcvars_result}).\n${_cao_vcvars_output}${_cao_vcvars_error}")
 endif()
 
 if(NOT EXISTS "${_cao_environment_script}")

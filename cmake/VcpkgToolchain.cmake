@@ -1,18 +1,34 @@
+get_property(_cao_vcpkg_in_try_compile GLOBAL PROPERTY IN_TRY_COMPILE)
+if(_cao_vcpkg_in_try_compile AND DEFINED CAO_RESOLVED_VCPKG_ROOT AND
+   NOT "${CAO_RESOLVED_VCPKG_ROOT}" STREQUAL "")
+  file(TO_CMAKE_PATH "${CAO_RESOLVED_VCPKG_ROOT}" _cao_vcpkg_root)
+  set(_cao_vcpkg_toolchain "${_cao_vcpkg_root}/scripts/buildsystems/vcpkg.cmake")
+  if(EXISTS "${_cao_vcpkg_toolchain}")
+    include("${_cao_vcpkg_toolchain}")
+    return()
+  endif()
+endif()
+
 set(_cao_vcpkg_candidate_roots)
+set(_cao_vcpkg_environment_candidate_roots)
+set(_cao_vcpkg_variable_candidate_roots)
 
-foreach(_cao_vcpkg_env_name IN ITEMS CAO_VCPKG_ROOT VCPKG_INSTALLATION_ROOT VCPKG_ROOT)
-  if(NOT "$ENV{${_cao_vcpkg_env_name}}" STREQUAL "")
-    file(TO_CMAKE_PATH "$ENV{${_cao_vcpkg_env_name}}" _cao_vcpkg_env_root)
-    list(APPEND _cao_vcpkg_candidate_roots "${_cao_vcpkg_env_root}")
+foreach(_cao_vcpkg_root_name IN ITEMS CAO_VCPKG_ROOT VCPKG_INSTALLATION_ROOT VCPKG_ROOT)
+  if(NOT "$ENV{${_cao_vcpkg_root_name}}" STREQUAL "")
+    file(TO_CMAKE_PATH "$ENV{${_cao_vcpkg_root_name}}" _cao_vcpkg_env_root)
+    list(APPEND _cao_vcpkg_environment_candidate_roots "${_cao_vcpkg_env_root}")
+  endif()
+
+  if(DEFINED ${_cao_vcpkg_root_name} AND NOT "${${_cao_vcpkg_root_name}}" STREQUAL "")
+    file(TO_CMAKE_PATH "${${_cao_vcpkg_root_name}}" _cao_vcpkg_var_root)
+    list(APPEND _cao_vcpkg_variable_candidate_roots "${_cao_vcpkg_var_root}")
   endif()
 endforeach()
 
-foreach(_cao_vcpkg_var_name IN ITEMS CAO_VCPKG_ROOT VCPKG_INSTALLATION_ROOT VCPKG_ROOT)
-  if(DEFINED ${_cao_vcpkg_var_name} AND NOT "${${_cao_vcpkg_var_name}}" STREQUAL "")
-    file(TO_CMAKE_PATH "${${_cao_vcpkg_var_name}}" _cao_vcpkg_var_root)
-    list(APPEND _cao_vcpkg_candidate_roots "${_cao_vcpkg_var_root}")
-  endif()
-endforeach()
+set(_cao_vcpkg_candidate_roots
+  ${_cao_vcpkg_environment_candidate_roots}
+  ${_cao_vcpkg_variable_candidate_roots}
+)
 
 if(NOT "$ENV{CAO_ORIGINAL_PATH}" STREQUAL "")
   file(TO_CMAKE_PATH "$ENV{CAO_ORIGINAL_PATH}" _cao_original_path)

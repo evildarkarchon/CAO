@@ -11,8 +11,8 @@
 AssetWorkPlanner::AssetWorkPlanner(AssetWorkPlanRequest request)
     : _request(std::move(request)) {}
 
-AssetWorkPlan AssetWorkPlanner::planArchives() const {
-  AssetWorkPlan plan;
+ArchiveAssetWorkPlan AssetWorkPlanner::planArchives() const {
+  ArchiveAssetWorkPlan plan;
   plan.modsToProcess = selectMods();
 
   if (_request.policy.allowsArchivePacking()) {
@@ -39,9 +39,9 @@ AssetWorkPlan AssetWorkPlanner::planArchives() const {
   return plan;
 }
 
-AssetWorkPlan
+LooseAssetWorkPlan
 AssetWorkPlanner::planLooseAssets(const QStringList &modsToProcess) const {
-  AssetWorkPlan plan;
+  LooseAssetWorkPlan plan;
   plan.modsToProcess = modsToProcess;
 
   for (const auto &mod : plan.modsToProcess) {
@@ -70,7 +70,8 @@ QStringList AssetWorkPlanner::selectMods() const {
   }
 
   const QDir dir(_request.selectedPath);
-  for (const auto &subDir : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+  for (const auto &subDir :
+       dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
     // Separators are empty directories used by Mod Organizer 2.
     if (!subDir.contains("separator", Qt::CaseInsensitive) &&
         !isIgnoredMod(subDir))

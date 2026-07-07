@@ -1,9 +1,4 @@
 find_package(Catch2 CONFIG REQUIRED)
-find_package(Qt5 COMPONENTS Core Widgets REQUIRED)
-find_package(plog CONFIG REQUIRED)
-find_package(bethutil CONFIG REQUIRED)
-find_package(nifly CONFIG REQUIRED)
-find_package(directxtex CONFIG REQUIRED)
 
 add_executable(Cathedral_Assets_Optimizer_Tests
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkExecutionPolicy.Tests.cpp
@@ -15,26 +10,6 @@ add_executable(Cathedral_Assets_Optimizer_Tests
     ${CMAKE_CURRENT_SOURCE_DIR}/ModAssetMetadata.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/OptionsCAO.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesFormats.Tests.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/AssetWorkExecutionPolicy.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/AssetWorkExecutionPolicy.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/AssetWorkPolicy.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/AssetWorkPolicy.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/AssetWorkPlan.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/AssetWorkPlan.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/AssetWorkPlanExecutor.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/AssetWorkPlanExecutor.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/FilesystemOperations.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/FilesystemOperations.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ManagerPlanning.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ManagerPlanning.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ModAssetMetadata.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ModAssetMetadata.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/OptionsCAO.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/OptionsCAO.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/PluginsOperations.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/PluginsOperations.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Profiles.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Profiles.h
 )
 
 target_include_directories(Cathedral_Assets_Optimizer_Tests PRIVATE
@@ -43,12 +18,7 @@ target_include_directories(Cathedral_Assets_Optimizer_Tests PRIVATE
 
 target_link_libraries(Cathedral_Assets_Optimizer_Tests PRIVATE
     Catch2::Catch2WithMain
-    Qt5::Core
-    Qt5::Widgets
-    plog::plog
-    nifly
-    Microsoft::DirectXTex
-    btu::bethutil
+    Cathedral_Assets_Optimizer_Core
 )
 
 target_compile_features(Cathedral_Assets_Optimizer_Tests PRIVATE cxx_std_20)

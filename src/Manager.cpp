@@ -98,7 +98,7 @@ void Manager::printProgress(const int &total,
 #endif
 }
 
-void Manager::cancelProcess() { _isCancelled = true; }
+void Manager::cancelProcess() { _isCancelled.store(true); }
 
 void Manager::readIgnoredMods() {
   QFile &&ignoredModsFile = Profiles::getFile("ignoredMods.txt");
@@ -149,7 +149,7 @@ void Manager::runOptimization() {
           break;
         }
       },
-      [this]() { return _isCancelled; }});
+      [this]() { return _isCancelled.load(); }});
 
   if (result == AssetWorkPlanExecutionResult::Cancelled)
     return;

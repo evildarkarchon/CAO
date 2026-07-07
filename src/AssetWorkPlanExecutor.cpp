@@ -24,6 +24,12 @@ AssetWorkPlanExecutionResult AssetWorkPlanExecutor::execute(
   const AssetWorkPlanner planner(_request);
   const auto archivePlan = planner.planArchives();
 
+  if (!archivePlan.archivesToExtract.isEmpty()) {
+    reportProgress(callbacks, AssetWorkPlanExecutionPhase::ArchiveExtraction,
+                   0,
+                   static_cast<int>(archivePlan.archivesToExtract.size()));
+  }
+
   int completedArchiveExtractions = 0;
   for (const auto &archive : archivePlan.archivesToExtract) {
     if (isCancelled(callbacks))

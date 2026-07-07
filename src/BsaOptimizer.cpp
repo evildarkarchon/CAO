@@ -111,14 +111,13 @@ QString BSAOptimizer::backup(const QString &bsaPath) const {
   QFile bsaBackupFile(bsaPath + ".bak");
   const QFile bsaFile(bsaPath);
 
-  if (!bsaBackupFile.exists())
+  while (bsaBackupFile.exists()) {
+    if (bsaFile.size() == bsaBackupFile.size() &&
+        QFile::remove(bsaBackupFile.fileName()))
+      break;
 
-    while (bsaBackupFile.exists()) {
-      if (bsaFile.size() == bsaBackupFile.size())
-        QFile::remove(bsaBackupFile.fileName());
-      else
-        bsaBackupFile.setFileName(bsaBackupFile.fileName() + ".bak");
-    }
+    bsaBackupFile.setFileName(bsaBackupFile.fileName() + ".bak");
+  }
 
   QFile::rename(bsaPath, bsaBackupFile.fileName());
 

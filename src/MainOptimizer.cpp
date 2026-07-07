@@ -62,10 +62,11 @@ void MainOptimizer::processLooseAsset(const LooseAssetWorkItem &workItem,
 
 void MainOptimizer::packArchive(const ArchivePackingWorkItem &workItem) {
   const QString &folder = workItem.folder;
-  if (QDir(folder).exists()) {
-    PLOG_INFO << "Creating BSA...";
-    _bsaOpt.packAll(folder, _executionPolicy.archive);
-  }
+  if (!QDir(folder).exists() || _executionPolicy.dryRun)
+    return;
+
+  PLOG_INFO << "Creating BSA...";
+  _bsaOpt.packAll(folder, _executionPolicy.archive);
 }
 
 void MainOptimizer::processTexture(const QString &file,
