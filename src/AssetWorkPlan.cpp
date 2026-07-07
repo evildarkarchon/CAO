@@ -51,7 +51,7 @@ AssetWorkPlanner::planLooseAssets(const QStringList &modsToProcess) const {
       if (it.fileInfo().isDir())
         continue;
 
-      const auto kind = classifyLooseAsset(it.fileName());
+      const auto kind = _request.policy.classifyLooseAsset(it.fileName());
       if (kind.has_value())
         plan.looseAssetsToOptimize.push_back(
             LooseAssetWorkItem{it.filePath(), kind.value()});
@@ -83,27 +83,4 @@ QStringList AssetWorkPlanner::selectMods() const {
 
 bool AssetWorkPlanner::isIgnoredMod(const QString &modName) const {
   return _request.ignoredMods.contains(modName, Qt::CaseInsensitive);
-}
-
-std::optional<LooseAssetKind>
-AssetWorkPlanner::classifyLooseAsset(const QString &fileName) const {
-  if (_request.policy.allowsDdsTextureOptimization() &&
-      fileName.endsWith(".dds", Qt::CaseInsensitive))
-    return LooseAssetKind::TextureDds;
-
-  if (_request.policy.allowsMeshOptimization() &&
-      (fileName.endsWith(".nif", Qt::CaseInsensitive) ||
-       fileName.endsWith(".btr", Qt::CaseInsensitive) ||
-       fileName.endsWith(".bto", Qt::CaseInsensitive)))
-    return LooseAssetKind::Mesh;
-
-  if (_request.policy.allowsTgaTextureConversion() &&
-      fileName.endsWith(".tga", Qt::CaseInsensitive))
-    return LooseAssetKind::TextureTga;
-
-  if (_request.policy.allowsAnimationOptimization() &&
-      fileName.endsWith(".hkx", Qt::CaseInsensitive))
-    return LooseAssetKind::Animation;
-
-  return std::nullopt;
 }

@@ -39,6 +39,29 @@ AssetWorkPolicy::resolve(const RequestedAssetWork &requested,
                          profile.bsaExtension};
 }
 
+std::optional<LooseAssetKind>
+AssetWorkPolicy::classifyLooseAsset(const QString &fileName) const {
+  if (allowsDdsTextureOptimization() &&
+      fileName.endsWith(".dds", Qt::CaseInsensitive))
+    return LooseAssetKind::TextureDds;
+
+  if (allowsMeshOptimization() &&
+      (fileName.endsWith(".nif", Qt::CaseInsensitive) ||
+       fileName.endsWith(".btr", Qt::CaseInsensitive) ||
+       fileName.endsWith(".bto", Qt::CaseInsensitive)))
+    return LooseAssetKind::Mesh;
+
+  if (allowsTgaTextureConversion() &&
+      fileName.endsWith(".tga", Qt::CaseInsensitive))
+    return LooseAssetKind::TextureTga;
+
+  if (allowsAnimationOptimization() &&
+      fileName.endsWith(".hkx", Qt::CaseInsensitive))
+    return LooseAssetKind::Animation;
+
+  return std::nullopt;
+}
+
 bool AssetWorkPolicy::allowsArchiveExtractionFor(
     const QString &fileName) const {
   return _extractArchives &&

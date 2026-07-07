@@ -5,6 +5,9 @@
 #pragma once
 
 #include <QString>
+#include <optional>
+
+enum class LooseAssetKind { TextureDds, TextureTga, Mesh, Animation };
 
 struct ProfilePlanningSnapshot {
   bool bsaEnabled = false;
@@ -44,6 +47,16 @@ public:
   [[nodiscard]] static AssetWorkPolicy
   resolve(const RequestedAssetWork &requested,
           const ProfilePlanningSnapshot &profile);
+
+  /*!
+   * \brief Classifies an allowed loose Asset file name under this policy.
+   * \param fileName The loose Asset file name to classify without path
+   * context.
+   * \return The matching loose Asset kind when the selected Profile and
+   * requested work allow it; otherwise std::nullopt.
+   */
+  [[nodiscard]] std::optional<LooseAssetKind>
+  classifyLooseAsset(const QString &fileName) const;
 
   /*!
    * \brief Checks whether archive extraction is allowed at all.

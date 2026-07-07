@@ -9,11 +9,8 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
-#include <optional>
 
 enum class AssetWorkMode { SingleMod, SeveralMods };
-
-enum class LooseAssetKind { TextureDds, TextureTga, Mesh, Animation };
 
 struct AssetWorkPlanRequest {
   QString selectedPath;
@@ -76,8 +73,6 @@ public:
 private:
   [[nodiscard]] QStringList selectMods() const;
   [[nodiscard]] bool isIgnoredMod(const QString &modName) const;
-  [[nodiscard]] std::optional<LooseAssetKind>
-  classifyLooseAsset(const QString &fileName) const;
 
   AssetWorkPlanRequest _request;
 };
