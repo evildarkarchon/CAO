@@ -1,4 +1,5 @@
 #include "PluginsOperations.h"
+#include "PluginsOperationsInternal.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -7,6 +8,8 @@
 #include <QTemporaryDir>
 
 #include <cstring>
+#include <sstream>
+#include <string>
 
 namespace
 {
@@ -62,6 +65,33 @@ void writeFile(const QString &path, const QByteArray &contents)
 }
 }
 
+TEST_CASE("PluginsOperations readPluginString truncates at embedded NUL bytes")
+{
+    const std::string payload("meshes/head.nif\0ignored", 23);
+    std::istringstream stream(payload);
+
+    REQUIRE(PluginsOperationsDetail::readPluginString(
+                stream, static_cast<uint16_t>(payload.size())) ==
+            QStringLiteral("meshes/head.nif"));
+}
+
+TEST_CASE("PluginsOperations readPluginString returns available bytes after a short read")
+{
+    const std::string payload("textures/short.dds");
+    std::istringstream stream(payload);
+
+    REQUIRE(PluginsOperationsDetail::readPluginString(
+                stream, static_cast<uint16_t>(payload.size() + 8)) ==
+            QStringLiteral("textures/short.dds"));
+}
+
+TEST_CASE("PluginsOperations readPluginString returns an empty string for empty payloads")
+{
+    std::istringstream stream(std::string("unused"));
+
+    REQUIRE(PluginsOperationsDetail::readPluginString(stream, 0).isEmpty());
+}
+
 TEST_CASE("PluginsOperations listLandscapeTextures skips undersized TNAM fields")
 {
     QTemporaryDir tempDir;
@@ -96,4 +126,37 @@ TEST_CASE("PluginsOperations listLandscapeTextures skips undersized TNAM fields"
 
     REQUIRE(PluginsOperations::listLandscapeTextures(pluginPath) ==
             QStringList{"textures/valid.dds"});
+}
+
+TEST_CASE("PluginsOperations listLandscapeTextures stops after a short TNAM form id read")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    constexpr uint16_t partialFormId = 0x1234;
+
+    PluginFieldHeader tnamHeader{};
+    std::memcpy(tnamHeader.type, GROUP_TNAM, sizeof tnamHeader.type);
+    tnamHeader.dataSize = sizeof(uint32_t);
+
+    QByteArray truncatedFields;
+    appendStruct(truncatedFields, tnamHeader);
+    appendStruct(truncatedFields, partialFormId);
+
+    RecordHeader ltexRecordHeader{};
+    std::memcpy(ltexRecordHeader.type, GROUP_LTEX, sizeof ltexRecordHeader.type);
+    ltexRecordHeader.dataSize = sizeof tnamHeader + sizeof(uint32_t);
+
+    QByteArray truncatedRecord;
+    appendStruct(truncatedRecord, ltexRecordHeader);
+    truncatedRecord.append(truncatedFields);
+
+    QByteArray plugin;
+    plugin.append(makeRecord(GROUP_TES4, 0, {}));
+    plugin.append(makeGroup(GROUP_LTEX, truncatedRecord));
+
+    const QString pluginPath = QDir(tempDir.path()).filePath("TruncatedLandscape.esp");
+    writeFile(pluginPath, plugin);
+
+    REQUIRE(PluginsOperations::listLandscapeTextures(pluginPath).isEmpty());
 }

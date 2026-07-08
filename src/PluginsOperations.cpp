@@ -4,30 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "PluginsOperations.h"
-
-#include <string>
-
-namespace {
-/*!
- * \brief Reads one length-prefixed plugin field into a QString without relying
- * on fixed buffers or trailing NUL bytes.
- */
-QString readPluginString(std::fstream &file, const uint16_t dataSize) {
-  if (dataSize == 0)
-    return {};
-
-  std::string fieldData(dataSize, '\0');
-  file.read(fieldData.data(), static_cast<std::streamsize>(fieldData.size()));
-  fieldData.resize(static_cast<size_t>(file.gcount()));
-
-  const auto nulPosition = fieldData.find('\0');
-  if (nulPosition != std::string::npos)
-    fieldData.resize(nulPosition);
-
-  return QString::fromUtf8(fieldData.data(),
-                           static_cast<int>(fieldData.size()));
-}
-} // namespace
+#include "PluginsOperationsInternal.h"
 
 QStringList PluginsOperations::listHeadparts(const QString &filepath) {
   std::fstream file;
@@ -58,8 +35,11 @@ QStringList PluginsOperations::listHeadparts(const QString &filepath) {
   file.seekg(header.record.dataSize, std::ios::cur);
 
   // Reading all groups
-  do {
+  while (file.good()) {
     readHeaders();
+    if (!file.good() ||
+        strncmp(header.plugin.type, GROUP_GRUP, sizeof GROUP_GRUP) != 0)
+      break;
 
     // skip non headpart groups
     if (strncmp(header.plugin.label, GROUP_HDPT, sizeof GROUP_HDPT) != 0) {
@@ -70,13 +50,18 @@ QStringList PluginsOperations::listHeadparts(const QString &filepath) {
     // Reading all headpart records
     const int64_t groupEndPos =
         header.plugin.groupSize - sizeof header + file.tellg();
-    while (file.tellg() < groupEndPos) {
+    while (file.good() && file.tellg() < groupEndPos) {
       readHeaders();
+      if (!file.good())
+        break;
 
       // reading all record fields
       const int64_t recEndPos = header.record.dataSize + file.tellg();
-      while (file.tellg() < recEndPos) {
+      while (file.good() && file.tellg() < recEndPos) {
         readFieldPluginHeader();
+        if (!file.good())
+          break;
+
         // skip everything but MODL
         if (strncmp(pluginFieldHeader.type, GROUP_MODL, sizeof GROUP_MODL) !=
             0) {
@@ -84,7 +69,8 @@ QStringList PluginsOperations::listHeadparts(const QString &filepath) {
           continue;
         }
 
-        QString headpart = readPluginString(file, pluginFieldHeader.dataSize);
+        QString headpart = PluginsOperationsDetail::readPluginString(
+            file, pluginFieldHeader.dataSize);
         // make sure that nif path starts with meshes
         if (!headpart.startsWith("meshes", Qt::CaseInsensitive))
           headpart = "meshes/" + headpart;
@@ -93,8 +79,7 @@ QStringList PluginsOperations::listHeadparts(const QString &filepath) {
         headparts << QDir::cleanPath(headpart);
       }
     }
-  } while (strncmp(header.plugin.type, GROUP_GRUP, sizeof GROUP_GRUP) == 0 &&
-           file.good());
+  }
 
   return headparts;
 }
@@ -111,7 +96,6 @@ QStringList PluginsOperations::listLandscapeTextures(const QString &filepath) {
 
   const auto readHeaders = [&]() {
     file.read(reinterpret_cast<char *>(&header), sizeof header);
-    return strncmp(header.plugin.type, GROUP_GRUP, sizeof GROUP_GRUP) == 0;
   };
 
   const auto readFieldPluginHeader = [&]() {
@@ -131,7 +115,12 @@ QStringList PluginsOperations::listLandscapeTextures(const QString &filepath) {
   QStringList finalTextures;
 
   // Reading all groups
-  while (readHeaders() && file.good()) {
+  while (file.good()) {
+    readHeaders();
+    if (!file.good() ||
+        strncmp(header.plugin.type, GROUP_GRUP, sizeof GROUP_GRUP) != 0)
+      break;
+
     // skip other groups
     if (strncmp(header.plugin.label, GROUP_LTEX, sizeof GROUP_LTEX) != 0 &&
         strncmp(header.plugin.label, GROUP_TXST, sizeof GROUP_TXST) != 0) {
@@ -145,13 +134,18 @@ QStringList PluginsOperations::listLandscapeTextures(const QString &filepath) {
     // Reading all records
     const int64_t groupEndPos =
         header.plugin.groupSize - sizeof header + file.tellg();
-    while (file.tellg() < groupEndPos) {
+    while (file.good() && file.tellg() < groupEndPos) {
       readHeaders();
+      if (!file.good())
+        break;
 
       // reading all record fields
       const int64_t recEndPos = header.record.dataSize + file.tellg();
-      while (file.tellg() < recEndPos) {
+      while (file.good() && file.tellg() < recEndPos) {
         readFieldPluginHeader();
+        if (!file.good())
+          break;
+
         // read FormID of landscape TXST record
         if (strncmp(signatureGroup, GROUP_LTEX, sizeof GROUP_LTEX) == 0 &&
             strncmp(pluginFieldHeader.type, GROUP_TNAM, sizeof GROUP_TNAM) ==
@@ -167,11 +161,13 @@ QStringList PluginsOperations::listLandscapeTextures(const QString &filepath) {
 
           file.read(reinterpret_cast<char *>(&formId),
                     static_cast<std::streamsize>(sizeof formId));
-          if (file.gcount() != static_cast<std::streamsize>(sizeof formId)) {
+          const auto bytesRead = file.gcount();
+          if (bytesRead != static_cast<std::streamsize>(sizeof formId) ||
+              !file.good()) {
             PLOG_WARNING << "Skipping malformed TNAM field in " << filepath
                           << ": expected " << sizeof formId << " bytes, read "
-                          << file.gcount();
-            continue;
+                          << bytesRead;
+            break;
           }
 
           firstSet.push_back(formId);
@@ -180,9 +176,9 @@ QStringList PluginsOperations::listLandscapeTextures(const QString &filepath) {
         else if (strncmp(signatureGroup, GROUP_TXST, sizeof GROUP_TXST) == 0 &&
                  strncmp(pluginFieldHeader.type, GROUP_TX00,
                          sizeof GROUP_TX00) == 0) {
-          QString string =
-              QDir::cleanPath(readPluginString(file,
-                                               pluginFieldHeader.dataSize));
+          QString string = QDir::cleanPath(
+              PluginsOperationsDetail::readPluginString(
+                  file, pluginFieldHeader.dataSize));
           if (!string.startsWith("textures/"))
             string.insert(0, "textures/");
 

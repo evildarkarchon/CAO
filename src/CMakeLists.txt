@@ -47,6 +47,7 @@ set(CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/OptionsCAO.h
     ${CMAKE_CURRENT_SOURCE_DIR}/PluginsOperations.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/PluginsOperations.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/PluginsOperationsInternal.h
     ${CMAKE_CURRENT_SOURCE_DIR}/Profiles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Profiles.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesFormats.h
