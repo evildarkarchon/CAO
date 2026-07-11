@@ -6,6 +6,7 @@
 #include "TexturesOptimizer.h"
 #include "Profiles.h"
 
+#include <limits>
 #include <string>
 
 TexturesOptimizer::TexturesOptimizer(TextureExecutionPolicy policy)
@@ -20,6 +21,138 @@ TexturesOptimizer::TexturesOptimizer(TextureExecutionPolicy policy)
   if (FAILED(hr))
     throw std::runtime_error(
         "Failed to initialize COM. Textures processing won't work.");
+  _comInitialized = true;
+}
+
+TexturesOptimizer::~TexturesOptimizer() {
+  if (_comInitialized)
+    CoUninitialize();
+}
+
+TextureTransformResult
+TexturesOptimizer::transform(const TextureTransformRequest &request) {
+  const QFileInfo sourceInfo(request.sourcePath);
+  if (!sourceInfo.exists() || !sourceInfo.isFile() ||
+      !sourceInfo.isReadable()) {
+    return {AssetTransactionStatus::OperationalFailure,
+            {},
+            {{AssetTransactionNoticeCode::OperationalFailure,
+              request.sourcePath,
+              {},
+              "Texture source is not readable"}}};
+  }
+
+  const auto type = request.sourceKind == TextureSourceKind::Tga ? TGA : DDS;
+  if (!open(request.sourcePath, type)) {
+    return {AssetTransactionStatus::MalformedAsset,
+            {},
+            {{AssetTransactionNoticeCode::MalformedAsset,
+              request.sourcePath,
+              {},
+              "Texture data could not be decoded"}}};
+  }
+
+  std::optional<size_t> width;
+  std::optional<size_t> height;
+  if (_policy.resizeByRatio) {
+    if (_policy.targetWidthRatio == 0 || _policy.targetHeightRatio == 0) {
+      return {AssetTransactionStatus::OperationalFailure,
+              {},
+              {{AssetTransactionNoticeCode::OperationalFailure,
+                request.sourcePath,
+                {},
+                "Texture resize ratio is zero"}}};
+    }
+    width = _info.width / _policy.targetWidthRatio;
+    height = _info.height / _policy.targetHeightRatio;
+  } else if (_policy.resizeBySize) {
+    width = _policy.targetWidth;
+    height = _policy.targetHeight;
+  }
+
+  const auto planned =
+      processArguments(_policy.necessaryOptimization, _policy.compress,
+                       _policy.mipmaps, width, height);
+  QVector<AssetTransactionNotice> notices;
+  const QString targetPath = request.sourceKind == TextureSourceKind::Tga
+                                 ? request.sourcePath.chopped(4) + ".dds"
+                                 : request.sourcePath;
+  if (request.dryRun) {
+    if (planned.bNeedsResize)
+      notices.push_back({AssetTransactionNoticeCode::IntendedAction,
+                         request.sourcePath, targetPath,
+                         "Would resize texture"});
+    if (planned.bNeedsMipmaps)
+      notices.push_back({AssetTransactionNoticeCode::IntendedAction,
+                         request.sourcePath, targetPath,
+                         "Would generate texture mipmaps"});
+    if (planned.bNeedsCompress || request.sourceKind == TextureSourceKind::Tga)
+      notices.push_back({AssetTransactionNoticeCode::IntendedAction,
+                         request.sourcePath, targetPath,
+                         "Would convert texture to DDS"});
+    if (notices.isEmpty())
+      return {AssetTransactionStatus::Unchanged,
+              {},
+              {{AssetTransactionNoticeCode::UnchangedAsset, request.sourcePath,
+                targetPath, "Texture requires no changes"}}};
+    return {AssetTransactionStatus::Completed, {}, std::move(notices)};
+  }
+
+  if (!optimize(width, height)) {
+    return {
+        AssetTransactionStatus::OperationalFailure,
+        {},
+        {{AssetTransactionNoticeCode::OperationalFailure, request.sourcePath,
+          targetPath, "Texture transformation failed"}}};
+  }
+
+  if (request.sourceKind == TextureSourceKind::Dds && !modifiedCurrentTexture) {
+    return {AssetTransactionStatus::Unchanged,
+            {},
+            {{AssetTransactionNoticeCode::UnchangedAsset, request.sourcePath,
+              targetPath, "Texture requires no changes"}}};
+  }
+
+  const auto *images = _image->GetImages();
+  if (!images) {
+    return {
+        AssetTransactionStatus::OperationalFailure,
+        {},
+        {{AssetTransactionNoticeCode::OperationalFailure, request.sourcePath,
+          targetPath, "Texture output has no image data"}}};
+  }
+
+  DirectX::Blob encoded;
+  const HRESULT saveResult = DirectX::SaveToDDSMemory(
+      images, _image->GetImageCount(), _info, DirectX::DDS_FLAGS_NONE, encoded);
+  if (FAILED(saveResult) ||
+      encoded.GetBufferSize() >
+          static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return {
+        AssetTransactionStatus::OperationalFailure,
+        {},
+        {{AssetTransactionNoticeCode::OperationalFailure, request.sourcePath,
+          targetPath, "Texture output could not be encoded"}}};
+  }
+
+  DirectX::ScratchImage validationImage;
+  DirectX::TexMetadata validationMetadata;
+  if (FAILED(DirectX::LoadFromDDSMemory(
+          encoded.GetConstBufferPointer(), encoded.GetBufferSize(),
+          DirectX::DDS_FLAGS_NONE, &validationMetadata, validationImage))) {
+    return {
+        AssetTransactionStatus::OperationalFailure,
+        {},
+        {{AssetTransactionNoticeCode::OperationalFailure, request.sourcePath,
+          targetPath, "Encoded DDS output failed validation"}}};
+  }
+
+  return {AssetTransactionStatus::Completed,
+          QByteArray(
+              reinterpret_cast<const char *>(encoded.GetConstBufferPointer()),
+              static_cast<int>(encoded.GetBufferSize())),
+          {{AssetTransactionNoticeCode::CompletedAction, request.sourcePath,
+            targetPath, "Texture transformation completed"}}};
 }
 
 void TexturesOptimizer::listLandscapeTextures(QDirIterator &it) {
@@ -50,19 +183,16 @@ bool TexturesOptimizer::getDXGIFactory(IDXGIFactory1 **pFactory) const {
   typedef HRESULT(WINAPI * pfn_CreateDXGIFactory1)(REFIID riid,
                                                    _Out_ void **ppFactory);
 
-  static pfn_CreateDXGIFactory1 sCreateDXGIFactory1 = nullptr;
-
-  if (!sCreateDXGIFactory1) {
+  static const pfn_CreateDXGIFactory1 sCreateDXGIFactory1 = [] {
     const HMODULE hModDXGI = LoadLibraryW(L"dxgi.dll");
     if (!hModDXGI)
-      return false;
+      return static_cast<pfn_CreateDXGIFactory1>(nullptr);
 
-    sCreateDXGIFactory1 =
-        reinterpret_cast<pfn_CreateDXGIFactory1>(reinterpret_cast<void *>(
-            GetProcAddress(hModDXGI, "CreateDXGIFactory1")));
-    if (!sCreateDXGIFactory1)
-      return false;
-  }
+    return reinterpret_cast<pfn_CreateDXGIFactory1>(reinterpret_cast<void *>(
+        GetProcAddress(hModDXGI, "CreateDXGIFactory1")));
+  }();
+  if (!sCreateDXGIFactory1)
+    return false;
 
   return SUCCEEDED(sCreateDXGIFactory1(IID_PPV_ARGS(pFactory)));
 }
@@ -74,19 +204,16 @@ bool TexturesOptimizer::createDevice(const int adapter,
 
   *pDevice = nullptr;
 
-  static PFN_D3D11_CREATE_DEVICE s_DynamicD3D11CreateDevice = nullptr;
-
-  if (!s_DynamicD3D11CreateDevice) {
+  static const PFN_D3D11_CREATE_DEVICE s_DynamicD3D11CreateDevice = [] {
     const HMODULE hModD3D11 = LoadLibraryW(L"d3d11.dll");
     if (!hModD3D11)
-      return false;
+      return static_cast<PFN_D3D11_CREATE_DEVICE>(nullptr);
 
-    s_DynamicD3D11CreateDevice =
-        reinterpret_cast<PFN_D3D11_CREATE_DEVICE>(reinterpret_cast<void *>(
-            GetProcAddress(hModD3D11, "D3D11CreateDevice")));
-    if (!s_DynamicD3D11CreateDevice)
-      return false;
-  }
+    return reinterpret_cast<PFN_D3D11_CREATE_DEVICE>(reinterpret_cast<void *>(
+        GetProcAddress(hModD3D11, "D3D11CreateDevice")));
+  }();
+  if (!s_DynamicD3D11CreateDevice)
+    return false;
 
   D3D_FEATURE_LEVEL featureLevels[] = {
       D3D_FEATURE_LEVEL_11_0,
@@ -159,9 +286,9 @@ TexturesOptimizer::TexOptOptionsResult TexturesOptimizer::processArguments(
   result.bNeedsResize =
       result.tHeight != _info.height || result.tWidth != _info.width;
 
-  result.bNeedsCompress = (bNecessary && (isIncompatible() || _type == TGA)) ||
-                          (bCompress && canBeCompressed() &&
-                           _info.format != _policy.outputFormat);
+  result.bNeedsCompress =
+      (bNecessary && (isIncompatible() || _type == TGA)) ||
+      (bCompress && canBeCompressed() && _info.format != _policy.outputFormat);
 
   result.bNeedsMipmaps = bMipmaps &&
                          _info.mipLevels != calculateOptimalMipMapsNumber() &&
@@ -173,9 +300,9 @@ TexturesOptimizer::TexOptOptionsResult TexturesOptimizer::processArguments(
 bool TexturesOptimizer::optimize(const std::optional<size_t> &tWidth,
                                  const std::optional<size_t> &tHeight) {
   PLOG_VERBOSE << "Processing arguments for: " << _name;
-  auto options = processArguments(_policy.necessaryOptimization,
-                                  _policy.compress, _policy.mipmaps, tWidth,
-                                  tHeight);
+  auto options =
+      processArguments(_policy.necessaryOptimization, _policy.compress,
+                       _policy.mipmaps, tWidth, tHeight);
 
   DXGI_FORMAT targetFormat = _info.format;
 
@@ -201,8 +328,8 @@ bool TexturesOptimizer::optimize(const std::optional<size_t> &tWidth,
       return false;
 
     options.bNeedsMipmaps =
-        _policy.mipmaps &&
-        _info.mipLevels != calculateOptimalMipMapsNumber() && canHaveMipMaps();
+        _policy.mipmaps && _info.mipLevels != calculateOptimalMipMapsNumber() &&
+        canHaveMipMaps();
   }
 
   // Generating mipmaps
@@ -266,8 +393,7 @@ bool TexturesOptimizer::canBeCompressed() const {
   const bool badSize = _info.width < 4 || _info.height < 4;
   const bool isPow2 = isPowerOfTwo();
 
-  const bool interfaceOkay =
-      _policy.compressInterface || !isInterface;
+  const bool interfaceOkay = _policy.compressInterface || !isInterface;
 
   return interfaceOkay && !already && !badSize && isPow2;
 }
@@ -631,9 +757,8 @@ bool TexturesOptimizer::saveToFile(const QString &filePath) const {
   const std::wstring nativeFilePath =
       QDir::toNativeSeparators(filePath).toStdWString();
 
-  const HRESULT hr =
-      SaveToDDSFile(img, nimg, _info, DirectX::DDS_FLAGS_NONE,
-                    nativeFilePath.c_str());
+  const HRESULT hr = SaveToDDSFile(img, nimg, _info, DirectX::DDS_FLAGS_NONE,
+                                   nativeFilePath.c_str());
   return SUCCEEDED(hr);
 }
 

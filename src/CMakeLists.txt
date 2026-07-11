@@ -26,8 +26,11 @@ set(CMAKE_AUTORCC ON)
 #SOURCES
 
 set(CORE_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetTransaction.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkMode.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkExecutionPolicy.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetPathConflicts.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetPathConflicts.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptions.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptions.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPolicyResolver.cpp
@@ -42,6 +45,8 @@ set(CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlan.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlanExecutor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlanExecutor.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/LooseAssetScheduler.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/LooseAssetScheduler.h
     ${CMAKE_CURRENT_SOURCE_DIR}/FilesystemOperations.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/FilesystemOperations.h
     ${CMAKE_CURRENT_SOURCE_DIR}/Logger.h
@@ -60,21 +65,35 @@ set(CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/pch.h
     )
 
-set(APP_SOURCES
+set(EXECUTION_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/AnimationAssetTransaction.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AnimationAssetTransaction.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ArchiveEngine.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ArchiveEngine.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ArchiveExecutionError.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ArchiveFileOperations.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ArchiveFileOperations.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AnimationsOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AnimationsOptimizer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/BsaOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/BsaOptimizer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/MainOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/MainOptimizer.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Manager.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Manager.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/MainOptimizerInternal.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/MainOptimizerInternal.h
     ${CMAKE_CURRENT_SOURCE_DIR}/MeshesOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/MeshesOptimizer.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptionsDraftUi.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/ProfilesUi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesOptimizer.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/TextureAssetTransaction.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/TextureAssetTransaction.h
+    )
+
+set(APP_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/Manager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Manager.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptionsDraftUi.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ProfilesUi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/pch.h
     )
@@ -136,12 +155,19 @@ target_include_directories(Cathedral_Assets_Optimizer_Core PUBLIC
 target_precompile_headers(Cathedral_Assets_Optimizer_Core PRIVATE "pch.h")
 target_compile_features(Cathedral_Assets_Optimizer_Core PUBLIC cxx_std_20)
 
+message("Adding CAO execution library")
+add_library(Cathedral_Assets_Optimizer_Execution STATIC ${EXECUTION_SOURCES})
+target_link_libraries(Cathedral_Assets_Optimizer_Execution PUBLIC
+    Cathedral_Assets_Optimizer_Core)
+target_precompile_headers(Cathedral_Assets_Optimizer_Execution PRIVATE "pch.h")
+target_compile_features(Cathedral_Assets_Optimizer_Execution PUBLIC cxx_std_20)
+
 message("Adding CAO.exe")
 add_executable(Cathedral_Assets_Optimizer WIN32 ${APP_SOURCES} ${RESOURCES} ${QM_FILES})
 #Windows 7 compatibility
 target_compile_definitions(Cathedral_Assets_Optimizer PRIVATE GUI)
 target_link_libraries(Cathedral_Assets_Optimizer PRIVATE
-    Cathedral_Assets_Optimizer_Core)
+    Cathedral_Assets_Optimizer_Execution)
 
 # PCH
 target_precompile_headers(Cathedral_Assets_Optimizer PRIVATE "pch.h")

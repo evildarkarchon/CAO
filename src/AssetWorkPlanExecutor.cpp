@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "AssetWorkPlanExecutor.h"
+#include "AssetWorkExecutionPolicy.h"
 #include "FilesystemOperations.h"
 
 #include <QDateTime>
@@ -17,7 +18,27 @@ AssetWorkPlanExecutor::AssetWorkPlanExecutor(
     const ModAssetMetadataProvider &metadataProvider,
     AssetWorkPlanExecutionAdapter &adapter)
     : _request(std::move(request)), _metadataProvider(metadataProvider),
-      _adapter(adapter) {}
+      _adapter(adapter),
+      _ownedScheduler(std::make_unique<DeterministicLooseAssetScheduler>()),
+      _scheduler(_ownedScheduler.get()) {}
+
+AssetWorkPlanExecutor::AssetWorkPlanExecutor(
+    AssetWorkPlanRequest request,
+    const ModAssetMetadataProvider &metadataProvider,
+    AssetWorkPlanExecutionAdapter &adapter, LooseAssetScheduler &scheduler)
+    : _request(std::move(request)), _metadataProvider(metadataProvider),
+      _adapter(adapter), _scheduler(&scheduler) {}
+
+AssetWorkPlanExecutor::AssetWorkPlanExecutor(
+    AssetWorkPlanRequest request,
+    const ModAssetMetadataProvider &metadataProvider,
+    AssetWorkPlanExecutionAdapter &adapter, const int maxConcurrentLooseAssets,
+    AssetWorkPlanExecutionReportSource &reports)
+    : _request(std::move(request)), _metadataProvider(metadataProvider),
+      _adapter(adapter),
+      _ownedScheduler(std::make_unique<QThreadPoolLooseAssetScheduler>(
+          maxConcurrentLooseAssets)),
+      _scheduler(_ownedScheduler.get()), _reports(&reports) {}
 
 AssetWorkPlanExecutionResult AssetWorkPlanExecutor::execute(
     const AssetWorkPlanExecutionCallbacks &callbacks) {
@@ -25,8 +46,7 @@ AssetWorkPlanExecutionResult AssetWorkPlanExecutor::execute(
   const auto archivePlan = planner.planArchives();
 
   if (!archivePlan.archivesToExtract.isEmpty()) {
-    reportProgress(callbacks, AssetWorkPlanExecutionPhase::ArchiveExtraction,
-                   0,
+    reportProgress(callbacks, AssetWorkPlanExecutionPhase::ArchiveExtraction, 0,
                    static_cast<int>(archivePlan.archivesToExtract.size()));
   }
 
@@ -53,12 +73,12 @@ AssetWorkPlanExecutionResult AssetWorkPlanExecutor::execute(
                  0, static_cast<int>(loosePlan.looseAssetsToOptimize.size()));
 
   ModAssetMetadata metadata;
-  const bool meshWorkPlanned = std::any_of(
-      loosePlan.looseAssetsToOptimize.begin(),
-      loosePlan.looseAssetsToOptimize.end(),
-      [](const LooseAssetWorkItem &asset) {
-        return asset.kind == LooseAssetKind::Mesh;
-      });
+  const bool meshWorkPlanned =
+      std::any_of(loosePlan.looseAssetsToOptimize.begin(),
+                  loosePlan.looseAssetsToOptimize.end(),
+                  [](const LooseAssetWorkItem &asset) {
+                    return asset.kind == LooseAssetKind::Mesh;
+                  });
 
   if (meshWorkPlanned) {
     if (isCancelled(callbacks))
@@ -76,25 +96,26 @@ AssetWorkPlanExecutionResult AssetWorkPlanExecutor::execute(
   // throttled loose Asset progress cadence instead of reporting every file.
   QDateTime lastLooseProgress = QDateTime::currentDateTime();
   int completedLooseAssets = 0;
-  for (const auto &asset : loosePlan.looseAssetsToOptimize) {
-    if (isCancelled(callbacks))
-      return AssetWorkPlanExecutionResult::Cancelled;
-
-    _adapter.processLooseAsset(asset, metadata);
-    ++completedLooseAssets;
-
-    if (isCancelled(callbacks))
-      return AssetWorkPlanExecutionResult::Cancelled;
-
-    const auto now = QDateTime::currentDateTime();
-    if (now > lastLooseProgress.addMSecs(2000)) {
-      reportProgress(callbacks,
-                     AssetWorkPlanExecutionPhase::LooseAssetProcessing,
-                     completedLooseAssets,
-                     static_cast<int>(loosePlan.looseAssetsToOptimize.size()));
-      lastLooseProgress = now;
-    }
-  }
+  const auto schedulingResult = _scheduler->run(
+      loosePlan.looseAssetsToOptimize,
+      [&](const LooseAssetWorkItem &asset) {
+        _adapter.processLooseAsset(asset, metadata);
+      },
+      {callbacks.isCancelled, [&] {
+         drainTransactionReports(callbacks);
+         ++completedLooseAssets;
+         const auto now = QDateTime::currentDateTime();
+         if (now > lastLooseProgress.addMSecs(2000)) {
+           reportProgress(
+               callbacks, AssetWorkPlanExecutionPhase::LooseAssetProcessing,
+               completedLooseAssets,
+               static_cast<int>(loosePlan.looseAssetsToOptimize.size()));
+           lastLooseProgress = now;
+         }
+       }});
+  drainTransactionReports(callbacks);
+  if (schedulingResult == LooseAssetSchedulingResult::Cancelled)
+    return AssetWorkPlanExecutionResult::Cancelled;
 
   if (!archivePlan.archivesToPack.isEmpty()) {
     reportProgress(callbacks, AssetWorkPlanExecutionPhase::ArchivePacking, 0,
@@ -132,4 +153,15 @@ void AssetWorkPlanExecutor::reportProgress(
 
   callbacks.reportProgress(
       AssetWorkPlanProgress{phase, completed, total, currentLabel});
+}
+
+void AssetWorkPlanExecutor::drainTransactionReports(
+    const AssetWorkPlanExecutionCallbacks &callbacks) const {
+  if (!_reports)
+    return;
+  const auto reports = _reports->drainTransactionReports();
+  if (!callbacks.reportTransaction)
+    return;
+  for (const auto &report : reports)
+    callbacks.reportTransaction(report);
 }

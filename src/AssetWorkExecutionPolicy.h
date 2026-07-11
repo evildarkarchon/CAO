@@ -8,6 +8,9 @@
 
 #include "btu/bsa/settings.hpp"
 
+#include <QThread>
+
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -49,7 +52,22 @@ struct MeshExecutionPolicy {
 
 class AssetWorkExecutionPolicy final {
 public:
+  /*!
+   * \brief Computes the bounded default for parallel loose Asset work.
+   * \return One through four workers, limited by available logical processors.
+   */
+  [[nodiscard]] static int defaultMaxConcurrentLooseAssets() noexcept {
+    const int ideal = QThread::idealThreadCount();
+    return std::max(1, std::min(4, ideal > 0 ? ideal : 1));
+  }
+
   [[nodiscard]] bool dryRun() const noexcept { return _dryRun; }
+  /*!
+   * \brief Returns the maximum simultaneous loose Asset transactions.
+   */
+  [[nodiscard]] int maxConcurrentLooseAssets() const noexcept {
+    return _maxConcurrentLooseAssets;
+  }
   [[nodiscard]] const ArchiveExecutionPolicy &archive() const noexcept {
     return _archive;
   }
@@ -66,17 +84,22 @@ private:
   /*!
    * \brief Stores the execution settings produced by the combined resolver.
    * \param dryRun Whether execution must avoid filesystem mutations.
+   * \param maxConcurrentLooseAssets Maximum simultaneous loose transactions.
    * \param archive Resolved archive execution settings.
    * \param texture Resolved texture execution settings.
    * \param mesh Resolved mesh execution settings.
    */
-  AssetWorkExecutionPolicy(bool dryRun, ArchiveExecutionPolicy archive,
+  AssetWorkExecutionPolicy(bool dryRun, int maxConcurrentLooseAssets,
+                           ArchiveExecutionPolicy archive,
                            TextureExecutionPolicy texture,
                            MeshExecutionPolicy mesh)
-      : _dryRun(dryRun), _archive(std::move(archive)),
-        _texture(std::move(texture)), _mesh(std::move(mesh)) {}
+      : _dryRun(dryRun),
+        _maxConcurrentLooseAssets(std::max(1, maxConcurrentLooseAssets)),
+        _archive(std::move(archive)), _texture(std::move(texture)),
+        _mesh(std::move(mesh)) {}
 
   bool _dryRun = false;
+  int _maxConcurrentLooseAssets = 1;
   ArchiveExecutionPolicy _archive;
   TextureExecutionPolicy _texture;
   MeshExecutionPolicy _mesh;

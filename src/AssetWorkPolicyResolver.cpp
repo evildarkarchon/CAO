@@ -75,6 +75,7 @@ AssetWorkPolicyResolver::resolve(const AssetWorkOptions &options,
 
   AssetWorkExecutionPolicy execution(
       options._dryRun,
+      AssetWorkExecutionPolicy::defaultMaxConcurrentLooseAssets(),
       ArchiveExecutionPolicy{
           options._deleteArchiveBackup, options._mergeIncompressibleArchives,
           options._mergeTextureArchives, options._createDummyPlugins,

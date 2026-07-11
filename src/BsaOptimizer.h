@@ -4,58 +4,73 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
+#include "ArchiveEngine.h"
+#include "ArchiveExecutionError.h"
+#include "ArchiveFileOperations.h"
 #include "AssetWorkExecutionPolicy.h"
-#include "FilesystemOperations.h"
 #include "pch.h"
 
+#include <memory>
+
 /*!
- * \brief Manages BSA : extract and create them
+ * \brief Executes complete staged archive extraction and packing transactions.
+ *
+ * Engine output is isolated in a sibling staging directory. Publishing is
+ * journaled so runtime failures restore the prior live Mod state.
  */
 class BSAOptimizer final : public QObject {
   Q_DECLARE_TR_FUNCTIONS(BsaOptimizer)
 
 public:
-  /*!
-   * \brief Default constructor
-   */
-  BSAOptimizer() = default;
-  /*!
-   * \brief Extracts a BSA
-   * \param bsaPath The path of the BSA to extract
-   * \param deleteBackup Deletes the backup the existing bsa
-   */
-  void extract(QString bsaPath, const bool deleteBackup) const;
-  /*!
-   * \brief Creates a BSA containing all the files given as argument
-   * \param bsa The BSA to create
-   */
-  int create(btu::bsa::ArchiveData &bsa, bool allowCompression,
-             bool deleteSource) const;
+  /*! \brief Creates a production archive transaction module. */
+  BSAOptimizer();
 
   /*!
-   * \brief Packs all the loose files in the directory into BSAs
-   * \param folderPath The folder to process
-   * \param policy The archive execution rules and resolved BSA settings.
+   * \brief Creates an archive transaction module using supplied test adapters.
+   * \param engine Stages archive contents and outputs without live mutations.
+   * \param files Publishes and rolls back staged filesystem changes.
    */
-  void packAll(const QString &folderPath,
-               const ArchiveExecutionPolicy &policy) const;
+  BSAOptimizer(ArchiveEngine &engine, ArchiveFileOperations &files);
+
+  /*!
+   * \brief Extracts and publishes one archive transaction.
+   * \param archivePath Source archive Asset.
+   * \param deleteBackup Remove the source after commit instead of retaining a
+   * uniquely named backup.
+   * \param dryRun Report intent without staging, engine, or filesystem work.
+   * \throws ArchiveExecutionError when staging, engine, publishing, or rollback
+   * fails.
+   */
+  void extract(const QString &archivePath, bool deleteBackup,
+               bool dryRun = false);
+
+  /*!
+   * \brief Stages and publishes the complete archive set for one Mod.
+   * \param folderPath Mod whose loose Assets are packed.
+   * \param policy Resolved archive execution rules.
+   * \param dryRun Report intent without staging, engine, or filesystem work.
+   * \throws ArchiveExecutionError when staging, engine, publishing, rollback,
+   * or post-commit source cleanup fails.
+   */
+  void packAll(const QString &folderPath, const ArchiveExecutionPolicy &policy,
+               bool dryRun = false);
 
 private:
-  /*!
-   * \brief Adds .bak to the bsa name. If a bak file already exist, their sizes
-   * are compared. If the size is the same, the current bsa is removed.
-   * Otherwise, the bak file is also renamed.
-   * \param bsaPath The BSA to backup
-   * \return a QString containing the name of the backup-ed bsa, or an empty
-   * QString if the backup could not be created.
-   */
-  QString backup(const QString &bsaPath) const;
-  /*!
-   * \brief Checks if the file is present in the list filesToNotPack
-   * \return a bool indicating the state of the file. True if is allowed, false
-   * otherwise
-   */
-  bool isAllowedFile(const std::vector<std::u8string> &filesToNotPack,
-                     const btu::Path &dir,
-                     const std::filesystem::directory_entry &fileinfo) const;
+  /*! \brief Selects a retained backup name without replacing prior backups. */
+  [[nodiscard]] QString uniqueBackupPath(const QString &path) const;
+  /*! \brief Creates missing destination parents and journals their paths. */
+  void ensureDestinationParent(const QString &destination,
+                               const QString &liveRoot,
+                               QStringList &createdDirectories);
+  /*! \brief Reverses newly published Assets and created directories. */
+  [[nodiscard]] QStringList
+  rollbackPublished(const QStringList &published,
+                    const QStringList &createdDirectories);
+  /*! \brief Best-effort cleanup that cannot invalidate a committed result. */
+  void cleanupStaging(const QString &stagingPath) noexcept;
+
+  std::unique_ptr<ArchiveEngine> _ownedEngine;
+  std::unique_ptr<ArchiveFileOperations> _ownedFiles;
+  ArchiveEngine *_engine = nullptr;
+  ArchiveFileOperations *_files = nullptr;
 };

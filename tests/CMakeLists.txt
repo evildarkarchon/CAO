@@ -1,6 +1,8 @@
 find_package(Catch2 CONFIG REQUIRED)
 
 add_executable(Cathedral_Assets_Optimizer_Tests
+    ${CMAKE_CURRENT_SOURCE_DIR}/AnimationAssetTransaction.Tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/BsaOptimizer.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptionsUiState.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptions.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPolicy.Tests.cpp
@@ -8,12 +10,17 @@ add_executable(Cathedral_Assets_Optimizer_Tests
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkProfileSnapshot.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlan.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlanExecutor.Tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetPathConflicts.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/FilesystemOperations.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ModAssetMetadata.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ManagerPlanning.Tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/MainOptimizer.Tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/MeshAssetTransaction.Tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/LooseAssetScheduler.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptionsDraft.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/PluginsOperations.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesFormats.Tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/TextureAssetTransaction.Tests.cpp
 )
 
 target_include_directories(Cathedral_Assets_Optimizer_Tests PRIVATE
@@ -22,7 +29,7 @@ target_include_directories(Cathedral_Assets_Optimizer_Tests PRIVATE
 
 target_link_libraries(Cathedral_Assets_Optimizer_Tests PRIVATE
     Catch2::Catch2WithMain
-    Cathedral_Assets_Optimizer_Core
+    Cathedral_Assets_Optimizer_Execution
 )
 
 target_compile_features(Cathedral_Assets_Optimizer_Tests PRIVATE cxx_std_20)

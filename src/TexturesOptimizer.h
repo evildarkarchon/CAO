@@ -7,18 +7,35 @@
 #include "AssetWorkExecutionPolicy.h"
 #include "FilesystemOperations.h"
 #include "PluginsOperations.h"
+#include "TextureAssetTransaction.h"
 #include "pch.h"
 
-class TexturesOptimizer final : public QObject {
+class TexturesOptimizer final : public QObject, public TextureTransformEngine {
   Q_DECLARE_TR_FUNCTIONS(TexturesOptimizer)
 
 public:
   /*!
-   * \brief Creates a texture optimizer from resolved texture execution rules.
-   * \param policy The texture execution rules and target Profile format.
+   * \brief Creates a texture optimizer from resolved texture execution
+   * rules.
+   * \param policy The texture execution rules and target Profile
+   * format.
    */
   explicit TexturesOptimizer(TextureExecutionPolicy policy);
+  /*! \brief Releases COM ownership on the worker that created this engine. */
+  ~TexturesOptimizer() override;
 
+  /*!
+   * \brief Completes read-only texture inspection and in-memory
+   * transformation.
+   * \param request The source texture kind and Dry Run
+   * contract.
+   * \return Encoded, validated DDS bytes or a classified
+   * failure.
+   */
+  [[nodiscard]] TextureTransformResult
+  transform(const TextureTransformRequest &request) override;
+
+private:
   enum TextureType { DDS, TGA };
 
   void listLandscapeTextures(QDirIterator &it);
@@ -57,6 +74,7 @@ public:
    * \brief Perform various optimizations on the current texture
    * \param tWidth Optional resolved width target for the current texture.
    * \param tHeight Optional resolved height target for the current texture.
+   *
    * \return False if an error happens
    */
   bool optimize(const std::optional<size_t> &tWidth,
@@ -105,7 +123,6 @@ public:
 
   bool modifiedCurrentTexture = false;
 
-private:
   TextureExecutionPolicy _policy;
   std::unique_ptr<DirectX::ScratchImage> _image{};
   DirectX::TexMetadata _info{};
@@ -113,6 +130,7 @@ private:
   TextureType _type;
 
   Microsoft::WRL::ComPtr<ID3D11Device> _pDevice;
+  bool _comInitialized = false;
 
   bool createDevice(int adapter, ID3D11Device **pDevice) const;
   bool getDXGIFactory(IDXGIFactory1 **pFactory) const;

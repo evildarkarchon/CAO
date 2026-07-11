@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
+#include "AssetTransaction.h"
 #include "AssetWorkExecutionPolicy.h"
 #include "PluginsOperations.h"
 #include "pch.h"
@@ -27,6 +28,19 @@ public:
    */
   explicit MeshesOptimizer(MeshExecutionPolicy policy);
   /*!
+   * \brief Completes one mesh Asset transaction behind a single interface.
+   * \param filePath The mesh Asset path.
+   * \param role The mesh role derived from Mod Asset Metadata.
+   * \param dryRun Whether read-only inspection must replace persistence.
+   * \return A classified result with structured notices.
+   */
+  [[nodiscard]] AssetTransactionResult
+  executeAsset(const QString &filePath, MeshAssetRole role, bool dryRun);
+
+private:
+  enum class OptimizationOutcome { Completed, Unchanged, Failed };
+
+  /*!
    * \brief Scans the selected meshes for issues
    * \param nif The mesh to scan
    * \return An enum with the scan results
@@ -36,8 +50,10 @@ public:
    * \brief Optimize the providen mesh according to its type
    * \param filePath The path of the mesh to optimize
    * \param role The mesh role derived from Mod Asset Metadata.
+   * \return Whether the transaction committed, found no eligible change, or
+   * failed before commit.
    */
-  bool optimize(const QString &filepath, MeshAssetRole role);
+  OptimizationOutcome optimize(const QString &filepath, MeshAssetRole role);
   /*!
    * \brief Report the optimization that would be made on the file
    * \param filePath The path of the mesh to optimize
@@ -54,6 +70,5 @@ public:
   std::tuple<bool, nifly::NifFile> loadMesh(const QString &filepath) const;
   bool saveMesh(nifly::NifFile &nif, const QString &filepath) const;
 
-private:
   MeshExecutionPolicy _policy;
 };

@@ -4,155 +4,346 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "BsaOptimizer.h"
-#include "PluginsOperations.h"
 
-void BSAOptimizer::extract(QString bsaPath, const bool deleteBackup) const {
-  if (!deleteBackup) {
-    const QString backupPath = backup(bsaPath);
-    if (backupPath.isEmpty()) {
-      PLOG_ERROR << "BSA extraction skipped because backup could not be "
-                    "created for: " +
-                        bsaPath;
-      return;
-    }
+#include <QDir>
+#include <QFileInfo>
 
-    bsaPath = backupPath;
-  }
+#include <algorithm>
+#include <stdexcept>
 
-  PLOG_VERBOSE << bsaPath;
-
-  try {
-    btu::bsa::unpack(btu::bsa::UnpackSettings{bsaPath.toStdU16String(),
-                                              deleteBackup, false});
-  } catch (const std::exception &e) {
-    PLOG_ERROR << e.what();
-    PLOG_ERROR << "An error occured during the extraction of: " + bsaPath +
-                      '\n' +
-                      "Please extract it manually. The BSA was not deleted.";
-    return;
-  }
-
-  PLOG_INFO << "BSA successfully extracted: " + bsaPath;
+namespace {
+bool isSafeRelativePath(const QString &relativePath) {
+  const QString clean = QDir::cleanPath(relativePath);
+  return !relativePath.isEmpty() && !QDir::isAbsolutePath(relativePath) &&
+         clean != ".." && !clean.startsWith("../") && !clean.startsWith("..\\");
 }
 
-void handle_errors(std::vector<std::pair<btu::Path, std::string>> errs) {
-  if (errs.empty())
-    return;
+QString normalizedAbsolutePath(const QString &path) {
+  return QDir::cleanPath(QFileInfo(path).absoluteFilePath()).toLower();
+}
 
-  PLOG_WARNING << "The following files failed to be packed. They will be "
-                  "renamed to *.caobad:\n";
-  for (auto &&[file, err] : errs) {
-    PLOG_WARNING << file.native() << " : " << err;
-    std::filesystem::rename(file, file.u8string() + u8".caobad");
+bool isLoosePackableAsset(const QString &path) {
+  const QString suffix = QFileInfo(path).suffix().toLower();
+  return suffix != "bsa" && suffix != "ba2" && suffix != "esp" &&
+         suffix != "esm" && suffix != "esl";
+}
+
+[[noreturn]] void throwFailure(ArchiveOperation operation,
+                               ArchiveFailureStage stage,
+                               const QString &assetPath,
+                               const std::exception &error,
+                               QStringList rollback = {}) {
+  throw ArchiveExecutionError(operation, stage, assetPath,
+                              QString::fromUtf8(error.what()),
+                              std::move(rollback));
+}
+} // namespace
+
+BSAOptimizer::BSAOptimizer()
+    : _ownedEngine(std::make_unique<BtuArchiveEngine>()),
+      _ownedFiles(std::make_unique<QtArchiveFileOperations>()),
+      _engine(_ownedEngine.get()), _files(_ownedFiles.get()) {}
+
+BSAOptimizer::BSAOptimizer(ArchiveEngine &engine, ArchiveFileOperations &files)
+    : _engine(&engine), _files(&files) {}
+
+void BSAOptimizer::extract(const QString &archivePath, const bool deleteBackup,
+                           const bool dryRun) {
+  if (dryRun) {
+    PLOG_INFO << archivePath + " would be extracted from BSA.";
+    return;
   }
+
+  QString staging;
+  QStringList published;
+  QStringList createdDirectories;
+  const QString liveRoot = QFileInfo(archivePath).absolutePath();
+
+  try {
+    staging = _files->createSiblingStagingDirectory(archivePath, "extract");
+  } catch (const std::exception &error) {
+    throwFailure(ArchiveOperation::Extraction, ArchiveFailureStage::Staging,
+                 archivePath, error);
+  }
+
+  try {
+    _engine->extractTo(archivePath, staging);
+  } catch (const std::exception &error) {
+    cleanupStaging(staging);
+    throwFailure(ArchiveOperation::Extraction, ArchiveFailureStage::Engine,
+                 archivePath, error);
+  }
+
+  QVector<ArchiveFileEntry> entries;
+  try {
+    entries = _files->listRecursively(staging);
+    for (const auto &entry : entries) {
+      if (entry.symbolicLink ||
+          (entry.regularFile && !isSafeRelativePath(entry.relativePath))) {
+        throw std::runtime_error(QString("Unsafe staged archive path: %1")
+                                     .arg(entry.relativePath)
+                                     .toStdString());
+      }
+    }
+  } catch (const std::exception &error) {
+    cleanupStaging(staging);
+    throwFailure(ArchiveOperation::Extraction, ArchiveFailureStage::Validation,
+                 archivePath, error);
+  }
+
+  std::sort(entries.begin(), entries.end(),
+            [](const ArchiveFileEntry &left, const ArchiveFileEntry &right) {
+              return left.relativePath.compare(right.relativePath,
+                                               Qt::CaseInsensitive) < 0;
+            });
+
+  try {
+    for (const auto &entry : entries) {
+      if (!entry.regularFile)
+        continue;
+
+      const QString destination = QDir(liveRoot).filePath(entry.relativePath);
+      // Existing loose Assets always win. This also makes the first extracted
+      // archive win a collision with a later archive in the same execution.
+      if (_files->exists(destination))
+        continue;
+
+      ensureDestinationParent(destination, liveRoot, createdDirectories);
+      _files->move(entry.absolutePath, destination);
+      published << destination;
+    }
+
+    if (deleteBackup) {
+      _files->removeFile(archivePath);
+    } else {
+      _files->move(archivePath, uniqueBackupPath(archivePath));
+    }
+  } catch (const std::exception &error) {
+    const QStringList rollback =
+        rollbackPublished(published, createdDirectories);
+    cleanupStaging(staging);
+    throwFailure(ArchiveOperation::Extraction,
+                 rollback.isEmpty() ? ArchiveFailureStage::Publishing
+                                    : ArchiveFailureStage::Rollback,
+                 archivePath, error, rollback);
+  }
+
+  cleanupStaging(staging);
+  PLOG_INFO << "BSA successfully extracted: " + archivePath;
 }
 
 void BSAOptimizer::packAll(const QString &folderPath,
-                           const ArchiveExecutionPolicy &policy) const {
-  using dir_it = std::filesystem::directory_iterator;
-
-  PLOG_VERBOSE << "Packing all loose files into BSAs";
-
-  const auto game = policy.settings;
-  const std::filesystem::path dir = folderPath.toStdU16String();
-
-  auto plugins = btu::bsa::list_plugins(dir_it(dir), {}, game);
-  btu::bsa::clean_dummy_plugins(plugins, game);
-
-  auto bsas = btu::bsa::split(
-      dir, game,
-      [this, &policy](const btu::Path &dir,
-                      btu::fs::directory_entry const &fileinfo) {
-        return btu::bsa::default_is_allowed_path(dir, fileinfo) &&
-               isAllowedFile(policy.filesToNotPack, dir, fileinfo);
-      });
-
-  if (policy.mergeIncompressible || policy.mergeTextures) {
-    const auto msets = [&] {
-      btu::bsa::MergeSettings sets = static_cast<btu::bsa::MergeSettings>(0);
-      if (policy.mergeIncompressible)
-        sets |= btu::bsa::MergeSettings::MergeIncompressible;
-      if (policy.mergeTextures)
-        sets |= btu::bsa::MergeSettings::MergeTextures;
-      return sets;
-    }();
-    btu::bsa::merge(bsas, msets);
+                           const ArchiveExecutionPolicy &policy,
+                           const bool dryRun) {
+  if (dryRun) {
+    PLOG_INFO << folderPath + " would be packed into BSA archives.";
+    return;
   }
 
-  const auto default_plug =
-      btu::bsa::FilePath(dir, dir.filename().u8string(), u8"", u8".esp",
-                         btu::bsa::FileTypes::Plugin);
-  if (plugins.empty()) // Used to find BSA name
-    plugins.emplace_back(default_plug);
+  QString staging;
+  try {
+    staging = _files->createSiblingStagingDirectory(folderPath, "pack");
+  } catch (const std::exception &error) {
+    throwFailure(ArchiveOperation::Packing, ArchiveFailureStage::Staging,
+                 folderPath, error);
+  }
 
-  for (auto &&bsa : bsas) {
-    try {
-      const auto files = std::vector(bsa.begin(), bsa.end());
-      auto name = btu::bsa::find_archive_name(plugins, game, bsa.get_type());
-      bsa.set_out_path(std::move(name).full_path());
+  QSet<QString> inputManifest;
+  try {
+    const auto inputs = _files->listRecursively(folderPath);
+    for (const auto &input : inputs) {
+      if (input.regularFile && !input.symbolicLink &&
+          isSafeRelativePath(input.relativePath) &&
+          isLoosePackableAsset(input.relativePath)) {
+        inputManifest.insert(normalizedAbsolutePath(input.absolutePath));
+      }
+    }
+  } catch (const std::exception &error) {
+    cleanupStaging(staging);
+    throwFailure(ArchiveOperation::Packing, ArchiveFailureStage::Validation,
+                 folderPath, error);
+  }
 
-      const auto errs =
-          btu::bsa::write(policy.compress, std::move(bsa), dir);
-      handle_errors(std::move(errs));
-      if (policy.deleteSource) {
-        std::for_each(files.begin(), files.end(), [](auto &&p) {
-          try {
-            std::filesystem::remove(p);
-          } catch (const std::exception &) {
-            PLOG_ERROR << "Failed to remove packed file: " << p.native();
-          }
-        });
+  StagedArchivePacking packing;
+  try {
+    packing = _engine->packTo(folderPath, staging, policy);
+  } catch (const std::exception &error) {
+    cleanupStaging(staging);
+    throwFailure(ArchiveOperation::Packing, ArchiveFailureStage::Engine,
+                 folderPath, error);
+  }
+
+  try {
+    QSet<QString> destinations;
+    const QDir stagingDir(staging);
+    for (const auto &output : packing.outputs) {
+      const QString stagedRelative =
+          stagingDir.relativeFilePath(output.stagingPath);
+      if (!_files->exists(output.stagingPath) ||
+          !isSafeRelativePath(stagedRelative) ||
+          !isSafeRelativePath(output.relativeDestination)) {
+        throw std::runtime_error(QString("Invalid staged archive output: %1")
+                                     .arg(output.stagingPath)
+                                     .toStdString());
+      }
+      const QString normalized =
+          QDir::cleanPath(output.relativeDestination).toLower();
+      if (destinations.contains(normalized)) {
+        throw std::runtime_error(
+            QString("Duplicate staged archive destination: %1")
+                .arg(output.relativeDestination)
+                .toStdString());
+      }
+      destinations.insert(normalized);
+    }
+    for (const QString &source : packing.packedSourceAssets) {
+      const QString relative = QDir(folderPath).relativeFilePath(source);
+      if (!isSafeRelativePath(relative) || !isLoosePackableAsset(relative) ||
+          !inputManifest.contains(normalizedAbsolutePath(source))) {
+        throw std::runtime_error(
+            QString("Archive engine returned an unsafe packed source: %1")
+                .arg(source)
+                .toStdString());
+      }
+    }
+  } catch (const std::exception &error) {
+    cleanupStaging(staging);
+    throwFailure(ArchiveOperation::Packing, ArchiveFailureStage::Validation,
+                 folderPath, error);
+  }
+
+  struct PublishedOutput {
+    QString destination;
+    QString backup;
+    bool published = false;
+  };
+  QVector<PublishedOutput> journal;
+  QStringList createdDirectories;
+
+  try {
+    for (const auto &output : packing.outputs) {
+      const QString destination =
+          QDir(folderPath).filePath(output.relativeDestination);
+
+      if (output.kind == StagedArchiveOutputKind::DummyPlugin &&
+          _files->exists(destination)) {
+        // A generated dummy must never replace a real loose plugin.
+        continue;
       }
 
-    } catch (const std::exception &e) {
-      PLOG_ERROR << QString("An error occurred while packing BSAs: \n%1")
-                        .arg(e.what());
+      ensureDestinationParent(destination, folderPath, createdDirectories);
+      PublishedOutput entry{destination, {}, false};
+      if (_files->exists(destination)) {
+        entry.backup = uniqueBackupPath(destination);
+        _files->move(destination, entry.backup);
+      }
+      journal.push_back(entry);
+      _files->move(output.stagingPath, destination);
+      journal.back().published = true;
+    }
+  } catch (const std::exception &error) {
+    QStringList rollback;
+    for (auto it = journal.rbegin(); it != journal.rend(); ++it) {
+      try {
+        if (it->published)
+          _files->removeFile(it->destination);
+        if (!it->backup.isEmpty())
+          _files->move(it->backup, it->destination);
+      } catch (const std::exception &rollbackError) {
+        rollback << QString::fromUtf8(rollbackError.what());
+      }
+    }
+    rollback.append(rollbackPublished({}, createdDirectories));
+    cleanupStaging(staging);
+    throwFailure(ArchiveOperation::Packing,
+                 rollback.isEmpty() ? ArchiveFailureStage::Publishing
+                                    : ArchiveFailureStage::Rollback,
+                 folderPath, error, rollback);
+  }
+
+  cleanupStaging(staging);
+
+  if (policy.deleteSource) {
+    QStringList failures;
+    for (const QString &source : packing.packedSourceAssets) {
+      try {
+        // Source deletion is deliberately after the entire archive output set
+        // commits. A failure leaves safe duplicates and retained backups.
+        _files->removeFile(source);
+      } catch (const std::exception &error) {
+        failures << QString::fromUtf8(error.what());
+      }
+    }
+    if (!failures.isEmpty()) {
+      throw ArchiveExecutionError(
+          ArchiveOperation::Packing, ArchiveFailureStage::SourceCleanup,
+          folderPath,
+          QString("Archive outputs committed, but loose source cleanup failed: "
+                  "%1")
+              .arg(failures.join("; ")));
     }
   }
 
-  if (policy.createDummies) {
-    const auto archives = btu::bsa::list_archive(dir_it(dir), {}, game);
-    btu::bsa::make_dummy_plugins(archives, game);
+  PLOG_INFO << "BSA archive set successfully packed: " + folderPath;
+}
+
+QString BSAOptimizer::uniqueBackupPath(const QString &path) const {
+  QString candidate = path + ".bak";
+  int suffix = 1;
+  while (_files->exists(candidate))
+    candidate = QString("%1.bak.%2").arg(path).arg(suffix++);
+  return candidate;
+}
+
+void BSAOptimizer::ensureDestinationParent(const QString &destination,
+                                           const QString &liveRoot,
+                                           QStringList &createdDirectories) {
+  QString directory = QFileInfo(destination).absolutePath();
+  QStringList missing;
+  const QString normalizedRoot = QDir(liveRoot).absolutePath();
+  while (directory != normalizedRoot && !_files->exists(directory)) {
+    missing.prepend(directory);
+    const QString parent = QFileInfo(directory).absolutePath();
+    if (parent == directory)
+      throw std::runtime_error("Destination escaped its live root");
+    directory = parent;
+  }
+  for (const QString &path : missing) {
+    _files->createDirectories(path);
+    createdDirectories << path;
   }
 }
 
-QString BSAOptimizer::backup(const QString &bsaPath) const {
-  QFile bsaBackupFile(bsaPath + ".bak");
-  const QFile bsaFile(bsaPath);
-
-  while (bsaBackupFile.exists()) {
-    if (bsaFile.size() == bsaBackupFile.size() &&
-        QFile::remove(bsaBackupFile.fileName()))
-      break;
-
-    bsaBackupFile.setFileName(bsaBackupFile.fileName() + ".bak");
-  }
-
-  if (!QFile::rename(bsaPath, bsaBackupFile.fileName())) {
-    PLOG_ERROR << "Failed to backup BSA : " << bsaPath << " to "
-               << bsaBackupFile.fileName();
-    return {};
-  }
-
-  PLOG_VERBOSE << "Backuping BSA : " << bsaPath << " to "
-               << bsaBackupFile.fileName();
-
-  return bsaBackupFile.fileName();
-}
-
-bool BSAOptimizer::isAllowedFile(
-    const std::vector<std::u8string> &filesToNotPack,
-    [[maybe_unused]] btu::Path const &dir,
-    btu::fs::directory_entry const &fileinfo) const {
-  const auto &path = fileinfo.path().u8string();
-  for (const auto &fileToNotPack : filesToNotPack) {
-    if (btu::common::str_contain(path, fileToNotPack, false)) {
-      PLOG_VERBOSE << btu::common::as_ascii(path)
-                   << " ignored because of filesToNotPack. Rule: "
-                   << btu::common::as_ascii(fileToNotPack);
-      return false;
+QStringList
+BSAOptimizer::rollbackPublished(const QStringList &published,
+                                const QStringList &createdDirectories) {
+  QStringList failures;
+  for (auto it = published.crbegin(); it != published.crend(); ++it) {
+    try {
+      _files->removeFile(*it);
+    } catch (const std::exception &error) {
+      failures << QString::fromUtf8(error.what());
     }
   }
+  for (auto it = createdDirectories.crbegin(); it != createdDirectories.crend();
+       ++it) {
+    try {
+      _files->removeEmptyDirectory(*it);
+    } catch (const std::exception &error) {
+      failures << QString::fromUtf8(error.what());
+    }
+  }
+  return failures;
+}
 
-  return true;
+void BSAOptimizer::cleanupStaging(const QString &stagingPath) noexcept {
+  if (stagingPath.isEmpty())
+    return;
+  try {
+    _files->removeTree(stagingPath);
+  } catch (const std::exception &error) {
+    // A committed transaction remains valid if only its private staging
+    // cleanup fails. Keep the diagnostic without undoing published Assets.
+    PLOG_WARNING << "Failed to clean archive staging: " << error.what();
+  }
 }

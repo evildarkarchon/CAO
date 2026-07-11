@@ -4,17 +4,21 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
-#include "AnimationsOptimizer.h"
 #include "AssetWorkExecutionPolicy.h"
 #include "AssetWorkPlan.h"
 #include "BsaOptimizer.h"
-#include "MeshesOptimizer.h"
 #include "ModAssetMetadata.h"
-#include "TexturesOptimizer.h"
+
+#include <memory>
+
+class AssetQuarantine;
+class AssetTransactionReportQueue;
+class LooseAssetTransactions;
+class MainOptimizerInternalFactory;
 
 /*!
- * \brief Coordinates all the subclasses in order to optimize BSAs, textures,
- * meshes and animations
+ * \brief Adapts the three Asset Work Plan operations to complete archive and
+ * loose Asset transactions.
  */
 class MainOptimizer final : public QObject {
   Q_DECLARE_TR_FUNCTIONS(MainOptimizer)
@@ -46,15 +50,28 @@ public:
   void packArchive(const ArchivePackingWorkItem &workItem);
 
 private:
-  void processNif(const QString &file, MeshAssetRole role);
-  void processTexture(const QString &file,
-                      const TexturesOptimizer::TextureType &type);
-  void processHkx(const QString &file);
+  friend class MainOptimizerInternalFactory;
+
+  /*!
+   * \brief Creates an optimizer with internal adapters for production or tests.
+   * \param executionPolicy Resolved execution rules.
+   * \param transactions Complete loose Asset transaction adapter.
+   * \param quarantine Malformed Asset quarantine adapter.
+   * \param reports Thread-safe report queue owned by execution composition.
+   */
+  MainOptimizer(AssetWorkExecutionPolicy executionPolicy,
+                std::unique_ptr<LooseAssetTransactions> transactions,
+                std::unique_ptr<AssetQuarantine> quarantine,
+                std::shared_ptr<AssetTransactionReportQueue> reports);
+
+  /*! \brief Drains queued transaction notices to the legacy direct logger. */
+  void drainReportsToLog();
 
   AssetWorkExecutionPolicy _executionPolicy;
 
-  BSAOptimizer _bsaOpt;
-  MeshesOptimizer _meshesOpt;
-  AnimationsOptimizer _animOpt;
-  TexturesOptimizer _texturesOpt;
+  std::unique_ptr<BSAOptimizer> _bsaOpt;
+  std::unique_ptr<LooseAssetTransactions> _looseAssetTransactions;
+  std::unique_ptr<AssetQuarantine> _quarantine;
+  std::shared_ptr<AssetTransactionReportQueue> _reports;
+  bool _drainReportsImmediately = false;
 };

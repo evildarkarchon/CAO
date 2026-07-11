@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
+#include "AnimationAssetTransaction.h"
 #include "pch.h"
 
 /*!
@@ -14,16 +15,18 @@
 class AnimationsOptimizer final : public QObject {
 public:
   /*!
-   * \brief Port an Oldrim animation to Skyrim Special Edition using Bethesda
-   * Havok Post Processing Tool
-   * \param filePath The path of the file to optimize
-   * \param pkFormat The format to use
+   * \brief Creates the production complete animation transaction.
+   * \param dryRun Whether conversion must report intent without mutation.
    */
-  void convert(const QString &filePath);
+  explicit AnimationsOptimizer(bool dryRun = false);
+
+  /*!
+   * \brief Completes one animation Asset transaction.
+   * \param filePath The animation Asset to inspect and possibly convert.
+   * \return Structured completion, unchanged, or operational failure details.
+   */
+  AssetTransactionResult convert(const QString &filePath);
 
 private:
-  bool hkxcmdFound = false;
-  std::once_flag onceFlag;
-
-  constexpr static inline auto hkxcmdPath = "bin/hkxcmd.exe";
+  std::unique_ptr<AnimationAssetTransaction> _transaction;
 };
