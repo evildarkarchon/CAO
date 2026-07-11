@@ -162,8 +162,7 @@ QStringList PluginsOperations::listLandscapeTextures(const QString &filepath) {
           file.read(reinterpret_cast<char *>(&formId),
                     static_cast<std::streamsize>(sizeof formId));
           const auto bytesRead = file.gcount();
-          if (bytesRead != static_cast<std::streamsize>(sizeof formId) ||
-              !file.good()) {
+          if (bytesRead != static_cast<std::streamsize>(sizeof formId)) {
             PLOG_WARNING << "Skipping malformed TNAM field in " << filepath
                           << ": expected " << sizeof formId << " bytes, read "
                           << bytesRead;

@@ -128,6 +128,33 @@ TEST_CASE("PluginsOperations listLandscapeTextures skips undersized TNAM fields"
             QStringList{"textures/valid.dds"});
 }
 
+TEST_CASE("PluginsOperations listLandscapeTextures reads TNAM form id at EOF")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    constexpr uint32_t formId = 0x01020304;
+
+    QByteArray tnamPayload;
+    appendStruct(tnamPayload, formId);
+
+    const QByteArray txstRecord =
+        makeRecord(GROUP_TXST, formId, makeField(GROUP_TX00, "landscape.dds"));
+    const QByteArray ltexRecord =
+        makeRecord(GROUP_LTEX, 0, makeField(GROUP_TNAM, tnamPayload));
+
+    QByteArray plugin;
+    plugin.append(makeRecord(GROUP_TES4, 0, {}));
+    plugin.append(makeGroup(GROUP_TXST, txstRecord));
+    plugin.append(makeGroup(GROUP_LTEX, ltexRecord));
+
+    const QString pluginPath = QDir(tempDir.path()).filePath("LandscapeAtEof.esp");
+    writeFile(pluginPath, plugin);
+
+    REQUIRE(PluginsOperations::listLandscapeTextures(pluginPath) ==
+            QStringList{"textures/landscape.dds"});
+}
+
 TEST_CASE("PluginsOperations listLandscapeTextures stops after a short TNAM form id read")
 {
     QTemporaryDir tempDir;
