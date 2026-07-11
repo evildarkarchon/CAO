@@ -4,7 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
-#include "OptionsCAO.h"
+#include "AssetWorkOptionsDraft.h"
 
 #include <QString>
 #include <cstddef>
@@ -68,7 +68,7 @@ struct AdvancedOptionsUiState {
 struct AssetWorkOptionsUiState {
   bool dryRun = false;
   bool debugLog = false;
-  OptionsCAO::OptimizationMode mode = OptionsCAO::SingleMod;
+  AssetWorkMode mode = AssetWorkMode::SingleMod;
   QString userPath;
   ArchiveOptionsUiState archive;
   TextureOptionsUiState textures;
@@ -79,23 +79,25 @@ struct AssetWorkOptionsUiState {
 
 namespace AssetWorkOptionsUi {
 /*!
- * \brief Presents Asset Work Options as deterministic, widget-free screen
- * state.
- * \param options The stored Asset Work Options value to present.
+ * \brief Presents an Asset Work Options draft as deterministic, widget-free
+ * screen state.
+ * \param options The raw adapter draft to present.
  * \param context Active Profile and user-interface context that affects which
  * options are available.
  * \return A screen-state value with Profile, dry-run, and mode rules applied.
  */
 [[nodiscard]] AssetWorkOptionsUiState
-present(const OptionsCAO &options, const AssetWorkOptionsUiContext &context);
+present(const AssetWorkOptionsDraft &options,
+        const AssetWorkOptionsUiContext &context);
 
 /*!
- * \brief Captures Asset Work Options from widget-free screen state.
+ * \brief Captures an Asset Work Options draft from widget-free screen state.
  * \param state The current screen state after reducers and Profile
  * availability have been applied.
- * \param options The Asset Work Options value to update in place.
+ * \param options The raw adapter draft to update in place.
  */
-void capture(const AssetWorkOptionsUiState &state, OptionsCAO &options);
+void capture(const AssetWorkOptionsUiState &state,
+             AssetWorkOptionsDraft &options);
 
 /*!
  * \brief Applies the dry-run reducer to screen state.
@@ -109,6 +111,5 @@ void applyDryRun(AssetWorkOptionsUiState &state, bool dryRun);
  * \param state The screen state to update.
  * \param mode The selected single-Mod or several-Mod optimization mode.
  */
-void applyMode(AssetWorkOptionsUiState &state,
-               OptionsCAO::OptimizationMode mode);
+void applyMode(AssetWorkOptionsUiState &state, AssetWorkMode mode);
 } // namespace AssetWorkOptionsUi

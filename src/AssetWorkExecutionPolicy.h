@@ -8,9 +8,8 @@
 
 #include "btu/bsa/settings.hpp"
 
+#include <utility>
 #include <vector>
-
-class OptionsCAO;
 
 struct ArchiveExecutionPolicy {
   bool deleteBackup = false;
@@ -48,41 +47,37 @@ struct MeshExecutionPolicy {
   bool renameTgaReferences = false;
 };
 
-struct ProfileExecutionSnapshot {
-  btu::bsa::Settings archiveSettings;
-  std::vector<std::u8string> filesToNotPack;
-  nifly::NiFileVersion meshFileVersion = nifly::V20_2_0_7;
-  uint meshStream = 0;
-  uint meshUser = 0;
-  DXGI_FORMAT textureFormat = DXGI_FORMAT_UNKNOWN;
-  bool texturesCompressInterface = false;
-  QList<DXGI_FORMAT> textureUnwantedFormats;
-  bool texturesConvertTga = false;
-};
+class AssetWorkExecutionPolicy final {
+public:
+  [[nodiscard]] bool dryRun() const noexcept { return _dryRun; }
+  [[nodiscard]] const ArchiveExecutionPolicy &archive() const noexcept {
+    return _archive;
+  }
+  [[nodiscard]] const TextureExecutionPolicy &texture() const noexcept {
+    return _texture;
+  }
+  [[nodiscard]] const MeshExecutionPolicy &mesh() const noexcept {
+    return _mesh;
+  }
 
-struct AssetWorkExecutionPolicy {
-  bool dryRun = false;
-  ArchiveExecutionPolicy archive;
-  TextureExecutionPolicy texture;
-  MeshExecutionPolicy mesh;
+private:
+  friend class AssetWorkPolicyResolver;
 
   /*!
-   * \brief Resolves Asset Work Execution Policy from requested options and the
-   * active Profile.
-   * \param options The requested execution behavior captured from UI or CLI.
-   * \return The value policy used by Asset Work Plan Execution adapters.
+   * \brief Stores the execution settings produced by the combined resolver.
+   * \param dryRun Whether execution must avoid filesystem mutations.
+   * \param archive Resolved archive execution settings.
+   * \param texture Resolved texture execution settings.
+   * \param mesh Resolved mesh execution settings.
    */
-  [[nodiscard]] static AssetWorkExecutionPolicy
-  resolve(const OptionsCAO &options);
+  AssetWorkExecutionPolicy(bool dryRun, ArchiveExecutionPolicy archive,
+                           TextureExecutionPolicy texture,
+                           MeshExecutionPolicy mesh)
+      : _dryRun(dryRun), _archive(std::move(archive)),
+        _texture(std::move(texture)), _mesh(std::move(mesh)) {}
 
-  /*!
-   * \brief Resolves Asset Work Execution Policy from requested options and a
-   * Profile snapshot.
-   * \param options The requested execution behavior captured from UI or CLI.
-   * \param profile The Profile facts needed while executing planned Asset Work
-   * Items.
-   * \return The value policy used by Asset Work Plan Execution adapters.
-   */
-  [[nodiscard]] static AssetWorkExecutionPolicy
-  resolve(const OptionsCAO &options, const ProfileExecutionSnapshot &profile);
+  bool _dryRun = false;
+  ArchiveExecutionPolicy _archive;
+  TextureExecutionPolicy _texture;
+  MeshExecutionPolicy _mesh;
 };

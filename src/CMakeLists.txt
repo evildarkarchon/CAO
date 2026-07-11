@@ -26,8 +26,14 @@ set(CMAKE_AUTORCC ON)
 #SOURCES
 
 set(CORE_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkExecutionPolicy.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkMode.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkExecutionPolicy.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptions.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptions.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPolicyResolver.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPolicyResolver.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkProfileSnapshot.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkProfileSnapshot.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptionsUiState.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptionsUiState.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPolicy.cpp
@@ -43,8 +49,8 @@ set(CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/ManagerPlanning.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ModAssetMetadata.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ModAssetMetadata.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/OptionsCAO.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/OptionsCAO.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptionsDraft.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptionsDraft.h
     ${CMAKE_CURRENT_SOURCE_DIR}/PluginsOperations.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/PluginsOperations.h
     ${CMAKE_CURRENT_SOURCE_DIR}/PluginsOperationsInternal.h
@@ -65,7 +71,7 @@ set(APP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Manager.h
     ${CMAKE_CURRENT_SOURCE_DIR}/MeshesOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/MeshesOptimizer.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/OptionsCAOUi.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptionsDraftUi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ProfilesUi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesOptimizer.h

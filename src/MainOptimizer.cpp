@@ -5,12 +5,23 @@
 
 #include "MainOptimizer.h"
 
-MainOptimizer::MainOptimizer(
-    const AssetWorkExecutionPolicy &executionPolicy)
-    : _executionPolicy(executionPolicy), _meshesOpt(_executionPolicy.mesh),
-      _texturesOpt(_executionPolicy.texture) {}
+MainOptimizer::MainOptimizer(const AssetWorkExecutionPolicy &executionPolicy)
+    : _executionPolicy(executionPolicy), _meshesOpt(_executionPolicy.mesh()),
+      _texturesOpt(_executionPolicy.texture()) {}
 
-void handleBadFile(const QString &path) {
+/*!
+ * \brief Quarantines a malformed Asset unless execution is a Dry Run.
+ * \param path The Asset path that could not be processed.
+ * \param dryRun Whether filesystem mutations are forbidden for this run.
+ */
+void handleBadFile(const QString &path, const bool dryRun) {
+  // Quarantine is itself an Asset mutation, so Dry Run may only report it.
+  if (dryRun) {
+    PLOG_ERROR
+        << QString("Dry Run left malformed Asset unchanged: %1").arg(path);
+    return;
+  }
+
   if (QFile::rename(path, path + ".caobad")) {
     PLOG_ERROR << QString("%1 was renamed to %2").arg(path, path + ".caobad");
   } else {
@@ -21,7 +32,7 @@ void handleBadFile(const QString &path) {
 void MainOptimizer::extractArchive(const ArchiveExtractionWorkItem &workItem) {
   const QString &file = workItem.path;
   if (QFileInfo(file).isFile()) {
-    if (_executionPolicy.dryRun) {
+    if (_executionPolicy.dryRun()) {
       PLOG_INFO << file + " would be extracted from BSA.";
       return;
     }
@@ -29,7 +40,7 @@ void MainOptimizer::extractArchive(const ArchiveExtractionWorkItem &workItem) {
     PLOG_INFO << "BSA found ! Extracting...(this may take a long time, do not "
                  "force close the program): " +
                      file;
-    _bsaOpt.extract(file, _executionPolicy.archive.deleteBackup);
+    _bsaOpt.extract(file, _executionPolicy.archive().deleteBackup);
   }
 
   // TODO if BSA content optimization is added, route it through execution
@@ -58,24 +69,29 @@ void MainOptimizer::processLooseAsset(const LooseAssetWorkItem &workItem,
   } catch (const std::exception &e) {
     PLOG_ERROR << "Cannot process: " + workItem.path
                << "\nAn exception occurred: " << e.what();
-    handleBadFile(workItem.path);
+    handleBadFile(workItem.path, _executionPolicy.dryRun());
   }
 }
 
 void MainOptimizer::packArchive(const ArchivePackingWorkItem &workItem) {
   const QString &folder = workItem.folder;
-  if (!QDir(folder).exists() || _executionPolicy.dryRun)
+  if (!QDir(folder).exists())
     return;
 
+  if (_executionPolicy.dryRun()) {
+    PLOG_INFO << folder + " would be packed into BSA archives.";
+    return;
+  }
+
   PLOG_INFO << "Creating BSA...";
-  _bsaOpt.packAll(folder, _executionPolicy.archive);
+  _bsaOpt.packAll(folder, _executionPolicy.archive());
 }
 
 void MainOptimizer::processTexture(const QString &file,
                                    const TexturesOptimizer::TextureType &type) {
   if (!_texturesOpt.open(file, type)) {
     PLOG_ERROR << "Failed to open: " << file;
-    handleBadFile(file);
+    handleBadFile(file, _executionPolicy.dryRun());
     return;
   }
 
@@ -83,9 +99,9 @@ void MainOptimizer::processTexture(const QString &file,
   std::optional<size_t> width;
   std::optional<size_t> height;
 
-  if (_executionPolicy.texture.resizeByRatio) {
-    if (_executionPolicy.texture.targetWidthRatio == 0 ||
-        _executionPolicy.texture.targetHeightRatio == 0) {
+  if (_executionPolicy.texture().resizeByRatio) {
+    if (_executionPolicy.texture().targetWidthRatio == 0 ||
+        _executionPolicy.texture().targetHeightRatio == 0) {
       PLOG_ERROR << "Cannot resize texture by ratio because target ratios must "
                     "be greater than zero: " +
                         file;
@@ -93,15 +109,15 @@ void MainOptimizer::processTexture(const QString &file,
     }
 
     width = _texturesOpt.getInfo().width /
-            _executionPolicy.texture.targetWidthRatio;
+            _executionPolicy.texture().targetWidthRatio;
     height = _texturesOpt.getInfo().height /
-             _executionPolicy.texture.targetHeightRatio;
-  } else if (_executionPolicy.texture.resizeBySize) {
-    width = _executionPolicy.texture.targetWidth;
-    height = _executionPolicy.texture.targetHeight;
+             _executionPolicy.texture().targetHeightRatio;
+  } else if (_executionPolicy.texture().resizeBySize) {
+    width = _executionPolicy.texture().targetWidth;
+    height = _executionPolicy.texture().targetHeight;
   }
 
-  if (_executionPolicy.dryRun)
+  if (_executionPolicy.dryRun())
     _texturesOpt.dryOptimize(width, height);
   else {
     if (!_texturesOpt.optimize(width, height)) {
@@ -124,18 +140,18 @@ void MainOptimizer::processTexture(const QString &file,
 }
 
 void MainOptimizer::processHkx(const QString &file) {
-  if (_executionPolicy.dryRun)
+  if (_executionPolicy.dryRun())
     PLOG_INFO << file + " would be converted to the appropriate format.";
   else
     _animOpt.convert(file);
 }
 
 void MainOptimizer::processNif(const QString &file, const MeshAssetRole role) {
-  if (_executionPolicy.mesh.optimizationLevel == 0)
+  if (_executionPolicy.mesh().optimizationLevel == 0)
     return;
 
-  if (_executionPolicy.dryRun)
+  if (_executionPolicy.dryRun())
     _meshesOpt.dryOptimize(file, role);
   else if (!_meshesOpt.optimize(file, role))
-    handleBadFile(file);
+    handleBadFile(file, _executionPolicy.dryRun());
 }

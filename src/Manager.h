@@ -4,20 +4,25 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
+#include "AssetWorkOptions.h"
 #include "AssetWorkPlan.h"
+#include "AssetWorkProfileSnapshot.h"
 #include "MainOptimizer.h"
-#include "OptionsCAO.h"
 #include "pch.h"
 
 #include <atomic>
+#include <optional>
 
 class Manager final : public QObject {
   Q_OBJECT
 public:
   /*!
-   * \brief Constructor that will perform a number of functions
+   * \brief Creates an Asset Work Plan Execution manager from owned run input.
+   * \param options Validated immutable Asset Work Options.
+   * \param selectedPath The selected Mod or parent path to process.
+   * \param debugLog Whether verbose debug records should be written.
    */
-  explicit Manager(const OptionsCAO &opt);
+  Manager(AssetWorkOptions options, QString selectedPath, bool debugLog);
   /*!
    * \brief The main process
    */
@@ -33,18 +38,15 @@ public:
 
 private:
   /*!
-   * \brief Initializes the manager
+   * \brief Initializes logging, validates run context, and captures the
+   * selected Profile exactly once.
+   * \throws std::runtime_error When the selected path or Profile is invalid.
    */
   void init();
   /*!
    * \brief Read ignoredMods.txt and store it to a list
    */
   void readIgnoredMods();
-  /*!
-   * \brief Builds the planner request from the current options and profile.
-   * \return The request used to plan asset work.
-   */
-  AssetWorkPlanRequest createAssetWorkPlanRequest() const;
   /*!
    * \brief The number of completed files. Used to determine progress
    */
@@ -53,7 +55,13 @@ private:
    * \brief The optimization options used to build planning and execution
    * policy.
    */
-  const OptionsCAO &_options;
+  AssetWorkOptions _options;
+  /*! \brief Selected Mod or parent path, kept outside Asset Work Options. */
+  QString _selectedPath;
+  /*! \brief Logging preference, kept outside Asset Work Options. */
+  bool _debugLog = false;
+  /*! \brief Validated immutable Profile facts captured during construction. */
+  std::optional<AssetWorkProfileSnapshot> _profileSnapshot;
   /*!
    * \brief Mods on this list won't be processed
    */
@@ -63,5 +71,4 @@ private:
 
 signals:
   void progressBarTextChanged(QString, int, int);
-  void end();
 };

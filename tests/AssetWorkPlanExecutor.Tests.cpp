@@ -1,4 +1,8 @@
 #include "AssetWorkPlanExecutor.h"
+#include "AssetWorkOptions.h"
+#include "AssetWorkOptionsDraft.h"
+#include "AssetWorkPolicyResolver.h"
+#include "AssetWorkProfileSnapshot.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -16,14 +20,41 @@ void createFile(const QString &path)
     REQUIRE(file.open(QIODevice::WriteOnly));
 }
 
+AssetWorkPolicy resolvedPolicy(const bool archives, const bool meshes,
+                               const bool textures, const bool animations)
+{
+    AssetWorkOptionsDraft draft;
+    draft.bBsaExtract = archives;
+    draft.bBsaCreate = archives;
+    draft.iMeshesOptimizationLevel = meshes ? 1 : 0;
+    draft.bTexturesNecessary = textures;
+    draft.bAnimationsOptimization = animations;
+
+    AssetWorkProfileSnapshotInput profileInput;
+    profileInput.archivesEnabled = true;
+    profileInput.archiveSettings = btu::bsa::Settings::get(btu::Game::FO4);
+    profileInput.archiveSettings.extension = u8".bsa";
+    profileInput.meshesEnabled = true;
+    profileInput.animationsEnabled = true;
+    profileInput.texturesEnabled = true;
+    profileInput.textureFormat = DXGI_FORMAT_BC7_UNORM;
+    profileInput.texturesConvertTga = true;
+
+    const auto optionsResult = AssetWorkOptions::create(draft);
+    REQUIRE(optionsResult.options.has_value());
+    auto profileResult = AssetWorkProfileSnapshot::create(std::move(profileInput));
+    REQUIRE(profileResult.snapshot.has_value());
+    return AssetWorkPolicyResolver::resolve(optionsResult.options.value(),
+                                            profileResult.snapshot.value())
+        .planning();
+}
+
 AssetWorkPlanRequest defaultRequest(const QString &selectedPath)
 {
-    const auto profile = ProfilePlanningSnapshot{true, true, true, true, true, ".bsa"};
-    const auto requested = RequestedAssetWork{true, true, true, true, true};
     return AssetWorkPlanRequest{selectedPath,
                                 AssetWorkMode::SeveralMods,
                                 {},
-                                AssetWorkPolicy::resolve(requested, profile)};
+                                resolvedPolicy(true, true, true, true)};
 }
 
 struct RecordedWorkAdapter final : AssetWorkPlanExecutionAdapter
@@ -126,12 +157,10 @@ TEST_CASE("AssetWorkPlanExecutor skips metadata scans for non-mesh loose work")
     createFile(root.filePath("Alpha/animations/idle.hkx"));
     createFile(root.filePath("Alpha/textures/diffuse.dds"));
 
-    const auto profile = ProfilePlanningSnapshot{true, true, true, true, true, ".bsa"};
-    const auto requested = RequestedAssetWork{false, false, false, true, true};
     const auto request = AssetWorkPlanRequest{tempDir.path(),
                                              AssetWorkMode::SeveralMods,
                                              {},
-                                             AssetWorkPolicy::resolve(requested, profile)};
+                                             resolvedPolicy(false, false, true, true)};
     RecordedWorkAdapter adapter;
     RecordedMetadataProvider metadataProvider;
 

@@ -21,7 +21,7 @@ The selected Bethesda game configuration that determines which asset kinds and a
 _Avoid_: Preset
 
 **Asset Work Options**:
-The user selections that request asset work before CAO resolves them against the selected Profile.
+The validated user selections that request asset work before CAO resolves them against the selected Profile. They include work mode and Dry Run, but not the selected path or logging preferences; raw UI, CLI, and settings input is not yet Asset Work Options.
 _Avoid_: Settings, UI state, OptionsCAO
 
 **Asset Work Plan**:
@@ -39,6 +39,10 @@ _Avoid_: Optimizer settings, runtime options, execution config
 **Asset Work Plan Execution**:
 The act of carrying out an Asset Work Plan against the selected Mod or Mods. It is execution, not planning; Loose Asset Discovery may happen during it after archive extraction changes the available Assets.
 _Avoid_: Optimization run, processing pipeline, manager orchestration
+
+**Dry Run**:
+An Asset Work Plan Execution that reports intended Asset work without changing Assets. Archive extraction and packing remain intended work, but Loose Asset Discovery cannot include Assets that would only become available through extraction.
+_Avoid_: Preview mode, no-op plan
 
 **Loose Asset Discovery**:
 The pass that classifies loose assets after archive extraction has had a chance to add files to the selected input path.

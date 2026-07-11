@@ -3,23 +3,99 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #include "Manager.h"
-#include "AssetWorkExecutionPolicy.h"
 #include "AssetWorkPlanExecutor.h"
+#include "AssetWorkPolicyResolver.h"
+#include "AssetWorkProfileSnapshot.h"
+#include "FilesystemOperations.h"
 #include "ManagerPlanning.h"
+#include "Profiles.h"
+
+#include "btu/common/string.hpp"
+
+#include <utility>
 
 namespace {
-QString currentBsaExtension() {
-  const auto u8BsaExt = btu::bsa::Settings::get(Profiles::bsaGame()).extension;
-  const auto asciiBsaExt = btu::common::as_ascii(u8BsaExt);
-  return QString::fromUtf8(asciiBsaExt.data(),
-                           static_cast<int>(asciiBsaExt.size()));
+constexpr auto FilesToNotPackFile = "FilesToNotPack.txt";
+
+btu::bsa::Settings currentArchiveSettings() {
+  auto settings = btu::bsa::Settings::get(Profiles::bsaGame());
+  if (Profiles::maxBsaUncompressedSize() > settings.max_size) {
+    settings.max_size =
+        static_cast<std::uintmax_t>(Profiles::maxBsaUncompressedSize());
+  }
+  return settings;
 }
 
-ProfilePlanningSnapshot currentProfilePlanningSnapshot() {
-  return ProfilePlanningSnapshot{
-      Profiles::bsaEnabled(),         Profiles::meshesEnabled(),
-      Profiles::animationsEnabled(),  Profiles::texturesEnabled(),
-      Profiles::texturesConvertTga(), currentBsaExtension()};
+std::vector<std::u8string> currentFilesToNotPack() {
+  QFile filesToNotPackFile = Profiles::getFile(FilesToNotPackFile);
+  if (!filesToNotPackFile.exists()) {
+    PLOG_ERROR << "FilesToNotPack.txt not found. Archive packing can include "
+                  "Assets that must remain loose.";
+    return {};
+  }
+
+  auto lines =
+      FilesystemOperations::readFile(filesToNotPackFile, [](QString &line) {
+        line = QDir::toNativeSeparators(line);
+      });
+
+  std::vector<std::u8string> filesToNotPack;
+  filesToNotPack.reserve(static_cast<size_t>(lines.size()));
+  for (auto &&line : lines) {
+    filesToNotPack.emplace_back(
+        btu::common::as_utf8_string(std::move(line).toStdString()));
+  }
+  if (filesToNotPack.empty()) {
+    PLOG_ERROR << "FilesToNotPack.txt is empty or contains only comments. "
+                  "Archive packing can include Assets that must remain loose.";
+  }
+  return filesToNotPack;
+}
+
+AssetWorkProfileSnapshot currentProfileSnapshot() {
+  AssetWorkProfileSnapshotInput input;
+  input.archivesEnabled = Profiles::bsaEnabled();
+  input.archiveSettings = currentArchiveSettings();
+  input.filesToNotPack = currentFilesToNotPack();
+  input.meshesEnabled = Profiles::meshesEnabled();
+  input.meshFileVersion = Profiles::meshesFileVersion();
+  input.meshStream = Profiles::meshesStream();
+  input.meshUser = Profiles::meshesUser();
+  input.animationsEnabled = Profiles::animationsEnabled();
+  input.texturesEnabled = Profiles::texturesEnabled();
+  input.textureFormat = Profiles::texturesFormat();
+  input.texturesCompressInterface = Profiles::texturesCompressInterface();
+  input.textureUnwantedFormats = Profiles::texturesUnwantedFormats();
+  input.texturesConvertTga = Profiles::texturesConvertTga();
+
+  auto result = AssetWorkProfileSnapshot::create(std::move(input));
+  if (!result.snapshot.has_value()) {
+    throw std::runtime_error(result.error.toStdString());
+  }
+  return std::move(result.snapshot.value());
+}
+
+QString workKindName(const AssetWorkKind work) {
+  switch (work) {
+  case AssetWorkKind::ArchiveExtraction:
+    return "archive extraction";
+  case AssetWorkKind::ArchivePacking:
+    return "archive packing";
+  case AssetWorkKind::MeshOptimization:
+    return "mesh optimization";
+  case AssetWorkKind::TextureOptimization:
+    return "texture optimization";
+  case AssetWorkKind::AnimationOptimization:
+    return "animation optimization";
+  }
+  return "unknown Asset work";
+}
+
+void logPolicyNotices(const std::vector<AssetWorkPolicyNotice> &notices) {
+  for (const auto &notice : notices) {
+    PLOG_WARNING << "Requested " + workKindName(notice.work) +
+                        " is not supported by the selected Profile.";
+  }
 }
 
 class MainOptimizerExecutionAdapter final
@@ -65,24 +141,27 @@ private:
 };
 } // namespace
 
-Manager::Manager(const OptionsCAO &opt)
-    : _options(opt)
-
-{
+Manager::Manager(AssetWorkOptions options, QString selectedPath,
+                 const bool debugLog)
+    : _options(std::move(options)), _selectedPath(std::move(selectedPath)),
+      _debugLog(debugLog) {
   init();
 }
 
 void Manager::init() {
   // Preparing logging
-  initCustomLogger(Profiles::logPath(), _options.bDebugLog);
+  initCustomLogger(Profiles::logPath(), _debugLog);
 
   PLOG_VERBOSE << "Checking settings...";
-  const QString error = _options.isValid();
-  if (!error.isEmpty()) {
+  if (!QDir(_selectedPath).exists() || _selectedPath.size() < 5) {
+    const QString error =
+        "This path does not exist or is shorter than 5 characters. Path: '" +
+        _selectedPath + "'";
     PLOG_FATAL << error;
-    throw std::runtime_error("Options are not valid." + error.toStdString());
+    throw std::runtime_error(error.toStdString());
   }
 
+  _profileSnapshot.emplace(currentProfileSnapshot());
   readIgnoredMods();
 }
 
@@ -111,24 +190,23 @@ void Manager::readIgnoredMods() {
   }
 }
 
-AssetWorkPlanRequest Manager::createAssetWorkPlanRequest() const {
-  return ManagerPlanning::createAssetWorkPlanRequest(
-      _options, _ignoredMods, currentProfilePlanningSnapshot());
-}
-
 void Manager::runOptimization() {
   PLOG_DEBUG << "Game: " << Profiles::currentProfile();
-  PLOG_INFO << "Processing: " + _options.userPath;
+  PLOG_INFO << "Processing: " + _selectedPath;
   PLOG_INFO << "Beginning...";
 
-  const auto executionPolicy = AssetWorkExecutionPolicy::resolve(_options);
-  MainOptimizerExecutionAdapter adapter(executionPolicy);
+  const auto resolution =
+      AssetWorkPolicyResolver::resolve(_options, _profileSnapshot.value());
+  logPolicyNotices(resolution.notices());
+  MainOptimizerExecutionAdapter adapter(resolution.execution());
   ProfileFileAssetReferenceProvider profileReferences;
   PluginOperationsAssetReferenceReader pluginReferences;
   ModAssetMetadataBuilder metadataBuilder(profileReferences, pluginReferences);
   PLOG_INFO << "Listing files and directories...";
-  AssetWorkPlanExecutor executor(createAssetWorkPlanRequest(), metadataBuilder,
-                                 adapter);
+  AssetWorkPlanExecutor executor(
+      ManagerPlanning::createAssetWorkPlanRequest(
+          _selectedPath, _options.mode(), _ignoredMods, resolution.planning()),
+      metadataBuilder, adapter);
   const auto result = executor.execute(AssetWorkPlanExecutionCallbacks{
       [this](const AssetWorkPlanProgress &progress) {
         _numberCompletedFiles = progress.completed;
@@ -155,5 +233,4 @@ void Manager::runOptimization() {
     return;
 
   PLOG_INFO << "Process completed<br><br><br>";
-  emit end();
 }

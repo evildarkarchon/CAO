@@ -1,4 +1,10 @@
 #include "AssetWorkPlan.h"
+#include "AssetWorkOptions.h"
+#include "AssetWorkOptionsDraft.h"
+#include "AssetWorkPolicyResolver.h"
+#include "AssetWorkProfileSnapshot.h"
+
+#include "btu/common/string.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -10,32 +16,81 @@
 
 namespace
 {
+struct PlanningTestProfile
+{
+    bool bsaEnabled = true;
+    bool meshesEnabled = true;
+    bool animationsEnabled = true;
+    bool texturesEnabled = true;
+    bool texturesConvertTga = true;
+    QString bsaExtension = ".bsa";
+};
+
+struct PlanningTestWork
+{
+    bool extractArchives = true;
+    bool packArchives = true;
+    bool optimizeMeshes = true;
+    bool optimizeTextures = true;
+    bool optimizeAnimations = true;
+};
+
 void createFile(const QString &path)
 {
     QFile file(path);
     REQUIRE(file.open(QIODevice::WriteOnly));
 }
 
-ProfilePlanningSnapshot defaultProfile()
+PlanningTestProfile defaultProfile()
 {
-    return ProfilePlanningSnapshot{true, true, true, true, true, ".bsa"};
+    return {};
 }
 
-RequestedAssetWork defaultRequestedWork()
+PlanningTestWork defaultRequestedWork()
 {
-    return RequestedAssetWork{true, true, true, true, true};
+    return {};
+}
+
+AssetWorkPolicy resolvePlanningPolicy(const PlanningTestWork &requested,
+                                      const PlanningTestProfile &profile)
+{
+    AssetWorkOptionsDraft draft;
+    draft.bBsaExtract = requested.extractArchives;
+    draft.bBsaCreate = requested.packArchives;
+    draft.iMeshesOptimizationLevel = requested.optimizeMeshes ? 1 : 0;
+    draft.bTexturesNecessary = requested.optimizeTextures;
+    draft.bAnimationsOptimization = requested.optimizeAnimations;
+
+    AssetWorkProfileSnapshotInput profileInput;
+    profileInput.archivesEnabled = profile.bsaEnabled;
+    profileInput.archiveSettings = btu::bsa::Settings::get(btu::Game::FO4);
+    profileInput.archiveSettings.extension =
+        btu::common::as_utf8_string(profile.bsaExtension.toStdString());
+    profileInput.meshesEnabled = profile.meshesEnabled;
+    profileInput.animationsEnabled = profile.animationsEnabled;
+    profileInput.texturesEnabled = profile.texturesEnabled;
+    profileInput.textureFormat = DXGI_FORMAT_BC7_UNORM;
+    profileInput.texturesConvertTga = profile.texturesConvertTga;
+
+    const auto optionsResult = AssetWorkOptions::create(draft);
+    REQUIRE(optionsResult.options.has_value());
+    auto profileResult = AssetWorkProfileSnapshot::create(std::move(profileInput));
+    REQUIRE(profileResult.snapshot.has_value());
+    return AssetWorkPolicyResolver::resolve(optionsResult.options.value(),
+                                            profileResult.snapshot.value())
+        .planning();
 }
 
 AssetWorkPolicy defaultPolicy()
 {
-    return AssetWorkPolicy::resolve(defaultRequestedWork(), defaultProfile());
+    return resolvePlanningPolicy(defaultRequestedWork(), defaultProfile());
 }
 
 void setPolicy(AssetWorkPlanRequest &request,
-               const RequestedAssetWork &requested,
-               const ProfilePlanningSnapshot &profile)
+               const PlanningTestWork &requested,
+               const PlanningTestProfile &profile)
 {
-    request.policy = AssetWorkPolicy::resolve(requested, profile);
+    request.policy = resolvePlanningPolicy(requested, profile);
 }
 
 AssetWorkPlanRequest defaultRequest(const QString &selectedPath)
@@ -166,28 +221,6 @@ TEST_CASE("Asset work planner keeps several-mod archive work in selected mod ord
     REQUIRE(plan.archivesToPack[1].folder == expectedMods[1]);
     REQUIRE(containsArchiveExtraction(plan, root.filePath("Alpha/nested/Alpha.bsa")));
     REQUIRE(containsArchiveExtraction(plan, root.filePath("Beta/Beta.bsa")));
-}
-
-TEST_CASE("Asset work planner requires a profile archive extension for extraction but not packing")
-{
-    QTemporaryDir tempDir;
-    REQUIRE(tempDir.isValid());
-
-    const QDir root(tempDir.path());
-    REQUIRE(root.mkpath("Alpha"));
-    createFile(root.filePath("Alpha/Alpha.bsa"));
-
-    auto request = defaultRequest(tempDir.path());
-    auto profile = defaultProfile();
-    profile.bsaExtension.clear();
-    setPolicy(request, defaultRequestedWork(), profile);
-
-    const AssetWorkPlanner planner(request);
-    const auto plan = planner.planArchives();
-
-    REQUIRE(plan.archivesToExtract.isEmpty());
-    REQUIRE(plan.archivesToPack.size() == 1);
-    REQUIRE(plan.archivesToPack[0].folder == root.filePath("Alpha"));
 }
 
 TEST_CASE("Asset work planner loose asset discovery only scans supplied mods")

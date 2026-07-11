@@ -21,24 +21,6 @@ AssetWorkPolicy::AssetWorkPolicy(const bool extractArchives,
       _optimizeAnimations(optimizeAnimations),
       _archiveExtension(std::move(archiveExtension)) {}
 
-AssetWorkPolicy
-AssetWorkPolicy::resolve(const RequestedAssetWork &requested,
-                         const ProfilePlanningSnapshot &profile) {
-  const bool archiveWorkSupported = profile.bsaEnabled;
-  const bool textureWorkSupported =
-      requested.optimizeTextures && profile.texturesEnabled;
-
-  return AssetWorkPolicy{requested.extractArchives && archiveWorkSupported &&
-                             !profile.bsaExtension.isEmpty(),
-                         requested.packArchives && archiveWorkSupported,
-                         requested.optimizeMeshes && profile.meshesEnabled,
-                         textureWorkSupported,
-                         textureWorkSupported && profile.texturesConvertTga,
-                         requested.optimizeAnimations &&
-                             profile.animationsEnabled,
-                         profile.bsaExtension};
-}
-
 std::optional<LooseAssetKind>
 AssetWorkPolicy::classifyLooseAsset(const QString &fileName) const {
   if (allowsDdsTextureOptimization() &&

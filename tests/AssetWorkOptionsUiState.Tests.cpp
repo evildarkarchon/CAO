@@ -13,9 +13,8 @@ AssetWorkOptionsUiContext allAvailableContext() {
 }
 } // namespace
 
-TEST_CASE("Asset Work Options UI state normalizes dry-run archive controls "
-          "during presentation") {
-  OptionsCAO options;
+TEST_CASE("Asset Work Options UI state preserves Dry Run archive intent") {
+  AssetWorkOptionsDraft options;
   options.bDryRun = true;
   options.bBsaExtract = true;
   options.bBsaCreate = true;
@@ -26,46 +25,46 @@ TEST_CASE("Asset Work Options UI state normalizes dry-run archive controls "
       AssetWorkOptionsUi::present(options, allAvailableContext());
 
   REQUIRE(state.dryRun);
-  REQUIRE_FALSE(state.archive.controlsEnabled);
-  REQUIRE_FALSE(state.archive.extract);
-  REQUIRE_FALSE(state.archive.create);
-  REQUIRE_FALSE(state.archive.deleteBackup);
+  REQUIRE(state.archive.controlsEnabled);
+  REQUIRE(state.archive.extract);
+  REQUIRE(state.archive.create);
+  REQUIRE(state.archive.deleteBackup);
   REQUIRE(state.archive.createDummies);
 
-  OptionsCAO captured;
+  AssetWorkOptionsDraft captured;
   AssetWorkOptionsUi::capture(state, captured);
 
   REQUIRE(captured.bDryRun);
-  REQUIRE_FALSE(captured.bBsaExtract);
-  REQUIRE_FALSE(captured.bBsaCreate);
-  REQUIRE_FALSE(captured.bBsaDeleteBackup);
-  REQUIRE_FALSE(captured.bBsaCreateDummies);
+  REQUIRE(captured.bBsaExtract);
+  REQUIRE(captured.bBsaCreate);
+  REQUIRE(captured.bBsaDeleteBackup);
+  REQUIRE(captured.bBsaCreateDummies);
 }
 
 TEST_CASE(
     "Asset Work Options UI state normalizes several-Mod mesh optimization") {
-  OptionsCAO options;
-  options.mode = OptionsCAO::SeveralMods;
+  AssetWorkOptionsDraft options;
+  options.mode = AssetWorkMode::SeveralMods;
   options.iMeshesOptimizationLevel = 3;
 
   const auto state =
       AssetWorkOptionsUi::present(options, allAvailableContext());
 
-  REQUIRE(state.mode == OptionsCAO::SeveralMods);
+  REQUIRE(state.mode == AssetWorkMode::SeveralMods);
   REQUIRE(state.meshes.optimizationEnabled);
   REQUIRE(state.meshes.optimizationLevel == 1);
   REQUIRE_FALSE(state.meshes.mediumAndFullOptimizationEnabled);
 
-  OptionsCAO captured;
+  AssetWorkOptionsDraft captured;
   AssetWorkOptionsUi::capture(state, captured);
 
-  REQUIRE(captured.mode == OptionsCAO::SeveralMods);
+  REQUIRE(captured.mode == AssetWorkMode::SeveralMods);
   REQUIRE(captured.iMeshesOptimizationLevel == 1);
 }
 
 TEST_CASE("Asset Work Options UI state leaves disabled Profile asset kinds out "
           "of captured options") {
-  OptionsCAO options;
+  AssetWorkOptionsDraft options;
   options.bTexturesNecessary = true;
   options.bTexturesCompress = true;
   options.bTexturesMipmaps = true;
@@ -80,7 +79,7 @@ TEST_CASE("Asset Work Options UI state leaves disabled Profile asset kinds out "
   const auto state = AssetWorkOptionsUi::present(options, context);
   REQUIRE_FALSE(state.textures.tabEnabled);
 
-  OptionsCAO captured;
+  AssetWorkOptionsDraft captured;
   AssetWorkOptionsUi::capture(state, captured);
 
   REQUIRE_FALSE(captured.bTexturesNecessary);
@@ -98,7 +97,7 @@ TEST_CASE("Asset Work Options UI state carries advanced settings visibility "
   context.advancedSettingsVisible = true;
   context.advancedSettingsEditable = false;
 
-  const OptionsCAO options;
+  const AssetWorkOptionsDraft options;
   const auto state = AssetWorkOptionsUi::present(options, context);
 
   REQUIRE(state.advanced.visible);

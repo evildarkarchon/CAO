@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "MainWindow.h"
+#include "Profiles.h"
 
 MainWindow::MainWindow() : _ui(new Ui::MainWindow) {
   _ui->setupUi(this);
@@ -15,8 +16,10 @@ MainWindow::MainWindow() : _ui(new Ui::MainWindow) {
   refreshProfiles();
   {
     // Mode chooser combo box
-    _ui->modeChooserComboBox->setItemData(0, OptionsCAO::SingleMod);
-    _ui->modeChooserComboBox->setItemData(1, OptionsCAO::SeveralMods);
+    _ui->modeChooserComboBox->setItemData(
+        0, static_cast<int>(AssetWorkMode::SingleMod));
+    _ui->modeChooserComboBox->setItemData(
+        1, static_cast<int>(AssetWorkMode::SeveralMods));
 
     // Advanced BSA
     _ui->bsaGame->setItemData(0, QVariant::fromValue(btu::Game::SLE));
@@ -47,9 +50,9 @@ MainWindow::MainWindow() : _ui(new Ui::MainWindow) {
           [&](const bool &checked) {
             // Re-present through the Asset Work Options state module so click
             // behavior matches initial load and Profile changes.
-            _options.readFromUi(_ui);
-            _options.bDryRun = checked;
-            _options.saveToUi(_ui);
+            _inputDraft.readFromUi(_ui);
+            _inputDraft.bDryRun = checked;
+            _inputDraft.saveToUi(_ui);
           });
 
   connect(_ui->advancedSettingsCheckbox, &QCheckBox::clicked, this,
@@ -70,17 +73,16 @@ MainWindow::MainWindow() : _ui(new Ui::MainWindow) {
 
   connect(_ui->modeChooserComboBox, QOverload<int>::of(&QComboBox::activated),
           this, [&] {
-            const bool &severalModsEnabled =
-                (_ui->modeChooserComboBox->currentData() ==
-                 OptionsCAO::SeveralMods);
+            const bool severalModsEnabled =
+                _ui->modeChooserComboBox->currentData().toInt() ==
+                static_cast<int>(AssetWorkMode::SeveralMods);
 
             // Re-present through the Asset Work Options state module so mode
             // constraints are identical for clicks and loaded settings.
-            _options.readFromUi(_ui);
-            _options.mode =
-                _ui->modeChooserComboBox->currentData()
-                    .value<OptionsCAO::OptimizationMode>();
-            _options.saveToUi(_ui);
+            _inputDraft.readFromUi(_ui);
+            _inputDraft.mode = static_cast<AssetWorkMode>(
+                _ui->modeChooserComboBox->currentData().toInt());
+            _inputDraft.saveToUi(_ui);
 
             if (severalModsEnabled) {
               this->showTutorialWindow(
@@ -96,7 +98,7 @@ MainWindow::MainWindow() : _ui(new Ui::MainWindow) {
 
   connect(_ui->userPathButton, &QPushButton::pressed, this, [&] {
     const QString &dir = QFileDialog::getExistingDirectory(
-        this, tr("Open Directory"), _options.userPath,
+        this, tr("Open Directory"), _inputDraft.userPath,
         QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
     if (!dir.isEmpty())
       _ui->userPathTextEdit->setText(dir);
@@ -104,6 +106,8 @@ MainWindow::MainWindow() : _ui(new Ui::MainWindow) {
 
   connect(_ui->processButton, &QPushButton::pressed, this,
           &MainWindow::initProcess);
+  connect(&_optimizationWatcher, &QFutureWatcher<void>::finished, this,
+          &MainWindow::endProcess);
 
   texturesFormatDialog = new TexturesFormatSelectDialog(this);
 
@@ -182,8 +186,8 @@ void MainWindow::saveUi() {
   if (_bLockVariables)
     return;
 
-  _options.readFromUi(_ui);
-  _options.saveToIni(Profiles::optionsSettings());
+  _inputDraft.readFromUi(_ui);
+  _inputDraft.saveToIni(Profiles::optionsSettings());
   Profiles::getInstance().readFromUi(_ui);
   Profiles::getInstance().saveToIni();
 }
@@ -198,8 +202,8 @@ void MainWindow::loadUi() {
       Profiles::commonSettings()->value("showTutorial", true).toBool();
   _ui->actionShow_tutorials->setChecked(_showTutorials);
 
-  _options.readFromIni(Profiles::optionsSettings());
-  _options.saveToUi(_ui);
+  _inputDraft.readFromIni(Profiles::optionsSettings());
+  _inputDraft.saveToUi(_ui);
 
   Profiles::getInstance().saveToUi(_ui);
 }
@@ -273,18 +277,30 @@ void MainWindow::setDarkTheme(const bool &enabled) {
 void MainWindow::initProcess() {
   saveUi();
   _ui->processButton->setDisabled(true);
+  // Profile globals feed both snapshot capture and reference-file lookup, so
+  // keep the active Profile stable until the worker has completely stopped.
+  _ui->presets->setDisabled(true);
+  _ui->newProfilePushButton->setDisabled(true);
   _bLockVariables = true;
+  _optimizationFuture = {};
 
   try {
     _caoProcess.reset();
-    _caoProcess = std::make_unique<Manager>(_options);
+    auto optionsResult = AssetWorkOptions::create(_inputDraft);
+    if (!optionsResult.options.has_value())
+      throw std::runtime_error(optionsResult.error.toStdString());
+
+    _caoProcess =
+        std::make_unique<Manager>(std::move(optionsResult.options.value()),
+                                  _inputDraft.userPath, _inputDraft.bDebugLog);
     connect(&*_caoProcess, &Manager::progressBarTextChanged, this,
             &MainWindow::readProgress);
     connect(&logTimer, &QTimer::timeout, this, &MainWindow::updateLog,
             Qt::UniqueConnection);
     logTimer.start(5000); // Refresh log every 5 seconds
-    connect(&*_caoProcess, &Manager::end, this, &MainWindow::endProcess);
-    QtConcurrent::run(&*_caoProcess, &Manager::runOptimization);
+    _optimizationFuture =
+        QtConcurrent::run(&*_caoProcess, &Manager::runOptimization);
+    _optimizationWatcher.setFuture(_optimizationFuture);
   } catch (const std::exception &e) {
     QMessageBox box(QMessageBox::Critical, tr("Error"),
                     tr("An exception has been encountered and the process was "
@@ -298,13 +314,24 @@ void MainWindow::initProcess() {
 void MainWindow::endProcess() {
   logTimer.stop();
 
+  if (_caoProcess)
+    _caoProcess->cancelProcess();
+
+  QString workerError;
+  try {
+    _optimizationFuture.waitForFinished();
+  } catch (const std::exception &e) {
+    workerError = QString::fromUtf8(e.what());
+  }
+
   _ui->processButton->setDisabled(false);
   _bLockVariables = false;
+  _ui->presets->setDisabled(false);
+  _ui->newProfilePushButton->setDisabled(false);
 
   saveUi();
 
   if (_caoProcess) {
-    _caoProcess->cancelProcess();
     _caoProcess->disconnect();
   }
 
@@ -312,6 +339,13 @@ void MainWindow::endProcess() {
   _ui->progressBar->setValue(100);
   _ui->progressBar->setFormat(tr("Done"));
   updateLog();
+
+  if (!workerError.isEmpty()) {
+    QMessageBox box(QMessageBox::Critical, tr("Error"),
+                    tr("The optimization worker stopped with an exception: ") +
+                        workerError);
+    box.exec();
+  }
 }
 
 void MainWindow::updateLog() const {
@@ -326,6 +360,10 @@ void MainWindow::updateLog() const {
 }
 
 void MainWindow::setGameMode(const QString &mode) {
+  // A running Manager owns immutable inputs captured from the active Profile.
+  if (_bLockVariables)
+    return;
+
   saveUi();
 
   // Resetting the window
@@ -336,15 +374,15 @@ void MainWindow::setGameMode(const QString &mode) {
   Profiles::getInstance().saveToUi(_ui);
   loadUi();
 
-  _options.saveToUi(_ui);
+  _inputDraft.saveToUi(_ui);
 }
 
 void MainWindow::setAdvancedSettingsEnabled(const bool &value) {
   // Re-presenting the full options UI needs a fresh snapshot so this toggle
   // does not discard unsaved edits in unrelated widgets.
-  _options.readFromUi(_ui);
+  _inputDraft.readFromUi(_ui);
   _ui->advancedSettingsCheckbox->setChecked(value);
-  _options.saveToUi(_ui);
+  _inputDraft.saveToUi(_ui);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {

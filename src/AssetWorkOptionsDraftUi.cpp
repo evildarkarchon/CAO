@@ -2,8 +2,10 @@
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+#include "AssetWorkOptionsDraft.h"
 #include "AssetWorkOptionsUiState.h"
-#include "OptionsCAO.h"
+#include "Profiles.h"
+#include "ui_mainWindow.h"
 
 #ifdef GUI
 namespace {
@@ -27,8 +29,8 @@ AssetWorkOptionsUiState stateFromUi(Ui::MainWindow *ui) {
   state.dryRun = ui->dryRunCheckBox->isChecked();
   state.debugLog = ui->actionEnable_debug_log->isChecked();
   state.userPath = QDir::cleanPath(ui->userPathTextEdit->text());
-  state.mode = ui->modeChooserComboBox->currentData()
-                   .value<OptionsCAO::OptimizationMode>();
+  state.mode = static_cast<AssetWorkMode>(
+      ui->modeChooserComboBox->currentData().toInt());
 
   state.archive.tabEnabled = ui->bsaTab->isEnabled();
   state.archive.controlsEnabled = ui->bsaBaseGroupBox->isEnabled();
@@ -95,7 +97,7 @@ void applyStateToUi(Ui::MainWindow *ui, const AssetWorkOptionsUiState &state) {
   ui->dryRunCheckBox->setChecked(state.dryRun);
   ui->actionEnable_debug_log->setChecked(state.debugLog);
   ui->modeChooserComboBox->setCurrentIndex(
-      ui->modeChooserComboBox->findData(state.mode));
+      ui->modeChooserComboBox->findData(static_cast<int>(state.mode)));
   ui->userPathTextEdit->setText(state.userPath);
 
   ui->bsaBaseGroupBox->setEnabled(state.archive.controlsEnabled);
@@ -157,11 +159,11 @@ void applyStateToUi(Ui::MainWindow *ui, const AssetWorkOptionsUiState &state) {
 }
 } // namespace
 
-void OptionsCAO::saveToUi(Ui::MainWindow *ui) {
+void AssetWorkOptionsDraft::saveToUi(Ui::MainWindow *ui) {
   applyStateToUi(ui, AssetWorkOptionsUi::present(*this, contextFromUi(ui)));
 }
 
-void OptionsCAO::readFromUi(Ui::MainWindow *ui) {
+void AssetWorkOptionsDraft::readFromUi(Ui::MainWindow *ui) {
   AssetWorkOptionsUi::capture(stateFromUi(ui), *this);
 }
 #endif

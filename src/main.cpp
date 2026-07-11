@@ -7,6 +7,7 @@
 #ifdef GUI
 #include "MainWindow.h"
 #endif
+#include "AssetWorkOptionsDraft.h"
 #include "Manager.h"
 
 void displayError(const std::string &err) {
@@ -41,15 +42,21 @@ int main(int argc, char *argv[]) {
 
 #ifdef GUI
   MainWindow *window = new MainWindow;
-#else
-  Manager *manager = new Manager(QCoreApplication::arguments());
 #endif
 
   try {
 #ifdef GUI
     window->show();
 #else
-    manager->runOptimization();
+    AssetWorkOptionsDraft inputDraft;
+    inputDraft.parseArguments(QCoreApplication::arguments());
+    auto optionsResult = AssetWorkOptions::create(inputDraft);
+    if (!optionsResult.options.has_value())
+      throw std::runtime_error(optionsResult.error.toStdString());
+
+    Manager manager(std::move(optionsResult.options.value()),
+                    inputDraft.userPath, inputDraft.bDebugLog);
+    manager.runOptimization();
 #endif
   } catch (const std::exception &e) {
     displayError(e.what());

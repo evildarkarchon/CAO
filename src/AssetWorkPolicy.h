@@ -9,23 +9,6 @@
 
 enum class LooseAssetKind { TextureDds, TextureTga, Mesh, Animation };
 
-struct ProfilePlanningSnapshot {
-  bool bsaEnabled = false;
-  bool meshesEnabled = false;
-  bool animationsEnabled = false;
-  bool texturesEnabled = false;
-  bool texturesConvertTga = false;
-  QString bsaExtension;
-};
-
-struct RequestedAssetWork {
-  bool extractArchives = false;
-  bool packArchives = false;
-  bool optimizeMeshes = false;
-  bool optimizeTextures = false;
-  bool optimizeAnimations = false;
-};
-
 class AssetWorkPolicy final {
 public:
   /*!
@@ -35,18 +18,6 @@ public:
    * partially-initialized planning requests from accidentally enabling work.
    */
   AssetWorkPolicy() = default;
-
-  /*!
-   * \brief Resolves requested work against the selected Profile's capabilities.
-   * \param requested The asset work requested by the user options.
-   * \param profile The selected Profile capabilities relevant to Asset Work
-   * planning.
-   * \return A policy exposing only the work that is both requested and
-   * supported.
-   */
-  [[nodiscard]] static AssetWorkPolicy
-  resolve(const RequestedAssetWork &requested,
-          const ProfilePlanningSnapshot &profile);
 
   /*!
    * \brief Classifies an allowed loose Asset file name under this policy.
@@ -110,6 +81,8 @@ public:
   [[nodiscard]] bool allowsAnimationOptimization() const;
 
 private:
+  friend class AssetWorkPolicyResolver;
+
   AssetWorkPolicy(bool extractArchives, bool packArchives, bool optimizeMeshes,
                   bool optimizeDdsTextures, bool convertTgaTextures,
                   bool optimizeAnimations, QString archiveExtension);

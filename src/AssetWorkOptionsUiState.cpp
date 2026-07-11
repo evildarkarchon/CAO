@@ -6,18 +6,18 @@
 #include "AssetWorkOptionsUiState.h"
 
 namespace {
-bool anyTextureWorkSelected(const OptionsCAO &options) {
+bool anyTextureWorkSelected(const AssetWorkOptionsDraft &options) {
   return options.bTexturesNecessary || options.bTexturesCompress ||
          options.bTexturesMipmaps;
 }
 
-bool anyTextureResizeSelected(const OptionsCAO &options) {
+bool anyTextureResizeSelected(const AssetWorkOptionsDraft &options) {
   return options.bTexturesResizeSize || options.bTexturesResizeRatio;
 }
 } // namespace
 
 AssetWorkOptionsUiState
-AssetWorkOptionsUi::present(const OptionsCAO &options,
+AssetWorkOptionsUi::present(const AssetWorkOptionsDraft &options,
                             const AssetWorkOptionsUiContext &context) {
   AssetWorkOptionsUiState state;
   state.dryRun = options.bDryRun;
@@ -67,7 +67,7 @@ AssetWorkOptionsUi::present(const OptionsCAO &options,
 }
 
 void AssetWorkOptionsUi::capture(const AssetWorkOptionsUiState &state,
-                                 OptionsCAO &options) {
+                                 AssetWorkOptionsDraft &options) {
   options.bDryRun = state.dryRun;
   options.bDebugLog = state.debugLog;
   options.mode = state.mode;
@@ -116,25 +116,18 @@ void AssetWorkOptionsUi::capture(const AssetWorkOptionsUiState &state,
 void AssetWorkOptionsUi::applyDryRun(AssetWorkOptionsUiState &state,
                                      const bool dryRun) {
   state.dryRun = dryRun;
-  state.archive.controlsEnabled = state.archive.tabEnabled && !dryRun;
-
-  if (!dryRun)
-    return;
-
-  // Dry-run intentionally suppresses archive mutation options; subordinate
-  // archive packing options can remain visible but inactive while disabled.
-  state.archive.extract = false;
-  state.archive.create = false;
-  state.archive.deleteBackup = false;
+  // Dry Run reports archive work without performing it, so the UI must retain
+  // the archive intent that policy resolution will place in the plan.
+  state.archive.controlsEnabled = state.archive.tabEnabled;
 }
 
 void AssetWorkOptionsUi::applyMode(AssetWorkOptionsUiState &state,
-                                   const OptionsCAO::OptimizationMode mode) {
+                                   const AssetWorkMode mode) {
   state.mode = mode;
   state.meshes.mediumAndFullOptimizationEnabled =
-      mode != OptionsCAO::SeveralMods;
+      mode != AssetWorkMode::SeveralMods;
 
-  if (mode == OptionsCAO::SeveralMods && state.meshes.optimizationEnabled &&
+  if (mode == AssetWorkMode::SeveralMods && state.meshes.optimizationEnabled &&
       state.meshes.optimizationLevel > 0) {
     // Several-Mod mode only allows the necessary mesh optimization path.
     state.meshes.optimizationLevel = 1;

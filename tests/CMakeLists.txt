@@ -1,15 +1,17 @@
 find_package(Catch2 CONFIG REQUIRED)
 
 add_executable(Cathedral_Assets_Optimizer_Tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkExecutionPolicy.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptionsUiState.Tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptions.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPolicy.Tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPolicyResolver.Tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkProfileSnapshot.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlan.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlanExecutor.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/FilesystemOperations.Tests.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/ManagerPlanning.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ModAssetMetadata.Tests.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/OptionsCAO.Tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ManagerPlanning.Tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptionsDraft.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/PluginsOperations.Tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesFormats.Tests.cpp
 )

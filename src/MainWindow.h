@@ -4,8 +4,8 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
+#include "AssetWorkOptionsDraft.h"
 #include "Manager.h"
-#include "OptionsCAO.h"
 #include "TexturesFormatSelectDialog.h"
 #include "pch.h"
 #include "ui_mainWindow.h"
@@ -41,6 +41,10 @@ private:
 
   void updateLog() const;
   void initProcess();
+  /*!
+   * \brief Cancels or joins the worker, restores Profile controls, and reports
+   * any stored worker exception.
+   */
   void endProcess();
   void readProgress(const QString &text, const int &max,
                     const int &value) const;
@@ -55,8 +59,12 @@ private:
 
   int _progressBarValue{};
 
-  OptionsCAO _options;
+  AssetWorkOptionsDraft _inputDraft;
   std::unique_ptr<Manager> _caoProcess;
+  /*! \brief Tracks worker lifetime so Profile selection stays locked. */
+  QFuture<void> _optimizationFuture;
+  /*! \brief Finalizes every worker outcome, including exceptions. */
+  QFutureWatcher<void> _optimizationWatcher;
   bool _showTutorials;
   TexturesFormatSelectDialog *texturesFormatDialog;
   QTimer logTimer;

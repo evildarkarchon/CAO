@@ -5,41 +5,11 @@
 
 #include "ManagerPlanning.h"
 
-namespace {
-AssetWorkMode toAssetWorkMode(const OptionsCAO::OptimizationMode mode) {
-  switch (mode) {
-  case OptionsCAO::SingleMod:
-    return AssetWorkMode::SingleMod;
-  case OptionsCAO::SeveralMods:
-    return AssetWorkMode::SeveralMods;
-  }
-
-  return AssetWorkMode::SingleMod;
-}
-
-bool texturesEnabledByOptions(const OptionsCAO &options) {
-  return options.bTexturesMipmaps || options.bTexturesCompress ||
-         options.bTexturesNecessary || options.bTexturesResizeSize ||
-         options.bTexturesResizeRatio;
-}
-
-RequestedAssetWork requestedAssetWorkFromOptions(const OptionsCAO &options) {
-  return RequestedAssetWork{
-      .extractArchives = options.bBsaExtract,
-      .packArchives = options.bBsaCreate,
-      .optimizeMeshes = options.iMeshesOptimizationLevel > 0,
-      .optimizeTextures = texturesEnabledByOptions(options),
-      .optimizeAnimations = options.bAnimationsOptimization};
-}
-} // namespace
+#include <utility>
 
 AssetWorkPlanRequest ManagerPlanning::createAssetWorkPlanRequest(
-    const OptionsCAO &options, const QStringList &ignoredMods,
-    const ProfilePlanningSnapshot &profile) {
-  return AssetWorkPlanRequest{
-      .selectedPath = options.userPath,
-      .mode = toAssetWorkMode(options.mode),
-      .ignoredMods = ignoredMods,
-      .policy = AssetWorkPolicy::resolve(requestedAssetWorkFromOptions(options),
-                                         profile)};
+    QString selectedPath, const AssetWorkMode mode, QStringList ignoredMods,
+    AssetWorkPolicy policy) {
+  return AssetWorkPlanRequest{std::move(selectedPath), mode,
+                              std::move(ignoredMods), std::move(policy)};
 }

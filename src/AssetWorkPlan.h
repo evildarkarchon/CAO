@@ -4,13 +4,12 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
+#include "AssetWorkMode.h"
 #include "AssetWorkPolicy.h"
 
 #include <QString>
 #include <QStringList>
 #include <QVector>
-
-enum class AssetWorkMode { SingleMod, SeveralMods };
 
 struct AssetWorkPlanRequest {
   QString selectedPath;
@@ -55,8 +54,8 @@ public:
   /*!
    * \brief Plans archive extraction and packing targets before archive
    * extraction mutates the filesystem.
-   * \return An Archive Asset Work Plan containing selected mods, BSA archives to
-   * extract, and folders to pack.
+   * \return An Archive Asset Work Plan containing selected mods, BSA archives
+   * to extract, and folders to pack.
    */
   [[nodiscard]] ArchiveAssetWorkPlan planArchives() const;
 
