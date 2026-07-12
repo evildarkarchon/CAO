@@ -127,3 +127,15 @@ _Avoid_: Profile settings, user preferences
 **Profile overlay**:
 The mutable, per-profile processing choices and remembered asset paths applied over a profile definition. Removing an overlay resets that profile to documented defaults without changing its definition, and overlay values never carry between profiles.
 _Avoid_: Profile definition, shared settings
+
+**Processing run**:
+One execution of a frozen optimization plan against a selected asset path, with its own scratch directory, log, progress, and run outcome.
+_Avoid_: Job, session, optimization task
+
+**Run plan**:
+The immutable snapshot of validated policy inputs and resolved processing choices used by one processing run. It does not require assets created or exposed by earlier processing phases to be enumerated in advance.
+_Avoid_: Live settings, mutable job configuration
+
+**Runtime work manifest**:
+The ordered asset inventory a processing run derives and records phase by phase as extraction and discovery reveal work governed by its run plan.
+_Avoid_: Run plan, precomputed asset list
