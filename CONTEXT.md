@@ -139,3 +139,23 @@ _Avoid_: Live settings, mutable job configuration
 **Runtime work manifest**:
 The ordered asset inventory a processing run derives and records phase by phase as extraction and discovery reveal work governed by its run plan.
 _Avoid_: Run plan, precomputed asset list
+
+**Parity fixture corpus**:
+The versioned verification inventory spanning a committed redistributable corpus and a hash-addressed local oracle kit for untracked inputs. A fixture may be synthetic or tool-generated when its provenance is explicit; it need not be derived from an installed game, and equivalence is established by automated evidence.
+_Avoid_: Test assets, golden folder, game-derived corpus
+
+**Local oracle kit**:
+The untracked, integrity-verified collection of licensed, private, or otherwise non-redistributable inputs used for differential runs against the behavioral oracle. The repository stores its manifests and acquisition checks, never its payloads.
+_Avoid_: Private corpus, checked-in oracle
+
+**Oracle evidence bundle**:
+A reviewed, hash-addressed record of normalized inputs, observations, outputs, and environment identity captured by a controlled differential campaign against the behavioral oracle. Routine CI may replay its expectations without possessing or executing the legacy distribution or other local-oracle-kit payloads.
+_Avoid_: Golden output, legacy CI artifact
+
+**Comparison profile**:
+The explicit, versioned assertion contract assigned to a parity fixture, selecting byte, filesystem, format-aware, or interaction evidence and any justified format-specific tolerances. A failed comparison profile never weakens itself by falling back to a less strict comparison.
+_Avoid_: Best-effort comparison, global tolerance
+
+**Parity coverage matrix**:
+The authoritative mapping from every in-scope game, profile, operation, option interaction, input class, control path, and outcome to verification fixtures, an approved discrepancy, or evidence-backed Not Applicable status. Missing and unknown cells remain visible blockers.
+_Avoid_: Test list, informal coverage checklist
