@@ -1,0 +1,13 @@
+[package]
+name = "cao-slint-interaction-prototype"
+version = "0.0.0"
+edition = "2024"
+publish = false
+build = "build.rs"
+
+[dependencies]
+slint = "=1.17.1"
+
+[build-dependencies]
+slint-build = "=1.17.1"
+

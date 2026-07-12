@@ -1,0 +1,505 @@
+import { Button, CheckBox, ScrollView } from "std-widgets.slint";
+
+// Three native Slint variants of the complete interaction surface, selected from the prototype bar.
+
+export global PrototypeState {
+    in-out property <int> variant: 0;
+    in-out property <string> profile: "SSE — Built-in";
+    in-out property <string> target: "D:\\Modding\\MO2\\mods\\Skyland AIO";
+    in-out property <bool> target-valid: true;
+    in-out property <bool> several-mods: false;
+    in-out property <bool> dry-run: false;
+    in-out property <bool> show-advanced: false;
+    in-out property <string> phase: "Ready";
+    in-out property <string> progress-label: "Ready to validate";
+    in-out property <float> progress: 0;
+    in-out property <string> current-item: "No run in progress";
+    in-out property <string> outcome: "Not started";
+    in-out property <bool> cancellation-requested: false;
+    in-out property <string> log-line-1: "INFO  Effective profile: SSE";
+    in-out property <string> log-line-2: "INFO  Waiting for a run";
+    in-out property <string> log-line-3: "      No filesystem changes have been made";
+
+    public function reset-ready() {
+        phase = "Ready";
+        progress-label = "Ready to validate";
+        progress = 0;
+        current-item = "No run in progress";
+        outcome = "Not started";
+        cancellation-requested = false;
+        log-line-1 = "INFO  Effective profile: SSE";
+        log-line-2 = "INFO  Waiting for a run";
+        log-line-3 = "      No filesystem changes have been made";
+    }
+
+    public function show-invalid-target() {
+        reset-ready();
+        target-valid = false;
+        target = "D:\\Modding\\Missing Mod";
+        progress-label = "1 blocking validation issue";
+        log-line-2 = "WARN  Remembered target is currently unavailable";
+    }
+
+    public function show-ready-target() {
+        target-valid = true;
+        target = several-mods ? "D:\\Modding\\MO2\\mods" : "D:\\Modding\\MO2\\mods\\Skyland AIO";
+        reset-ready();
+    }
+
+    public function start-run() {
+        if (target-valid) {
+            phase = "Running";
+            progress-label = "Processing files";
+            progress = 0.42;
+            current-item = "textures\\architecture\\whiterun\\wrwall01_n.dds";
+            outcome = "In progress";
+            cancellation-requested = false;
+            log-line-1 = "INFO  Run 8F2A started — effective plan frozen";
+            log-line-2 = "INFO  1,284 files discovered; processing textures";
+            log-line-3 = "INFO  Optimized wrwall01.dds (BC7, 2048 × 2048)";
+        }
+    }
+
+    public function request-cancel() {
+        if (phase == "Running") {
+            phase = "Stopping";
+            progress-label = "Cancellation requested — finishing current texture";
+            cancellation-requested = true;
+            log-line-2 = "WARN  Cancellation requested; no new work will start";
+            log-line-3 = "INFO  Waiting at safe boundary after wrwall01_n.dds";
+        }
+    }
+
+    public function finish-cancel() {
+        if (phase == "Stopping") {
+            phase = "Cancelled";
+            progress-label = "Stopped at a safe cancellation boundary";
+            outcome = "Cancelled";
+            current-item = "Stopped after 538 of 1,284 files";
+            log-line-1 = "INFO  Run 8F2A cancelled by user";
+            log-line-2 = "INFO  538 completed outputs remain valid";
+            log-line-3 = "INFO  Outcome: Cancelled — log saved to data\\logs";
+        }
+    }
+
+    public function finish-with-errors() {
+        phase = "Succeeded with errors";
+        progress-label = "Run completed; 3 items require attention";
+        progress = 1;
+        current-item = "1,281 completed • 3 renamed .caobad";
+        outcome = "Succeeded with errors";
+        cancellation-requested = false;
+        log-line-1 = "INFO  Processing complete — 1,284 files attempted";
+        log-line-2 = "ERROR  3 unreadable meshes renamed with .caobad";
+        log-line-3 = "INFO  Outcome: Succeeded with errors";
+    }
+}
+
+component Pill inherits Rectangle {
+    in property <string> label;
+    in property <brush> fill: #243147;
+    in property <brush> ink: #dbeafe;
+    height: 28px;
+    border-radius: 14px;
+    background: fill;
+    horizontal-stretch: 0;
+    Text {
+        text: root.label;
+        color: root.ink;
+        font-size: 12px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component StatusPanel inherits Rectangle {
+    background: #111827;
+    border-color: PrototypeState.target-valid ? #2dd4bf : #fb7185;
+    border-width: 1px;
+    border-radius: 10px;
+    VerticalLayout {
+        padding: 14px;
+        spacing: 8px;
+        HorizontalLayout {
+            Text { text: "RUN READINESS"; color: #94a3b8; font-size: 11px; font-weight: 700; }
+            Rectangle { horizontal-stretch: 1; }
+            Pill {
+                width: PrototypeState.target-valid ? 72px : 92px;
+                label: PrototypeState.target-valid ? "READY" : "BLOCKED";
+                fill: PrototypeState.target-valid ? #123c3a : #4c1d2b;
+                ink: PrototypeState.target-valid ? #5eead4 : #fda4af;
+            }
+        }
+        Text { text: PrototypeState.profile; color: #f8fafc; font-size: 17px; font-weight: 700; }
+        Text { text: PrototypeState.target; color: #cbd5e1; font-size: 12px; overflow: elide; }
+        Text {
+            text: PrototypeState.target-valid ?
+                (PrototypeState.dry-run ? "Dry run • no persistent writes" : "Real run • persistent changes allowed") :
+                "Choose an available absolute folder before running";
+            color: PrototypeState.target-valid ? #a7f3d0 : #fda4af;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        Text { text: "Archives  5 choices   •   Textures  4   •   Meshes  2   •   Animations  0"; color: #94a3b8; font-size: 11px; wrap: word-wrap; }
+    }
+}
+
+component ProgressPanel inherits Rectangle {
+    background: #111827;
+    border-color: PrototypeState.phase == "Stopping" ? #fbbf24 : #334155;
+    border-width: 1px;
+    border-radius: 10px;
+    VerticalLayout {
+        padding: 14px;
+        spacing: 8px;
+        HorizontalLayout {
+            Text { text: PrototypeState.phase; color: #f8fafc; font-size: 19px; font-weight: 700; }
+            Rectangle { horizontal-stretch: 1; }
+            Pill { width: 154px; label: PrototypeState.outcome; }
+        }
+        Text { text: PrototypeState.progress-label; color: #cbd5e1; font-size: 13px; }
+        Rectangle {
+            height: 7px;
+            border-radius: 3px;
+            background: #243147;
+            Rectangle {
+                width: parent.width * PrototypeState.progress;
+                border-radius: 3px;
+                background: PrototypeState.phase == "Stopping" ? #fbbf24 : #38bdf8;
+            }
+        }
+        Text { text: PrototypeState.current-item; color: #94a3b8; font-size: 11px; overflow: elide; }
+        HorizontalLayout {
+            spacing: 8px;
+            Button { text: "Start mock run"; enabled: PrototypeState.phase != "Running" && PrototypeState.phase != "Stopping" && PrototypeState.target-valid; clicked => { PrototypeState.start-run(); } }
+            Button { text: "Request cancel"; enabled: PrototypeState.phase == "Running"; clicked => { PrototypeState.request-cancel(); } }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Button { text: "Reach safe boundary"; enabled: PrototypeState.phase == "Stopping"; clicked => { PrototypeState.finish-cancel(); } }
+            Button { text: "Finish with errors"; enabled: PrototypeState.phase == "Running"; clicked => { PrototypeState.finish-with-errors(); } }
+        }
+    }
+}
+
+component LogPanel inherits Rectangle {
+    background: #0b1220;
+    border-color: #263449;
+    border-width: 1px;
+    border-radius: 8px;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 5px;
+        HorizontalLayout {
+            Text { text: "LIVE RUN LOG"; color: #94a3b8; font-size: 11px; font-weight: 700; }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: "Open unique log ↗"; color: #7dd3fc; font-size: 11px; }
+        }
+        Text { text: PrototypeState.log-line-1; color: #d1fae5; font-size: 11px; font-family: "Consolas"; }
+        Text { text: PrototypeState.log-line-2; color: PrototypeState.phase == "Succeeded with errors" ? #fda4af : #fde68a; font-size: 11px; font-family: "Consolas"; }
+        Text { text: PrototypeState.log-line-3; color: #cbd5e1; font-size: 11px; font-family: "Consolas"; }
+    }
+}
+
+component TargetSelector inherits Rectangle {
+    background: #111827;
+    border-color: PrototypeState.target-valid ? #334155 : #fb7185;
+    border-width: 1px;
+    border-radius: 9px;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 7px;
+        Text { text: "TARGET FOLDER"; color: #94a3b8; font-size: 11px; font-weight: 700; }
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle {
+                height: 34px;
+                horizontal-stretch: 1;
+                background: #0b1220;
+                border-radius: 6px;
+                Text { x: 10px; width: parent.width - 20px; text: PrototypeState.target; color: #e2e8f0; vertical-alignment: center; overflow: elide; font-size: 12px; }
+            }
+            Button { text: "Browse…"; clicked => { PrototypeState.show-ready-target(); } }
+        }
+        if !PrototypeState.target-valid: Text { text: "This remembered path is unavailable. It will not be cleared, but this run is blocked."; color: #fda4af; font-size: 11px; wrap: word-wrap; }
+    }
+}
+
+component ProfileSelector inherits Rectangle {
+    background: #111827;
+    border-color: #334155;
+    border-width: 1px;
+    border-radius: 9px;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 7px;
+        Text { text: "ACTIVE PROFILE"; color: #94a3b8; font-size: 11px; font-weight: 700; }
+        Text { text: PrototypeState.profile; color: #f8fafc; font-size: 17px; font-weight: 700; }
+        Text { text: "Immutable definition • profile-specific choices"; color: #94a3b8; font-size: 11px; }
+        HorizontalLayout {
+            spacing: 8px;
+            Button { text: "Switch profile"; clicked => { PrototypeState.profile = PrototypeState.profile == "SSE — Built-in" ? "FO4 — Built-in" : "SSE — Built-in"; } }
+            Button { text: "New custom…"; clicked => { PrototypeState.profile = "My Custom Profile"; } }
+            Button { text: "Import legacy…"; }
+        }
+    }
+}
+
+component OptionRow inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <string> value;
+    height: 52px;
+    background: #111827;
+    border-color: #263449;
+    border-width: 1px;
+    border-radius: 7px;
+    HorizontalLayout {
+        padding: 10px;
+        spacing: 10px;
+        VerticalLayout {
+            Text { text: root.title; color: #f1f5f9; font-size: 13px; font-weight: 600; }
+            Text { text: root.detail; color: #94a3b8; font-size: 10px; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Pill { width: 122px; label: root.value; }
+    }
+}
+
+component VariantA inherits Rectangle {
+    background: #0f172a;
+    HorizontalLayout {
+        padding: 18px;
+        spacing: 16px;
+        Rectangle {
+            width: 220px;
+            background: #111827;
+            border-radius: 11px;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 14px;
+                Text { text: "GUIDED FLOW"; color: #38bdf8; font-size: 11px; font-weight: 800; }
+                Text { text: "Prepare a run"; color: #f8fafc; font-size: 22px; font-weight: 700; }
+                Rectangle { height: 1px; background: #334155; }
+                Text { text: "1   Profile"; color: #e2e8f0; font-size: 14px; font-weight: 700; }
+                Text { text: "2   Target & mode"; color: #e2e8f0; font-size: 14px; font-weight: 700; }
+                Text { text: "3   Operations"; color: #e2e8f0; font-size: 14px; font-weight: 700; }
+                Text { text: "4   Review & run"; color: #7dd3fc; font-size: 14px; font-weight: 700; }
+                Rectangle { vertical-stretch: 1; }
+                Text { text: "Advanced definition editing appears only for custom profiles."; color: #94a3b8; font-size: 11px; wrap: word-wrap; }
+            }
+        }
+        ScrollView {
+            horizontal-stretch: 1;
+            VerticalLayout {
+                padding-right: 8px;
+                spacing: 12px;
+                Text { text: "Review the effective run"; color: #f8fafc; font-size: 24px; font-weight: 700; }
+                Text { text: "Every choice stays visible before processing starts."; color: #94a3b8; font-size: 12px; }
+                ProfileSelector { height: 124px; }
+                TargetSelector { height: PrototypeState.target-valid ? 105px : 132px; }
+                HorizontalLayout {
+                    spacing: 10px;
+                    Rectangle {
+                        background: #111827; border-radius: 9px; border-color: #334155; border-width: 1px;
+                        VerticalLayout { padding: 12px; spacing: 7px; Text { text: "TARGET SHAPE"; color: #94a3b8; font-size: 11px; } CheckBox { text: "Several mods (MO2 folder)"; checked: PrototypeState.several-mods; toggled => { PrototypeState.several-mods = self.checked; PrototypeState.show-ready-target(); } } Text { text: PrototypeState.several-mods ? "Mesh level constrained to Necessary" : "Single mod root"; color: #fbbf24; font-size: 10px; } }
+                    }
+                    Rectangle {
+                        background: #111827; border-radius: 9px; border-color: #334155; border-width: 1px;
+                        VerticalLayout { padding: 12px; spacing: 7px; Text { text: "WRITE POLICY"; color: #94a3b8; font-size: 11px; } CheckBox { text: "Dry run"; checked: PrototypeState.dry-run; toggled => { PrototypeState.dry-run = self.checked; } } Text { text: PrototypeState.dry-run ? "Preview all planned effects" : "Backups and output rules apply"; color: #a7f3d0; font-size: 10px; } }
+                    }
+                }
+                OptionRow { title: "Archives"; detail: "Extract, create, backup, compression, dummy plugin"; value: "5 choices"; }
+                OptionRow { title: "Textures"; detail: "Necessary optimization, BC7, mipmaps, 2048 × 2048"; value: "4 choices"; }
+                OptionRow { title: "Meshes"; detail: PrototypeState.several-mods ? "Necessary only — constrained by several-mod mode" : "Necessary optimization • headparts"; value: "2 choices"; }
+            }
+        }
+        VerticalLayout {
+            width: 330px;
+            spacing: 12px;
+            StatusPanel { height: 154px; }
+            ProgressPanel { height: 220px; }
+            LogPanel { height: 116px; }
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+}
+
+component VariantB inherits Rectangle {
+    background: #0b1220;
+    HorizontalLayout {
+        Rectangle {
+            width: 194px;
+            background: #111827;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
+                Text { text: "CAO WORKBENCH"; color: #c4b5fd; font-size: 14px; font-weight: 800; }
+                Text { text: PrototypeState.profile; color: #f8fafc; font-size: 12px; wrap: word-wrap; }
+                Rectangle { height: 1px; background: #334155; }
+                Pill { width: 160px; label: "Overview"; fill: #4c1d95; ink: #ede9fe; }
+                Text { text: "Archives"; color: #cbd5e1; font-size: 13px; }
+                Text { text: "Textures"; color: #cbd5e1; font-size: 13px; }
+                Text { text: "Meshes"; color: #cbd5e1; font-size: 13px; }
+                Text { text: "Animations"; color: #64748b; font-size: 13px; }
+                Text { text: "Profile definition"; color: PrototypeState.profile == "My Custom Profile" ? #cbd5e1 : #64748b; font-size: 13px; }
+                Text { text: "Run history"; color: #cbd5e1; font-size: 13px; }
+                Rectangle { vertical-stretch: 1; }
+                Text { text: "Unsupported categories remain visible and explain why they are unavailable."; color: #94a3b8; font-size: 10px; wrap: word-wrap; }
+            }
+        }
+        VerticalLayout {
+            padding: 18px;
+            spacing: 12px;
+            HorizontalLayout {
+                height: 40px;
+                Text { text: "Effective configuration"; color: #f8fafc; font-size: 24px; font-weight: 700; }
+                Rectangle { horizontal-stretch: 1; }
+                Button { text: "Switch profile"; clicked => { PrototypeState.profile = PrototypeState.profile == "SSE — Built-in" ? "My Custom Profile" : "SSE — Built-in"; } }
+                Button { text: "Import"; }
+            }
+            TargetSelector { height: PrototypeState.target-valid ? 100px : 126px; }
+            HorizontalLayout {
+                spacing: 12px;
+                ScrollView {
+                    horizontal-stretch: 1;
+                    VerticalLayout {
+                        padding-right: 8px;
+                        spacing: 9px;
+                        Text { text: "CATEGORY SETTINGS"; color: #94a3b8; font-size: 11px; font-weight: 700; }
+                        OptionRow { title: "Archive extraction"; detail: "Preserve loose files and record collisions"; value: "Off"; }
+                        OptionRow { title: "Archive creation"; detail: "Dummy plugin • compression • delete source"; value: "Configured"; }
+                        OptionRow { title: "Texture optimization"; detail: "Necessary • BC7 • mipmaps"; value: "Enabled"; }
+                        OptionRow { title: "Texture resize"; detail: "Maximum 2048 × 2048"; value: "Fixed size"; }
+                        OptionRow { title: "Mesh optimization"; detail: PrototypeState.several-mods ? "Several-mod rule masks Medium and Full" : "Necessary with headpart handling"; value: PrototypeState.several-mods ? "Necessary" : "Enabled"; }
+                        OptionRow { title: "Animations"; detail: "Unavailable in this profile definition"; value: "Unsupported"; }
+                        CheckBox { text: "Several mods"; checked: PrototypeState.several-mods; toggled => { PrototypeState.several-mods = self.checked; PrototypeState.show-ready-target(); } }
+                        CheckBox { text: "Dry run — preserve choices, suppress persistent writes"; checked: PrototypeState.dry-run; toggled => { PrototypeState.dry-run = self.checked; } }
+                    }
+                }
+                VerticalLayout {
+                    width: 342px;
+                    spacing: 10px;
+                    StatusPanel { height: 154px; }
+                    ProgressPanel { height: 220px; }
+                    LogPanel { height: 116px; }
+                }
+            }
+        }
+    }
+}
+
+component OperationTile inherits Rectangle {
+    in property <string> number;
+    in property <string> title;
+    in property <string> summary;
+    in property <string> state;
+    background: #111827;
+    border-color: #334155;
+    border-width: 1px;
+    border-radius: 10px;
+    VerticalLayout {
+        padding: 13px;
+        spacing: 7px;
+        HorizontalLayout {
+            Pill { width: 28px; label: root.number; fill: #164e63; ink: #a5f3fc; }
+            Rectangle { horizontal-stretch: 1; }
+            Pill { width: 104px; label: root.state; }
+        }
+        Text { text: root.title; color: #f8fafc; font-size: 16px; font-weight: 700; }
+        Text { text: root.summary; color: #94a3b8; font-size: 11px; wrap: word-wrap; }
+        Rectangle { vertical-stretch: 1; }
+        Text { text: "Open settings →"; color: #67e8f9; font-size: 11px; }
+    }
+}
+
+component VariantC inherits Rectangle {
+    background: #0f172a;
+    VerticalLayout {
+        padding: 18px;
+        spacing: 12px;
+        HorizontalLayout {
+            Text { text: "RUN DESK"; color: #67e8f9; font-size: 15px; font-weight: 800; }
+            Rectangle { horizontal-stretch: 1; }
+            Pill { width: 150px; label: PrototypeState.profile; }
+            Button { text: "Profiles…"; clicked => { PrototypeState.profile = PrototypeState.profile == "SSE — Built-in" ? "My Custom Profile" : "SSE — Built-in"; } }
+        }
+        Rectangle {
+            height: 92px;
+            background: #111827;
+            border-radius: 10px;
+            border-color: PrototypeState.target-valid ? #334155 : #fb7185;
+            border-width: 1px;
+            HorizontalLayout {
+                padding: 12px;
+                spacing: 14px;
+                VerticalLayout {
+                    Text { text: "TARGET"; color: #94a3b8; font-size: 10px; font-weight: 700; }
+                    Text { text: PrototypeState.target; color: #f8fafc; font-size: 14px; font-weight: 600; overflow: elide; }
+                    Text { text: PrototypeState.target-valid ? "Validated absolute path" : "Unavailable remembered path — run blocked"; color: PrototypeState.target-valid ? #a7f3d0 : #fda4af; font-size: 10px; }
+                }
+                Button { text: "Choose folder"; clicked => { PrototypeState.show-ready-target(); } }
+                Rectangle { width: 1px; background: #334155; }
+                CheckBox { text: "Several mods"; checked: PrototypeState.several-mods; toggled => { PrototypeState.several-mods = self.checked; PrototypeState.show-ready-target(); } }
+                CheckBox { text: "Dry run"; checked: PrototypeState.dry-run; toggled => { PrototypeState.dry-run = self.checked; } }
+            }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            OperationTile { number: "1"; title: "Archives"; summary: "Extract off • create on • dummy plugin • compressed"; state: "5 choices"; }
+            OperationTile { number: "2"; title: "Textures"; summary: "Necessary • BC7 • mipmaps • 2048 × 2048"; state: "4 choices"; }
+            OperationTile { number: "3"; title: "Meshes"; summary: PrototypeState.several-mods ? "Necessary only; stronger levels unavailable in several-mod mode" : "Necessary optimization and headpart handling"; state: "2 choices"; }
+            OperationTile { number: "4"; title: "Animations"; summary: "Capability unavailable for the active profile"; state: "Unsupported"; }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            ProgressPanel { horizontal-stretch: 1; }
+            StatusPanel { width: 330px; }
+        }
+        LogPanel { height: 116px; }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "CAO Slint Interaction Contract — THROWAWAY PROTOTYPE";
+    width: 1280px;
+    height: 800px;
+    background: #020617;
+
+    VerticalLayout {
+        if PrototypeState.variant == 0: VariantA { vertical-stretch: 1; }
+        if PrototypeState.variant == 1: VariantB { vertical-stretch: 1; }
+        if PrototypeState.variant == 2: VariantC { vertical-stretch: 1; }
+
+        Rectangle {
+            height: 56px;
+            background: #020617;
+            border-color: #475569;
+            border-width: 1px;
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                spacing: 8px;
+                Text { text: "PROTOTYPE"; color: #fb7185; font-size: 11px; font-weight: 800; vertical-alignment: center; }
+                Button { text: "‹"; clicked => { PrototypeState.variant = PrototypeState.variant == 0 ? 2 : PrototypeState.variant - 1; } }
+                Pill {
+                    width: 190px;
+                    label: PrototypeState.variant == 0 ? "A — Guided flow" : PrototypeState.variant == 1 ? "B — Workbench" : "C — Run desk";
+                    fill: #312e81;
+                    ink: #e0e7ff;
+                }
+                Button { text: "›"; clicked => { PrototypeState.variant = PrototypeState.variant == 2 ? 0 : PrototypeState.variant + 1; } }
+                Rectangle { width: 1px; height: 30px; background: #334155; }
+                Text { text: "SCENARIO"; color: #94a3b8; font-size: 10px; font-weight: 700; vertical-alignment: center; }
+                Button { text: "Ready"; clicked => { PrototypeState.show-ready-target(); } }
+                Button { text: "Invalid target"; clicked => { PrototypeState.show-invalid-target(); } }
+                Button { text: "Running"; clicked => { PrototypeState.show-ready-target(); PrototypeState.start-run(); } }
+                Button { text: "Stopping"; clicked => { PrototypeState.show-ready-target(); PrototypeState.start-run(); PrototypeState.request-cancel(); } }
+                Button { text: "With errors"; clicked => { PrototypeState.show-ready-target(); PrototypeState.start-run(); PrototypeState.finish-with-errors(); } }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: PrototypeState.phase; color: #e2e8f0; font-size: 12px; font-weight: 700; vertical-alignment: center; }
+            }
+        }
+    }
+}
