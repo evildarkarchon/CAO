@@ -157,15 +157,6 @@
         "windows"
       ],
       "name": "ninja-windows"
-    },
-    {
-      "generator": "Ninja",
-      "inherits": [
-        "cmake-dev",
-        "linux",
-        "vcpkg"
-      ],
-      "name": "ninja-linux"
     }
   ]
 }

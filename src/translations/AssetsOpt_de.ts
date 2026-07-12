@@ -575,6 +575,14 @@ Dieses Programm wird verteilt der Hoffnung dass es nützlich ist aber OHNE GEWÄ
         <source>The optimization worker stopped with an exception: </source>
         <translation type="unfinished"></translation>
     </message>
+    <message>
+        <source>Unknown worker exception</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Failed</source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>TexturesFormatSelectDialog</name>

@@ -289,6 +289,7 @@ void BSAOptimizer::packAll(const QString &folderPath,
   try {
     int rollbackIndex = 0;
     QStringList rollbackOnlyFiles;
+    bool publishedOutput = false;
     for (const auto &output : packing.outputs) {
       const QString destination =
           QDir(folderPath).filePath(output.relativeDestination);
@@ -308,6 +309,13 @@ void BSAOptimizer::packAll(const QString &folderPath,
         rollbackOnlyFiles << rollbackPath;
       }
       moveJournaled(output.stagingPath, destination, *workspace);
+      publishedOutput = true;
+    }
+
+    if (!publishedOutput) {
+      // A no-op pack has no journal intents and therefore cannot be committed.
+      workspace->cleanup();
+      return;
     }
 
     QMap<QString, QString> cleanup;

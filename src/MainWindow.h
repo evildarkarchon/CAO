@@ -10,6 +10,8 @@
 #include "pch.h"
 #include "ui_mainWindow.h"
 
+#include <exception>
+
 namespace Ui {
 class MainWindow;
 }
@@ -65,6 +67,8 @@ private:
   QFuture<void> _optimizationFuture;
   /*! \brief Finalizes every worker outcome, including exceptions. */
   QFutureWatcher<void> _optimizationWatcher;
+  /*! \brief Preserves ordinary C++ exceptions across QtConcurrent's boundary. */
+  std::exception_ptr _optimizationException;
   bool _showTutorials;
   TexturesFormatSelectDialog *texturesFormatDialog;
   QTimer logTimer;

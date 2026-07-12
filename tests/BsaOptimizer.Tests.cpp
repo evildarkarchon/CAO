@@ -417,6 +417,33 @@ TEST_CASE("BSA packing Dry Run performs no staging or engine work") {
   REQUIRE(engine.packCalls == 0);
 }
 
+TEST_CASE("BSA packing treats an empty archive plan as a no-op") {
+  MemoryArchiveFiles files;
+  files.directories.insert("C:/Mods/Alpha");
+  RecordedArchiveEngine engine(files);
+  BSAOptimizer optimizer(engine, files);
+
+  REQUIRE_NOTHROW(optimizer.packAll("C:/Mods/Alpha", packingPolicy(true)));
+  REQUIRE(engine.packCalls == 1);
+  REQUIRE(files.moveCount == 0);
+  REQUIRE_FALSE(files.exists("C:/Mods/Alpha/.cao-transactions"));
+}
+
+TEST_CASE("BSA packing treats a skipped dummy-only plan as a no-op") {
+  MemoryArchiveFiles files;
+  files.directories.insert("C:/Mods/Alpha");
+  files.addFile("C:/Mods/Alpha/Alpha.esp");
+  const QString pluginIdentity = files.identity("C:/Mods/Alpha/Alpha.esp");
+  RecordedArchiveEngine engine(files);
+  engine.packedOutputs = {{"Alpha.esp", StagedArchiveOutputKind::DummyPlugin}};
+  BSAOptimizer optimizer(engine, files);
+
+  REQUIRE_NOTHROW(optimizer.packAll("C:/Mods/Alpha", packingPolicy(true)));
+  REQUIRE(files.moveCount == 0);
+  REQUIRE(files.identity("C:/Mods/Alpha/Alpha.esp") == pluginIdentity);
+  REQUIRE_FALSE(files.exists("C:/Mods/Alpha/.cao-transactions"));
+}
+
 TEST_CASE("BSA packing commits output before deleting loose sources") {
   MemoryArchiveFiles files;
   files.directories.insert("C:/Mods/Alpha");

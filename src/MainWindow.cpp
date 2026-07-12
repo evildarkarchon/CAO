@@ -283,6 +283,7 @@ void MainWindow::initProcess() {
   _ui->newProfilePushButton->setDisabled(true);
   _bLockVariables = true;
   _optimizationFuture = {};
+  _optimizationException = {};
 
   try {
     _caoProcess.reset();
@@ -298,8 +299,14 @@ void MainWindow::initProcess() {
     connect(&logTimer, &QTimer::timeout, this, &MainWindow::updateLog,
             Qt::UniqueConnection);
     logTimer.start(5000); // Refresh log every 5 seconds
-    _optimizationFuture =
-        QtConcurrent::run(&*_caoProcess, &Manager::runOptimization);
+    _optimizationFuture = QtConcurrent::run([this]() {
+      try {
+        _caoProcess->runOptimization();
+      } catch (...) {
+        // Qt 5 discards non-QException payloads at the concurrent boundary.
+        _optimizationException = std::current_exception();
+      }
+    });
     _optimizationWatcher.setFuture(_optimizationFuture);
   } catch (const std::exception &e) {
     QMessageBox box(QMessageBox::Critical, tr("Error"),
@@ -320,8 +327,14 @@ void MainWindow::endProcess() {
   QString workerError;
   try {
     _optimizationFuture.waitForFinished();
+    const std::exception_ptr workerException =
+        std::exchange(_optimizationException, {});
+    if (workerException)
+      std::rethrow_exception(workerException);
   } catch (const std::exception &e) {
     workerError = QString::fromUtf8(e.what());
+  } catch (...) {
+    workerError = tr("Unknown worker exception");
   }
 
   _ui->processButton->setDisabled(false);
@@ -337,7 +350,8 @@ void MainWindow::endProcess() {
 
   _ui->progressBar->setMaximum(100);
   _ui->progressBar->setValue(100);
-  _ui->progressBar->setFormat(tr("Done"));
+  _ui->progressBar->setFormat(workerError.isEmpty() ? tr("Done")
+                                                    : tr("Failed"));
   updateLog();
 
   if (!workerError.isEmpty()) {

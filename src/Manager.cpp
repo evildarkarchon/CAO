@@ -208,7 +208,7 @@ void Manager::runOptimization() {
                       .arg(error.assetPath(), error.diagnostic());
     for (const auto &rollbackError : error.rollbackDiagnostics())
       PLOG_ERROR << "Archive rollback failure: " + rollbackError;
-    return;
+    throw;
   }
 
   PLOG_INFO << "Process completed<br><br><br>";
