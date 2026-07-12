@@ -12,11 +12,25 @@
 
 #include <memory>
 
+/*! \brief Durably brackets workspace creation with the owning Mod lock. */
+class ArchiveTransactionBootstrap {
+public:
+  virtual ~ArchiveTransactionBootstrap() = default;
+
+  /*! \brief Records intent before the reserved root or workspace is created. */
+  virtual void begin(const QString &modPath, const QString &transactionId,
+                     const QString &workspacePath) = 0;
+  /*! \brief Clears intent only after the workspace manifest is durable. */
+  virtual void complete(const QString &modPath,
+                        const QString &transactionId) = 0;
+};
+
 /*!
  * \brief Executes complete staged archive extraction and packing transactions.
  *
- * Engine output is isolated in a sibling staging directory. Publishing is
- * journaled so runtime failures restore the prior live Mod state.
+ * Engine output is isolated in an owned in-Mod transaction workspace.
+ * Durable replay restores runtime failures through the same path used after a
+ * process restart.
  */
 class BSAOptimizer final : public QObject {
   Q_DECLARE_TR_FUNCTIONS(BsaOptimizer)
@@ -25,12 +39,19 @@ public:
   /*! \brief Creates a production archive transaction module. */
   BSAOptimizer();
 
+  /*! \brief Creates production archive transactions owned by held Mod locks. */
+  explicit BSAOptimizer(ArchiveTransactionBootstrap &bootstrap);
+
   /*!
    * \brief Creates an archive transaction module using supplied test adapters.
    * \param engine Stages archive contents and outputs without live mutations.
    * \param files Publishes and rolls back staged filesystem changes.
    */
   BSAOptimizer(ArchiveEngine &engine, ArchiveFileOperations &files);
+
+  /*! \brief Creates deterministic archive transactions with lock bootstrap. */
+  BSAOptimizer(ArchiveEngine &engine, ArchiveFileOperations &files,
+               ArchiveTransactionBootstrap &bootstrap);
 
   /*!
    * \brief Extracts and publishes one archive transaction.
@@ -58,19 +79,22 @@ public:
 private:
   /*! \brief Selects a retained backup name without replacing prior backups. */
   [[nodiscard]] QString uniqueBackupPath(const QString &path) const;
-  /*! \brief Creates missing destination parents and journals their paths. */
+  /*! \brief Creates missing destination parents through write-ahead records. */
   void ensureDestinationParent(const QString &destination,
                                const QString &liveRoot,
-                               QStringList &createdDirectories);
-  /*! \brief Reverses newly published Assets and created directories. */
-  [[nodiscard]] QStringList
-  rollbackPublished(const QStringList &published,
-                    const QStringList &createdDirectories);
-  /*! \brief Best-effort cleanup that cannot invalidate a committed result. */
-  void cleanupStaging(const QString &stagingPath) noexcept;
+                               ArchiveTransactionWorkspace &workspace);
+  /*! \brief Durably records and performs one no-overwrite Asset move. */
+  void moveJournaled(const QString &source, const QString &destination,
+                     ArchiveTransactionWorkspace &workspace);
+  /*! \brief Creates a fully owned durable workspace for one transaction. */
+  [[nodiscard]] ArchiveTransactionWorkspace
+  createWorkspace(ArchiveTransactionKind kind, const QString &modPath,
+                  const QString &anchorPath,
+                  const QMap<QString, QString> &policyFacts = {});
 
   std::unique_ptr<ArchiveEngine> _ownedEngine;
   std::unique_ptr<ArchiveFileOperations> _ownedFiles;
   ArchiveEngine *_engine = nullptr;
   ArchiveFileOperations *_files = nullptr;
+  ArchiveTransactionBootstrap *_bootstrap = nullptr;
 };

@@ -93,3 +93,33 @@ TEST_CASE("ModAssetMetadataBuilder combines Profile and selected Mod plugin Head
     REQUIRE_FALSE(metadata.isHeadpartMesh(root.filePath("Beta/meshes/plugin/beta-head.nif")));
     REQUIRE(pluginReferences.inspectedPlugins == QStringList{alphaPlugin});
 }
+
+TEST_CASE("ModAssetMetadataBuilder excludes plugins in the reserved Archive Transaction root")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Alpha/.cao-transactions/transaction/output"));
+    REQUIRE(root.mkpath("Alpha/.cao-transactions-backup"));
+    const QString livePlugin = root.filePath("Alpha/Live.esp");
+    const QString stagedPlugin =
+        root.filePath("Alpha/.cao-transactions/transaction/output/Staged.esp");
+    const QString similarlyNamedPlugin =
+        root.filePath("Alpha/.cao-transactions-backup/Legitimate.esp");
+    createFile(livePlugin);
+    createFile(stagedPlugin);
+    createFile(similarlyNamedPlugin);
+
+    FakeProfileAssetReferences profileReferences;
+    FakePluginAssetReferences pluginReferences;
+    const ModAssetMetadataBuilder builder(profileReferences, pluginReferences);
+
+    const auto metadata =
+        builder.buildForMods(QStringList{root.filePath("Alpha")});
+    static_cast<void>(metadata);
+
+    REQUIRE(pluginReferences.inspectedPlugins.contains(livePlugin));
+    REQUIRE(pluginReferences.inspectedPlugins.contains(similarlyNamedPlugin));
+    REQUIRE_FALSE(pluginReferences.inspectedPlugins.contains(stagedPlugin));
+}

@@ -4,16 +4,36 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "AssetWorkPlan.h"
+#include "AssetPathVisibility.h"
 
 #include <QDir>
-#include <QDirIterator>
 
-AssetWorkPlanner::AssetWorkPlanner(AssetWorkPlanRequest request)
-    : _request(std::move(request)) {}
+namespace {
+template <typename Visitor>
+void visitAssetFiles(const QString &rootPath, Visitor visitor) {
+  const QDir root(rootPath);
+  const QFileInfoList entries = root.entryInfoList(
+      QDir::Dirs | QDir::Files | QDir::Hidden | QDir::System |
+          QDir::NoDotAndDotDot,
+      QDir::Name | QDir::IgnoreCase);
+  for (const QFileInfo &entry : entries) {
+    if (AssetPathVisibility::isInternalPath(entry.filePath()))
+      continue;
+    if (entry.isDir())
+      visitAssetFiles(entry.filePath(), visitor);
+    else
+      visitor(entry);
+  }
+}
+} // namespace
+
+AssetWorkPlanner::AssetWorkPlanner(AssetWorkPlanRequest request,
+                                   QStringList selectedMods)
+    : _request(std::move(request)), _selectedMods(std::move(selectedMods)) {}
 
 ArchiveAssetWorkPlan AssetWorkPlanner::planArchives() const {
   ArchiveAssetWorkPlan plan;
-  plan.modsToProcess = selectMods();
+  plan.modsToProcess = _selectedMods;
 
   if (_request.policy.allowsArchivePacking()) {
     for (const auto &mod : plan.modsToProcess)
@@ -24,63 +44,28 @@ ArchiveAssetWorkPlan AssetWorkPlanner::planArchives() const {
     return plan;
 
   for (const auto &mod : plan.modsToProcess) {
-    QDirIterator it(mod, QDirIterator::Subdirectories);
-    while (it.hasNext()) {
-      it.next();
-      if (it.fileInfo().isDir())
-        continue;
-
-      if (_request.policy.allowsArchiveExtractionFor(it.fileName()))
+    visitAssetFiles(mod, [&](const QFileInfo &entry) {
+      if (_request.policy.allowsArchiveExtractionFor(entry.fileName()))
         plan.archivesToExtract.push_back(
-            ArchiveExtractionWorkItem{it.filePath()});
-    }
+            ArchiveExtractionWorkItem{entry.filePath()});
+    });
   }
 
   return plan;
 }
 
-LooseAssetWorkPlan
-AssetWorkPlanner::planLooseAssets(const QStringList &modsToProcess) const {
+LooseAssetWorkPlan AssetWorkPlanner::planLooseAssets() const {
   LooseAssetWorkPlan plan;
-  plan.modsToProcess = modsToProcess;
+  plan.modsToProcess = _selectedMods;
 
   for (const auto &mod : plan.modsToProcess) {
-    QDirIterator it(mod, QDirIterator::Subdirectories);
-    while (it.hasNext()) {
-      it.next();
-      if (it.fileInfo().isDir())
-        continue;
-
-      const auto kind = _request.policy.classifyLooseAsset(it.fileName());
+    visitAssetFiles(mod, [&](const QFileInfo &entry) {
+      const auto kind = _request.policy.classifyLooseAsset(entry.fileName());
       if (kind.has_value())
         plan.looseAssetsToOptimize.push_back(
-            LooseAssetWorkItem{it.filePath(), kind.value()});
-    }
+            LooseAssetWorkItem{entry.filePath(), kind.value()});
+    });
   }
 
   return plan;
-}
-
-QStringList AssetWorkPlanner::selectMods() const {
-  QStringList mods;
-
-  if (_request.mode == AssetWorkMode::SingleMod) {
-    mods << _request.selectedPath;
-    return mods;
-  }
-
-  const QDir dir(_request.selectedPath);
-  for (const auto &subDir :
-       dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
-    // Separators are empty directories used by Mod Organizer 2.
-    if (!subDir.contains("separator", Qt::CaseInsensitive) &&
-        !isIgnoredMod(subDir))
-      mods << dir.filePath(subDir);
-  }
-
-  return mods;
-}
-
-bool AssetWorkPlanner::isIgnoredMod(const QString &modName) const {
-  return _request.ignoredMods.contains(modName, Qt::CaseInsensitive);
 }

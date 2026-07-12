@@ -21,8 +21,10 @@ MainOptimizer::MainOptimizer(
     AssetWorkExecutionPolicy executionPolicy,
     std::unique_ptr<LooseAssetTransactions> transactions,
     std::unique_ptr<AssetQuarantine> quarantine,
-    std::shared_ptr<AssetTransactionReportQueue> reports)
+    std::shared_ptr<AssetTransactionReportQueue> reports,
+    std::unique_ptr<BSAOptimizer> bsaOptimizer)
     : _executionPolicy(std::move(executionPolicy)),
+      _bsaOpt(std::move(bsaOptimizer)),
       _looseAssetTransactions(std::move(transactions)),
       _quarantine(std::move(quarantine)), _reports(std::move(reports)) {}
 

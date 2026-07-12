@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "FilesystemOperations.h"
+#include "AssetPathVisibility.h"
 #include "PluginsOperations.h"
 
 namespace {
@@ -29,32 +30,24 @@ QMap<QString, QString> folderSnapshot(const QString &folder,
 
   return entries;
 }
+
+void deleteEmptyAssetDirectories(const QString &folderPath) {
+  QDir folder(folderPath);
+  const QFileInfoList children = folder.entryInfoList(
+      QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot,
+      QDir::Name | QDir::IgnoreCase);
+  for (const QFileInfo &child : children) {
+    if (AssetPathVisibility::isInternalPath(child.filePath()))
+      continue;
+    deleteEmptyAssetDirectories(child.filePath());
+    if (!child.filePath().contains("separator", Qt::CaseInsensitive))
+      folder.rmdir(child.fileName());
+  }
+}
 } // namespace
 
 void FilesystemOperations::deleteEmptyDirectories(const QString &folderPath) {
-  QDirIterator dirIt(folderPath, QDirIterator::Subdirectories);
-  QMap<int, QStringList> dirs;
-
-  while (dirIt.hasNext()) {
-    QString path = QDir::cleanPath(dirIt.next());
-    int size = path.size();
-
-    const bool alreadyExist = dirs[size].contains(path);
-    const bool isSeparator = path.contains("separator", Qt::CaseInsensitive);
-
-    if (!alreadyExist && !isSeparator)
-      dirs[size].append(path);
-  }
-
-  const QDir dir(folderPath);
-  QMapIterator<int, QStringList> i(dirs);
-
-  i.toBack();
-  while (i.hasPrevious()) {
-    i.previous();
-    for (int j = 0; j < i.value().size(); ++j)
-      dir.rmpath(i.value().at(j));
-  }
+  deleteEmptyAssetDirectories(folderPath);
 }
 
 bool FilesystemOperations::compareFolders(const QString &folder1,

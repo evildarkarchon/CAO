@@ -60,7 +60,7 @@
 #include "DirectXTex.h"
 #include "Logger.h"
 #include "NifFile.hpp"
-#include "TexturesFormats.h"
+#include "texturesformats.h"
 #include "btu/bsa/pack.hpp"
 #include "btu/bsa/unpack.hpp"
 /*----------------------*/

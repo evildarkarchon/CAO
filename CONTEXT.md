@@ -40,6 +40,14 @@ _Avoid_: Optimizer settings, runtime options, execution config
 The act of carrying out an Asset Work Plan against the selected Mod or Mods. It is execution, not planning; Loose Asset Discovery may happen during it after archive extraction changes the available Assets.
 _Avoid_: Optimization run, processing pipeline, manager orchestration
 
+**Archive Transaction**:
+A complete archive extraction for one source archive or a complete archive packing operation for one Mod. Its Asset changes either become committed together or are restored together.
+_Avoid_: BSA operation, archive step
+
+**Archive Recovery**:
+The phase of Asset Work Plan Execution that restores the selected Mod or Mods after an interrupted archive transaction. It runs after the Mods are selected but before new Asset Work Items are planned, rolling an incomplete transaction back or completing cleanup for a committed transaction; Dry Run reports required recovery without changing Assets.
+_Avoid_: Staging cleanup, stale folder cleanup
+
 **Dry Run**:
 An Asset Work Plan Execution that reports intended Asset work without changing Assets. Archive extraction and packing remain intended work, but Loose Asset Discovery cannot include Assets that would only become available through extraction.
 _Avoid_: Preview mode, no-op plan

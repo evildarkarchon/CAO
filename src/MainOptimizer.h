@@ -58,11 +58,13 @@ private:
    * \param transactions Complete loose Asset transaction adapter.
    * \param quarantine Malformed Asset quarantine adapter.
    * \param reports Thread-safe report queue owned by execution composition.
+   * \param bsaOptimizer Optional archive module bound to held Mod locks.
    */
   MainOptimizer(AssetWorkExecutionPolicy executionPolicy,
                 std::unique_ptr<LooseAssetTransactions> transactions,
                 std::unique_ptr<AssetQuarantine> quarantine,
-                std::shared_ptr<AssetTransactionReportQueue> reports);
+                std::shared_ptr<AssetTransactionReportQueue> reports,
+                std::unique_ptr<BSAOptimizer> bsaOptimizer = {});
 
   /*! \brief Drains queued transaction notices to the legacy direct logger. */
   void drainReportsToLog();

@@ -195,3 +195,18 @@ TEST_CASE("FilesystemOperations deleteEmptyDirectories removes empty directories
     REQUIRE(root.exists("separator 1"));
     REQUIRE(root.exists("separator 1/EmptyChild"));
 }
+
+TEST_CASE("FilesystemOperations empty-directory cleanup does not traverse the reserved transaction root")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Alpha/Empty/Nested"));
+    REQUIRE(root.mkpath("Alpha/.cao-transactions/transaction/output/empty"));
+
+    FilesystemOperations::deleteEmptyDirectories(root.filePath("Alpha"));
+
+    REQUIRE_FALSE(root.exists("Alpha/Empty"));
+    REQUIRE(root.exists("Alpha/.cao-transactions/transaction/output/empty"));
+}

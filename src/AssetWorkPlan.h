@@ -16,6 +16,12 @@ struct AssetWorkPlanRequest {
   AssetWorkMode mode = AssetWorkMode::SingleMod;
   QStringList ignoredMods;
   AssetWorkPolicy policy;
+  // Dry Run and recovery-first callers disable generic filesystem cleanup;
+  // archive transaction cleanup remains owned by Archive Recovery.
+  bool cleanupEmptyDirectories = true;
+  // Recovery-first composition supplies the exact locked scope so planning
+  // cannot drift if the selected parent changes after lock acquisition.
+  QStringList resolvedSelectedMods;
 };
 
 struct ArchiveExtractionWorkItem {
@@ -48,8 +54,10 @@ public:
    * \brief Creates a planner for one optimization request.
    * \param request The selected path, profile capabilities, ignored mods, and
    * enabled work categories.
+   * \param selectedMods The already-resolved Mod directories that planning is
+   * allowed to inspect.
    */
-  explicit AssetWorkPlanner(AssetWorkPlanRequest request);
+  AssetWorkPlanner(AssetWorkPlanRequest request, QStringList selectedMods);
 
   /*!
    * \brief Plans archive extraction and packing targets before archive
@@ -62,16 +70,12 @@ public:
   /*!
    * \brief Plans loose assets after archive extraction has had a chance to add
    * files.
-   * \param modsToProcess The selected mods from the archive plan.
    * \return A Loose Asset Work Plan containing loose assets to optimize,
    * preserving filesystem traversal order.
    */
-  [[nodiscard]] LooseAssetWorkPlan
-  planLooseAssets(const QStringList &modsToProcess) const;
+  [[nodiscard]] LooseAssetWorkPlan planLooseAssets() const;
 
 private:
-  [[nodiscard]] QStringList selectMods() const;
-  [[nodiscard]] bool isIgnoredMod(const QString &modName) const;
-
   AssetWorkPlanRequest _request;
+  QStringList _selectedMods;
 };

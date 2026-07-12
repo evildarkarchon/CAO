@@ -3,6 +3,7 @@
 #include "AssetWorkOptionsDraft.h"
 #include "AssetWorkPolicyResolver.h"
 #include "AssetWorkProfileSnapshot.h"
+#include "AssetWorkScope.h"
 
 #include "btu/common/string.hpp"
 
@@ -98,6 +99,14 @@ AssetWorkPlanRequest defaultRequest(const QString &selectedPath)
     return AssetWorkPlanRequest{selectedPath, AssetWorkMode::SeveralMods, {}, defaultPolicy()};
 }
 
+AssetWorkPlanner plannerFor(const AssetWorkPlanRequest &request)
+{
+    const auto scope = AssetWorkScope::resolve(request.selectedPath,
+                                               request.mode,
+                                               request.ignoredMods);
+    return AssetWorkPlanner(request, scope.selectedMods());
+}
+
 bool containsLooseAsset(const LooseAssetWorkPlan &plan, const QString &path, const LooseAssetKind kind)
 {
     return std::any_of(plan.looseAssetsToOptimize.begin(),
@@ -131,7 +140,7 @@ TEST_CASE("Asset work planner single-mod mode selects the chosen mod directly")
     request.mode = AssetWorkMode::SingleMod;
     request.ignoredMods = QStringList{"Chosen"};
 
-    const AssetWorkPlanner planner(request);
+    const AssetWorkPlanner planner = plannerFor(request);
     const auto plan = planner.planArchives();
 
     REQUIRE(plan.modsToProcess == QStringList{root.filePath("Chosen")});
@@ -156,7 +165,7 @@ TEST_CASE("Asset work planner excludes ignored mods and Mod Organizer separators
     auto request = defaultRequest(tempDir.path());
     request.ignoredMods = QStringList{"Nemesis"};
 
-    const AssetWorkPlanner planner(request);
+    const AssetWorkPlanner planner = plannerFor(request);
     const auto plan = planner.planArchives();
 
     REQUIRE(plan.modsToProcess == QStringList{root.filePath("Alpha")});
@@ -164,6 +173,35 @@ TEST_CASE("Asset work planner excludes ignored mods and Mod Organizer separators
     REQUIRE(plan.archivesToExtract[0].path == root.filePath("Alpha/Alpha.bsa"));
     REQUIRE(plan.archivesToPack.size() == 1);
     REQUIRE(plan.archivesToPack[0].folder == root.filePath("Alpha"));
+}
+
+TEST_CASE("Asset work planner excludes the reserved Archive Transaction root")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Alpha/.cao-transactions/transaction/output/meshes"));
+    REQUIRE(root.mkpath("Alpha/.cao-transactions-backup/meshes"));
+
+    createFile(root.filePath("Alpha/.cao-transactions/transaction/staged.bsa"));
+    createFile(root.filePath("Alpha/.cao-transactions/transaction/output/meshes/staged.nif"));
+    createFile(root.filePath("Alpha/.cao-transactions-backup/legitimate.bsa"));
+    createFile(root.filePath("Alpha/.cao-transactions-backup/meshes/legitimate.nif"));
+
+    const AssetWorkPlanner planner = plannerFor(defaultRequest(tempDir.path()));
+    const auto archivePlan = planner.planArchives();
+    const auto loosePlan = planner.planLooseAssets();
+
+    REQUIRE(archivePlan.archivesToExtract.size() == 1);
+    REQUIRE(containsArchiveExtraction(
+        archivePlan,
+        root.filePath("Alpha/.cao-transactions-backup/legitimate.bsa")));
+    REQUIRE(loosePlan.looseAssetsToOptimize.size() == 1);
+    REQUIRE(containsLooseAsset(
+        loosePlan,
+        root.filePath("Alpha/.cao-transactions-backup/meshes/legitimate.nif"),
+        LooseAssetKind::Mesh));
 }
 
 TEST_CASE("Asset work planner excludes ignored mods case-insensitively in several-mod mode")
@@ -178,7 +216,7 @@ TEST_CASE("Asset work planner excludes ignored mods case-insensitively in severa
     auto request = defaultRequest(tempDir.path());
     request.ignoredMods = QStringList{"nemesis"};
 
-    const AssetWorkPlanner planner(request);
+    const AssetWorkPlanner planner = plannerFor(request);
     const auto plan = planner.planArchives();
 
     REQUIRE(plan.modsToProcess == QStringList{root.filePath("Alpha")});
@@ -193,7 +231,7 @@ TEST_CASE("Asset work planner matches archive extensions case-insensitively")
     REQUIRE(root.mkpath("Alpha"));
     createFile(root.filePath("Alpha/ALPHA.BSA"));
 
-    const AssetWorkPlanner planner(defaultRequest(tempDir.path()));
+    const AssetWorkPlanner planner = plannerFor(defaultRequest(tempDir.path()));
     const auto plan = planner.planArchives();
 
     REQUIRE(plan.archivesToExtract.size() == 1);
@@ -211,7 +249,7 @@ TEST_CASE("Asset work planner keeps several-mod archive work in selected mod ord
     createFile(root.filePath("Beta/Beta.bsa"));
     createFile(root.filePath("Alpha/nested/Alpha.bsa"));
 
-    const AssetWorkPlanner planner(defaultRequest(tempDir.path()));
+    const AssetWorkPlanner planner = plannerFor(defaultRequest(tempDir.path()));
     const auto plan = planner.planArchives();
 
     const QStringList expectedMods{root.filePath("Alpha"), root.filePath("Beta")};
@@ -223,7 +261,31 @@ TEST_CASE("Asset work planner keeps several-mod archive work in selected mod ord
     REQUIRE(containsArchiveExtraction(plan, root.filePath("Beta/Beta.bsa")));
 }
 
-TEST_CASE("Asset work planner loose asset discovery only scans supplied mods")
+TEST_CASE("Asset work planner archive discovery only scans resolved Mods")
+{
+    QTemporaryDir tempDir;
+    REQUIRE(tempDir.isValid());
+
+    const QDir root(tempDir.path());
+    REQUIRE(root.mkpath("Alpha"));
+    REQUIRE(root.mkpath("Beta"));
+
+    createFile(root.filePath("Alpha/Alpha.bsa"));
+    createFile(root.filePath("Beta/Beta.bsa"));
+
+    const auto request = defaultRequest(tempDir.path());
+    const AssetWorkPlanner planner(request, QStringList{root.filePath("Beta")});
+    const auto plan = planner.planArchives();
+
+    REQUIRE(plan.modsToProcess == QStringList{root.filePath("Beta")});
+    REQUIRE(plan.archivesToExtract.size() == 1);
+    REQUIRE(containsArchiveExtraction(plan, root.filePath("Beta/Beta.bsa")));
+    REQUIRE_FALSE(containsArchiveExtraction(plan, root.filePath("Alpha/Alpha.bsa")));
+    REQUIRE(plan.archivesToPack.size() == 1);
+    REQUIRE(plan.archivesToPack[0].folder == root.filePath("Beta"));
+}
+
+TEST_CASE("Asset work planner loose asset discovery only scans resolved Mods")
 {
     QTemporaryDir tempDir;
     REQUIRE(tempDir.isValid());
@@ -235,8 +297,9 @@ TEST_CASE("Asset work planner loose asset discovery only scans supplied mods")
     createFile(root.filePath("Alpha/textures/diffuse.dds"));
     createFile(root.filePath("Beta/meshes/body.nif"));
 
-    const AssetWorkPlanner planner(defaultRequest(tempDir.path()));
-    const auto plan = planner.planLooseAssets(QStringList{root.filePath("Beta")});
+    const auto request = defaultRequest(tempDir.path());
+    const AssetWorkPlanner planner(request, QStringList{root.filePath("Beta")});
+    const auto plan = planner.planLooseAssets();
 
     REQUIRE(plan.modsToProcess == QStringList{root.filePath("Beta")});
     REQUIRE(plan.looseAssetsToOptimize.size() == 1);
@@ -259,7 +322,7 @@ TEST_CASE("Asset work planner BSA profile support disables archive work")
     profile.bsaEnabled = false;
     setPolicy(request, defaultRequestedWork(), profile);
 
-    const AssetWorkPlanner planner(request);
+    const AssetWorkPlanner planner = plannerFor(request);
     const auto archivePlan = planner.planArchives();
 
     REQUIRE(archivePlan.modsToProcess == QStringList{root.filePath("Alpha")});
@@ -285,7 +348,7 @@ TEST_CASE("Asset work planner archive option flags suppress archive work")
         requested.extractArchives = false;
         setPolicy(request, requested, defaultProfile());
 
-        const AssetWorkPlanner planner(request);
+        const AssetWorkPlanner planner = plannerFor(request);
         const auto archivePlan = planner.planArchives();
 
         REQUIRE(archivePlan.modsToProcess == QStringList{root.filePath("Alpha")});
@@ -299,7 +362,7 @@ TEST_CASE("Asset work planner archive option flags suppress archive work")
         requested.packArchives = false;
         setPolicy(request, requested, defaultProfile());
 
-        const AssetWorkPlanner planner(request);
+        const AssetWorkPlanner planner = plannerFor(request);
         const auto archivePlan = planner.planArchives();
 
         REQUIRE(archivePlan.modsToProcess == QStringList{root.filePath("Alpha")});
@@ -323,9 +386,9 @@ TEST_CASE("Asset work planner turns policy-classified files into loose Asset Wor
     createFile(root.filePath("Alpha/animation.hkx"));
     createFile(root.filePath("Alpha/readme.txt"));
 
-    const AssetWorkPlanner planner(defaultRequest(tempDir.path()));
+    const AssetWorkPlanner planner = plannerFor(defaultRequest(tempDir.path()));
     const auto archivePlan = planner.planArchives();
-    const auto loosePlan = planner.planLooseAssets(archivePlan.modsToProcess);
+    const auto loosePlan = planner.planLooseAssets();
 
     REQUIRE(loosePlan.looseAssetsToOptimize.size() == 4);
     REQUIRE(containsLooseAsset(loosePlan, root.filePath("Alpha/textures/diffuse.dds"), LooseAssetKind::TextureDds));
@@ -349,7 +412,7 @@ TEST_CASE("Asset work planner characterizes packing-only and extraction-only arc
     requestedPackingOnly.extractArchives = false;
     setPolicy(packingOnly, requestedPackingOnly, defaultProfile());
 
-    const AssetWorkPlanner packingPlanner(packingOnly);
+    const AssetWorkPlanner packingPlanner = plannerFor(packingOnly);
     const auto packingPlan = packingPlanner.planArchives();
 
     REQUIRE(packingPlan.archivesToExtract.isEmpty());
@@ -361,7 +424,7 @@ TEST_CASE("Asset work planner characterizes packing-only and extraction-only arc
     requestedExtractionOnly.packArchives = false;
     setPolicy(extractionOnly, requestedExtractionOnly, defaultProfile());
 
-    const AssetWorkPlanner extractionPlanner(extractionOnly);
+    const AssetWorkPlanner extractionPlanner = plannerFor(extractionOnly);
     const auto extractionPlan = extractionPlanner.planArchives();
 
     REQUIRE(extractionPlan.archivesToPack.isEmpty());

@@ -69,11 +69,13 @@ public:
    * report queue.
    * \param policy Immutable Asset Work Execution Policy.
    * \param reports Queue drained by the Asset Work Plan Execution coordinator.
+   * \param bsaOptimizer Archive module bound to the held Mod-lock bootstrap.
    * \return A production optimizer safe for bounded concurrent loose work.
    */
   [[nodiscard]] static std::unique_ptr<MainOptimizer>
   createProduction(AssetWorkExecutionPolicy policy,
-                   std::shared_ptr<AssetTransactionReportQueue> reports);
+                   std::shared_ptr<AssetTransactionReportQueue> reports,
+                   std::unique_ptr<BSAOptimizer> bsaOptimizer = {});
 
   /*!
    * \brief Creates MainOptimizer with recorded or production internal adapters.

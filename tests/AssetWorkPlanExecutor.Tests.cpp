@@ -293,3 +293,43 @@ TEST_CASE("AssetWorkPlanExecutor drains loose Asset scheduling before "
   REQUIRE(adapter.events.first().startsWith("process:"));
   REQUIRE(root.exists("Alpha/empty"));
 }
+
+TEST_CASE("AssetWorkPlanExecutor limits empty-directory cleanup to selected Mods") {
+  QTemporaryDir tempDir;
+  REQUIRE(tempDir.isValid());
+
+  const QDir root(tempDir.path());
+  REQUIRE(root.mkpath("Alpha/empty/nested"));
+  REQUIRE(root.mkpath("Ignored/empty/nested"));
+
+  auto request = defaultRequest(tempDir.path());
+  request.ignoredMods = QStringList{"Ignored"};
+  RecordedWorkAdapter adapter;
+  RecordedMetadataProvider metadataProvider;
+  DeterministicLooseAssetScheduler scheduler;
+
+  AssetWorkPlanExecutor executor(request, metadataProvider, adapter, scheduler);
+  REQUIRE(executor.execute() == AssetWorkPlanExecutionResult::Completed);
+
+  REQUIRE_FALSE(root.exists("Alpha/empty"));
+  REQUIRE(root.exists("Ignored/empty/nested"));
+}
+
+TEST_CASE("AssetWorkPlanExecutor can disable empty-directory cleanup for Dry Run") {
+  QTemporaryDir tempDir;
+  REQUIRE(tempDir.isValid());
+
+  const QDir root(tempDir.path());
+  REQUIRE(root.mkpath("Alpha/empty/nested"));
+
+  auto request = defaultRequest(tempDir.path());
+  request.cleanupEmptyDirectories = false;
+  RecordedWorkAdapter adapter;
+  RecordedMetadataProvider metadataProvider;
+  DeterministicLooseAssetScheduler scheduler;
+
+  AssetWorkPlanExecutor executor(request, metadataProvider, adapter, scheduler);
+  REQUIRE(executor.execute() == AssetWorkPlanExecutionResult::Completed);
+
+  REQUIRE(root.exists("Alpha/empty/nested"));
+}

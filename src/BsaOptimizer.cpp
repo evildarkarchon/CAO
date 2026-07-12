@@ -5,11 +5,16 @@
 
 #include "BsaOptimizer.h"
 
+#include "AssetPathVisibility.h"
+
 #include <QDir>
 #include <QFileInfo>
+#include <QUuid>
 
 #include <algorithm>
+#include <optional>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 bool isSafeRelativePath(const QString &relativePath) {
@@ -44,8 +49,19 @@ BSAOptimizer::BSAOptimizer()
       _ownedFiles(std::make_unique<QtArchiveFileOperations>()),
       _engine(_ownedEngine.get()), _files(_ownedFiles.get()) {}
 
+BSAOptimizer::BSAOptimizer(ArchiveTransactionBootstrap &bootstrap)
+    : BSAOptimizer() {
+  _bootstrap = &bootstrap;
+}
+
 BSAOptimizer::BSAOptimizer(ArchiveEngine &engine, ArchiveFileOperations &files)
     : _engine(&engine), _files(&files) {}
+
+BSAOptimizer::BSAOptimizer(ArchiveEngine &engine, ArchiveFileOperations &files,
+                           ArchiveTransactionBootstrap &bootstrap)
+    : BSAOptimizer(engine, files) {
+  _bootstrap = &bootstrap;
+}
 
 void BSAOptimizer::extract(const QString &archivePath, const bool deleteBackup,
                            const bool dryRun) {
@@ -54,22 +70,37 @@ void BSAOptimizer::extract(const QString &archivePath, const bool deleteBackup,
     return;
   }
 
-  QString staging;
-  QStringList published;
-  QStringList createdDirectories;
   const QString liveRoot = QFileInfo(archivePath).absolutePath();
-
+  std::optional<ArchiveTransactionWorkspace> workspace;
   try {
-    staging = _files->createSiblingStagingDirectory(archivePath, "extract");
+    workspace.emplace(createWorkspace(
+        ArchiveTransactionKind::Extraction, liveRoot, archivePath,
+        {{QStringLiteral("deleteBackup"), deleteBackup ? "true" : "false"}}));
   } catch (const std::exception &error) {
     throwFailure(ArchiveOperation::Extraction, ArchiveFailureStage::Staging,
                  archivePath, error);
   }
 
+  const QString staging = QDir(workspace->path()).filePath("staged");
+  const QString rollbackRoot = QDir(workspace->path()).filePath("rollback");
+  try {
+    _files->createDirectories(staging);
+    _files->createDirectories(rollbackRoot);
+  } catch (const std::exception &error) {
+    const QStringList rollback = workspace->replay(*_files);
+    throwFailure(ArchiveOperation::Extraction,
+                 rollback.isEmpty() ? ArchiveFailureStage::Staging
+                                    : ArchiveFailureStage::Rollback,
+                 archivePath, error, rollback);
+  }
+
   try {
     _engine->extractTo(archivePath, staging);
   } catch (const std::exception &error) {
-    cleanupStaging(staging);
+    const QStringList rollback = workspace->replay(*_files);
+    if (!rollback.isEmpty())
+      throwFailure(ArchiveOperation::Extraction, ArchiveFailureStage::Rollback,
+                   archivePath, error, rollback);
     throwFailure(ArchiveOperation::Extraction, ArchiveFailureStage::Engine,
                  archivePath, error);
   }
@@ -84,9 +115,14 @@ void BSAOptimizer::extract(const QString &archivePath, const bool deleteBackup,
                                      .arg(entry.relativePath)
                                      .toStdString());
       }
+      if (entry.regularFile)
+        _files->flushFileDurably(entry.absolutePath);
     }
   } catch (const std::exception &error) {
-    cleanupStaging(staging);
+    const QStringList rollback = workspace->replay(*_files);
+    if (!rollback.isEmpty())
+      throwFailure(ArchiveOperation::Extraction, ArchiveFailureStage::Rollback,
+                   archivePath, error, rollback);
     throwFailure(ArchiveOperation::Extraction, ArchiveFailureStage::Validation,
                  archivePath, error);
   }
@@ -108,27 +144,39 @@ void BSAOptimizer::extract(const QString &archivePath, const bool deleteBackup,
       if (_files->exists(destination))
         continue;
 
-      ensureDestinationParent(destination, liveRoot, createdDirectories);
-      _files->move(entry.absolutePath, destination);
-      published << destination;
+      ensureDestinationParent(destination, liveRoot, *workspace);
+      moveJournaled(entry.absolutePath, destination, *workspace);
     }
 
     if (deleteBackup) {
-      _files->removeFile(archivePath);
+      moveJournaled(archivePath, QDir(rollbackRoot).filePath("source-archive"),
+                    *workspace);
     } else {
-      _files->move(archivePath, uniqueBackupPath(archivePath));
+      // A retained extraction backup is a committed Asset, not rollback-only
+      // transaction material, so committed recovery must leave it in place.
+      moveJournaled(archivePath, uniqueBackupPath(archivePath), *workspace);
     }
+    QMap<QString, QString> cleanup;
+    if (deleteBackup)
+      cleanup.insert(QStringLiteral("cleanup-file.0"),
+                     QDir(rollbackRoot).filePath("source-archive"));
+    workspace->commit(cleanup);
   } catch (const std::exception &error) {
-    const QStringList rollback =
-        rollbackPublished(published, createdDirectories);
-    cleanupStaging(staging);
+    const QStringList rollback = workspace->replay(*_files);
     throwFailure(ArchiveOperation::Extraction,
                  rollback.isEmpty() ? ArchiveFailureStage::Publishing
                                     : ArchiveFailureStage::Rollback,
                  archivePath, error, rollback);
   }
 
-  cleanupStaging(staging);
+  const QStringList cleanup = workspace->replay(*_files);
+  if (!cleanup.isEmpty()) {
+    throw ArchiveExecutionError(
+        ArchiveOperation::Extraction, ArchiveFailureStage::SourceCleanup,
+        archivePath,
+        QString("Archive extraction committed, but deferred cleanup failed: %1")
+            .arg(cleanup.join("; ")));
+  }
   PLOG_INFO << "BSA successfully extracted: " + archivePath;
 }
 
@@ -140,12 +188,27 @@ void BSAOptimizer::packAll(const QString &folderPath,
     return;
   }
 
-  QString staging;
+  std::optional<ArchiveTransactionWorkspace> workspace;
   try {
-    staging = _files->createSiblingStagingDirectory(folderPath, "pack");
+    workspace.emplace(
+        createWorkspace(ArchiveTransactionKind::Packing, folderPath, folderPath,
+                        {{QStringLiteral("deleteSource"),
+                          policy.deleteSource ? "true" : "false"}}));
   } catch (const std::exception &error) {
     throwFailure(ArchiveOperation::Packing, ArchiveFailureStage::Staging,
                  folderPath, error);
+  }
+  const QString staging = QDir(workspace->path()).filePath("staged");
+  const QString rollbackRoot = QDir(workspace->path()).filePath("rollback");
+  try {
+    _files->createDirectories(staging);
+    _files->createDirectories(rollbackRoot);
+  } catch (const std::exception &error) {
+    const QStringList rollback = workspace->replay(*_files);
+    throwFailure(ArchiveOperation::Packing,
+                 rollback.isEmpty() ? ArchiveFailureStage::Staging
+                                    : ArchiveFailureStage::Rollback,
+                 folderPath, error, rollback);
   }
 
   QSet<QString> inputManifest;
@@ -154,12 +217,16 @@ void BSAOptimizer::packAll(const QString &folderPath,
     for (const auto &input : inputs) {
       if (input.regularFile && !input.symbolicLink &&
           isSafeRelativePath(input.relativePath) &&
+          !AssetPathVisibility::isInternalPath(input.relativePath) &&
           isLoosePackableAsset(input.relativePath)) {
         inputManifest.insert(normalizedAbsolutePath(input.absolutePath));
       }
     }
   } catch (const std::exception &error) {
-    cleanupStaging(staging);
+    const QStringList rollback = workspace->replay(*_files);
+    if (!rollback.isEmpty())
+      throwFailure(ArchiveOperation::Packing, ArchiveFailureStage::Rollback,
+                   folderPath, error, rollback);
     throwFailure(ArchiveOperation::Packing, ArchiveFailureStage::Validation,
                  folderPath, error);
   }
@@ -168,7 +235,10 @@ void BSAOptimizer::packAll(const QString &folderPath,
   try {
     packing = _engine->packTo(folderPath, staging, policy);
   } catch (const std::exception &error) {
-    cleanupStaging(staging);
+    const QStringList rollback = workspace->replay(*_files);
+    if (!rollback.isEmpty())
+      throwFailure(ArchiveOperation::Packing, ArchiveFailureStage::Rollback,
+                   folderPath, error, rollback);
     throwFailure(ArchiveOperation::Packing, ArchiveFailureStage::Engine,
                  folderPath, error);
   }
@@ -186,6 +256,7 @@ void BSAOptimizer::packAll(const QString &folderPath,
                                      .arg(output.stagingPath)
                                      .toStdString());
       }
+      _files->flushFileDurably(output.stagingPath);
       const QString normalized =
           QDir::cleanPath(output.relativeDestination).toLower();
       if (destinations.contains(normalized)) {
@@ -207,20 +278,17 @@ void BSAOptimizer::packAll(const QString &folderPath,
       }
     }
   } catch (const std::exception &error) {
-    cleanupStaging(staging);
+    const QStringList rollback = workspace->replay(*_files);
+    if (!rollback.isEmpty())
+      throwFailure(ArchiveOperation::Packing, ArchiveFailureStage::Rollback,
+                   folderPath, error, rollback);
     throwFailure(ArchiveOperation::Packing, ArchiveFailureStage::Validation,
                  folderPath, error);
   }
 
-  struct PublishedOutput {
-    QString destination;
-    QString backup;
-    bool published = false;
-  };
-  QVector<PublishedOutput> journal;
-  QStringList createdDirectories;
-
   try {
+    int rollbackIndex = 0;
+    QStringList rollbackOnlyFiles;
     for (const auto &output : packing.outputs) {
       const QString destination =
           QDir(folderPath).filePath(output.relativeDestination);
@@ -231,57 +299,49 @@ void BSAOptimizer::packAll(const QString &folderPath,
         continue;
       }
 
-      ensureDestinationParent(destination, folderPath, createdDirectories);
-      PublishedOutput entry{destination, {}, false};
+      ensureDestinationParent(destination, folderPath, *workspace);
       if (_files->exists(destination)) {
-        entry.backup = uniqueBackupPath(destination);
-        _files->move(destination, entry.backup);
+        const QString rollbackPath =
+            QDir(rollbackRoot)
+                .filePath(QString("output-%1").arg(rollbackIndex++));
+        moveJournaled(destination, rollbackPath, *workspace);
+        rollbackOnlyFiles << rollbackPath;
       }
-      journal.push_back(entry);
-      _files->move(output.stagingPath, destination);
-      journal.back().published = true;
+      moveJournaled(output.stagingPath, destination, *workspace);
     }
+
+    QMap<QString, QString> cleanup;
+    int cleanupIndex = 0;
+    for (const QString &rollbackPath : std::as_const(rollbackOnlyFiles))
+      cleanup.insert(QString("cleanup-file.%1").arg(cleanupIndex++),
+                     rollbackPath);
+    if (policy.deleteSource) {
+      int sourceIndex = 0;
+      for (const QString &source : packing.packedSourceAssets) {
+        const QString rollbackPath =
+            QDir(rollbackRoot).filePath(QString("source-%1").arg(sourceIndex));
+        moveJournaled(source, rollbackPath, *workspace);
+        cleanup.insert(QString("cleanup-file.%1").arg(cleanupIndex++),
+                       rollbackPath);
+        ++sourceIndex;
+      }
+    }
+    workspace->commit(cleanup);
   } catch (const std::exception &error) {
-    QStringList rollback;
-    for (auto it = journal.rbegin(); it != journal.rend(); ++it) {
-      try {
-        if (it->published)
-          _files->removeFile(it->destination);
-        if (!it->backup.isEmpty())
-          _files->move(it->backup, it->destination);
-      } catch (const std::exception &rollbackError) {
-        rollback << QString::fromUtf8(rollbackError.what());
-      }
-    }
-    rollback.append(rollbackPublished({}, createdDirectories));
-    cleanupStaging(staging);
+    const QStringList rollback = workspace->replay(*_files);
     throwFailure(ArchiveOperation::Packing,
                  rollback.isEmpty() ? ArchiveFailureStage::Publishing
                                     : ArchiveFailureStage::Rollback,
                  folderPath, error, rollback);
   }
 
-  cleanupStaging(staging);
-
-  if (policy.deleteSource) {
-    QStringList failures;
-    for (const QString &source : packing.packedSourceAssets) {
-      try {
-        // Source deletion is deliberately after the entire archive output set
-        // commits. A failure leaves safe duplicates and retained backups.
-        _files->removeFile(source);
-      } catch (const std::exception &error) {
-        failures << QString::fromUtf8(error.what());
-      }
-    }
-    if (!failures.isEmpty()) {
-      throw ArchiveExecutionError(
-          ArchiveOperation::Packing, ArchiveFailureStage::SourceCleanup,
-          folderPath,
-          QString("Archive outputs committed, but loose source cleanup failed: "
-                  "%1")
-              .arg(failures.join("; ")));
-    }
+  const QStringList cleanup = workspace->replay(*_files);
+  if (!cleanup.isEmpty()) {
+    throw ArchiveExecutionError(
+        ArchiveOperation::Packing, ArchiveFailureStage::SourceCleanup,
+        folderPath,
+        QString("Archive outputs committed, but deferred cleanup failed: %1")
+            .arg(cleanup.join("; ")));
   }
 
   PLOG_INFO << "BSA archive set successfully packed: " + folderPath;
@@ -295,9 +355,9 @@ QString BSAOptimizer::uniqueBackupPath(const QString &path) const {
   return candidate;
 }
 
-void BSAOptimizer::ensureDestinationParent(const QString &destination,
-                                           const QString &liveRoot,
-                                           QStringList &createdDirectories) {
+void BSAOptimizer::ensureDestinationParent(
+    const QString &destination, const QString &liveRoot,
+    ArchiveTransactionWorkspace &workspace) {
   QString directory = QFileInfo(destination).absolutePath();
   QStringList missing;
   const QString normalizedRoot = QDir(liveRoot).absolutePath();
@@ -309,41 +369,64 @@ void BSAOptimizer::ensureDestinationParent(const QString &destination,
     directory = parent;
   }
   for (const QString &path : missing) {
+    _files->validateReplayPath(path, workspace.manifest().canonicalModPath,
+                               workspace.path());
+    workspace.append(
+        ArchiveTransactionRecordKind::Intent,
+        {{QStringLiteral("operation"), QStringLiteral("create-directory")},
+         {QStringLiteral("path"), path}});
     _files->createDirectories(path);
-    createdDirectories << path;
+    workspace.append(ArchiveTransactionRecordKind::MutationComplete,
+                     {{QStringLiteral("path"), path}});
   }
 }
 
-QStringList
-BSAOptimizer::rollbackPublished(const QStringList &published,
-                                const QStringList &createdDirectories) {
-  QStringList failures;
-  for (auto it = published.crbegin(); it != published.crend(); ++it) {
-    try {
-      _files->removeFile(*it);
-    } catch (const std::exception &error) {
-      failures << QString::fromUtf8(error.what());
-    }
-  }
-  for (auto it = createdDirectories.crbegin(); it != createdDirectories.crend();
-       ++it) {
-    try {
-      _files->removeEmptyDirectory(*it);
-    } catch (const std::exception &error) {
-      failures << QString::fromUtf8(error.what());
-    }
-  }
-  return failures;
+void BSAOptimizer::moveJournaled(const QString &source,
+                                 const QString &destination,
+                                 ArchiveTransactionWorkspace &workspace) {
+  _files->validateReplayPath(source, workspace.manifest().canonicalModPath,
+                             workspace.path());
+  _files->validateReplayPath(destination, workspace.manifest().canonicalModPath,
+                             workspace.path());
+  workspace.append(ArchiveTransactionRecordKind::Intent,
+                   {{QStringLiteral("operation"), QStringLiteral("move")},
+                    {QStringLiteral("source"), source},
+                    {QStringLiteral("destination"), destination}});
+  _files->move(source, destination);
+  workspace.append(ArchiveTransactionRecordKind::MutationComplete,
+                   {{QStringLiteral("source"), source},
+                    {QStringLiteral("destination"), destination}});
 }
 
-void BSAOptimizer::cleanupStaging(const QString &stagingPath) noexcept {
-  if (stagingPath.isEmpty())
-    return;
-  try {
-    _files->removeTree(stagingPath);
-  } catch (const std::exception &error) {
-    // A committed transaction remains valid if only its private staging
-    // cleanup fails. Keep the diagnostic without undoing published Assets.
-    PLOG_WARNING << "Failed to clean archive staging: " << error.what();
-  }
+ArchiveTransactionWorkspace
+BSAOptimizer::createWorkspace(const ArchiveTransactionKind kind,
+                              const QString &modPath, const QString &anchorPath,
+                              const QMap<QString, QString> &policyFacts) {
+  const QString canonicalModPath = QFileInfo(modPath).absoluteFilePath();
+  const QString canonicalAnchorPath = QFileInfo(anchorPath).absoluteFilePath();
+  _files->preflightTransaction(canonicalModPath);
+  ArchiveTransactionManifest manifest;
+  manifest.transactionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+  manifest.kind = kind;
+  manifest.canonicalModPath = canonicalModPath;
+  manifest.modIdentity = _files->identity(canonicalModPath);
+  manifest.canonicalAnchorPath = canonicalAnchorPath;
+  manifest.anchorIdentity = _files->identity(canonicalAnchorPath);
+  // The durable adapter's stable identity includes its volume component. The
+  // full Mod identity is retained here until the adapter exposes it separately.
+  manifest.volumeIdentity = manifest.modIdentity;
+  manifest.policyFacts = policyFacts;
+  const QString workspacePath =
+      QDir(QDir(canonicalModPath)
+               .filePath(ArchiveTransactionWorkspace::ReservedRootName))
+          .filePath(manifest.transactionId);
+  if (_bootstrap)
+    _bootstrap->begin(canonicalModPath, manifest.transactionId, workspacePath);
+  auto durability = std::shared_ptr<ArchiveTransactionDurability>(
+      _files, [](ArchiveTransactionDurability *) {});
+  auto workspace =
+      ArchiveTransactionWorkspace::create(manifest, std::move(durability));
+  if (_bootstrap)
+    _bootstrap->complete(canonicalModPath, manifest.transactionId);
+  return workspace;
 }

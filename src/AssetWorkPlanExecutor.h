@@ -13,6 +13,7 @@
 #include <memory>
 
 enum class AssetWorkPlanExecutionPhase {
+  ArchiveRecovery,
   ArchiveExtraction,
   LooseAssetProcessing,
   ArchivePacking

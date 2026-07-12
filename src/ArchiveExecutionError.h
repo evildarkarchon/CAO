@@ -9,7 +9,7 @@
 
 #include <stdexcept>
 
-enum class ArchiveOperation { Extraction, Packing };
+enum class ArchiveOperation { Extraction, Packing, Recovery };
 
 enum class ArchiveFailureStage {
   Staging,
@@ -17,7 +17,11 @@ enum class ArchiveFailureStage {
   Validation,
   Publishing,
   Rollback,
-  SourceCleanup
+  SourceCleanup,
+  RecoveryDiscovery,
+  RecoveryValidation,
+  RecoveryRollback,
+  RecoveryCleanup
 };
 
 /*!
@@ -36,14 +40,18 @@ public:
    *  \param diagnostic Human-readable description of the primary failure.
    *  \param rollbackDiagnostics Additional rollback failures; empty means the
    *  transaction restored its pre-execution state.
+   *  \param workspacePaths Owned or conflicting recovery workspaces involved
+   *  in the failure; empty for ordinary extraction and packing failures.
    */
   ArchiveExecutionError(ArchiveOperation operation, ArchiveFailureStage stage,
                         QString assetPath, QString diagnostic,
-                        QStringList rollbackDiagnostics = {})
+                        QStringList rollbackDiagnostics = {},
+                        QStringList workspacePaths = {})
       : std::runtime_error(diagnostic.toStdString()), _operation(operation),
         _stage(stage), _assetPath(std::move(assetPath)),
         _diagnostic(std::move(diagnostic)),
-        _rollbackDiagnostics(std::move(rollbackDiagnostics)) {}
+        _rollbackDiagnostics(std::move(rollbackDiagnostics)),
+        _workspacePaths(std::move(workspacePaths)) {}
 
   [[nodiscard]] ArchiveOperation operation() const noexcept {
     return _operation;
@@ -59,6 +67,10 @@ public:
   [[nodiscard]] bool rollbackCompleted() const noexcept {
     return _rollbackDiagnostics.isEmpty();
   }
+  /*! \brief Returns structured recovery workspace paths, if applicable. */
+  [[nodiscard]] const QStringList &workspacePaths() const noexcept {
+    return _workspacePaths;
+  }
 
 private:
   ArchiveOperation _operation;
@@ -66,4 +78,5 @@ private:
   QString _assetPath;
   QString _diagnostic;
   QStringList _rollbackDiagnostics;
+  QStringList _workspacePaths;
 };

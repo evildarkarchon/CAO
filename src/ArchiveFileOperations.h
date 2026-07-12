@@ -4,6 +4,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
+#include "ArchiveTransactionWorkspace.h"
+
+#include <QByteArray>
 #include <QString>
 #include <QVector>
 
@@ -20,19 +23,10 @@ struct ArchiveFileEntry {
  * move() never overwrites. Implementations throw std::runtime_error for
  * ordinary operation failures so the archive transaction can retain context.
  */
-class ArchiveFileOperations {
+class ArchiveFileOperations : public ArchiveTransactionDurability {
 public:
   virtual ~ArchiveFileOperations() = default;
 
-  /*! \brief Creates an empty, unique staging directory beside \p anchor.
-   *  \param anchor File or directory whose parent determines the staging area.
-   *  \param purpose Human-readable suffix used to identify the transaction.
-   *  \return Absolute path to the created directory.
-   *  \throws std::runtime_error if the directory cannot be created.
-   */
-  [[nodiscard]] virtual QString
-  createSiblingStagingDirectory(const QString &anchor,
-                                const QString &purpose) = 0;
   /*! \brief Lists every entry below \p root with paths relative to that root.
    *  \throws std::runtime_error if the tree cannot be enumerated safely.
    */
@@ -40,6 +34,22 @@ public:
   listRecursively(const QString &root) const = 0;
   /*! \brief Returns whether a filesystem entry exists at \p path. */
   [[nodiscard]] virtual bool exists(const QString &path) const = 0;
+  /*! \brief Creates exactly one durable transaction directory path. */
+  virtual void createDirectory(const QString &path) override = 0;
+  /*! \brief Returns the stable identity used by transaction ownership. */
+  [[nodiscard]] virtual QString
+  identity(const QString &path) const override = 0;
+  /*! \brief Creates and durably flushes a transaction metadata file. */
+  virtual void writeNewDurably(const QString &path,
+                               const QByteArray &contents) override = 0;
+  /*! \brief Appends and durably flushes transaction journal bytes. */
+  virtual void appendDurably(const QString &path,
+                             const QByteArray &contents) override = 0;
+  /*! \brief Reads a complete transaction metadata file. */
+  [[nodiscard]] virtual QByteArray
+  readAll(const QString &path) const override = 0;
+  /*! \brief Flushes already-written staged file bytes before publication. */
+  virtual void flushFileDurably(const QString &path) = 0;
   /*! \brief Creates \p path and any missing parents.
    *  \throws std::runtime_error when creation fails.
    */
@@ -53,8 +63,8 @@ public:
    *  \throws std::runtime_error when removal fails.
    */
   virtual void removeFile(const QString &path) = 0;
-  /*! \brief Removes the directory at \p path only when it is empty.
-   *  \throws std::runtime_error when removal fails.
+  /*! \brief Removes \p path when empty and leaves a non-empty path unchanged.
+   *  \throws std::runtime_error when removal of an empty directory fails.
    */
   virtual void removeEmptyDirectory(const QString &path) = 0;
   /*! \brief Recursively removes the transaction-owned tree at \p path.
@@ -65,12 +75,21 @@ public:
 
 class QtArchiveFileOperations final : public ArchiveFileOperations {
 public:
-  [[nodiscard]] QString
-  createSiblingStagingDirectory(const QString &anchor,
-                                const QString &purpose) override;
   [[nodiscard]] QVector<ArchiveFileEntry>
   listRecursively(const QString &root) const override;
   [[nodiscard]] bool exists(const QString &path) const override;
+  void createDirectory(const QString &path) override;
+  [[nodiscard]] QString identity(const QString &path) const override;
+  void writeNewDurably(const QString &path,
+                       const QByteArray &contents) override;
+  void appendDurably(const QString &path, const QByteArray &contents) override;
+  [[nodiscard]] QByteArray readAll(const QString &path) const override;
+  void validateWorkspacePath(const QString &modPath,
+                             const QString &workspacePath) const override;
+  void validateReplayPath(const QString &path, const QString &modPath,
+                          const QString &workspacePath) const override;
+  void preflightTransaction(const QString &modPath) const override;
+  void flushFileDurably(const QString &path) override;
   void createDirectories(const QString &path) override;
   void move(const QString &source, const QString &destination) override;
   void removeFile(const QString &path) override;

@@ -31,12 +31,16 @@ set(CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkExecutionPolicy.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetPathConflicts.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetPathConflicts.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetPathVisibility.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetPathVisibility.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptions.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptions.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPolicyResolver.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPolicyResolver.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkProfileSnapshot.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkProfileSnapshot.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkScope.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkScope.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptionsUiState.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkOptionsUiState.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPolicy.cpp
@@ -61,7 +65,7 @@ set(CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/PluginsOperationsInternal.h
     ${CMAKE_CURRENT_SOURCE_DIR}/Profiles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Profiles.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/TexturesFormats.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/texturesformats.h
     ${CMAKE_CURRENT_SOURCE_DIR}/pch.h
     )
 
@@ -73,6 +77,12 @@ set(EXECUTION_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/ArchiveExecutionError.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ArchiveFileOperations.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ArchiveFileOperations.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ArchiveRecovery.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ArchiveRecovery.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ArchiveTransactionWorkspace.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ArchiveTransactionWorkspace.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlanExecution.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AssetWorkPlanExecution.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AnimationsOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AnimationsOptimizer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/BsaOptimizer.cpp
@@ -81,6 +91,10 @@ set(EXECUTION_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/MainOptimizer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/MainOptimizerInternal.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/MainOptimizerInternal.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/LegacyArchiveWorkspaceDiscovery.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/LegacyArchiveWorkspaceDiscovery.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ModExecutionLock.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ModExecutionLock.h
     ${CMAKE_CURRENT_SOURCE_DIR}/MeshesOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/MeshesOptimizer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesOptimizer.cpp

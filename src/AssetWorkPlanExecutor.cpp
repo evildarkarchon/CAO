@@ -5,6 +5,7 @@
 
 #include "AssetWorkPlanExecutor.h"
 #include "AssetWorkExecutionPolicy.h"
+#include "AssetWorkScope.h"
 #include "FilesystemOperations.h"
 
 #include <QDateTime>
@@ -42,7 +43,14 @@ AssetWorkPlanExecutor::AssetWorkPlanExecutor(
 
 AssetWorkPlanExecutionResult AssetWorkPlanExecutor::execute(
     const AssetWorkPlanExecutionCallbacks &callbacks) {
-  const AssetWorkPlanner planner(_request);
+  QStringList selectedMods = _request.resolvedSelectedMods;
+  if (selectedMods.isEmpty()) {
+    selectedMods = AssetWorkScope::resolve(
+                       _request.selectedPath, _request.mode,
+                       _request.ignoredMods)
+                       .selectedMods();
+  }
+  const AssetWorkPlanner planner(_request, std::move(selectedMods));
   const auto archivePlan = planner.planArchives();
 
   if (!archivePlan.archivesToExtract.isEmpty()) {
@@ -68,7 +76,7 @@ AssetWorkPlanExecutionResult AssetWorkPlanExecutor::execute(
   if (isCancelled(callbacks))
     return AssetWorkPlanExecutionResult::Cancelled;
 
-  const auto loosePlan = planner.planLooseAssets(archivePlan.modsToProcess);
+  const auto loosePlan = planner.planLooseAssets();
   reportProgress(callbacks, AssetWorkPlanExecutionPhase::LooseAssetProcessing,
                  0, static_cast<int>(loosePlan.looseAssetsToOptimize.size()));
 
@@ -135,7 +143,10 @@ AssetWorkPlanExecutionResult AssetWorkPlanExecutor::execute(
                    QFileInfo(archive.folder).fileName());
   }
 
-  FilesystemOperations::deleteEmptyDirectories(_request.selectedPath);
+  if (_request.cleanupEmptyDirectories) {
+    for (const QString &mod : archivePlan.modsToProcess)
+      FilesystemOperations::deleteEmptyDirectories(mod);
+  }
   return AssetWorkPlanExecutionResult::Completed;
 }
 

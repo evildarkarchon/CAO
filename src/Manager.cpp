@@ -4,12 +4,10 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #include "Manager.h"
 #include "ArchiveExecutionError.h"
-#include "AssetWorkPlanExecutor.h"
+#include "AssetWorkPlanExecution.h"
 #include "AssetWorkPolicyResolver.h"
 #include "AssetWorkProfileSnapshot.h"
 #include "FilesystemOperations.h"
-#include "MainOptimizerInternal.h"
-#include "ManagerPlanning.h"
 #include "Profiles.h"
 
 #include "btu/common/string.hpp"
@@ -100,56 +98,6 @@ void logPolicyNotices(const std::vector<AssetWorkPolicyNotice> &notices) {
   }
 }
 
-class MainOptimizerExecutionAdapter final
-    : public AssetWorkPlanExecutionAdapter,
-      public AssetWorkPlanExecutionReportSource {
-public:
-  /*!
-   * \brief Creates the production adapter used for Asset Work Plan Execution.
-   * \param executionPolicy Resolved policy consumed by MainOptimizer while
-   * executing work items.
-   */
-  explicit MainOptimizerExecutionAdapter(
-      const AssetWorkExecutionPolicy &executionPolicy)
-      : _reports(std::make_shared<AssetTransactionReportQueue>()),
-        _optimizer(MainOptimizerInternalFactory::createProduction(
-            executionPolicy, _reports)) {}
-
-  /*!
-   * \brief Delegates archive extraction to MainOptimizer.
-   * \param workItem The planned archive extraction work item.
-   */
-  void extractArchive(const ArchiveExtractionWorkItem &workItem) override {
-    _optimizer->extractArchive(workItem);
-  }
-
-  /*!
-   * \brief Delegates loose Asset processing to MainOptimizer.
-   * \param workItem The planned loose Asset Work Item.
-   * \param metadata Metadata derived from selected Mods for this execution.
-   */
-  void processLooseAsset(const LooseAssetWorkItem &workItem,
-                         const ModAssetMetadata &metadata) override {
-    _optimizer->processLooseAsset(workItem, metadata);
-  }
-
-  /*!
-   * \brief Delegates archive packing to MainOptimizer.
-   * \param workItem The planned archive packing work item.
-   */
-  void packArchive(const ArchivePackingWorkItem &workItem) override {
-    _optimizer->packArchive(workItem);
-  }
-
-  /*! \brief Drains structured reports after worker completion. */
-  QVector<AssetTransactionReport> drainTransactionReports() override {
-    return _reports->drain();
-  }
-
-private:
-  std::shared_ptr<AssetTransactionReportQueue> _reports;
-  std::unique_ptr<MainOptimizer> _optimizer;
-};
 } // namespace
 
 Manager::Manager(AssetWorkOptions options, QString selectedPath,
@@ -209,48 +157,49 @@ void Manager::runOptimization() {
   const auto resolution =
       AssetWorkPolicyResolver::resolve(_options, _profileSnapshot.value());
   logPolicyNotices(resolution.notices());
-  MainOptimizerExecutionAdapter adapter(resolution.execution());
-  ProfileFileAssetReferenceProvider profileReferences;
-  PluginOperationsAssetReferenceReader pluginReferences;
-  ModAssetMetadataBuilder metadataBuilder(profileReferences, pluginReferences);
   PLOG_INFO << "Listing files and directories...";
-  AssetWorkPlanExecutor executor(
-      ManagerPlanning::createAssetWorkPlanRequest(
-          _selectedPath, _options.mode(), _ignoredMods, resolution.planning()),
-      metadataBuilder, adapter,
-      resolution.execution().maxConcurrentLooseAssets(), adapter);
   try {
-    const auto result = executor.execute(AssetWorkPlanExecutionCallbacks{
-        [this](const AssetWorkPlanProgress &progress) {
-          _numberCompletedFiles = progress.completed;
+    const auto result = AssetWorkPlanExecution::execute(
+        AssetWorkPlanExecutionRequest{_selectedPath, _options.mode(),
+                                      _ignoredMods, resolution.planning(),
+                                      resolution.execution()},
+        AssetWorkPlanExecutionCallbacks{
+            [this](const AssetWorkPlanProgress &progress) {
+              _numberCompletedFiles = progress.completed;
 
-          switch (progress.phase) {
-          case AssetWorkPlanExecutionPhase::ArchiveExtraction:
-            printProgress(progress.total, "Extracting BSAs");
-            break;
-          case AssetWorkPlanExecutionPhase::LooseAssetProcessing:
-            printProgress(progress.total, "Processing files");
-            break;
-          case AssetWorkPlanExecutionPhase::ArchivePacking:
-            if (progress.currentLabel.isEmpty())
-              printProgress(progress.total, "Packing BSAs");
-            else
-              printProgress(progress.total,
-                            "Packing BSAs - Folder:  " + progress.currentLabel);
-            break;
-          }
-        },
-        [this]() { return _isCancelled.load(); },
-        [](const AssetTransactionReport &report) {
-          for (const auto &notice : report.result.notices) {
-            if (notice.code == AssetTransactionNoticeCode::MalformedAsset ||
-                notice.code == AssetTransactionNoticeCode::OperationalFailure ||
-                notice.code == AssetTransactionNoticeCode::QuarantineFailure)
-              PLOG_ERROR << notice.diagnostic;
-            else
-              PLOG_INFO << notice.diagnostic;
-          }
-        }});
+              switch (progress.phase) {
+              case AssetWorkPlanExecutionPhase::ArchiveRecovery:
+                printProgress(progress.total, progress.currentLabel);
+                break;
+              case AssetWorkPlanExecutionPhase::ArchiveExtraction:
+                printProgress(progress.total, "Extracting BSAs");
+                break;
+              case AssetWorkPlanExecutionPhase::LooseAssetProcessing:
+                printProgress(progress.total, "Processing files");
+                break;
+              case AssetWorkPlanExecutionPhase::ArchivePacking:
+                if (progress.currentLabel.isEmpty())
+                  printProgress(progress.total, "Packing BSAs");
+                else
+                  printProgress(
+                      progress.total,
+                      "Packing BSAs - Folder:  " + progress.currentLabel);
+                break;
+              }
+            },
+            [this]() { return _isCancelled.load(); },
+            [](const AssetTransactionReport &report) {
+              for (const auto &notice : report.result.notices) {
+                if (notice.code == AssetTransactionNoticeCode::MalformedAsset ||
+                    notice.code ==
+                        AssetTransactionNoticeCode::OperationalFailure ||
+                    notice.code ==
+                        AssetTransactionNoticeCode::QuarantineFailure)
+                  PLOG_ERROR << notice.diagnostic;
+                else
+                  PLOG_INFO << notice.diagnostic;
+              }
+            }});
 
     if (result == AssetWorkPlanExecutionResult::Cancelled)
       return;

@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "ModAssetMetadata.h"
+#include "AssetPathVisibility.h"
 #include "FilesystemOperations.h"
 #include "PluginsOperations.h"
 #include "Profiles.h"
@@ -26,6 +27,27 @@ QString normalizeAssetPath(QString path) {
     path = path.mid(meshesMarkerIndex + 1);
 
   return path.toLower();
+}
+
+QStringList listPluginsOutsideTransactions(const QString &rootPath) {
+  static const QRegularExpression pluginExtension(
+      QStringLiteral("\\.es[plm]$"),
+      QRegularExpression::CaseInsensitiveOption);
+  QStringList plugins;
+  const QDir root(rootPath);
+  const QFileInfoList entries = root.entryInfoList(
+      QDir::Dirs | QDir::Files | QDir::Hidden | QDir::System |
+          QDir::NoDotAndDotDot,
+      QDir::Name | QDir::IgnoreCase);
+  for (const QFileInfo &entry : entries) {
+    if (AssetPathVisibility::isInternalPath(entry.filePath()))
+      continue;
+    if (entry.isDir())
+      plugins += listPluginsOutsideTransactions(entry.filePath());
+    else if (entry.fileName().contains(pluginExtension))
+      plugins << entry.filePath();
+  }
+  return plugins;
 }
 } // namespace
 
@@ -57,8 +79,7 @@ ModAssetMetadataBuilder::buildForMods(const QStringList &selectedMods) const {
   }
 
   for (const auto &mod : selectedMods) {
-    QDirIterator it(mod, QDirIterator::Subdirectories);
-    for (const auto &plugin : FilesystemOperations::listPlugins(it))
+    for (const auto &plugin : listPluginsOutsideTransactions(mod))
       headpartMeshPaths += _pluginReferences.listHeadparts(plugin);
   }
 

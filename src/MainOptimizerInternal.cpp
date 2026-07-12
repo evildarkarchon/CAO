@@ -168,12 +168,14 @@ std::unique_ptr<MainOptimizer> MainOptimizerInternalFactory::create(
 
 std::unique_ptr<MainOptimizer> MainOptimizerInternalFactory::createProduction(
     AssetWorkExecutionPolicy policy,
-    std::shared_ptr<AssetTransactionReportQueue> reports) {
+    std::shared_ptr<AssetTransactionReportQueue> reports,
+    std::unique_ptr<BSAOptimizer> bsaOptimizer) {
   auto transactions =
       MainOptimizerInternals::createLooseAssetTransactions(policy);
   auto quarantine = MainOptimizerInternals::createAssetQuarantine();
-  return create(std::move(policy), std::move(transactions),
-                std::move(quarantine), std::move(reports));
+  return std::unique_ptr<MainOptimizer>(new MainOptimizer(
+      std::move(policy), std::move(transactions), std::move(quarantine),
+      std::move(reports), std::move(bsaOptimizer)));
 }
 
 std::unique_ptr<LooseAssetTransactions>

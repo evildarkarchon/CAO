@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "ArchiveEngine.h"
+#include "AssetPathVisibility.h"
 
 #include "btu/bsa/pack.hpp"
 #include "btu/bsa/plugin.hpp"
@@ -22,6 +23,9 @@ QString fromPath(const std::filesystem::path &path) {
 
 bool isAllowedFile(const ArchiveExecutionPolicy &policy, const btu::Path &dir,
                    const btu::fs::directory_entry &fileInfo) {
+  if (AssetPathVisibility::isInternalPath(fromPath(fileInfo.path())))
+    return false;
+
   if (!btu::bsa::default_is_allowed_path(dir, fileInfo))
     return false;
 
