@@ -32,14 +32,17 @@ $env:CAO_RUSTUP_HOME = "$HOME\.rustup"
 
 `tools/build_workspace.py` and `tools/stage_release.py` reject missing, substituted, wrong-version, or conflicting inherited inputs before Cargo runs. Providing `SKIA_SOURCE_DIR`, `SKIA_GN_COMMAND`, and `SKIA_NINJA_COMMAND` forces `skia-bindings` down its local source-build path and prevents its binary-download, GN-download, and source-synchronization fallbacks. The entry points reject alternate Skia library paths, GN arguments, system libraries, and binary URLs; force a source build; and bind clang/libclang to the authenticated `LLVM_HOME`.
 
-The same environment builder activates the authenticated MSVC 14.51.36231 tree and Windows SDK 10.0.26100.0 for Cargo, `cc`, Skia, and the Rust linker. It replaces inherited compiler/include/library selection with exact `PATH`, `INCLUDE`, `LIB`, linker, compiler, and SDK variables. Cargo, rustc, and Git must be absolute commands; Cargo and rustc must report 1.97.0 under the selected Rustup home, and the selected Cargo home must contain the authenticated offline cache without an ambient `config` or `config.toml`. On CI, set `CAO_WINDOWS_SDK_ISO` to the retained immutable SDK ISO as well; the workflow verifies that archive before using the installed kit.
+The same environment builder activates the authenticated MSVC 14.51.36231 tree and Windows SDK 10.0.26100.0 for Cargo, `cc`, Skia, and the Rust linker. It replaces inherited compiler/include/library selection with exact `PATH`, `INCLUDE`, `LIB`, linker, compiler, and SDK variables. Cargo, rustc, and Git must be absolute commands; Cargo and rustc must report 1.97.0 under the selected Rustup home, and the selected Cargo home must contain the authenticated offline cache without an ambient `config` or `config.toml`. For local authenticated release verification, set `CAO_WINDOWS_SDK_ISO` to the retained immutable SDK ISO and verify that archive explicitly before using the installed kit.
 
 ## Verify and build
 
 ```powershell
 python tools/verify_baseline.py
+python tools/verify_baseline.py --verify-input "rust-toolchain=$env:CAO_RUSTC_COMMAND"
+python tools/verify_baseline.py --verify-input "msvc-toolchain=$env:CAO_MSVC_TOOLCHAIN_DIR"
+python tools/verify_baseline.py --verify-input "windows-sdk=$env:CAO_WINDOWS_SDK_ISO"
 python tools/verify_workspace.py
-python -m unittest tests.test_verify_baseline tests.test_verify_workspace -v
+python -m unittest tests.test_ci_workflow tests.test_verify_baseline tests.test_verify_workspace -v
 python tools/build_workspace.py
 python tools/stage_release.py --output D:\staging\tracetide
 ```
@@ -57,8 +60,14 @@ $env:CAO_RUN_RELEASE_STAGING_TEST = '1'
 python -m unittest tests.test_verify_workspace -v
 ```
 
-## CI runner contract
+## GitHub Actions pull-request validation
 
-`.github/workflows/rust-workspace.yml` runs on the `tracetide-offline` Windows x64 self-hosted runner. Provision that runner only from the authenticated W0 cache, set the eleven build environment variables above plus `CAO_WINDOWS_SDK_ISO`, and keep the Cargo home free of user configuration. The workflow resolves Cargo, rustc, and Git to absolute commands under the selected tool homes, re-hashes the pinned MSVC tree and SDK ISO, validates Rust's exact version, activates those installed toolchains, compares the production graph, runs mutation tests, stages the two production roots, and builds the complete workspace with Cargo frozen.
+`.github/workflows/rust-workspace.yml` runs on the GitHub-hosted `windows-2025` image. The workflow installs Rust 1.97.0 and acquires the locked Cargo dependency graph while network access is available. It then enables Cargo offline mode and loopback-only HTTP(S)/all-proxy values before comparing the production graph, running the Python contract tests, and testing the UI-independent domain and application libraries with frozen Cargo inputs.
 
-Dependency/tool acquisition is an administrative step outside the workflow. During the build step CI sets Cargo offline mode and loopback-only HTTP(S)/all-proxy values. The exact graph/build-script lock and mandatory local Skia inputs are the fail-closed controls; the proxy settings are additional defense against command-based download fallbacks, not a claim that Windows process networking is kernel-isolated.
+This hosted workflow is a review gate, not the authenticated production build. It intentionally does not set `CAO_RUN_RELEASE_STAGING_TEST`, authenticate the complete MSVC/SDK/Skia tool cache, stage the production binaries, run `tools/build_workspace.py`, or publish a release. The exact GitHub-hosted image contents may be updated independently of this repository, so a passing pull-request check does not establish release-toolchain reproducibility.
+
+## Local authenticated release verification
+
+Run the complete build and staging commands in the **Verify and build** section manually on a provisioned release workstation containing the authenticated offline inputs. Set the eleven build environment variables above, plus `CAO_WINDOWS_SDK_ISO` when verifying the retained SDK archive, and keep the Cargo home free of user configuration. Local release verification resolves Cargo, rustc, and Git to absolute commands under the selected tool homes, re-hashes the pinned inputs, validates the exact tool versions, stages only the two production roots, and builds the complete workspace with Cargo frozen. GitHub Actions does not perform this process.
+
+Dependency and tool acquisition remains a manual administrative step outside local release verification. During the build, Cargo offline mode and the exact graph/build-script lock prevent registry resolution drift; mandatory local Skia inputs prevent its download and synchronization fallbacks. Loopback proxy settings are an additional defense against command-based downloads, not a claim that Windows process networking is kernel-isolated.
