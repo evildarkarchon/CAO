@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "baseline_revision": 1,
+  "matrix_revision": 1,
+  "scope": "initial-windows-x64-functional-parity",
+  "closure_state": "blocked",
+  "cells": []
+}

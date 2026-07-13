@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "baseline_revision": 1,
+  "authority": "docs/rust-slint-implementation-blueprint.md",
+  "licensing": {
+    "combined_work": "GPL-3.0-only",
+    "slint_choice": "GPL-3.0-only",
+    "existing_source_files": "preserve-MPL-2.0-coverage-and-notices",
+    "corresponding_source": "exact-source-alongside-every-binary"
+  },
+  "native_runtime": {
+    "scope": "tracetide-production-graph",
+    "msvc_runtime": "MultiThreaded",
+    "msvc_flag": "/MT",
+    "rust_target_feature": "+crt-static",
+    "debug_crt_allowed": false
+  },
+  "windows": {
+    "minimum_release": "Windows 10 22H2",
+    "minimum_architecture": "x86_64",
+    "minimum_support_status": "out-of-support",
+    "primary_release": "Windows 11 x64",
+    "cpu_baseline": "x86-64",
+    "avx_required": false,
+    "avx2_required": false
+  }
+}

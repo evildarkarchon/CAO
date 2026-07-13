@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evildarkarchon/CAO/verification/schemas/fixture.schema.json",
+  "title": "Tracetide parity fixture manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "baseline_revision",
+    "id",
+    "revision",
+    "content_sha256",
+    "matrix_cells",
+    "inputs",
+    "provenance",
+    "required_engines",
+    "comparison_profile",
+    "oracle_evidence",
+    "discrepancy_refs",
+    "temporary_opt_in"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "baseline_revision": { "type": "integer", "const": 1 },
+    "id": { "type": "string", "pattern": "^FIX-[A-Z0-9-]+$" },
+    "revision": { "type": "integer", "minimum": 1 },
+    "content_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "matrix_cells": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "revision"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^CELL-[A-Z0-9-]+$" },
+          "revision": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "size_bytes", "origin", "license_class", "redistributable"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "size_bytes": { "type": "integer", "minimum": 1 },
+          "origin": { "type": "string", "minLength": 1 },
+          "license_class": { "type": "string", "minLength": 1 },
+          "redistributable": { "type": "boolean" }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "instructions"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["deterministic-recipe", "acquisition"] },
+        "instructions": { "type": "string", "minLength": 1 }
+      }
+    },
+    "required_engines": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["input_id", "version", "commit"],
+        "properties": {
+          "input_id": { "type": "string", "minLength": 1 },
+          "version": { "type": ["string", "null"] },
+          "commit": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "comparison_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tier", "fallback_allowed", "assertions", "tolerances"],
+      "properties": {
+        "tier": { "type": "string", "enum": ["byte-identity", "normalized-filesystem", "format-aware", "interaction"] },
+        "fallback_allowed": { "type": "boolean", "const": false },
+        "assertions": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "tolerances": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "oracle_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "revision", "manifest_sha256", "bundle_sha256"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^EVD-[A-Z0-9-]+$" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "manifest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "bundle_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "discrepancy_refs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^DISC-[0-9]{4}@[1-9][0-9]*$" } },
+    "temporary_opt_in": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "reason", "removal_condition"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "reason": { "type": ["string", "null"] },
+        "removal_condition": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

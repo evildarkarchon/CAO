@@ -1,0 +1,7 @@
+[build]
+target = "x86_64-pc-windows-msvc"
+
+[target.x86_64-pc-windows-msvc]
+# The release contract requires the MSVC CRT to be linked statically.
+rustflags = ["-C", "target-feature=+crt-static"]
+

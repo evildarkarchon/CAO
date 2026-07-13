@@ -1,0 +1,7 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@
+ [features]
+-default = ["flate2/zlib"]
++default = []
++zlib = ["flate2/zlib"]

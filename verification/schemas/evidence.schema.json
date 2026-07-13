@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evildarkarchon/CAO/verification/schemas/evidence.schema.json",
+  "title": "Tracetide oracle evidence bundle",
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size_bytes"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "size_bytes": { "type": "integer", "minimum": 1 }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "baseline_revision",
+    "id",
+    "revision",
+    "kind",
+    "fixture_ref",
+    "oracle",
+    "environment",
+    "observations",
+    "filesystem",
+    "normalization_evidence",
+    "captured_on",
+    "reviewed_on",
+    "reviewed_by",
+    "bundle"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "baseline_revision": { "type": "integer", "const": 1 },
+    "id": { "type": "string", "pattern": "^EVD-[A-Z0-9-]+$" },
+    "revision": { "type": "integer", "minimum": 1 },
+    "kind": { "type": "string", "enum": ["oracle-capture", "replacement-replay"] },
+    "fixture_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "revision", "sha256"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^FIX-[A-Z0-9-]+$" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "oracle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_id", "archive_sha256"],
+      "properties": {
+        "input_id": { "type": "string", "const": "behavioral-oracle" },
+        "archive_sha256": { "type": "string", "const": "b25cf0c0c97160b602dd47c252af2ede735c27abe565c9ab84d272306308abb6" }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vm_image", "gpu_lane", "profile_tree_sha256", "selected_profile", "ui_options", "fixture_sha256", "working_directory"],
+      "properties": {
+        "vm_image": { "type": "string", "minLength": 1 },
+        "gpu_lane": { "type": "string", "minLength": 1 },
+        "profile_tree_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "selected_profile": { "type": "string", "minLength": 1 },
+        "ui_options": { "type": "object", "minProperties": 1 },
+        "fixture_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "working_directory": { "type": "string", "minLength": 1 }
+      }
+    },
+    "observations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["raw_inis", "html_logs", "initial_ui_state", "post_profile_ui_state", "warnings_and_validation", "progress_and_log_sequence", "screenshots_and_final_state", "process_tree_and_helper_invocations", "cancellation_point"],
+      "properties": {
+        "raw_inis": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
+        "html_logs": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
+        "initial_ui_state": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } },
+        "post_profile_ui_state": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } },
+        "warnings_and_validation": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
+        "progress_and_log_sequence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } },
+        "screenshots_and_final_state": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } },
+        "process_tree_and_helper_invocations": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } },
+        "cancellation_point": { "type": ["string", "null"] }
+      }
+    },
+    "filesystem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["before_manifest", "after_manifest"],
+      "properties": {
+        "before_manifest": { "$ref": "#/$defs/artifact" },
+        "after_manifest": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "normalization_evidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } },
+    "captured_on": { "type": "string", "format": "date" },
+    "reviewed_on": { "type": "string", "format": "date" },
+    "reviewed_by": { "type": "string", "minLength": 1 },
+    "bundle": { "$ref": "#/$defs/artifact" }
+  }
+}

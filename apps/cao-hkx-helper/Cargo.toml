@@ -1,0 +1,25 @@
+[package]
+name = "cao-hkx-helper"
+description = "Isolated one-shot HKX conversion helper for Tracetide"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+build = false
+
+[dependencies]
+cao-hkx-protocol.workspace = true
+havok_classes.workspace = true
+serde_hkx.workspace = true
+
+[[bin]]
+name = "cao-hkx-helper"
+path = "src/main.rs"
+

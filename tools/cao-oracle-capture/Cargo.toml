@@ -1,0 +1,23 @@
+[package]
+name = "cao-oracle-capture"
+description = "Explicit opt-in behavioral-oracle evidence capture tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+build = false
+
+[dependencies]
+cao-verification.workspace = true
+
+[[bin]]
+name = "cao-oracle-capture"
+path = "src/main.rs"
+

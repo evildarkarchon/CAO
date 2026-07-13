@@ -1,0 +1,23 @@
+[package]
+name = "cao-backend-texture"
+description = "DDS texture format adapter for Tracetide"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+build = false
+
+[dependencies]
+cao-application.workspace = true
+
+[lib]
+name = "cao_backend_texture"
+path = "src/lib.rs"
+

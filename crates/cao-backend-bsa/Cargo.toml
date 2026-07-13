@@ -1,0 +1,24 @@
+[package]
+name = "cao-backend-bsa"
+description = "BSA and BA2 format adapter for Tracetide"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+build = false
+
+[dependencies]
+ba2.workspace = true
+cao-application.workspace = true
+
+[lib]
+name = "cao_backend_bsa"
+path = "src/lib.rs"
+

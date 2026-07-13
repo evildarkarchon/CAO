@@ -1,0 +1,5 @@
+root = false
+
+[*]
+# Preserve the published byte style of third-party source archives.
+end_of_line = lf

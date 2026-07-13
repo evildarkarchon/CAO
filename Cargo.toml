@@ -1,0 +1,79 @@
+[workspace]
+members = [
+  "crates/cao-domain",
+  "crates/cao-application",
+  "crates/cao-platform-windows",
+  "crates/cao-backend-bsa",
+  "crates/cao-backend-nif",
+  "crates/cao-backend-texture",
+  "crates/cao-backend-hkx",
+  "crates/cao-hkx-protocol",
+  "apps/cao-gui",
+  "apps/cao-hkx-helper",
+  "tools/cao-verification",
+  "tools/cao-oracle-capture",
+]
+default-members = [
+  "crates/cao-domain",
+  "crates/cao-application",
+  "crates/cao-platform-windows",
+  "crates/cao-backend-bsa",
+  "crates/cao-backend-nif",
+  "crates/cao-backend-texture",
+  "crates/cao-backend-hkx",
+  "crates/cao-hkx-protocol",
+  "apps/cao-gui",
+  "apps/cao-hkx-helper",
+  "tools/cao-verification",
+]
+exclude = ["vendor/ba2-3.0.1", "vendor/serde-hkx"]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.0"
+license = "GPL-3.0-only"
+repository = "https://github.com/evildarkarchon/CAO"
+publish = false
+
+[workspace.dependencies]
+cao-domain = { version = "=0.0.0", path = "crates/cao-domain" }
+cao-application = { version = "=0.0.0", path = "crates/cao-application" }
+cao-platform-windows = { version = "=0.0.0", path = "crates/cao-platform-windows" }
+cao-backend-bsa = { version = "=0.0.0", path = "crates/cao-backend-bsa" }
+cao-backend-nif = { version = "=0.0.0", path = "crates/cao-backend-nif" }
+cao-backend-texture = { version = "=0.0.0", path = "crates/cao-backend-texture" }
+cao-backend-hkx = { version = "=0.0.0", path = "crates/cao-backend-hkx" }
+cao-hkx-protocol = { version = "=0.0.0", path = "crates/cao-hkx-protocol" }
+cao-verification = { version = "=0.0.0", path = "tools/cao-verification" }
+crossbeam-channel = { version = "=0.5.16", default-features = false, features = ["std"] }
+ba2 = { version = "=3.0.1", path = "vendor/ba2-3.0.1", default-features = false, features = ["zlib"] }
+slint = { version = "=1.17.1", default-features = false, features = [
+  "std",
+  "compat-1-2",
+  "accessibility",
+  "backend-winit",
+  "renderer-skia",
+  "renderer-software",
+] }
+serde_hkx = { version = "=1.0.1", path = "vendor/serde-hkx/serde_hkx", default-features = false }
+havok_classes = { version = "=1.0.1", path = "vendor/serde-hkx/crates/havok_classes", default-features = false }
+
+[workspace.metadata.cao]
+implementation-inputs = "verification/baseline/implementation-inputs.json"
+release-packages = ["cao-gui", "cao-hkx-helper"]
+unsafe-allowed = ["cao-platform-windows", "cao-backend-nif", "cao-backend-texture"]
+
+[workspace.metadata.cao.staged-binaries]
+cao-gui = "tracetide.exe"
+cao-hkx-helper = "bin/tracetide-hkx-helper.exe"
+
+[workspace.metadata.cao.native-sources]
+nifly = "965a1da1be7bff145b7b3435def5c04d6e8c8cce"
+directxtex = "4feb3e11a020f35b796fc769a74216a555d4f5ef"
+skia = "90af6f5c5a3ed8788b805fe6ca3fcdf28c2c2bc9"
+
+[workspace.metadata.cao.vendored-sources]
+ba2 = "3.0.1+explicit-zlib-feature"
+serde-hkx = "6c1bee56d42de7def991cf6fba025a9df7492d83"

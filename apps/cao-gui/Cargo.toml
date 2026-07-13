@@ -1,0 +1,29 @@
+[package]
+name = "cao-gui"
+description = "Slint GUI composition root for Tracetide"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+build = false
+
+[dependencies]
+cao-application.workspace = true
+cao-backend-bsa.workspace = true
+cao-backend-hkx.workspace = true
+cao-backend-nif.workspace = true
+cao-backend-texture.workspace = true
+cao-platform-windows.workspace = true
+slint.workspace = true
+
+[[bin]]
+name = "cao-gui"
+path = "src/main.rs"
+

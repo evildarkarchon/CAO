@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evildarkarchon/CAO/verification/schemas/parity-coverage-matrix.schema.json",
+  "title": "Tracetide parity coverage matrix",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "baseline_revision", "matrix_revision", "scope", "closure_state", "cells"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "baseline_revision": { "type": "integer", "const": 1 },
+    "matrix_revision": { "type": "integer", "minimum": 1 },
+    "scope": { "type": "string", "const": "initial-windows-x64-functional-parity" },
+    "closure_state": { "type": "string", "enum": ["blocked", "closed"] },
+    "cells": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "revision", "dimensions", "resolution"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^CELL-[A-Z0-9-]+$" },
+          "revision": { "type": "integer", "minimum": 1 },
+          "dimensions": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["game", "profile", "operation", "option_interaction", "input_class", "control_path", "outcome"],
+            "properties": {
+              "game": { "type": "string", "minLength": 1 },
+              "profile": { "type": "string", "minLength": 1 },
+              "operation": { "type": "string", "minLength": 1 },
+              "option_interaction": { "type": "string", "minLength": 1 },
+              "input_class": { "type": "string", "minLength": 1 },
+              "control_path": { "type": "string", "minLength": 1 },
+              "outcome": { "type": "string", "minLength": 1 }
+            }
+          },
+          "resolution": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["status", "fixture_refs", "discrepancy_refs", "evidence_refs", "reason", "removal_condition"],
+            "properties": {
+              "status": { "type": "string", "enum": ["covered", "not-applicable", "temporary-opt-in", "blocked", "unknown"] },
+              "fixture_refs": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["id", "revision", "manifest_sha256"],
+                  "properties": {
+                    "id": { "type": "string", "pattern": "^FIX-[A-Z0-9-]+$" },
+                    "revision": { "type": "integer", "minimum": 1 },
+                    "manifest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+                  }
+                }
+              },
+              "discrepancy_refs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^DISC-[0-9]{4}@[1-9][0-9]*$" } },
+              "evidence_refs": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["id", "revision", "manifest_sha256"],
+                  "properties": {
+                    "id": { "type": "string", "pattern": "^EVD-[A-Z0-9-]+$" },
+                    "revision": { "type": "integer", "minimum": 1 },
+                    "manifest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+                  }
+                }
+              },
+              "reason": { "type": ["string", "null"] },
+              "removal_condition": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

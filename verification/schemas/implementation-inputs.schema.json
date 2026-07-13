@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evildarkarchon/CAO/verification/schemas/implementation-inputs.schema.json",
+  "title": "Tracetide implementation input manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "baseline_revision", "scope", "inputs"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "baseline_revision": { "type": "integer", "const": 1 },
+    "scope": { "type": "string", "const": "blueprint-selected-implementation-inputs" },
+    "inputs": {
+      "type": "array",
+      "minItems": 19,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "version",
+          "commit",
+          "filename",
+          "source_uri",
+          "acquisition",
+          "redistribution",
+          "license_expression",
+          "selected_license",
+          "default_features",
+          "required_features",
+          "patches",
+          "verification"
+        ],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "kind": {
+            "type": "string",
+            "enum": ["restricted-oracle", "rust-toolchain", "rust-crate", "native-source", "transitive-native-source", "ui-toolkit", "windows-toolchain", "build-tool", "compliance-tool", "packaging-tool"]
+          },
+          "version": { "type": ["string", "null"] },
+          "commit": { "type": ["string", "null"] },
+          "filename": { "type": ["string", "null"] },
+          "source_uri": { "type": "string", "minLength": 1 },
+          "acquisition": { "type": "string", "minLength": 1 },
+          "redistribution": {
+            "type": "string",
+            "enum": ["restricted-local-only", "source-redistributable", "toolchain-managed"]
+          },
+          "license_expression": { "type": ["string", "null"] },
+          "selected_license": { "type": ["string", "null"] },
+          "default_features": { "type": ["boolean", "null"] },
+          "required_features": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "patches": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "sha256", "size_bytes", "normalization"],
+              "properties": {
+                "path": { "type": "string", "minLength": 1 },
+                "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                "size_bytes": { "type": "integer", "minimum": 1 },
+                "normalization": { "type": "string", "const": "lf-text" }
+              }
+            }
+          },
+          "verification": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["method", "arguments", "allowed_exit_codes", "sha256", "size_bytes", "expected"],
+            "properties": {
+              "method": { "type": "string", "enum": ["sha256", "tree-sha256", "version-output"] },
+              "arguments": { "type": "array", "items": { "type": "string" } },
+              "allowed_exit_codes": { "type": "array", "uniqueItems": true, "items": { "type": "integer" } },
+              "sha256": { "type": ["string", "null"] },
+              "size_bytes": { "type": ["integer", "null"], "minimum": 1 },
+              "file_count": { "type": ["integer", "null"], "minimum": 1 },
+              "expected": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evildarkarchon/CAO/verification/schemas/compliance-policy.schema.json",
+  "title": "Tracetide compliance and runtime policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "baseline_revision", "authority", "licensing", "native_runtime", "windows"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "baseline_revision": { "type": "integer", "const": 1 },
+    "authority": { "type": "string", "const": "docs/rust-slint-implementation-blueprint.md" },
+    "licensing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["combined_work", "slint_choice", "existing_source_files", "corresponding_source"],
+      "properties": {
+        "combined_work": { "type": "string", "const": "GPL-3.0-only" },
+        "slint_choice": { "type": "string", "const": "GPL-3.0-only" },
+        "existing_source_files": { "type": "string", "const": "preserve-MPL-2.0-coverage-and-notices" },
+        "corresponding_source": { "type": "string", "const": "exact-source-alongside-every-binary" }
+      }
+    },
+    "native_runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "msvc_runtime", "msvc_flag", "rust_target_feature", "debug_crt_allowed"],
+      "properties": {
+        "scope": { "type": "string", "const": "tracetide-production-graph" },
+        "msvc_runtime": { "type": "string", "const": "MultiThreaded" },
+        "msvc_flag": { "type": "string", "const": "/MT" },
+        "rust_target_feature": { "type": "string", "const": "+crt-static" },
+        "debug_crt_allowed": { "type": "boolean", "const": false }
+      }
+    },
+    "windows": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimum_release",
+        "minimum_architecture",
+        "minimum_support_status",
+        "primary_release",
+        "cpu_baseline",
+        "avx_required",
+        "avx2_required"
+      ],
+      "properties": {
+        "minimum_release": { "type": "string", "const": "Windows 10 22H2" },
+        "minimum_architecture": { "type": "string", "const": "x86_64" },
+        "minimum_support_status": { "type": "string", "const": "out-of-support" },
+        "primary_release": { "type": "string", "const": "Windows 11 x64" },
+        "cpu_baseline": { "type": "string", "const": "x86-64" },
+        "avx_required": { "type": "boolean", "const": false },
+        "avx2_required": { "type": "boolean", "const": false }
+      }
+    }
+  }
+}
