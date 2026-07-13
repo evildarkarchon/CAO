@@ -2315,12 +2315,14 @@ def production_cargo_graph(
         str(root / "Cargo.toml"),
     ]
     try:
+        # Cargo's JSON protocol is UTF-8 even when Windows selects a legacy code page.
         result = subprocess.run(
             command,
             cwd=root,
             env=dict(build_environment) if build_environment is not None else None,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
     except OSError as error:
