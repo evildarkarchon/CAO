@@ -11,6 +11,21 @@
     "revision": "90af6f5c5a3ed8788b805fe6ca3fcdf28c2c2bc9",
     "tag": "m150-0.98.1"
   },
+  "tools": {
+    "gn": {
+      "source_uri": "https://chrome-infra-packages.appspot.com/dl/gn/gn/windows-amd64/+/git_revision:b2afae122eeb6ce09c52d63f67dc53fc517dbdc8",
+      "revision": "b2afae122eeb6ce09c52d63f67dc53fc517dbdc8",
+      "version": "2175 (b2afae122eeb)",
+      "size_bytes": 2371072,
+      "executable_sha256": "cf28c1ea5c5c6c2ec1c2e4e12b360f276595ceea8de6a35368dfd1f9b39b527d"
+    },
+    "llvm": {
+      "source_uri": "https://github.com/llvm/llvm-project/releases/tag/llvmorg-22.1.8",
+      "revision": "ca7933e47d3a3451d81e72ac174dcb5aa28b59d1",
+      "version": "22.1.8",
+      "clang_cl_sha256": "986af49c2d1eefeac324f724ff54597753d1053927fa5d58a37a457f578e1cf8"
+    }
+  },
   "repositories": [
     {
       "path": "agents/shared",
