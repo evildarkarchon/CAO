@@ -94,6 +94,8 @@ EXPECTED_DEPENDENCIES = {
         "cao-backend-nif",
         "cao-backend-texture",
         "cao-platform-windows",
+        "serde",
+        "serde_json",
     },
     "tools/cao-oracle-capture": {"cao-verification"},
 }
@@ -344,6 +346,8 @@ def validate_workspace_manifest(root: Path) -> None:
         {
             *EXPECTED_WORKSPACE_PATH_DEPENDENCIES,
             "crossbeam-channel",
+            "serde",
+            "serde_json",
             "ba2",
             "slint",
             "serde_hkx",
@@ -364,6 +368,20 @@ def validate_workspace_manifest(root: Path) -> None:
         dependencies,
         "crossbeam-channel",
         {"version": "=0.5.16", "default-features": False, "features": ["std"]},
+    )
+    validate_dependency_pin(
+        dependencies,
+        "serde",
+        {
+            "version": "=1.0.228",
+            "default-features": False,
+            "features": ["derive", "std"],
+        },
+    )
+    validate_dependency_pin(
+        dependencies,
+        "serde_json",
+        {"version": "=1.0.150", "default-features": False, "features": ["std"]},
     )
     validate_dependency_pin(
         dependencies,

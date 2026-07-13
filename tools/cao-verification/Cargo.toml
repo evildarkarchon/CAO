@@ -21,6 +21,8 @@ cao-backend-hkx.workspace = true
 cao-backend-nif.workspace = true
 cao-backend-texture.workspace = true
 cao-platform-windows.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [lib]
 name = "cao_verification"

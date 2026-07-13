@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "baseline_revision": 1,
+  "id": "SETUP-SEAM-FIXTURE",
+  "revision": 1,
+  "cases": [
+    {
+      "id": "persist-success",
+      "initial_dry_run": false,
+      "intent_dry_run": true,
+      "fault": null
+    },
+    {
+      "id": "open-unavailable",
+      "initial_dry_run": false,
+      "intent_dry_run": null,
+      "fault": {
+        "point": "open",
+        "fixture_path": "setup.state",
+        "failure": {
+          "port": "portable-state",
+          "operation": "open",
+          "kind": "unavailable",
+          "subject": null,
+          "diagnostic": "injected portable state unavailability"
+        }
+      }
+    },
+    {
+      "id": "load-corrupt-data",
+      "initial_dry_run": false,
+      "intent_dry_run": null,
+      "fault": {
+        "point": "load-setup",
+        "fixture_path": "setup.state",
+        "failure": {
+          "port": "portable-state",
+          "operation": "load-setup",
+          "kind": "corrupt-data",
+          "subject": null,
+          "diagnostic": "injected corrupt setup state"
+        }
+      }
+    },
+    {
+      "id": "persist-io",
+      "initial_dry_run": false,
+      "intent_dry_run": true,
+      "fault": {
+        "point": "persist-setup",
+        "fixture_path": "setup.state",
+        "failure": {
+          "port": "portable-state",
+          "operation": "persist-setup",
+          "kind": "io",
+          "subject": null,
+          "diagnostic": "injected durable write failure"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evildarkarchon/CAO/verification/schemas/setup-replay-manifest.schema.json",
+  "title": "Tracetide non-parity setup replay manifest",
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size_bytes"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "size_bytes": { "type": "integer", "minimum": 1 }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "baseline_revision", "id", "revision", "fixture", "evidence"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "baseline_revision": { "type": "integer", "const": 1 },
+    "id": { "type": "string", "const": "REPLAY-SETUP-SEAM" },
+    "revision": { "type": "integer", "const": 1 },
+    "fixture": { "$ref": "#/$defs/artifact" },
+    "evidence": { "$ref": "#/$defs/artifact" }
+  }
+}

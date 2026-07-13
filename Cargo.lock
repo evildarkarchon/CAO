@@ -730,6 +730,8 @@ dependencies = [
  "cao-backend-nif",
  "cao-backend-texture",
  "cao-platform-windows",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

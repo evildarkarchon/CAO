@@ -48,6 +48,8 @@ cao-backend-hkx = { version = "=0.0.0", path = "crates/cao-backend-hkx" }
 cao-hkx-protocol = { version = "=0.0.0", path = "crates/cao-hkx-protocol" }
 cao-verification = { version = "=0.0.0", path = "tools/cao-verification" }
 crossbeam-channel = { version = "=0.5.16", default-features = false, features = ["std"] }
+serde = { version = "=1.0.228", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 ba2 = { version = "=3.0.1", path = "vendor/ba2-3.0.1", default-features = false, features = ["zlib"] }
 slint = { version = "=1.17.1", default-features = false, features = [
   "std",

@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evildarkarchon/CAO/verification/schemas/setup-replay-evidence.schema.json",
+  "title": "Tracetide non-parity setup replay evidence",
+  "$defs": {
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port", "operation", "kind", "subject", "diagnostic"],
+      "properties": {
+        "port": { "type": "string", "enum": ["portable-state", "application-runtime"] },
+        "operation": { "type": "string", "enum": ["open", "load-setup", "persist-setup", "start-supervisor", "stop-supervisor"] },
+        "kind": { "type": "string", "enum": ["invalid-input", "unsupported", "unavailable", "not-found", "permission-denied", "conflict", "resource-exhausted", "corrupt-data", "io", "protocol", "backend-rejected", "backend-crashed", "integrity", "internal"] },
+        "subject": { "type": ["string", "null"] },
+        "diagnostic": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "intent": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "const": "none" } } },
+        { "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "const": "applied" } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "failure"], "properties": { "status": { "const": "failed" }, "failure": { "$ref": "#/$defs/failure" } } }
+      ]
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "dry_run", "last_intent"],
+      "properties": {
+        "revision": { "type": "integer", "minimum": 0 },
+        "dry_run": { "type": "boolean" },
+        "last_intent": { "$ref": "#/$defs/intent" }
+      }
+    },
+    "started_case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "startup", "snapshots", "persisted_dry_run", "restart_dry_run"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "startup": { "const": "started" },
+        "snapshots": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/snapshot" } },
+        "persisted_dry_run": { "type": "boolean" },
+        "restart_dry_run": { "type": "boolean" }
+      }
+    },
+    "failed_case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "startup", "failure", "snapshot_count", "persisted_dry_run"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "startup": { "const": "failed" },
+        "failure": { "$ref": "#/$defs/failure" },
+        "snapshot_count": { "type": "integer", "const": 0 },
+        "persisted_dry_run": { "type": "boolean" }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "baseline_revision", "id", "revision", "fixture_ref", "cases"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "baseline_revision": { "type": "integer", "const": 1 },
+    "id": { "type": "string", "const": "SETUP-SEAM-EVIDENCE" },
+    "revision": { "type": "integer", "const": 1 },
+    "fixture_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "revision"],
+      "properties": {
+        "id": { "type": "string", "const": "SETUP-SEAM-FIXTURE" },
+        "revision": { "type": "integer", "const": 1 }
+      }
+    },
+    "cases": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "oneOf": [{ "$ref": "#/$defs/started_case" }, { "$ref": "#/$defs/failed_case" }] } }
+  }
+}

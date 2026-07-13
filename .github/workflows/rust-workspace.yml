@@ -73,6 +73,16 @@ jobs:
           python tools/verify_workspace.py
           python -m unittest tests.test_verify_baseline tests.test_verify_workspace -v
 
+      - name: Exercise the UI-independent application seam
+        shell: pwsh
+        run: cargo test --workspace --lib --frozen
+
+      - name: Replay the governed setup tracer
+        shell: pwsh
+        run: >-
+          cargo run --package cao-verification --bin cao-verification --frozen --
+          --root . --manifest verification/tracers/setup/manifest.json
+
       - name: Build all twelve packages without acquisition
         shell: pwsh
         env:

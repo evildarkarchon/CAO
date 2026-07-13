@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "baseline_revision": 1,
+  "id": "SETUP-SEAM-EVIDENCE",
+  "revision": 1,
+  "fixture_ref": {
+    "id": "SETUP-SEAM-FIXTURE",
+    "revision": 1
+  },
+  "cases": [
+    {
+      "id": "persist-success",
+      "startup": "started",
+      "snapshots": [
+        {
+          "revision": 0,
+          "dry_run": false,
+          "last_intent": { "status": "none" }
+        },
+        {
+          "revision": 1,
+          "dry_run": true,
+          "last_intent": { "status": "applied" }
+        }
+      ],
+      "persisted_dry_run": true,
+      "restart_dry_run": true
+    },
+    {
+      "id": "open-unavailable",
+      "startup": "failed",
+      "failure": {
+        "port": "portable-state",
+        "operation": "open",
+        "kind": "unavailable",
+        "subject": null,
+        "diagnostic": "injected portable state unavailability"
+      },
+      "snapshot_count": 0,
+      "persisted_dry_run": false
+    },
+    {
+      "id": "load-corrupt-data",
+      "startup": "failed",
+      "failure": {
+        "port": "portable-state",
+        "operation": "load-setup",
+        "kind": "corrupt-data",
+        "subject": null,
+        "diagnostic": "injected corrupt setup state"
+      },
+      "snapshot_count": 0,
+      "persisted_dry_run": false
+    },
+    {
+      "id": "persist-io",
+      "startup": "started",
+      "snapshots": [
+        {
+          "revision": 0,
+          "dry_run": false,
+          "last_intent": { "status": "none" }
+        },
+        {
+          "revision": 1,
+          "dry_run": false,
+          "last_intent": {
+            "status": "failed",
+            "failure": {
+              "port": "portable-state",
+              "operation": "persist-setup",
+              "kind": "io",
+              "subject": null,
+              "diagnostic": "injected durable write failure"
+            }
+          }
+        }
+      ],
+      "persisted_dry_run": false,
+      "restart_dry_run": false
+    }
+  ]
+}

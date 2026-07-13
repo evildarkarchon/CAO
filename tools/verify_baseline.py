@@ -35,6 +35,15 @@ DOCUMENT_SCHEMAS = {
     "verification/parity/coverage-matrix.json": (
         "verification/schemas/parity-coverage-matrix.schema.json"
     ),
+    "verification/tracers/setup/manifest.json": (
+        "verification/schemas/setup-replay-manifest.schema.json"
+    ),
+    "verification/tracers/setup/fixture.json": (
+        "verification/schemas/setup-replay-fixture.schema.json"
+    ),
+    "verification/tracers/setup/evidence.json": (
+        "verification/schemas/setup-replay-evidence.schema.json"
+    ),
 }
 
 COLLECTION_SCHEMAS = {
@@ -647,6 +656,71 @@ def validate_fixture_semantics(
                 source,
                 "/content_sha256",
                 f"fixture content SHA-256 mismatch; expected {declared_content_hash}",
+            )
+        )
+    return errors
+
+
+def validate_setup_replay_semantics(
+    manifest: Mapping[str, Any],
+    fixture: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    manifest_path: Path,
+) -> list[ValidationError]:
+    """Validate the non-parity setup tracer's artifact integrity and exact case links."""
+    errors: list[ValidationError] = []
+    for field in ("fixture", "evidence"):
+        artifact = manifest.get(field)
+        if isinstance(artifact, dict):
+            errors.extend(
+                validate_local_artifact_reference(
+                    manifest_path,
+                    f"/{field}",
+                    artifact,
+                )
+            )
+
+    fixture_reference = evidence.get("fixture_ref", {})
+    if (
+        fixture_reference.get("id") != fixture.get("id")
+        or fixture_reference.get("revision") != fixture.get("revision")
+    ):
+        errors.append(
+            ValidationError(
+                manifest_path,
+                "/evidence/fixture_ref",
+                "setup replay evidence does not reference the exact fixture revision",
+            )
+        )
+
+    fixture_ids = [
+        case.get("id") for case in fixture.get("cases", []) if isinstance(case, dict)
+    ]
+    evidence_ids = [
+        case.get("id") for case in evidence.get("cases", []) if isinstance(case, dict)
+    ]
+    if len(fixture_ids) != len(set(fixture_ids)):
+        errors.append(
+            ValidationError(
+                manifest_path,
+                "/fixture/cases",
+                "setup replay fixture contains duplicate case IDs",
+            )
+        )
+    if len(evidence_ids) != len(set(evidence_ids)):
+        errors.append(
+            ValidationError(
+                manifest_path,
+                "/evidence/cases",
+                "setup replay evidence contains duplicate case IDs",
+            )
+        )
+    if fixture_ids != evidence_ids:
+        errors.append(
+            ValidationError(
+                manifest_path,
+                "/evidence/cases",
+                "setup replay fixture and evidence case order or membership differs",
             )
         )
     return errors
@@ -1297,6 +1371,9 @@ def validate_repository(
     policy_path = root / "verification/baseline/compliance-policy.json"
     register_path = root / "verification/discrepancies/register.json"
     matrix_path = root / "verification/parity/coverage-matrix.json"
+    setup_manifest_path = root / "verification/tracers/setup/manifest.json"
+    setup_fixture_path = root / "verification/tracers/setup/fixture.json"
+    setup_evidence_path = root / "verification/tracers/setup/evidence.json"
 
     if input_path in loaded:
         errors.extend(validate_input_semantics(loaded[input_path], input_path))
@@ -1323,6 +1400,18 @@ def validate_repository(
     if matrix_path in loaded:
         errors.extend(
             validate_matrix_semantics(loaded[matrix_path], matrix_path, parity_gate)
+        )
+    if all(
+        path in loaded
+        for path in (setup_manifest_path, setup_fixture_path, setup_evidence_path)
+    ):
+        errors.extend(
+            validate_setup_replay_semantics(
+                loaded[setup_manifest_path],
+                loaded[setup_fixture_path],
+                loaded[setup_evidence_path],
+                setup_manifest_path,
+            )
         )
 
     fixture_root = root / "verification/fixtures"

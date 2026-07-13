@@ -394,7 +394,7 @@ class VerifyBaselineTests(unittest.TestCase):
             self.assertIn("closure_state is blocked", result.stderr)
 
     def test_every_governed_schema_rejects_a_missing_required_field(self) -> None:
-        """All six versioned contracts reject incomplete records at the CLI seam."""
+        """All nine versioned contracts reject incomplete records at the CLI seam."""
         cases = [
             ("verification/baseline/implementation-inputs.json", "scope"),
             ("verification/baseline/compliance-policy.json", "authority"),
@@ -402,6 +402,9 @@ class VerifyBaselineTests(unittest.TestCase):
             ("verification/parity/coverage-matrix.json", "matrix_revision"),
             ("verification/fixtures/setup/fixture.json", "comparison_profile"),
             ("verification/evidence/setup/evidence.json", "environment"),
+            ("verification/tracers/setup/manifest.json", "fixture"),
+            ("verification/tracers/setup/fixture.json", "cases"),
+            ("verification/tracers/setup/evidence.json", "cases"),
         ]
         for relative_path, required_field in cases:
             with self.subTest(document=relative_path, field=required_field):
@@ -539,6 +542,36 @@ class VerifyBaselineTests(unittest.TestCase):
             fixture_path, _ = self.write_linked_fixture_and_evidence(root)
             input_path = fixture_path.parent / "input/profile.ini"
             input_path.write_bytes(b"tampered fixture payload")
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("artifact SHA-256 mismatch", result.stderr)
+
+    def test_setup_tracer_fixture_tampering_is_rejected(self) -> None:
+        """The governed setup runner cannot consume modified fixture bytes."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self.copy_validation_root(root)
+            fixture_path = root / "verification/tracers/setup/fixture.json"
+            fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+            fixture["cases"][0]["intent_dry_run"] = False
+            fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("artifact SHA-256 mismatch", result.stderr)
+
+    def test_setup_tracer_evidence_tampering_is_rejected(self) -> None:
+        """The governed setup runner cannot consume modified evidence bytes."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self.copy_validation_root(root)
+            evidence_path = root / "verification/tracers/setup/evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["cases"][0]["persisted_dry_run"] = False
+            evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
 
             result = self.run_validator(root)
 

@@ -102,6 +102,29 @@ class VerifyWorkspaceTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("public API leaks leaf type ba2", result.stderr)
 
+    def assert_application_leaf_fragment_rejected(
+        self, fragment: str, leaf_type: str
+    ) -> None:
+        """Require one application-seam fragment to fail leaf-type validation.
+
+        Raises:
+          OSError: Sandbox files or the validator process cannot be created.
+          AssertionError: The fragment passes or lacks the expected diagnostic.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            source = root / "crates/cao-application/src/lib.rs"
+            content = source.read_text(encoding="utf-8")
+            source.write_text(content + "\n" + fragment, encoding="utf-8")
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                f"public API leaks leaf type {leaf_type}", result.stderr
+            )
+
     def add_local_runner_commands(self, environment: dict[str, str]) -> None:
         """Add absolute Cargo, rustc, Git, and tool-home inputs to a test env.
 
@@ -294,6 +317,24 @@ class VerifyWorkspaceTests(unittest.TestCase):
         """Reject a backend library type exposed through a public adapter signature."""
         self.assert_leaf_fragment_rejected(
             "pub fn leak_archive(_: ba2::fo4::Archive) {}\n"
+        )
+
+    def test_application_handle_must_hide_its_queue_transport(self) -> None:
+        """Reject a crossbeam sender exposed by the public application handle."""
+        self.assert_application_leaf_fragment_rejected(
+            "pub struct LeakyApplicationHandle {\n"
+            "    pub sender: crossbeam_channel::Sender<Intent>,\n"
+            "}\n",
+            "crossbeam_channel",
+        )
+
+    def test_snapshot_sink_must_not_expose_a_ui_type(self) -> None:
+        """Reject a Slint value exposed by a public snapshot-sink contract."""
+        self.assert_application_leaf_fragment_rejected(
+            "pub trait LeakySnapshotSink {\n"
+            "    fn publish(&self, snapshot: slint::SharedString);\n"
+            "}\n",
+            "slint",
         )
 
     def test_aliased_leaf_type_must_not_cross_a_public_api(self) -> None:

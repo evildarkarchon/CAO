@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evildarkarchon/CAO/verification/schemas/setup-replay-fixture.schema.json",
+  "title": "Tracetide non-parity setup replay fixture",
+  "$defs": {
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port", "operation", "kind", "subject", "diagnostic"],
+      "properties": {
+        "port": { "type": "string", "enum": ["portable-state", "application-runtime"] },
+        "operation": { "type": "string", "enum": ["open", "load-setup", "persist-setup", "start-supervisor", "stop-supervisor"] },
+        "kind": { "type": "string", "enum": ["invalid-input", "unsupported", "unavailable", "not-found", "permission-denied", "conflict", "resource-exhausted", "corrupt-data", "io", "protocol", "backend-rejected", "backend-crashed", "integrity", "internal"] },
+        "subject": { "type": ["string", "null"] },
+        "diagnostic": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "fault": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["point", "fixture_path", "failure"],
+      "properties": {
+        "point": { "type": "string", "enum": ["open", "load-setup", "persist-setup"] },
+        "fixture_path": { "type": "string", "const": "setup.state" },
+        "failure": { "$ref": "#/$defs/failure" }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "initial_dry_run", "intent_dry_run", "fault"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "initial_dry_run": { "type": "boolean" },
+        "intent_dry_run": { "type": ["boolean", "null"] },
+        "fault": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/fault" }] }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "baseline_revision", "id", "revision", "cases"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "baseline_revision": { "type": "integer", "const": 1 },
+    "id": { "type": "string", "const": "SETUP-SEAM-FIXTURE" },
+    "revision": { "type": "integer", "const": 1 },
+    "cases": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/case" } }
+  }
+}

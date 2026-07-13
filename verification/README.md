@@ -36,6 +36,7 @@ File inputs are verified by SHA-256 or their pinned version output. The installe
 - `parity/coverage-matrix.json` is the authoritative parity coverage matrix. Its initial blocked state is deliberate.
 - `schemas/` contains Draft 2020-12 JSON Schemas for the two baseline records plus discrepancy, matrix, fixture, and evidence records.
 - `fixtures/` and `evidence/` receive immutable revisioned records in downstream verification work.
+- `tracers/setup/` contains the non-parity engineering fixture and expected public-seam evidence for the W3 setup tracer. The runner copies governed verification inputs into a fresh sandbox, excludes the local oracle kit, validates the exact copied bytes, and only then replays each deterministic or injected-failure case.
 - `local-oracle-kit/` is ignored except for its instructions.
 
 ## Evolve a contract
