@@ -1,0 +1,2 @@
+# Setup tracer manifests pin exact artifact bytes, so checkout must not follow core.autocrlf.
+/verification/tracers/setup/*.json text eol=lf

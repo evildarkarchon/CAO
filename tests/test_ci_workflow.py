@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -12,6 +13,25 @@ WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "rust-workspace.yml"
 
 class RustWorkspaceWorkflowTests(unittest.TestCase):
     """Verify behavior exposed by the checked-in pull-request workflow."""
+
+    def test_setup_tracer_artifacts_are_checked_out_with_lf_bytes(self) -> None:
+        """Byte-pinned setup artifacts must be stable under Windows Git checkout."""
+        artifact_paths = (
+            "verification/tracers/setup/fixture.json",
+            "verification/tracers/setup/evidence.json",
+        )
+        result = subprocess.run(
+            ["git", "check-attr", "eol", "--", *artifact_paths],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for artifact_path in artifact_paths:
+            with self.subTest(artifact_path=artifact_path):
+                self.assertIn(f"{artifact_path}: eol: lf", result.stdout)
 
     def test_pull_request_validation_uses_a_hosted_acquire_then_offline_contract(
         self,

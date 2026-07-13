@@ -6,3 +6,7 @@ insert_final_newline = true
 indent_style = space
 # Keep every language aligned on the repository's four-space standard.
 indent_size = 4
+
+# Setup tracer manifests pin exact artifact bytes and therefore require stable LF endings.
+[verification/tracers/setup/*.json]
+end_of_line = lf
