@@ -31,6 +31,7 @@
 # Created by git for backups. To disable backups in Git:
 # $ git config --global mergetool.keepBackup false
 *.orig
+!/vendor/ba2-3.0.1/Cargo.toml.orig
 
 # Created by git when using merge tools for conflicts
 *.BACKUP.*

@@ -6,9 +6,11 @@ import argparse
 import hashlib
 import json
 import re
+import struct
 import subprocess
 import sys
 import tomllib
+import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 from typing import Any, Mapping, NamedTuple, Sequence
 
@@ -104,6 +106,90 @@ EXPECTED_STAGED_BINARIES = {
     "cao-gui": "tracetide.exe",
     "cao-hkx-helper": "bin/tracetide-hkx-helper.exe",
 }
+EXPECTED_BRANDING_FILES = (
+    "assets/branding/tracetide-mark.svg",
+    "assets/branding/tracetide-mark-monochrome.svg",
+    "assets/branding/tracetide.ico",
+    "assets/branding/README.md",
+)
+HASHED_BRANDING_FILES = EXPECTED_BRANDING_FILES[:3]
+EXPECTED_ICON_SIZES = (16, 20, 24, 32, 40, 48, 64, 256)
+EXPECTED_REVIEWED_BRANDING_SHA256 = {
+    "tracetide-mark.svg": (
+        "af9d420704bd49dfcbcf94165a44752e001f19d0efdbe893040cb5a2911cb9a0"
+    ),
+    "tracetide-mark-monochrome.svg": (
+        "273febd4158f7f1b1f4fe96c562d95adb90d3d5a3571fcbddf07f2d3df3946ef"
+    ),
+    "tracetide.ico": (
+        "d486b58c068fc5154f6197446fd2fef0931ec8bc5fd25b35751c8c36ff131458"
+    ),
+}
+EXPECTED_PUBLIC_IDENTITY = {
+    "schema_version": 1,
+    "product": {
+        "display_name": "Tracetide",
+        "slug": "tracetide",
+        "positioning_line": "Trace every change from plan to outcome.",
+        "description": "Asset optimization workbench for Fallout 4 and Skyrim.",
+        "windows_app_user_model_id": "io.github.evildarkarchon.tracetide",
+    },
+    "artifact_names": {
+        "gui_executable": "tracetide.exe",
+        "helper_executable": "bin/tracetide-hkx-helper.exe",
+        "binary_zip": "tracetide-v{version}-windows-x64.zip",
+        "binary_root": "tracetide-v{version}-windows-x64/",
+        "source_zip": "tracetide-v{version}-source.zip",
+        "symbol_zip": "tracetide-v{version}-symbols.zip",
+        "sbom": "tracetide-v{version}.cdx.json",
+        "checksums": "SHA256SUMS.txt",
+        "release_manifest": "release.json",
+    },
+    "windows_metadata": {
+        "file_version": "{major}.{minor}.{patch}.0",
+        "product_version": "{major}.{minor}.{patch}",
+        "gui": {
+            "CompanyName": "evildarkarchon",
+            "ProductName": "Tracetide",
+            "FileDescription": "Tracetide asset optimization workbench",
+            "InternalName": "tracetide",
+            "OriginalFilename": "tracetide.exe",
+            "LegalCopyright": (
+                "Copyright © 2019 G'k; © 2026 evildarkarchon and contributors"
+            ),
+            "Comments": "GPLv3 licensed; see bundled notices.",
+        },
+        "helper": {
+            "CompanyName": "evildarkarchon",
+            "ProductName": "Tracetide",
+            "FileDescription": "Tracetide HKX processing helper",
+            "InternalName": "tracetide-hkx-helper",
+            "OriginalFilename": "tracetide-hkx-helper.exe",
+            "LegalCopyright": "Copyright © 2026 evildarkarchon and contributors",
+            "Comments": "Bundled Tracetide component; see bundled notices.",
+        },
+    },
+    "accessibility_contract": {
+        "high_contrast_source": "assets/branding/tracetide-mark-monochrome.svg",
+        "status_meaning_requires": ["text", "icon"],
+        "border_must_not_be_sole_boundary": True,
+        "motion_required_for_comprehension": False,
+        "wordmarks_remain_live_text": True,
+    },
+    "name_collision_recheck": {
+        "status": "scheduled",
+        "owner": "release owner",
+        "triggers": [
+            "before external registration",
+            "within 30 days before every release",
+        ],
+        "required_evidence": (
+            "Dated exact-name and relevant software-class search record linked from "
+            "the release manifest."
+        ),
+        "legal_clearance": False,
+    },
+}
 EXPECTED_UNSAFE_ALLOWLIST = [
     "cao-platform-windows",
     "cao-backend-nif",
@@ -126,14 +212,14 @@ DISABLED_CARGO_AUTO_TARGET_FIELDS = (
 )
 EXPECTED_VENDOR_TREE_DIGESTS = {
     "vendor/ba2-3.0.1": (
-        "8552a81b2741170eab22ffb6a152bfd16974ea12c8abcfc459835f46265869bd"
+        "79ffbf98f96cd356e919694dcd68f11fce511596265fc971221663bdcf18b801"
     ),
     "vendor/serde-hkx": (
-        "ae57b1a5709cece9d9a9e9245db41c8e52cbd99949ecd228cf02c07241b95c8c"
+        "d9a12403609de6b041fc3a2f2fce121e185e0b92771e8a02abf794475c525276"
     ),
 }
 EXPECTED_SKIA_SOURCE_LOCK_SHA256 = (
-    "def6ff8de3367744c51d29ed903d7cbc03b939b8fef1803222d6900abd30fdab"
+    "977cf722f0bd614ec42bd93d0cee18a7e92dbb91be19baf77477352a8586491f"
 )
 EXPECTED_LOCAL_LOCK_PACKAGES = {
     (name, "0.0.0") for name in EXPECTED_PACKAGE_NAMES.values()
@@ -435,6 +521,7 @@ def validate_workspace_manifest(root: Path) -> None:
         set(metadata),
         {
             "implementation-inputs",
+            "branding",
             "release-packages",
             "staged-binaries",
             "unsafe-allowed",
@@ -447,6 +534,11 @@ def validate_workspace_manifest(root: Path) -> None:
         metadata.get("implementation-inputs"),
         "verification/baseline/implementation-inputs.json",
         "implementation-input manifest",
+    )
+    require_equal(
+        metadata.get("branding"),
+        "assets/branding/identity.json",
+        "public identity metadata",
     )
     require_equal(
         metadata.get("release-packages"),
@@ -2402,6 +2494,314 @@ def validate_release_script(root: Path) -> None:
             raise ContractError(f"missing required file: {script}")
 
 
+def validate_theme_tokens(path: Path) -> None:
+    """Validate the approved presentation palette and independent lifecycle roles.
+
+    Raises:
+      ContractError: The Slint token file is unreadable, incomplete, or changed.
+    """
+    try:
+        theme = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ContractError(f"cannot read semantic theme tokens: {error}") from error
+    token_pairs = re.findall(
+        r"^\s*out property <brush> ([a-z-]+): "
+        r"dark-mode \? (#[0-9a-f]{6}) : (#[0-9a-f]{6});$",
+        theme,
+        re.MULTILINE,
+    )
+    tokens = {name: (dark, light) for name, dark, light in token_pairs}
+    presentation_tokens = {
+        "shell": ("#10111b", "#f6f6fb"),
+        "panel": ("#1a1b2a", "#ffffff"),
+        "text": ("#f2f1fa", "#18192a"),
+        "border": ("#40435d", "#cfd2e2"),
+        "accent": ("#ac9eff", "#5a43c0"),
+        "accent-soft": ("#2e2857", "#eae5ff"),
+        "secondary": ("#4ec9c5", "#087983"),
+    }
+    require_equal(
+        {name: tokens.get(name) for name in presentation_tokens},
+        presentation_tokens,
+        "semantic theme tokens",
+    )
+    lifecycle_names = {
+        "status-success",
+        "status-warning",
+        "status-error",
+        "status-cancelled",
+    }
+    require_equal(
+        lifecycle_names.intersection(tokens),
+        lifecycle_names,
+        "semantic lifecycle tokens",
+    )
+    presentation_colors = {
+        color for pair in presentation_tokens.values() for color in pair
+    }
+    lifecycle_colors = {
+        color for name in lifecycle_names for color in tokens[name]
+    }
+    if presentation_colors.intersection(lifecycle_colors):
+        raise ContractError(
+            "semantic lifecycle tokens must remain independent from brand colors"
+        )
+
+
+def validate_public_identity(path: Path) -> None:
+    """Validate approved public names, Windows metadata, and collision-recheck policy.
+
+    Raises:
+      ContractError: The identity manifest is missing, invalid, or changed.
+    """
+    if not path.is_file():
+        raise ContractError(f"missing public identity metadata: {path}")
+    require_equal(
+        load_json(path),
+        EXPECTED_PUBLIC_IDENTITY,
+        "public identity metadata contract",
+    )
+
+
+def load_branding_provenance(path: Path) -> dict[str, str]:
+    """Load the human review record and return its asset hashes.
+
+    Raises:
+      ContractError: The record is unreadable or omits required evidence.
+    """
+    try:
+        readme = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ContractError(f"cannot read branding provenance: {error}") from error
+    required_provenance = (
+        "Design direction and approval: evildarkarchon, 2026-07-13.",
+        "Vector construction and deterministic export implementation: OpenAI Codex,",
+        "License: `GPL-3.0-only`",
+        "## Reviewed icon constructions",
+        "## Independent review and accessibility evidence",
+        "Independent reviewer: Codex review agent, 2026-07-13.",
+        "## Approved export procedure",
+        "python tools/export_branding.py --check",
+        "## SHA-256",
+    )
+    missing_provenance = [
+        snippet for snippet in required_provenance if snippet not in readme
+    ]
+    if missing_provenance:
+        raise ContractError(
+            "branding provenance record is incomplete: "
+            + ", ".join(missing_provenance)
+        )
+    return dict(
+        re.findall(r"^\| `([^`]+)` \| `([0-9a-f]{64})` \|$", readme, re.MULTILINE)
+    )
+
+
+def hash_branding_assets(root: Path, recorded_hashes: Mapping[str, str]) -> dict[str, str]:
+    """Verify reviewed asset bytes against their provenance hashes.
+
+    Raises:
+      ContractError: An asset is unreadable or differs from its recorded hash.
+    """
+    actual_hashes = {}
+    for relative_path in HASHED_BRANDING_FILES:
+        path = root / relative_path
+        expected = recorded_hashes.get(path.name)
+        if expected is None:
+            raise ContractError(f"missing recorded branding SHA-256 for {path.name}")
+        try:
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as error:
+            raise ContractError(f"cannot hash branding asset {path}: {error}") from error
+        require_equal(actual, expected, f"branding SHA-256 for {path.name}")
+        actual_hashes[path.name] = actual
+    return actual_hashes
+
+
+def validate_icon_contract(path: Path) -> None:
+    """Validate ICO structure, pixel format, and exact optical layer sizes.
+
+    Raises:
+      ContractError: The icon directory or a PNG layer violates the contract.
+    """
+    try:
+        icon = path.read_bytes()
+        reserved, image_type, count = struct.unpack_from("<HHH", icon)
+    except (OSError, struct.error) as error:
+        raise ContractError(f"cannot parse reviewed ICO directory: {error}") from error
+    require_equal((reserved, image_type), (0, 1), "ICO header")
+    require_equal(count, len(EXPECTED_ICON_SIZES), "ICO layer count")
+    layer_sizes = []
+    for index in range(count):
+        try:
+            (
+                width,
+                height,
+                color_count,
+                entry_reserved,
+                planes,
+                bit_count,
+                payload_size,
+                payload_offset,
+            ) = struct.unpack_from("<BBBBHHII", icon, 6 + index * 16)
+        except struct.error as error:
+            raise ContractError(f"cannot parse ICO layer {index}: {error}") from error
+        # ICO uses zero because its one-byte dimension cannot represent 256.
+        width = 256 if width == 0 else width
+        height = 256 if height == 0 else height
+        require_equal(width, height, f"ICO layer {index} square dimensions")
+        require_equal(
+            (color_count, entry_reserved, planes, bit_count),
+            (0, 0, 1, 32),
+            f"ICO layer {index} pixel format",
+        )
+        payload = icon[payload_offset : payload_offset + payload_size]
+        if len(payload) != payload_size or not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ContractError(f"ICO layer {index} must contain one complete PNG")
+        try:
+            # The PNG width and height start 16 bytes after its signature and IHDR prefix.
+            png_width, png_height = struct.unpack_from(">II", payload, 16)
+        except struct.error as error:
+            raise ContractError(f"cannot parse ICO PNG layer {index}: {error}") from error
+        require_equal(
+            (png_width, png_height),
+            (width, height),
+            f"ICO layer {index} PNG dimensions",
+        )
+        layer_sizes.append(width)
+    require_equal(tuple(layer_sizes), EXPECTED_ICON_SIZES, "ICO layer sizes")
+
+
+def load_branding_svg(path: Path, label: str) -> ElementTree.Element:
+    """Parse one required SVG with a contract-specific diagnostic label.
+
+    Raises:
+      ContractError: The SVG is unreadable or malformed.
+    """
+    try:
+        return ElementTree.fromstring(path.read_bytes())
+    except (OSError, ElementTree.ParseError) as error:
+        raise ContractError(f"cannot parse {label} branding SVG: {error}") from error
+
+
+def validate_svg_contracts(root: Path) -> None:
+    """Validate canonical and High Contrast mark geometry and colors.
+
+    Raises:
+      ContractError: Either SVG differs from the approved construction.
+    """
+    namespace = "{http://www.w3.org/2000/svg}"
+    mark = load_branding_svg(root / "assets/branding/tracetide-mark.svg", "canonical")
+    require_equal(mark.tag, namespace + "svg", "canonical SVG root")
+    require_equal(
+        (mark.get("width"), mark.get("height"), mark.get("viewBox")),
+        ("1024", "1024", "0 0 32 32"),
+        "canonical SVG geometry",
+    )
+    paths = mark.findall(namespace + "path")
+    rectangles = mark.findall(namespace + "rect")
+    require_equal((len(paths), len(rectangles)), (1, 3), "canonical SVG geometry")
+    require_equal(
+        {
+            key: paths[0].get(key)
+            for key in ("d", "fill", "stroke", "stroke-width", "stroke-linecap")
+        },
+        {
+            "d": "M 4 22 C 9.5 22 9.5 10 16 10 C 22.5 10 22.5 22 28 22",
+            "fill": "none",
+            "stroke": "#5A43C0",
+            "stroke-width": "3",
+            "stroke-linecap": "round",
+        },
+        "canonical SVG geometry",
+    )
+    require_equal(
+        [
+            tuple(rectangle.get(key) for key in ("x", "y", "width", "height", "fill"))
+            for rectangle in rectangles
+        ],
+        [
+            ("2", "20", "4", "4", "#087983"),
+            ("14", "8", "4", "4", "#087983"),
+            ("26", "20", "4", "4", "#087983"),
+        ],
+        "canonical SVG geometry",
+    )
+
+    monochrome = load_branding_svg(
+        root / "assets/branding/tracetide-mark-monochrome.svg", "monochrome"
+    )
+    require_equal(
+        (monochrome.get("width"), monochrome.get("height"), monochrome.get("viewBox")),
+        ("1024", "1024", "0 0 32 32"),
+        "monochrome SVG geometry",
+    )
+    monochrome_paths = monochrome.findall(namespace + "path")
+    monochrome_rectangles = monochrome.findall(namespace + "rect")
+    require_equal(
+        (len(monochrome_paths), len(monochrome_rectangles)),
+        (1, 3),
+        "monochrome SVG geometry",
+    )
+    require_equal(
+        {
+            monochrome_paths[0].get("stroke"),
+            *(rectangle.get("fill") for rectangle in monochrome_rectangles),
+        },
+        {"#000000"},
+        "monochrome SVG colors",
+    )
+    require_equal(
+        (
+            monochrome_paths[0].get("d"),
+            monochrome_paths[0].get("stroke-width"),
+            [
+                tuple(rectangle.get(key) for key in ("x", "y", "width", "height"))
+                for rectangle in monochrome_rectangles
+            ],
+        ),
+        (
+            paths[0].get("d"),
+            paths[0].get("stroke-width"),
+            [
+                tuple(rectangle.get(key) for key in ("x", "y", "width", "height"))
+                for rectangle in rectangles
+            ],
+        ),
+        "monochrome SVG geometry",
+    )
+
+
+def validate_branding_contract(root: Path) -> None:
+    """Require the approved branding, theme, identity, review, and hash contract.
+
+    Raises:
+      ContractError: A required artifact is missing or violates its contract.
+    """
+    for relative_path in EXPECTED_BRANDING_FILES:
+        path = root / relative_path
+        if not path.is_file():
+            raise ContractError(f"missing required branding file: {path}")
+    exporter_path = root / "tools/export_branding.py"
+    if not exporter_path.is_file():
+        raise ContractError(f"missing branding export tool: {exporter_path}")
+    theme_path = root / "apps/cao-gui/ui/theme.slint"
+    if not theme_path.is_file():
+        raise ContractError(f"missing semantic theme token file: {theme_path}")
+
+    validate_theme_tokens(theme_path)
+    validate_public_identity(root / "assets/branding/identity.json")
+    recorded_hashes = load_branding_provenance(root / "assets/branding/README.md")
+    actual_hashes = hash_branding_assets(root, recorded_hashes)
+    validate_icon_contract(root / "assets/branding/tracetide.ico")
+    validate_svg_contracts(root)
+    require_equal(
+        actual_hashes,
+        EXPECTED_REVIEWED_BRANDING_SHA256,
+        "reviewed branding SHA-256 set",
+    )
+
+
 def validate(root: Path, build_environment: Mapping[str, str] | None = None) -> None:
     """Validate every machine-verifiable W1 workspace invariant.
 
@@ -2421,6 +2821,7 @@ def validate(root: Path, build_environment: Mapping[str, str] | None = None) -> 
     validate_skia_source_lock(root)
     validate_production_cargo_graph(root, build_environment)
     validate_release_script(root)
+    validate_branding_contract(root)
 
 
 def parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:

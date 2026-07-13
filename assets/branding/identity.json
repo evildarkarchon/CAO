@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "product": {
+    "display_name": "Tracetide",
+    "slug": "tracetide",
+    "positioning_line": "Trace every change from plan to outcome.",
+    "description": "Asset optimization workbench for Fallout 4 and Skyrim.",
+    "windows_app_user_model_id": "io.github.evildarkarchon.tracetide"
+  },
+  "artifact_names": {
+    "gui_executable": "tracetide.exe",
+    "helper_executable": "bin/tracetide-hkx-helper.exe",
+    "binary_zip": "tracetide-v{version}-windows-x64.zip",
+    "binary_root": "tracetide-v{version}-windows-x64/",
+    "source_zip": "tracetide-v{version}-source.zip",
+    "symbol_zip": "tracetide-v{version}-symbols.zip",
+    "sbom": "tracetide-v{version}.cdx.json",
+    "checksums": "SHA256SUMS.txt",
+    "release_manifest": "release.json"
+  },
+  "windows_metadata": {
+    "file_version": "{major}.{minor}.{patch}.0",
+    "product_version": "{major}.{minor}.{patch}",
+    "gui": {
+      "CompanyName": "evildarkarchon",
+      "ProductName": "Tracetide",
+      "FileDescription": "Tracetide asset optimization workbench",
+      "InternalName": "tracetide",
+      "OriginalFilename": "tracetide.exe",
+      "LegalCopyright": "Copyright © 2019 G'k; © 2026 evildarkarchon and contributors",
+      "Comments": "GPLv3 licensed; see bundled notices."
+    },
+    "helper": {
+      "CompanyName": "evildarkarchon",
+      "ProductName": "Tracetide",
+      "FileDescription": "Tracetide HKX processing helper",
+      "InternalName": "tracetide-hkx-helper",
+      "OriginalFilename": "tracetide-hkx-helper.exe",
+      "LegalCopyright": "Copyright © 2026 evildarkarchon and contributors",
+      "Comments": "Bundled Tracetide component; see bundled notices."
+    }
+  },
+  "accessibility_contract": {
+    "high_contrast_source": "assets/branding/tracetide-mark-monochrome.svg",
+    "status_meaning_requires": [
+      "text",
+      "icon"
+    ],
+    "border_must_not_be_sole_boundary": true,
+    "motion_required_for_comprehension": false,
+    "wordmarks_remain_live_text": true
+  },
+  "name_collision_recheck": {
+    "status": "scheduled",
+    "owner": "release owner",
+    "triggers": [
+      "before external registration",
+      "within 30 days before every release"
+    ],
+    "required_evidence": "Dated exact-name and relevant software-class search record linked from the release manifest.",
+    "legal_clearance": false
+  }
+}

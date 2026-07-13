@@ -1,0 +1,20 @@
+// Production presentation tokens for the maintainer-approved Tracetide identity.
+export global ThemeTokens {
+    /// Selects the dark presentation palette without changing status meaning.
+    in property <bool> dark-mode;
+
+    out property <brush> shell: dark-mode ? #10111b : #f6f6fb;
+    out property <brush> panel: dark-mode ? #1a1b2a : #ffffff;
+    out property <brush> text: dark-mode ? #f2f1fa : #18192a;
+    out property <brush> border: dark-mode ? #40435d : #cfd2e2;
+    out property <brush> accent: dark-mode ? #ac9eff : #5a43c0;
+    out property <brush> accent-soft: dark-mode ? #2e2857 : #eae5ff;
+    out property <brush> secondary: dark-mode ? #4ec9c5 : #087983;
+
+    // Lifecycle colors stay literal and separately named so brand changes cannot alter outcomes.
+    // UI consumers must pair each status color with text and iconography.
+    out property <brush> status-success: dark-mode ? #67d39a : #167044;
+    out property <brush> status-warning: dark-mode ? #f5c451 : #8a5900;
+    out property <brush> status-error: dark-mode ? #ff8c96 : #b42332;
+    out property <brush> status-cancelled: dark-mode ? #b6b9c9 : #555b70;
+}

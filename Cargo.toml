@@ -64,6 +64,7 @@ havok_classes = { version = "=1.0.1", path = "vendor/serde-hkx/crates/havok_clas
 
 [workspace.metadata.cao]
 implementation-inputs = "verification/baseline/implementation-inputs.json"
+branding = "assets/branding/identity.json"
 release-packages = ["cao-gui", "cao-hkx-helper"]
 unsafe-allowed = ["cao-platform-windows", "cao-backend-nif", "cao-backend-texture"]
 

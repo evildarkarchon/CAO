@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -47,6 +48,7 @@ class VerifyWorkspaceTests(unittest.TestCase):
         ):
             shutil.copy2(REPOSITORY_ROOT / file_name, destination / file_name)
         shutil.copytree(REPOSITORY_ROOT / ".cargo", destination / ".cargo")
+        shutil.copytree(REPOSITORY_ROOT / "assets", destination / "assets")
         shutil.copytree(REPOSITORY_ROOT / "apps", destination / "apps")
         shutil.copytree(REPOSITORY_ROOT / "crates", destination / "crates")
         shutil.copytree(
@@ -65,6 +67,10 @@ class VerifyWorkspaceTests(unittest.TestCase):
             REPOSITORY_ROOT / "tools/build_workspace.py",
             destination / "tools/build_workspace.py",
         )
+        shutil.copy2(
+            REPOSITORY_ROOT / "tools/export_branding.py",
+            destination / "tools/export_branding.py",
+        )
         (destination / "verification/build-inputs").mkdir(parents=True)
         shutil.copy2(
             REPOSITORY_ROOT / "verification/build-inputs/skia-source-lock.json",
@@ -81,6 +87,24 @@ class VerifyWorkspaceTests(unittest.TestCase):
         shutil.copytree(
             REPOSITORY_ROOT / "vendor/serde-hkx",
             destination / "vendor/serde-hkx",
+        )
+
+    def replace_recorded_branding_hash(
+        self, root: Path, original: bytes, modified: bytes
+    ) -> None:
+        """Update one sandbox provenance hash to model a self-consistent rebaseline.
+
+        Raises:
+          OSError: The sandbox provenance record cannot be read or written.
+          AssertionError: The original asset hash is absent from the record.
+        """
+        readme = root / "assets/branding/README.md"
+        documentation = readme.read_text(encoding="utf-8")
+        old_hash = hashlib.sha256(original).hexdigest()
+        new_hash = hashlib.sha256(modified).hexdigest()
+        self.assertIn(old_hash, documentation)
+        readme.write_text(
+            documentation.replace(old_hash, new_hash, 1), encoding="utf-8"
         )
 
     def assert_leaf_fragment_rejected(self, fragment: str) -> None:
@@ -170,6 +194,200 @@ class VerifyWorkspaceTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Rust workspace contract verified", result.stdout)
+
+    def test_workspace_requires_reviewed_branding_contract(self) -> None:
+        """Reject a production workspace without the owned branding artifacts."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            (root / "assets/branding/tracetide.ico").unlink()
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("missing required branding file", result.stderr)
+
+    def test_workspace_rejects_branding_asset_hash_drift(self) -> None:
+        """Reject a reviewed branding asset whose recorded bytes have changed."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            mark = root / "assets/branding/tracetide-mark.svg"
+            mark.write_bytes(mark.read_bytes() + b"\n")
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("branding SHA-256", result.stderr)
+
+    def test_workspace_rejects_unreviewed_branding_rebaseline(self) -> None:
+        """Reject structurally valid asset bytes outside the reviewed hash set."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            mark = root / "assets/branding/tracetide-mark.svg"
+            original = mark.read_bytes()
+            modified = original.replace(b"?>\n<svg", b"?>\n\n<svg", 1)
+            self.assertNotEqual(original, modified)
+            mark.write_bytes(modified)
+
+            self.replace_recorded_branding_hash(root, original, modified)
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("reviewed branding SHA-256", result.stderr)
+
+    def test_workspace_rejects_unapproved_icon_layer_sizes(self) -> None:
+        """Reject a rehashed ICO whose directory omits an approved native size."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            icon = root / "assets/branding/tracetide.ico"
+            content = bytearray(icon.read_bytes())
+            self.assertEqual(content[6], 16)
+            content[6] = 17
+            icon.write_bytes(content)
+
+            self.replace_recorded_branding_hash(
+                root,
+                (REPOSITORY_ROOT / "assets/branding/tracetide.ico").read_bytes(),
+                bytes(content),
+            )
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("ICO layer", result.stderr)
+
+    def test_workspace_rejects_unapproved_canonical_mark_geometry(self) -> None:
+        """Reject a rehashed vector master that changes the approved construction."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            mark = root / "assets/branding/tracetide-mark.svg"
+            original = mark.read_bytes()
+            modified = original.replace(b'stroke-width="3"', b'stroke-width="4"', 1)
+            self.assertNotEqual(original, modified)
+            mark.write_bytes(modified)
+
+            self.replace_recorded_branding_hash(root, original, modified)
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("canonical SVG geometry", result.stderr)
+
+    def test_workspace_rejects_colored_high_contrast_mark(self) -> None:
+        """Reject a rehashed High Contrast source that is no longer monochrome."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            mark = root / "assets/branding/tracetide-mark-monochrome.svg"
+            original = mark.read_bytes()
+            modified = original.replace(b'#000000', b'#5A43C0', 1)
+            self.assertNotEqual(original, modified)
+            mark.write_bytes(modified)
+
+            self.replace_recorded_branding_hash(root, original, modified)
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("monochrome SVG colors", result.stderr)
+
+    def test_workspace_requires_semantic_theme_tokens(self) -> None:
+        """Reject a production workspace without its approved semantic palette."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            (root / "apps/cao-gui/ui/theme.slint").unlink()
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("missing semantic theme token file", result.stderr)
+
+    def test_workspace_rejects_semantic_theme_token_drift(self) -> None:
+        """Reject palette drift or lifecycle roles coupled to brand colors."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            theme = root / "apps/cao-gui/ui/theme.slint"
+            content = theme.read_text(encoding="utf-8")
+            self.assertIn("#f6f6fb", content)
+            theme.write_text(
+                content.replace("#f6f6fb", "#f5f5fa", 1), encoding="utf-8"
+            )
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("semantic theme tokens", result.stderr)
+
+    def test_workspace_requires_public_identity_metadata(self) -> None:
+        """Reject a workspace without approved identity and release recheck data."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            (root / "assets/branding/identity.json").unlink()
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("missing public identity metadata", result.stderr)
+
+    def test_workspace_rejects_public_identity_metadata_drift(self) -> None:
+        """Reject valid JSON that changes approved identity or recheck policy."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            identity = root / "assets/branding/identity.json"
+            content = identity.read_text(encoding="utf-8")
+            self.assertIn('"display_name": "Tracetide"', content)
+            identity.write_text(
+                content.replace(
+                    '"display_name": "Tracetide"',
+                    '"display_name": "Cathedral Assets Optimizer"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("public identity metadata contract", result.stderr)
+
+    def test_workspace_rejects_incomplete_branding_provenance(self) -> None:
+        """Reject branding records without authorship, license, or export checks."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            readme = root / "assets/branding/README.md"
+            content = readme.read_text(encoding="utf-8")
+            self.assertIn("License: `GPL-3.0-only`", content)
+            readme.write_text(
+                content.replace("License: `GPL-3.0-only`", "License: unrecorded", 1),
+                encoding="utf-8",
+            )
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("branding provenance record", result.stderr)
+
+    def test_workspace_requires_branding_export_tool(self) -> None:
+        """Reject a documented branding procedure whose exporter is unavailable."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            (root / "tools/export_branding.py").unlink()
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("missing branding export tool", result.stderr)
 
     def test_internal_workspace_dependency_must_remain_exact(self) -> None:
         """Reject a broad first-party version even when its path remains unchanged."""

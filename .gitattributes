@@ -1,2 +1,13 @@
 # Setup tracer manifests pin exact artifact bytes, so checkout must not follow core.autocrlf.
 /verification/tracers/setup/*.json text eol=lf
+
+# Branding hashes are cross-platform release inputs and must keep reviewed bytes.
+/assets/branding/*.svg text eol=lf
+/assets/branding/README.md text eol=lf
+/assets/branding/*.json text eol=lf
+/assets/branding/*.ico binary
+/apps/cao-gui/ui/*.slint text eol=lf
+
+# Authenticated source hashes must not depend on the caller's core.autocrlf setting.
+/vendor/** text eol=lf
+/verification/build-inputs/skia-source-lock.json text eol=lf

@@ -33,6 +33,41 @@ class RustWorkspaceWorkflowTests(unittest.TestCase):
             with self.subTest(artifact_path=artifact_path):
                 self.assertIn(f"{artifact_path}: eol: lf", result.stdout)
 
+    def test_authenticated_source_inputs_are_checked_out_with_lf_bytes(self) -> None:
+        """Authenticated source inputs must have checkout-independent bytes."""
+        source_paths = (
+            "vendor/ba2-3.0.1/src/lib.rs",
+            "vendor/ba2-3.0.1/Cargo.toml.orig",
+            "vendor/serde-hkx/serde_hkx/src/lib.rs",
+            "verification/build-inputs/skia-source-lock.json",
+        )
+        result = subprocess.run(
+            ["git", "check-attr", "eol", "--", *source_paths],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for source_path in source_paths:
+            with self.subTest(source_path=source_path):
+                self.assertIn(f"{source_path}: eol: lf", result.stdout)
+
+        archived_manifest = source_paths[1]
+        tracked_result = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", archived_manifest],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(
+            tracked_result.returncode,
+            0,
+            f"authenticated archive input is not tracked: {archived_manifest}",
+        )
+
     def test_pull_request_validation_uses_a_hosted_acquire_then_offline_contract(
         self,
     ) -> None:
