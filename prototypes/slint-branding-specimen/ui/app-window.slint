@@ -1,0 +1,586 @@
+// Three fork identities on the same resolved Workbench, selected from the prototype bar.
+export global SpecimenState {
+    in-out property <int> variant: 2;
+    in-out property <bool> dark: true;
+    in-out property <bool> compact: false;
+
+    /// Selects the previous identity candidate and wraps at the first candidate.
+    public function previous() {
+        variant = variant == 0 ? 2 : variant - 1;
+    }
+
+    /// Selects the next identity candidate and wraps at the final candidate.
+    public function next() {
+        variant = variant == 2 ? 0 : variant + 1;
+    }
+
+    /// Switches between the specimen's light and dark semantic themes.
+    public function toggle-theme() {
+        dark = !dark;
+    }
+
+    /// Switches the shell metrics between the resolved wide and compact width bands.
+    public function toggle-density() {
+        compact = !compact;
+    }
+}
+
+export global Identity {
+    out property <string> name: SpecimenState.variant == 0 ? "Asset Kiln" : SpecimenState.variant == 1 ? "Meldframe" : "Tracetide";
+    out property <string> slug: SpecimenState.variant == 0 ? "asset-kiln" : SpecimenState.variant == 1 ? "meldframe" : "tracetide";
+    out property <string> positioning: SpecimenState.variant == 0 ? "Refine assets with every choice visible." : SpecimenState.variant == 1 ? "One visible plan from input to outcome." : "Trace every change from plan to outcome.";
+    out property <string> direction: SpecimenState.variant == 0 ? "Warm / tactile / refinement-led" : SpecimenState.variant == 1 ? "Cool / modular / system-led" : "Calm / directional / traceability-led";
+    out property <string> type-note: SpecimenState.variant == 0 ? "Bahnschrift SemiBold wordmark · Segoe UI interface" : SpecimenState.variant == 1 ? "Segoe UI Semibold wordmark · Bahnschrift phase labels" : "Trebuchet MS Bold wordmark · Segoe UI interface";
+    out property <string> risk: SpecimenState.variant == 0 ? "Exact compound appears clear; “Kiln” is crowded in software and asset/crypto contexts." : SpecimenState.variant == 1 ? "Exact compound appears clear; “Meld” overlaps the established Meld diff-tool root." : "Exact compound appears clear; abstract name needs the positioning line for category clarity.";
+}
+
+export global Theme {
+    out property <brush> shell: SpecimenState.variant == 0 ?
+        (SpecimenState.dark ? #15110f : #f8f5f2) : SpecimenState.variant == 1 ?
+        (SpecimenState.dark ? #0e1619 : #f4f7f8) :
+        (SpecimenState.dark ? #10111b : #f6f6fb);
+    out property <brush> panel: SpecimenState.variant == 0 ?
+        (SpecimenState.dark ? #211916 : #ffffff) : SpecimenState.variant == 1 ?
+        (SpecimenState.dark ? #172227 : #ffffff) :
+        (SpecimenState.dark ? #1a1b2a : #ffffff);
+    out property <brush> panel-strong: SpecimenState.variant == 0 ?
+        (SpecimenState.dark ? #2c211d : #f2e9e3) : SpecimenState.variant == 1 ?
+        (SpecimenState.dark ? #1d2b31 : #e9f0f2) :
+        (SpecimenState.dark ? #22243a : #ececf6);
+    out property <brush> text: SpecimenState.variant == 0 ?
+        (SpecimenState.dark ? #f7eee9 : #211a17) : SpecimenState.variant == 1 ?
+        (SpecimenState.dark ? #eaf3f4 : #132126) :
+        (SpecimenState.dark ? #f2f1fa : #18192a);
+    out property <brush> muted: SpecimenState.variant == 0 ?
+        (SpecimenState.dark ? #c8b6ad : #6c5a51) : SpecimenState.variant == 1 ?
+        (SpecimenState.dark ? #a5b8bd : #52686f) :
+        (SpecimenState.dark ? #b6b5c9 : #62647a);
+    out property <brush> border: SpecimenState.variant == 0 ?
+        (SpecimenState.dark ? #533c34 : #d9cbc4) : SpecimenState.variant == 1 ?
+        (SpecimenState.dark ? #3b5058 : #c8d4d8) :
+        (SpecimenState.dark ? #40435d : #cfd2e2);
+    out property <brush> accent: SpecimenState.variant == 0 ?
+        (SpecimenState.dark ? #ff8a65 : #963d24) : SpecimenState.variant == 1 ?
+        (SpecimenState.dark ? #51d2cb : #006a73) :
+        (SpecimenState.dark ? #ac9eff : #5a43c0);
+    out property <brush> accent-soft: SpecimenState.variant == 0 ?
+        (SpecimenState.dark ? #48261c : #f5ded4) : SpecimenState.variant == 1 ?
+        (SpecimenState.dark ? #153a3b : #d6f0f0) :
+        (SpecimenState.dark ? #2e2857 : #eae5ff);
+    out property <brush> secondary: SpecimenState.variant == 0 ?
+        (SpecimenState.dark ? #ffd3a8 : #7b4c24) : SpecimenState.variant == 1 ?
+        (SpecimenState.dark ? #91a7ff : #3659c9) :
+        (SpecimenState.dark ? #4ec9c5 : #087983);
+    // Status colors remain independent so a brand accent never changes outcome meaning.
+    out property <brush> success: SpecimenState.dark ? #67d39a : #167044;
+    out property <brush> warning: SpecimenState.dark ? #f5c451 : #8a5900;
+    out property <brush> danger: SpecimenState.dark ? #ff8c96 : #b42332;
+}
+
+component AssetKilnMark inherits Rectangle {
+    background: transparent;
+    Rectangle { x: parent.width * 0.14; y: parent.height * 0.17; width: parent.width * 0.72; height: parent.height * 0.17; border-radius: self.height / 2; background: Theme.accent; }
+    Rectangle { x: parent.width * 0.22; y: parent.height * 0.42; width: parent.width * 0.56; height: parent.height * 0.17; border-radius: self.height / 2; background: Theme.accent; }
+    Rectangle { x: parent.width * 0.31; y: parent.height * 0.67; width: parent.width * 0.38; height: parent.height * 0.17; border-radius: self.height / 2; background: Theme.accent; }
+}
+
+component MeldframeMark inherits Rectangle {
+    background: transparent;
+    // Offset open frames stay recognizable when reduced to Windows' 16 px icon slot.
+    Rectangle { x: 2px; y: 2px; width: parent.width * 0.58; height: parent.height * 0.58; background: transparent; border-width: max(2px, parent.width * 0.09); border-color: Theme.accent; border-radius: parent.width * 0.08; }
+    Rectangle { x: parent.width * 0.38; y: parent.height * 0.38; width: parent.width * 0.58; height: parent.height * 0.58; background: transparent; border-width: max(2px, parent.width * 0.09); border-color: Theme.secondary; border-radius: parent.width * 0.08; }
+    Rectangle { x: parent.width * 0.43; y: parent.height * 0.43; width: parent.width * 0.16; height: parent.height * 0.16; background: Theme.text; border-radius: 1px; }
+}
+
+component TracetideMark inherits Rectangle {
+    background: transparent;
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 64;
+        viewbox-height: 64;
+        commands: "M 7 43 C 18 43 18 20 31 20 C 44 20 44 43 57 43";
+        fill: transparent;
+        stroke: Theme.accent;
+        stroke-width: 5px;
+        stroke-line-cap: round;
+    }
+    Rectangle { x: parent.width * 0.06; y: parent.height * 0.59; width: parent.width * 0.17; height: parent.height * 0.17; border-radius: 2px; background: Theme.secondary; }
+    Rectangle { x: parent.width * 0.42; y: parent.height * 0.23; width: parent.width * 0.17; height: parent.height * 0.17; border-radius: 2px; background: Theme.accent; }
+    Rectangle { x: parent.width * 0.77; y: parent.height * 0.59; width: parent.width * 0.17; height: parent.height * 0.17; border-radius: 2px; background: Theme.secondary; }
+}
+
+component BrandMark inherits Rectangle {
+    background: transparent;
+    if SpecimenState.variant == 0: AssetKilnMark { width: parent.width; height: parent.height; }
+    if SpecimenState.variant == 1: MeldframeMark { width: parent.width; height: parent.height; }
+    if SpecimenState.variant == 2: TracetideMark { width: parent.width; height: parent.height; }
+}
+
+component Eyebrow inherits Text {
+    color: Theme.accent;
+    font-family: SpecimenState.variant == 1 ? "Bahnschrift" : "Segoe UI";
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+}
+
+component BodyText inherits Text {
+    color: Theme.muted;
+    font-family: "Segoe UI";
+    font-size: 12px;
+    wrap: word-wrap;
+}
+
+component CandidateWordmark inherits HorizontalLayout {
+    in property <length> mark-size: 38px;
+    spacing: 10px;
+    BrandMark { width: root.mark-size; height: root.mark-size; }
+    VerticalLayout {
+        alignment: center;
+        spacing: 0px;
+        Text {
+            text: Identity.name;
+            color: Theme.text;
+            font-family: SpecimenState.variant == 0 ? "Bahnschrift" : SpecimenState.variant == 2 ? "Trebuchet MS" : "Segoe UI";
+            font-size: root.mark-size * 0.48;
+            font-weight: 700;
+        }
+        Text { text: "ASSET WORKBENCH"; color: Theme.muted; font-family: "Segoe UI"; font-size: 8px; font-weight: 700; letter-spacing: 0.7px; }
+    }
+}
+
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected: false;
+    in property <bool> enabled: true;
+    height: 38px;
+    background: root.selected ? Theme.accent-soft : transparent;
+    border-radius: SpecimenState.variant == 2 ? 19px : 5px;
+    border-width: SpecimenState.variant == 1 && root.selected ? 2px : 0px;
+    border-color: Theme.accent;
+    Rectangle {
+        visible: SpecimenState.variant == 0 && root.selected;
+        x: 0px;
+        y: 5px;
+        width: 3px;
+        height: parent.height - 10px;
+        background: Theme.accent;
+        border-radius: 2px;
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 10px;
+        spacing: 9px;
+        Rectangle {
+            width: 7px;
+            height: 7px;
+            border-radius: SpecimenState.variant == 1 ? 1px : 4px;
+            background: root.selected ? Theme.accent : (root.enabled ? Theme.border : Theme.panel-strong);
+        }
+        Text { text: root.label; color: root.enabled ? Theme.text : Theme.muted; font-family: "Segoe UI"; font-size: 12px; font-weight: root.selected ? 700 : 500; vertical-alignment: center; }
+    }
+}
+
+component Navigation inherits Rectangle {
+    in property <bool> compact;
+    width: root.compact ? 168px : 200px;
+    background: Theme.panel;
+    border-color: Theme.border;
+    border-width: 0px;
+    VerticalLayout {
+        padding: root.compact ? 12px : 16px;
+        spacing: 7px;
+        CandidateWordmark { height: 56px; mark-size: 34px; }
+        BodyText { text: "SSE · Built-in"; height: 22px; font-size: 10px; }
+        Rectangle { height: 1px; background: Theme.border; }
+        NavItem { label: "Overview"; selected: true; }
+        NavItem { label: "Archives"; }
+        NavItem { label: "Textures"; }
+        NavItem { label: "Meshes"; }
+        NavItem { label: "Animations"; enabled: false; }
+        NavItem { label: "Profile Definition"; }
+        NavItem { label: "Run History"; }
+        Rectangle { vertical-stretch: 1; }
+        Rectangle {
+            height: 78px;
+            background: Theme.panel-strong;
+            border-radius: 7px;
+            VerticalLayout {
+                padding: 10px;
+                spacing: 3px;
+                Eyebrow { text: "PORTABLE"; }
+                BodyText { text: "Fork-owned state · side-by-side safe"; font-size: 10px; }
+            }
+        }
+    }
+}
+
+component Swatch inherits Rectangle {
+    in property <brush> fill;
+    in property <string> label;
+    height: 42px;
+    background: root.fill;
+    border-color: Theme.border;
+    border-width: 1px;
+    border-radius: 6px;
+    Text { x: 8px; y: parent.height - 17px; width: parent.width - 16px; text: root.label; color: Theme.text; font-family: "Segoe UI"; font-size: 9px; font-weight: 700; }
+}
+
+component CompactSetting inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <string> value;
+    height: 58px;
+    background: Theme.panel;
+    border-color: Theme.border;
+    border-width: 1px;
+    border-radius: 7px;
+    HorizontalLayout {
+        padding: 10px;
+        spacing: 8px;
+        VerticalLayout {
+            spacing: 2px;
+            Text { text: root.title; color: Theme.text; font-family: "Segoe UI"; font-size: 12px; font-weight: 700; }
+            BodyText { text: root.detail; font-size: 10px; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Rectangle {
+            width: 92px;
+            height: 28px;
+            border-radius: 14px;
+            background: Theme.accent-soft;
+            Text { text: root.value; color: Theme.accent; font-family: "Segoe UI"; font-size: 10px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+        }
+    }
+}
+
+component IconScaleRow inherits HorizontalLayout {
+    spacing: 12px;
+    alignment: center;
+    VerticalLayout { width: 34px; spacing: 3px; BrandMark { width: 16px; height: 16px; } Text { text: "16"; color: Theme.muted; font-size: 9px; horizontal-alignment: center; } }
+    VerticalLayout { width: 38px; spacing: 3px; BrandMark { width: 20px; height: 20px; } Text { text: "20"; color: Theme.muted; font-size: 9px; horizontal-alignment: center; } }
+    VerticalLayout { width: 42px; spacing: 3px; BrandMark { width: 24px; height: 24px; } Text { text: "24"; color: Theme.muted; font-size: 9px; horizontal-alignment: center; } }
+    VerticalLayout { width: 50px; spacing: 3px; BrandMark { width: 32px; height: 32px; } Text { text: "32"; color: Theme.muted; font-size: 9px; horizontal-alignment: center; } }
+    VerticalLayout { width: 66px; spacing: 3px; BrandMark { width: 48px; height: 48px; } Text { text: "48"; color: Theme.muted; font-size: 9px; horizontal-alignment: center; } }
+}
+
+component VariantA inherits VerticalLayout {
+    spacing: 12px;
+    Rectangle {
+        height: 144px;
+        background: Theme.panel-strong;
+        border-radius: 10px;
+        HorizontalLayout {
+            padding: 18px;
+            spacing: 18px;
+            BrandMark { width: 92px; height: 92px; }
+            VerticalLayout {
+                alignment: center;
+                spacing: 4px;
+                Eyebrow { text: "IDENTITY A · WARM REFINEMENT"; }
+                Text { text: Identity.name; color: Theme.text; font-family: "Bahnschrift"; font-size: 30px; font-weight: 700; }
+                BodyText { text: Identity.positioning; font-size: 14px; }
+            }
+        }
+    }
+    HorizontalLayout {
+        height: 300px;
+        spacing: 12px;
+        VerticalLayout {
+            spacing: 8px;
+            Eyebrow { text: "WORKBENCH EXPRESSION"; }
+            CompactSetting { title: "Archive creation"; detail: "Material becomes smaller; policy stays visible"; value: "Configured"; }
+            CompactSetting { title: "Texture optimization"; detail: "Necessary · BC7 · mipmaps"; value: "Enabled"; }
+            CompactSetting { title: "Mesh optimization"; detail: "Format-aware processing"; value: "Enabled"; }
+        }
+        VerticalLayout {
+            width: 230px;
+            spacing: 8px;
+            Eyebrow { text: "MARK AT WINDOWS SIZES"; }
+            Rectangle { height: 84px; background: Theme.panel; border-color: Theme.border; border-width: 1px; border-radius: 7px; IconScaleRow { padding: 10px; } }
+            Eyebrow { text: "SEMANTIC PALETTE"; }
+            HorizontalLayout { spacing: 6px; Swatch { fill: Theme.accent; label: "Accent"; } Swatch { fill: Theme.accent-soft; label: "Accent soft"; } Swatch { fill: Theme.panel-strong; label: "Surface"; } }
+            BodyText { text: "Three narrowing slabs read as refinement and survive without flame, masonry, or a gear."; font-size: 10px; }
+        }
+    }
+}
+
+component VariantB inherits HorizontalLayout {
+    spacing: 12px;
+    Rectangle {
+        width: 230px;
+        background: Theme.panel-strong;
+        border-color: Theme.accent;
+        border-width: 2px;
+        border-radius: 4px;
+        VerticalLayout {
+            padding: 18px;
+            spacing: 10px;
+            BrandMark { width: 78px; height: 78px; }
+            Eyebrow { text: "IDENTITY B"; }
+            Text { text: Identity.name; color: Theme.text; font-family: "Segoe UI"; font-size: 27px; font-weight: 700; }
+            BodyText { text: Identity.positioning; font-size: 14px; }
+            Rectangle { height: 1px; background: Theme.border; }
+            BodyText { text: "Two framed inputs overlap at a stable application boundary."; }
+            Rectangle { vertical-stretch: 1; }
+            IconScaleRow { height: 72px; }
+        }
+    }
+    VerticalLayout {
+        spacing: 10px;
+        Eyebrow { text: "VISIBLE PLAN / MODULAR SYSTEM"; }
+        HorizontalLayout {
+            spacing: 8px;
+            for label[index] in ["INPUT", "PLAN", "VERIFY", "COMMIT"]: Rectangle {
+                height: 70px;
+                background: index == 1 ? Theme.accent-soft : Theme.panel;
+                border-color: index == 1 ? Theme.accent : Theme.border;
+                border-width: index == 1 ? 2px : 1px;
+                border-radius: 4px;
+                VerticalLayout {
+                    padding: 9px;
+                    Text { text: "0" + (index + 1); color: Theme.secondary; font-family: "Bahnschrift"; font-size: 10px; font-weight: 700; }
+                    Text { text: label; color: Theme.text; font-family: "Bahnschrift"; font-size: 11px; font-weight: 700; }
+                }
+            }
+        }
+        CompactSetting { title: "Run plan"; detail: "Frozen profile, target, mode, and effective choices"; value: "Ready"; }
+        CompactSetting { title: "Backend probes"; detail: "BSA · NIF · texture · HKX"; value: "4 / 4"; }
+        HorizontalLayout { spacing: 6px; Swatch { fill: Theme.accent; label: "Frame"; } Swatch { fill: Theme.secondary; label: "Overlap"; } Swatch { fill: Theme.panel-strong; label: "Module"; } }
+        BodyText { text: "The identity reinforces the Workbench's framed regions and UI-independent boundary without becoming a diagram."; font-size: 10px; }
+    }
+}
+
+component VariantC inherits VerticalLayout {
+    spacing: 11px;
+    HorizontalLayout {
+        height: 92px;
+        spacing: 14px;
+        BrandMark { width: 76px; height: 76px; }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Eyebrow { text: "IDENTITY C · TRACEABLE FLOW"; }
+            Text { text: Identity.name; color: Theme.text; font-family: "Trebuchet MS"; font-size: 30px; font-weight: 700; }
+            BodyText { text: Identity.positioning; font-size: 14px; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Rectangle { width: 210px; background: Theme.accent-soft; border-radius: 46px; IconScaleRow { padding: 12px; } }
+    }
+    Rectangle {
+        height: 112px;
+        background: Theme.panel;
+        border-color: Theme.border;
+        border-width: 1px;
+        border-radius: 9px;
+        HorizontalLayout {
+            padding: 14px;
+            spacing: 8px;
+            for phase[index] in ["Plan", "Extract", "Transform", "Verify", "Outcome"]: HorizontalLayout {
+                spacing: 8px;
+                Rectangle {
+                    width: 34px;
+                    height: 34px;
+                    border-radius: 5px;
+                    background: index == 2 ? Theme.accent : Theme.accent-soft;
+                    Text { text: "" + (index + 1); color: index == 2 ? Theme.shell : Theme.accent; font-family: "Segoe UI"; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                }
+                if index < 4: Rectangle { width: 16px; height: 2px; background: Theme.border; }
+                Text { text: phase; color: Theme.text; font-family: "Segoe UI"; font-size: 10px; font-weight: 700; vertical-alignment: center; }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: 10px;
+        CompactSetting { title: "Current phase"; detail: "Transforming textures"; value: "42%"; }
+        CompactSetting { title: "Safe boundary"; detail: "After current texture"; value: "Visible"; }
+    }
+    HorizontalLayout { spacing: 6px; Swatch { fill: Theme.accent; label: "Trace"; } Swatch { fill: Theme.secondary; label: "Node"; } Swatch { fill: Theme.panel-strong; label: "Surface"; } }
+    BodyText { text: "A shallow trace through named boundaries fits progress and cancellation, while remaining still under reduced motion."; font-size: 10px; }
+}
+
+component WorkspaceHeader inherits Rectangle {
+    height: 72px;
+    background: Theme.panel;
+    border-color: Theme.border;
+    border-width: 0px;
+    HorizontalLayout {
+        padding-left: 18px;
+        padding-right: 18px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Eyebrow { text: "OVERVIEW"; }
+            Text { text: "Effective configuration"; color: Theme.text; font-family: "Segoe UI"; font-size: 21px; font-weight: 700; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Rectangle {
+            width: 244px;
+            height: 42px;
+            background: Theme.panel-strong;
+            border-radius: 6px;
+            VerticalLayout { padding-left: 10px; padding-top: 5px; spacing: 0px; Text { text: "SSE · Built-in"; color: Theme.text; font-size: 11px; font-weight: 700; } Text { text: "D:\\Modding\\MO2\\mods\\Skyland AIO"; color: Theme.muted; font-size: 9px; overflow: elide; } }
+        }
+    }
+}
+
+component Workspace inherits Rectangle {
+    background: Theme.shell;
+    VerticalLayout {
+        WorkspaceHeader { }
+        Rectangle { height: 1px; background: Theme.border; }
+        Rectangle {
+            vertical-stretch: 1;
+            background: Theme.shell;
+            if SpecimenState.variant == 0: VariantA { x: 18px; y: 16px; width: parent.width - 36px; height: parent.height - 32px; }
+            if SpecimenState.variant == 1: VariantB { x: 18px; y: 16px; width: parent.width - 36px; height: parent.height - 32px; }
+            if SpecimenState.variant == 2: VariantC { x: 18px; y: 16px; width: parent.width - 36px; height: parent.height - 32px; }
+        }
+    }
+}
+
+component ContractLine inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value;
+    spacing: 1px;
+    Text { text: root.label; color: Theme.muted; font-family: "Segoe UI"; font-size: 9px; font-weight: 700; letter-spacing: 0.5px; }
+    Text { text: root.value; color: Theme.text; font-family: "Consolas"; font-size: 10px; wrap: word-wrap; }
+}
+
+component RunInspector inherits Rectangle {
+    in property <bool> compact;
+    width: root.compact ? 300px : 360px;
+    background: Theme.panel;
+    border-color: Theme.border;
+    border-width: 0px;
+    VerticalLayout {
+        padding: root.compact ? 12px : 16px;
+        spacing: 8px;
+        Eyebrow { text: "NAMING + ASSET CONTRACT"; }
+        Text { text: Identity.name; color: Theme.text; font-family: "Segoe UI"; font-size: 20px; font-weight: 700; }
+        BodyText { text: Identity.direction; font-size: 10px; }
+        Rectangle { height: 1px; background: Theme.border; }
+        ContractLine { label: "GUI"; value: Identity.slug + ".exe"; }
+        ContractLine { label: "BUNDLED HELPER"; value: "bin\\" + Identity.slug + "-hkx-helper.exe"; }
+        ContractLine { label: "BINARY ZIP + ROOT"; value: Identity.slug + "-vX.Y.Z-windows-x64"; }
+        ContractLine { label: "SOURCE / SYMBOLS"; value: Identity.slug + "-vX.Y.Z-{source|symbols}.zip"; }
+        ContractLine { label: "SBOM"; value: Identity.slug + "-vX.Y.Z.cdx.json"; }
+        Rectangle { height: 1px; background: Theme.border; }
+        Eyebrow { text: "WINDOWS VERSIONINFO"; }
+        ContractLine { label: "ProductName"; value: Identity.name; }
+        ContractLine { label: "FileDescription"; value: Identity.name + " desktop workbench"; }
+        ContractLine { label: "InternalName"; value: Identity.slug; }
+        ContractLine { label: "OriginalFilename"; value: Identity.slug + ".exe"; }
+        Rectangle { height: 1px; background: Theme.border; }
+        Eyebrow { text: "OWNED ASSETS"; }
+        BodyText { text: "Master SVG · ICO 16/20/24/32/40/48/64/256 · one-color mark · High Contrast mapping"; font-size: 10px; }
+        BodyText { text: Identity.type-note; font-size: 10px; }
+        Rectangle { vertical-stretch: 1; }
+        Rectangle {
+            height: 92px;
+            background: Theme.accent-soft;
+            border-color: Theme.accent;
+            border-width: 1px;
+            border-radius: 7px;
+            VerticalLayout {
+                padding: 10px;
+                spacing: 3px;
+                Eyebrow { text: "CLEARANCE NOTE"; }
+                BodyText { text: Identity.risk; color: Theme.text; font-size: 10px; }
+            }
+        }
+        HorizontalLayout {
+            height: 36px;
+            spacing: 6px;
+            Rectangle { background: Theme.success; border-radius: 4px; Text { text: "Success"; color: Theme.shell; font-size: 9px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+            Rectangle { background: Theme.warning; border-radius: 4px; Text { text: "Warning"; color: Theme.shell; font-size: 9px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+            Rectangle { background: Theme.danger; border-radius: 4px; Text { text: "Error"; color: Theme.shell; font-size: 9px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+        }
+    }
+}
+
+component WorkbenchShell inherits Rectangle {
+    in property <bool> compact;
+    background: Theme.shell;
+    HorizontalLayout {
+        Navigation { compact: root.compact; }
+        Rectangle { width: 1px; background: Theme.border; }
+        Workspace { horizontal-stretch: 1; }
+        Rectangle { width: 1px; background: Theme.border; }
+        RunInspector { compact: root.compact; }
+    }
+}
+
+component SwitcherButton inherits Rectangle {
+    in property <string> label;
+    in property <length> button-width: 44px;
+    callback clicked();
+    width: root.button-width;
+    height: 32px;
+    background: touch.has-hover ? (SpecimenState.dark ? #d6d6d6 : #3f3f3f) : (SpecimenState.dark ? #ececec : #292929);
+    border-radius: 16px;
+    Text { text: root.label; color: SpecimenState.dark ? #171717 : #f7f7f7; font-family: "Segoe UI"; font-size: 10px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
+component PrototypeSwitcher inherits Rectangle {
+    width: 740px;
+    height: 50px;
+    background: SpecimenState.dark ? #f7f7f7 : #171717;
+    border-radius: 25px;
+    border-width: 1px;
+    border-color: SpecimenState.dark ? #ffffff : #000000;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+        Text { text: "PROTOTYPE"; color: SpecimenState.dark ? #9f2030 : #ff8c96; font-family: "Segoe UI"; font-size: 9px; font-weight: 800; vertical-alignment: center; }
+        SwitcherButton { label: "←"; clicked => { SpecimenState.previous(); } }
+        Rectangle {
+            width: 194px;
+            height: 32px;
+            background: SpecimenState.dark ? #e7e7e7 : #292929;
+            border-radius: 16px;
+            Text { text: (SpecimenState.variant == 0 ? "A — " : SpecimenState.variant == 1 ? "B — " : "C — ") + Identity.name; color: SpecimenState.dark ? #171717 : #f7f7f7; font-family: "Segoe UI"; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+        }
+        SwitcherButton { label: "→"; clicked => { SpecimenState.next(); } }
+        Rectangle { width: 1px; height: 26px; background: SpecimenState.dark ? #b0b0b0 : #555555; }
+        SwitcherButton { button-width: 88px; label: SpecimenState.dark ? "View light" : "View dark"; clicked => { SpecimenState.toggle-theme(); } }
+        SwitcherButton { button-width: 118px; label: SpecimenState.compact ? "Use wide band" : "Use compact band"; clicked => { SpecimenState.toggle-density(); } }
+        Rectangle { horizontal-stretch: 1; }
+        Text { text: "← / →"; color: SpecimenState.dark ? #505050 : #bdbdbd; font-family: "Segoe UI"; font-size: 9px; vertical-alignment: center; }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "Fork product identity — THROWAWAY PROTOTYPE";
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    min-width: 900px;
+    min-height: 600px;
+    background: Theme.shell;
+    forward-focus: keys;
+
+    WorkbenchShell { width: parent.width; height: parent.height; compact: SpecimenState.compact; }
+
+    // The high-contrast pill is evaluation chrome, not part of any candidate identity.
+    PrototypeSwitcher { x: (parent.width - self.width) / 2; y: parent.height - self.height - 10px; }
+
+    keys := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(event) => {
+            if (event.text == Key.LeftArrow) {
+                SpecimenState.previous();
+                return accept;
+            }
+            if (event.text == Key.RightArrow) {
+                SpecimenState.next();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
