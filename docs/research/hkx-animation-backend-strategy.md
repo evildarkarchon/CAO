@@ -2,6 +2,8 @@
 
 Research date: 2026-07-12
 
+> **Architecture supersession (2026-07-12):** The later resolved application and workspace contracts select the CAO-owned one-file helper as the initial production deployment mode. The engine selection and technical evidence below remain authoritative, but references to an in-process default are historical proposals rather than the implementation contract. See [Choose the HKX animation backend strategy](https://github.com/evildarkarchon/CAO/issues/8) and [Define the Rust workspace graph and internal interface contracts](https://github.com/evildarkarchon/CAO/issues/17).
+
 ## Decision
 
 Adopt [`SARDONYX-sard/serde-hkx` 1.0.1 at commit `6c1bee56d42de7def991cf6fba025a9df7492d83`](https://github.com/SARDONYX-sard/serde-hkx/tree/6c1bee56d42de7def991cf6fba025a9df7492d83) as the production HKX engine, called through an **in-process CAO-owned `HkxConverter`**. Pin the peeled commit and vendor its source; do not track `main` or rely only on the movable tag name.
