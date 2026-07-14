@@ -5,12 +5,12 @@
   "revision": 1,
   "fixture": {
     "path": "fixture.json",
-    "sha256": "b790d265a1d6b81419d31c189ec092f72055ea9268fed329897069e1043d7be3",
-    "size_bytes": 1498
+    "sha256": "f759940041e0ce59b231fa8663f850f3f9551b5c87b41faa1e955fd2b902b907",
+    "size_bytes": 2211
   },
   "evidence": {
     "path": "evidence.json",
-    "sha256": "72eb003542af9a9f281100cd558e18f8ea6d3538315fff52500eb5706138517b",
-    "size_bytes": 1948
+    "sha256": "ebaac8e21f41a81ee5bb39c889482d8efe5627e98bb955060bcddaaf06fe4821",
+    "size_bytes": 2834
   }
 }

@@ -6,14 +6,14 @@
   "cases": [
     {
       "id": "persist-success",
-      "initial_dry_run": false,
-      "intent_dry_run": true,
+      "initial_state": { "status": "ready", "dry_run": false },
+      "intent": { "kind": "edit-profile-overlay", "dry_run": true },
       "fault": null
     },
     {
       "id": "open-unavailable",
-      "initial_dry_run": false,
-      "intent_dry_run": null,
+      "initial_state": { "status": "ready", "dry_run": false },
+      "intent": null,
       "fault": {
         "point": "open",
         "fixture_path": "setup.state",
@@ -28,8 +28,8 @@
     },
     {
       "id": "load-corrupt-data",
-      "initial_dry_run": false,
-      "intent_dry_run": null,
+      "initial_state": { "status": "ready", "dry_run": false },
+      "intent": null,
       "fault": {
         "point": "load-setup",
         "fixture_path": "setup.state",
@@ -44,8 +44,8 @@
     },
     {
       "id": "persist-io",
-      "initial_dry_run": false,
-      "intent_dry_run": true,
+      "initial_state": { "status": "ready", "dry_run": false },
+      "intent": { "kind": "edit-profile-overlay", "dry_run": true },
       "fault": {
         "point": "persist-setup",
         "fixture_path": "setup.state",
@@ -57,6 +57,23 @@
           "diagnostic": "injected durable write failure"
         }
       }
+    },
+    {
+      "id": "restore-backup-success",
+      "initial_state": {
+        "status": "recovery-required",
+        "recovered_dry_run": true,
+        "backup_available": true,
+        "failure": {
+          "port": "portable-state",
+          "operation": "load-setup",
+          "kind": "corrupt-data",
+          "subject": "setup.state",
+          "diagnostic": "injected corrupt global state"
+        }
+      },
+      "intent": { "kind": "recover-global-state", "action": "restore-backup" },
+      "fault": null
     }
   ]
 }

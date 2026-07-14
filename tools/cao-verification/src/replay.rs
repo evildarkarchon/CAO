@@ -2,8 +2,9 @@
 
 use crate::{DeterministicStateFactory, FaultPlan, FaultPoint, RecordingSink};
 use cao_application::{
-    ApplicationRuntime, FailureKind, Intent, IntentOutcome, OperationId, PortFailure, PortId,
-    ProfileOverlay, ProfileOverlayEdit, SetupState, WorkbenchSnapshot,
+    ApplicationRuntime, FailureKind, GlobalStateRecovery, GlobalStateRecoveryAction, Intent,
+    IntentOutcome, OperationId, PortFailure, PortId, ProfileOverlay, ProfileOverlayEdit,
+    SetupState, WorkbenchSnapshot,
 };
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -140,9 +141,36 @@ struct SetupFixture {
 #[serde(deny_unknown_fields)]
 struct SetupCase {
     id: String,
-    initial_dry_run: bool,
-    intent_dry_run: Option<bool>,
+    initial_state: InitialStateSpec,
+    intent: Option<IntentSpec>,
     fault: Option<FaultSpec>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
+enum InitialStateSpec {
+    Ready {
+        dry_run: bool,
+    },
+    RecoveryRequired {
+        recovered_dry_run: bool,
+        backup_available: bool,
+        failure: FailureSpec,
+    },
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+enum IntentSpec {
+    EditProfileOverlay { dry_run: bool },
+    RecoverGlobalState { action: RecoveryActionSpec },
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum RecoveryActionSpec {
+    RestoreBackup,
+    Reset,
 }
 
 #[derive(Clone, Deserialize)]
@@ -159,6 +187,8 @@ enum FaultPointSpec {
     Open,
     LoadSetup,
     PersistSetup,
+    RestoreGlobalState,
+    ResetGlobalState,
 }
 
 #[derive(Deserialize)]
@@ -206,7 +236,15 @@ enum StartupExpectation {
 struct SnapshotExpectation {
     revision: u64,
     dry_run: bool,
+    recovery: Option<RecoveryExpectation>,
     last_intent: IntentExpectation,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecoveryExpectation {
+    backup_available: bool,
+    failure: FailureSpec,
 }
 
 #[derive(Deserialize)]
@@ -240,6 +278,9 @@ enum OperationSpec {
     Open,
     LoadSetup,
     PersistSetup,
+    MigrateState,
+    RestoreGlobalState,
+    ResetGlobalState,
     StartSupervisor,
     StopSupervisor,
 }
@@ -303,6 +344,9 @@ impl OperationSpec {
             Self::Open => OperationId::Open,
             Self::LoadSetup => OperationId::LoadSetup,
             Self::PersistSetup => OperationId::PersistSetup,
+            Self::MigrateState => OperationId::MigrateState,
+            Self::RestoreGlobalState => OperationId::RestoreGlobalState,
+            Self::ResetGlobalState => OperationId::ResetGlobalState,
             Self::StartSupervisor => OperationId::StartSupervisor,
             Self::StopSupervisor => OperationId::StopSupervisor,
         }
@@ -336,6 +380,46 @@ impl FaultPointSpec {
             Self::Open => FaultPoint::Open,
             Self::LoadSetup => FaultPoint::LoadSetup,
             Self::PersistSetup => FaultPoint::PersistSetup,
+            Self::RestoreGlobalState => FaultPoint::RestoreGlobalState,
+            Self::ResetGlobalState => FaultPoint::ResetGlobalState,
+        }
+    }
+}
+
+impl InitialStateSpec {
+    /// Returns the deterministic setup stored behind this startup condition.
+    fn setup(&self) -> SetupState {
+        let dry_run = match self {
+            Self::Ready { dry_run } => *dry_run,
+            Self::RecoveryRequired {
+                recovered_dry_run, ..
+            } => *recovered_dry_run,
+        };
+        SetupState::default().with_profile_overlay(ProfileOverlay::default().with_dry_run(dry_run))
+    }
+
+    /// Builds the recovery projection required by corrupt initial state, when present.
+    fn recovery(&self) -> Option<GlobalStateRecovery> {
+        match self {
+            Self::Ready { .. } => None,
+            Self::RecoveryRequired {
+                backup_available,
+                failure,
+                ..
+            } => Some(GlobalStateRecovery::new(
+                failure.to_failure(),
+                *backup_available,
+            )),
+        }
+    }
+}
+
+impl RecoveryActionSpec {
+    /// Converts fixture vocabulary to the public application recovery choice.
+    const fn to_recovery_action(self) -> GlobalStateRecoveryAction {
+        match self {
+            Self::RestoreBackup => GlobalStateRecoveryAction::RestoreBackup,
+            Self::Reset => GlobalStateRecoveryAction::Reset,
         }
     }
 }
@@ -499,8 +583,7 @@ fn replay_case(
     expected: &ExpectedCase,
     portable_state_tree: &Path,
 ) -> Result<(), ReplayError> {
-    let setup = SetupState::default()
-        .with_profile_overlay(ProfileOverlay::default().with_dry_run(fixture.initial_dry_run));
+    let setup = fixture.initial_state.setup();
     let faults = fixture
         .fault
         .as_ref()
@@ -511,11 +594,15 @@ fn replay_case(
                 fault.failure.to_failure(),
             )
         });
-    let factory = Arc::new(DeterministicStateFactory::in_sandbox(
-        portable_state_tree,
-        setup,
-        faults,
-    )?);
+    let factory = Arc::new(match fixture.initial_state.recovery() {
+        Some(recovery) => DeterministicStateFactory::in_sandbox_requiring_recovery(
+            portable_state_tree,
+            setup,
+            recovery,
+            faults,
+        )?,
+        None => DeterministicStateFactory::in_sandbox(portable_state_tree, setup, faults)?,
+    });
     factory.release_persistence();
     let sink = Arc::new(RecordingSink::default());
     let started = ApplicationRuntime::start(Arc::clone(&factory), Arc::clone(&sink));
@@ -567,21 +654,27 @@ fn replay_case(
                 "started setup cases must govern initial and confirmed snapshots",
             )?;
             compare_snapshot(&fixture.id, &snapshots[0], &sink.wait_for(0), None)?;
-            let intent_dry_run = fixture.intent_dry_run.ok_or_else(|| {
-                ReplayError::InvalidManifest(format!(
-                    "started case {} has no setup intent",
-                    fixture.id
-                ))
+            let intent = fixture.intent.ok_or_else(|| {
+                ReplayError::InvalidManifest(format!("started case {} has no intent", fixture.id))
             })?;
-            let receipt = handle
-                .submit(Intent::EditProfileOverlay {
-                    expected_revision: sink.wait_for(0).revision(),
-                    edit: ProfileOverlayEdit::SetDryRun(intent_dry_run),
-                })
-                .map_err(|rejection| ReplayError::EvidenceMismatch {
-                    case_id: fixture.id.clone(),
-                    detail: format!("setup intent was rejected at transport: {rejection:?}"),
-                })?;
+            let expected_revision = sink.wait_for(0).revision();
+            let intent = match intent {
+                IntentSpec::EditProfileOverlay { dry_run } => Intent::EditProfileOverlay {
+                    expected_revision,
+                    edit: ProfileOverlayEdit::SetDryRun(dry_run),
+                },
+                IntentSpec::RecoverGlobalState { action } => Intent::RecoverGlobalState {
+                    expected_revision,
+                    action: action.to_recovery_action(),
+                },
+            };
+            let receipt =
+                handle
+                    .submit(intent)
+                    .map_err(|rejection| ReplayError::EvidenceMismatch {
+                        case_id: fixture.id.clone(),
+                        detail: format!("setup intent was rejected at transport: {rejection:?}"),
+                    })?;
             compare_snapshot(&fixture.id, &snapshots[1], &sink.wait_for(1), Some(receipt))?;
             runtime
                 .shutdown()
@@ -639,6 +732,13 @@ fn compare_snapshot(
         actual.setup().profile_overlay().dry_run() == expected.dry_run,
         "snapshot dry-run setup differs",
     )?;
+    match (&expected.recovery, actual.global_state_recovery()) {
+        (None, None) => {}
+        (Some(expected), Some(actual))
+            if expected.backup_available == actual.backup_available()
+                && expected.failure.matches(actual.corrupt_failure()) => {}
+        _ => return mismatch(case_id, "global-state recovery projection differs"),
+    }
     match (&expected.last_intent, actual.last_intent(), receipt) {
         (IntentExpectation::None, None, None) => Ok(()),
         (IntentExpectation::Applied, Some(IntentOutcome::Applied(actual)), Some(expected))

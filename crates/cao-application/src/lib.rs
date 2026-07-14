@@ -44,6 +44,15 @@ pub enum ProfileOverlayEdit {
     SetDryRun(bool),
 }
 
+/// Explicit user choice for recovering corrupt fork-owned global configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GlobalStateRecoveryAction {
+    /// Restores the newest valid restorable backup discovered by the state adapter.
+    RestoreBackup,
+    /// Replaces corrupt global configuration with documented fork defaults.
+    Reset,
+}
+
 /// Closed set of commands accepted by the UI-independent application seam.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Intent {
@@ -54,6 +63,27 @@ pub enum Intent {
         /// Typed profile-overlay mutation to persist.
         edit: ProfileOverlayEdit,
     },
+    /// Applies an explicit recovery choice while corrupt global state blocks setup edits.
+    RecoverGlobalState {
+        /// Snapshot revision against which the recovery choice was made.
+        expected_revision: SnapshotRevision,
+        /// Restore or reset transaction selected by the user.
+        action: GlobalStateRecoveryAction,
+    },
+}
+
+impl Intent {
+    /// Returns the authoritative snapshot revision observed when this intent was created.
+    const fn expected_revision(&self) -> SnapshotRevision {
+        match self {
+            Self::EditProfileOverlay {
+                expected_revision, ..
+            }
+            | Self::RecoverGlobalState {
+                expected_revision, ..
+            } => *expected_revision,
+        }
+    }
 }
 
 /// Stable identifier assigned to one accepted intent.
@@ -115,6 +145,12 @@ pub enum OperationId {
     LoadSetup,
     /// Atomically persist setup values.
     PersistSetup,
+    /// Apply ordered forward migrations to fork-owned portable state.
+    MigrateState,
+    /// Restore corrupt global configuration from a valid backup.
+    RestoreGlobalState,
+    /// Reset corrupt global configuration to documented defaults.
+    ResetGlobalState,
     /// Start the application-supervisor thread.
     StartSupervisor,
     /// Stop and join the application-supervisor thread.
@@ -263,14 +299,53 @@ impl PortFailure {
     }
 }
 
+/// Recoverable corrupt-global-state condition projected through the public seam.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GlobalStateRecovery {
+    corrupt_failure: PortFailure,
+    backup_available: bool,
+}
+
+impl GlobalStateRecovery {
+    /// Creates a recovery requirement from the load failure and backup availability.
+    #[must_use]
+    pub const fn new(corrupt_failure: PortFailure, backup_available: bool) -> Self {
+        Self {
+            corrupt_failure,
+            backup_available,
+        }
+    }
+
+    /// Returns the stable corruption failure that prevented normal setup loading.
+    #[must_use]
+    pub const fn corrupt_failure(&self) -> &PortFailure {
+        &self.corrupt_failure
+    }
+
+    /// Reports whether the state adapter found a valid restorable backup.
+    #[must_use]
+    pub const fn backup_available(&self) -> bool {
+        self.backup_available
+    }
+}
+
+/// Result of loading setup from one exclusively owned portable state tree.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SetupLoadOutcome {
+    /// Valid setup is ready for ordinary editing and processing.
+    Ready(SetupState),
+    /// Corrupt global state requires an explicit restore or reset choice.
+    RecoveryRequired(GlobalStateRecovery),
+}
+
 /// Supervisor-owned session for loading and atomically persisting setup state.
 pub trait PortableState: Send + 'static {
-    /// Loads the authoritative setup state at application startup.
+    /// Loads valid setup or a recoverable corrupt-global-state condition at startup.
     ///
     /// # Errors
     ///
-    /// Returns a stable [`PortFailure`] when persisted state cannot be loaded.
-    fn load_setup(&mut self) -> Result<SetupState, PortFailure>;
+    /// Returns a stable [`PortFailure`] when startup cannot retain a usable state session.
+    fn load_setup(&mut self) -> Result<SetupLoadOutcome, PortFailure>;
 
     /// Persists a complete candidate before it becomes authoritative in memory.
     ///
@@ -278,6 +353,19 @@ pub trait PortableState: Send + 'static {
     ///
     /// Returns a stable [`PortFailure`] when the candidate cannot be committed.
     fn persist_setup(&mut self, setup: &SetupState) -> Result<(), PortFailure>;
+
+    /// Applies one explicit corrupt-global-state recovery transaction.
+    ///
+    /// The returned setup is the newly authoritative state after the transaction commits.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable [`PortFailure`] when restore or reset cannot be committed. The
+    /// original corrupt global state must remain recoverable after failure.
+    fn recover_global_state(
+        &mut self,
+        action: GlobalStateRecoveryAction,
+    ) -> Result<SetupState, PortFailure>;
 }
 
 /// Thread-safe factory for a supervisor-owned portable-state session.
@@ -322,6 +410,7 @@ pub enum IntentOutcome {
 pub struct WorkbenchSnapshot {
     revision: SnapshotRevision,
     setup: SetupState,
+    global_state_recovery: Option<GlobalStateRecovery>,
     last_intent: Option<IntentOutcome>,
 }
 
@@ -338,6 +427,12 @@ impl WorkbenchSnapshot {
         &self.setup
     }
 
+    /// Returns the recovery requirement currently blocking ordinary setup edits.
+    #[must_use]
+    pub const fn global_state_recovery(&self) -> Option<&GlobalStateRecovery> {
+        self.global_state_recovery.as_ref()
+    }
+
     /// Returns the most recently processed intent outcome, if any.
     #[must_use]
     pub const fn last_intent(&self) -> Option<&IntentOutcome> {
@@ -348,11 +443,13 @@ impl WorkbenchSnapshot {
     fn new(
         revision: SnapshotRevision,
         setup: SetupState,
+        global_state_recovery: Option<GlobalStateRecovery>,
         last_intent: Option<IntentOutcome>,
     ) -> Self {
         Self {
             revision,
             setup,
+            global_state_recovery,
             last_intent,
         }
     }
@@ -420,8 +517,8 @@ impl ApplicationRuntime {
     ///
     /// # Errors
     ///
-    /// Returns a stable [`PortFailure`] when state cannot be opened or loaded, or when
-    /// the supervisor thread cannot be started.
+    /// Returns a stable [`PortFailure`] when state cannot be opened or retained for
+    /// recovery, or when the supervisor thread cannot be started.
     pub fn start<F, S>(
         portable_state_factory: Arc<F>,
         snapshot_sink: Arc<S>,
@@ -544,18 +641,27 @@ fn run_supervisor<F, S>(
             return;
         }
     };
-    let mut setup = match portable_state.load_setup() {
-        Ok(setup) => setup,
+    let load_outcome = match portable_state.load_setup() {
+        Ok(load_outcome) => load_outcome,
         Err(failure) => {
             // Returning after notification drops the failed portable-state session here.
             let _ = initialization_sender.send(Err(failure));
             return;
         }
     };
+    let (mut setup, mut global_state_recovery) = match load_outcome {
+        SetupLoadOutcome::Ready(setup) => (setup, None),
+        SetupLoadOutcome::RecoveryRequired(recovery) => {
+            // Defaults provide a bounded inert projection; validation blocks their use
+            // until restore or reset returns newly authoritative setup.
+            (SetupState::default(), Some(recovery))
+        }
+    };
     let mut revision = SnapshotRevision::INITIAL;
     snapshot_sink.publish(Arc::new(WorkbenchSnapshot::new(
         revision,
         setup.clone(),
+        global_state_recovery.clone(),
         None,
     )));
     if initialization_sender.send(Ok(())).is_err() {
@@ -566,9 +672,13 @@ fn run_supervisor<F, S>(
     while let Ok(message) = receiver.recv() {
         match message {
             SupervisorMessage::Intent(envelope) => {
-                let Some(snapshot) =
-                    process_intent(portable_state.as_mut(), &mut setup, &mut revision, envelope)
-                else {
+                let Some(snapshot) = process_intent(
+                    portable_state.as_mut(),
+                    &mut setup,
+                    &mut global_state_recovery,
+                    &mut revision,
+                    envelope,
+                ) else {
                     // A u64 revision cannot advance, so stopping preserves monotonic snapshots.
                     return;
                 };
@@ -580,36 +690,78 @@ fn run_supervisor<F, S>(
 }
 
 /// Applies one accepted intent transactionally and builds its authoritative projection.
+///
+/// Setup and recovery state change only after their corresponding portable-state transaction
+/// commits. Returns `None` without further mutation when the snapshot revision is exhausted.
 fn process_intent(
     portable_state: &mut dyn PortableState,
     setup: &mut SetupState,
+    global_state_recovery: &mut Option<GlobalStateRecovery>,
     revision: &mut SnapshotRevision,
     envelope: IntentEnvelope,
 ) -> Option<WorkbenchSnapshot> {
-    let outcome = match envelope.intent {
-        Intent::EditProfileOverlay {
-            expected_revision,
-            edit: _,
-        } if expected_revision != *revision => IntentOutcome::Rejected {
+    let expected_revision = envelope.intent.expected_revision();
+    let outcome = if expected_revision != *revision {
+        IntentOutcome::Rejected {
             receipt: envelope.receipt,
             rejection: IntentRejection::StaleRevision,
-        },
-        Intent::EditProfileOverlay { edit, .. } => {
-            let profile_overlay = match edit {
-                ProfileOverlayEdit::SetDryRun(dry_run) => {
-                    setup.profile_overlay().with_dry_run(dry_run)
-                }
-            };
-            let candidate = setup.with_profile_overlay(profile_overlay);
-            match portable_state.persist_setup(&candidate) {
-                Ok(()) => {
-                    *setup = candidate;
-                    IntentOutcome::Applied(envelope.receipt)
-                }
-                Err(failure) => IntentOutcome::Failed {
+        }
+    } else {
+        match envelope.intent {
+            Intent::EditProfileOverlay { .. } if global_state_recovery.is_some() => {
+                IntentOutcome::Rejected {
                     receipt: envelope.receipt,
-                    failure,
-                },
+                    rejection: IntentRejection::ValidationBlocked,
+                }
+            }
+            Intent::EditProfileOverlay { edit, .. } => {
+                let profile_overlay = match edit {
+                    ProfileOverlayEdit::SetDryRun(dry_run) => {
+                        setup.profile_overlay().with_dry_run(dry_run)
+                    }
+                };
+                let candidate = setup.with_profile_overlay(profile_overlay);
+                match portable_state.persist_setup(&candidate) {
+                    Ok(()) => {
+                        *setup = candidate;
+                        IntentOutcome::Applied(envelope.receipt)
+                    }
+                    Err(failure) => IntentOutcome::Failed {
+                        receipt: envelope.receipt,
+                        failure,
+                    },
+                }
+            }
+            Intent::RecoverGlobalState { .. } if global_state_recovery.is_none() => {
+                IntentOutcome::Rejected {
+                    receipt: envelope.receipt,
+                    rejection: IntentRejection::ValidationBlocked,
+                }
+            }
+            Intent::RecoverGlobalState {
+                action: GlobalStateRecoveryAction::RestoreBackup,
+                ..
+            } if global_state_recovery
+                .as_ref()
+                .is_some_and(|recovery| !recovery.backup_available()) =>
+            {
+                IntentOutcome::Rejected {
+                    receipt: envelope.receipt,
+                    rejection: IntentRejection::ValidationBlocked,
+                }
+            }
+            Intent::RecoverGlobalState { action, .. } => {
+                match portable_state.recover_global_state(action) {
+                    Ok(recovered_setup) => {
+                        *setup = recovered_setup;
+                        *global_state_recovery = None;
+                        IntentOutcome::Applied(envelope.receipt)
+                    }
+                    Err(failure) => IntentOutcome::Failed {
+                        receipt: envelope.receipt,
+                        failure,
+                    },
+                }
             }
         }
     };
@@ -618,6 +770,7 @@ fn process_intent(
     Some(WorkbenchSnapshot::new(
         *revision,
         setup.clone(),
+        global_state_recovery.clone(),
         Some(outcome),
     ))
 }
@@ -629,4 +782,376 @@ fn runtime_failure(
     diagnostic: impl Into<String>,
 ) -> PortFailure {
     PortFailure::new(PortId::ApplicationRuntime, operation, kind, diagnostic)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ApplicationRuntime, FailureKind, GlobalStateRecovery, GlobalStateRecoveryAction, Intent,
+        IntentOutcome, IntentRejection, OperationId, PortFailure, PortId, PortableState,
+        PortableStateFactory, ProfileOverlay, ProfileOverlayEdit, SetupLoadOutcome, SetupState,
+        SnapshotSink, WorkbenchSnapshot,
+    };
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::{Duration, Instant};
+
+    const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[derive(Default)]
+    struct RecordingSink {
+        snapshots: Mutex<Vec<Arc<WorkbenchSnapshot>>>,
+        changed: Condvar,
+    }
+
+    impl RecordingSink {
+        /// Waits for one public snapshot, failing instead of hanging on supervisor loss.
+        fn wait_for(&self, index: usize) -> Arc<WorkbenchSnapshot> {
+            let deadline = Instant::now() + WAIT_TIMEOUT;
+            let mut snapshots = self.snapshots.lock().expect("snapshot lock was poisoned");
+            while snapshots.len() <= index {
+                let remaining = deadline
+                    .checked_duration_since(Instant::now())
+                    .expect("snapshot was not published before the timeout");
+                (snapshots, _) = self
+                    .changed
+                    .wait_timeout(snapshots, remaining)
+                    .expect("snapshot lock was poisoned while waiting");
+            }
+            Arc::clone(&snapshots[index])
+        }
+    }
+
+    impl SnapshotSink for RecordingSink {
+        fn publish(&self, snapshot: Arc<WorkbenchSnapshot>) {
+            self.snapshots
+                .lock()
+                .expect("snapshot lock was poisoned")
+                .push(snapshot);
+            self.changed.notify_all();
+        }
+    }
+
+    struct FakeStateFactory {
+        shared: Arc<FakeStateShared>,
+    }
+
+    struct FakeStateShared {
+        load: SetupLoadOutcome,
+        recovery_result: Mutex<Result<SetupState, PortFailure>>,
+        recovery_actions: Mutex<Vec<GlobalStateRecoveryAction>>,
+        persist_count: Mutex<usize>,
+    }
+
+    impl FakeStateFactory {
+        /// Creates a ready or recovery-required state session with a scripted recovery result.
+        fn new(load: SetupLoadOutcome, recovery_result: Result<SetupState, PortFailure>) -> Self {
+            Self {
+                shared: Arc::new(FakeStateShared {
+                    load,
+                    recovery_result: Mutex::new(recovery_result),
+                    recovery_actions: Mutex::new(Vec::new()),
+                    persist_count: Mutex::new(0),
+                }),
+            }
+        }
+
+        /// Returns the recovery actions that crossed the portable-state port.
+        fn recovery_actions(&self) -> Vec<GlobalStateRecoveryAction> {
+            self.shared
+                .recovery_actions
+                .lock()
+                .expect("recovery action lock was poisoned")
+                .clone()
+        }
+
+        /// Returns how many setup candidates crossed the persistence port.
+        fn persist_count(&self) -> usize {
+            *self
+                .shared
+                .persist_count
+                .lock()
+                .expect("persist count lock was poisoned")
+        }
+    }
+
+    impl PortableStateFactory for FakeStateFactory {
+        fn open(&self) -> Result<Box<dyn PortableState>, PortFailure> {
+            Ok(Box::new(FakeState {
+                shared: Arc::clone(&self.shared),
+            }))
+        }
+    }
+
+    struct FakeState {
+        shared: Arc<FakeStateShared>,
+    }
+
+    impl PortableState for FakeState {
+        fn load_setup(&mut self) -> Result<SetupLoadOutcome, PortFailure> {
+            Ok(self.shared.load.clone())
+        }
+
+        fn persist_setup(&mut self, _setup: &SetupState) -> Result<(), PortFailure> {
+            *self
+                .shared
+                .persist_count
+                .lock()
+                .expect("persist count lock was poisoned") += 1;
+            Ok(())
+        }
+
+        fn recover_global_state(
+            &mut self,
+            action: GlobalStateRecoveryAction,
+        ) -> Result<SetupState, PortFailure> {
+            self.shared
+                .recovery_actions
+                .lock()
+                .expect("recovery action lock was poisoned")
+                .push(action);
+            self.shared
+                .recovery_result
+                .lock()
+                .expect("recovery result lock was poisoned")
+                .clone()
+        }
+    }
+
+    /// Creates a stable corrupt-global-state projection for recovery tests.
+    fn corrupt_recovery(backup_available: bool) -> GlobalStateRecovery {
+        GlobalStateRecovery::new(
+            PortFailure::new(
+                PortId::PortableState,
+                OperationId::LoadSetup,
+                FailureKind::CorruptData,
+                "global configuration is corrupt",
+            ),
+            backup_available,
+        )
+    }
+
+    #[test]
+    fn corrupt_global_state_starts_in_recovery_and_blocks_profile_edits() {
+        let recovery = corrupt_recovery(true);
+        let factory = Arc::new(FakeStateFactory::new(
+            SetupLoadOutcome::RecoveryRequired(recovery.clone()),
+            Ok(SetupState::default()),
+        ));
+        let sink = Arc::new(RecordingSink::default());
+        let (handle, runtime) = ApplicationRuntime::start(Arc::clone(&factory), Arc::clone(&sink))
+            .expect("recoverable corruption should publish a usable runtime");
+        let initial = sink.wait_for(0);
+
+        assert_eq!(initial.global_state_recovery(), Some(&recovery));
+        let receipt = handle
+            .submit(Intent::EditProfileOverlay {
+                expected_revision: initial.revision(),
+                edit: ProfileOverlayEdit::SetDryRun(true),
+            })
+            .expect("the blocked edit should enter the intent queue");
+        let blocked = sink.wait_for(1);
+
+        assert_eq!(blocked.global_state_recovery(), Some(&recovery));
+        assert_eq!(
+            blocked.last_intent(),
+            Some(&IntentOutcome::Rejected {
+                receipt,
+                rejection: IntentRejection::ValidationBlocked,
+            })
+        );
+        assert_eq!(factory.persist_count(), 0);
+        runtime
+            .shutdown()
+            .expect("the recovery runtime should shut down cleanly");
+    }
+
+    #[test]
+    fn restoring_global_state_clears_recovery_and_publishes_restored_setup() {
+        let restored = SetupState::default()
+            .with_profile_overlay(ProfileOverlay::default().with_dry_run(true));
+        let factory = Arc::new(FakeStateFactory::new(
+            SetupLoadOutcome::RecoveryRequired(corrupt_recovery(true)),
+            Ok(restored.clone()),
+        ));
+        let sink = Arc::new(RecordingSink::default());
+        let (handle, runtime) = ApplicationRuntime::start(Arc::clone(&factory), Arc::clone(&sink))
+            .expect("recoverable corruption should publish a usable runtime");
+        let initial = sink.wait_for(0);
+
+        let receipt = handle
+            .submit(Intent::RecoverGlobalState {
+                expected_revision: initial.revision(),
+                action: GlobalStateRecoveryAction::RestoreBackup,
+            })
+            .expect("restore should enter the intent queue");
+        let recovered = sink.wait_for(1);
+
+        assert_eq!(recovered.global_state_recovery(), None);
+        assert_eq!(recovered.setup(), &restored);
+        assert_eq!(
+            recovered.last_intent(),
+            Some(&IntentOutcome::Applied(receipt))
+        );
+        assert_eq!(
+            factory.recovery_actions(),
+            [GlobalStateRecoveryAction::RestoreBackup]
+        );
+        runtime
+            .shutdown()
+            .expect("the restored runtime should shut down cleanly");
+    }
+
+    #[test]
+    fn failed_global_state_reset_preserves_recovery_requirement() {
+        let recovery = corrupt_recovery(false);
+        let failure = PortFailure::new(
+            PortId::PortableState,
+            OperationId::ResetGlobalState,
+            FailureKind::Io,
+            "injected reset failure",
+        );
+        let factory = Arc::new(FakeStateFactory::new(
+            SetupLoadOutcome::RecoveryRequired(recovery.clone()),
+            Err(failure.clone()),
+        ));
+        let sink = Arc::new(RecordingSink::default());
+        let (handle, runtime) = ApplicationRuntime::start(Arc::clone(&factory), Arc::clone(&sink))
+            .expect("recoverable corruption should publish a usable runtime");
+        let initial = sink.wait_for(0);
+
+        let receipt = handle
+            .submit(Intent::RecoverGlobalState {
+                expected_revision: initial.revision(),
+                action: GlobalStateRecoveryAction::Reset,
+            })
+            .expect("reset should enter the intent queue");
+        let failed = sink.wait_for(1);
+
+        assert_eq!(failed.global_state_recovery(), Some(&recovery));
+        assert_eq!(
+            failed.last_intent(),
+            Some(&IntentOutcome::Failed { receipt, failure })
+        );
+        assert_eq!(
+            factory.recovery_actions(),
+            [GlobalStateRecoveryAction::Reset]
+        );
+        runtime
+            .shutdown()
+            .expect("the recovery runtime should shut down after a failed reset");
+    }
+
+    #[test]
+    fn reset_without_a_backup_clears_recovery_after_commit() {
+        let reset = SetupState::default()
+            .with_profile_overlay(ProfileOverlay::default().with_dry_run(true));
+        let factory = Arc::new(FakeStateFactory::new(
+            SetupLoadOutcome::RecoveryRequired(corrupt_recovery(false)),
+            Ok(reset.clone()),
+        ));
+        let sink = Arc::new(RecordingSink::default());
+        let (handle, runtime) = ApplicationRuntime::start(Arc::clone(&factory), Arc::clone(&sink))
+            .expect("resettable corruption should publish a usable runtime");
+        let initial = sink.wait_for(0);
+
+        handle
+            .submit(Intent::RecoverGlobalState {
+                expected_revision: initial.revision(),
+                action: GlobalStateRecoveryAction::Reset,
+            })
+            .expect("reset should enter the intent queue");
+        let recovered = sink.wait_for(1);
+
+        assert_eq!(recovered.global_state_recovery(), None);
+        assert_eq!(recovered.setup(), &reset);
+        assert_eq!(
+            factory.recovery_actions(),
+            [GlobalStateRecoveryAction::Reset]
+        );
+        runtime
+            .shutdown()
+            .expect("the reset runtime should shut down cleanly");
+    }
+
+    #[test]
+    fn stale_or_unavailable_restore_is_rejected_before_port_dispatch() {
+        let factory = Arc::new(FakeStateFactory::new(
+            SetupLoadOutcome::RecoveryRequired(corrupt_recovery(false)),
+            Ok(SetupState::default()),
+        ));
+        let sink = Arc::new(RecordingSink::default());
+        let (handle, runtime) = ApplicationRuntime::start(Arc::clone(&factory), Arc::clone(&sink))
+            .expect("recoverable corruption should publish a usable runtime");
+        let initial = sink.wait_for(0);
+
+        let unavailable_receipt = handle
+            .submit(Intent::RecoverGlobalState {
+                expected_revision: initial.revision(),
+                action: GlobalStateRecoveryAction::RestoreBackup,
+            })
+            .expect("the unavailable restore should enter the intent queue");
+        let unavailable = sink.wait_for(1);
+        assert_eq!(
+            unavailable.last_intent(),
+            Some(&IntentOutcome::Rejected {
+                receipt: unavailable_receipt,
+                rejection: IntentRejection::ValidationBlocked,
+            })
+        );
+
+        let stale_receipt = handle
+            .submit(Intent::RecoverGlobalState {
+                expected_revision: initial.revision(),
+                action: GlobalStateRecoveryAction::RestoreBackup,
+            })
+            .expect("the stale restore should enter the intent queue");
+        let stale = sink.wait_for(2);
+        assert_eq!(
+            stale.last_intent(),
+            Some(&IntentOutcome::Rejected {
+                receipt: stale_receipt,
+                rejection: IntentRejection::StaleRevision,
+            })
+        );
+        assert_eq!(
+            stale.global_state_recovery(),
+            initial.global_state_recovery()
+        );
+        assert!(factory.recovery_actions().is_empty());
+        runtime
+            .shutdown()
+            .expect("the blocked recovery runtime should shut down cleanly");
+    }
+
+    #[test]
+    fn recovery_intent_is_blocked_when_global_state_is_ready() {
+        let factory = Arc::new(FakeStateFactory::new(
+            SetupLoadOutcome::Ready(SetupState::default()),
+            Ok(SetupState::default()),
+        ));
+        let sink = Arc::new(RecordingSink::default());
+        let (handle, runtime) = ApplicationRuntime::start(Arc::clone(&factory), Arc::clone(&sink))
+            .expect("ready setup should start normally");
+        let initial = sink.wait_for(0);
+
+        let receipt = handle
+            .submit(Intent::RecoverGlobalState {
+                expected_revision: initial.revision(),
+                action: GlobalStateRecoveryAction::Reset,
+            })
+            .expect("the invalid recovery should enter the intent queue");
+        let rejected = sink.wait_for(1);
+
+        assert_eq!(
+            rejected.last_intent(),
+            Some(&IntentOutcome::Rejected {
+                receipt,
+                rejection: IntentRejection::ValidationBlocked,
+            })
+        );
+        assert!(factory.recovery_actions().is_empty());
+        runtime
+            .shutdown()
+            .expect("the ready runtime should shut down cleanly");
+    }
 }

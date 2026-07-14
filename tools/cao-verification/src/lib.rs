@@ -2,8 +2,9 @@
 //! Shared parity evidence and replay harness types.
 
 use cao_application::{
-    FailureKind, OperationId, PortFailure, PortId, PortableState, PortableStateFactory,
-    ProfileOverlay, SetupState, SnapshotSink, WorkbenchSnapshot,
+    FailureKind, GlobalStateRecovery, GlobalStateRecoveryAction, OperationId, PortFailure, PortId,
+    PortableState, PortableStateFactory, ProfileOverlay, SetupLoadOutcome, SetupState,
+    SnapshotSink, WorkbenchSnapshot,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
@@ -20,6 +21,10 @@ pub enum FaultPoint {
     LoadSetup,
     /// Persisting a complete setup candidate.
     PersistSetup,
+    /// Restoring valid setup from the newest restorable global-state backup.
+    RestoreGlobalState,
+    /// Resetting corrupt global configuration to documented defaults.
+    ResetGlobalState,
 }
 
 #[derive(Clone)]
@@ -89,6 +94,7 @@ pub struct DeterministicStateFactory {
 
 struct DeterministicStateShared {
     setup: Mutex<SetupState>,
+    recovery: Mutex<Option<GlobalStateRecovery>>,
     state_file: Option<PathBuf>,
     gate: (Mutex<PersistenceGateState>, Condvar),
     faults: Mutex<FaultPlan>,
@@ -117,6 +123,27 @@ impl DeterministicStateFactory {
         Self {
             shared: Arc::new(DeterministicStateShared {
                 setup: Mutex::new(setup),
+                recovery: Mutex::new(None),
+                state_file: None,
+                gate: (Mutex::new(PersistenceGateState::default()), Condvar::new()),
+                faults: Mutex::new(faults),
+            }),
+        }
+    }
+
+    /// Creates an in-memory adapter whose global configuration requires recovery.
+    ///
+    /// `recovered_setup` represents the newest valid backup returned by an explicit restore.
+    #[must_use]
+    pub fn requiring_recovery(
+        recovered_setup: SetupState,
+        recovery: GlobalStateRecovery,
+        faults: FaultPlan,
+    ) -> Self {
+        Self {
+            shared: Arc::new(DeterministicStateShared {
+                setup: Mutex::new(recovered_setup),
+                recovery: Mutex::new(Some(recovery)),
                 state_file: None,
                 gate: (Mutex::new(PersistenceGateState::default()), Condvar::new()),
                 faults: Mutex::new(faults),
@@ -140,6 +167,37 @@ impl DeterministicStateFactory {
         Ok(Self {
             shared: Arc::new(DeterministicStateShared {
                 setup: Mutex::new(setup),
+                recovery: Mutex::new(None),
+                state_file: Some(state_file),
+                gate: (Mutex::new(PersistenceGateState::default()), Condvar::new()),
+                faults: Mutex::new(faults),
+            }),
+        })
+    }
+
+    /// Creates a deterministic sandbox whose global configuration requires recovery.
+    ///
+    /// `recovered_setup` represents the newest valid backup returned by an explicit restore.
+    /// The corrupt failure remains projected until recovery commits successfully.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the sandbox directory or backup state cannot be written.
+    pub fn in_sandbox_requiring_recovery(
+        portable_state_tree: &Path,
+        recovered_setup: SetupState,
+        recovery: GlobalStateRecovery,
+        faults: FaultPlan,
+    ) -> std::io::Result<Self> {
+        std::fs::create_dir_all(portable_state_tree)?;
+        let state_file = portable_state_tree.join("setup.state");
+        // Recovery starts from unreadable authority; only the explicit transaction may
+        // place the valid backup contents into the primary state file.
+        std::fs::write(&state_file, b"corrupt deterministic global state\n")?;
+        Ok(Self {
+            shared: Arc::new(DeterministicStateShared {
+                setup: Mutex::new(recovered_setup),
+                recovery: Mutex::new(Some(recovery)),
                 state_file: Some(state_file),
                 gate: (Mutex::new(PersistenceGateState::default()), Condvar::new()),
                 faults: Mutex::new(faults),
@@ -197,9 +255,21 @@ struct DeterministicState {
 }
 
 impl PortableState for DeterministicState {
-    fn load_setup(&mut self) -> Result<SetupState, PortFailure> {
+    /// Loads the deterministic authority or projects its retained recovery requirement.
+    ///
+    /// A recovery-required load deliberately does not read the corrupt sandbox file.
+    fn load_setup(&mut self) -> Result<SetupLoadOutcome, PortFailure> {
         if let Some(failure) = self.shared.take_fault(FaultPoint::LoadSetup) {
             return Err(failure);
+        }
+        if let Some(recovery) = self
+            .shared
+            .recovery
+            .lock()
+            .expect("deterministic recovery lock was poisoned")
+            .clone()
+        {
+            return Ok(SetupLoadOutcome::RecoveryRequired(recovery));
         }
         if let Some(state_file) = &self.shared.state_file {
             let loaded = read_setup_file(state_file)?;
@@ -209,14 +279,16 @@ impl PortableState for DeterministicState {
                 .lock()
                 .expect("deterministic setup lock was poisoned") = loaded;
         }
-        Ok(self
-            .shared
-            .setup
-            .lock()
-            .expect("deterministic setup lock was poisoned")
-            .clone())
+        Ok(SetupLoadOutcome::Ready(
+            self.shared
+                .setup
+                .lock()
+                .expect("deterministic setup lock was poisoned")
+                .clone(),
+        ))
     }
 
+    /// Persists one setup candidate after the deterministic acceptance barrier is released.
     fn persist_setup(&mut self, setup: &SetupState) -> Result<(), PortFailure> {
         if let Some(failure) = self.shared.take_fault(FaultPoint::PersistSetup) {
             return Err(failure);
@@ -252,6 +324,85 @@ impl PortableState for DeterministicState {
             .lock()
             .expect("deterministic setup lock was poisoned") = setup.clone();
         Ok(())
+    }
+
+    /// Commits the selected deterministic recovery and clears recovery only after its write.
+    ///
+    /// Failed fault injection or filesystem writes leave both the recovery projection and
+    /// the corrupt primary sandbox file unchanged.
+    fn recover_global_state(
+        &mut self,
+        action: GlobalStateRecoveryAction,
+    ) -> Result<SetupState, PortFailure> {
+        let fault_point = match action {
+            GlobalStateRecoveryAction::RestoreBackup => FaultPoint::RestoreGlobalState,
+            GlobalStateRecoveryAction::Reset => FaultPoint::ResetGlobalState,
+        };
+        if let Some(failure) = self.shared.take_fault(fault_point) {
+            return Err(failure);
+        }
+
+        let recovery = self
+            .shared
+            .recovery
+            .lock()
+            .expect("deterministic recovery lock was poisoned")
+            .clone()
+            .ok_or_else(|| {
+                PortFailure::new(
+                    PortId::PortableState,
+                    operation_for_recovery(action),
+                    FailureKind::Conflict,
+                    "deterministic global state does not require recovery",
+                )
+            })?;
+        if action == GlobalStateRecoveryAction::RestoreBackup && !recovery.backup_available() {
+            return Err(PortFailure::new(
+                PortId::PortableState,
+                OperationId::RestoreGlobalState,
+                FailureKind::NotFound,
+                "deterministic global state has no restorable backup",
+            ));
+        }
+
+        let recovered_setup = match action {
+            GlobalStateRecoveryAction::RestoreBackup => self
+                .shared
+                .setup
+                .lock()
+                .expect("deterministic setup lock was poisoned")
+                .clone(),
+            GlobalStateRecoveryAction::Reset => SetupState::default(),
+        };
+        if let Some(state_file) = &self.shared.state_file {
+            write_setup_file(state_file, &recovered_setup).map_err(|error| {
+                PortFailure::new(
+                    PortId::PortableState,
+                    operation_for_recovery(action),
+                    FailureKind::Io,
+                    error.to_string(),
+                )
+            })?;
+        }
+        *self
+            .shared
+            .setup
+            .lock()
+            .expect("deterministic setup lock was poisoned") = recovered_setup.clone();
+        *self
+            .shared
+            .recovery
+            .lock()
+            .expect("deterministic recovery lock was poisoned") = None;
+        Ok(recovered_setup)
+    }
+}
+
+/// Returns the stable application operation for one explicit recovery choice.
+const fn operation_for_recovery(action: GlobalStateRecoveryAction) -> OperationId {
+    match action {
+        GlobalStateRecoveryAction::RestoreBackup => OperationId::RestoreGlobalState,
+        GlobalStateRecoveryAction::Reset => OperationId::ResetGlobalState,
     }
 }
 
@@ -350,8 +501,9 @@ mod tests {
         DeterministicStateFactory, FaultPlan, FaultPoint, RecordingSink, run_setup_replay,
     };
     use cao_application::{
-        ApplicationRuntime, BoundedText, FailureKind, Intent, IntentOutcome, IntentRejection,
-        MAX_DIAGNOSTIC_BYTES, OperationId, PortFailure, PortId, ProfileOverlayEdit, SetupState,
+        ApplicationRuntime, BoundedText, FailureKind, GlobalStateRecovery,
+        GlobalStateRecoveryAction, Intent, IntentOutcome, IntentRejection, MAX_DIAGNOSTIC_BYTES,
+        OperationId, PortFailure, PortId, ProfileOverlay, ProfileOverlayEdit, SetupState,
         SnapshotRevision,
     };
     use std::path::PathBuf;
@@ -480,6 +632,64 @@ mod tests {
     }
 
     #[test]
+    fn injected_restore_failure_preserves_recovery_and_backup_through_public_seam() {
+        let corrupt_failure = PortFailure::new(
+            PortId::PortableState,
+            OperationId::LoadSetup,
+            FailureKind::CorruptData,
+            "injected corrupt global state",
+        );
+        let restore_failure = PortFailure::new(
+            PortId::PortableState,
+            OperationId::RestoreGlobalState,
+            FailureKind::Io,
+            "injected backup restore failure",
+        );
+        let backup_setup = SetupState::default()
+            .with_profile_overlay(ProfileOverlay::default().with_dry_run(true));
+        let factory = Arc::new(DeterministicStateFactory::requiring_recovery(
+            backup_setup,
+            GlobalStateRecovery::new(corrupt_failure.clone(), true),
+            FaultPlan::fail_once(FaultPoint::RestoreGlobalState, restore_failure.clone()),
+        ));
+        let sink = Arc::new(RecordingSink::default());
+        let (handle, runtime) = ApplicationRuntime::start(Arc::clone(&factory), Arc::clone(&sink))
+            .expect("recoverable corruption should keep the application seam available");
+        let initial = sink.wait_for(0);
+
+        assert_eq!(
+            initial
+                .global_state_recovery()
+                .map(GlobalStateRecovery::corrupt_failure),
+            Some(&corrupt_failure)
+        );
+        let receipt = handle
+            .submit(Intent::RecoverGlobalState {
+                expected_revision: initial.revision(),
+                action: GlobalStateRecoveryAction::RestoreBackup,
+            })
+            .expect("the explicit restore should enter the application queue");
+        let failed = sink.wait_for(1);
+
+        assert_eq!(
+            failed.last_intent(),
+            Some(&IntentOutcome::Failed {
+                receipt,
+                failure: restore_failure,
+            })
+        );
+        assert_eq!(
+            failed.global_state_recovery(),
+            initial.global_state_recovery()
+        );
+        assert!(!failed.setup().profile_overlay().dry_run());
+        assert!(factory.persisted_setup().profile_overlay().dry_run());
+        runtime
+            .shutdown()
+            .expect("application runtime should shut down after a recovery fault");
+    }
+
+    #[test]
     fn committed_setup_manifest_replays_deterministic_and_fault_cases() {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
@@ -497,6 +707,7 @@ mod tests {
                 "open-unavailable",
                 "load-corrupt-data",
                 "persist-io",
+                "restore-backup-success",
             ]
         );
         assert!(report.sandbox_roots_are_distinct());

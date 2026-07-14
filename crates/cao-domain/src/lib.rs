@@ -48,6 +48,14 @@ impl SetupState {
         self.active_profile
     }
 
+    /// Returns an owned setup value with the supplied stable active-profile identity.
+    #[must_use]
+    pub fn with_active_profile(&self, active_profile: ActiveProfileId) -> Self {
+        let mut setup = self.clone();
+        setup.active_profile = active_profile;
+        setup
+    }
+
     /// Returns the processing choices for the active profile.
     #[must_use]
     pub const fn profile_overlay(&self) -> ProfileOverlay {

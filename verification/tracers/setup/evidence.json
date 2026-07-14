@@ -15,11 +15,13 @@
         {
           "revision": 0,
           "dry_run": false,
+          "recovery": null,
           "last_intent": { "status": "none" }
         },
         {
           "revision": 1,
           "dry_run": true,
+          "recovery": null,
           "last_intent": { "status": "applied" }
         }
       ],
@@ -59,11 +61,13 @@
         {
           "revision": 0,
           "dry_run": false,
+          "recovery": null,
           "last_intent": { "status": "none" }
         },
         {
           "revision": 1,
           "dry_run": false,
+          "recovery": null,
           "last_intent": {
             "status": "failed",
             "failure": {
@@ -78,6 +82,35 @@
       ],
       "persisted_dry_run": false,
       "restart_dry_run": false
+    },
+    {
+      "id": "restore-backup-success",
+      "startup": "started",
+      "snapshots": [
+        {
+          "revision": 0,
+          "dry_run": false,
+          "recovery": {
+            "backup_available": true,
+            "failure": {
+              "port": "portable-state",
+              "operation": "load-setup",
+              "kind": "corrupt-data",
+              "subject": "setup.state",
+              "diagnostic": "injected corrupt global state"
+            }
+          },
+          "last_intent": { "status": "none" }
+        },
+        {
+          "revision": 1,
+          "dry_run": true,
+          "recovery": null,
+          "last_intent": { "status": "applied" }
+        }
+      ],
+      "persisted_dry_run": true,
+      "restart_dry_run": true
     }
   ]
 }

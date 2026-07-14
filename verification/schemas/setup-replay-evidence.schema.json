@@ -9,7 +9,7 @@
       "required": ["port", "operation", "kind", "subject", "diagnostic"],
       "properties": {
         "port": { "type": "string", "enum": ["portable-state", "application-runtime"] },
-        "operation": { "type": "string", "enum": ["open", "load-setup", "persist-setup", "start-supervisor", "stop-supervisor"] },
+        "operation": { "type": "string", "enum": ["open", "load-setup", "persist-setup", "migrate-state", "restore-global-state", "reset-global-state", "start-supervisor", "stop-supervisor"] },
         "kind": { "type": "string", "enum": ["invalid-input", "unsupported", "unavailable", "not-found", "permission-denied", "conflict", "resource-exhausted", "corrupt-data", "io", "protocol", "backend-rejected", "backend-crashed", "integrity", "internal"] },
         "subject": { "type": ["string", "null"] },
         "diagnostic": { "type": "string", "minLength": 1, "maxLength": 4096 }
@@ -22,13 +22,23 @@
         { "type": "object", "additionalProperties": false, "required": ["status", "failure"], "properties": { "status": { "const": "failed" }, "failure": { "$ref": "#/$defs/failure" } } }
       ]
     },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backup_available", "failure"],
+      "properties": {
+        "backup_available": { "type": "boolean" },
+        "failure": { "$ref": "#/$defs/failure" }
+      }
+    },
     "snapshot": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["revision", "dry_run", "last_intent"],
+      "required": ["revision", "dry_run", "recovery", "last_intent"],
       "properties": {
         "revision": { "type": "integer", "minimum": 0 },
         "dry_run": { "type": "boolean" },
+        "recovery": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/recovery" }] },
         "last_intent": { "$ref": "#/$defs/intent" }
       }
     },
