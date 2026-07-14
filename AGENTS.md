@@ -5,6 +5,12 @@
 - Reading, searching, compiling, and analyzing these areas is allowed when useful, provided those actions do not modify their contents.
 - If it is unclear whether a file belongs to the fork or to the protected legacy/native implementation, ask the user before modifying it.
 
+## Rust formatting
+
+- Never run `cargo fmt --all`. Cargo's `--all` option also formats local path dependencies, which includes the read-only crates under `vendor/`.
+- To format or check all workspace members, run regular `cargo fmt` or `cargo fmt --check` from the workspace root without `--all`.
+- When only specific packages are involved, run `cargo fmt --package <package>` or `cargo fmt --package <package> --check` for each affected package.
+
 ## Agent skills
 
 ### Issue tracker

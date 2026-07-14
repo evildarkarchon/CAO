@@ -1,4 +1,4 @@
-"""Build and stage only Tracetide's two production composition roots."""
+"""Build and stage Tracetide's allow-listed production release artifacts."""
 
 from __future__ import annotations
 
@@ -55,6 +55,12 @@ RELEASE_BINARIES = {
         Path("bin/tracetide-hkx-helper.exe"),
     ),
 }
+# Keep the profile allow-list explicit so the portable package cannot inherit legacy trees.
+RELEASE_RESOURCES = (
+    Path("profiles/built-ins.state"),
+    Path("profiles/README.md"),
+    Path("profiles/SSE/startup.state"),
+)
 
 
 class OfflineInputError(RuntimeError):
@@ -533,13 +539,13 @@ def cargo_target_directory(root: Path) -> Path:
     return target_directory.resolve()
 
 
-def stage_binaries(root: Path, destination: Path) -> None:
-    """Copy the two allow-listed executables into a new staging directory.
+def stage_release_artifacts(root: Path, destination: Path) -> None:
+    """Copy allow-listed executables and authenticated resources into a new stage.
 
     Raises:
       FileExistsError: The destination already exists and might contain stale files.
-      FileNotFoundError: A required composition-root executable was not built.
-      OSError: A staging directory or binary cannot be created or copied.
+      FileNotFoundError: A required executable or authenticated resource is missing.
+      OSError: A staging directory or release artifact cannot be created or copied.
     """
     if destination.exists():
         raise FileExistsError(
@@ -551,9 +557,14 @@ def stage_binaries(root: Path, destination: Path) -> None:
         for source_name, _ in RELEASE_BINARIES.values()
         if not (source_directory / source_name).is_file()
     ]
+    missing.extend(
+        root / "resources" / resource
+        for resource in RELEASE_RESOURCES
+        if not (root / "resources" / resource).is_file()
+    )
     if missing:
         raise FileNotFoundError(
-            "release build did not produce required binaries: "
+            "release inputs are missing: "
             + ", ".join(str(path) for path in missing)
         )
 
@@ -563,6 +574,10 @@ def stage_binaries(root: Path, destination: Path) -> None:
         output_path = destination / staged_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_directory / source_name, output_path)
+    for resource in RELEASE_RESOURCES:
+        output_path = destination / "resources" / resource
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / "resources" / resource, output_path)
 
 
 def parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:
@@ -572,13 +587,13 @@ def parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:
         "--output",
         type=Path,
         required=True,
-        help="New directory that will receive the staged executables",
+        help="New directory that will receive the staged release artifacts",
     )
     return parser.parse_args(arguments)
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
-    """Build the frozen release graph and stage its allow-listed executables."""
+    """Build the frozen release graph and stage its allow-listed artifacts."""
     options = parse_arguments(arguments if arguments is not None else sys.argv[1:])
     root = Path(__file__).resolve().parents[1]
     destination = options.output.resolve()
@@ -587,7 +602,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         environment = offline_build_environment(root)
         validate_workspace(root, environment)
         build_release(root, environment)
-        stage_binaries(root, destination)
+        stage_release_artifacts(root, destination)
     except (
         OSError,
         ContractError,
@@ -596,7 +611,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     ) as error:
         print(f"release staging failed: {error}", file=sys.stderr)
         return 1
-    print(f"Staged Tracetide production binaries in {destination}")
+    print(f"Staged Tracetide production release artifacts in {destination}")
     return 0
 
 

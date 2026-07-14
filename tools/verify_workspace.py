@@ -106,6 +106,9 @@ EXPECTED_STAGED_BINARIES = {
     "cao-gui": "tracetide.exe",
     "cao-hkx-helper": "bin/tracetide-hkx-helper.exe",
 }
+EXPECTED_BUILT_IN_PROFILE_MANIFEST_SHA256 = (
+    "7eba8e249f9a5a14bb8d0b6401db70b05334333d1b6b0eae8db8a35d8df1e91d"
+)
 EXPECTED_BRANDING_FILES = (
     "assets/branding/tracetide-mark.svg",
     "assets/branding/tracetide-mark-monochrome.svg",
@@ -2888,6 +2891,25 @@ def validate(root: Path, build_environment: Mapping[str, str] | None = None) -> 
     validate_production_cargo_graph(root, build_environment)
     validate_release_script(root)
     validate_branding_contract(root)
+    validate_built_in_profile_contract(root)
+
+
+def validate_built_in_profile_contract(root: Path) -> None:
+    """Require the reviewed oracle-derived built-in inventory byte-for-byte.
+
+    Raises:
+      ContractError: The inventory is absent or differs from the reviewed contract.
+    """
+    path = root / "resources/profiles/built-ins.state"
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as error:
+        raise ContractError(f"cannot read built-in profile inventory: {error}") from error
+    require_equal(
+        digest,
+        EXPECTED_BUILT_IN_PROFILE_MANIFEST_SHA256,
+        "built-in profile inventory SHA-256",
+    )
 
 
 def parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:

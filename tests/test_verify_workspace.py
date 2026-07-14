@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -51,6 +52,7 @@ class VerifyWorkspaceTests(unittest.TestCase):
         shutil.copytree(REPOSITORY_ROOT / "assets", destination / "assets")
         shutil.copytree(REPOSITORY_ROOT / "apps", destination / "apps")
         shutil.copytree(REPOSITORY_ROOT / "crates", destination / "crates")
+        shutil.copytree(REPOSITORY_ROOT / "resources", destination / "resources")
         shutil.copytree(
             REPOSITORY_ROOT / "tools/cao-verification",
             destination / "tools/cao-verification",
@@ -96,6 +98,61 @@ class VerifyWorkspaceTests(unittest.TestCase):
             REPOSITORY_ROOT / "vendor/serde-hkx",
             destination / "vendor/serde-hkx",
         )
+
+    def test_release_staging_includes_only_authenticated_profile_resources(self) -> None:
+        """The executable-relative startup contract must survive ZIP staging."""
+        spec = importlib.util.spec_from_file_location("stage_release_under_test", STAGER)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        tools_path = str(REPOSITORY_ROOT / "tools")
+        sys.path.insert(0, tools_path)
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.path.remove(tools_path)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            target = Path(temporary_directory) / "target"
+            destination = Path(temporary_directory) / "stage"
+            release = target / module.TARGET / "release"
+            release.mkdir(parents=True)
+            for source_name, _ in module.RELEASE_BINARIES.values():
+                (release / source_name).write_bytes(b"executable")
+            for resource in module.RELEASE_RESOURCES:
+                source = root / "resources" / resource
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes((REPOSITORY_ROOT / "resources" / resource).read_bytes())
+
+            original_target = os.environ.get("CARGO_TARGET_DIR")
+            os.environ["CARGO_TARGET_DIR"] = str(target)
+            try:
+                module.stage_release_artifacts(root, destination)
+            finally:
+                if original_target is None:
+                    os.environ.pop("CARGO_TARGET_DIR", None)
+                else:
+                    os.environ["CARGO_TARGET_DIR"] = original_target
+
+            self.assertEqual(
+                (destination / "resources/profiles/built-ins.state").read_bytes(),
+                (REPOSITORY_ROOT / "resources/profiles/built-ins.state").read_bytes(),
+            )
+            self.assertFalse((destination / "profiles").exists())
+
+    def test_modified_built_in_profile_inventory_is_rejected(self) -> None:
+        """The workspace gate must pin the reviewed oracle-derived inventory bytes."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            inventory = root / "resources/profiles/built-ins.state"
+            inventory.write_bytes(inventory.read_bytes() + b"SSE.identity=FO4\n")
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("built-in profile inventory SHA-256", result.stderr)
 
     def replace_recorded_branding_hash(
         self, root: Path, original: bytes, modified: bytes

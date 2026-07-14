@@ -8,9 +8,10 @@ mod state_document;
 pub use run_effects::WindowsRunEnvironmentFactory;
 
 use cao_application::{
-    ActiveProfileId, AtomicFilePublisher, FailureKind, GlobalStateRecovery,
+    ActiveProfileId, AssetPath, AtomicFilePublisher, FailureKind, GlobalStateRecovery,
     GlobalStateRecoveryAction, OperationId, PortFailure, PortId, PortableState,
-    PortableStateFactory, ProfileOverlay, SetupLoadOutcome, SetupState,
+    PortableStateFactory, ProfileOverlay, ProfileSelectionFallback, SetupLoadOutcome, SetupState,
+    authenticated_built_in_profile_contract,
 };
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
@@ -27,11 +28,15 @@ const FILE_SHARE_READ: u32 = 0x1;
 const FILE_SHARE_WRITE: u32 = 0x2;
 const ERROR_SHARING_VIOLATION: i32 = 32;
 const STARTUP_DEFAULTS_RELATIVE_PATH: &str = "resources/profiles/SSE/startup.state";
+const BUILT_IN_PROFILES_RELATIVE_PATH: &str = "resources/profiles/built-ins.state";
 const GLOBAL_STATE_RELATIVE_PATH: &str = "data/config/application.state";
 const RECOVERY_REPORT_RELATIVE_PATH: &str = "data/config/recovery.report";
-const OVERLAY_STATE_RELATIVE_PATH: &str = "data/profiles/SSE/overlay.state";
+#[cfg(test)]
+const OVERLAY_STATE_RELATIVE_PATH: &str = "data/profiles/builtin-sse/overlay.state";
 const OWNERSHIP_LOCK_RELATIVE_PATH: &str = "data/state.lock";
 const SSE_STARTUP_DEFAULTS: &[u8] = b"schema_version=1\nactive_profile=SSE\ndry_run=0\n";
+const AUTHENTICATED_BUILT_IN_PROFILES: &[u8] =
+    include_bytes!("../../../resources/profiles/built-ins.state");
 
 /// Safe Windows implementation of atomic same-volume file publication.
 #[derive(Clone, Copy, Debug, Default)]
@@ -177,6 +182,7 @@ impl WindowsPortableStateFactory {
         let ownership = acquire_state_ownership(&ownership_path)?;
 
         let startup_defaults = self.executable_root.join(STARTUP_DEFAULTS_RELATIVE_PATH);
+        let built_in_profiles = self.executable_root.join(BUILT_IN_PROFILES_RELATIVE_PATH);
         let startup_profile_root = startup_defaults.parent().ok_or_else(|| {
             containment_failure(
                 OperationId::Open,
@@ -185,53 +191,78 @@ impl WindowsPortableStateFactory {
             )
         })?;
         let resources_root = self.executable_root.join("resources");
-        validate_existing_managed_path(&self.executable_root, &resources_root, OperationId::Open)?;
-        let resources_root_handle = hold_managed_directory(&resources_root)?;
+        validate_existing_managed_path(&self.executable_root, &resources_root, OperationId::Open)
+            .map_err(|failure| bundled_resource_directory_failure(&resources_root, failure))?;
+        let resources_root_handle = hold_managed_directory(&resources_root)
+            .map_err(|failure| bundled_resource_directory_failure(&resources_root, failure))?;
         let resources_profiles_root = self.executable_root.join("resources/profiles");
         validate_existing_managed_path(
             &self.executable_root,
             &resources_profiles_root,
             OperationId::Open,
-        )?;
-        let resources_profiles_root_handle = hold_managed_directory(&resources_profiles_root)?;
+        )
+        .map_err(|failure| bundled_resource_directory_failure(&resources_profiles_root, failure))?;
+        let resources_profiles_root_handle = hold_managed_directory(&resources_profiles_root)
+            .map_err(|failure| {
+                bundled_resource_directory_failure(&resources_profiles_root, failure)
+            })?;
         validate_existing_managed_path(
             &self.executable_root,
             startup_profile_root,
             OperationId::Open,
-        )?;
-        let startup_profile_root_handle = hold_managed_directory(startup_profile_root)?;
+        )
+        .map_err(|failure| bundled_resource_directory_failure(startup_profile_root, failure))?;
+        let startup_profile_root_handle = hold_managed_directory(startup_profile_root)
+            .map_err(|failure| bundled_resource_directory_failure(startup_profile_root, failure))?;
 
         let profiles_root = self.executable_root.join("data/profiles");
         create_managed_directory(&self.executable_root, &profiles_root)?;
         let profiles_root_handle = hold_managed_directory(&profiles_root)?;
-        let profile_root = self.executable_root.join("data/profiles/SSE");
-        create_managed_directory(&self.executable_root, &profile_root)?;
-        let profile_root_handle = hold_managed_directory(&profile_root)?;
-        let overlay_path = self.executable_root.join(OVERLAY_STATE_RELATIVE_PATH);
+        let mut profile_root_handles = Vec::new();
+        let overlay_paths = ActiveProfileId::ALL.map(|profile| {
+            self.executable_root
+                .join("data/profiles")
+                .join(profile.definition().state_directory())
+                .join("overlay.state")
+        });
+        for overlay_path in &overlay_paths {
+            let profile_root = overlay_path.parent().ok_or_else(|| {
+                containment_failure(
+                    OperationId::Open,
+                    overlay_path,
+                    "profile overlay path has no managed parent",
+                )
+            })?;
+            create_managed_directory(&self.executable_root, profile_root)?;
+            profile_root_handles.push(hold_managed_directory(profile_root)?);
+        }
         let config_root = self.executable_root.join("data/config");
         create_managed_directory(&self.executable_root, &config_root)?;
         let config_root_handle = hold_managed_directory(&config_root)?;
         let global_state_path = self.executable_root.join(GLOBAL_STATE_RELATIVE_PATH);
 
+        let mut managed_directory_handles = vec![
+            executable_root_handle,
+            resources_root_handle,
+            resources_profiles_root_handle,
+            startup_profile_root_handle,
+            data_root_handle,
+            config_root_handle,
+            profiles_root_handle,
+        ];
+        managed_directory_handles.extend(profile_root_handles);
+
         Ok(WindowsPortableState {
             _bootstrap_ownership: bootstrap_ownership,
             _ownership: ownership,
-            _managed_directory_handles: vec![
-                executable_root_handle,
-                resources_root_handle,
-                resources_profiles_root_handle,
-                startup_profile_root_handle,
-                data_root_handle,
-                config_root_handle,
-                profiles_root_handle,
-                profile_root_handle,
-            ],
+            _managed_directory_handles: managed_directory_handles,
             executable_root: self.executable_root.clone(),
             startup_defaults,
+            built_in_profiles,
             global_state_path,
-            overlay_path,
+            overlay_paths,
             global_document: None,
-            overlay_document: None,
+            overlay_documents: std::array::from_fn(|_| None),
         })
     }
 }
@@ -252,10 +283,37 @@ struct WindowsPortableState {
     _managed_directory_handles: Vec<File>,
     executable_root: PathBuf,
     startup_defaults: PathBuf,
+    built_in_profiles: PathBuf,
     global_state_path: PathBuf,
-    overlay_path: PathBuf,
+    overlay_paths: [PathBuf; 3],
     global_document: Option<StateDocument>,
-    overlay_document: Option<StateDocument>,
+    overlay_documents: [Option<StateDocument>; 3],
+}
+
+impl WindowsPortableState {
+    /// Loads every built-in overlay independently so inactive choices cannot inherit state.
+    fn load_profile_overlays(&mut self) -> Result<[ProfileOverlay; 3], PortFailure> {
+        let mut overlays = std::array::from_fn(|_| ProfileOverlay::default());
+        for profile in ActiveProfileId::ALL {
+            let index = profile.storage_index();
+            let path = self.overlay_paths[index].clone();
+            let (overlay, document) = match read_optional_managed_file(
+                &self.executable_root,
+                &path,
+                OperationId::LoadSetup,
+            )? {
+                None => {
+                    let overlay = ProfileOverlay::default();
+                    let document = default_overlay_document(&overlay);
+                    (overlay, document)
+                }
+                Some(bytes) => decode_overlay_document(&self.executable_root, &bytes, &path)?,
+            };
+            overlays[index] = overlay;
+            self.overlay_documents[index] = Some(document);
+        }
+        Ok(overlays)
+    }
 }
 
 impl PortableState for WindowsPortableState {
@@ -275,8 +333,32 @@ impl PortableState for WindowsPortableState {
             )
             .with_subject(self.startup_defaults.display().to_string()));
         }
+        let built_ins =
+            read_required_bundled_resource(&self.executable_root, &self.built_in_profiles)
+                .map_err(|failure| {
+                    PortFailure::new(
+                        PortId::PortableState,
+                        OperationId::LoadSetup,
+                        FailureKind::Integrity,
+                        format!(
+                            "bundled built-in profile definitions could not be authenticated: {}",
+                            failure.diagnostic().as_str()
+                        ),
+                    )
+                    .with_subject(self.built_in_profiles.display().to_string())
+                })?;
+        let domain_contract = authenticated_built_in_profile_contract();
+        if built_ins != AUTHENTICATED_BUILT_IN_PROFILES || built_ins != domain_contract.as_bytes() {
+            return Err(PortFailure::new(
+                PortId::PortableState,
+                OperationId::LoadSetup,
+                FailureKind::Integrity,
+                "bundled FO4, SSE, and TES5 definitions do not match the authenticated contract",
+            )
+            .with_subject(self.built_in_profiles.display().to_string()));
+        }
 
-        let active_profile = match read_optional_managed_file(
+        let (active_profile, selection_fallback) = match read_optional_managed_file(
             &self.executable_root,
             &self.global_state_path,
             OperationId::LoadSetup,
@@ -284,10 +366,10 @@ impl PortableState for WindowsPortableState {
             None => {
                 let (active_profile, document) = default_global_document();
                 self.global_document = Some(document);
-                active_profile
+                (active_profile, None)
             }
             Some(bytes) => match decode_global_document(&bytes, &self.global_state_path) {
-                Ok((active_profile, document)) => {
+                Ok((active_profile, selection_fallback, document)) => {
                     if document.was_migrated() {
                         let migrated = document.encode();
                         atomic_replace(
@@ -298,7 +380,7 @@ impl PortableState for WindowsPortableState {
                         )?;
                     }
                     self.global_document = Some(document);
-                    active_profile
+                    (active_profile, selection_fallback)
                 }
                 Err(failure) if failure.kind() == FailureKind::CorruptData => {
                     self.global_document = None;
@@ -312,52 +394,63 @@ impl PortableState for WindowsPortableState {
             },
         };
 
-        let overlay = match read_optional_managed_file(
-            &self.executable_root,
-            &self.overlay_path,
-            OperationId::LoadSetup,
-        )? {
-            None => {
-                let overlay = ProfileOverlay::default();
-                self.overlay_document = Some(default_overlay_document(overlay));
-                overlay
-            }
-            Some(bytes) => {
-                let (overlay, document) =
-                    decode_overlay_document(&self.executable_root, &bytes, &self.overlay_path)?;
-                self.overlay_document = Some(document);
-                overlay
-            }
-        };
-        let setup = SetupState::default()
-            .with_active_profile(active_profile)
-            .with_profile_overlay(overlay);
+        let overlays = self.load_profile_overlays()?;
+        let mut setup = SetupState::default().with_active_profile(active_profile);
+        for profile in ActiveProfileId::ALL {
+            setup =
+                setup.with_profile_overlay_for(profile, overlays[profile.storage_index()].clone());
+        }
+        if let Some(reason) = selection_fallback {
+            setup = setup.with_selection_fallback(reason);
+        }
         Ok(SetupLoadOutcome::Ready(setup))
     }
 
-    /// Atomically persists the active profile overlay with its prior authority as backup.
-    fn persist_setup(&mut self, setup: &SetupState) -> Result<(), PortFailure> {
+    /// Atomically persists one complete profile overlay without touching global selection.
+    fn persist_profile_overlay(
+        &mut self,
+        profile: ActiveProfileId,
+        overlay: &ProfileOverlay,
+    ) -> Result<(), PortFailure> {
+        let index = profile.storage_index();
+        let overlay_path = self.overlay_paths[index].clone();
         let _ = read_optional_managed_file(
             &self.executable_root,
-            &self.overlay_path,
+            &overlay_path,
             OperationId::PersistSetup,
         )?;
-        let mut document = self
-            .overlay_document
+        let mut document = self.overlay_documents[index]
             .clone()
-            .unwrap_or_else(|| default_overlay_document(setup.profile_overlay()));
-        document.set(
-            "dry_run",
-            u8::from(setup.profile_overlay().dry_run()).to_string(),
-        );
+            .unwrap_or_else(|| default_overlay_document(overlay));
+        update_overlay_document(&mut document, overlay);
         let encoded = document.encode();
         atomic_replace(
             &self.executable_root,
-            &self.overlay_path,
+            &overlay_path,
             &encoded,
             OperationId::PersistSetup,
         )?;
-        self.overlay_document = Some(document);
+        self.overlay_documents[index] = Some(document);
+        Ok(())
+    }
+
+    /// Atomically persists one stable selection without materializing an unchanged overlay.
+    fn persist_active_profile(&mut self, profile: ActiveProfileId) -> Result<(), PortFailure> {
+        let active_profile = profile.stable_id();
+        let mut global_document = self
+            .global_document
+            .clone()
+            .unwrap_or_else(|| default_global_document().1);
+        if global_document.get("active_profile") != Some(active_profile) {
+            global_document.set("active_profile", active_profile);
+            atomic_replace(
+                &self.executable_root,
+                &self.global_state_path,
+                &global_document.encode(),
+                OperationId::PersistSetup,
+            )?;
+            self.global_document = Some(global_document);
+        }
         Ok(())
     }
 
@@ -408,8 +501,8 @@ impl PortableState for WindowsPortableState {
                     )
                     .with_subject(backup.display().to_string())
                 })?;
-                let (active_profile, document) =
-                    decode_global_document(&bytes, &backup).map_err(|failure| {
+                let (active_profile, _, document) = decode_global_document(&bytes, &backup)
+                    .map_err(|failure| {
                         PortFailure::new(
                             PortId::PortableState,
                             OperationId::RestoreGlobalState,
@@ -438,17 +531,7 @@ impl PortableState for WindowsPortableState {
         };
 
         // Every remaining fallible setup read happens before the global authority commits.
-        let (overlay, overlay_document) =
-            match read_optional_managed_file(&self.executable_root, &self.overlay_path, operation)?
-            {
-                None => {
-                    let overlay = ProfileOverlay::default();
-                    (overlay, default_overlay_document(overlay))
-                }
-                Some(bytes) => {
-                    decode_overlay_document(&self.executable_root, &bytes, &self.overlay_path)?
-                }
-            };
+        let overlays = self.load_profile_overlays()?;
         let corrupt_backup = sibling_with_suffix(&self.global_state_path, ".corrupt", operation)?;
         atomic_replace_with_backup(
             &self.executable_root,
@@ -458,10 +541,12 @@ impl PortableState for WindowsPortableState {
             operation,
         )?;
         self.global_document = Some(global_document);
-        self.overlay_document = Some(overlay_document);
-        Ok(SetupState::default()
-            .with_active_profile(active_profile)
-            .with_profile_overlay(overlay))
+        let mut setup = SetupState::default().with_active_profile(active_profile);
+        for profile in ActiveProfileId::ALL {
+            setup =
+                setup.with_profile_overlay_for(profile, overlays[profile.storage_index()].clone());
+        }
+        Ok(setup)
     }
 }
 
@@ -744,15 +829,105 @@ fn sibling_with_suffix(
     Ok(path.with_file_name(sibling))
 }
 
-/// Constructs the default current-schema SSE overlay document.
-fn default_overlay_document(overlay: ProfileOverlay) -> StateDocument {
-    StateDocument::current([(
-        "dry_run".to_owned(),
-        u8::from(overlay.dry_run()).to_string(),
-    )])
+/// Constructs a current-schema document from one complete profile overlay.
+fn default_overlay_document(overlay: &ProfileOverlay) -> StateDocument {
+    let mut document = StateDocument::current([]);
+    update_overlay_document(&mut document, overlay);
+    document
 }
 
-/// Decodes and, when necessary, transactionally migrates one SSE overlay.
+/// Updates every supported overlay field while retaining unknown compatible fields.
+fn update_overlay_document(document: &mut StateDocument, overlay: &ProfileOverlay) {
+    document.set("mode", "single-mod");
+    document.set(
+        "asset_path",
+        overlay.asset_path().map_or("", AssetPath::as_str),
+    );
+    set_bool(document, "dry_run", overlay.dry_run());
+    set_bool(document, "debug_log", overlay.debug_log());
+    let archives = overlay.archives();
+    set_bool(document, "archives.extract", archives.extract());
+    set_bool(document, "archives.create", archives.create());
+    set_bool(
+        document,
+        "archives.delete_backups",
+        archives.delete_backups(),
+    );
+    set_bool(
+        document,
+        "archives.merge_incompressible",
+        archives.merge_incompressible(),
+    );
+    set_bool(
+        document,
+        "archives.merge_textures",
+        archives.merge_textures(),
+    );
+    set_bool(
+        document,
+        "archives.process_content",
+        archives.process_content(),
+    );
+    set_bool(
+        document,
+        "archives.create_dummies",
+        archives.create_dummies(),
+    );
+    set_bool(document, "archives.compress", archives.compress());
+    set_bool(document, "archives.delete_source", archives.delete_source());
+    let textures = overlay.textures();
+    set_bool(
+        document,
+        "textures.process_necessary",
+        textures.process_necessary(),
+    );
+    set_bool(document, "textures.compress", textures.compress());
+    set_bool(
+        document,
+        "textures.generate_mipmaps",
+        textures.generate_mipmaps(),
+    );
+    set_bool(
+        document,
+        "textures.resize_to_fixed_size",
+        textures.resize_to_fixed_size(),
+    );
+    document.set("textures.target_width", textures.target_width().to_string());
+    document.set(
+        "textures.target_height",
+        textures.target_height().to_string(),
+    );
+    set_bool(
+        document,
+        "textures.resize_by_ratio",
+        textures.resize_by_ratio(),
+    );
+    document.set("textures.width_ratio", textures.width_ratio().to_string());
+    document.set("textures.height_ratio", textures.height_ratio().to_string());
+    let meshes = overlay.meshes();
+    document.set(
+        "meshes.optimization_level",
+        meshes.optimization_level().to_string(),
+    );
+    set_bool(
+        document,
+        "meshes.handle_headparts",
+        meshes.handle_headparts(),
+    );
+    set_bool(document, "meshes.resave", meshes.resave());
+    set_bool(
+        document,
+        "animations.optimize",
+        overlay.animations().optimize(),
+    );
+}
+
+/// Stores one canonical fork-owned boolean in a compatible state document.
+fn set_bool(document: &mut StateDocument, key: &str, value: bool) {
+    document.set(key, u8::from(value).to_string());
+}
+
+/// Decodes and, when necessary, transactionally migrates one profile overlay.
 fn decode_overlay_document(
     root: &Path,
     bytes: &[u8],
@@ -765,22 +940,203 @@ fn decode_overlay_document(
         _ => {
             return Err(corrupt_document(
                 path,
-                "portable SSE overlay has no boolean dry_run",
+                "portable profile overlay has no boolean dry_run",
             ));
         }
     };
+    if document
+        .get("mode")
+        .is_some_and(|mode| mode != "single-mod")
+    {
+        return Err(corrupt_document(
+            path,
+            "portable profile overlay has an unsupported mode",
+        ));
+    }
+    let defaults = ProfileOverlay::default();
+    let archives = defaults
+        .archives()
+        .with_extract(read_optional_bool(
+            &document,
+            "archives.extract",
+            false,
+            path,
+        )?)
+        .with_create(read_optional_bool(
+            &document,
+            "archives.create",
+            false,
+            path,
+        )?)
+        .with_delete_backups(read_optional_bool(
+            &document,
+            "archives.delete_backups",
+            false,
+            path,
+        )?)
+        .with_merge_incompressible(read_optional_bool(
+            &document,
+            "archives.merge_incompressible",
+            true,
+            path,
+        )?)
+        .with_merge_textures(read_optional_bool(
+            &document,
+            "archives.merge_textures",
+            false,
+            path,
+        )?)
+        .with_process_content(read_optional_bool(
+            &document,
+            "archives.process_content",
+            false,
+            path,
+        )?)
+        .with_create_dummies(read_optional_bool(
+            &document,
+            "archives.create_dummies",
+            true,
+            path,
+        )?)
+        .with_compress(read_optional_bool(
+            &document,
+            "archives.compress",
+            true,
+            path,
+        )?)
+        .with_delete_source(read_optional_bool(
+            &document,
+            "archives.delete_source",
+            true,
+            path,
+        )?);
+    let textures = defaults
+        .textures()
+        .with_process_necessary(read_optional_bool(
+            &document,
+            "textures.process_necessary",
+            true,
+            path,
+        )?)
+        .with_compress(read_optional_bool(
+            &document,
+            "textures.compress",
+            false,
+            path,
+        )?)
+        .with_generate_mipmaps(read_optional_bool(
+            &document,
+            "textures.generate_mipmaps",
+            false,
+            path,
+        )?)
+        .with_resize_to_fixed_size(read_optional_bool(
+            &document,
+            "textures.resize_to_fixed_size",
+            false,
+            path,
+        )?)
+        .with_resize_by_ratio(read_optional_bool(
+            &document,
+            "textures.resize_by_ratio",
+            false,
+            path,
+        )?)
+        .with_target_size(
+            read_optional_u32(&document, "textures.target_width", 2048, path)?,
+            read_optional_u32(&document, "textures.target_height", 2048, path)?,
+        )
+        .with_ratios(
+            read_optional_u32(&document, "textures.width_ratio", 2, path)?,
+            read_optional_u32(&document, "textures.height_ratio", 2, path)?,
+        );
+    let optimization_level = read_optional_u32(&document, "meshes.optimization_level", 0, path)?;
+    let optimization_level = u8::try_from(optimization_level).map_err(|_| {
+        corrupt_document(path, "portable profile overlay mesh level is out of range")
+    })?;
+    let meshes = defaults
+        .meshes()
+        .with_optimization_level(optimization_level)
+        .with_handle_headparts(read_optional_bool(
+            &document,
+            "meshes.handle_headparts",
+            true,
+            path,
+        )?)
+        .with_resave(read_optional_bool(&document, "meshes.resave", false, path)?);
+    let animation_optimize = read_optional_bool(
+        &document,
+        "animations.optimize",
+        document.get("animation_optimize") == Some("1"),
+        path,
+    )?;
     if document.was_migrated() {
         let migrated = document.encode();
         atomic_replace(root, path, &migrated, OperationId::MigrateState)?;
     }
-    Ok((ProfileOverlay::default().with_dry_run(dry_run), document))
+    let mut overlay = defaults
+        .with_dry_run(dry_run)
+        .with_debug_log(read_optional_bool(&document, "debug_log", false, path)?)
+        .with_archives(archives)
+        .with_textures(textures)
+        .with_meshes(meshes)
+        .with_animations(defaults.animations().with_optimize(animation_optimize));
+    if let Some(asset_path) = document.get("asset_path").filter(|value| !value.is_empty()) {
+        let asset_path = AssetPath::new(asset_path).map_err(|error| {
+            corrupt_document(
+                path,
+                &format!("portable profile overlay asset_path is invalid: {error}"),
+            )
+        })?;
+        overlay = overlay.with_asset_path(asset_path);
+    }
+    Ok((overlay, document))
+}
+
+/// Reads one optional canonical boolean, using the documented deterministic default.
+fn read_optional_bool(
+    document: &StateDocument,
+    key: &str,
+    default: bool,
+    path: &Path,
+) -> Result<bool, PortFailure> {
+    match document.get(key) {
+        None => Ok(default),
+        Some("0") => Ok(false),
+        Some("1") => Ok(true),
+        Some(_) => Err(corrupt_document(
+            path,
+            &format!("portable profile overlay field {key} is not boolean"),
+        )),
+    }
+}
+
+/// Reads one optional non-zero-capable integer with a deterministic fallback.
+fn read_optional_u32(
+    document: &StateDocument,
+    key: &str,
+    default: u32,
+    path: &Path,
+) -> Result<u32, PortFailure> {
+    match document.get(key) {
+        None => Ok(default),
+        Some(value) => value.parse().map_err(|_| {
+            corrupt_document(
+                path,
+                &format!("portable profile overlay field {key} is not an unsigned integer"),
+            )
+        }),
+    }
 }
 
 /// Constructs default global configuration without mutating the portable state tree.
 fn default_global_document() -> (ActiveProfileId, StateDocument) {
     (
         ActiveProfileId::Sse,
-        StateDocument::current([("active_profile".to_owned(), "SSE".to_owned())]),
+        StateDocument::current([(
+            "active_profile".to_owned(),
+            ActiveProfileId::Sse.stable_id().to_owned(),
+        )]),
     )
 }
 
@@ -788,20 +1144,29 @@ fn default_global_document() -> (ActiveProfileId, StateDocument) {
 fn decode_global_document(
     bytes: &[u8],
     path: &Path,
-) -> Result<(ActiveProfileId, StateDocument), PortFailure> {
+) -> Result<
+    (
+        ActiveProfileId,
+        Option<ProfileSelectionFallback>,
+        StateDocument,
+    ),
+    PortFailure,
+> {
     let document = StateDocument::decode(bytes).map_err(|error| document_failure(path, error))?;
-    let active_profile = match document.get("active_profile") {
-        Some("FO4") => ActiveProfileId::Fo4,
-        Some("SSE") => ActiveProfileId::Sse,
-        Some("TES5") => ActiveProfileId::Tes5,
-        _ => {
-            return Err(corrupt_document(
-                path,
-                "global configuration has no recognized active_profile",
-            ));
-        }
+    let (active_profile, fallback) = match document.get("active_profile") {
+        Some(value) => match ActiveProfileId::from_stable_id(value) {
+            Some(profile) => (profile, None),
+            None => (
+                ActiveProfileId::Sse,
+                Some(ProfileSelectionFallback::Invalid),
+            ),
+        },
+        None => (
+            ActiveProfileId::Sse,
+            Some(ProfileSelectionFallback::Missing),
+        ),
     };
-    Ok((active_profile, document))
+    Ok((active_profile, fallback, document))
 }
 
 /// Reports whether the fixed newest backup is readable, compatible, and valid.
@@ -836,6 +1201,20 @@ fn corrupt_document(path: &Path, diagnostic: &str) -> PortFailure {
         OperationId::LoadSetup,
         FailureKind::CorruptData,
         diagnostic,
+    )
+    .with_subject(path.display().to_string())
+}
+
+/// Normalizes any bundled-profile directory failure as installation integrity loss.
+fn bundled_resource_directory_failure(path: &Path, failure: PortFailure) -> PortFailure {
+    PortFailure::new(
+        PortId::PortableState,
+        OperationId::LoadSetup,
+        FailureKind::Integrity,
+        format!(
+            "bundled profile resources could not be loaded: {}",
+            failure.diagnostic().as_str()
+        ),
     )
     .with_subject(path.display().to_string())
 }
@@ -1062,13 +1441,16 @@ fn open_failure(
 #[cfg(test)]
 mod tests {
     use super::{
-        ERROR_SHARING_VIOLATION, FILE_SHARE_READ, GLOBAL_STATE_RELATIVE_PATH,
-        OVERLAY_STATE_RELATIVE_PATH, RECOVERY_REPORT_RELATIVE_PATH, STARTUP_DEFAULTS_RELATIVE_PATH,
-        WindowsPortableStateFactory, validate_existing_managed_path,
+        BUILT_IN_PROFILES_RELATIVE_PATH, ERROR_SHARING_VIOLATION, FILE_SHARE_READ,
+        GLOBAL_STATE_RELATIVE_PATH, OVERLAY_STATE_RELATIVE_PATH, RECOVERY_REPORT_RELATIVE_PATH,
+        STARTUP_DEFAULTS_RELATIVE_PATH, WindowsPortableStateFactory,
+        validate_existing_managed_path,
     };
     use cao_application::{
-        ActiveProfileId, ApplicationRuntime, GlobalStateRecoveryAction, Intent, IntentOutcome,
-        ProfileOverlayEdit, SnapshotRevision, SnapshotSink, WorkbenchSnapshot,
+        ActiveProfileId, ApplicationRuntime, AssetPath, FailureKind, GlobalStateRecoveryAction,
+        Intent, IntentOutcome, PortableStateFactory, ProfileOverlay, ProfileOverlayEdit,
+        ProfileSelectionFallback, SetupLoadOutcome, SnapshotRevision, SnapshotSink,
+        WorkbenchSnapshot,
     };
     use std::fs::OpenOptions;
     use std::os::windows::fs::OpenOptionsExt;
@@ -1082,6 +1464,8 @@ mod tests {
         b"schema_version=1\nactive_profile=SSE\ndry_run=0\n";
     const COMMITTED_SSE_STARTUP_DEFAULTS: &[u8] =
         include_bytes!("../../../resources/profiles/SSE/startup.state");
+    const COMMITTED_BUILT_IN_PROFILES: &[u8] =
+        include_bytes!("../../../resources/profiles/built-ins.state");
     const CHILD_EXECUTABLE_ENV: &str = "TRACETIDE_PORTABLE_STATE_CHILD_EXECUTABLE";
 
     #[derive(Default)]
@@ -1140,6 +1524,11 @@ mod tests {
                 .expect("sandbox resources should be created");
             std::fs::write(&resource, COMMITTED_SSE_STARTUP_DEFAULTS)
                 .expect("startup defaults should be written");
+            std::fs::write(
+                root.join(BUILT_IN_PROFILES_RELATIVE_PATH),
+                COMMITTED_BUILT_IN_PROFILES,
+            )
+            .expect("authenticated built-in definitions should be written");
             let executable = root.join("tracetide.exe");
             std::fs::write(&executable, b"test executable")
                 .expect("sandbox executable should be written");
@@ -1210,6 +1599,223 @@ mod tests {
         restarted_runtime
             .shutdown()
             .expect("the restarted runtime should shut down cleanly");
+    }
+
+    #[test]
+    fn built_in_selection_and_overlays_survive_restart_without_cross_profile_leakage() {
+        let sandbox = PortableSandbox::create("profile-isolation");
+        let factory = Arc::new(
+            WindowsPortableStateFactory::for_executable(sandbox.executable())
+                .expect("the executable root should resolve"),
+        );
+        let sink = Arc::new(RecordingSink::default());
+        let (handle, runtime) = ApplicationRuntime::start(Arc::clone(&factory), Arc::clone(&sink))
+            .expect("fresh portable state should start");
+        let initial = sink.wait_for(0);
+
+        handle
+            .submit(Intent::EditProfileOverlay {
+                expected_revision: initial.revision(),
+                edit: ProfileOverlayEdit::SetDryRun(true),
+            })
+            .expect("the SSE edit should enter the queue");
+        let sse_edited = sink.wait_for(1);
+        handle
+            .submit(Intent::SelectProfile {
+                expected_revision: sse_edited.revision(),
+                profile_id: ActiveProfileId::Fo4,
+            })
+            .expect("the FO4 selection should enter the queue");
+        let fo4_selected = sink.wait_for(2);
+        assert!(!fo4_selected.setup().profile_overlay().dry_run());
+        runtime
+            .shutdown()
+            .expect("the first runtime should release portable state");
+
+        let restarted_sink = Arc::new(RecordingSink::default());
+        let (restarted_handle, restarted_runtime) =
+            ApplicationRuntime::start(Arc::clone(&factory), Arc::clone(&restarted_sink))
+                .expect("portable state should reopen after shutdown");
+        let restarted = restarted_sink.wait_for(0);
+        assert_eq!(restarted.setup().active_profile(), ActiveProfileId::Fo4);
+        assert!(!restarted.setup().profile_overlay().dry_run());
+        restarted_handle
+            .submit(Intent::SelectProfile {
+                expected_revision: restarted.revision(),
+                profile_id: ActiveProfileId::Sse,
+            })
+            .expect("the SSE reselection should enter the queue");
+        let sse_reselected = restarted_sink.wait_for(1);
+        assert!(sse_reselected.setup().profile_overlay().dry_run());
+        restarted_runtime
+            .shutdown()
+            .expect("the restarted runtime should shut down cleanly");
+    }
+
+    #[test]
+    fn complete_overlay_round_trips_through_the_portable_state_port() {
+        let sandbox = PortableSandbox::create("complete-overlay");
+        let factory = WindowsPortableStateFactory::for_executable(sandbox.executable())
+            .expect("the executable root should resolve");
+        let mut state = factory.open().expect("portable state should open");
+        let initial = match state.load_setup().expect("setup should load") {
+            SetupLoadOutcome::Ready(setup) => setup,
+            SetupLoadOutcome::RecoveryRequired(_) => {
+                panic!("fresh setup unexpectedly needs recovery")
+            }
+        };
+        let defaults = ProfileOverlay::default();
+        let overlay = defaults
+            .with_asset_path(
+                AssetPath::new(r"E:\Mods\A=Named Mod")
+                    .expect("the absolute asset path should validate"),
+            )
+            .with_dry_run(true)
+            .with_debug_log(true)
+            .with_archives(
+                defaults
+                    .archives()
+                    .with_extract(true)
+                    .with_create(true)
+                    .with_delete_backups(true)
+                    .with_merge_incompressible(false)
+                    .with_merge_textures(true)
+                    .with_process_content(true)
+                    .with_create_dummies(false)
+                    .with_compress(false)
+                    .with_delete_source(false),
+            )
+            .with_textures(
+                defaults
+                    .textures()
+                    .with_process_necessary(false)
+                    .with_compress(true)
+                    .with_generate_mipmaps(true)
+                    .with_resize_to_fixed_size(true)
+                    .with_resize_by_ratio(true)
+                    .with_target_size(1024, 512)
+                    .with_ratios(4, 8),
+            )
+            .with_meshes(
+                defaults
+                    .meshes()
+                    .with_optimization_level(3)
+                    .with_handle_headparts(false)
+                    .with_resave(true),
+            )
+            .with_animations(defaults.animations().with_optimize(true));
+        state
+            .persist_profile_overlay(initial.active_profile(), &overlay)
+            .expect("complete overlay should persist");
+        drop(state);
+
+        let mut reopened = factory.open().expect("portable state should reopen");
+        let reloaded = match reopened.load_setup().expect("persisted setup should load") {
+            SetupLoadOutcome::Ready(setup) => setup,
+            SetupLoadOutcome::RecoveryRequired(_) => {
+                panic!("persisted setup unexpectedly needs recovery")
+            }
+        };
+        assert_eq!(reloaded.profile_overlay(), &overlay);
+    }
+
+    #[test]
+    fn profile_selection_commits_only_global_authority() {
+        let sandbox = PortableSandbox::create("selection-authority");
+        let factory = WindowsPortableStateFactory::for_executable(sandbox.executable())
+            .expect("the executable root should resolve");
+        let mut state = factory.open().expect("portable state should open");
+        state.load_setup().expect("fresh setup should load");
+
+        state
+            .persist_active_profile(ActiveProfileId::Fo4)
+            .expect("the stable selection should persist");
+
+        let global = std::fs::read_to_string(sandbox.root().join(GLOBAL_STATE_RELATIVE_PATH))
+            .expect("global selection should be materialized");
+        assert!(global.contains("active_profile=FO4"));
+        assert!(
+            !sandbox
+                .root()
+                .join("data/profiles/builtin-fo4/overlay.state")
+                .exists(),
+            "selection must not create a second persistence authority"
+        );
+    }
+
+    #[test]
+    fn relative_persisted_asset_path_is_rejected_as_corrupt_overlay_state() {
+        let sandbox = PortableSandbox::create("relative-asset-path");
+        let factory = WindowsPortableStateFactory::for_executable(sandbox.executable())
+            .expect("the executable root should resolve");
+        let mut state = factory.open().expect("portable state should open");
+        std::fs::write(
+            sandbox.root().join(OVERLAY_STATE_RELATIVE_PATH),
+            b"schema_version=2\ndry_run=0\nasset_path=relative\\assets\n",
+        )
+        .expect("invalid overlay fixture should be written");
+
+        let failure = state
+            .load_setup()
+            .expect_err("a relative remembered path must not enter the domain model");
+        assert_eq!(failure.kind(), FailureKind::CorruptData);
+        assert!(
+            failure.diagnostic().as_str().contains("not absolute"),
+            "unexpected diagnostic: {}",
+            failure.diagnostic().as_str()
+        );
+    }
+
+    #[test]
+    fn missing_or_invalid_selection_visibly_falls_back_to_sse_and_can_be_corrected() {
+        for (name, document, expected_reason) in [
+            (
+                "missing-selection",
+                b"schema_version=2\nfuture=kept\n".as_slice(),
+                ProfileSelectionFallback::Missing,
+            ),
+            (
+                "invalid-selection",
+                b"schema_version=2\nactive_profile=display-name-skyrim\nfuture=kept\n".as_slice(),
+                ProfileSelectionFallback::Invalid,
+            ),
+        ] {
+            let sandbox = PortableSandbox::create(name);
+            let global = sandbox.root().join(GLOBAL_STATE_RELATIVE_PATH);
+            std::fs::create_dir_all(global.parent().expect("global state should have a parent"))
+                .expect("configuration directory should be created");
+            std::fs::write(&global, document).expect("global state should be written");
+            let factory = Arc::new(
+                WindowsPortableStateFactory::for_executable(sandbox.executable())
+                    .expect("the executable root should resolve"),
+            );
+            let sink = Arc::new(RecordingSink::default());
+            let (handle, runtime) =
+                ApplicationRuntime::start(Arc::clone(&factory), Arc::clone(&sink))
+                    .expect("invalid selection should not become corruption recovery");
+            let fallback = sink.wait_for(0);
+
+            assert_eq!(fallback.setup().active_profile(), ActiveProfileId::Sse);
+            assert_eq!(fallback.setup().selection_fallback(), Some(expected_reason));
+            assert_eq!(fallback.global_state_recovery(), None);
+            handle
+                .submit(Intent::SelectProfile {
+                    expected_revision: fallback.revision(),
+                    profile_id: ActiveProfileId::Tes5,
+                })
+                .expect("an explicit identity should correct the fallback");
+            let corrected = sink.wait_for(1);
+            assert_eq!(corrected.setup().active_profile(), ActiveProfileId::Tes5);
+            assert_eq!(corrected.setup().selection_fallback(), None);
+            runtime
+                .shutdown()
+                .expect("the corrected runtime should shut down cleanly");
+
+            let saved = std::fs::read_to_string(&global)
+                .expect("corrected global state should remain readable");
+            assert!(saved.contains("active_profile=TES5"));
+            assert!(saved.contains("future=kept"));
+        }
     }
 
     #[test]
@@ -1380,7 +1986,7 @@ mod tests {
         let global = sandbox.root().join(GLOBAL_STATE_RELATIVE_PATH);
         std::fs::create_dir_all(global.parent().expect("global state should have a parent"))
             .expect("configuration directory should be created");
-        let corrupt = b"schema_version=2\nactive_profile=false\n";
+        let corrupt = b"schema_version=2\nactive_profile\n";
         std::fs::write(&global, corrupt).expect("corrupt global state should be written");
         let protected = [
             (
@@ -1844,10 +2450,61 @@ mod tests {
     }
 
     #[test]
+    fn missing_or_modified_built_in_definition_inventory_is_an_integrity_failure() {
+        for (name, replacement) in [
+            ("missing-built-ins", None),
+            (
+                "modified-built-ins",
+                Some(b"schema_version=1\nSSE.identity=FO4\n".as_slice()),
+            ),
+        ] {
+            let sandbox = PortableSandbox::create(name);
+            let manifest = sandbox.root().join(BUILT_IN_PROFILES_RELATIVE_PATH);
+            match replacement {
+                Some(bytes) => std::fs::write(&manifest, bytes)
+                    .expect("modified built-in inventory should be written"),
+                None => {
+                    std::fs::remove_file(&manifest).expect("built-in inventory should be removed")
+                }
+            }
+            let factory = Arc::new(
+                WindowsPortableStateFactory::for_executable(sandbox.executable())
+                    .expect("the executable root should resolve"),
+            );
+
+            let failure =
+                match ApplicationRuntime::start(factory, Arc::new(RecordingSink::default())) {
+                    Ok((_handle, runtime)) => {
+                        runtime
+                            .shutdown()
+                            .expect("an unexpected runtime should still shut down cleanly");
+                        panic!("unauthenticated built-ins unexpectedly started");
+                    }
+                    Err(failure) => failure,
+                };
+
+            assert_eq!(failure.port(), cao_application::PortId::PortableState);
+            assert_eq!(failure.operation(), cao_application::OperationId::LoadSetup);
+            assert_eq!(failure.kind(), cao_application::FailureKind::Integrity);
+            assert!(failure.subject().is_some_and(|subject| {
+                subject
+                    .as_str()
+                    .ends_with("resources\\profiles\\built-ins.state")
+            }));
+        }
+    }
+
+    #[test]
     fn missing_sse_startup_resource_is_an_installation_integrity_failure() {
         let sandbox = PortableSandbox::create("missing-resource");
-        std::fs::remove_file(sandbox.root().join(STARTUP_DEFAULTS_RELATIVE_PATH))
-            .expect("the sandbox resource should be removed");
+        std::fs::remove_dir_all(
+            sandbox
+                .root()
+                .join(STARTUP_DEFAULTS_RELATIVE_PATH)
+                .parent()
+                .expect("startup resource should have a parent"),
+        )
+        .expect("the sandbox SSE resource directory should be removed");
         let factory = Arc::new(
             WindowsPortableStateFactory::for_executable(sandbox.executable())
                 .expect("the executable root should resolve"),
@@ -1974,7 +2631,7 @@ mod tests {
         let (handle, runtime) = ApplicationRuntime::start(factory, Arc::clone(&sink))
             .expect("portable state should start before the reparse swap");
         let initial = sink.wait_for(0);
-        let profile_root = sandbox.root().join("data/profiles/SSE");
+        let profile_root = sandbox.root().join("data/profiles/builtin-sse");
         let removal_error = std::fs::remove_dir(&profile_root)
             .expect_err("the held profile root must deny a swap after startup");
         assert_eq!(removal_error.raw_os_error(), Some(ERROR_SHARING_VIOLATION));

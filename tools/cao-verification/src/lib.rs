@@ -6,9 +6,9 @@ mod run_effects;
 pub use run_effects::*;
 
 use cao_application::{
-    FailureKind, GlobalStateRecovery, GlobalStateRecoveryAction, OperationId, PortFailure, PortId,
-    PortableState, PortableStateFactory, ProfileOverlay, SetupLoadOutcome, SetupState,
-    SnapshotSink, WorkbenchSnapshot,
+    ActiveProfileId, FailureKind, GlobalStateRecovery, GlobalStateRecoveryAction, OperationId,
+    PortFailure, PortId, PortableState, PortableStateFactory, ProfileOverlay, SetupLoadOutcome,
+    SetupState, SnapshotSink, WorkbenchSnapshot,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
@@ -243,6 +243,46 @@ struct DeterministicState {
     shared: Arc<DeterministicStateShared>,
 }
 
+impl DeterministicState {
+    /// Persists one candidate after the deterministic acceptance barrier is released.
+    fn persist_candidate(&self, setup: SetupState) -> Result<(), PortFailure> {
+        if let Some(failure) = self.shared.take_fault(OperationId::PersistSetup) {
+            return Err(failure);
+        }
+
+        let (state, changed) = &self.shared.gate;
+        let mut state = state.lock().expect("persistence gate lock was poisoned");
+        state.entered = true;
+        changed.notify_all();
+
+        // The barrier makes transport acceptance observable before durable confirmation.
+        while !state.released {
+            state = changed
+                .wait(state)
+                .expect("persistence gate lock was poisoned while blocked");
+        }
+        drop(state);
+
+        if let Some(state_file) = &self.shared.state_file {
+            write_setup_file(state_file, &setup).map_err(|error| {
+                PortFailure::new(
+                    PortId::PortableState,
+                    OperationId::PersistSetup,
+                    FailureKind::Io,
+                    error.to_string(),
+                )
+            })?;
+        }
+
+        *self
+            .shared
+            .setup
+            .lock()
+            .expect("deterministic setup lock was poisoned") = setup;
+        Ok(())
+    }
+}
+
 impl PortableState for DeterministicState {
     /// Loads the deterministic authority or projects its retained recovery requirement.
     ///
@@ -277,42 +317,32 @@ impl PortableState for DeterministicState {
         ))
     }
 
-    /// Persists one setup candidate after the deterministic acceptance barrier is released.
-    fn persist_setup(&mut self, setup: &SetupState) -> Result<(), PortFailure> {
-        if let Some(failure) = self.shared.take_fault(OperationId::PersistSetup) {
-            return Err(failure);
-        }
-
-        let (state, changed) = &self.shared.gate;
-        let mut state = state.lock().expect("persistence gate lock was poisoned");
-        state.entered = true;
-        changed.notify_all();
-
-        // The barrier makes transport acceptance observable before durable confirmation.
-        while !state.released {
-            state = changed
-                .wait(state)
-                .expect("persistence gate lock was poisoned while blocked");
-        }
-        drop(state);
-
-        if let Some(state_file) = &self.shared.state_file {
-            write_setup_file(state_file, setup).map_err(|error| {
-                PortFailure::new(
-                    PortId::PortableState,
-                    OperationId::PersistSetup,
-                    FailureKind::Io,
-                    error.to_string(),
-                )
-            })?;
-        }
-
-        *self
+    /// Persists one deterministic overlay authority.
+    fn persist_profile_overlay(
+        &mut self,
+        profile: ActiveProfileId,
+        overlay: &ProfileOverlay,
+    ) -> Result<(), PortFailure> {
+        let setup = self
             .shared
             .setup
             .lock()
-            .expect("deterministic setup lock was poisoned") = setup.clone();
-        Ok(())
+            .expect("deterministic setup lock was poisoned")
+            .clone()
+            .with_profile_overlay_for(profile, overlay.clone());
+        self.persist_candidate(setup)
+    }
+
+    /// Persists one deterministic global selection authority.
+    fn persist_active_profile(&mut self, profile: ActiveProfileId) -> Result<(), PortFailure> {
+        let setup = self
+            .shared
+            .setup
+            .lock()
+            .expect("deterministic setup lock was poisoned")
+            .clone()
+            .with_active_profile(profile);
+        self.persist_candidate(setup)
     }
 
     /// Commits the selected deterministic recovery and clears recovery only after its write.
@@ -488,7 +518,7 @@ impl SnapshotSink for RecordingSink {
 mod tests {
     use super::{DeterministicStateFactory, FaultPlan, RecordingSink, run_setup_replay};
     use cao_application::{
-        ApplicationRuntime, BoundedText, FailureKind, GlobalStateRecovery,
+        ActiveProfileId, ApplicationRuntime, BoundedText, FailureKind, GlobalStateRecovery,
         GlobalStateRecoveryAction, Intent, IntentOutcome, IntentRejection, MAX_DIAGNOSTIC_BYTES,
         OperationId, PortFailure, PortId, ProfileOverlay, ProfileOverlayEdit, SetupState,
         SnapshotRevision,
@@ -541,6 +571,58 @@ mod tests {
         restarted_runtime
             .shutdown()
             .expect("restarted runtime should shut down cleanly");
+    }
+
+    #[test]
+    fn deterministic_public_seam_preserves_isolated_profile_selection_across_restart() {
+        let factory = Arc::new(DeterministicStateFactory::default());
+        factory.release_persistence();
+        let sink = Arc::new(RecordingSink::default());
+        let (handle, runtime) = ApplicationRuntime::start(Arc::clone(&factory), Arc::clone(&sink))
+            .expect("application runtime should start");
+        let initial = sink.wait_for(0);
+
+        handle
+            .submit(Intent::EditProfileOverlay {
+                expected_revision: initial.revision(),
+                edit: ProfileOverlayEdit::SetDryRun(true),
+            })
+            .expect("the SSE edit should enter the queue");
+        let sse_edited = sink.wait_for(1);
+        handle
+            .submit(Intent::SelectProfile {
+                expected_revision: sse_edited.revision(),
+                profile_id: ActiveProfileId::Fo4,
+            })
+            .expect("the FO4 selection should enter the queue");
+        let fo4_selected = sink.wait_for(2);
+        assert!(!fo4_selected.setup().profile_overlay().dry_run());
+        assert!(
+            fo4_selected
+                .setup()
+                .overlay_for(ActiveProfileId::Sse)
+                .dry_run()
+        );
+        runtime
+            .shutdown()
+            .expect("the first runtime should shut down cleanly");
+
+        let restarted_sink = Arc::new(RecordingSink::default());
+        let (_handle, restarted_runtime) =
+            ApplicationRuntime::start(Arc::clone(&factory), Arc::clone(&restarted_sink))
+                .expect("deterministic state should restart");
+        let restarted = restarted_sink.wait_for(0);
+        assert_eq!(restarted.setup().active_profile(), ActiveProfileId::Fo4);
+        assert!(!restarted.setup().profile_overlay().dry_run());
+        assert!(
+            restarted
+                .setup()
+                .overlay_for(ActiveProfileId::Sse)
+                .dry_run()
+        );
+        restarted_runtime
+            .shutdown()
+            .expect("the restarted runtime should shut down cleanly");
     }
 
     #[test]

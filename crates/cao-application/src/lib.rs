@@ -3,7 +3,13 @@
 
 mod run_effects;
 
-pub use cao_domain::{ActiveProfileId, ProfileOverlay, SetupState};
+pub use cao_domain::{
+    ActiveProfileId, AnimationChoices, ArchiveChoices, ArchiveFormatTarget, AssetPath,
+    AssetPathError, AuthenticatedProfileAsset, BuiltInProfileDefinition, EffectiveProfileOverlay,
+    MeshChoices, MeshFormatTarget, ProcessingMode, ProfileCapabilities, ProfileOverlay,
+    ProfileSelectionFallback, SetupState, TextureChoices, TextureFormatTarget,
+    authenticated_built_in_profile_contract,
+};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 pub use run_effects::{
     AtomicFilePublisher, CancellationProbe, Clock, DEFAULT_PROCESS_OUTPUT_BYTES, IdSource,
@@ -51,6 +57,8 @@ impl SnapshotRevision {
 pub enum ProfileOverlayEdit {
     /// Enables or disables faithful non-mutating processing.
     SetDryRun(bool),
+    /// Stores animation optimization even when the active definition masks the control.
+    SetAnimationOptimization(bool),
 }
 
 /// Explicit user choice for recovering corrupt fork-owned global configuration.
@@ -72,6 +80,18 @@ pub enum Intent {
         /// Typed profile-overlay mutation to persist.
         edit: ProfileOverlayEdit,
     },
+    /// Selects one built-in by stable identity without deriving it from a name or path.
+    SelectProfile {
+        /// Snapshot revision against which the selection was made.
+        expected_revision: SnapshotRevision,
+        /// Reserved built-in identity to make active.
+        profile_id: ActiveProfileId,
+    },
+    /// Removes only the active profile's overlay and restores documented defaults.
+    ResetProfileOverlay {
+        /// Snapshot revision against which the reset was requested.
+        expected_revision: SnapshotRevision,
+    },
     /// Applies an explicit recovery choice while corrupt global state blocks setup edits.
     RecoverGlobalState {
         /// Snapshot revision against which the recovery choice was made.
@@ -88,6 +108,10 @@ impl Intent {
             Self::EditProfileOverlay {
                 expected_revision, ..
             }
+            | Self::SelectProfile {
+                expected_revision, ..
+            }
+            | Self::ResetProfileOverlay { expected_revision }
             | Self::RecoverGlobalState {
                 expected_revision, ..
             } => *expected_revision,
@@ -389,7 +413,7 @@ pub enum SetupLoadOutcome {
     RecoveryRequired(GlobalStateRecovery),
 }
 
-/// Supervisor-owned session for loading and atomically persisting setup state.
+/// Supervisor-owned session for loading and atomically persisting setup authorities.
 pub trait PortableState: Send + 'static {
     /// Loads valid setup or a recoverable corrupt-global-state condition at startup.
     ///
@@ -398,12 +422,23 @@ pub trait PortableState: Send + 'static {
     /// Returns a stable [`PortFailure`] when startup cannot retain a usable state session.
     fn load_setup(&mut self) -> Result<SetupLoadOutcome, PortFailure>;
 
-    /// Persists a complete candidate before it becomes authoritative in memory.
+    /// Persists one profile overlay before it becomes authoritative in memory.
     ///
     /// # Errors
     ///
-    /// Returns a stable [`PortFailure`] when the candidate cannot be committed.
-    fn persist_setup(&mut self, setup: &SetupState) -> Result<(), PortFailure>;
+    /// Returns a stable [`PortFailure`] when the overlay cannot be committed.
+    fn persist_profile_overlay(
+        &mut self,
+        profile: ActiveProfileId,
+        overlay: &ProfileOverlay,
+    ) -> Result<(), PortFailure>;
+
+    /// Persists one stable active-profile identity before it becomes authoritative in memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable [`PortFailure`] when the selection cannot be committed.
+    fn persist_active_profile(&mut self, profile: ActiveProfileId) -> Result<(), PortFailure>;
 
     /// Applies one explicit corrupt-global-state recovery transaction.
     ///
@@ -759,7 +794,11 @@ fn process_intent(
         }
     } else {
         match envelope.intent {
-            Intent::EditProfileOverlay { .. } if global_state_recovery.is_some() => {
+            Intent::EditProfileOverlay { .. }
+            | Intent::SelectProfile { .. }
+            | Intent::ResetProfileOverlay { .. }
+                if global_state_recovery.is_some() =>
+            {
                 IntentOutcome::Rejected {
                     receipt: envelope.receipt,
                     rejection: IntentRejection::ValidationBlocked,
@@ -770,9 +809,44 @@ fn process_intent(
                     ProfileOverlayEdit::SetDryRun(dry_run) => {
                         setup.profile_overlay().with_dry_run(dry_run)
                     }
+                    ProfileOverlayEdit::SetAnimationOptimization(optimize) => {
+                        setup.profile_overlay().with_animations(
+                            setup.profile_overlay().animations().with_optimize(optimize),
+                        )
+                    }
                 };
                 let candidate = setup.with_profile_overlay(profile_overlay);
-                match portable_state.persist_setup(&candidate) {
+                match portable_state
+                    .persist_profile_overlay(setup.active_profile(), candidate.profile_overlay())
+                {
+                    Ok(()) => {
+                        *setup = candidate;
+                        IntentOutcome::Applied(envelope.receipt)
+                    }
+                    Err(failure) => IntentOutcome::Failed {
+                        receipt: envelope.receipt,
+                        failure,
+                    },
+                }
+            }
+            Intent::SelectProfile { profile_id, .. } => {
+                let candidate = setup.with_active_profile(profile_id);
+                match portable_state.persist_active_profile(profile_id) {
+                    Ok(()) => {
+                        *setup = candidate;
+                        IntentOutcome::Applied(envelope.receipt)
+                    }
+                    Err(failure) => IntentOutcome::Failed {
+                        receipt: envelope.receipt,
+                        failure,
+                    },
+                }
+            }
+            Intent::ResetProfileOverlay { .. } => {
+                let candidate = setup.reset_profile_overlay(setup.active_profile());
+                match portable_state
+                    .persist_profile_overlay(setup.active_profile(), candidate.profile_overlay())
+                {
                     Ok(()) => {
                         *setup = candidate;
                         IntentOutcome::Applied(envelope.receipt)
@@ -838,10 +912,10 @@ fn runtime_failure(
 #[cfg(test)]
 mod tests {
     use super::{
-        ApplicationRuntime, FailureKind, GlobalStateRecovery, GlobalStateRecoveryAction, Intent,
-        IntentOutcome, IntentRejection, OperationId, PortFailure, PortId, PortableState,
-        PortableStateFactory, ProfileOverlay, ProfileOverlayEdit, SetupLoadOutcome, SetupState,
-        SnapshotSink, WorkbenchSnapshot,
+        ActiveProfileId, ApplicationRuntime, FailureKind, GlobalStateRecovery,
+        GlobalStateRecoveryAction, Intent, IntentOutcome, IntentRejection, OperationId,
+        PortFailure, PortId, PortableState, PortableStateFactory, ProfileOverlay,
+        ProfileOverlayEdit, SetupLoadOutcome, SetupState, SnapshotSink, WorkbenchSnapshot,
     };
     use std::sync::{Arc, Condvar, Mutex};
     use std::time::{Duration, Instant};
@@ -937,17 +1011,32 @@ mod tests {
         shared: Arc<FakeStateShared>,
     }
 
-    impl PortableState for FakeState {
-        fn load_setup(&mut self) -> Result<SetupLoadOutcome, PortFailure> {
-            Ok(self.shared.load.clone())
-        }
-
-        fn persist_setup(&mut self, _setup: &SetupState) -> Result<(), PortFailure> {
+    impl FakeState {
+        fn record_persist(&self) {
             *self
                 .shared
                 .persist_count
                 .lock()
                 .expect("persist count lock was poisoned") += 1;
+        }
+    }
+
+    impl PortableState for FakeState {
+        fn load_setup(&mut self) -> Result<SetupLoadOutcome, PortFailure> {
+            Ok(self.shared.load.clone())
+        }
+
+        fn persist_profile_overlay(
+            &mut self,
+            _profile: ActiveProfileId,
+            _overlay: &ProfileOverlay,
+        ) -> Result<(), PortFailure> {
+            self.record_persist();
+            Ok(())
+        }
+
+        fn persist_active_profile(&mut self, _profile: ActiveProfileId) -> Result<(), PortFailure> {
+            self.record_persist();
             Ok(())
         }
 
@@ -1014,6 +1103,86 @@ mod tests {
         runtime
             .shutdown()
             .expect("the recovery runtime should shut down cleanly");
+    }
+
+    #[test]
+    fn profile_intents_isolate_reset_and_mask_overlays_through_snapshots() {
+        let factory = Arc::new(FakeStateFactory::new(
+            SetupLoadOutcome::Ready(SetupState::default()),
+            Ok(SetupState::default()),
+        ));
+        let sink = Arc::new(RecordingSink::default());
+        let (handle, runtime) = ApplicationRuntime::start(Arc::clone(&factory), Arc::clone(&sink))
+            .expect("application runtime should start");
+        let initial = sink.wait_for(0);
+
+        handle
+            .submit(Intent::EditProfileOverlay {
+                expected_revision: initial.revision(),
+                edit: ProfileOverlayEdit::SetDryRun(true),
+            })
+            .expect("the SSE edit should enter the queue");
+        let sse_edited = sink.wait_for(1);
+        handle
+            .submit(Intent::SelectProfile {
+                expected_revision: sse_edited.revision(),
+                profile_id: ActiveProfileId::Fo4,
+            })
+            .expect("the FO4 selection should enter the queue");
+        let fo4_selected = sink.wait_for(2);
+
+        assert_eq!(fo4_selected.setup().active_profile(), ActiveProfileId::Fo4);
+        assert!(!fo4_selected.setup().profile_overlay().dry_run());
+        assert!(
+            fo4_selected
+                .setup()
+                .overlay_for(ActiveProfileId::Sse)
+                .dry_run()
+        );
+
+        handle
+            .submit(Intent::EditProfileOverlay {
+                expected_revision: fo4_selected.revision(),
+                edit: ProfileOverlayEdit::SetAnimationOptimization(true),
+            })
+            .expect("the dormant FO4 choice should enter the queue");
+        let fo4_edited = sink.wait_for(3);
+        assert!(fo4_edited.setup().profile_overlay().animations().optimize());
+        assert_eq!(
+            fo4_edited.setup().effective_profile_overlay().animations(),
+            None
+        );
+
+        handle
+            .submit(Intent::ResetProfileOverlay {
+                expected_revision: fo4_edited.revision(),
+            })
+            .expect("the FO4 reset should enter the queue");
+        let fo4_reset = sink.wait_for(4);
+        assert_eq!(
+            fo4_reset.setup().profile_overlay(),
+            &ProfileOverlay::default()
+        );
+
+        handle
+            .submit(Intent::SelectProfile {
+                expected_revision: fo4_reset.revision(),
+                profile_id: ActiveProfileId::Sse,
+            })
+            .expect("the SSE selection should enter the queue");
+        let sse_reselected = sink.wait_for(5);
+        assert!(sse_reselected.setup().profile_overlay().dry_run());
+        assert!(
+            sse_reselected
+                .setup()
+                .effective_profile_overlay()
+                .animations()
+                .is_some()
+        );
+        assert_eq!(factory.persist_count(), 5);
+        runtime
+            .shutdown()
+            .expect("the profile runtime should shut down cleanly");
     }
 
     #[test]

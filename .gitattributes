@@ -1,6 +1,7 @@
 # Setup tracer manifests pin exact artifact bytes, so checkout must not follow core.autocrlf.
 /verification/tracers/setup/*.json text eol=lf
 /resources/profiles/SSE/startup.state text eol=lf
+/resources/profiles/built-ins.state text eol=lf
 
 # Branding hashes are cross-platform release inputs and must keep reviewed bytes.
 /assets/branding/*.svg text eol=lf

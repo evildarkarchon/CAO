@@ -843,6 +843,11 @@ mod tests {
 
     const PROBE_MODE: &str = "CAO_PROCESS_TEST_MODE";
     const SENTINEL_PATH: &str = "CAO_PROCESS_TEST_SENTINEL";
+    // Parallel Windows test loads can delay process creation well beyond 100 ms. Keep the
+    // hypothetical escape later than the parent window and allow two more seconds to observe it.
+    const DESCENDANT_PARENT_TIMEOUT: Duration = Duration::from_secs(2);
+    const DESCENDANT_ESCAPE_DELAY: Duration = Duration::from_secs(3);
+    const DESCENDANT_OBSERVATION_DELAY: Duration = Duration::from_secs(5);
 
     struct NeverCancelled;
 
@@ -947,7 +952,7 @@ mod tests {
         let ready = sentinel.with_extension("ready");
         let request = probe_request(
             "descendant-parent",
-            Duration::from_millis(100),
+            DESCENDANT_PARENT_TIMEOUT,
             4096,
             vec![(
                 SENTINEL_PATH.to_owned(),
@@ -958,7 +963,7 @@ mod tests {
         let facts = WindowsOneShotProcess
             .execute(&request, &NeverCancelled)
             .expect("descendant probe should time out through the job");
-        std::thread::sleep(Duration::from_millis(800));
+        std::thread::sleep(DESCENDANT_OBSERVATION_DELAY);
 
         assert_eq!(facts.termination(), ProcessTermination::TimedOut);
         assert!(
@@ -1023,7 +1028,7 @@ mod tests {
             "descendant-child" => {
                 let sentinel = std::env::var_os(SENTINEL_PATH)
                     .expect("descendant should receive a sentinel path");
-                std::thread::sleep(Duration::from_millis(500));
+                std::thread::sleep(DESCENDANT_ESCAPE_DELAY);
                 std::fs::write(sentinel, b"escaped job\n")
                     .expect("an uncontained descendant should expose itself");
             }

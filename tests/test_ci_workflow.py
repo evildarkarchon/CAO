@@ -20,6 +20,7 @@ class RustWorkspaceWorkflowTests(unittest.TestCase):
             "verification/tracers/setup/fixture.json",
             "verification/tracers/setup/evidence.json",
             "resources/profiles/SSE/startup.state",
+            "resources/profiles/built-ins.state",
         )
         result = subprocess.run(
             ["git", "check-attr", "eol", "--", *artifact_paths],
