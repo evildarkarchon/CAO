@@ -1,6 +1,18 @@
 #![forbid(unsafe_code)]
 //! Backend-neutral domain values and behavior for Tracetide.
 
+/// Reserved identity of an immutable built-in profile.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ActiveProfileId {
+    /// Fallout 4 built-in profile.
+    Fo4,
+    /// Skyrim Special Edition built-in profile and fresh-install default.
+    #[default]
+    Sse,
+    /// Classic Skyrim built-in profile.
+    Tes5,
+}
+
 /// Mutable processing choices applied over the active profile definition.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ProfileOverlay {
@@ -25,10 +37,17 @@ impl ProfileOverlay {
 /// Persisted setup values that are authoritative before a processing run begins.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SetupState {
+    active_profile: ActiveProfileId,
     profile_overlay: ProfileOverlay,
 }
 
 impl SetupState {
+    /// Returns the stable identity of the profile governing setup.
+    #[must_use]
+    pub const fn active_profile(&self) -> ActiveProfileId {
+        self.active_profile
+    }
+
     /// Returns the processing choices for the active profile.
     #[must_use]
     pub const fn profile_overlay(&self) -> ProfileOverlay {

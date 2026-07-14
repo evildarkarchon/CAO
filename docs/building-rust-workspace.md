@@ -62,7 +62,7 @@ python -m unittest tests.test_verify_workspace -v
 
 ## GitHub Actions pull-request validation
 
-`.github/workflows/rust-workspace.yml` runs on the GitHub-hosted `windows-2025` image. The workflow installs Rust 1.97.0 and acquires the locked Cargo dependency graph while network access is available. It then enables Cargo offline mode and loopback-only HTTP(S)/all-proxy values before comparing the production graph, running the Python contract tests, and testing the UI-independent domain and application libraries with frozen Cargo inputs.
+`.github/workflows/rust-workspace.yml` runs on the GitHub-hosted `windows-2025` image. The workflow installs Rust 1.97.0 and acquires the locked Cargo dependency graph while network access is available. It then enables Cargo offline mode and loopback-only HTTP(S)/all-proxy values before comparing the production graph, running the Python contract tests, and testing the UI-independent domain, application, Windows portable-state, and verification libraries with frozen Cargo inputs.
 
 This hosted workflow is a review gate, not the authenticated production build. It intentionally does not set `CAO_RUN_RELEASE_STAGING_TEST`, authenticate the complete MSVC/SDK/Skia tool cache, stage the production binaries, run `tools/build_workspace.py`, or publish a release. The exact GitHub-hosted image contents may be updated independently of this repository, so a passing pull-request check does not establish release-toolchain reproducibility.
 

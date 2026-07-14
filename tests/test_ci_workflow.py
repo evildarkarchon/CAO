@@ -14,11 +14,12 @@ WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "rust-workspace.yml"
 class RustWorkspaceWorkflowTests(unittest.TestCase):
     """Verify behavior exposed by the checked-in pull-request workflow."""
 
-    def test_setup_tracer_artifacts_are_checked_out_with_lf_bytes(self) -> None:
-        """Byte-pinned setup artifacts must be stable under Windows Git checkout."""
+    def test_byte_authenticated_resources_are_checked_out_with_lf_bytes(self) -> None:
+        """Byte-authenticated setup inputs must be stable under Windows checkout."""
         artifact_paths = (
             "verification/tracers/setup/fixture.json",
             "verification/tracers/setup/evidence.json",
+            "resources/profiles/SSE/startup.state",
         )
         result = subprocess.run(
             ["git", "check-attr", "eol", "--", *artifact_paths],
@@ -101,7 +102,8 @@ class RustWorkspaceWorkflowTests(unittest.TestCase):
         )
         self.assertIn("python tools/verify_workspace.py", commands)
         self.assertIn(
-            "cargo test --package cao-domain --package cao-application --lib --frozen",
+            "cargo test --package cao-domain --package cao-application "
+            "--package cao-platform-windows --package cao-verification --lib --frozen",
             commands,
         )
         self.assertNotIn("CAO_RUN_RELEASE_STAGING_TEST", workflow)

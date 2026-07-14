@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Application orchestration and inward-facing ports for Tracetide.
 
-pub use cao_domain::{ProfileOverlay, SetupState};
+pub use cao_domain::{ActiveProfileId, ProfileOverlay, SetupState};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use std::sync::{
     Arc,

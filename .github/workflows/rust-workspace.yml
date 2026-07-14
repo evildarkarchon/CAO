@@ -66,4 +66,4 @@ jobs:
           HTTPS_PROXY: http://127.0.0.1:9
           ALL_PROXY: http://127.0.0.1:9
           NO_PROXY: ""
-        run: cargo test --package cao-domain --package cao-application --lib --frozen
+        run: cargo test --package cao-domain --package cao-application --package cao-platform-windows --package cao-verification --lib --frozen
