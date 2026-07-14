@@ -1,6 +1,6 @@
 //! Manifest-driven replay of the setup tracer through the public application seam.
 
-use crate::{DeterministicStateFactory, FaultPlan, FaultPoint, RecordingSink};
+use crate::{DeterministicStateFactory, FaultPlan, RecordingSink};
 use cao_application::{
     ApplicationRuntime, FailureKind, GlobalStateRecovery, GlobalStateRecoveryAction, Intent,
     IntentOutcome, OperationId, PortFailure, PortId, ProfileOverlay, ProfileOverlayEdit,
@@ -375,13 +375,14 @@ impl FailureKindSpec {
 }
 
 impl FaultPointSpec {
-    const fn to_fault_point(self) -> FaultPoint {
+    /// Returns the application-owned operation key used by deterministic fault injection.
+    const fn to_operation_id(self) -> OperationId {
         match self {
-            Self::Open => FaultPoint::Open,
-            Self::LoadSetup => FaultPoint::LoadSetup,
-            Self::PersistSetup => FaultPoint::PersistSetup,
-            Self::RestoreGlobalState => FaultPoint::RestoreGlobalState,
-            Self::ResetGlobalState => FaultPoint::ResetGlobalState,
+            Self::Open => OperationId::Open,
+            Self::LoadSetup => OperationId::LoadSetup,
+            Self::PersistSetup => OperationId::PersistSetup,
+            Self::RestoreGlobalState => OperationId::RestoreGlobalState,
+            Self::ResetGlobalState => OperationId::ResetGlobalState,
         }
     }
 }
@@ -589,7 +590,7 @@ fn replay_case(
         .as_ref()
         .map_or_else(FaultPlan::default, |fault| {
             FaultPlan::fail_once_at(
-                fault.point.to_fault_point(),
+                fault.point.to_operation_id(),
                 &fault.fixture_path,
                 fault.failure.to_failure(),
             )

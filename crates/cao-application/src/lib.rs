@@ -1,8 +1,17 @@
 #![forbid(unsafe_code)]
 //! Application orchestration and inward-facing ports for Tracetide.
 
+mod run_effects;
+
 pub use cao_domain::{ActiveProfileId, ProfileOverlay, SetupState};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
+pub use run_effects::{
+    AtomicFilePublisher, CancellationProbe, Clock, DEFAULT_PROCESS_OUTPUT_BYTES, IdSource,
+    InventoryEntry, MAX_RETAINED_RUN_LOG_BYTES, MAX_RETAINED_RUN_LOGS, MAX_RUN_LOG_BYTES,
+    OneShotProcess, ProcessFacts, ProcessOutput, ProcessRequest, ProcessTermination, Residue,
+    ResidueReport, RunEnvironment, RunEnvironmentFactory, RunEnvironmentRequest, RunId, RunLog,
+    RunStore, RunStoreLimits, StagedArtifact, TimestampMillis, WriteAuditAction, WriteAuditEntry,
+};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -132,6 +141,18 @@ pub enum IntentRejection {
 pub enum PortId {
     /// Portable configuration and profile state.
     PortableState,
+    /// Fresh filesystem, logging, process, clock, and identity capabilities for one run.
+    RunEnvironment,
+    /// Bounded staged filesystem effects for one run.
+    RunStore,
+    /// Durable UTF-8 diagnostics for one run.
+    RunLog,
+    /// Contained one-shot helper execution.
+    Process,
+    /// Wall-clock observations owned by a run.
+    Clock,
+    /// Unique identity allocation owned by a run.
+    Identity,
     /// Long-lived application-supervisor runtime.
     ApplicationRuntime,
 }
@@ -151,6 +172,36 @@ pub enum OperationId {
     RestoreGlobalState,
     /// Reset corrupt global configuration to documented defaults.
     ResetGlobalState,
+    /// Create all fresh capabilities for one processing run.
+    CreateRunEnvironment,
+    /// Enumerate a bounded filesystem inventory.
+    Inventory,
+    /// Read a bounded asset or staged artifact.
+    Read,
+    /// Write a private staged artifact.
+    StageWrite,
+    /// Verify a private staged artifact before commit.
+    VerifyStaged,
+    /// Atomically create or replace an asset from a staged artifact.
+    CommitReplace,
+    /// Atomically remove an asset through a private tombstone.
+    Delete,
+    /// Report predicted dry-run writes.
+    Audit,
+    /// Report remaining private artifacts.
+    ReportResidue,
+    /// Remove disposable run artifacts.
+    Cleanup,
+    /// Append one UTF-8 run-log record.
+    WriteLog,
+    /// Flush a run log to durable storage.
+    FlushLog,
+    /// Execute one contained helper process.
+    ExecuteProcess,
+    /// Read the application clock.
+    ReadClock,
+    /// Allocate a unique application identity.
+    GenerateId,
     /// Start the application-supervisor thread.
     StartSupervisor,
     /// Stop and join the application-supervisor thread.

@@ -1,12 +1,16 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 //! Safe Windows platform capabilities with private, audited unsafe boundaries.
 
+pub(crate) mod process;
+mod run_effects;
 mod state_document;
 
+pub use run_effects::WindowsRunEnvironmentFactory;
+
 use cao_application::{
-    ActiveProfileId, FailureKind, GlobalStateRecovery, GlobalStateRecoveryAction, OperationId,
-    PortFailure, PortId, PortableState, PortableStateFactory, ProfileOverlay, SetupLoadOutcome,
-    SetupState,
+    ActiveProfileId, AtomicFilePublisher, FailureKind, GlobalStateRecovery,
+    GlobalStateRecoveryAction, OperationId, PortFailure, PortId, PortableState,
+    PortableStateFactory, ProfileOverlay, SetupLoadOutcome, SetupState,
 };
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
@@ -28,6 +32,45 @@ const RECOVERY_REPORT_RELATIVE_PATH: &str = "data/config/recovery.report";
 const OVERLAY_STATE_RELATIVE_PATH: &str = "data/profiles/SSE/overlay.state";
 const OWNERSHIP_LOCK_RELATIVE_PATH: &str = "data/state.lock";
 const SSE_STARTUP_DEFAULTS: &[u8] = b"schema_version=1\nactive_profile=SSE\ndry_run=0\n";
+
+/// Safe Windows implementation of atomic same-volume file publication.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WindowsAtomicFilePublisher;
+
+impl AtomicFilePublisher for WindowsAtomicFilePublisher {
+    /// Publishes a prepared sibling through one write-through Windows replacement.
+    fn replace(&self, source: &Path, destination: &Path) -> Result<(), PortFailure> {
+        if !source.is_absolute() || !destination.is_absolute() {
+            let subject = if !source.is_absolute() {
+                source
+            } else {
+                destination
+            };
+            return Err(PortFailure::new(
+                PortId::RunStore,
+                OperationId::CommitReplace,
+                FailureKind::InvalidInput,
+                "atomic replacement paths must be absolute",
+            )
+            .with_subject(subject.display().to_string()));
+        }
+        windows_api::replace_file(source, destination).map_err(|error| {
+            let kind = match error.kind() {
+                io::ErrorKind::NotFound => FailureKind::NotFound,
+                io::ErrorKind::PermissionDenied => FailureKind::PermissionDenied,
+                io::ErrorKind::AlreadyExists => FailureKind::Conflict,
+                _ => FailureKind::Io,
+            };
+            PortFailure::new(
+                PortId::RunStore,
+                OperationId::CommitReplace,
+                kind,
+                error.to_string(),
+            )
+            .with_subject(destination.display().to_string())
+        })
+    }
+}
 
 /// Factory for executable-relative, exclusively owned Tracetide portable state.
 #[derive(Clone, Debug)]
@@ -101,6 +144,15 @@ impl WindowsPortableStateFactory {
     #[must_use]
     pub fn executable_root(&self) -> &Path {
         &self.executable_root
+    }
+
+    /// Creates per-run effect factories from this startup-captured executable root.
+    ///
+    /// Sharing this captured root prevents state and run-log capabilities from
+    /// independently re-resolving executable-relative authority.
+    #[must_use]
+    pub fn run_environment_factory(&self) -> WindowsRunEnvironmentFactory {
+        WindowsRunEnvironmentFactory::for_executable_root(self.executable_root.clone())
     }
 
     /// Opens and exclusively owns the fixed portable state tree.

@@ -1,6 +1,10 @@
 #![forbid(unsafe_code)]
 //! Shared parity evidence and replay harness types.
 
+mod run_effects;
+
+pub use run_effects::*;
+
 use cao_application::{
     FailureKind, GlobalStateRecovery, GlobalStateRecoveryAction, OperationId, PortFailure, PortId,
     PortableState, PortableStateFactory, ProfileOverlay, SetupLoadOutcome, SetupState,
@@ -12,24 +16,9 @@ use std::time::{Duration, Instant};
 
 const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Application-owned portable-state operation at which a deterministic fault may fire.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FaultPoint {
-    /// Opening the supervisor-owned portable-state session.
-    Open,
-    /// Loading authoritative setup during application startup.
-    LoadSetup,
-    /// Persisting a complete setup candidate.
-    PersistSetup,
-    /// Restoring valid setup from the newest restorable global-state backup.
-    RestoreGlobalState,
-    /// Resetting corrupt global configuration to documented defaults.
-    ResetGlobalState,
-}
-
 #[derive(Clone)]
 struct PlannedFault {
-    point: FaultPoint,
+    operation: OperationId,
     fixture_path: Option<PathBuf>,
     failure: PortFailure,
 }
@@ -43,10 +32,10 @@ pub struct FaultPlan {
 impl FaultPlan {
     /// Creates a plan that fails the first matching operation exactly once.
     #[must_use]
-    pub fn fail_once(point: FaultPoint, failure: PortFailure) -> Self {
+    pub fn fail_once(operation: OperationId, failure: PortFailure) -> Self {
         Self {
             faults: vec![PlannedFault {
-                point,
+                operation,
                 fixture_path: None,
                 failure,
             }],
@@ -56,13 +45,13 @@ impl FaultPlan {
     /// Creates a plan that fails one operation on a matching fixture-relative path.
     #[must_use]
     pub fn fail_once_at(
-        point: FaultPoint,
+        operation: OperationId,
         fixture_path: impl Into<PathBuf>,
         failure: PortFailure,
     ) -> Self {
         Self {
             faults: vec![PlannedFault {
-                point,
+                operation,
                 fixture_path: Some(fixture_path.into()),
                 failure,
             }],
@@ -70,9 +59,9 @@ impl FaultPlan {
     }
 
     /// Removes the next fault matching both operation and optional fixture path.
-    fn take(&mut self, point: FaultPoint, actual_path: Option<&Path>) -> Option<PortFailure> {
+    fn take(&mut self, operation: OperationId, actual_path: Option<&Path>) -> Option<PortFailure> {
         let index = self.faults.iter().position(|fault| {
-            fault.point == point
+            fault.operation == operation
                 && fault.fixture_path.as_ref().is_none_or(|fixture_path| {
                     actual_path.is_some_and(|actual_path| actual_path.ends_with(fixture_path))
                 })
@@ -102,11 +91,11 @@ struct DeterministicStateShared {
 
 impl DeterministicStateShared {
     /// Consumes one fault that matches the operation and this adapter's fixture path.
-    fn take_fault(&self, point: FaultPoint) -> Option<PortFailure> {
+    fn take_fault(&self, operation: OperationId) -> Option<PortFailure> {
         self.faults
             .lock()
             .expect("fault plan lock was poisoned")
-            .take(point, self.state_file.as_deref())
+            .take(operation, self.state_file.as_deref())
     }
 }
 
@@ -241,7 +230,7 @@ impl DeterministicStateFactory {
 
 impl PortableStateFactory for DeterministicStateFactory {
     fn open(&self) -> Result<Box<dyn PortableState>, PortFailure> {
-        if let Some(failure) = self.shared.take_fault(FaultPoint::Open) {
+        if let Some(failure) = self.shared.take_fault(OperationId::Open) {
             return Err(failure);
         }
         Ok(Box::new(DeterministicState {
@@ -259,7 +248,7 @@ impl PortableState for DeterministicState {
     ///
     /// A recovery-required load deliberately does not read the corrupt sandbox file.
     fn load_setup(&mut self) -> Result<SetupLoadOutcome, PortFailure> {
-        if let Some(failure) = self.shared.take_fault(FaultPoint::LoadSetup) {
+        if let Some(failure) = self.shared.take_fault(OperationId::LoadSetup) {
             return Err(failure);
         }
         if let Some(recovery) = self
@@ -290,7 +279,7 @@ impl PortableState for DeterministicState {
 
     /// Persists one setup candidate after the deterministic acceptance barrier is released.
     fn persist_setup(&mut self, setup: &SetupState) -> Result<(), PortFailure> {
-        if let Some(failure) = self.shared.take_fault(FaultPoint::PersistSetup) {
+        if let Some(failure) = self.shared.take_fault(OperationId::PersistSetup) {
             return Err(failure);
         }
 
@@ -335,8 +324,8 @@ impl PortableState for DeterministicState {
         action: GlobalStateRecoveryAction,
     ) -> Result<SetupState, PortFailure> {
         let fault_point = match action {
-            GlobalStateRecoveryAction::RestoreBackup => FaultPoint::RestoreGlobalState,
-            GlobalStateRecoveryAction::Reset => FaultPoint::ResetGlobalState,
+            GlobalStateRecoveryAction::RestoreBackup => OperationId::RestoreGlobalState,
+            GlobalStateRecoveryAction::Reset => OperationId::ResetGlobalState,
         };
         if let Some(failure) = self.shared.take_fault(fault_point) {
             return Err(failure);
@@ -497,9 +486,7 @@ impl SnapshotSink for RecordingSink {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DeterministicStateFactory, FaultPlan, FaultPoint, RecordingSink, run_setup_replay,
-    };
+    use super::{DeterministicStateFactory, FaultPlan, RecordingSink, run_setup_replay};
     use cao_application::{
         ApplicationRuntime, BoundedText, FailureKind, GlobalStateRecovery,
         GlobalStateRecoveryAction, Intent, IntentOutcome, IntentRejection, MAX_DIAGNOSTIC_BYTES,
@@ -605,7 +592,7 @@ mod tests {
         );
         let factory = Arc::new(DeterministicStateFactory::with_faults(
             SetupState::default(),
-            FaultPlan::fail_once(FaultPoint::PersistSetup, failure.clone()),
+            FaultPlan::fail_once(OperationId::PersistSetup, failure.clone()),
         ));
         let sink = Arc::new(RecordingSink::default());
         let (handle, runtime) = ApplicationRuntime::start(Arc::clone(&factory), Arc::clone(&sink))
@@ -650,7 +637,7 @@ mod tests {
         let factory = Arc::new(DeterministicStateFactory::requiring_recovery(
             backup_setup,
             GlobalStateRecovery::new(corrupt_failure.clone(), true),
-            FaultPlan::fail_once(FaultPoint::RestoreGlobalState, restore_failure.clone()),
+            FaultPlan::fail_once(OperationId::RestoreGlobalState, restore_failure.clone()),
         ));
         let sink = Arc::new(RecordingSink::default());
         let (handle, runtime) = ApplicationRuntime::start(Arc::clone(&factory), Arc::clone(&sink))
