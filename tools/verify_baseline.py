@@ -14,12 +14,12 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 
-BASELINE_REVISION = 1
-SCHEMA_REVISION = 1
+BASELINE_REVISION = 2
+SCHEMA_REVISION = 2
 HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 # Requiring a validator change makes every source/feature/license drift explicit in review.
 EXPECTED_INPUT_MANIFEST_SHA256 = (
-    "7b3de50d0710f107e62e1d98776d1978d2e58637ec42bee25d7b607905d7a349"
+    "b8fb07a3555fa70db3a86d8ab9fd7d2070fbe9ae00dae93b9866f6f5f10e443e"
 )
 
 DOCUMENT_SCHEMAS = {
@@ -180,9 +180,9 @@ EXPECTED_COMPLIANCE = {
     "licensing.existing_source_files": "preserve-MPL-2.0-coverage-and-notices",
     "licensing.corresponding_source": "exact-source-alongside-every-binary",
     "native_runtime.scope": "tracetide-production-graph",
-    "native_runtime.msvc_runtime": "MultiThreaded",
-    "native_runtime.msvc_flag": "/MT",
-    "native_runtime.rust_target_feature": "+crt-static",
+    "native_runtime.msvc_runtime": "MultiThreadedDLL",
+    "native_runtime.msvc_flag": "/MD",
+    "native_runtime.rust_crt_linkage": "dynamic",
     "native_runtime.debug_crt_allowed": False,
     "windows.minimum_release": "Windows 10 22H2",
     "windows.minimum_architecture": "x86_64",

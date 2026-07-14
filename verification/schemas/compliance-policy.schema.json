@@ -6,8 +6,8 @@
   "additionalProperties": false,
   "required": ["schema_version", "baseline_revision", "authority", "licensing", "native_runtime", "windows"],
   "properties": {
-    "schema_version": { "type": "integer", "const": 1 },
-    "baseline_revision": { "type": "integer", "const": 1 },
+    "schema_version": { "type": "integer", "const": 2 },
+    "baseline_revision": { "type": "integer", "const": 2 },
     "authority": { "type": "string", "const": "docs/rust-slint-implementation-blueprint.md" },
     "licensing": {
       "type": "object",
@@ -23,12 +23,12 @@
     "native_runtime": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["scope", "msvc_runtime", "msvc_flag", "rust_target_feature", "debug_crt_allowed"],
+      "required": ["scope", "msvc_runtime", "msvc_flag", "rust_crt_linkage", "debug_crt_allowed"],
       "properties": {
         "scope": { "type": "string", "const": "tracetide-production-graph" },
-        "msvc_runtime": { "type": "string", "const": "MultiThreaded" },
-        "msvc_flag": { "type": "string", "const": "/MT" },
-        "rust_target_feature": { "type": "string", "const": "+crt-static" },
+        "msvc_runtime": { "type": "string", "const": "MultiThreadedDLL" },
+        "msvc_flag": { "type": "string", "const": "/MD" },
+        "rust_crt_linkage": { "type": "string", "const": "dynamic" },
         "debug_crt_allowed": { "type": "boolean", "const": false }
       }
     },

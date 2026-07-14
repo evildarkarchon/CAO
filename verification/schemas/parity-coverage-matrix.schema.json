@@ -6,8 +6,8 @@
   "additionalProperties": false,
   "required": ["schema_version", "baseline_revision", "matrix_revision", "scope", "closure_state", "cells"],
   "properties": {
-    "schema_version": { "type": "integer", "const": 1 },
-    "baseline_revision": { "type": "integer", "const": 1 },
+    "schema_version": { "type": "integer", "const": 2 },
+    "baseline_revision": { "type": "integer", "const": 2 },
     "matrix_revision": { "type": "integer", "minimum": 1 },
     "scope": { "type": "string", "const": "initial-windows-x64-functional-parity" },
     "closure_state": { "type": "string", "enum": ["blocked", "closed"] },

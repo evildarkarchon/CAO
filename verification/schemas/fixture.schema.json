@@ -20,8 +20,8 @@
     "temporary_opt_in"
   ],
   "properties": {
-    "schema_version": { "type": "integer", "const": 1 },
-    "baseline_revision": { "type": "integer", "const": 1 },
+    "schema_version": { "type": "integer", "const": 2 },
+    "baseline_revision": { "type": "integer", "const": 2 },
     "id": { "type": "string", "pattern": "^FIX-[A-Z0-9-]+$" },
     "revision": { "type": "integer", "minimum": 1 },
     "content_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },

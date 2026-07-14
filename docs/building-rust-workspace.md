@@ -10,6 +10,18 @@ In a network-enabled acquisition environment, install the toolchain from `rust-t
 cargo fetch --locked
 ```
 
+Ordinary development and hosted validation use the authenticated rust-skia binary archive locked in `verification/build-inputs/skia-binary-lock.json`. Acquire it into the content-addressed machine cache outside both the repository and `CARGO_HOME`, then expose only the local URL template to Cargo:
+
+```powershell
+$env:SKIA_BINARIES_URL = python tools/acquire_skia_binary.py
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+cargo test --workspace --all-targets --frozen
+```
+
+The default cache root is `%LOCALAPPDATA%\cao-build-cache`; set `CAO_BUILD_CACHE` to an absolute path to relocate it. The acquisition tool rejects cache roots that overlap the repository or `CARGO_HOME`. It verifies the archive's locked byte size and SHA-256 plus its embedded rust-skia release tag and feature key after every download or cache restore. Downloads use a bounded network timeout, cannot write beyond the locked byte count, land in a temporary sibling, and publish atomically, so a failed or interrupted transfer cannot become a cache hit. `--offline` verifies an existing entry without network access. Do not use prefix restore keys for the archive, and do not inherit an arbitrary `SKIA_BINARIES_URL`.
+
+The authenticated production build may instead compile Skia from source using the complete closure below. This remains the path used by `tools/build_workspace.py` and `tools/stage_release.py`.
+
 Acquire Ninja 1.13.2 from the URI in `verification/baseline/implementation-inputs.json` and verify it with `tools/verify_baseline.py`. Check out the Skia root and every build-required external repository at the exact revisions in `verification/build-inputs/skia-source-lock.json`. The source directory supplied to the production build must be a clean Git checkout of that complete closure; the build is not allowed to synchronize it.
 
 The same Skia lock pins the Windows x64 GN package selected by the tracked `bin/fetch-gn` script and the LLVM/clang-cl build toolchain. Acquire GN separately, verify its extracted executable against the locked size, SHA-256, and version, and install the locked LLVM release. Do not run `fetch-gn` or place generated tools inside the clean Skia checkout. Run the build entry points with Python 3.14.5, which is the interpreter they put first on `PATH` for Skia's GN probes.
@@ -42,7 +54,7 @@ python tools/verify_baseline.py --verify-input "rust-toolchain=$env:CAO_RUSTC_CO
 python tools/verify_baseline.py --verify-input "msvc-toolchain=$env:CAO_MSVC_TOOLCHAIN_DIR"
 python tools/verify_baseline.py --verify-input "windows-sdk=$env:CAO_WINDOWS_SDK_ISO"
 python tools/verify_workspace.py
-python -m unittest tests.test_ci_workflow tests.test_verify_baseline tests.test_verify_workspace -v
+python -m unittest tests.test_acquire_skia_binary tests.test_ci_workflow tests.test_verify_baseline tests.test_verify_workspace -v
 python tools/build_workspace.py
 python tools/stage_release.py --output D:\staging\tracetide
 ```
@@ -62,9 +74,9 @@ python -m unittest tests.test_verify_workspace -v
 
 ## GitHub Actions pull-request validation
 
-`.github/workflows/rust-workspace.yml` runs on the GitHub-hosted `windows-2025` image. The workflow installs Rust 1.97.0 and acquires the locked Cargo dependency graph while network access is available. It then enables Cargo offline mode and loopback-only HTTP(S)/all-proxy values before comparing the production graph, running the Python contract tests, and testing the UI-independent domain, application, Windows portable-state, and verification libraries with frozen Cargo inputs.
+`.github/workflows/rust-workspace.yml` runs on the GitHub-hosted `windows-2025` image. The workflow installs Rust 1.97.0, acquires the locked Cargo dependency graph, derives the exact content-addressed Skia cache key from the reviewed binary lock, and runs `tools/acquire_skia_binary.py` while network access is available. The acquisition tool re-authenticates restored cache bytes. The workflow then enables Cargo offline mode and loopback-only HTTP(S)/all-proxy values before comparing the production graph, running the Python contract tests, and testing the complete workspace with frozen Cargo inputs and the local Skia URL template.
 
-This hosted workflow is a review gate, not the authenticated production build. It intentionally does not set `CAO_RUN_RELEASE_STAGING_TEST`, authenticate the complete MSVC/SDK/Skia tool cache, stage the production binaries, run `tools/build_workspace.py`, or publish a release. The exact GitHub-hosted image contents may be updated independently of this repository, so a passing pull-request check does not establish release-toolchain reproducibility.
+This hosted workflow is a review gate, not the authenticated production build. It intentionally does not set `CAO_RUN_RELEASE_STAGING_TEST`, authenticate the complete MSVC/SDK/source-build tool cache, stage the production binaries, run `tools/build_workspace.py`, or publish a release. The exact GitHub-hosted image contents may be updated independently of this repository, so a passing pull-request check does not establish release-toolchain reproducibility.
 
 ## Local authenticated release verification
 

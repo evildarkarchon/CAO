@@ -12,3 +12,4 @@
 # Authenticated source hashes must not depend on the caller's core.autocrlf setting.
 /vendor/** text eol=lf
 /verification/build-inputs/skia-source-lock.json text eol=lf
+/verification/build-inputs/skia-binary-lock.json text eol=lf

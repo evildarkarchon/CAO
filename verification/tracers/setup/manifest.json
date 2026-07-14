@@ -1,16 +1,16 @@
 {
-  "schema_version": 1,
-  "baseline_revision": 1,
+  "schema_version": 2,
+  "baseline_revision": 2,
   "id": "REPLAY-SETUP-SEAM",
   "revision": 1,
   "fixture": {
     "path": "fixture.json",
-    "sha256": "f759940041e0ce59b231fa8663f850f3f9551b5c87b41faa1e955fd2b902b907",
+    "sha256": "c222c80cadd2cfb7bfb8376cacd7b71a4e8b7c3fd7eb40128e7a43ed77625de5",
     "size_bytes": 2211
   },
   "evidence": {
     "path": "evidence.json",
-    "sha256": "ebaac8e21f41a81ee5bb39c889482d8efe5627e98bb955060bcddaaf06fe4821",
+    "sha256": "8bb240e2ff86b1fb91d34117d9e302ff832fad6c6a28b41708170c95f506fdcc",
     "size_bytes": 2834
   }
 }

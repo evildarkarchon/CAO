@@ -74,9 +74,10 @@ ui_*.h
 *.jsc
 Makefile*
 *build-*
-# The production build's reviewed native-source closure must survive clean clones.
+# Reviewed native build-input locks must survive clean clones.
 !/verification/build-inputs/
 !/verification/build-inputs/skia-source-lock.json
+!/verification/build-inputs/skia-binary-lock.json
 
 # Qt unit tests
 target_wrapper.*

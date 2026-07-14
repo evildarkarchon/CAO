@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "baseline_revision": 1,
+  "schema_version": 2,
+  "baseline_revision": 2,
   "id": "SETUP-SEAM-FIXTURE",
   "revision": 1,
   "cases": [

@@ -85,8 +85,8 @@ class VerifyBaselineTests(unittest.TestCase):
         )
         fixture_content_sha256 = self.fixture_content_sha256([fixture_input])
         evidence = {
-            "schema_version": 1,
-            "baseline_revision": 1,
+            "schema_version": 2,
+            "baseline_revision": 2,
             "id": "EVD-SETUP",
             "revision": 1,
             "kind": "oracle-capture",
@@ -167,8 +167,8 @@ class VerifyBaselineTests(unittest.TestCase):
         ).hexdigest()
 
         fixture = {
-            "schema_version": 1,
-            "baseline_revision": 1,
+            "schema_version": 2,
+            "baseline_revision": 2,
             "id": "FIX-SETUP",
             "revision": 1,
             "content_sha256": fixture_content_sha256,
@@ -309,11 +309,11 @@ class VerifyBaselineTests(unittest.TestCase):
             )
 
             document = json.loads(document_path.read_text(encoding="utf-8"))
-            document["schema_version"] = 2
+            document["schema_version"] = 3
             document_path.write_text(json.dumps(document), encoding="utf-8")
 
             schema = json.loads(schema_path.read_text(encoding="utf-8"))
-            schema["properties"]["schema_version"]["const"] = 2
+            schema["properties"]["schema_version"]["const"] = 3
             schema_path.write_text(json.dumps(schema), encoding="utf-8")
 
             result = self.run_validator(root)
@@ -423,11 +423,13 @@ class VerifyBaselineTests(unittest.TestCase):
                     self.assertIn("required property is missing", result.stderr)
 
     def test_compliance_policy_drift_is_rejected(self) -> None:
-        """Licensing, static CRT, and Windows floor values remain normative."""
+        """Licensing, dynamic CRT, and Windows floor values remain normative."""
         cases = [
             (("licensing", "combined_work"), "MPL-2.0"),
             (("licensing", "slint_choice"), "Royalty-free"),
-            (("native_runtime", "msvc_flag"), "/MD"),
+            (("native_runtime", "msvc_runtime"), "MultiThreaded"),
+            (("native_runtime", "msvc_flag"), "/MT"),
+            (("native_runtime", "rust_crt_linkage"), "static"),
             (("windows", "minimum_release"), "Windows 11 24H2"),
         ]
         for path_parts, replacement in cases:

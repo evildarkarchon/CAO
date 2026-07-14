@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "baseline_revision": 1,
+  "schema_version": 2,
+  "baseline_revision": 2,
   "authority": "docs/rust-slint-implementation-blueprint.md",
   "licensing": {
     "combined_work": "GPL-3.0-only",
@@ -10,9 +10,9 @@
   },
   "native_runtime": {
     "scope": "tracetide-production-graph",
-    "msvc_runtime": "MultiThreaded",
-    "msvc_flag": "/MT",
-    "rust_target_feature": "+crt-static",
+    "msvc_runtime": "MultiThreadedDLL",
+    "msvc_flag": "/MD",
+    "rust_crt_linkage": "dynamic",
     "debug_crt_allowed": false
   },
   "windows": {

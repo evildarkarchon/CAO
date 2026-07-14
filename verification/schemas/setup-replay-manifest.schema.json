@@ -18,8 +18,8 @@
   "additionalProperties": false,
   "required": ["schema_version", "baseline_revision", "id", "revision", "fixture", "evidence"],
   "properties": {
-    "schema_version": { "type": "integer", "const": 1 },
-    "baseline_revision": { "type": "integer", "const": 1 },
+    "schema_version": { "type": "integer", "const": 2 },
+    "baseline_revision": { "type": "integer", "const": 2 },
     "id": { "type": "string", "const": "REPLAY-SETUP-SEAM" },
     "revision": { "type": "integer", "const": 1 },
     "fixture": { "$ref": "#/$defs/artifact" },

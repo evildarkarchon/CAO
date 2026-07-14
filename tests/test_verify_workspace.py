@@ -68,6 +68,10 @@ class VerifyWorkspaceTests(unittest.TestCase):
             destination / "tools/build_workspace.py",
         )
         shutil.copy2(
+            REPOSITORY_ROOT / "tools/acquire_skia_binary.py",
+            destination / "tools/acquire_skia_binary.py",
+        )
+        shutil.copy2(
             REPOSITORY_ROOT / "tools/export_branding.py",
             destination / "tools/export_branding.py",
         )
@@ -75,6 +79,10 @@ class VerifyWorkspaceTests(unittest.TestCase):
         shutil.copy2(
             REPOSITORY_ROOT / "verification/build-inputs/skia-source-lock.json",
             destination / "verification/build-inputs/skia-source-lock.json",
+        )
+        shutil.copy2(
+            REPOSITORY_ROOT / "verification/build-inputs/skia-binary-lock.json",
+            destination / "verification/build-inputs/skia-binary-lock.json",
         )
         shutil.copy2(
             REPOSITORY_ROOT / "verification/build-inputs/production-cargo-graph.json",
@@ -194,6 +202,41 @@ class VerifyWorkspaceTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Rust workspace contract verified", result.stdout)
+
+    def test_workspace_rejects_static_crt_rustflags(self) -> None:
+        """The public validator rejects a static CRT override in Cargo configuration."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            cargo_config = root / ".cargo/config.toml"
+            cargo_config.write_text(
+                '[build]\ntarget = "x86_64-pc-windows-msvc"\n\n'
+                + "[target.x86_64-pc-windows-msvc]\n"
+                + 'rustflags = ["-C", "target-feature=+crt-static"]\n',
+                encoding="utf-8",
+            )
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("dynamic CRT Cargo configuration", result.stderr)
+
+    def test_workspace_rejects_build_level_static_crt_rustflags(self) -> None:
+        """The public validator rejects static CRT flags from the build table."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            cargo_config = root / ".cargo/config.toml"
+            cargo_config.write_text(
+                '[build]\ntarget = "x86_64-pc-windows-msvc"\n'
+                + 'rustflags = ["-C", "target-feature=+crt-static"]\n',
+                encoding="utf-8",
+            )
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("dynamic CRT Cargo configuration", result.stderr)
 
     def test_workspace_requires_reviewed_branding_contract(self) -> None:
         """Reject a production workspace without the owned branding artifacts."""
@@ -470,6 +513,27 @@ class VerifyWorkspaceTests(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Skia source lock SHA-256", result.stderr)
+
+    def test_skia_binary_lock_must_remain_byte_exact(self) -> None:
+        """Reject any unreviewed change to the authenticated Skia binary archive."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "repository"
+            self.copy_contract_root(root)
+            binary_lock = root / "verification/build-inputs/skia-binary-lock.json"
+            content = binary_lock.read_text(encoding="utf-8")
+            binary_lock.write_text(
+                content.replace(
+                    "9e6c3d1da63ae202bff9938329ccaf81afc24acb4193aec15d6f0aac72a5960f",
+                    "0" * 64,
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.run_validator(root)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Skia binary lock SHA-256", result.stderr)
 
     def test_production_graph_lock_drift_must_be_rejected(self) -> None:
         """Reject a resolved production feature/build graph outside review."""

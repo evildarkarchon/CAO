@@ -41,6 +41,7 @@ class RustWorkspaceWorkflowTests(unittest.TestCase):
             "vendor/ba2-3.0.1/Cargo.toml.orig",
             "vendor/serde-hkx/serde_hkx/src/lib.rs",
             "verification/build-inputs/skia-source-lock.json",
+            "verification/build-inputs/skia-binary-lock.json",
         )
         result = subprocess.run(
             ["git", "check-attr", "eol", "--", *source_paths],
@@ -80,7 +81,8 @@ class RustWorkspaceWorkflowTests(unittest.TestCase):
 
         self.assertIn("runs-on: windows-2025", workflow)
         self.assertNotIn("self-hosted", workflow)
-        acquisition_index = workflow.index("cargo fetch --locked")
+        cargo_acquisition_index = workflow.index("cargo fetch --locked")
+        skia_acquisition_index = workflow.index("python tools/acquire_skia_binary.py")
         for offline_guard in (
             'CARGO_NET_OFFLINE: "true"',
             "HTTP_PROXY:",
@@ -88,7 +90,8 @@ class RustWorkspaceWorkflowTests(unittest.TestCase):
             "ALL_PROXY:",
         ):
             with self.subTest(offline_guard=offline_guard):
-                self.assertLess(acquisition_index, workflow.index(offline_guard))
+                self.assertLess(cargo_acquisition_index, workflow.index(offline_guard))
+                self.assertLess(skia_acquisition_index, workflow.index(offline_guard))
         self.assertIn(
             "rustup toolchain install 1.97.0 --profile minimal --component clippy "
             "--component rustfmt --target x86_64-pc-windows-msvc",
@@ -102,10 +105,21 @@ class RustWorkspaceWorkflowTests(unittest.TestCase):
         )
         self.assertIn("python tools/verify_workspace.py", commands)
         self.assertIn(
-            "cargo test --package cao-domain --package cao-application "
-            "--package cao-platform-windows --package cao-verification --lib --frozen",
+            "cargo test --workspace --all-targets --frozen",
             commands,
         )
+        self.assertIn(
+            "uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae",
+            workflow,
+        )
+        self.assertIn("python tools/acquire_skia_binary.py --print-cache-key", workflow)
+        self.assertIn(
+            "key: rust-skia-${{ runner.os }}-${{ steps.skia-lock.outputs.identity }}",
+            workflow,
+        )
+        self.assertNotIn("key: rust-skia-${{ runner.os }}-0.99.0-", workflow)
+        self.assertIn("SKIA_BINARIES_URL=$template", workflow)
+        self.assertNotIn("restore-keys:", workflow)
         self.assertNotIn("CAO_RUN_RELEASE_STAGING_TEST", workflow)
         self.assertNotIn("tools/build_workspace.py", workflow)
 

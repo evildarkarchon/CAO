@@ -545,7 +545,7 @@ The binary ZIP has one root, `tracetide-vX.Y.Z-windows-x64/`, containing `tracet
 
 Do not ship mutable state, PDBs, Qt assets/translations, the legacy icon, Havok tools, behavioral oracle, local oracle kit, development tools, caches, repository tests, or pre-populated logs/configuration. PDBs go only in the symbols ZIP.
 
-The compatibility floor is Windows 10 22H2 x64, disclosed as out of support; Windows 11 x64 is primary. Target ordinary x86-64 without AVX/AVX2 requirements. Use MSVC `/MT` and Rust `+crt-static` consistently. The GUI uses the Windows subsystem; the helper has no visible console. Embed `asInvoker`, `uiAccess=false`, supported-Windows and long-path manifests, approved product/version metadata, and the reviewed icon. Enable the UTF-8 active code page only after the parity corpus proves legacy profile/path and backend behavior in that manifest mode.
+The compatibility floor is Windows 10 22H2 x64, disclosed as out of support; Windows 11 x64 is primary. Target ordinary x86-64 without AVX/AVX2 requirements. Use the standard dynamic MSVC runtime consistently (`/MD` for native code and Rust's default dynamic CRT), and make the supported Microsoft Visual C++ Redistributable an explicit prerequisite. The GUI uses the Windows subsystem; the helper has no visible console. Embed `asInvoker`, `uiAccess=false`, supported-Windows and long-path manifests, approved product/version metadata, and the reviewed icon. Enable the UTF-8 active code page only after the parity corpus proves legacy profile/path and backend behavior in that manifest mode.
 
 Initial binaries are unsigned. Release metadata states that policy. SHA-256 checksums, GitHub provenance attestations, and SBOM attestations authenticate every artifact.
 
@@ -571,7 +571,7 @@ Recursively audit normal and delayed PE imports. Only allow-listed Windows 10 sy
 
 Run pinned `cargo-deny`, `cargo-about`, and CycloneDX generation against the exact staged features. Fail closed on unknown licenses, moving sources, wildcard direct dependencies, unreviewed expressions, missing texts, or native/assets absent from reconciliation. Choose Slint's GPLv3 licensing option. Publish exact Corresponding Source for the GPLv3 combined work beside the binary and retain it for as long as that binary remains offered. It includes MPL-covered source/notices, vendored/retrievable crate and native sources, bridges, manifests, lockfiles, code-generation inputs, resources, patches, and build/package scripts.
 
-The exact staged ZIP must launch through Explorer and PowerShell from unrelated, space-containing, Unicode, and near-long paths on clean Windows 10/11 VMs with no repository, toolchain, network, prior state, or VC runtime. Exercise every backend, the helper, CPU texture fallback, a representative run, safe cancellation, relaunch, and delete-directory uninstall.
+After installing and verifying the declared Microsoft Visual C++ Redistributable prerequisite, the exact staged ZIP must launch through Explorer and PowerShell from unrelated, space-containing, Unicode, and near-long paths on clean Windows 10/11 VMs with no repository, toolchain, network, or prior application state. Exercise every backend, the helper, CPU texture fallback, a representative run, safe cancellation, relaunch, and delete-directory uninstall.
 
 Publication is atomic across binary, source, symbols, SBOM, checksums, attestations, and notes. Never replace bytes under an existing version and never publish a runnable ZIP from ordinary CI or a pull request.
 
@@ -581,7 +581,7 @@ The work packages below are the implementation sequence. A package may start onl
 
 | ID | Work package | Depends on | Required exit evidence |
 |---|---|---|---|
-| W0 | Freeze sources, evidence, and compliance policy | None | Oracle hash check; pin/checksum manifest; discrepancy register schema; parity matrix schema; GPLv3/Slint/static-CRT policy; support-floor record |
+| W0 | Freeze sources, evidence, and compliance policy | None | Oracle hash check; pin/checksum manifest; discrepancy register schema; parity matrix schema; GPLv3/Slint/dynamic-CRT policy; support-floor record |
 | W1 | Bootstrap the twelve-package workspace and CI enforcement | W0 | Rust 1.97/edition 2024/resolver 3 workspace; lockfile; exact dependencies; DAG/unsafe/feature/source checks; offline build skeleton |
 | W2 | Implement domain values and application seam | W1 | Typed profiles/overlays/configuration/run plan/work manifest/outcomes/errors; `Intent`, `ApplicationHandle`, `SnapshotSink`, bounded immutable snapshot; domain/application unit and leakage tests |
 | W3 | Build verification foundation and deterministic adapters | W2 | Manifest/evidence schemas; fresh sandbox runner; deterministic/fault adapters; conformance-suite framework; first application-seam tracer fixture in every-PR CI |

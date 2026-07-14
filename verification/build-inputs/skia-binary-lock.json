@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "selected_by": {
+    "package": "skia-bindings",
+    "version": "0.99.0",
+    "cargo_lock_checksum": "3e2d1c3ebd697c0cbded0145e9204a38fa6b268446051b7196d0a096414ea7f3"
+  },
+  "archive": {
+    "tag": "0.99.0",
+    "key": "a25a0fdb7d90429aa2d1-x86_64-pc-windows-msvc-d3d-gl-jpegd-jpege-pdf-textlayout",
+    "filename": "skia-binaries-a25a0fdb7d90429aa2d1-x86_64-pc-windows-msvc-d3d-gl-jpegd-jpege-pdf-textlayout.tar.gz",
+    "source_uri": "https://github.com/rust-skia/skia-binaries/releases/download/0.99.0/skia-binaries-a25a0fdb7d90429aa2d1-x86_64-pc-windows-msvc-d3d-gl-jpegd-jpege-pdf-textlayout.tar.gz",
+    "size_bytes": 25712200,
+    "sha256": "9e6c3d1da63ae202bff9938329ccaf81afc24acb4193aec15d6f0aac72a5960f"
+  }
+}

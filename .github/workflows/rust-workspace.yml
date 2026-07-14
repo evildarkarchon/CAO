@@ -36,6 +36,31 @@ jobs:
         shell: pwsh
         run: cargo fetch --locked
 
+      - name: Read the locked Skia cache identity
+        id: skia-lock
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $identity = python tools/acquire_skia_binary.py --print-cache-key
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "identity=$identity" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Restore the content-addressed Skia archive
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}\cao-build-cache
+          key: rust-skia-${{ runner.os }}-${{ steps.skia-lock.outputs.identity }}
+
+      - name: Acquire and authenticate the locked Skia archive
+        shell: pwsh
+        env:
+          CAO_BUILD_CACHE: ${{ runner.temp }}\cao-build-cache
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $template = python tools/acquire_skia_binary.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "SKIA_BINARIES_URL=$template" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Verify the reviewed baseline and Rust toolchain
         shell: pwsh
         run: |
@@ -56,9 +81,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           python tools/verify_workspace.py
-          python -m unittest tests.test_ci_workflow tests.test_verify_baseline tests.test_verify_workspace -v
+          python -m unittest tests.test_acquire_skia_binary tests.test_ci_workflow tests.test_verify_baseline tests.test_verify_workspace -v
 
-      - name: Exercise the UI-independent application seam
+      - name: Exercise the complete workspace from authenticated caches
         shell: pwsh
         env:
           CARGO_NET_OFFLINE: "true"
@@ -66,4 +91,4 @@ jobs:
           HTTPS_PROXY: http://127.0.0.1:9
           ALL_PROXY: http://127.0.0.1:9
           NO_PROXY: ""
-        run: cargo test --package cao-domain --package cao-application --package cao-platform-windows --package cao-verification --lib --frozen
+        run: cargo test --workspace --all-targets --frozen

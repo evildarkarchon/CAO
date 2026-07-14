@@ -221,6 +221,9 @@ EXPECTED_VENDOR_TREE_DIGESTS = {
 EXPECTED_SKIA_SOURCE_LOCK_SHA256 = (
     "977cf722f0bd614ec42bd93d0cee18a7e92dbb91be19baf77477352a8586491f"
 )
+EXPECTED_SKIA_BINARY_LOCK_SHA256 = (
+    "304fdb5eaef811f88e67f88355f554ec600fea83b79b0f19b82b0cc29ac117c6"
+)
 EXPECTED_LOCAL_LOCK_PACKAGES = {
     (name, "0.0.0") for name in EXPECTED_PACKAGE_NAMES.values()
 } | {
@@ -333,7 +336,7 @@ def validate_toolchain(root: Path) -> None:
     """Validate the exact Rust release, components, and Windows target.
 
     Raises:
-      ContractError: A toolchain or static-CRT setting is missing or changed.
+      ContractError: A toolchain or dynamic-CRT setting is missing or changed.
     """
     toolchain = load_toml(root / "rust-toolchain.toml").get("toolchain", {})
     require_equal(toolchain.get("channel"), "1.97.0", "Rust toolchain channel")
@@ -347,16 +350,20 @@ def validate_toolchain(root: Path) -> None:
 
     cargo_config = load_toml(root / ".cargo/config.toml")
     require_equal(
-        cargo_config.get("build", {}).get("target"),
-        "x86_64-pc-windows-msvc",
-        "Cargo default target",
+        set(cargo_config),
+        {"build"},
+        "dynamic CRT Cargo configuration tables",
+    )
+    cargo_build = cargo_config.get("build", {})
+    require_equal(
+        set(cargo_build),
+        {"target"},
+        "dynamic CRT Cargo configuration fields",
     )
     require_equal(
-        cargo_config.get("target", {})
-        .get("x86_64-pc-windows-msvc", {})
-        .get("rustflags"),
-        ["-C", "target-feature=+crt-static"],
-        "static CRT rustflags",
+        cargo_build.get("target"),
+        "x86_64-pc-windows-msvc",
+        "Cargo default target",
     )
 
 
@@ -2286,6 +2293,58 @@ def validate_skia_source_lock(root: Path) -> None:
     )
 
 
+def validate_skia_binary_lock(root: Path) -> None:
+    """Validate the authenticated upstream binary selected by locked skia-bindings.
+
+    Raises:
+      ContractError: The binary lock bytes or selected archive identity drift.
+    """
+    path = root / "verification/build-inputs/skia-binary-lock.json"
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as error:
+        raise ContractError(f"cannot read required file {path}: {error}") from error
+    require_equal(digest, EXPECTED_SKIA_BINARY_LOCK_SHA256, "Skia binary lock SHA-256")
+
+    binary_lock = load_json(path)
+    require_equal(binary_lock.get("schema_version"), 1, "Skia binary lock schema")
+    require_equal(
+        binary_lock.get("selected_by"),
+        {
+            "package": "skia-bindings",
+            "version": "0.99.0",
+            "cargo_lock_checksum": (
+                "3e2d1c3ebd697c0cbded0145e9204a38fa6b268446051b7196d0a096414ea7f3"
+            ),
+        },
+        "Skia binary lock selector",
+    )
+    require_equal(
+        binary_lock.get("archive"),
+        {
+            "tag": "0.99.0",
+            "key": (
+                "a25a0fdb7d90429aa2d1-x86_64-pc-windows-msvc-"
+                "d3d-gl-jpegd-jpege-pdf-textlayout"
+            ),
+            "filename": (
+                "skia-binaries-a25a0fdb7d90429aa2d1-x86_64-pc-windows-msvc-"
+                "d3d-gl-jpegd-jpege-pdf-textlayout.tar.gz"
+            ),
+            "source_uri": (
+                "https://github.com/rust-skia/skia-binaries/releases/download/0.99.0/"
+                "skia-binaries-a25a0fdb7d90429aa2d1-x86_64-pc-windows-msvc-"
+                "d3d-gl-jpegd-jpege-pdf-textlayout.tar.gz"
+            ),
+            "size_bytes": 25712200,
+            "sha256": (
+                "9e6c3d1da63ae202bff9938329ccaf81afc24acb4193aec15d6f0aac72a5960f"
+            ),
+        },
+        "Skia binary archive identity",
+    )
+
+
 def production_cargo_graph(
     root: Path, build_environment: Mapping[str, str] | None = None
 ) -> dict[str, Any]:
@@ -2485,12 +2544,16 @@ def validate_production_cargo_graph(
 
 
 def validate_release_script(root: Path) -> None:
-    """Require the guarded offline build and allowlist-driven staging entry points.
+    """Require authenticated acquisition, build, and staging entry points.
 
     Raises:
       ContractError: A required build entry point is missing.
     """
-    for relative_path in ("tools/build_workspace.py", "tools/stage_release.py"):
+    for relative_path in (
+        "tools/acquire_skia_binary.py",
+        "tools/build_workspace.py",
+        "tools/stage_release.py",
+    ):
         script = root / relative_path
         if not script.is_file():
             raise ContractError(f"missing required file: {script}")
@@ -2821,6 +2884,7 @@ def validate(root: Path, build_environment: Mapping[str, str] | None = None) -> 
     validate_vendored_sources(root)
     validate_lockfile(root)
     validate_skia_source_lock(root)
+    validate_skia_binary_lock(root)
     validate_production_cargo_graph(root, build_environment)
     validate_release_script(root)
     validate_branding_contract(root)
