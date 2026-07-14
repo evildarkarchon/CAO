@@ -1202,6 +1202,9 @@ class VerifyWorkspaceTests(unittest.TestCase):
             environment["LLVM_HOME"] = str(root / "llvm")
             environment["CAO_MSVC_TOOLCHAIN_DIR"] = str(root / "msvc")
             environment["CAO_WINDOWS_SDK_DIR"] = str(root / "sdk")
+            # CI exports the authenticated binary-build URL, but release staging
+            # deliberately accepts only its source-build inputs.
+            environment.pop("SKIA_BINARIES_URL", None)
             self.add_local_runner_commands(environment)
             result = subprocess.run(
                 [
