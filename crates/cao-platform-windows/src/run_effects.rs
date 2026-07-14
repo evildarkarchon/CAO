@@ -1193,7 +1193,7 @@ const fn profile_slug(profile: ActiveProfileId) -> &'static str {
 mod tests {
     use super::{
         FILE_SHARE_READ, MAX_RETAINED_RUN_LOG_BYTES, MAX_RETAINED_RUN_LOGS,
-        WindowsRunEnvironmentFactory,
+        WindowsRunEnvironmentFactory, without_verbatim_prefix,
     };
     use cao_application::{
         ActiveProfileId, FailureKind, RunEnvironmentFactory, RunEnvironmentRequest, RunStoreLimits,
@@ -1262,11 +1262,15 @@ mod tests {
         assert_ne!(first.scratch_directory(), second.scratch_directory());
         assert_ne!(first.log_path(), second.log_path());
         assert!(first.scratch_directory().starts_with(std::env::temp_dir()));
-        assert!(
-            first
-                .log_path()
-                .starts_with(sandbox.root().join("data/logs"))
+        // Match the factory's canonical spelling because Windows path comparisons here are lexical.
+        let expected_logs = without_verbatim_prefix(
+            &sandbox
+                .root()
+                .join("data/logs")
+                .canonicalize()
+                .expect("run log directory should canonicalize"),
         );
+        assert!(first.log_path().starts_with(expected_logs));
         assert!(first.log_path().to_string_lossy().contains("SSE"));
 
         let log_path = first.log_path().to_path_buf();
