@@ -4,7 +4,7 @@
 
 #include "AnimationsOptimizer.h"
 
-void AnimationsOptimizer::convert(const QString &filePath)
+bool AnimationsOptimizer::convert(const QString &filePath)
 {
     std::call_once(onceFlag, [this] {
         hkxcmdFound = QFile::exists(hkxcmdPath);
@@ -16,7 +16,7 @@ void AnimationsOptimizer::convert(const QString &filePath)
     });
 
     if (!hkxcmdFound)
-        return;
+        return false;
 
     const QString tempHkx = "___tempAnimFile.hkx";
     const QString outHkx = "___tempAnimFile-out.hkx";
@@ -27,7 +27,7 @@ void AnimationsOptimizer::convert(const QString &filePath)
     QFile file(filePath);
     if (!file.copy(tempHkx)) {
         PLOG_ERROR << QString("Cannot copy %1 in order to convert it").arg(filePath);
-        return;
+        return false;
     }
 
     QProcess hkxcmd(this);
@@ -42,14 +42,15 @@ void AnimationsOptimizer::convert(const QString &filePath)
 
     if (!success) {
         PLOG_WARNING << QString("Cannot convert %1, it is probably already converted.").arg(filePath);
-        return;
+        return false;
     }
 
     QFile::remove(filePath);
     if (!QFile::rename(outHkx, filePath)) {
         PLOG_ERROR << QString("Failed to convert %1: Cannot copy it back to its path").arg(filePath);
-        return;
+        return false;
     }
 
     PLOG_INFO << QString("Successfully converted %1").arg(filePath);
+    return true;
 }

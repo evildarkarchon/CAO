@@ -5,6 +5,7 @@
 
 #include "MeshesOptimizer.h"
 #include "FilesystemOperations.h"
+#include "MeshReferenceMaintenance.h"
 
 using namespace nifly;
 
@@ -74,15 +75,66 @@ bool MeshesOptimizer::optimize(const QString &filepath)
     if (!loadResult)
         return false;
 
+    const auto optimization = optimize(nif, filepath, cao::routing::ExecutionMode::Apply);
+    if (!optimization.succeeded())
+        return false;
+
+    bool changed = optimization.wouldChange();
+    // The legacy entry point retains its global policy read until discovery is atomically cut over in #394.
+    if (Profiles::texturesConvertTga())
+        changed = cao::execution::replaceReferencedTgaTextureNames(nif) || changed;
+    return !changed || saveMesh(nif, filepath);
+}
+
+cao::execution::OperationResult MeshesOptimizer::optimize(
+    NifFile &nif,
+    const QString &filepath,
+    const cao::routing::ExecutionMode mode) const
+{
+    const ScanResult scanResult = scan(nif);
+    if (scanResult == doNotProcess)
+        return cao::execution::OperationResult::unchanged();
+
+    const QString relativeFilePath = filepath.mid(filepath.indexOf("/meshes/", Qt::CaseInsensitive)
+                                                  + 1);
+    if (mode == cao::routing::ExecutionMode::DryRun) {
+        bool wouldChange = bMeshesResave;
+        // Headparts have to get a special optimization.
+        if (iMeshesOptimizationLevel >= 1 && bMeshesHeadparts
+            && headparts.contains(relativeFilePath, Qt::CaseInsensitive)) {
+            PLOG_INFO << filepath + " would be optimized as an headpart due to necessary optimization";
+            wouldChange = true;
+        } else {
+            switch (scanResult) {
+            case doNotProcess:
+                break;
+            case good:
+            case lightIssue:
+                if (iMeshesOptimizationLevel >= 3) {
+                    PLOG_INFO << filepath + " would be optimized due to full optimization";
+                    wouldChange = true;
+                } else if (iMeshesOptimizationLevel >= 2) {
+                    PLOG_INFO << filepath + " would be optimized due to medium optimization";
+                    wouldChange = true;
+                }
+                break;
+            case criticalIssue:
+                if (iMeshesOptimizationLevel >= 1) {
+                    PLOG_INFO << filepath + " would be optimized due to necessary optimization";
+                    wouldChange = true;
+                }
+                break;
+            }
+        }
+        return wouldChange ? cao::execution::OperationResult::changed()
+                           : cao::execution::OperationResult::unchanged();
+    }
+
     OptOptions options;
     options.targetVersion.SetFile(Profiles::meshesFileVersion());
     options.targetVersion.SetStream(Profiles::meshesStream());
     options.targetVersion.SetUser(Profiles::meshesUser());
     options.removeParallax = false;
-
-    const ScanResult scanResult = scan(nif);
-    const QString relativeFilePath = filepath.mid(filepath.indexOf("/meshes/", Qt::CaseInsensitive)
-                                                  + 1);
 
     auto print_res = [](nifly::OptResult res) {
         std::string str = "Details of mesh optimization:";
@@ -98,7 +150,7 @@ bool MeshesOptimizer::optimize(const QString &filepath)
     };
 
     bool processedHeadpart = false;
-    //Headparts have to get a special optimization
+    // Headparts have to get a special optimization.
     if (iMeshesOptimizationLevel >= 1
         && (headparts.contains(relativeFilePath, Qt::CaseInsensitive)
             || relativeFilePath.contains("facegen", Qt::CaseInsensitive))) {
@@ -113,7 +165,7 @@ bool MeshesOptimizer::optimize(const QString &filepath)
     } else {
         switch (scanResult) {
         case doNotProcess:
-            return true;
+            break;
         case good:
         case lightIssue:
             if (iMeshesOptimizationLevel >= 3) {
@@ -134,16 +186,9 @@ bool MeshesOptimizer::optimize(const QString &filepath)
                               || (iMeshesOptimizationLevel >= 1 && scanResult >= criticalIssue)
                               || iMeshesOptimizationLevel >= 2;
 
-    //Renaming textures referenced in mesh if TGA were converted to DDS
-    const auto renamedReferencedTextures = Profiles::texturesConvertTga()
-                                           && renameReferencedTexturesExtension(nif);
-    PLOG_VERBOSE_IF(renamedReferencedTextures)
-        << "Renamed referenced textures from TGA to DDS in " + filepath;
-
-    if (modifiedMesh || renamedReferencedTextures || processedHeadpart)
-        saveMesh(nif, filepath);
-    PLOG_VERBOSE << "Closing mesh: " + filepath;
-    return true;
+    return modifiedMesh || processedHeadpart
+               ? cao::execution::OperationResult::changed()
+               : cao::execution::OperationResult::unchanged();
 }
 
 void MeshesOptimizer::dryOptimize(const QString &filepath) const
@@ -151,61 +196,31 @@ void MeshesOptimizer::dryOptimize(const QString &filepath) const
     auto [loadResult, nif] = loadMesh(filepath);
     if (!loadResult)
         return;
+    static_cast<void>(optimize(nif, filepath, cao::routing::ExecutionMode::DryRun));
 
-    const ScanResult scanResult = scan(nif);
-    const QString relativeFilePath = filepath.mid(filepath.indexOf("/meshes/", Qt::CaseInsensitive)
-                                                  + 1);
-
-    //Headparts have to get a special optimization
-    if (iMeshesOptimizationLevel >= 1 && bMeshesHeadparts
-        && headparts.contains(relativeFilePath, Qt::CaseInsensitive))
-        PLOG_INFO << filepath + " would be optimized as an headpart due to necessary optimization";
-    else {
-        switch (scanResult) {
-        case doNotProcess:
-            return;
-        case good:
-        case lightIssue:
-            if (iMeshesOptimizationLevel >= 3)
-                PLOG_INFO << filepath + " would be optimized due to full optimization";
-
-            else if (iMeshesOptimizationLevel >= 2) {
-                PLOG_INFO << filepath + " would be optimized due to medium optimization";
-            }
-            break;
-        case criticalIssue:
-            PLOG_INFO << filepath + " would be optimized due to necessary optimization";
-            break;
-        }
-    }
-}
-
-bool MeshesOptimizer::renameReferencedTexturesExtension(NifFile &file)
-{
-    bool meshChanged = false;
-    for (auto shape : file.GetShapes()) {
-        for (auto tex : file.GetTexturePathRefs(shape)) {
-            if (tex.get().empty())
-                continue;
-
-            QString qsTex = QString::fromStdString(tex.get());
-            if (qsTex.contains(".tga", Qt::CaseInsensitive)) {
-                qsTex.replace(".tga", ".dds", Qt::CaseInsensitive);
-                tex.get() = qsTex.toStdString();
-                meshChanged = true;
-            }
-        }
-    }
-    return meshChanged;
+    // The legacy entry point evaluates its global maintenance policy until #394 removes it.
+    PLOG_INFO_IF(Profiles::texturesConvertTga()
+                 && cao::execution::hasReferencedTgaTexture(nif))
+        << "Referenced TGA Texture names would be replaced with DDS.";
 }
 
 std::tuple<bool, NifFile> MeshesOptimizer::loadMesh(const QString &filepath) const
 {
+    const bool terrain = filepath.endsWith("btr", Qt::CaseInsensitive)
+                         || filepath.endsWith("bto", Qt::CaseInsensitive);
+    return loadMesh(filepath,
+                    terrain ? cao::routing::MeshVariant::Terrain
+                            : cao::routing::MeshVariant::Standard);
+}
+
+std::tuple<bool, NifFile> MeshesOptimizer::loadMesh(
+    const QString &filepath,
+    const cao::routing::MeshVariant variant) const
+{
     PLOG_VERBOSE << "Loading mesh: " + filepath;
 
     NifLoadOptions loadOptions;
-    loadOptions.isTerrain = (filepath.endsWith("btr", Qt::CaseInsensitive)
-                             || filepath.endsWith("bto", Qt::CaseInsensitive));
+    loadOptions.isTerrain = variant == cao::routing::MeshVariant::Terrain;
 
     NifFile nif;
     if (nif.Load(filepath.toStdU16String(), loadOptions)) {

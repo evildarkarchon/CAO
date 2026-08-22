@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "MainOptimizer.h"
+#include "MeshReferenceMaintenance.h"
 #include "Profiles.h"
 #include "PluginsOperations.h"
 #include "TexturesOptimizer.h"
@@ -12,9 +13,22 @@ MainOptimizer::MainOptimizer(const OptionsCAO &optOptions)
     : _optOptions(optOptions)
     , _meshesOpt(
           MeshesOptimizer(_optOptions.bMeshesHeadparts, optOptions.iMeshesOptimizationLevel, optOptions.bMeshesResave))
+    , _assetExecutor(*this)
 {
     addHeadparts();
     addLandscapeTextures();
+}
+
+cao::execution::AssetExecutionResult MainOptimizer::process(
+    const cao::routing::RoutedAsset &asset)
+{
+    const auto result = _assetExecutor.execute(asset);
+    if (!result.succeeded()) {
+        PLOG_ERROR << "Cannot process Routed Asset: "
+                   << QString::fromStdWString(asset.executionPath().wstring())
+                   << "\n" << result.message();
+    }
+    return result;
 }
 
 void handleBadFile(const QString &path)
@@ -172,7 +186,7 @@ void MainOptimizer::processHkx(const QString &file)
     if (_optOptions.bAnimationsOptimization && _optOptions.bDryRun)
         PLOG_INFO << file + " would be converted to the appropriate format.";
     else if (_optOptions.bAnimationsOptimization)
-        _animOpt.convert(file);
+        static_cast<void>(_animOpt.convert(file));
 }
 
 void MainOptimizer::processNif(const QString &file)
@@ -185,4 +199,118 @@ void MainOptimizer::processNif(const QString &file)
     else if (_optOptions.iMeshesOptimizationLevel >= 1 && !_optOptions.bDryRun)
         if (!_meshesOpt.optimize(file))
             handleBadFile(file);
+}
+
+bool MainOptimizer::loadTexture(const std::filesystem::path &path,
+                                const cao::routing::TextureVariant variant)
+{
+    const auto type = variant == cao::routing::TextureVariant::Native
+                          ? TexturesOptimizer::DDS
+                          : TexturesOptimizer::TGA;
+    return _texturesOpt.open(QString::fromStdWString(path.wstring()), type);
+}
+
+cao::execution::OperationResult MainOptimizer::optimizeTexture(
+    const cao::routing::AssetOperations &operations,
+    const cao::routing::ExecutionMode mode)
+{
+    const bool optimize = operations.contains(cao::routing::AssetOperation::Optimization);
+    const bool convert = operations.contains(cao::routing::AssetOperation::Conversion);
+    std::optional<size_t> width;
+    std::optional<size_t> height;
+    if (optimize && _optOptions.bTexturesResizeRatio) {
+        width = _texturesOpt.getInfo().width / _optOptions.iTexturesTargetWidthRatio;
+        height = _texturesOpt.getInfo().height / _optOptions.iTexturesTargetHeightRatio;
+    } else if (optimize && _optOptions.bTexturesResizeSize) {
+        width = _optOptions.iTexturesTargetWidth;
+        height = _optOptions.iTexturesTargetHeight;
+    }
+
+    const bool necessary = convert || (optimize && _optOptions.bTexturesNecessary);
+    const bool compress = optimize && _optOptions.bTexturesCompress;
+    const bool mipmaps = optimize && _optOptions.bTexturesMipmaps;
+    if (mode == cao::routing::ExecutionMode::DryRun) {
+        _texturesOpt.dryOptimize(necessary, compress, mipmaps, width, height);
+        return cao::execution::OperationResult::changed();
+    }
+
+    if (!_texturesOpt.optimize(necessary, compress, mipmaps, width, height))
+        return cao::execution::OperationResult::failed("Failed to optimize Texture.");
+    if (convert || _texturesOpt.modifiedCurrentTexture)
+        return cao::execution::OperationResult::changed();
+    return cao::execution::OperationResult::unchanged();
+}
+
+bool MainOptimizer::saveTexture(const std::filesystem::path &path)
+{
+    return _texturesOpt.saveToFile(QString::fromStdWString(path.wstring()));
+}
+
+bool MainOptimizer::removeTexture(const std::filesystem::path &path)
+{
+    return QFile(QString::fromStdWString(path.wstring())).remove();
+}
+
+bool MainOptimizer::loadMesh(const std::filesystem::path &path,
+                             const cao::routing::MeshVariant variant)
+{
+    auto [loaded, mesh] = _meshesOpt.loadMesh(QString::fromStdWString(path.wstring()), variant);
+    if (!loaded) {
+        _loadedMesh.reset();
+        return false;
+    }
+
+    _loadedMesh = std::make_unique<nifly::NifFile>(std::move(mesh));
+    return true;
+}
+
+cao::execution::OperationResult MainOptimizer::optimizeMesh(
+    const std::filesystem::path &path,
+    const cao::routing::ExecutionMode mode)
+{
+    if (!_loadedMesh)
+        return cao::execution::OperationResult::failed("No Mesh is loaded.");
+    return _meshesOpt.optimize(*_loadedMesh,
+                              QString::fromStdWString(path.wstring()),
+                              mode);
+}
+
+cao::execution::OperationResult MainOptimizer::maintainMeshReferences(
+    const cao::routing::ExecutionMode mode)
+{
+    if (!_loadedMesh)
+        return cao::execution::OperationResult::failed("No Mesh is loaded.");
+
+    if (mode == cao::routing::ExecutionMode::DryRun) {
+        const bool wouldChange = cao::execution::hasReferencedTgaTexture(*_loadedMesh);
+        PLOG_INFO_IF(wouldChange)
+            << "Referenced TGA Texture names would be replaced with DDS.";
+        return wouldChange ? cao::execution::OperationResult::changed()
+                           : cao::execution::OperationResult::unchanged();
+    }
+
+    const bool changed = cao::execution::replaceReferencedTgaTextureNames(*_loadedMesh);
+    PLOG_VERBOSE_IF(changed) << "Replaced referenced TGA Texture names with DDS.";
+    return changed ? cao::execution::OperationResult::changed()
+                   : cao::execution::OperationResult::unchanged();
+}
+
+bool MainOptimizer::saveMesh(const std::filesystem::path &path)
+{
+    return _loadedMesh
+           && _meshesOpt.saveMesh(*_loadedMesh, QString::fromStdWString(path.wstring()));
+}
+
+cao::execution::OperationResult MainOptimizer::optimizeAnimation(
+    const std::filesystem::path &path,
+    const cao::routing::ExecutionMode mode)
+{
+    const auto executionPath = QString::fromStdWString(path.wstring());
+    if (mode == cao::routing::ExecutionMode::DryRun) {
+        PLOG_INFO << executionPath + " would be converted to the appropriate format.";
+        return cao::execution::OperationResult::changed();
+    }
+    return _animOpt.convert(executionPath)
+               ? cao::execution::OperationResult::changed()
+               : cao::execution::OperationResult::failed("Failed to optimize Animation.");
 }

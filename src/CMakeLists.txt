@@ -5,6 +5,7 @@ configure_file (
     )
 
 add_subdirectory(AssetRouting)
+add_subdirectory(AssetExecution)
 
 # Find includes in corresponding build directories
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
@@ -89,6 +90,14 @@ add_compile_definitions(PLOG_OMIT_PLOG_DEFINES)
 find_package(bethutil CONFIG REQUIRED)
 #Nif Library
 find_package(nifly CONFIG REQUIRED)
+
+add_library(cao_mesh_reference_maintenance
+    ${CMAKE_CURRENT_SOURCE_DIR}/MeshReferenceMaintenance.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/MeshReferenceMaintenance.h
+)
+target_link_libraries(cao_mesh_reference_maintenance PUBLIC nifly)
+target_include_directories(cao_mesh_reference_maintenance PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(cao_mesh_reference_maintenance PUBLIC cxx_std_20)
 # DirectXTex
 find_package(directxtex CONFIG REQUIRED)
 
@@ -106,7 +115,9 @@ add_executable(Cathedral_Assets_Optimizer WIN32 ${SOURCES} ${RESOURCES} ${QM_FIL
 target_compile_definitions(Cathedral_Assets_Optimizer PRIVATE GUI)
 #Windows 7 compatibility
 target_link_libraries(Cathedral_Assets_Optimizer PRIVATE
+    cao_asset_execution
     cao_asset_routing
+    cao_mesh_reference_maintenance
     Qt5::Core Qt5::Widgets
     nifly Microsoft::DirectXTex btu::bethutil)
 target_include_directories(Cathedral_Assets_Optimizer PRIVATE ${PLOG_INCLUDE_DIRS})
