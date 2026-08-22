@@ -106,7 +106,7 @@ public:
     /// owned Routed Assets to the execution adapter, reports definitive routing diagnostics, then
     /// finalizes Archives in Apply mode only. Cancellation is observed only between attempts so an
     /// adapter is never abandoned mid-operation. A finalizer reports cancellation by returning
-    /// false; filesystem and adapter exceptions propagate to the caller.
+    /// false. Filesystem races are skipped during discovery; adapter exceptions propagate.
     [[nodiscard]] AssetRunResult execute(
         std::span<const std::filesystem::path> roots,
         const AssetRunAdapters &adapters) const;

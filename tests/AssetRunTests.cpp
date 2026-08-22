@@ -204,6 +204,12 @@ private slots:
 
     /// Verifies cancellation stops before the next Routed Asset without changing the work total.
     void cancellationStopsBetweenRoutedAssets();
+
+    /// Verifies Archive cancellation returns before definitive Loose Asset discovery.
+    void archiveCancellationSkipsDefinitiveDiscovery();
+
+    /// Verifies cancellation during the final Archive also skips definitive discovery.
+    void finalArchiveCancellationSkipsDefinitiveDiscovery();
 };
 
 void AssetRunTests::archiveExtractionPrecedesDefinitiveRoutedExecution()
@@ -603,6 +609,64 @@ void AssetRunTests::cancellationStopsBetweenRoutedAssets()
     QCOMPARE(progress.size(), std::size_t{1});
     QCOMPARE(progress.front().completed, std::size_t{1});
     QCOMPARE(progress.front().total, std::size_t{2});
+}
+
+void AssetRunTests::archiveCancellationSkipsDefinitiveDiscovery()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+
+    const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString());
+    const std::array paths{root / "first.bsa",
+                           root / "second.bsa",
+                           root / "textures" / "loose.dds"};
+    for (const auto &path : paths)
+        writeFile(path);
+
+    std::size_t extractionAttempts = 0;
+    const AssetRun run(archiveAndTexturePolicy());
+    const std::array roots{root};
+    const auto result = run.execute(
+        roots,
+        AssetRunAdapters{
+            [&](const cao::routing::RoutedAsset &) { ++extractionAttempts; },
+            [](const cao::routing::RoutedAsset &) {
+                qFatal("No Loose Asset should execute after Archive cancellation");
+            },
+            {},
+            [&] { return extractionAttempts == 1; }});
+
+    QVERIFY(result.cancelled());
+    QCOMPARE(extractionAttempts, std::size_t{1});
+    QVERIFY(result.ledger().routedAssets().empty());
+}
+
+void AssetRunTests::finalArchiveCancellationSkipsDefinitiveDiscovery()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+
+    const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString());
+    const std::array paths{root / "only.bsa", root / "textures" / "loose.dds"};
+    for (const auto &path : paths)
+        writeFile(path);
+
+    std::size_t extractionAttempts = 0;
+    const AssetRun run(archiveAndTexturePolicy());
+    const std::array roots{root};
+    const auto result = run.execute(
+        roots,
+        AssetRunAdapters{
+            [&](const cao::routing::RoutedAsset &) { ++extractionAttempts; },
+            [](const cao::routing::RoutedAsset &) {
+                qFatal("No Loose Asset should execute after final Archive cancellation");
+            },
+            {},
+            [&] { return extractionAttempts == 1; }});
+
+    QVERIFY(result.cancelled());
+    QCOMPARE(extractionAttempts, std::size_t{1});
+    QVERIFY(result.ledger().routedAssets().empty());
 }
 
 QTEST_MAIN(AssetRunTests)

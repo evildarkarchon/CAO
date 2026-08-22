@@ -11,7 +11,7 @@
 namespace cao::run
 {
 using ArchiveExtractionOperation =
-    std::function<void(std::span<const routing::RoutedAsset>)>;
+    std::function<bool(std::span<const routing::RoutedAsset>)>;
 
 /// Extracts one Archive through bethutil while preserving every existing Loose Asset.
 /// When removeArchive is true, the Archive is removed only according to bethutil's extraction contract.
@@ -69,9 +69,9 @@ public:
     explicit ArchiveFirstAssetDiscovery(routing::RoutingPolicy policy) noexcept;
 
     /// Selects enabled Archives, passes the complete batch for synchronous extraction, then
-    /// traverses roots once for definitive paths. The operation must return only after every
-    /// selected Archive is available beneath its root. Filesystem and extraction exceptions
-    /// propagate to the caller.
+    /// traverses roots once for definitive paths. The operation returns false when extraction was
+    /// cancelled, which skips definitive traversal. Filesystem races and permission failures are
+    /// skipped during traversal; extraction exceptions propagate to the caller.
     /// Roots must not overlap; each filesystem occurrence is preserved in traversal order.
     [[nodiscard]] ArchiveFirstAssetDiscoveryResult discover(
         std::span<const std::filesystem::path> roots,

@@ -16,12 +16,12 @@ ApplicationRunChoices choicesFrom(const OptionsCAO &options)
                                         || options.bTexturesResizeRatio;
     // The application has one Mesh level, while routing keeps Standard and Terrain choices explicit.
     const bool optimizeMeshes = options.iMeshesOptimizationLevel > 0;
-    // TGA conversion is a selected-profile run choice and is validated separately against profile capabilities.
+    // A profile's TGA preference only participates when the user selected Texture work for this run.
     return ApplicationRunChoices{
         .executionMode = options.bDryRun ? routing::ExecutionMode::DryRun
                                          : routing::ExecutionMode::Apply,
         .optimizeNativeTextures = optimizeNativeTextures,
-        .convertTextures = Profiles::texturesConvertTga(),
+        .convertTextures = optimizeNativeTextures && Profiles::texturesConvertTga(),
         .optimizeStandardMeshes = optimizeMeshes,
         .optimizeTerrainMeshes = optimizeMeshes,
         .optimizeAnimations = options.bAnimationsOptimization,
@@ -36,7 +36,7 @@ SelectedProfileFacts factsFromSelectedProfile()
         btu::bsa::Settings::get(Profiles::bsaGame()).extension);
     const bool texturesEnabled = Profiles::texturesEnabled();
     const bool meshesEnabled = Profiles::meshesEnabled();
-    // TGA conversion derives Mesh Reference Maintenance, so unsupported Mesh handling is a setup conflict.
+    // Reference maintenance belongs to Texture conversion; Mesh enablement controls optimization only.
     return SelectedProfileFacts{
         .archiveExtension = std::string(archiveExtension.data(), archiveExtension.size()),
         .supportsNativeTextureOptimization = texturesEnabled,
@@ -45,7 +45,7 @@ SelectedProfileFacts factsFromSelectedProfile()
         .supportsTerrainMeshOptimization = meshesEnabled,
         .supportsAnimationOptimization = Profiles::animationsEnabled(),
         .supportsArchiveExtraction = Profiles::bsaEnabled(),
-        .supportsMeshReferenceMaintenance = meshesEnabled,
+        .supportsMeshReferenceMaintenance = texturesEnabled,
     };
 }
 }

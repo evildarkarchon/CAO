@@ -7,6 +7,23 @@
 #include "MeshReferenceMaintenance.h"
 #include "TexturesOptimizer.h"
 
+namespace
+{
+/// Renames an unreadable optimizer input to a collision-safe path outside packable Asset extensions.
+void handleBadFile(const QString &path)
+{
+    auto quarantinePath = path + ".caobad";
+    for (quint64 suffix = 1; QFileInfo::exists(quarantinePath); ++suffix)
+        quarantinePath = path + ".caobad." + QString::number(suffix);
+
+    if (QFile::rename(path, quarantinePath)) {
+        PLOG_ERROR << QString("%1 was renamed to %2").arg(path, quarantinePath);
+    } else {
+        PLOG_ERROR << QString("Please remove %1").arg(path);
+    }
+}
+}
+
 MainOptimizer::MainOptimizer(const OptionsCAO &optOptions)
     : _optOptions(optOptions)
     , _meshesOpt(
@@ -25,6 +42,12 @@ cao::execution::AssetExecutionResult MainOptimizer::process(
         PLOG_ERROR << "Cannot process Routed Asset: "
                    << QString::fromStdWString(asset.executionPath().wstring())
                    << "\n" << result.message();
+
+        // Quarantine mutates the effective tree, so Dry Run only reports the load failure.
+        if (asset.executionMode() == cao::routing::ExecutionMode::Apply
+            && result.failure() == cao::execution::AssetExecutionFailure::LoadFailed) {
+            handleBadFile(QString::fromStdWString(asset.executionPath().wstring()));
+        }
     }
     return result;
 }

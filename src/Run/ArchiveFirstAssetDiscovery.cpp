@@ -3,6 +3,7 @@
 #include <btu/bsa/unpack.hpp>
 
 #include <map>
+#include <system_error>
 #include <unordered_set>
 #include <utility>
 #include <variant>
@@ -24,14 +25,27 @@ void visitRegularFiles(const std::span<const std::filesystem::path> roots,
                        Visitor &&visitor)
 {
     for (const auto &root : roots) {
-        if (std::filesystem::is_regular_file(root)) {
+        std::error_code error;
+        if (std::filesystem::is_regular_file(root, error)) {
             visitor(root, true);
             continue;
         }
 
-        for (const auto &entry : std::filesystem::recursive_directory_iterator(root)) {
-            if (entry.is_regular_file())
-                visitor(entry.path(), false);
+        // A mod tree can change while an Archive adapter runs, so traversal treats disappeared or
+        // unreadable entries as absent from this pass instead of escaping the GUI worker.
+        error.clear();
+        auto entry = std::filesystem::recursive_directory_iterator(
+            root,
+            std::filesystem::directory_options::skip_permission_denied,
+            error);
+        const auto end = std::filesystem::recursive_directory_iterator();
+        while (entry != end) {
+            error.clear();
+            if (entry->is_regular_file(error))
+                visitor(entry->path(), false);
+
+            error.clear();
+            entry.increment(error);
         }
     }
 }
@@ -107,8 +121,12 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
             unsupportedExplicitPaths.push_back(path);
     });
 
-    if (!selectedArchives.empty())
-        extractArchive(selectedArchives);
+    if (!selectedArchives.empty() && !extractArchive(selectedArchives)) {
+        return ArchiveFirstAssetDiscoveryResult(
+            EffectiveAssetTree({}),
+            std::move(skippedArchiveCounts),
+            std::move(unsupportedExplicitPaths));
+    }
 
     // Extraction is synchronous so this is the single definitive view of all non-Archive paths.
     std::vector<std::filesystem::path> effectivePaths;

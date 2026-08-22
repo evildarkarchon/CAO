@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -115,6 +116,15 @@ private slots:
 
     /// Verifies recognized Archives excluded by policy never reach the extraction operation.
     void excludedArchivesAreNotExtracted();
+
+    /// Verifies a cancelled extraction batch does not trigger definitive filesystem discovery.
+    void cancelledExtractionSkipsDefinitiveTraversal();
+
+    /// Verifies an explicitly supplied Archive may disappear before pass two without escaping.
+    void removedExplicitArchiveRootDoesNotThrow();
+
+    /// Verifies a directory root may disappear before pass two without escaping.
+    void removedDirectoryRootDoesNotThrow();
 };
 
 void ArchiveFirstAssetDiscoveryTests::extractsEnabledArchivesBeforeDefinitiveDiscovery()
@@ -130,20 +140,29 @@ void ArchiveFirstAssetDiscoveryTests::extractsEnabledArchivesBeforeDefinitiveDis
     writeFile(looseAsset, "loose");
 
     std::vector<std::filesystem::path> extractedArchives;
+    std::size_t selectedArchiveCount = 0;
+    bool selectedArchiveWasRoutedForExtraction = false;
     const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy());
     const std::array roots{root};
     const auto effectiveTree = discovery.discover(
         roots,
         [&](const std::span<const RoutedAsset> selectedArchives) {
-            QCOMPARE(selectedArchives.size(), std::size_t{1});
-            const auto &selectedArchive = selectedArchives.front();
-            QCOMPARE(selectedArchive.kind(), AssetKind::Archive);
-            QCOMPARE(selectedArchive.phase(), RunPhase::ArchiveExtraction);
-            QVERIFY(selectedArchive.operations().contains(AssetOperation::Extraction));
-            extractedArchives.push_back(selectedArchive.executionPath());
+            selectedArchiveCount = selectedArchives.size();
+            if (!selectedArchives.empty()) {
+                const auto &selectedArchive = selectedArchives.front();
+                selectedArchiveWasRoutedForExtraction = selectedArchive.kind() == AssetKind::Archive
+                                                        && selectedArchive.phase()
+                                                               == RunPhase::ArchiveExtraction
+                                                        && selectedArchive.operations().contains(
+                                                            AssetOperation::Extraction);
+                extractedArchives.push_back(selectedArchive.executionPath());
+            }
             writeFile(extractedAsset, "extracted");
+            return true;
         });
 
+    QCOMPARE(selectedArchiveCount, std::size_t{1});
+    QVERIFY(selectedArchiveWasRoutedForExtraction);
     QCOMPARE(extractedArchives, std::vector<std::filesystem::path>{archive});
     QCOMPARE(pathCount(effectiveTree.effectiveAssetTree().paths(), looseAsset), std::size_t{1});
     QCOMPARE(pathCount(effectiveTree.effectiveAssetTree().paths(), extractedAsset), std::size_t{1});
@@ -178,6 +197,7 @@ void ArchiveFirstAssetDiscoveryTests::realExtractionPreservesLooseAssetPrecedenc
         [](const std::span<const RoutedAsset> selectedArchives) {
             for (const auto &selectedArchive : selectedArchives)
                 extractArchiveNoOverwrite(selectedArchive.executionPath(), false);
+            return true;
         });
 
     QCOMPARE(readFile(collision), QByteArray("loose collision"));
@@ -203,12 +223,87 @@ void ArchiveFirstAssetDiscoveryTests::excludedArchivesAreNotExtracted()
     const std::array roots{root};
     const auto effectiveTree = discovery.discover(
         roots,
-        [&](const std::span<const RoutedAsset>) { extractionAttempted = true; });
+        [&](const std::span<const RoutedAsset>) {
+            extractionAttempted = true;
+            return true;
+        });
 
     QVERIFY(!extractionAttempted);
     QCOMPARE(pathCount(effectiveTree.effectiveAssetTree().paths(), looseAsset), std::size_t{1});
     QCOMPARE(pathCount(effectiveTree.effectiveAssetTree().paths(), archive), std::size_t{0});
     QCOMPARE(effectiveTree.effectiveAssetTree().paths().size(), std::size_t{1});
+}
+
+void ArchiveFirstAssetDiscoveryTests::cancelledExtractionSkipsDefinitiveTraversal()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+
+    const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString());
+    const auto archive = root / "content.bsa";
+    const auto looseAsset = root / "textures" / "loose.dds";
+    writeFile(archive, "archive placeholder");
+    writeFile(looseAsset, "loose");
+
+    const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy());
+    const std::array roots{root};
+    const auto result = discovery.discover(
+        roots,
+        [](const std::span<const RoutedAsset>) { return false; });
+
+    QVERIFY(result.effectiveAssetTree().paths().empty());
+}
+
+void ArchiveFirstAssetDiscoveryTests::removedExplicitArchiveRootDoesNotThrow()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+
+    const auto archive = std::filesystem::path(temporaryDirectory.path().toStdWString())
+                         / "content.bsa";
+    writeFile(archive, "archive placeholder");
+
+    std::optional<cao::run::ArchiveFirstAssetDiscoveryResult> result;
+    const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy());
+    const std::array roots{archive};
+    try {
+        result.emplace(discovery.discover(
+            roots,
+            [&](const std::span<const RoutedAsset>) {
+                return std::filesystem::remove(archive);
+            }));
+    } catch (const std::filesystem::filesystem_error &) {
+        // The assertion below reports the filesystem error as a test failure.
+    }
+
+    QVERIFY(result.has_value());
+    QVERIFY(result->effectiveAssetTree().paths().empty());
+}
+
+void ArchiveFirstAssetDiscoveryTests::removedDirectoryRootDoesNotThrow()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+
+    const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString()) / "mod";
+    const auto archive = root / "content.bsa";
+    writeFile(archive, "archive placeholder");
+
+    std::optional<cao::run::ArchiveFirstAssetDiscoveryResult> result;
+    const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy());
+    const std::array roots{root};
+    try {
+        result.emplace(discovery.discover(
+            roots,
+            [&](const std::span<const RoutedAsset>) {
+                return std::filesystem::remove_all(root) != 0;
+            }));
+    } catch (const std::filesystem::filesystem_error &) {
+        // The assertion below reports the filesystem error as a test failure.
+    }
+
+    QVERIFY(result.has_value());
+    QVERIFY(result->effectiveAssetTree().paths().empty());
 }
 
 QTEST_MAIN(ArchiveFirstAssetDiscoveryTests)

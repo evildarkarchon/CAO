@@ -85,7 +85,14 @@ AssetRunResult AssetRun::execute(
                         completed,
                         archives.size()});
                 }
+                // Re-sample after the in-flight extraction and its progress callback so cancellation
+                // during the final Archive can stop discovery before the definitive tree traversal.
+                if (adapters.isCancelled && adapters.isCancelled()) {
+                    cancelled = true;
+                    break;
+                }
             }
+            return !cancelled;
         });
     const routing::AssetRouter router(_policy);
     std::map<routing::SkipReason, std::size_t> skippedArchiveCounts;
