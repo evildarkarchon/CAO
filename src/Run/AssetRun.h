@@ -24,15 +24,43 @@ struct AssetRunProgress final
 
 using AssetRunProgressAdapter = std::function<void(const AssetRunProgress &)>;
 using AssetRunCancellationAdapter = std::function<bool()>;
+/// Completes post-execution Archive mutations and reports whether finalization finished.
+using ArchiveLifecycleFinalizationAdapter = std::function<bool()>;
+
+class AssetRunResult;
+
+/// Read-only diagnostics that are definitive before Apply-mode Archive finalization begins.
+class AssetRunDiagnostics final
+{
+public:
+    /// Returns the aggregate count for one stable recognized-Asset Skip Reason.
+    [[nodiscard]] std::size_t skippedAssetCount(routing::SkipReason reason) const noexcept;
+
+    /// Returns unsupported roots that were explicitly supplied as files, never directory entries.
+    [[nodiscard]] std::span<const std::filesystem::path> unsupportedExplicitPaths() const noexcept;
+
+private:
+    friend class AssetRun;
+
+    /// Borrows one in-flight result for the duration of its synchronous diagnostics callback.
+    explicit AssetRunDiagnostics(const AssetRunResult &result) noexcept;
+
+    const AssetRunResult &_result;
+};
+
+using AssetRunDiagnosticsAdapter = std::function<void(const AssetRunDiagnostics &)>;
 
 /// Supplies the production or test adapters used at the run's filesystem and execution seams.
-/// Extraction and execution are required; progress and cancellation adapters are optional.
+/// Extraction and execution are required; progress, cancellation, finalization, and result
+/// reporting are optional.
 struct AssetRunAdapters final
 {
     ArchiveAssetAdapter extractArchive;
     RoutedAssetExecutionAdapter executeAsset;
     AssetRunProgressAdapter reportProgress;
     AssetRunCancellationAdapter isCancelled;
+    ArchiveLifecycleFinalizationAdapter finalizeArchiveLifecycle;
+    AssetRunDiagnosticsAdapter reportDiagnostics;
 };
 
 /// Owns the definitive Routing Ledger and the terminal state of one Asset Run.
@@ -74,10 +102,11 @@ public:
     /// Owns the immutable policy used for both Archive selection and definitive routing.
     explicit AssetRun(routing::RoutingPolicy policy) noexcept;
 
-    /// Extracts routed Archives, batch-routes the resulting Effective Asset Tree once, and
-    /// offers the owned Routed Assets to the execution adapter. Cancellation is observed only
-    /// between attempts so an adapter is never abandoned mid-operation. Filesystem and adapter
-    /// exceptions propagate to the caller.
+    /// Extracts routed Archives, batch-routes the resulting Effective Asset Tree once, offers the
+    /// owned Routed Assets to the execution adapter, reports definitive routing diagnostics, then
+    /// finalizes Archives in Apply mode only. Cancellation is observed only between attempts so an
+    /// adapter is never abandoned mid-operation. A finalizer reports cancellation by returning
+    /// false; filesystem and adapter exceptions propagate to the caller.
     [[nodiscard]] AssetRunResult execute(
         std::span<const std::filesystem::path> roots,
         const AssetRunAdapters &adapters) const;

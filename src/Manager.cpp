@@ -142,44 +142,51 @@ void Manager::runOptimization()
                     lastLooseProgress = now;
                 }
             },
-            [&] { return _isCancelled; }});
+            [&] { return _isCancelled; },
+            [&] {
+                _numberCompletedFiles = 0;
+                printProgress(_modsToProcess.size(), "Packing BSAs");
+
+                //Packing BSAs
+                if (_options.bBsaCreate)
+                    for (const auto &folder : _modsToProcess)
+                    {
+                        if (_isCancelled)
+                            return false;
+
+                        if (QDir(folder).exists()) {
+                            PLOG_INFO << "Creating BSA...";
+                            bsaOptimizer.packAll(folder, _options);
+                        }
+                        ++_numberCompletedFiles;
+                        printProgress(_modsToProcess.size(),
+                                      "Packing BSAs - Folder:  "
+                                          + QFileInfo(folder).fileName());
+                    }
+
+                FilesystemOperations::deleteEmptyDirectories(_options.userPath);
+                return true;
+            },
+            [&](const cao::run::AssetRunDiagnostics &diagnostics) {
+                for (const auto reason : {cao::routing::SkipReason::DisabledPhase,
+                                          cao::routing::SkipReason::DisabledAssetKind,
+                                          cao::routing::SkipReason::ExcludedAssetVariant}) {
+                    const auto count = diagnostics.skippedAssetCount(reason);
+                    if (count != 0) {
+                        PLOG_INFO << QStringLiteral("Skipped %1 recognized Assets: %2")
+                                         .arg(count)
+                                         .arg(skipReasonName(reason));
+                    }
+                }
+                for (const auto &path : diagnostics.unsupportedExplicitPaths()) {
+                    PLOG_ERROR << "Cannot process: "
+                                      + QString::fromStdWString(path.wstring());
+                }
+            }});
 
     if (result.cancelled())
         return;
 
-    for (const auto reason : {cao::routing::SkipReason::DisabledPhase,
-                              cao::routing::SkipReason::DisabledAssetKind,
-                              cao::routing::SkipReason::ExcludedAssetVariant}) {
-        const auto count = result.skippedAssetCount(reason);
-        if (count != 0) {
-            PLOG_INFO << QStringLiteral("Skipped %1 recognized Assets: %2")
-                             .arg(count)
-                             .arg(skipReasonName(reason));
-        }
-    }
-    for (const auto &path : result.unsupportedExplicitPaths())
-        PLOG_ERROR << "Cannot process: " + QString::fromStdWString(path.wstring());
-
-    _numberCompletedFiles = 0;
-    printProgress(_modsToProcess.size(), "Packing BSAs");
-
-    //Packing BSAs
-    if (_options.bBsaCreate)
-        for (const auto &folder : _modsToProcess)
-        {
-            if (_isCancelled)
-                return;
-
-            if (QDir(folder).exists()) {
-                PLOG_INFO << "Creating BSA...";
-                bsaOptimizer.packAll(folder, _options);
-            }
-            ++_numberCompletedFiles;
-            printProgress(_modsToProcess.size(),
-                          "Packing BSAs - Folder:  " + QFileInfo(folder).fileName());
-        }
-
-    FilesystemOperations::deleteEmptyDirectories(_options.userPath);
     PLOG_INFO << "Process completed<br><br><br>";
     emit end();
 }

@@ -41,6 +41,22 @@ AssetRunResult::unsupportedExplicitPaths() const noexcept
     return _unsupportedExplicitPaths;
 }
 
+AssetRunDiagnostics::AssetRunDiagnostics(const AssetRunResult &result) noexcept
+    : _result(result)
+{}
+
+std::size_t AssetRunDiagnostics::skippedAssetCount(
+    const routing::SkipReason reason) const noexcept
+{
+    return _result.skippedAssetCount(reason);
+}
+
+std::span<const std::filesystem::path>
+AssetRunDiagnostics::unsupportedExplicitPaths() const noexcept
+{
+    return _result.unsupportedExplicitPaths();
+}
+
 AssetRun::AssetRun(routing::RoutingPolicy policy) noexcept
     : _policy(std::move(policy))
 {}
@@ -110,6 +126,17 @@ AssetRunResult AssetRun::execute(
                     routing::RunPhase::LooseAssetProcessing, completed, total});
             }
         }
+    }
+    if (adapters.reportDiagnostics) {
+        const AssetRunDiagnostics diagnostics(result);
+        adapters.reportDiagnostics(diagnostics);
+    }
+
+    // The immutable policy is the run authority, so mismatched CLI or programmatic options cannot
+    // re-enable Archive packing, creation, source deletion, or cleanup during Dry Run.
+    if (_policy.executionMode() == routing::ExecutionMode::Apply
+        && adapters.finalizeArchiveLifecycle) {
+        result._cancelled = !adapters.finalizeArchiveLifecycle();
     }
     return result;
 }

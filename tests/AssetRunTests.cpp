@@ -93,6 +93,22 @@ RoutingPolicy dryRunArchivePolicy()
         "The known-valid Dry Run Asset policy failed to compile");
 }
 
+/// Compiles a Dry Run policy carrying conversion, Mesh, and Archive choices together.
+RoutingPolicy dryRunLifecyclePolicy()
+{
+    return compilePolicy(
+        ExecutionMode::DryRun,
+        {RequestedWork::ConvertibleTextureConversion,
+         RequestedWork::StandardMeshOptimization,
+         RequestedWork::ArchiveExtraction},
+        {ProfileCapability::ConvertibleTextureConversion,
+         ProfileCapability::StandardMeshOptimization,
+         ProfileCapability::AnimationOptimization,
+         ProfileCapability::ArchiveExtraction,
+         ProfileCapability::MeshReferenceMaintenance},
+        "The known-valid Dry Run lifecycle policy failed to compile");
+}
+
 /// Writes one test file after creating its parent directory.
 void writeFile(const std::filesystem::path &path,
                const QByteArray &contents = QByteArrayLiteral("fixture"))
@@ -110,6 +126,34 @@ QByteArray readFile(const std::filesystem::path &path)
     if (!file.open(QIODevice::ReadOnly))
         qFatal("Could not read an Asset Run fixture");
     return file.readAll();
+}
+
+/// Captures relative entry types and file bytes so empty-directory or content mutations are visible.
+QByteArray snapshotTree(const std::filesystem::path &root)
+{
+    std::vector<std::filesystem::path> entries;
+    for (const auto &entry : std::filesystem::recursive_directory_iterator(root))
+        entries.push_back(entry.path());
+    std::ranges::sort(entries, {}, [&](const std::filesystem::path &path) {
+        return path.lexically_relative(root).generic_wstring();
+    });
+
+    QByteArray snapshot;
+    for (const auto &path : entries) {
+        const auto relative = path.lexically_relative(root);
+        const bool directory = std::filesystem::is_directory(path);
+        snapshot.append(directory ? "D|" : "F|");
+        snapshot.append(QString::fromStdWString(relative.generic_wstring()).toUtf8());
+        if (!directory) {
+            const auto contents = readFile(path);
+            snapshot.append('|');
+            snapshot.append(QByteArray::number(contents.size()));
+            snapshot.append('|');
+            snapshot.append(contents);
+        }
+        snapshot.append('\n');
+    }
+    return snapshot;
 }
 
 /// Builds one real SSE Texture Archive from a staging tree outside the scanned mod root.
@@ -146,8 +190,17 @@ private slots:
     /// Verifies only Routed Asset attempts contribute to work totals and completed progress.
     void progressAndSkipSummaryExcludeNonWork();
 
+    /// Verifies applying runs retain post-execution Archive finalization ordering.
+    void applyFinalizesArchivesAfterRoutedExecution();
+
+    /// Verifies a cancelled Archive finalizer becomes the run's terminal state.
+    void cancelledArchiveFinalizationIsReported();
+
     /// Verifies Archive skips aggregate while only explicit unsupported roots remain reportable.
     void dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPathsSilent();
+
+    /// Verifies Dry Run evaluates carried Loose Asset work without changing the complete mod tree.
+    void dryRunLeavesCompleteModTreeUnchangedWhileEvaluatingLooseAssets();
 
     /// Verifies cancellation stops before the next Routed Asset without changing the work total.
     void cancellationStopsBetweenRoutedAssets();
@@ -329,6 +382,73 @@ void AssetRunTests::progressAndSkipSummaryExcludeNonWork()
     QCOMPARE(result.skippedAssetCount(SkipReason::DisabledPhase), std::size_t{0});
 }
 
+void AssetRunTests::applyFinalizesArchivesAfterRoutedExecution()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+
+    const auto texture = std::filesystem::path(temporaryDirectory.path().toStdWString())
+                         / "textures" / "native.dds";
+    writeFile(texture);
+
+    std::vector<QByteArray> events;
+    const AssetRun run(archiveAndTexturePolicy());
+    const std::array roots{texture};
+    static_cast<void>(run.execute(
+        roots,
+        AssetRunAdapters{
+            [](const cao::routing::RoutedAsset &) {
+                qFatal("No Archive should be selected in the finalization-order test");
+            },
+            [&](const cao::routing::RoutedAsset &) {
+                events.push_back(QByteArrayLiteral("execute"));
+            },
+            {},
+            {},
+            [&] {
+                events.push_back(QByteArrayLiteral("finalize"));
+                return true;
+            },
+            [&](const cao::run::AssetRunDiagnostics &) {
+                events.push_back(QByteArrayLiteral("report"));
+            }}));
+
+    const std::vector<QByteArray> expectedEvents{QByteArrayLiteral("execute"),
+                                                 QByteArrayLiteral("report"),
+                                                 QByteArrayLiteral("finalize")};
+    QCOMPARE(events, expectedEvents);
+}
+
+void AssetRunTests::cancelledArchiveFinalizationIsReported()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+
+    const auto texture = std::filesystem::path(temporaryDirectory.path().toStdWString())
+                         / "textures" / "native.dds";
+    writeFile(texture);
+
+    bool resultReportedBeforeFinalization = false;
+    const AssetRun run(archiveAndTexturePolicy());
+    const std::array roots{texture};
+    const auto result = run.execute(
+        roots,
+        AssetRunAdapters{
+            [](const cao::routing::RoutedAsset &) {
+                qFatal("No Archive should be selected in the finalization-cancellation test");
+            },
+            [](const cao::routing::RoutedAsset &) {},
+            {},
+            {},
+            [] { return false; },
+            [&](const cao::run::AssetRunDiagnostics &) {
+                resultReportedBeforeFinalization = true;
+            }});
+
+    QVERIFY(resultReportedBeforeFinalization);
+    QVERIFY(result.cancelled());
+}
+
 void AssetRunTests::dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPathsSilent()
 {
     QTemporaryDir temporaryDirectory;
@@ -369,6 +489,88 @@ void AssetRunTests::dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPath
     QVERIFY(unsupported.front() == explicitUnsupported);
     QVERIFY(std::find(unsupported.begin(), unsupported.end(), unsupportedDirectoryEntry)
             == unsupported.end());
+}
+
+void AssetRunTests::dryRunLeavesCompleteModTreeUnchangedWhileEvaluatingLooseAssets()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+
+    const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString()) / "mod";
+    const auto archive = root / "content.bsa";
+    const auto convertibleTexture = root / "textures" / "convertible.tga";
+    const auto mesh = root / "meshes" / "actor.nif";
+    const auto disabledAnimation = root / "animations" / "walk.hkx";
+    const auto unsupported = root / "docs" / "readme.txt";
+    const auto emptyDirectory = root / "empty" / "nested";
+    writeFile(archive, "archive bytes");
+    writeFile(convertibleTexture, "texture bytes");
+    writeFile(mesh, "mesh bytes");
+    writeFile(disabledAnimation, "animation bytes");
+    writeFile(unsupported, "documentation bytes");
+    QVERIFY(QDir().mkpath(QString::fromStdWString(emptyDirectory.wstring())));
+    const auto originalTree = snapshotTree(root);
+
+    struct ExecutionObservation final
+    {
+        std::filesystem::path path;
+        ExecutionMode mode;
+        bool optimization;
+        bool conversion;
+        bool meshReferenceMaintenance;
+    };
+    std::vector<ExecutionObservation> executed;
+    std::vector<AssetRunProgress> progress;
+    bool extractionAttempted = false;
+    bool finalizationAttempted = false;
+    const AssetRun run(dryRunLifecyclePolicy());
+    const std::array roots{root};
+    const auto result = run.execute(
+        roots,
+        AssetRunAdapters{
+            [&](const cao::routing::RoutedAsset &) {
+                extractionAttempted = true;
+                writeFile(root / "textures" / "extracted.dds", "extracted bytes");
+            },
+            [&](const cao::routing::RoutedAsset &asset) {
+                executed.push_back(ExecutionObservation{
+                    asset.executionPath(),
+                    asset.executionMode(),
+                    asset.operations().contains(cao::routing::AssetOperation::Optimization),
+                    asset.operations().contains(cao::routing::AssetOperation::Conversion),
+                    asset.operations().contains(
+                        cao::routing::AssetOperation::MeshReferenceMaintenance)});
+            },
+            [&](const AssetRunProgress &update) { progress.push_back(update); },
+            {},
+            [&] {
+                finalizationAttempted = true;
+                writeFile(root / "packed.bsa", "packed bytes");
+                return std::filesystem::remove(emptyDirectory);
+            }});
+
+    QVERIFY(!extractionAttempted);
+    QVERIFY(!finalizationAttempted);
+    QCOMPARE(snapshotTree(root), originalTree);
+    QCOMPARE(executed.size(), std::size_t{2});
+    QVERIFY(executed[0].path == convertibleTexture);
+    QCOMPARE(executed[0].mode, ExecutionMode::DryRun);
+    QVERIFY(!executed[0].optimization);
+    QVERIFY(executed[0].conversion);
+    QVERIFY(!executed[0].meshReferenceMaintenance);
+    QVERIFY(executed[1].path == mesh);
+    QCOMPARE(executed[1].mode, ExecutionMode::DryRun);
+    QVERIFY(executed[1].optimization);
+    QVERIFY(!executed[1].conversion);
+    QVERIFY(executed[1].meshReferenceMaintenance);
+    QCOMPARE(result.ledger().routedAssets().size(), std::size_t{2});
+    QCOMPARE(result.skippedAssetCount(SkipReason::DisabledPhase), std::size_t{1});
+    QCOMPARE(result.skippedAssetCount(SkipReason::DisabledAssetKind), std::size_t{1});
+    QCOMPARE(progress.size(), std::size_t{2});
+    QCOMPARE(progress[0].completed, std::size_t{1});
+    QCOMPARE(progress[0].total, std::size_t{2});
+    QCOMPARE(progress[1].completed, std::size_t{2});
+    QCOMPARE(progress[1].total, std::size_t{2});
 }
 
 void AssetRunTests::cancellationStopsBetweenRoutedAssets()

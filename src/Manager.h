@@ -21,7 +21,8 @@ public:
   Manager(const OptionsCAO &opt, cao::routing::RoutingPolicy routingPolicy);
   /**
    * Runs Archive-first discovery, definitive routing, ordered execution, aggregate reporting,
-   * and optional post-execution packing. Cancellation is observed between carried Asset attempts.
+   * and optional post-execution packing. Cancellation is observed between carried Asset attempts
+   * and between Archive-finalization folders.
    */
   void runOptimization();
   /*!
