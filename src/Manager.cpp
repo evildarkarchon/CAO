@@ -4,6 +4,30 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #include "Manager.h"
 
+#include "BsaOptimizer.h"
+#include "MainOptimizer.h"
+#include "Run/AssetRun.h"
+
+#include <filesystem>
+#include <vector>
+
+namespace
+{
+/// Returns the stable domain label used in one aggregate skip log message.
+QString skipReasonName(const cao::routing::SkipReason reason)
+{
+    switch (reason) {
+    case cao::routing::SkipReason::DisabledPhase:
+        return QStringLiteral("DisabledPhase");
+    case cao::routing::SkipReason::DisabledAssetKind:
+        return QStringLiteral("DisabledAssetKind");
+    case cao::routing::SkipReason::ExcludedAssetVariant:
+        return QStringLiteral("ExcludedAssetVariant");
+    }
+    return QStringLiteral("UnknownSkipReason");
+}
+}
+
 Manager::Manager(const OptionsCAO &opt, cao::routing::RoutingPolicy routingPolicy)
   : _options(opt)
   , _routingPolicy(std::move(routingPolicy))
@@ -29,7 +53,6 @@ void Manager::init()
 
     PLOG_INFO << "Listing files and directories...";
     listDirectories();
-    listFiles();
 }
 
 void Manager::listDirectories()
@@ -64,48 +87,6 @@ void Manager::cancelProcess()
     _isCancelled = true;
 }
 
-void Manager::listFiles()
-{
-    _numberFiles = 0;
-    _files.clear();
-    BSAs.clear();
-
-    for (auto &subDir : _modsToProcess)
-    {
-        QDirIterator it(subDir, QDirIterator::Subdirectories);
-        while (it.hasNext())
-        {
-            it.next();
-
-            const bool mesh = it.fileName().endsWith(".nif", Qt::CaseInsensitive)
-                              || it.fileName().endsWith(".btr", Qt::CaseInsensitive)
-                              || it.fileName().endsWith(".bto", Qt::CaseInsensitive);
-            const bool textureDDS = it.fileName().endsWith(".dds", Qt::CaseInsensitive);
-            const bool textureTGA = it.fileName().endsWith(".tga", Qt::CaseInsensitive);
-            const bool animation = _options.bAnimationsOptimization
-                                   && it.fileName().endsWith(".hkx", Qt::CaseInsensitive);
-
-            const auto u8BsaExt = btu::bsa::Settings::get(Profiles::bsaGame()).extension;
-            const auto asciiBsaExt = btu::common::as_ascii(u8BsaExt);
-            const auto bsaExt = QString::fromUtf8(asciiBsaExt.data(),
-                                                  static_cast<int>(asciiBsaExt.size()));
-
-            const bool bsa = _options.bBsaExtract
-                             && it.fileName().endsWith(bsaExt, Qt::CaseInsensitive);
-
-            auto addToList = [&](QStringList &list) {
-                ++_numberFiles;
-                list << it.filePath();
-            };
-
-            if (mesh || textureDDS || textureTGA || animation)
-                addToList(_files);
-            else if (bsa)
-                addToList(BSAs);
-        }
-    }
-}
-
 void Manager::readIgnoredMods()
 {
     QFile &&ignoredModsFile = Profiles::getFile("ignoredMods.txt");
@@ -125,38 +106,59 @@ void Manager::runOptimization()
     PLOG_INFO << "Beginning...";
 
     MainOptimizer optimizer(_options);
+    BSAOptimizer bsaOptimizer;
+    std::vector<std::filesystem::path> roots;
+    roots.reserve(static_cast<std::size_t>(_modsToProcess.size()));
+    for (const auto &mod : _modsToProcess)
+        roots.emplace_back(mod.toStdWString());
 
-    //Extracting BSAs
-    for (const auto &file : BSAs) {
-        if (_isCancelled)
-            return;
+    const cao::run::AssetRun assetRun(_routingPolicy);
+    auto lastLooseProgress = QDateTime::currentDateTime();
+    const auto result = assetRun.execute(
+        roots,
+        cao::run::AssetRunAdapters{
+            [&](const cao::routing::RoutedAsset &archive) {
+                bsaOptimizer.extract(
+                    QString::fromStdWString(archive.executionPath().wstring()),
+                    _options.bBsaDeleteBackup);
+            },
+            [&](const cao::routing::RoutedAsset &asset) {
+                static_cast<void>(optimizer.process(asset));
+            },
+            [&](const cao::run::AssetRunProgress &progress) {
+                _numberCompletedFiles = static_cast<int>(progress.completed);
+                const auto text = progress.phase == cao::routing::RunPhase::ArchiveExtraction
+                                      ? QStringLiteral("Extracting BSAs")
+                                      : QStringLiteral("Processing files");
+                const auto now = QDateTime::currentDateTime();
+                const bool shouldReport = progress.phase
+                                              == cao::routing::RunPhase::ArchiveExtraction
+                                          || progress.completed == progress.total
+                                          || now > lastLooseProgress.addMSecs(2000);
+                if (shouldReport) {
+                    // Loose Asset progress is throttled because GUI signal delivery and CLI
+                    // output are comparatively expensive.
+                    printProgress(static_cast<int>(progress.total), text);
+                    lastLooseProgress = now;
+                }
+            },
+            [&] { return _isCancelled; }});
 
-        optimizer.process(file);
-        ++_numberCompletedFiles;
-        printProgress(BSAs.size(), "Extracting BSAs");
-    }
+    if (result.cancelled())
+        return;
 
-    //Listing newly extracted files
-    listFiles();
-
-    printProgress(_numberFiles);
-
-    //Using time in order to prevent printing progress too often
-    QDateTime time1 = QDateTime::currentDateTime();
-    QDateTime time2;
-    for (const auto &file : _files)
-    {
-        optimizer.process(file);
-        ++_numberCompletedFiles;
-        if (_isCancelled)
-            return;
-
-        time2 = QDateTime::currentDateTime();
-        if (time2 > time1.addMSecs(2000)) {
-            printProgress(_numberFiles);
-            time1 = time2;
+    for (const auto reason : {cao::routing::SkipReason::DisabledPhase,
+                              cao::routing::SkipReason::DisabledAssetKind,
+                              cao::routing::SkipReason::ExcludedAssetVariant}) {
+        const auto count = result.skippedAssetCount(reason);
+        if (count != 0) {
+            PLOG_INFO << QStringLiteral("Skipped %1 recognized Assets: %2")
+                             .arg(count)
+                             .arg(skipReasonName(reason));
         }
     }
+    for (const auto &path : result.unsupportedExplicitPaths())
+        PLOG_ERROR << "Cannot process: " + QString::fromStdWString(path.wstring());
 
     _numberCompletedFiles = 0;
     printProgress(_modsToProcess.size(), "Packing BSAs");
@@ -168,7 +170,10 @@ void Manager::runOptimization()
             if (_isCancelled)
                 return;
 
-            optimizer.packBsa(folder);
+            if (QDir(folder).exists()) {
+                PLOG_INFO << "Creating BSA...";
+                bsaOptimizer.packAll(folder, _options);
+            }
             ++_numberCompletedFiles;
             printProgress(_modsToProcess.size(),
                           "Packing BSAs - Folder:  " + QFileInfo(folder).fileName());

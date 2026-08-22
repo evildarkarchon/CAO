@@ -68,24 +68,6 @@ void MeshesOptimizer::listHeadparts(const QString &directory)
     headparts.removeDuplicates();
 }
 
-bool MeshesOptimizer::optimize(const QString &filepath)
-// Optimize the selected mesh
-{
-    auto [loadResult, nif] = loadMesh(filepath);
-    if (!loadResult)
-        return false;
-
-    const auto optimization = optimize(nif, filepath, cao::routing::ExecutionMode::Apply);
-    if (!optimization.succeeded())
-        return false;
-
-    bool changed = optimization.wouldChange();
-    // The legacy entry point retains its global policy read until discovery is atomically cut over in #394.
-    if (Profiles::texturesConvertTga())
-        changed = cao::execution::replaceReferencedTgaTextureNames(nif) || changed;
-    return !changed || saveMesh(nif, filepath);
-}
-
 cao::execution::OperationResult MeshesOptimizer::optimize(
     NifFile &nif,
     const QString &filepath,
@@ -189,28 +171,6 @@ cao::execution::OperationResult MeshesOptimizer::optimize(
     return modifiedMesh || processedHeadpart
                ? cao::execution::OperationResult::changed()
                : cao::execution::OperationResult::unchanged();
-}
-
-void MeshesOptimizer::dryOptimize(const QString &filepath) const
-{
-    auto [loadResult, nif] = loadMesh(filepath);
-    if (!loadResult)
-        return;
-    static_cast<void>(optimize(nif, filepath, cao::routing::ExecutionMode::DryRun));
-
-    // The legacy entry point evaluates its global maintenance policy until #394 removes it.
-    PLOG_INFO_IF(Profiles::texturesConvertTga()
-                 && cao::execution::hasReferencedTgaTexture(nif))
-        << "Referenced TGA Texture names would be replaced with DDS.";
-}
-
-std::tuple<bool, NifFile> MeshesOptimizer::loadMesh(const QString &filepath) const
-{
-    const bool terrain = filepath.endsWith("btr", Qt::CaseInsensitive)
-                         || filepath.endsWith("bto", Qt::CaseInsensitive);
-    return loadMesh(filepath,
-                    terrain ? cao::routing::MeshVariant::Terrain
-                            : cao::routing::MeshVariant::Standard);
 }
 
 std::tuple<bool, NifFile> MeshesOptimizer::loadMesh(

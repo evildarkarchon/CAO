@@ -1,0 +1,116 @@
+#include "AssetRun.h"
+
+#include "ArchiveFirstAssetDiscovery.h"
+
+#include <array>
+#include <utility>
+
+namespace cao::run
+{
+AssetRunResult::AssetRunResult(
+    routing::RoutingLedger ledger,
+    std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
+    std::vector<std::filesystem::path> unsupportedExplicitPaths,
+    const bool cancelled) noexcept
+    : _ledger(std::move(ledger))
+    , _skippedArchiveCounts(std::move(skippedArchiveCounts))
+    , _unsupportedExplicitPaths(std::move(unsupportedExplicitPaths))
+    , _cancelled(cancelled)
+{}
+
+const routing::RoutingLedger &AssetRunResult::ledger() const noexcept
+{
+    return _ledger;
+}
+
+bool AssetRunResult::cancelled() const noexcept
+{
+    return _cancelled;
+}
+
+std::size_t AssetRunResult::skippedAssetCount(const routing::SkipReason reason) const noexcept
+{
+    const auto archiveCount = _skippedArchiveCounts.find(reason);
+    return _ledger.skippedAssetCount(reason)
+           + (archiveCount == _skippedArchiveCounts.end() ? 0 : archiveCount->second);
+}
+
+std::span<const std::filesystem::path>
+AssetRunResult::unsupportedExplicitPaths() const noexcept
+{
+    return _unsupportedExplicitPaths;
+}
+
+AssetRun::AssetRun(routing::RoutingPolicy policy) noexcept
+    : _policy(std::move(policy))
+{}
+
+AssetRunResult AssetRun::execute(
+    const std::span<const std::filesystem::path> roots,
+    const AssetRunAdapters &adapters) const
+{
+    const ArchiveFirstAssetDiscovery discovery(_policy);
+    bool cancelled = false;
+    const auto discoveryResult = discovery.discover(
+        roots,
+        [&](const std::span<const routing::RoutedAsset> archives) {
+            std::size_t completed = 0;
+            for (const auto &archive : archives) {
+                // An in-flight extraction must finish so cancellation cannot leave a partial Archive.
+                if (adapters.isCancelled && adapters.isCancelled()) {
+                    cancelled = true;
+                    break;
+                }
+                adapters.extractArchive(archive);
+                ++completed;
+                if (adapters.reportProgress) {
+                    adapters.reportProgress(AssetRunProgress{
+                        routing::RunPhase::ArchiveExtraction,
+                        completed,
+                        archives.size()});
+                }
+            }
+        });
+    const routing::AssetRouter router(_policy);
+    std::map<routing::SkipReason, std::size_t> skippedArchiveCounts;
+    for (const auto reason : {routing::SkipReason::DisabledPhase,
+                              routing::SkipReason::DisabledAssetKind,
+                              routing::SkipReason::ExcludedAssetVariant}) {
+        const auto count = discoveryResult.skippedArchiveCount(reason);
+        if (count != 0)
+            skippedArchiveCounts.emplace(reason, count);
+    }
+    auto result = AssetRunResult(
+        router.route(discoveryResult.effectiveAssetTree().paths()),
+        std::move(skippedArchiveCounts),
+        std::vector<std::filesystem::path>(
+            discoveryResult.unsupportedExplicitPaths().begin(),
+            discoveryResult.unsupportedExplicitPaths().end()),
+        cancelled);
+    constexpr std::array targetOrder{
+        routing::OptimizerTarget::Texture,
+        routing::OptimizerTarget::Mesh,
+        routing::OptimizerTarget::Animation};
+    if (result.cancelled())
+        return result;
+    const auto total = result.ledger().routedAssets().size();
+    std::size_t completed = 0;
+    for (const auto target : targetOrder) {
+        // Target queries preserve ledger-relative order, so only cross-target order changes.
+        for (const auto asset : result.ledger().routedAssets(target)) {
+            // An in-flight optimizer attempt must finish so cancellation cannot interrupt mutation.
+            if (adapters.isCancelled && adapters.isCancelled()) {
+                result._cancelled = true;
+                return result;
+            }
+            adapters.executeAsset(asset.get());
+            ++completed;
+            if (adapters.reportProgress) {
+                adapters.reportProgress(AssetRunProgress{
+                    routing::RunPhase::LooseAssetProcessing, completed, total});
+            }
+        }
+    }
+    return result;
+}
+}

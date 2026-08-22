@@ -6,7 +6,6 @@
 
 #include "AssetExecution/AssetExecutor.h"
 #include "AnimationsOptimizer.h"
-#include "BsaOptimizer.h"
 #include "MeshesOptimizer.h"
 #include "OptionsCAO.h"
 #include "TexturesOptimizer.h"
@@ -25,18 +24,9 @@ public:
     [[nodiscard]] cao::execution::AssetExecutionResult process(
         const cao::routing::RoutedAsset &asset);
 
-    /// Executes the legacy path-classifying flow until the atomic routing cutover replaces discovery.
-    void process(const QString &file);
-    void packBsa(const QString& folder);
-
   private:
     void addLandscapeTextures();
     void addHeadparts();
-
-    void processBsa(const QString &file) const;
-    void processNif(const QString &file);
-    void processTexture(const QString &file, const TexturesOptimizer::TextureType &type);
-    void processHkx(const QString &file);
 
     /// Loads a Texture using the carried Variant rather than its execution-path extension.
     bool loadTexture(const std::filesystem::path &path,
@@ -75,7 +65,6 @@ public:
 
     const OptionsCAO& _optOptions;
 
-    BSAOptimizer _bsaOpt;
     MeshesOptimizer _meshesOpt;
     AnimationsOptimizer _animOpt;
     TexturesOptimizer _texturesOpt;

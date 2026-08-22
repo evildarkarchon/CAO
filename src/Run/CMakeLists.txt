@@ -14,6 +14,18 @@ target_link_libraries(cao_run_discovery PUBLIC
 target_include_directories(cao_run_discovery PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_compile_features(cao_run_discovery PUBLIC cxx_std_20)
 
+add_library(cao_asset_run
+    AssetRun.cpp
+    AssetRun.h
+)
+
+target_link_libraries(cao_asset_run PUBLIC
+    cao_asset_routing
+    cao_run_discovery
+)
+target_include_directories(cao_asset_run PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_compile_features(cao_asset_run PUBLIC cxx_std_20)
+
 add_library(cao_run_setup
     RunSetup.cpp
     RunSetup.h

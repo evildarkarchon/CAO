@@ -1,0 +1,88 @@
+#pragma once
+
+#include "AssetRouting/AssetRouter.h"
+
+#include <cstddef>
+#include <filesystem>
+#include <functional>
+#include <map>
+#include <span>
+#include <vector>
+
+namespace cao::run
+{
+using ArchiveAssetAdapter = std::function<void(const routing::RoutedAsset &)>;
+using RoutedAssetExecutionAdapter = std::function<void(const routing::RoutedAsset &)>;
+
+/// Reports completed Routed Asset attempts against the routed-only work total for one phase.
+struct AssetRunProgress final
+{
+    routing::RunPhase phase;
+    std::size_t completed;
+    std::size_t total;
+};
+
+using AssetRunProgressAdapter = std::function<void(const AssetRunProgress &)>;
+using AssetRunCancellationAdapter = std::function<bool()>;
+
+/// Supplies the production or test adapters used at the run's filesystem and execution seams.
+/// Extraction and execution are required; progress and cancellation adapters are optional.
+struct AssetRunAdapters final
+{
+    ArchiveAssetAdapter extractArchive;
+    RoutedAssetExecutionAdapter executeAsset;
+    AssetRunProgressAdapter reportProgress;
+    AssetRunCancellationAdapter isCancelled;
+};
+
+/// Owns the definitive Routing Ledger and the terminal state of one Asset Run.
+class AssetRunResult final
+{
+public:
+    /// Returns the definitive owned Routing Ledger; cancellation may leave some Assets unexecuted.
+    [[nodiscard]] const routing::RoutingLedger &ledger() const noexcept;
+
+    /// Reports whether the run stopped early at a cancellation seam.
+    [[nodiscard]] bool cancelled() const noexcept;
+
+    /// Returns the aggregate count for one stable recognized-Asset Skip Reason.
+    [[nodiscard]] std::size_t skippedAssetCount(routing::SkipReason reason) const noexcept;
+
+    /// Returns unsupported roots that were explicitly supplied as files, never directory entries.
+    [[nodiscard]] std::span<const std::filesystem::path> unsupportedExplicitPaths() const noexcept;
+
+private:
+    friend class AssetRun;
+
+    /// Takes ownership of the definitive ledger after run orchestration finishes.
+    AssetRunResult(
+        routing::RoutingLedger ledger,
+        std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
+        std::vector<std::filesystem::path> unsupportedExplicitPaths,
+        bool cancelled) noexcept;
+
+    routing::RoutingLedger _ledger;
+    std::map<routing::SkipReason, std::size_t> _skippedArchiveCounts;
+    std::vector<std::filesystem::path> _unsupportedExplicitPaths;
+    bool _cancelled;
+};
+
+/// Orchestrates Archive-first discovery, definitive routing, and carried Asset execution.
+class AssetRun final
+{
+public:
+    /// Owns the immutable policy used for both Archive selection and definitive routing.
+    explicit AssetRun(routing::RoutingPolicy policy) noexcept;
+
+    /// Extracts routed Archives, batch-routes the resulting Effective Asset Tree once, and
+    /// offers the owned Routed Assets to the execution adapter. Cancellation is observed only
+    /// between attempts so an adapter is never abandoned mid-operation. Filesystem and adapter
+    /// exceptions propagate to the caller.
+    [[nodiscard]] AssetRunResult execute(
+        std::span<const std::filesystem::path> roots,
+        const AssetRunAdapters &adapters) const;
+
+private:
+    routing::RoutingPolicy _policy;
+};
+}

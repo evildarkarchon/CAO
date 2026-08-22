@@ -134,7 +134,9 @@ void ArchiveFirstAssetDiscoveryTests::extractsEnabledArchivesBeforeDefinitiveDis
     const std::array roots{root};
     const auto effectiveTree = discovery.discover(
         roots,
-        [&](const RoutedAsset &selectedArchive) {
+        [&](const std::span<const RoutedAsset> selectedArchives) {
+            QCOMPARE(selectedArchives.size(), std::size_t{1});
+            const auto &selectedArchive = selectedArchives.front();
             QCOMPARE(selectedArchive.kind(), AssetKind::Archive);
             QCOMPARE(selectedArchive.phase(), RunPhase::ArchiveExtraction);
             QVERIFY(selectedArchive.operations().contains(AssetOperation::Extraction));
@@ -143,10 +145,10 @@ void ArchiveFirstAssetDiscoveryTests::extractsEnabledArchivesBeforeDefinitiveDis
         });
 
     QCOMPARE(extractedArchives, std::vector<std::filesystem::path>{archive});
-    QCOMPARE(pathCount(effectiveTree.paths(), looseAsset), std::size_t{1});
-    QCOMPARE(pathCount(effectiveTree.paths(), extractedAsset), std::size_t{1});
-    QCOMPARE(pathCount(effectiveTree.paths(), archive), std::size_t{0});
-    QCOMPARE(effectiveTree.paths().size(), std::size_t{2});
+    QCOMPARE(pathCount(effectiveTree.effectiveAssetTree().paths(), looseAsset), std::size_t{1});
+    QCOMPARE(pathCount(effectiveTree.effectiveAssetTree().paths(), extractedAsset), std::size_t{1});
+    QCOMPARE(pathCount(effectiveTree.effectiveAssetTree().paths(), archive), std::size_t{0});
+    QCOMPARE(effectiveTree.effectiveAssetTree().paths().size(), std::size_t{2});
 }
 
 void ArchiveFirstAssetDiscoveryTests::realExtractionPreservesLooseAssetPrecedence()
@@ -173,15 +175,16 @@ void ArchiveFirstAssetDiscoveryTests::realExtractionPreservesLooseAssetPrecedenc
     const std::array roots{root};
     const auto effectiveTree = discovery.discover(
         roots,
-        [](const RoutedAsset &selectedArchive) {
-            extractArchiveNoOverwrite(selectedArchive.executionPath(), false);
+        [](const std::span<const RoutedAsset> selectedArchives) {
+            for (const auto &selectedArchive : selectedArchives)
+                extractArchiveNoOverwrite(selectedArchive.executionPath(), false);
         });
 
     QCOMPARE(readFile(collision), QByteArray("loose collision"));
     QCOMPARE(readFile(archivedOnly), QByteArray("archived only"));
-    QCOMPARE(pathCount(effectiveTree.paths(), collision), std::size_t{1});
-    QCOMPARE(pathCount(effectiveTree.paths(), archivedOnly), std::size_t{1});
-    QCOMPARE(effectiveTree.paths().size(), std::size_t{2});
+    QCOMPARE(pathCount(effectiveTree.effectiveAssetTree().paths(), collision), std::size_t{1});
+    QCOMPARE(pathCount(effectiveTree.effectiveAssetTree().paths(), archivedOnly), std::size_t{1});
+    QCOMPARE(effectiveTree.effectiveAssetTree().paths().size(), std::size_t{2});
 }
 
 void ArchiveFirstAssetDiscoveryTests::excludedArchivesAreNotExtracted()
@@ -200,12 +203,12 @@ void ArchiveFirstAssetDiscoveryTests::excludedArchivesAreNotExtracted()
     const std::array roots{root};
     const auto effectiveTree = discovery.discover(
         roots,
-        [&](const RoutedAsset &) { extractionAttempted = true; });
+        [&](const std::span<const RoutedAsset>) { extractionAttempted = true; });
 
     QVERIFY(!extractionAttempted);
-    QCOMPARE(pathCount(effectiveTree.paths(), looseAsset), std::size_t{1});
-    QCOMPARE(pathCount(effectiveTree.paths(), archive), std::size_t{0});
-    QCOMPARE(effectiveTree.paths().size(), std::size_t{1});
+    QCOMPARE(pathCount(effectiveTree.effectiveAssetTree().paths(), looseAsset), std::size_t{1});
+    QCOMPARE(pathCount(effectiveTree.effectiveAssetTree().paths(), archive), std::size_t{0});
+    QCOMPARE(effectiveTree.effectiveAssetTree().paths().size(), std::size_t{1});
 }
 
 QTEST_MAIN(ArchiveFirstAssetDiscoveryTests)

@@ -5,7 +5,8 @@
 #pragma once
 
 #include "AssetRouting/AssetRouter.h"
-#include "MainOptimizer.h"
+#include "FilesystemOperations.h"
+#include "OptionsCAO.h"
 #include "pch.h"
 
 class Manager final : public QObject
@@ -18,8 +19,9 @@ public:
    * \param routingPolicy Immutable validated policy retained for the entire run.
    */
   Manager(const OptionsCAO &opt, cao::routing::RoutingPolicy routingPolicy);
-  /*!
-   * \brief The main process
+  /**
+   * Runs Archive-first discovery, definitive routing, ordered execution, aggregate reporting,
+   * and optional post-execution packing. Cancellation is observed between carried Asset attempts.
    */
   void runOptimization();
   /*!
@@ -41,18 +43,9 @@ public:
    */
   void listDirectories();
   /*!
-   * \brief List all the files in the modsToProcess list and store them. Also
-   * add their weights to filesWeight
-   */
-  void listFiles();
-  /*!
    * \brief Read ignoredMods.txt and store it to a list
    */
   void readIgnoredMods();
-  /*!
-   * \brief The number of all files. Used to determine progress
-   */
-  int _numberFiles = 0;
   /*!
    * \brief The number of completed files. Used to determine progress
    */
@@ -77,15 +70,6 @@ public:
    * \brief Used to read the INI
    */
   QSettings* _settings;
-  /*!
-   * \brief The files to process
-   */
-  QStringList _files;
-  /*!
-   * \brief The BSAs to extract
-   */
-  QStringList BSAs;
-
   bool _isCancelled = false;
 
   signals:

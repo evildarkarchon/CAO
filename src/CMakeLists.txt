@@ -126,6 +126,7 @@ endif()
 target_link_libraries(Cathedral_Assets_Optimizer PRIVATE
     cao_asset_execution
     cao_asset_routing
+    cao_asset_run
     cao_run_discovery
     cao_run_setup
     cao_mesh_reference_maintenance
