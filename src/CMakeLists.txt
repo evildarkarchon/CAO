@@ -4,6 +4,8 @@ configure_file (
     "${CMAKE_CURRENT_SOURCE_DIR}/Version.h"
     )
 
+add_subdirectory(AssetRouting)
+
 # Find includes in corresponding build directories
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
@@ -13,8 +15,7 @@ find_package(Qt5 COMPONENTS Core Widgets REQUIRED)
 find_package(Qt5LinguistTools REQUIRED)
 
 #Setting GUI
-#Comment out the next lines to create a CLI version instead (untested)
-add_compile_definitions(GUI)
+#Set this to false to create a CLI version instead (untested)
 set(GUI true)
 
 #SOURCES
@@ -102,8 +103,10 @@ set(CMAKE_AUTORCC ON)
 #Build
 message("Adding CAO.exe")
 add_executable(Cathedral_Assets_Optimizer WIN32 ${SOURCES} ${RESOURCES} ${QM_FILES})
+target_compile_definitions(Cathedral_Assets_Optimizer PRIVATE GUI)
 #Windows 7 compatibility
 target_link_libraries(Cathedral_Assets_Optimizer PRIVATE
+    cao_asset_routing
     Qt5::Core Qt5::Widgets
     nifly Microsoft::DirectXTex btu::bethutil)
 target_include_directories(Cathedral_Assets_Optimizer PRIVATE ${PLOG_INCLUDE_DIRS})
