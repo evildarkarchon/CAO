@@ -15,6 +15,8 @@ using cao::routing::AssetVariant;
 using cao::routing::MeshVariant;
 using cao::routing::ProfileCapability;
 using cao::routing::RequestedWork;
+using cao::routing::RoutedAsset;
+using cao::routing::RoutedAssetReferences;
 using cao::routing::TextureVariant;
 
 struct RequestedWorkDefinition final
@@ -190,6 +192,22 @@ std::optional<cao::routing::MalformedArchiveExtensionReason> malformedReason(
     }
 
     return std::nullopt;
+}
+
+/// Selects const Routed Asset references by one carried execution fact while preserving ledger order.
+template<typename Projection, typename Value>
+RoutedAssetReferences matchingRoutedAssets(const std::span<const RoutedAsset> routedAssets,
+                                           Projection projection,
+                                           const Value expected)
+{
+    RoutedAssetReferences matches;
+    matches.reserve(routedAssets.size());
+    for (const auto &routedAsset : routedAssets) {
+        if (std::invoke(projection, routedAsset) == expected)
+            matches.emplace_back(std::cref(routedAsset));
+    }
+
+    return matches;
 }
 }
 
@@ -466,6 +484,37 @@ SkipReason SkippedAsset::reason() const noexcept
     return _reason;
 }
 
+RoutingLedger::RoutingLedger(std::vector<RoutedAsset> routedAssets,
+                             std::map<SkipReason, std::size_t> skippedAssetCounts) noexcept
+    : _routedAssets(std::move(routedAssets))
+    , _skippedAssetCounts(std::move(skippedAssetCounts))
+{}
+
+std::span<const RoutedAsset> RoutingLedger::routedAssets() const noexcept
+{
+    return _routedAssets;
+}
+
+RoutedAssetReferences RoutingLedger::routedAssets(const RunPhase phase) const
+{
+    return matchingRoutedAssets(std::span<const RoutedAsset>(_routedAssets),
+                                &RoutedAsset::phase,
+                                phase);
+}
+
+RoutedAssetReferences RoutingLedger::routedAssets(const OptimizerTarget target) const
+{
+    return matchingRoutedAssets(std::span<const RoutedAsset>(_routedAssets),
+                                &RoutedAsset::target,
+                                target);
+}
+
+std::size_t RoutingLedger::skippedAssetCount(const SkipReason reason) const noexcept
+{
+    const auto count = _skippedAssetCounts.find(reason);
+    return count == _skippedAssetCounts.end() ? 0 : count->second;
+}
+
 AssetRouter::AssetRouter(RoutingPolicy policy) noexcept
     : _policy(std::move(policy))
 {}
@@ -568,5 +617,24 @@ RoutingDecision AssetRouter::route(const std::filesystem::path &executionPath) c
     }
 
     return UnsupportedDecision{};
+}
+
+RoutingLedger AssetRouter::route(
+    const std::span<const std::filesystem::path> executionPaths) const
+{
+    std::vector<RoutedAsset> routedAssets;
+    routedAssets.reserve(executionPaths.size());
+    std::map<SkipReason, std::size_t> skippedAssetCounts;
+    for (const auto &executionPath : executionPaths) {
+        auto decision = route(executionPath);
+        if (auto *routedAsset = std::get_if<RoutedAsset>(&decision)) {
+            routedAssets.push_back(std::move(*routedAsset));
+        } else if (const auto *skippedAsset = std::get_if<SkippedAsset>(&decision)) {
+            ++skippedAssetCounts[skippedAsset->reason()];
+        }
+        // Unsupported paths are intentionally absent because they are neither work nor recognized exclusions.
+    }
+
+    return RoutingLedger(std::move(routedAssets), skippedAssetCounts);
 }
 }

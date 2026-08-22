@@ -4,8 +4,11 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <span>
 #include <type_traits>
+#include <utility>
 #include <variant>
+#include <vector>
 
 using cao::routing::AssetRouter;
 using cao::routing::AmbiguousArchiveExtension;
@@ -25,8 +28,10 @@ using cao::routing::ProfileCapability;
 using cao::routing::ProfileCapabilities;
 using cao::routing::RequestedWork;
 using cao::routing::RoutedAsset;
+using cao::routing::RoutedAssetReferences;
 using cao::routing::RoutingPolicy;
 using cao::routing::RoutingDecision;
+using cao::routing::RoutingLedger;
 using cao::routing::RunPhase;
 using cao::routing::RunRequest;
 using cao::routing::SkipReason;
@@ -45,6 +50,10 @@ static_assert(!std::is_constructible_v<TextureAsset, MeshVariant>);
 static_assert(!std::is_constructible_v<MeshAsset, TextureVariant>);
 static_assert(std::variant_size_v<AssetIdentity> == 4);
 static_assert(std::variant_size_v<RoutingDecision> == 3);
+static_assert(std::is_same_v<decltype(std::declval<const RoutingLedger &>().routedAssets()),
+                             std::span<const RoutedAsset>>);
+static_assert(std::is_same_v<RoutedAssetReferences::value_type,
+                             std::reference_wrapper<const RoutedAsset>>);
 
 template<typename Decision>
 concept ExposesRoutedExecutionFacts = requires(const Decision &decision) {
@@ -152,6 +161,24 @@ private slots:
 
     /// Verifies routing neither depends on nor mutates path existence and file contents.
     void routingIgnoresFilesystemState();
+
+    /// Verifies batch routing owns Routed Assets after borrowed input expires while preserving order and duplicates.
+    void batchRoutingOwnsRoutedAssetsInInputOrder();
+
+    /// Verifies unsupported paths are omitted while every recognized exclusion is counted by stable Skip Reason.
+    void batchRoutingOmitsUnsupportedPathsAndCountsSkips();
+
+    /// Verifies phase and target queries expose const Routed Assets in original relative order.
+    void ledgerQueriesRoutedAssetsByPhaseAndTarget();
+
+    /// Verifies a Routed Asset contributes one work entry even when it carries multiple operations.
+    void ledgerWorkTotalCountsRoutedAssetsNotOperations();
+
+    /// Verifies batch aggregation matches single-path decisions for every Routing Disposition.
+    void batchRoutingMatchesSingleAssetDecisions();
+
+    /// Verifies an empty borrowed batch produces an empty ledger without exclusions.
+    void emptyBatchProducesEmptyLedger();
 };
 
 void AssetRoutingTests::compilesCompleteRoutingPolicy()
@@ -662,6 +689,160 @@ void AssetRoutingTests::routingIgnoresFilesystemState()
 
     QVERIFY(file.open(QIODevice::ReadOnly));
     QCOMPARE(file.readAll(), QByteArray("arbitrary non-DDS contents"));
+}
+
+void AssetRoutingTests::batchRoutingOwnsRoutedAssetsInInputOrder()
+{
+    const auto router = fullyEnabledRouter();
+
+    const RoutingLedger ledger = [&router] {
+        const std::vector borrowedPaths{
+            std::filesystem::path(L"Textures/First.dds"),
+            std::filesystem::path(L"Meshes/Second.nif"),
+            std::filesystem::path(L"Textures/First.dds")};
+        return router.route(std::span<const std::filesystem::path>(borrowedPaths));
+    }();
+
+    const auto routedAssets = ledger.routedAssets();
+    QCOMPARE(routedAssets.size(), std::size_t{3});
+    QVERIFY(routedAssets[0].executionPath() == std::filesystem::path(L"Textures/First.dds"));
+    QVERIFY(routedAssets[1].executionPath() == std::filesystem::path(L"Meshes/Second.nif"));
+    QVERIFY(routedAssets[2].executionPath() == std::filesystem::path(L"Textures/First.dds"));
+}
+
+void AssetRoutingTests::batchRoutingOmitsUnsupportedPathsAndCountsSkips()
+{
+    const auto request = RunRequest::forWork(ExecutionMode::DryRun,
+                                             {RequestedWork::ConvertibleTextureConversion,
+                                              RequestedWork::ArchiveExtraction});
+    const auto capabilities = ProfileCapabilities::define(
+        ".ba2", {ProfileCapability::ConvertibleTextureConversion,
+                  ProfileCapability::ArchiveExtraction,
+                  ProfileCapability::MeshReferenceMaintenance});
+    const auto result = RoutingPolicy::compile(request, capabilities);
+    QVERIFY(result.hasPolicy());
+    const AssetRouter router(*result.policy());
+    const std::vector paths{
+        std::filesystem::path(L"Textures/Routed.tga"),
+        std::filesystem::path(L"Docs/Unsupported.txt"),
+        std::filesystem::path(L"Textures/Excluded.dds"),
+        std::filesystem::path(L"Animations/Disabled.hkx"),
+        std::filesystem::path(L"Archives/Disabled.ba2"),
+        std::filesystem::path(L"Textures/Routed.tga")};
+
+    const auto ledger = router.route(std::span<const std::filesystem::path>(paths));
+
+    const auto routedAssets = ledger.routedAssets();
+    QCOMPARE(routedAssets.size(), std::size_t{2});
+    QVERIFY(routedAssets[0].executionPath() == paths[0]);
+    QVERIFY(routedAssets[1].executionPath() == paths[5]);
+    QCOMPARE(ledger.skippedAssetCount(SkipReason::DisabledPhase), std::size_t{1});
+    QCOMPARE(ledger.skippedAssetCount(SkipReason::DisabledAssetKind), std::size_t{1});
+    QCOMPARE(ledger.skippedAssetCount(SkipReason::ExcludedAssetVariant), std::size_t{1});
+}
+
+void AssetRoutingTests::ledgerQueriesRoutedAssetsByPhaseAndTarget()
+{
+    const auto router = fullyEnabledRouter();
+    const std::vector paths{
+        std::filesystem::path(L"Archives/First.ba2"),
+        std::filesystem::path(L"Textures/Repeated.dds"),
+        std::filesystem::path(L"Meshes/Middle.nif"),
+        std::filesystem::path(L"Textures/Repeated.dds"),
+        std::filesystem::path(L"Archives/Last.ba2")};
+    const auto ledger = router.route(std::span<const std::filesystem::path>(paths));
+
+    const auto looseAssets = ledger.routedAssets(RunPhase::LooseAssetProcessing);
+    QCOMPARE(looseAssets.size(), std::size_t{3});
+    QVERIFY(looseAssets[0].get().executionPath() == paths[1]);
+    QVERIFY(looseAssets[1].get().executionPath() == paths[2]);
+    QVERIFY(looseAssets[2].get().executionPath() == paths[3]);
+
+    const auto archiveAssets = ledger.routedAssets(RunPhase::ArchiveExtraction);
+    QCOMPARE(archiveAssets.size(), std::size_t{2});
+    QVERIFY(archiveAssets[0].get().executionPath() == paths[0]);
+    QVERIFY(archiveAssets[1].get().executionPath() == paths[4]);
+
+    const auto textureAssets = ledger.routedAssets(OptimizerTarget::Texture);
+    QCOMPARE(textureAssets.size(), std::size_t{2});
+    QVERIFY(textureAssets[0].get().executionPath() == paths[1]);
+    QVERIFY(textureAssets[1].get().executionPath() == paths[3]);
+
+    const auto meshAssets = ledger.routedAssets(OptimizerTarget::Mesh);
+    QCOMPARE(meshAssets.size(), std::size_t{1});
+    QVERIFY(meshAssets[0].get().executionPath() == paths[2]);
+    QVERIFY(ledger.routedAssets(OptimizerTarget::Animation).empty());
+}
+
+void AssetRoutingTests::ledgerWorkTotalCountsRoutedAssetsNotOperations()
+{
+    const auto request = RunRequest::forWork(ExecutionMode::Apply,
+                                             {RequestedWork::ConvertibleTextureConversion,
+                                              RequestedWork::StandardMeshOptimization});
+    const auto capabilities = ProfileCapabilities::define(
+        ".ba2", {ProfileCapability::ConvertibleTextureConversion,
+                  ProfileCapability::StandardMeshOptimization,
+                  ProfileCapability::MeshReferenceMaintenance});
+    const auto result = RoutingPolicy::compile(request, capabilities);
+    QVERIFY(result.hasPolicy());
+    const AssetRouter router(*result.policy());
+    const std::array paths{std::filesystem::path(L"Meshes/BothOperations.nif")};
+
+    const auto ledger = router.route(std::span<const std::filesystem::path>(paths));
+
+    const auto routedAssets = ledger.routedAssets();
+    QCOMPARE(routedAssets.size(), std::size_t{1});
+    QVERIFY(routedAssets[0].operations().contains(AssetOperation::Optimization));
+    QVERIFY(routedAssets[0].operations().contains(AssetOperation::MeshReferenceMaintenance));
+}
+
+void AssetRoutingTests::batchRoutingMatchesSingleAssetDecisions()
+{
+    const auto request = RunRequest::forWork(
+        ExecutionMode::Apply, {RequestedWork::ConvertibleTextureConversion});
+    const auto capabilities = ProfileCapabilities::define(
+        ".ba2", {ProfileCapability::ConvertibleTextureConversion,
+                  ProfileCapability::MeshReferenceMaintenance});
+    const auto result = RoutingPolicy::compile(request, capabilities);
+    QVERIFY(result.hasPolicy());
+    const AssetRouter router(*result.policy());
+    const std::array paths{
+        std::filesystem::path(L"Textures/Routed.tga"),
+        std::filesystem::path(L"Textures/Skipped.dds"),
+        std::filesystem::path(L"Docs/Unsupported.txt")};
+
+    const auto routedDecision = router.route(paths[0]);
+    const auto skippedDecision = router.route(paths[1]);
+    const auto unsupportedDecision = router.route(paths[2]);
+    const auto ledger = router.route(std::span<const std::filesystem::path>(paths));
+
+    QVERIFY(std::holds_alternative<RoutedAsset>(routedDecision));
+    QVERIFY(std::holds_alternative<SkippedAsset>(skippedDecision));
+    QVERIFY(std::holds_alternative<UnsupportedDecision>(unsupportedDecision));
+    const auto &singleRoutedAsset = std::get<RoutedAsset>(routedDecision);
+    const auto routedAssets = ledger.routedAssets();
+    QCOMPARE(routedAssets.size(), std::size_t{1});
+    QVERIFY(routedAssets[0].executionPath() == singleRoutedAsset.executionPath());
+    QCOMPARE(routedAssets[0].kind(), singleRoutedAsset.kind());
+    QCOMPARE(routedAssets[0].phase(), singleRoutedAsset.phase());
+    QCOMPARE(routedAssets[0].target(), singleRoutedAsset.target());
+    QCOMPARE(routedAssets[0].executionMode(), singleRoutedAsset.executionMode());
+    QCOMPARE(routedAssets[0].operations().contains(AssetOperation::Conversion),
+             singleRoutedAsset.operations().contains(AssetOperation::Conversion));
+    const auto reason = std::get<SkippedAsset>(skippedDecision).reason();
+    QCOMPARE(ledger.skippedAssetCount(reason), std::size_t{1});
+}
+
+void AssetRoutingTests::emptyBatchProducesEmptyLedger()
+{
+    const auto router = fullyEnabledRouter();
+
+    const auto ledger = router.route(std::span<const std::filesystem::path>{});
+
+    QVERIFY(ledger.routedAssets().empty());
+    QCOMPARE(ledger.skippedAssetCount(SkipReason::DisabledPhase), std::size_t{0});
+    QCOMPARE(ledger.skippedAssetCount(SkipReason::DisabledAssetKind), std::size_t{0});
+    QCOMPARE(ledger.skippedAssetCount(SkipReason::ExcludedAssetVariant), std::size_t{0});
 }
 
 QTEST_APPLESS_MAIN(AssetRoutingTests)

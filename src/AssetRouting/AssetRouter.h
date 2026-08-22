@@ -1,8 +1,11 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <initializer_list>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -381,6 +384,36 @@ struct UnsupportedDecision final
 {};
 
 using RoutingDecision = std::variant<RoutedAsset, SkippedAsset, UnsupportedDecision>;
+using RoutedAssetReferences = std::vector<std::reference_wrapper<const RoutedAsset>>;
+
+/// Owned summary of batch Routing Decisions that retains Routed Assets in caller input order.
+class RoutingLedger final
+{
+public:
+    /// Returns every owned Routed Asset as a read-only span valid until this ledger is destroyed or replaced.
+    [[nodiscard]] std::span<const RoutedAsset> routedAssets() const noexcept;
+
+    /// Returns read-only references matching one run phase in original relative order.
+    /// References remain valid until this ledger is destroyed or replaced.
+    [[nodiscard]] RoutedAssetReferences routedAssets(RunPhase phase) const;
+
+    /// Returns read-only references matching one optimizer target in original relative order.
+    /// References remain valid until this ledger is destroyed or replaced.
+    [[nodiscard]] RoutedAssetReferences routedAssets(OptimizerTarget target) const;
+
+    /// Returns how many recognized Assets were excluded for one stable Skip Reason.
+    [[nodiscard]] std::size_t skippedAssetCount(SkipReason reason) const noexcept;
+
+private:
+    friend class AssetRouter;
+
+    /// Takes ownership of Routed Assets and the aggregated recognized exclusions from a borrowed batch input.
+    RoutingLedger(std::vector<RoutedAsset> routedAssets,
+                  std::map<SkipReason, std::size_t> skippedAssetCounts) noexcept;
+
+    std::vector<RoutedAsset> _routedAssets;
+    std::map<SkipReason, std::size_t> _skippedAssetCounts;
+};
 
 /// Makes deterministic, filename-only Routing Decisions from one immutable policy.
 class AssetRouter final
@@ -392,6 +425,10 @@ public:
     /// Routes one execution path without filesystem access or path normalization.
     /// Returns a tagged Routed Asset, recognized-but-skipped Asset, or unsupported decision.
     [[nodiscard]] RoutingDecision route(const std::filesystem::path &executionPath) const;
+
+    /// Routes borrowed execution paths once and returns an owned ledger preserving routed input order and duplicates.
+    [[nodiscard]] RoutingLedger route(
+        std::span<const std::filesystem::path> executionPaths) const;
 
 private:
     RoutingPolicy _policy;
