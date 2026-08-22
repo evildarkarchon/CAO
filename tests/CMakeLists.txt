@@ -39,3 +39,16 @@ target_link_libraries(cao_mesh_reference_maintenance_tests PRIVATE
 set_target_properties(cao_mesh_reference_maintenance_tests PROPERTIES AUTOMOC ON)
 
 add_test(NAME cao_mesh_reference_maintenance_tests COMMAND cao_mesh_reference_maintenance_tests)
+
+add_executable(cao_archive_first_asset_discovery_tests
+    ArchiveFirstAssetDiscoveryTests.cpp
+)
+
+target_link_libraries(cao_archive_first_asset_discovery_tests PRIVATE
+    Qt5::Test
+    cao_run_discovery
+)
+
+set_target_properties(cao_archive_first_asset_discovery_tests PROPERTIES AUTOMOC ON)
+
+add_test(NAME cao_archive_first_asset_discovery_tests COMMAND cao_archive_first_asset_discovery_tests)

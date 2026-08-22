@@ -6,6 +6,7 @@ configure_file (
 
 add_subdirectory(AssetRouting)
 add_subdirectory(AssetExecution)
+add_subdirectory(Run)
 
 # Find includes in corresponding build directories
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
@@ -117,6 +118,7 @@ target_compile_definitions(Cathedral_Assets_Optimizer PRIVATE GUI)
 target_link_libraries(Cathedral_Assets_Optimizer PRIVATE
     cao_asset_execution
     cao_asset_routing
+    cao_run_discovery
     cao_mesh_reference_maintenance
     Qt5::Core Qt5::Widgets
     nifly Microsoft::DirectXTex btu::bethutil)

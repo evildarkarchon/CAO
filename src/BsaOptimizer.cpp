@@ -6,6 +6,7 @@
 #include "BsaOptimizer.h"
 #include "OptionsCAO.h"
 #include "PluginsOperations.h"
+#include "Run/ArchiveFirstAssetDiscovery.h"
 
 BSAOptimizer::BSAOptimizer()
 {
@@ -45,7 +46,7 @@ void BSAOptimizer::extract(QString bsaPath, const bool deleteBackup) const {
     PLOG_VERBOSE << bsaPath;
 
     try {
-        btu::bsa::unpack(btu::bsa::UnpackSettings{bsaPath.toStdU16String(), deleteBackup, false});
+        cao::run::extractArchiveNoOverwrite(bsaPath.toStdU16String(), deleteBackup);
     } catch (const std::exception& e) {
         PLOG_ERROR << e.what();
         PLOG_ERROR
