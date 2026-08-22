@@ -502,3 +502,7 @@ MigrationBackup/
 graphify-out/
 .claude/settings.json
 .codex/hooks.json
+build/
+install/
+build-*/
+src/Version.h
