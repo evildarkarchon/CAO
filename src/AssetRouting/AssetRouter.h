@@ -45,6 +45,46 @@ enum class ExecutionMode
     DryRun
 };
 
+enum class RunPhase
+{
+    ArchiveExtraction,
+    LooseAssetProcessing
+};
+
+enum class OptimizerTarget
+{
+    Texture,
+    Mesh,
+    Animation,
+    Archive
+};
+
+enum class SkipReason
+{
+    DisabledPhase,
+    DisabledAssetKind,
+    ExcludedAssetVariant
+};
+
+/// Read-only closed set of work that execution must perform for one Routed Asset.
+class AssetOperations final
+{
+public:
+    /// Reports whether the Routed Asset carries one closed operation.
+    [[nodiscard]] bool contains(AssetOperation operation) const noexcept;
+
+private:
+    friend class AssetRouter;
+
+    /// Adds one operation while the router constructs an internally consistent Routed Asset.
+    void include(AssetOperation operation) noexcept;
+
+    /// Reports whether no execution operation applies to the recognized Asset.
+    [[nodiscard]] bool empty() const noexcept;
+
+    std::array<bool, 4> _operations{};
+};
+
 /// Closed work choices that an input adapter can place in a run request.
 enum class RequestedWork
 {
@@ -239,29 +279,108 @@ private:
     TextureVariant _variant;
 };
 
+/// Kind-specific identity for a recognized Mesh Asset.
+class MeshAsset final
+{
+public:
+    /// Creates a Mesh identity carrying its Mesh-specific Variant.
+    explicit MeshAsset(MeshVariant variant) noexcept;
+
+    /// Returns the Mesh-specific Asset Variant.
+    [[nodiscard]] MeshVariant variant() const noexcept;
+
+private:
+    MeshVariant _variant;
+};
+
+/// Kind-specific identity for a recognized Animation Asset.
+struct AnimationAsset final
+{};
+
+/// Kind-specific identity for a recognized Archive Asset.
+struct ArchiveAsset final
+{};
+
+using AssetIdentity = std::variant<TextureAsset, MeshAsset, AnimationAsset, ArchiveAsset>;
+
 /// A recognized Asset selected to participate in the optimization run.
 class RoutedAsset final
 {
 public:
-    /// Owns the caller's execution path without normalizing it and carries the recognized Texture identity.
-    RoutedAsset(std::filesystem::path executionPath, TextureAsset texture);
-
     /// Returns the caller-provided execution path exactly as supplied to the router.
     [[nodiscard]] const std::filesystem::path &executionPath() const noexcept;
 
-    /// Returns the kind-specific Texture identity selected by routing.
-    [[nodiscard]] const TextureAsset &texture() const noexcept;
+    /// Returns the Asset Kind implied by the carried kind-specific identity.
+    [[nodiscard]] AssetKind kind() const noexcept;
+
+    /// Returns the kind-specific identity selected by routing.
+    [[nodiscard]] const AssetIdentity &identity() const noexcept;
+
+    /// Returns the run phase selected without requiring the caller to reinterpret policy.
+    [[nodiscard]] RunPhase phase() const noexcept;
+
+    /// Returns the optimizer target selected for execution.
+    [[nodiscard]] OptimizerTarget target() const noexcept;
+
+    /// Returns the apply-or-Dry-Run mode fixed by the Routing Policy.
+    [[nodiscard]] ExecutionMode executionMode() const noexcept;
+
+    /// Returns the complete closed operation set selected for execution.
+    [[nodiscard]] const AssetOperations &operations() const noexcept;
 
 private:
+    friend class AssetRouter;
+
+    /// Owns all execution facts selected by one policy-aware routing decision.
+    RoutedAsset(std::filesystem::path executionPath,
+                AssetIdentity identity,
+                RunPhase phase,
+                OptimizerTarget target,
+                ExecutionMode executionMode,
+                AssetOperations operations);
+
     std::filesystem::path _executionPath;
-    TextureAsset _texture;
+    AssetIdentity _identity;
+    RunPhase _phase;
+    OptimizerTarget _target;
+    ExecutionMode _executionMode;
+    AssetOperations _operations;
+};
+
+/// A recognized Asset excluded by Routing Policy before execution.
+class SkippedAsset final
+{
+public:
+    /// Returns the caller-provided execution path exactly as supplied to the router.
+    [[nodiscard]] const std::filesystem::path &executionPath() const noexcept;
+
+    /// Returns the Asset Kind implied by the carried kind-specific identity.
+    [[nodiscard]] AssetKind kind() const noexcept;
+
+    /// Returns the kind-specific identity recognized before policy exclusion.
+    [[nodiscard]] const AssetIdentity &identity() const noexcept;
+
+    /// Returns the stable highest-precedence explanation for the exclusion.
+    [[nodiscard]] SkipReason reason() const noexcept;
+
+private:
+    friend class AssetRouter;
+
+    /// Owns the recognized Asset facts and stable reason selected by policy-aware routing.
+    SkippedAsset(std::filesystem::path executionPath,
+                 AssetIdentity identity,
+                 SkipReason reason);
+
+    std::filesystem::path _executionPath;
+    AssetIdentity _identity;
+    SkipReason _reason;
 };
 
 /// A Routing Decision for a path whose terminal extension is not supported by this tracer.
 struct UnsupportedDecision final
 {};
 
-using RoutingDecision = std::variant<RoutedAsset, UnsupportedDecision>;
+using RoutingDecision = std::variant<RoutedAsset, SkippedAsset, UnsupportedDecision>;
 
 /// Makes deterministic, filename-only Routing Decisions from one immutable policy.
 class AssetRouter final
@@ -271,10 +390,10 @@ public:
     explicit AssetRouter(RoutingPolicy policy) noexcept;
 
     /// Routes one execution path without filesystem access or path normalization.
+    /// Returns a tagged Routed Asset, recognized-but-skipped Asset, or unsupported decision.
     [[nodiscard]] RoutingDecision route(const std::filesystem::path &executionPath) const;
 
 private:
-    // The tracer policy is a validity proof today; ownership keeps the router run-scoped as later facts are added.
-    [[maybe_unused]] RoutingPolicy _policy;
+    RoutingPolicy _policy;
 };
 }

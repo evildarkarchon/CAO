@@ -1,9 +1,11 @@
 #include "AssetRouter.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <optional>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 namespace
@@ -78,32 +80,44 @@ constexpr std::array builtInExtensions{
     BuiltInExtension{".bto", AssetKind::Mesh},
     BuiltInExtension{".hkx", AssetKind::Animation}};
 
-/// Compares the terminal extension using the ASCII case rules that define supported Asset extensions.
-bool hasNativeTextureExtension(const std::filesystem::path &executionPath)
+/// Returns the terminal extension using the ASCII case rules that define supported Asset extensions.
+std::string normalizedTerminalExtension(const std::filesystem::path &executionPath)
 {
-    using PathCharacter = std::filesystem::path::value_type;
-    constexpr std::array expectedExtension{
-        static_cast<PathCharacter>('.'),
-        static_cast<PathCharacter>('d'),
-        static_cast<PathCharacter>('d'),
-        static_cast<PathCharacter>('s')};
-
     const auto extension = executionPath.filename().extension().native();
-    if (extension.size() != expectedExtension.size())
-        return false;
-
-    for (std::size_t index = 0; index < extension.size(); ++index) {
-        auto character = extension[index];
-        if (character >= static_cast<PathCharacter>('A')
-            && character <= static_cast<PathCharacter>('Z')) {
-            character += static_cast<PathCharacter>('a' - 'A');
+    std::string normalized;
+    normalized.reserve(extension.size());
+    for (auto character : extension) {
+        if (character < 0 || character > 127)
+            return {};
+        if (character >= static_cast<decltype(character)>('A')
+            && character <= static_cast<decltype(character)>('Z')) {
+            character += static_cast<decltype(character)>('a' - 'A');
         }
-
-        if (character != expectedExtension[index])
-            return false;
+        normalized.push_back(static_cast<char>(character));
     }
 
-    return true;
+    return normalized;
+}
+
+/// Returns the Asset Kind encoded by one kind-specific identity alternative.
+AssetKind assetKindOf(const cao::routing::AssetIdentity &identity) noexcept
+{
+    using cao::routing::AnimationAsset;
+    using cao::routing::ArchiveAsset;
+    using cao::routing::MeshAsset;
+    using cao::routing::TextureAsset;
+
+    return std::visit([](const auto &asset) {
+        using Identity = std::decay_t<decltype(asset)>;
+        if constexpr (std::is_same_v<Identity, TextureAsset>)
+            return AssetKind::Texture;
+        else if constexpr (std::is_same_v<Identity, MeshAsset>)
+            return AssetKind::Mesh;
+        else if constexpr (std::is_same_v<Identity, AnimationAsset>)
+            return AssetKind::Animation;
+        else
+            return AssetKind::Archive;
+    }, identity);
 }
 
 /// Safely reads a closed enum's bit from its compact value set.
@@ -349,9 +363,44 @@ TextureVariant TextureAsset::variant() const noexcept
     return _variant;
 }
 
-RoutedAsset::RoutedAsset(std::filesystem::path executionPath, const TextureAsset texture)
+MeshAsset::MeshAsset(const MeshVariant variant) noexcept
+    : _variant(variant)
+{}
+
+MeshVariant MeshAsset::variant() const noexcept
+{
+    return _variant;
+}
+
+bool AssetOperations::contains(const AssetOperation operation) const noexcept
+{
+    return ::contains(_operations, operation);
+}
+
+void AssetOperations::include(const AssetOperation operation) noexcept
+{
+    ::include(_operations, operation);
+}
+
+bool AssetOperations::empty() const noexcept
+{
+    return std::none_of(_operations.begin(), _operations.end(), [](const bool included) {
+        return included;
+    });
+}
+
+RoutedAsset::RoutedAsset(std::filesystem::path executionPath,
+                         AssetIdentity identity,
+                         const RunPhase phase,
+                         const OptimizerTarget target,
+                         const ExecutionMode executionMode,
+                         AssetOperations operations)
     : _executionPath(std::move(executionPath))
-    , _texture(texture)
+    , _identity(std::move(identity))
+    , _phase(phase)
+    , _target(target)
+    , _executionMode(executionMode)
+    , _operations(operations)
 {}
 
 const std::filesystem::path &RoutedAsset::executionPath() const noexcept
@@ -359,9 +408,62 @@ const std::filesystem::path &RoutedAsset::executionPath() const noexcept
     return _executionPath;
 }
 
-const TextureAsset &RoutedAsset::texture() const noexcept
+AssetKind RoutedAsset::kind() const noexcept
 {
-    return _texture;
+    return assetKindOf(_identity);
+}
+
+const AssetIdentity &RoutedAsset::identity() const noexcept
+{
+    return _identity;
+}
+
+RunPhase RoutedAsset::phase() const noexcept
+{
+    return _phase;
+}
+
+OptimizerTarget RoutedAsset::target() const noexcept
+{
+    return _target;
+}
+
+ExecutionMode RoutedAsset::executionMode() const noexcept
+{
+    return _executionMode;
+}
+
+const AssetOperations &RoutedAsset::operations() const noexcept
+{
+    return _operations;
+}
+
+SkippedAsset::SkippedAsset(std::filesystem::path executionPath,
+                           AssetIdentity identity,
+                           const SkipReason reason)
+    : _executionPath(std::move(executionPath))
+    , _identity(std::move(identity))
+    , _reason(reason)
+{}
+
+const std::filesystem::path &SkippedAsset::executionPath() const noexcept
+{
+    return _executionPath;
+}
+
+AssetKind SkippedAsset::kind() const noexcept
+{
+    return assetKindOf(_identity);
+}
+
+const AssetIdentity &SkippedAsset::identity() const noexcept
+{
+    return _identity;
+}
+
+SkipReason SkippedAsset::reason() const noexcept
+{
+    return _reason;
 }
 
 AssetRouter::AssetRouter(RoutingPolicy policy) noexcept
@@ -370,9 +472,101 @@ AssetRouter::AssetRouter(RoutingPolicy policy) noexcept
 
 RoutingDecision AssetRouter::route(const std::filesystem::path &executionPath) const
 {
-    if (!hasNativeTextureExtension(executionPath))
-        return UnsupportedDecision{};
+    const auto extension = normalizedTerminalExtension(executionPath);
+    const auto kindHasWork = [this](const AssetKind kind) {
+        switch (kind) {
+        case AssetKind::Texture:
+            return _policy.requests(RequestedWork::NativeTextureOptimization)
+                || _policy.requests(RequestedWork::ConvertibleTextureConversion);
+        case AssetKind::Mesh:
+            return _policy.requests(RequestedWork::StandardMeshOptimization)
+                || _policy.requests(RequestedWork::TerrainMeshOptimization)
+                || _policy.maintainsMeshReferences();
+        case AssetKind::Animation:
+            return _policy.requests(RequestedWork::AnimationOptimization);
+        case AssetKind::Archive:
+            return _policy.requests(RequestedWork::ArchiveExtraction);
+        }
+        return false;
+    };
+    const auto finishDecision = [this, &executionPath, &kindHasWork](
+                                    AssetIdentity identity,
+                                    const RunPhase phase,
+                                    const OptimizerTarget target,
+                                    AssetOperations operations) -> RoutingDecision {
+        const auto kind = assetKindOf(identity);
+        // Dry Run disables Archive extraction before kind/variant eligibility is considered.
+        if (phase == RunPhase::ArchiveExtraction
+            && _policy.executionMode() == ExecutionMode::DryRun) {
+            return SkippedAsset(executionPath, std::move(identity), SkipReason::DisabledPhase);
+        }
+        if (!operations.empty()) {
+            return RoutedAsset(executionPath,
+                               std::move(identity),
+                               phase,
+                               target,
+                               _policy.executionMode(),
+                               operations);
+        }
+        const auto reason = kindHasWork(kind)
+            ? SkipReason::ExcludedAssetVariant
+            : SkipReason::DisabledAssetKind;
+        return SkippedAsset(executionPath, std::move(identity), reason);
+    };
 
-    return RoutedAsset(executionPath, TextureAsset(TextureVariant::Native));
+    if (extension == ".dds") {
+        AssetOperations operations;
+        if (_policy.requests(RequestedWork::NativeTextureOptimization))
+            operations.include(AssetOperation::Optimization);
+        return finishDecision(TextureAsset(TextureVariant::Native),
+                              RunPhase::LooseAssetProcessing,
+                              OptimizerTarget::Texture,
+                              operations);
+    }
+    if (extension == ".tga") {
+        AssetOperations operations;
+        if (_policy.requests(RequestedWork::ConvertibleTextureConversion))
+            operations.include(AssetOperation::Conversion);
+        return finishDecision(TextureAsset(TextureVariant::Convertible),
+                              RunPhase::LooseAssetProcessing,
+                              OptimizerTarget::Texture,
+                              operations);
+    }
+    if (extension == ".nif" || extension == ".btr" || extension == ".bto") {
+        AssetOperations operations;
+        const auto variant = extension == ".nif" ? MeshVariant::Standard : MeshVariant::Terrain;
+        const auto requestedOptimization = variant == MeshVariant::Standard
+            ? RequestedWork::StandardMeshOptimization
+            : RequestedWork::TerrainMeshOptimization;
+        if (_policy.requests(requestedOptimization))
+            operations.include(AssetOperation::Optimization);
+        // Convertible Texture conversion changes referenced names, so both Mesh Variants carry maintenance independently of optimization.
+        if (_policy.maintainsMeshReferences())
+            operations.include(AssetOperation::MeshReferenceMaintenance);
+        return finishDecision(MeshAsset(variant),
+                              RunPhase::LooseAssetProcessing,
+                              OptimizerTarget::Mesh,
+                              operations);
+    }
+    if (extension == ".hkx") {
+        AssetOperations operations;
+        if (_policy.requests(RequestedWork::AnimationOptimization))
+            operations.include(AssetOperation::Optimization);
+        return finishDecision(AnimationAsset{},
+                              RunPhase::LooseAssetProcessing,
+                              OptimizerTarget::Animation,
+                              operations);
+    }
+    if (extension == _policy.archiveExtension()) {
+        AssetOperations operations;
+        if (_policy.requests(RequestedWork::ArchiveExtraction))
+            operations.include(AssetOperation::Extraction);
+        return finishDecision(ArchiveAsset{},
+                              RunPhase::ArchiveExtraction,
+                              OptimizerTarget::Archive,
+                              operations);
+    }
+
+    return UnsupportedDecision{};
 }
 }

@@ -10,10 +10,15 @@
 using cao::routing::AssetRouter;
 using cao::routing::AmbiguousArchiveExtension;
 using cao::routing::AssetKind;
+using cao::routing::AnimationAsset;
+using cao::routing::ArchiveAsset;
+using cao::routing::AssetIdentity;
 using cao::routing::AssetOperation;
+using cao::routing::OptimizerTarget;
 using cao::routing::ExecutionMode;
 using cao::routing::MalformedArchiveExtension;
 using cao::routing::MalformedArchiveExtensionReason;
+using cao::routing::MeshAsset;
 using cao::routing::MeshVariant;
 using cao::routing::MissingArchiveExtension;
 using cao::routing::ProfileCapability;
@@ -21,8 +26,13 @@ using cao::routing::ProfileCapabilities;
 using cao::routing::RequestedWork;
 using cao::routing::RoutedAsset;
 using cao::routing::RoutingPolicy;
+using cao::routing::RoutingDecision;
+using cao::routing::RunPhase;
 using cao::routing::RunRequest;
+using cao::routing::SkipReason;
+using cao::routing::SkippedAsset;
 using cao::routing::TextureVariant;
+using cao::routing::TextureAsset;
 using cao::routing::UnsupportedDerivedOperation;
 using cao::routing::UnsupportedRequestedAssetKind;
 using cao::routing::UnsupportedRequestedAssetVariant;
@@ -31,6 +41,67 @@ using cao::routing::UnsupportedDecision;
 static_assert(!std::is_copy_assignable_v<RoutingPolicy>);
 static_assert(!std::is_move_assignable_v<RoutingPolicy>);
 static_assert(!std::is_default_constructible_v<RoutingPolicy>);
+static_assert(!std::is_constructible_v<TextureAsset, MeshVariant>);
+static_assert(!std::is_constructible_v<MeshAsset, TextureVariant>);
+static_assert(std::variant_size_v<AssetIdentity> == 4);
+static_assert(std::variant_size_v<RoutingDecision> == 3);
+
+template<typename Decision>
+concept ExposesRoutedExecutionFacts = requires(const Decision &decision) {
+    decision.phase();
+    decision.target();
+    decision.executionMode();
+    decision.operations();
+};
+
+static_assert(ExposesRoutedExecutionFacts<RoutedAsset>);
+static_assert(!ExposesRoutedExecutionFacts<SkippedAsset>);
+static_assert(!ExposesRoutedExecutionFacts<UnsupportedDecision>);
+
+enum class ExpectedIdentity
+{
+    NativeTexture,
+    ConvertibleTexture,
+    StandardMesh,
+    TerrainMesh,
+    Animation,
+    Archive
+};
+
+enum class SkipCase
+{
+    DryRunArchive,
+    DisabledTexture,
+    ExcludedNativeTexture,
+    ExcludedConvertibleTexture,
+    ExcludedTerrainMesh,
+    DisabledAnimation,
+    DisabledArchive
+};
+
+/// Builds the shared all-work router used by recognition and carried-execution-fact matrices.
+AssetRouter fullyEnabledRouter()
+{
+    const auto request = RunRequest::forWork(ExecutionMode::Apply,
+                                             {RequestedWork::NativeTextureOptimization,
+                                              RequestedWork::ConvertibleTextureConversion,
+                                              RequestedWork::StandardMeshOptimization,
+                                              RequestedWork::TerrainMeshOptimization,
+                                              RequestedWork::AnimationOptimization,
+                                              RequestedWork::ArchiveExtraction});
+    const auto capabilities = ProfileCapabilities::define(
+        ".ba2", {ProfileCapability::NativeTextureOptimization,
+                  ProfileCapability::ConvertibleTextureConversion,
+                  ProfileCapability::StandardMeshOptimization,
+                  ProfileCapability::TerrainMeshOptimization,
+                  ProfileCapability::AnimationOptimization,
+                  ProfileCapability::ArchiveExtraction,
+                  ProfileCapability::MeshReferenceMaintenance});
+    const auto result = RoutingPolicy::compile(request, capabilities);
+    if (!result.hasPolicy())
+        qFatal("The known-valid complete Routing Policy failed to compile");
+    return AssetRouter(*result.policy());
+}
 
 class AssetRoutingTests final : public QObject
 {
@@ -54,6 +125,33 @@ private slots:
 
     /// Verifies the public router decision, native Texture identity, and exact execution-path ownership.
     void nativeTextureTracer();
+
+    /// Defines every supported extension and its kind-specific Asset identity.
+    void supportedAssetRecognition_data();
+
+    /// Verifies supported terminal extensions map case-insensitively to the correct Asset identity.
+    void supportedAssetRecognition();
+
+    /// Defines the complete execution facts carried for every eligible Asset identity.
+    void routedAssetFacts_data();
+
+    /// Verifies Routed Assets carry phase, target, mode, and closed operations without policy reinterpretation.
+    void routedAssetFacts();
+
+    /// Defines recognized exclusions that exercise deterministic Skip Reason precedence.
+    void skipReasonPrecedence_data();
+
+    /// Verifies recognized Assets are skipped with the highest-precedence stable reason.
+    void skipReasonPrecedence();
+
+    /// Verifies conversion-only Texture work routes TGA and derives maintenance for both Mesh Variants.
+    void conversionOnlyRoutesTextureAndMaintainsMeshes();
+
+    /// Verifies Dry Run preserves eligible Loose Asset operations while excluding Archive extraction.
+    void dryRunPreservesLooseAssetOperations();
+
+    /// Verifies routing neither depends on nor mutates path existence and file contents.
+    void routingIgnoresFilesystemState();
 };
 
 void AssetRoutingTests::compilesCompleteRoutingPolicy()
@@ -215,7 +313,13 @@ void AssetRoutingTests::nativeTextureTracer_data()
     QTest::addColumn<bool>("shouldRoute");
 
     QTest::newRow("mixed-case terminal DDS") << QStringLiteral("mods/Textures/Armor.DdS") << true;
+    QTest::newRow("lexically unnormalized caller path")
+        << QStringLiteral("mods/Textures/../Textures/Armor.DdS") << true;
     QTest::newRow("DDS only in parent segment") << QStringLiteral("mods/textures.dds/readme") << false;
+    QTest::newRow("DDS before another terminal extension")
+        << QStringLiteral("mods/Textures/Armor.dds.backup") << false;
+    QTest::newRow("extension text without terminal period")
+        << QStringLiteral("mods/Textures/DDS") << false;
     QTest::newRow("unknown terminal extension") << QStringLiteral("mods/Textures/readme.txt") << false;
 }
 
@@ -242,7 +346,322 @@ void AssetRoutingTests::nativeTextureTracer()
     QVERIFY(std::holds_alternative<RoutedAsset>(decision));
     const auto &routedAsset = std::get<RoutedAsset>(decision);
     QVERIFY(routedAsset.executionPath() == callerPath);
-    QVERIFY(routedAsset.texture().variant() == TextureVariant::Native);
+    QVERIFY(std::holds_alternative<TextureAsset>(routedAsset.identity()));
+    QVERIFY(std::get<TextureAsset>(routedAsset.identity()).variant() == TextureVariant::Native);
+}
+
+void AssetRoutingTests::supportedAssetRecognition_data()
+{
+    QTest::addColumn<QString>("executionPath");
+    QTest::addColumn<int>("expectedIdentity");
+
+    QTest::newRow("native Texture")
+        << QStringLiteral("Root/Textures/Native.DdS")
+        << static_cast<int>(ExpectedIdentity::NativeTexture);
+    QTest::newRow("convertible Texture")
+        << QStringLiteral("Root/Textures/Convertible.TgA")
+        << static_cast<int>(ExpectedIdentity::ConvertibleTexture);
+    QTest::newRow("standard Mesh")
+        << QStringLiteral("Root/Meshes/Standard.NiF")
+        << static_cast<int>(ExpectedIdentity::StandardMesh);
+    QTest::newRow("BTR terrain Mesh")
+        << QStringLiteral("Root/Meshes/Terrain.BtR")
+        << static_cast<int>(ExpectedIdentity::TerrainMesh);
+    QTest::newRow("BTO terrain Mesh")
+        << QStringLiteral("Root/Meshes/Terrain.BtO")
+        << static_cast<int>(ExpectedIdentity::TerrainMesh);
+    QTest::newRow("Animation")
+        << QStringLiteral("Root/Animations/Behavior.HkX")
+        << static_cast<int>(ExpectedIdentity::Animation);
+    QTest::newRow("profile Archive")
+        << QStringLiteral("Root/Archives/Assets.Ba2")
+        << static_cast<int>(ExpectedIdentity::Archive);
+}
+
+void AssetRoutingTests::supportedAssetRecognition()
+{
+    QFETCH(QString, executionPath);
+    QFETCH(int, expectedIdentity);
+
+    const auto router = fullyEnabledRouter();
+    const std::filesystem::path callerPath(executionPath.toStdWString());
+
+    const auto decision = router.route(callerPath);
+
+    QVERIFY(std::holds_alternative<RoutedAsset>(decision));
+    const auto &routedAsset = std::get<RoutedAsset>(decision);
+    QVERIFY(routedAsset.executionPath() == callerPath);
+    const auto &identity = routedAsset.identity();
+    switch (static_cast<ExpectedIdentity>(expectedIdentity)) {
+    case ExpectedIdentity::NativeTexture:
+        QCOMPARE(routedAsset.kind(), AssetKind::Texture);
+        QVERIFY(std::holds_alternative<TextureAsset>(identity));
+        QCOMPARE(std::get<TextureAsset>(identity).variant(), TextureVariant::Native);
+        break;
+    case ExpectedIdentity::ConvertibleTexture:
+        QCOMPARE(routedAsset.kind(), AssetKind::Texture);
+        QVERIFY(std::holds_alternative<TextureAsset>(identity));
+        QCOMPARE(std::get<TextureAsset>(identity).variant(), TextureVariant::Convertible);
+        break;
+    case ExpectedIdentity::StandardMesh:
+        QCOMPARE(routedAsset.kind(), AssetKind::Mesh);
+        QVERIFY(std::holds_alternative<MeshAsset>(identity));
+        QCOMPARE(std::get<MeshAsset>(identity).variant(), MeshVariant::Standard);
+        break;
+    case ExpectedIdentity::TerrainMesh:
+        QCOMPARE(routedAsset.kind(), AssetKind::Mesh);
+        QVERIFY(std::holds_alternative<MeshAsset>(identity));
+        QCOMPARE(std::get<MeshAsset>(identity).variant(), MeshVariant::Terrain);
+        break;
+    case ExpectedIdentity::Animation:
+        QCOMPARE(routedAsset.kind(), AssetKind::Animation);
+        QVERIFY(std::holds_alternative<AnimationAsset>(identity));
+        break;
+    case ExpectedIdentity::Archive:
+        QCOMPARE(routedAsset.kind(), AssetKind::Archive);
+        QVERIFY(std::holds_alternative<ArchiveAsset>(identity));
+        break;
+    }
+}
+
+void AssetRoutingTests::routedAssetFacts_data()
+{
+    QTest::addColumn<QString>("executionPath");
+    QTest::addColumn<int>("phase");
+    QTest::addColumn<int>("target");
+    QTest::addColumn<bool>("extraction");
+    QTest::addColumn<bool>("optimization");
+    QTest::addColumn<bool>("conversion");
+    QTest::addColumn<bool>("meshReferenceMaintenance");
+
+    QTest::newRow("native Texture")
+        << QStringLiteral("Textures/Native.dds")
+        << static_cast<int>(RunPhase::LooseAssetProcessing)
+        << static_cast<int>(OptimizerTarget::Texture)
+        << false << true << false << false;
+    QTest::newRow("convertible Texture")
+        << QStringLiteral("Textures/Convertible.tga")
+        << static_cast<int>(RunPhase::LooseAssetProcessing)
+        << static_cast<int>(OptimizerTarget::Texture)
+        << false << false << true << false;
+    QTest::newRow("standard Mesh")
+        << QStringLiteral("Meshes/Standard.nif")
+        << static_cast<int>(RunPhase::LooseAssetProcessing)
+        << static_cast<int>(OptimizerTarget::Mesh)
+        << false << true << false << true;
+    QTest::newRow("terrain Mesh")
+        << QStringLiteral("Meshes/Terrain.btr")
+        << static_cast<int>(RunPhase::LooseAssetProcessing)
+        << static_cast<int>(OptimizerTarget::Mesh)
+        << false << true << false << true;
+    QTest::newRow("Animation")
+        << QStringLiteral("Animations/Behavior.hkx")
+        << static_cast<int>(RunPhase::LooseAssetProcessing)
+        << static_cast<int>(OptimizerTarget::Animation)
+        << false << true << false << false;
+    QTest::newRow("Archive")
+        << QStringLiteral("Archives/Assets.ba2")
+        << static_cast<int>(RunPhase::ArchiveExtraction)
+        << static_cast<int>(OptimizerTarget::Archive)
+        << true << false << false << false;
+}
+
+void AssetRoutingTests::routedAssetFacts()
+{
+    QFETCH(QString, executionPath);
+    QFETCH(int, phase);
+    QFETCH(int, target);
+    QFETCH(bool, extraction);
+    QFETCH(bool, optimization);
+    QFETCH(bool, conversion);
+    QFETCH(bool, meshReferenceMaintenance);
+
+    const auto router = fullyEnabledRouter();
+
+    const auto decision = router.route(std::filesystem::path(executionPath.toStdWString()));
+
+    QVERIFY(std::holds_alternative<RoutedAsset>(decision));
+    const auto &routedAsset = std::get<RoutedAsset>(decision);
+    QCOMPARE(static_cast<int>(routedAsset.phase()), phase);
+    QCOMPARE(static_cast<int>(routedAsset.target()), target);
+    QCOMPARE(routedAsset.executionMode(), ExecutionMode::Apply);
+    QCOMPARE(routedAsset.operations().contains(AssetOperation::Extraction), extraction);
+    QCOMPARE(routedAsset.operations().contains(AssetOperation::Optimization), optimization);
+    QCOMPARE(routedAsset.operations().contains(AssetOperation::Conversion), conversion);
+    QCOMPARE(routedAsset.operations().contains(AssetOperation::MeshReferenceMaintenance),
+             meshReferenceMaintenance);
+}
+
+void AssetRoutingTests::skipReasonPrecedence_data()
+{
+    QTest::addColumn<int>("skipCaseValue");
+    QTest::addColumn<QString>("executionPath");
+    QTest::addColumn<int>("skipReason");
+
+    QTest::newRow("disabled phase precedes disabled Archive kind")
+        << static_cast<int>(SkipCase::DryRunArchive) << QStringLiteral("Archives/Assets.ba2")
+        << static_cast<int>(SkipReason::DisabledPhase);
+    QTest::newRow("disabled Texture kind")
+        << static_cast<int>(SkipCase::DisabledTexture) << QStringLiteral("Textures/Native.dds")
+        << static_cast<int>(SkipReason::DisabledAssetKind);
+    QTest::newRow("excluded native Texture Variant")
+        << static_cast<int>(SkipCase::ExcludedNativeTexture) << QStringLiteral("Textures/Native.dds")
+        << static_cast<int>(SkipReason::ExcludedAssetVariant);
+    QTest::newRow("excluded convertible Texture Variant")
+        << static_cast<int>(SkipCase::ExcludedConvertibleTexture) << QStringLiteral("Textures/Convertible.tga")
+        << static_cast<int>(SkipReason::ExcludedAssetVariant);
+    QTest::newRow("excluded terrain Mesh Variant")
+        << static_cast<int>(SkipCase::ExcludedTerrainMesh) << QStringLiteral("Meshes/Terrain.bto")
+        << static_cast<int>(SkipReason::ExcludedAssetVariant);
+    QTest::newRow("disabled Animation kind")
+        << static_cast<int>(SkipCase::DisabledAnimation) << QStringLiteral("Animations/Behavior.hkx")
+        << static_cast<int>(SkipReason::DisabledAssetKind);
+    QTest::newRow("disabled Archive kind in Apply mode")
+        << static_cast<int>(SkipCase::DisabledArchive) << QStringLiteral("Archives/Assets.ba2")
+        << static_cast<int>(SkipReason::DisabledAssetKind);
+}
+
+void AssetRoutingTests::skipReasonPrecedence()
+{
+    QFETCH(int, skipCaseValue);
+    QFETCH(QString, executionPath);
+    QFETCH(int, skipReason);
+
+    const auto skipCase = static_cast<SkipCase>(skipCaseValue);
+    const auto request = [skipCase] {
+        if (skipCase == SkipCase::DryRunArchive)
+            return RunRequest::forWork(ExecutionMode::DryRun, {});
+        if (skipCase == SkipCase::ExcludedNativeTexture) {
+            return RunRequest::forWork(ExecutionMode::Apply,
+                                       {RequestedWork::ConvertibleTextureConversion});
+        }
+        if (skipCase == SkipCase::ExcludedConvertibleTexture) {
+            return RunRequest::forWork(ExecutionMode::Apply,
+                                       {RequestedWork::NativeTextureOptimization});
+        }
+        if (skipCase == SkipCase::ExcludedTerrainMesh) {
+            return RunRequest::forWork(ExecutionMode::Apply,
+                                       {RequestedWork::StandardMeshOptimization});
+        }
+        return RunRequest::forWork(ExecutionMode::Apply, {});
+    }();
+    const auto capabilities = ProfileCapabilities::define(
+        ".ba2", {ProfileCapability::NativeTextureOptimization,
+                  ProfileCapability::ConvertibleTextureConversion,
+                  ProfileCapability::StandardMeshOptimization,
+                  ProfileCapability::TerrainMeshOptimization,
+                  ProfileCapability::AnimationOptimization,
+                  ProfileCapability::ArchiveExtraction,
+                  ProfileCapability::MeshReferenceMaintenance});
+    const auto result = RoutingPolicy::compile(request, capabilities);
+    QVERIFY(result.hasPolicy());
+    const AssetRouter router(*result.policy());
+    const std::filesystem::path callerPath(executionPath.toStdWString());
+
+    const auto decision = router.route(callerPath);
+
+    QVERIFY(std::holds_alternative<SkippedAsset>(decision));
+    const auto &skippedAsset = std::get<SkippedAsset>(decision);
+    QVERIFY(skippedAsset.executionPath() == callerPath);
+    QCOMPARE(static_cast<int>(skippedAsset.reason()), skipReason);
+}
+
+void AssetRoutingTests::conversionOnlyRoutesTextureAndMaintainsMeshes()
+{
+    const auto request = RunRequest::forWork(
+        ExecutionMode::Apply, {RequestedWork::ConvertibleTextureConversion});
+    const auto capabilities = ProfileCapabilities::define(
+        ".ba2", {ProfileCapability::ConvertibleTextureConversion,
+                  ProfileCapability::MeshReferenceMaintenance});
+    const auto result = RoutingPolicy::compile(request, capabilities);
+    QVERIFY(result.hasPolicy());
+    const AssetRouter router(*result.policy());
+
+    for (const auto &path : {std::filesystem::path(L"Textures/Convertible.tga"),
+                             std::filesystem::path(L"Meshes/Standard.nif"),
+                             std::filesystem::path(L"Meshes/Terrain.btr"),
+                             std::filesystem::path(L"Meshes/Terrain.bto")}) {
+        const auto decision = router.route(path);
+        QVERIFY(std::holds_alternative<RoutedAsset>(decision));
+        const auto &routedAsset = std::get<RoutedAsset>(decision);
+        QVERIFY(routedAsset.executionPath() == path);
+        if (routedAsset.kind() == AssetKind::Texture) {
+            QVERIFY(routedAsset.operations().contains(AssetOperation::Conversion));
+            QVERIFY(!routedAsset.operations().contains(AssetOperation::Optimization));
+            QVERIFY(!routedAsset.operations().contains(AssetOperation::MeshReferenceMaintenance));
+        } else {
+            QCOMPARE(routedAsset.kind(), AssetKind::Mesh);
+            QVERIFY(routedAsset.operations().contains(AssetOperation::MeshReferenceMaintenance));
+            QVERIFY(!routedAsset.operations().contains(AssetOperation::Optimization));
+        }
+    }
+}
+
+void AssetRoutingTests::dryRunPreservesLooseAssetOperations()
+{
+    const auto request = RunRequest::forWork(ExecutionMode::DryRun,
+                                             {RequestedWork::ConvertibleTextureConversion,
+                                              RequestedWork::StandardMeshOptimization,
+                                              RequestedWork::ArchiveExtraction});
+    const auto capabilities = ProfileCapabilities::define(
+        ".ba2", {ProfileCapability::ConvertibleTextureConversion,
+                  ProfileCapability::StandardMeshOptimization,
+                  ProfileCapability::ArchiveExtraction,
+                  ProfileCapability::MeshReferenceMaintenance});
+    const auto result = RoutingPolicy::compile(request, capabilities);
+    QVERIFY(result.hasPolicy());
+    const AssetRouter router(*result.policy());
+
+    const auto textureDecision = router.route(std::filesystem::path(L"Textures/Source.tga"));
+    QVERIFY(std::holds_alternative<RoutedAsset>(textureDecision));
+    const auto &texture = std::get<RoutedAsset>(textureDecision);
+    QCOMPARE(texture.executionMode(), ExecutionMode::DryRun);
+    QVERIFY(texture.operations().contains(AssetOperation::Conversion));
+
+    const auto meshDecision = router.route(std::filesystem::path(L"Meshes/Model.nif"));
+    QVERIFY(std::holds_alternative<RoutedAsset>(meshDecision));
+    const auto &mesh = std::get<RoutedAsset>(meshDecision);
+    QCOMPARE(mesh.executionMode(), ExecutionMode::DryRun);
+    QVERIFY(mesh.operations().contains(AssetOperation::Optimization));
+    QVERIFY(mesh.operations().contains(AssetOperation::MeshReferenceMaintenance));
+
+    const auto archiveDecision = router.route(std::filesystem::path(L"Archives/Assets.ba2"));
+    QVERIFY(std::holds_alternative<SkippedAsset>(archiveDecision));
+    QCOMPARE(std::get<SkippedAsset>(archiveDecision).reason(), SkipReason::DisabledPhase);
+}
+
+void AssetRoutingTests::routingIgnoresFilesystemState()
+{
+    const auto request = RunRequest::optimizeNativeTextures();
+    const auto capabilities = ProfileCapabilities::define(
+        ".ba2", {ProfileCapability::NativeTextureOptimization});
+    const auto result = RoutingPolicy::compile(request, capabilities);
+    QVERIFY(result.hasPolicy());
+    const AssetRouter router(*result.policy());
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const auto qPath = temporaryDirectory.filePath(QStringLiteral("NotReallyATexture.dds"));
+    const std::filesystem::path executionPath(qPath.toStdWString());
+
+    const auto missingDecision = router.route(executionPath);
+    QVERIFY(std::holds_alternative<RoutedAsset>(missingDecision));
+
+    QFile file(qPath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write("arbitrary non-DDS contents"), qint64{26});
+    file.close();
+
+    const auto existingDecision = router.route(executionPath);
+    QVERIFY(std::holds_alternative<RoutedAsset>(existingDecision));
+    const auto &missingAsset = std::get<RoutedAsset>(missingDecision);
+    const auto &existingAsset = std::get<RoutedAsset>(existingDecision);
+    QCOMPARE(missingAsset.kind(), existingAsset.kind());
+    QCOMPARE(missingAsset.executionMode(), existingAsset.executionMode());
+    QVERIFY(missingAsset.executionPath() == existingAsset.executionPath());
+    QVERIFY(existingAsset.operations().contains(AssetOperation::Optimization));
+
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), QByteArray("arbitrary non-DDS contents"));
 }
 
 QTEST_APPLESS_MAIN(AssetRoutingTests)
