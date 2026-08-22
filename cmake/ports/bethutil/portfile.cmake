@@ -7,8 +7,6 @@ vcpkg_from_github(
     HEAD_REF main
 )
 
-set(SOURCE_PATH "C:/IT/Code_perso/bethutil")
-
 vcpkg_cmake_configure(
 	SOURCE_PATH "${SOURCE_PATH}"
 	OPTIONS

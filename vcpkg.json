@@ -1,10 +1,13 @@
 {
   "name": "cao",
   "version-string": "1",
+  "builtin-baseline": "127402f1c75bb3d5ff6bce04b285faa4930a5aca",
   "dependencies": [
     "bethutil",
-	"directxtex",
-	"nifly",
-	"plog"
+    "directxtex",
+    "nifly",
+    "plog",
+    "qt5-base",
+    "qt5-tools"
   ]
 }

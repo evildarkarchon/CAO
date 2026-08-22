@@ -10,6 +10,8 @@ Make the optimization run a deep module whose interface hides construction-time 
 
 - `src/Manager.cpp:7-32` performs logger setup, validation, ignored-mod reads, directory discovery, and file discovery in the constructor.
 - `src/Manager.cpp:120-178` owns extract, rescan, optimize, pack, cleanup, progress, cancellation checks, and completion emission.
+- `src/BsaOptimizer.cpp:48` invokes the pinned `bethutil` extraction with overwrite disabled; that implementation skips an archive entry when its destination exists, preserving Loose Asset precedence.
+- Archives are extracted in an unsorted `QDirIterator` order (`src/Manager.cpp:72-103,128-139`). When two Archives contain the same game path and no Loose Asset exists, the first extracted entry wins and later entries are skipped.
 - `src/MainWindow.cpp:272-312` must construct the manager, connect signals, start a log timer, launch `runOptimization` through `QtConcurrent`, then cancel and disconnect it.
 - `src/Manager.h:52-82` holds mutable counters and work lists, retains options by reference, contains a raw `QSettings*`, and uses a plain boolean for cross-thread cancellation.
 - GUI and CLI are two real adapters at this seam, but `src/main.cpp:46` attempts a `Manager(QStringList)` construction not declared in `src/Manager.h`.
@@ -31,6 +33,7 @@ Make the optimization run a deep module whose interface hides construction-time 
 - Give construction no surprising filesystem or logger side effects.
 - Make terminal outcomes explicit, including cancellation and failure.
 - Concentrate progress accounting and cancellation semantics inside the run module.
+- Preserve Loose Assets when an Archived Asset has the same game path.
 - Test a run through observable progress and terminal results, not widget or thread choreography.
 
 ## Grilling Start
@@ -42,6 +45,7 @@ Begin with these prerequisite decisions:
 3. Which terminal outcomes must be distinct: completed, cancelled, partially completed, and failed?
 4. Is progress defined by discovered files, completed operations, weighted work, or named phases?
 5. Which cleanup must occur after cancellation or failure?
+6. What stable precedence, if any, should apply when two Archives contain the same game path?
 
 Use the `grilling` skill for the full decision tree. Use `domain-modeling` to capture only project-specific run terms once resolved; record an ADR only if a hard-to-reverse concurrency trade-off meets the ADR threshold.
 
