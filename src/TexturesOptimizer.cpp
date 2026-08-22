@@ -357,10 +357,10 @@ bool TexturesOptimizer::open(const void *pSource, const size_t &size, const Text
 
     switch (type)
     {
-    case TGA: return LoadFromTGAMemory(pSource, size, &_info, *_image);
+    case TGA: return LoadFromTGAMemory(static_cast<const uint8_t *>(pSource), size, &_info, *_image);
     case DDS:
         const auto ddsFlags = DirectX::DDS_FLAGS_NONE;
-        const HRESULT hr = LoadFromDDSMemory(pSource, size, ddsFlags, &_info, *_image);
+        const HRESULT hr = LoadFromDDSMemory(static_cast<const uint8_t *>(pSource), size, ddsFlags, &_info, *_image);
         if (FAILED(hr))
             return false;
 
