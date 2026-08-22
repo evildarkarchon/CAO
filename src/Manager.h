@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
+#include "AssetRouting/AssetRouter.h"
 #include "MainOptimizer.h"
 #include "pch.h"
 
@@ -12,9 +13,11 @@ class Manager final : public QObject
   Q_OBJECT
 public:
   /*!
-   * \brief Constructor that will perform a number of functions
+   * \brief Creates a run and performs discovery only after routing setup has succeeded.
+   * \param opt Application options whose lifetime must exceed this Manager.
+   * \param routingPolicy Immutable validated policy retained for the entire run.
    */
-  explicit Manager(const OptionsCAO& opt);
+  Manager(const OptionsCAO &opt, cao::routing::RoutingPolicy routingPolicy);
   /*!
    * \brief The main process
    */
@@ -58,6 +61,10 @@ public:
    * \brief The optimization options, that will be given to the MainOptimizer
    */
   const OptionsCAO& _options;
+  /*!
+   * \brief The immutable policy retained for the routing cutover later in this run.
+   */
+  const cao::routing::RoutingPolicy _routingPolicy;
   /*!
    * \brief The list of directories to process
    */

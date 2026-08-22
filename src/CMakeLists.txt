@@ -16,9 +16,9 @@ find_package(Qt5 COMPONENTS Core Widgets REQUIRED)
 #Qt Linguist
 find_package(Qt5LinguistTools REQUIRED)
 
-#Setting GUI
-#Set this to false to create a CLI version instead (untested)
-set(GUI true)
+# Build either the desktop GUI or the command-line application from the same run-setup path.
+option(CAO_BUILD_GUI "Build the Qt desktop GUI instead of the command-line application" ON)
+set(GUI ${CAO_BUILD_GUI})
 
 #SOURCES
 
@@ -42,6 +42,8 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/PluginsOperations.h
     ${CMAKE_CURRENT_SOURCE_DIR}/Profiles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Profiles.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/Run/ApplicationRunSetup.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Run/ApplicationRunSetup.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesFormats.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesOptimizer.h
@@ -80,8 +82,10 @@ set(TS_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/translations/AssetsOpt_zh_CN.ts
     )
 
-message("Updating translations files")
-qt5_create_translation(QM_FILES ${TS_FILES} ${SOURCES})
+if(GUI)
+    message("Updating translations files")
+    qt5_create_translation(QM_FILES ${TS_FILES} ${SOURCES})
+endif()
 
 #plog
 message("Adding Plog library")
@@ -112,13 +116,18 @@ set(CMAKE_AUTORCC ON)
 
 #Build
 message("Adding CAO.exe")
-add_executable(Cathedral_Assets_Optimizer WIN32 ${SOURCES} ${RESOURCES} ${QM_FILES})
-target_compile_definitions(Cathedral_Assets_Optimizer PRIVATE GUI)
+if(GUI)
+    add_executable(Cathedral_Assets_Optimizer WIN32 ${SOURCES} ${RESOURCES} ${QM_FILES})
+    target_compile_definitions(Cathedral_Assets_Optimizer PRIVATE GUI)
+else()
+    add_executable(Cathedral_Assets_Optimizer ${SOURCES} ${RESOURCES} ${QM_FILES})
+endif()
 #Windows 7 compatibility
 target_link_libraries(Cathedral_Assets_Optimizer PRIVATE
     cao_asset_execution
     cao_asset_routing
     cao_run_discovery
+    cao_run_setup
     cao_mesh_reference_maintenance
     Qt5::Core Qt5::Widgets
     nifly Microsoft::DirectXTex btu::bethutil)

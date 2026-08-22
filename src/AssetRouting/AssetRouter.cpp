@@ -216,6 +216,18 @@ namespace cao::routing
 RunRequest RunRequest::forWork(const ExecutionMode mode,
                                const std::initializer_list<RequestedWork> work) noexcept
 {
+    return fromWork(mode, work);
+}
+
+RunRequest RunRequest::forWork(const ExecutionMode mode,
+                               const std::vector<RequestedWork> &work) noexcept
+{
+    return fromWork(mode, work);
+}
+
+RunRequest RunRequest::fromWork(const ExecutionMode mode,
+                                const std::span<const RequestedWork> work) noexcept
+{
     auto request = RunRequest();
     request._executionMode = mode;
     for (const auto choice : work)
@@ -234,18 +246,34 @@ ProfileCapabilities ProfileCapabilities::define(
     std::string archiveExtension,
     const std::initializer_list<ProfileCapability> capabilities)
 {
-    auto profile = ProfileCapabilities();
-    profile._archiveExtension = std::move(archiveExtension);
-    for (const auto capability : capabilities)
-        include(profile._capabilities, capability);
+    return fromDefinition(std::move(archiveExtension), capabilities);
+}
 
-    return profile;
+ProfileCapabilities ProfileCapabilities::define(
+    std::string archiveExtension,
+    const std::vector<ProfileCapability> &capabilities)
+{
+    return fromDefinition(std::move(archiveExtension), capabilities);
 }
 
 ProfileCapabilities ProfileCapabilities::withoutArchiveExtension(
     const std::initializer_list<ProfileCapability> capabilities) noexcept
 {
+    return fromDefinition(std::nullopt, capabilities);
+}
+
+ProfileCapabilities ProfileCapabilities::withoutArchiveExtension(
+    const std::vector<ProfileCapability> &capabilities) noexcept
+{
+    return fromDefinition(std::nullopt, capabilities);
+}
+
+ProfileCapabilities ProfileCapabilities::fromDefinition(
+    std::optional<std::string> archiveExtension,
+    const std::span<const ProfileCapability> capabilities) noexcept
+{
     auto profile = ProfileCapabilities();
+    profile._archiveExtension = std::move(archiveExtension);
     for (const auto capability : capabilities)
         include(profile._capabilities, capability);
 

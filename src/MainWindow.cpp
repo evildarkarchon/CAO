@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "MainWindow.h"
+#include "Run/ApplicationRunSetup.h"
 
 MainWindow::MainWindow() : _ui(new Ui::MainWindow)
 {
@@ -272,12 +273,23 @@ void MainWindow::setDarkTheme(const bool &enabled)
 void MainWindow::initProcess()
 {
     saveUi();
+
+    const auto setup = cao::run::prepareApplicationRun(_options);
+    if (!setup.hasPolicy()) {
+        const auto messages = cao::run::policyValidationErrorMessages(setup.errors());
+        QMessageBox::critical(this,
+                              tr("Invalid run setup"),
+                              tr("The run cannot start until these conflicts are corrected:\n\n")
+                                  + messages.join('\n'));
+        return;
+    }
+
     _ui->processButton->setDisabled(true);
     _bLockVariables = true;
 
     try {
         _caoProcess.reset();
-        _caoProcess = std::make_unique<Manager>(_options);
+        _caoProcess = std::make_unique<Manager>(_options, *setup.policy());
         connect(&*_caoProcess, &Manager::progressBarTextChanged, this, &MainWindow::readProgress);
         connect(&logTimer, &QTimer::timeout, this, &MainWindow::updateLog);
         logTimer.start(5000); // Refresh log every 5 seconds

@@ -119,6 +119,10 @@ public:
     [[nodiscard]] static RunRequest forWork(ExecutionMode mode,
                                             std::initializer_list<RequestedWork> work) noexcept;
 
+    /// Owns a dynamically adapted sequence of closed work choices for the selected execution mode.
+    [[nodiscard]] static RunRequest forWork(ExecutionMode mode,
+                                            const std::vector<RequestedWork> &work) noexcept;
+
     /// Produces the tracer's dedicated request for native Texture optimization.
     [[nodiscard]] static RunRequest optimizeNativeTextures() noexcept;
 
@@ -126,6 +130,10 @@ private:
     friend class RoutingPolicy;
 
     RunRequest() = default;
+
+    /// Copies a borrowed sequence of closed choices into one dedicated request value.
+    [[nodiscard]] static RunRequest fromWork(ExecutionMode mode,
+                                             std::span<const RequestedWork> work) noexcept;
 
     ExecutionMode _executionMode{ExecutionMode::Apply};
     std::array<bool, 6> _work{};
@@ -140,14 +148,28 @@ public:
         std::string archiveExtension,
         std::initializer_list<ProfileCapability> capabilities);
 
+    /// Owns one raw Archive extension and a dynamically adapted sequence of closed capabilities.
+    [[nodiscard]] static ProfileCapabilities define(
+        std::string archiveExtension,
+        const std::vector<ProfileCapability> &capabilities);
+
     /// Omits the Archive extension while retaining supplied capabilities so compilation can report it as invalid.
     [[nodiscard]] static ProfileCapabilities withoutArchiveExtension(
         std::initializer_list<ProfileCapability> capabilities = {}) noexcept;
+
+    /// Omits the Archive extension while owning a dynamically adapted sequence of closed capabilities.
+    [[nodiscard]] static ProfileCapabilities withoutArchiveExtension(
+        const std::vector<ProfileCapability> &capabilities) noexcept;
 
 private:
     friend class RoutingPolicy;
 
     ProfileCapabilities() = default;
+
+    /// Copies a borrowed capability sequence and optional Archive extension into one dedicated value.
+    [[nodiscard]] static ProfileCapabilities fromDefinition(
+        std::optional<std::string> archiveExtension,
+        std::span<const ProfileCapability> capabilities) noexcept;
 
     std::optional<std::string> _archiveExtension;
     std::array<bool, 7> _capabilities{};

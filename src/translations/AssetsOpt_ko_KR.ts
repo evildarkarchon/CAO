@@ -576,6 +576,16 @@ Mozilla Public License를 참조하십시오.</translation>
         <source>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Recommended&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:400;&quot;&gt;Mipmaps are smaller copies of textures embedded in the same file which get used when things are small or far away and a pixel on screen covers several pixels in the texture. &lt;/span&gt;&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:400;&quot;&gt;They improve visual quality with a small performance cost.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
         <translation type="unfinished"></translation>
     </message>
+    <message>
+        <source>Invalid run setup</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>The run cannot start until these conflicts are corrected:
+
+</source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>TexturesFormatSelectDialog</name>

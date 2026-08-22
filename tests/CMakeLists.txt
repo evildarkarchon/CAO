@@ -52,3 +52,16 @@ target_link_libraries(cao_archive_first_asset_discovery_tests PRIVATE
 set_target_properties(cao_archive_first_asset_discovery_tests PROPERTIES AUTOMOC ON)
 
 add_test(NAME cao_archive_first_asset_discovery_tests COMMAND cao_archive_first_asset_discovery_tests)
+
+add_executable(cao_run_setup_tests
+    RunSetupTests.cpp
+)
+
+target_link_libraries(cao_run_setup_tests PRIVATE
+    Qt5::Test
+    cao_run_setup
+)
+
+set_target_properties(cao_run_setup_tests PROPERTIES AUTOMOC ON)
+
+add_test(NAME cao_run_setup_tests COMMAND cao_run_setup_tests)

@@ -4,8 +4,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #include "Manager.h"
 
-Manager::Manager(const OptionsCAO& opt)
+Manager::Manager(const OptionsCAO &opt, cao::routing::RoutingPolicy routingPolicy)
   : _options(opt)
+  , _routingPolicy(std::move(routingPolicy))
 
 {
     init();

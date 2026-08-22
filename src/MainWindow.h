@@ -41,6 +41,7 @@ private:
     void showTutorialWindow(const QString &title, const QString &text);
 
     void updateLog() const;
+    /// Compiles and validates one Routing Policy before constructing the discovery-owning Manager.
     void initProcess();
     void endProcess();
     void readProgress(const QString &text, const int &max, const int &value) const;

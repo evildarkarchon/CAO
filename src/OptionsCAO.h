@@ -6,7 +6,9 @@
 
 #include "Profiles.h"
 #include "pch.h"
+#ifdef GUI
 #include "ui_mainWindow.h"
+#endif
 
 /*
 namespace plog

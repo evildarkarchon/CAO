@@ -8,6 +8,7 @@
 #include "MainWindow.h"
 #endif
 #include "Manager.h"
+#include "Run/ApplicationRunSetup.h"
 
 void displayError(const std::string &err)
 {
@@ -40,17 +41,22 @@ int main(int argc, char *argv[])
     qtTranslator.load(QLocale(), "AssetsOpt", "_", "translations");
     QCoreApplication::installTranslator(&AssetsOptTranslator);
 
-#ifdef GUI
-    MainWindow *window = new MainWindow;
-#else
-    Manager *manager = new Manager(QCoreApplication::arguments());
-#endif
-
     try {
 #ifdef GUI
+        MainWindow *window = new MainWindow;
         window->show();
 #else
-        manager->runOptimization();
+        OptionsCAO options;
+        options.parseArguments(QCoreApplication::arguments());
+        const auto setup = cao::run::prepareApplicationRun(options);
+        if (!setup.hasPolicy()) {
+            for (const auto &message : cao::run::policyValidationErrorMessages(setup.errors()))
+                std::cerr << message.toStdString() << std::endl;
+            return 1;
+        }
+
+        Manager manager(options, *setup.policy());
+        manager.runOptimization();
 #endif
     } catch (const std::exception &e) {
         displayError(e.what());
