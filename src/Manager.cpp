@@ -38,9 +38,6 @@ Manager::Manager(const OptionsCAO &opt, cao::routing::RoutingPolicy routingPolic
 
 void Manager::init()
 {
-    //Preparing logging
-    initCustomLogger(Profiles::logPath(), _options.bDebugLog);
-
     PLOG_VERBOSE << "Checking settings...";
     const QString error = _options.isValid();
     if (!error.isEmpty())

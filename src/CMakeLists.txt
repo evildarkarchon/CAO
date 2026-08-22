@@ -89,8 +89,19 @@ endif()
 
 #plog
 message("Adding Plog library")
-find_path(PLOG_INCLUDE_DIRS "plog/Appenders/AndroidAppender.h")
 add_compile_definitions(PLOG_OMIT_PLOG_DEFINES)
+
+add_library(cao_application_logging
+    ${CMAKE_CURRENT_SOURCE_DIR}/ApplicationLogging.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ApplicationLogging.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/Logger.h
+)
+target_link_libraries(cao_application_logging PRIVATE Qt5::Core plog::plog)
+target_include_directories(cao_application_logging
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_features(cao_application_logging PUBLIC cxx_std_20)
+
 #bsa
 find_package(bethutil CONFIG REQUIRED)
 #Nif Library
@@ -124,6 +135,7 @@ else()
 endif()
 #Windows 7 compatibility
 target_link_libraries(Cathedral_Assets_Optimizer PRIVATE
+    cao_application_logging
     cao_asset_execution
     cao_asset_routing
     cao_asset_run
@@ -131,8 +143,7 @@ target_link_libraries(Cathedral_Assets_Optimizer PRIVATE
     cao_run_setup
     cao_mesh_reference_maintenance
     Qt5::Core Qt5::Widgets
-    nifly Microsoft::DirectXTex btu::bethutil)
-target_include_directories(Cathedral_Assets_Optimizer PRIVATE ${PLOG_INCLUDE_DIRS})
+    nifly Microsoft::DirectXTex btu::bethutil plog::plog)
 
 # PCH
 target_precompile_headers(Cathedral_Assets_Optimizer PRIVATE "pch.h")

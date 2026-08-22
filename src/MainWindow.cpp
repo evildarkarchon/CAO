@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "MainWindow.h"
+#include "ApplicationLogging.h"
 #include "Run/ApplicationRunSetup.h"
 
 MainWindow::MainWindow() : _ui(new Ui::MainWindow)
@@ -134,7 +135,8 @@ MainWindow::MainWindow() : _ui(new Ui::MainWindow)
         });
 
         connect(_ui->actionOpen_log_file, &QAction::triggered, this, [] {
-            QDesktopServices::openUrl(QUrl("file:///" + Profiles::logPath(), QUrl::TolerantMode));
+            QDesktopServices::openUrl(
+                QUrl("file:///" + cao::application::configuredLogPath(), QUrl::TolerantMode));
         });
 
         connect(_ui->actionAbout, &QAction::triggered, this, [&] {
@@ -325,7 +327,7 @@ void MainWindow::endProcess()
 
 void MainWindow::updateLog() const
 {
-    QFile log(Profiles::logPath());
+    QFile log(cao::application::configuredLogPath());
     if (log.open(QFile::Text | QFile::ReadOnly)) {
         _ui->logTextEdit->clear();
         QTextStream ts(&log);

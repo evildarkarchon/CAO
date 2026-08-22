@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "Version.h"
+#include "ApplicationLogging.h"
 #ifdef GUI
 #include "MainWindow.h"
 #endif
@@ -42,12 +43,18 @@ int main(int argc, char *argv[])
     QCoreApplication::installTranslator(&AssetsOptTranslator);
 
     try {
+        OptionsCAO options;
+#ifdef GUI
+        options.readFromIni(Profiles::optionsSettings());
+#else
+        options.parseArguments(QCoreApplication::arguments());
+#endif
+        cao::application::configureLogging(Profiles::logPath(), options.bDebugLog);
+
 #ifdef GUI
         MainWindow *window = new MainWindow;
         window->show();
 #else
-        OptionsCAO options;
-        options.parseArguments(QCoreApplication::arguments());
         const auto setup = cao::run::prepareApplicationRun(options);
         if (!setup.hasPolicy()) {
             for (const auto &message : cao::run::policyValidationErrorMessages(setup.errors()))

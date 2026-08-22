@@ -78,3 +78,17 @@ target_link_libraries(cao_run_setup_tests PRIVATE
 set_target_properties(cao_run_setup_tests PROPERTIES AUTOMOC ON)
 
 add_test(NAME cao_run_setup_tests COMMAND cao_run_setup_tests)
+
+add_executable(cao_application_logging_tests
+    ApplicationLoggingTests.cpp
+)
+
+target_link_libraries(cao_application_logging_tests PRIVATE
+    Qt5::Test
+    cao_application_logging
+    plog::plog
+)
+
+set_target_properties(cao_application_logging_tests PROPERTIES AUTOMOC ON)
+
+add_test(NAME cao_application_logging_tests COMMAND cao_application_logging_tests)

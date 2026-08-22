@@ -6,11 +6,14 @@
 /* Custom functions for plog */
 
 #pragma once
-#include "pch.h"
 
 #include <plog/Appenders/RollingFileAppender.h>
-#include <plog/Initializers/RollingFileInitializer.h>
 #include <plog/Log.h>
+
+#include <ctime>
+#include <iomanip>
+#include <sstream>
+#include <string>
 
 namespace plog {
 class CustomDebugFormatter
@@ -109,33 +112,3 @@ public:
     }
 };
 } // namespace plog
-
-inline void initCustomLogger(const QString &logPath, bool debugLog)
-{
-    //Cancelling if logger is already ready
-    if (plog::get())
-        return;
-
-    //Creating log folder
-    const QDir dir;
-    dir.mkpath(QFileInfo(logPath).path());
-
-    //Creating log file
-    QFile file(logPath);
-
-    if (!file.open(QFile::ReadWrite | QFile::Append))
-        throw std::runtime_error("Cannot open log file: " + logPath.toStdString());
-
-    static plog::RollingFileAppender<plog::CustomDebugFormatter> debugAppender(qPrintable(logPath),
-                                                                               250'000,
-                                                                               1'000);
-
-    static plog::RollingFileAppender<plog::CustomInfoFormatter> infoAppender(qPrintable(logPath),
-                                                                             250'000,
-                                                                             1'000);
-
-    if (debugLog)
-        plog::init(plog::Severity::verbose, &debugAppender);
-    else
-        plog::init(plog::Severity::info, &infoAppender);
-}

@@ -4,6 +4,8 @@ project(Cathedral_Assets_Optimizer VERSION 5.3.14 LANGUAGES CXX)
 
 include(CTest)
 
+find_package(plog CONFIG REQUIRED)
+
 add_subdirectory(src)
 
 if(BUILD_TESTING)
