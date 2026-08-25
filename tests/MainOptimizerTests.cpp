@@ -1,13 +1,18 @@
 #include "MainOptimizer.h"
 #include "AssetRouting/AssetRouter.h"
 
+#include <nifly/BasicTypes.hpp>
+#include <nifly/NifFile.hpp>
+
 #include <QTemporaryDir>
 #include <QTest>
 
 #include <array>
 #include <filesystem>
 #include <stdexcept>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -70,6 +75,55 @@ RoutedAsset routeAsset(const std::filesystem::path &path,
     return std::get<RoutedAsset>(std::move(decision));
 }
 
+/// Routes one input through a policy carrying conversion and its derived Mesh Reference
+/// Maintenance, but no ordinary Mesh optimization, so only the dependent rewrite can save a Mesh.
+RoutedAsset routeMaintenanceOnly(const std::filesystem::path &path)
+{
+    const auto policyResult = RoutingPolicy::compile(
+        RoutingPolicyRequest::forWork(ExecutionMode::Apply,
+                            {RequestedWork::ConvertibleTextureConversion}),
+        ProfileCapabilities::define(".bsa",
+                                    {ProfileCapability::ConvertibleTextureConversion,
+                                     ProfileCapability::MeshReferenceMaintenance}));
+    if (!policyResult.hasPolicy())
+        throw std::runtime_error("Test maintenance-only Routing Policy failed to compile.");
+
+    const AssetRouter router(*policyResult.policy());
+    auto decision = router.route(path);
+    if (!std::holds_alternative<RoutedAsset>(decision))
+        throw std::runtime_error("Maintenance-only test Asset unexpectedly failed to route.");
+    return std::get<RoutedAsset>(std::move(decision));
+}
+
+/// Writes a minimal SSE Mesh whose single Texture slot references the supplied name.
+void writeMeshWithTexture(const std::filesystem::path &path, const std::string &texturePath)
+{
+    QVERIFY(QDir().mkpath(QString::fromStdWString(path.parent_path().wstring())));
+
+    nifly::NifFile mesh;
+    mesh.Create(nifly::NiVersion::getSSE());
+    std::vector<nifly::Vector3> vertices{{0.0F, 0.0F, 0.0F},
+                                         {1.0F, 0.0F, 0.0F},
+                                         {0.0F, 1.0F, 0.0F}};
+    std::vector<nifly::Triangle> triangles{{0, 1, 2}};
+    auto *shape = mesh.CreateShapeFromData("TestShape", &vertices, &triangles, nullptr);
+    auto mutableTexturePath = texturePath;
+    mesh.SetTextureSlot(shape, mutableTexturePath);
+    QCOMPARE(mesh.Save(path.u16string()), 0);
+}
+
+/// Reads the first Texture slot back from a saved Mesh.
+std::string savedTextureSlot(const std::filesystem::path &path)
+{
+    nifly::NifFile mesh;
+    if (mesh.Load(path.u16string()) != 0)
+        throw std::runtime_error("The saved test Mesh could not be reloaded.");
+
+    std::string texturePath;
+    mesh.GetTextureSlot(mesh.GetShapes().front(), texturePath);
+    return texturePath;
+}
+
 /// Writes one test fixture after creating its parent directory.
 void writeFile(const std::filesystem::path &path, const QByteArray &contents)
 {
@@ -93,6 +147,12 @@ private slots:
 
     /// Verifies reporting a malformed input never mutates a Dry Run tree.
     void dryRunLoadFailureDoesNotQuarantine();
+
+    /// Verifies a failed Texture conversion withholds the dependent referenced-TGA rewrite.
+    void failedConversionSuppressesMeshReferenceMaintenance();
+
+    /// Verifies the referenced-TGA rewrite still applies when no conversion failed.
+    void successfulRunStillMaintainsMeshReferences();
 
 private:
     QTemporaryDir _temporaryDirectory;
@@ -175,6 +235,58 @@ void MainOptimizerTests::dryRunLoadFailureDoesNotQuarantine()
     QCOMPARE(result.failure().value(), AssetExecutionFailure::LoadFailed);
     QVERIFY(std::filesystem::is_regular_file(malformedTexture));
     QVERIFY(!std::filesystem::exists(malformedTexture.wstring() + L".caobad"));
+}
+
+void MainOptimizerTests::failedConversionSuppressesMeshReferenceMaintenance()
+{
+    QVERIFY(_temporaryDirectory.isValid());
+
+    const ScopedCurrentDirectory isolatedWorkingDirectory(_temporaryDirectory.path());
+
+    const auto root = std::filesystem::path(_temporaryDirectory.path().toStdWString());
+    const auto malformedTexture = root / "suppressed-conversion.tga";
+    const auto mesh = root / "suppressed-reference.nif";
+    writeFile(malformedTexture, QByteArrayLiteral("malformed"));
+    writeMeshWithTexture(mesh, "textures\\armor\\body.tga");
+
+    OptionsCAO options;
+    options.mode = OptionsCAO::SingleMod;
+    options.userPath = _temporaryDirectory.path();
+    MainOptimizer optimizer(options);
+
+    // Asset Run always completes the Texture target first, so the conversion failure is already
+    // definitive when the Mesh is executed.
+    const auto conversion = optimizer.process(routeMaintenanceOnly(malformedTexture));
+    QVERIFY(!conversion.succeeded());
+    QCOMPARE(conversion.failure().value(), AssetExecutionFailure::LoadFailed);
+
+    const auto maintenance = optimizer.process(routeMaintenanceOnly(mesh));
+
+    // The Mesh itself is intact, so the run continues; only the rewrite that would point at a
+    // never-produced DDS is withheld.
+    QVERIFY(maintenance.succeeded());
+    QCOMPARE(savedTextureSlot(mesh), std::string("textures\\armor\\body.tga"));
+}
+
+void MainOptimizerTests::successfulRunStillMaintainsMeshReferences()
+{
+    QVERIFY(_temporaryDirectory.isValid());
+
+    const ScopedCurrentDirectory isolatedWorkingDirectory(_temporaryDirectory.path());
+
+    const auto root = std::filesystem::path(_temporaryDirectory.path().toStdWString());
+    const auto mesh = root / "maintained-reference.nif";
+    writeMeshWithTexture(mesh, "textures\\armor\\body.tga");
+
+    OptionsCAO options;
+    options.mode = OptionsCAO::SingleMod;
+    options.userPath = _temporaryDirectory.path();
+    MainOptimizer optimizer(options);
+
+    const auto maintenance = optimizer.process(routeMaintenanceOnly(mesh));
+
+    QVERIFY(maintenance.succeeded());
+    QCOMPARE(savedTextureSlot(mesh), std::string("textures\\armor\\body.dds"));
 }
 
 QTEST_APPLESS_MAIN(MainOptimizerTests)

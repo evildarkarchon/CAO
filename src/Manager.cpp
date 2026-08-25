@@ -108,6 +108,9 @@ void Manager::runOptimization() {
                                      _options.bBsaDeleteBackup);
             },
             [&](const cao::routing::RoutedAsset& asset) {
+                // MainOptimizer owns the outcome: it quarantines unreadable inputs and records
+                // failed Texture conversions so the later Mesh phase withholds the dependent
+                // reference rewrite. The run itself continues past a single failed Asset.
                 static_cast<void>(optimizer.process(asset));
             },
             [&](const cao::run::AssetRunProgress& progress) {
@@ -132,8 +135,9 @@ void Manager::runOptimization() {
                 _numberCompletedFiles = 0;
                 printProgress(_modsToProcess.size(), "Packing BSAs");
 
-                // Packing BSAs
-                if (_options.bBsaCreate)
+                // Packing BSAs. The compiled policy, not the raw option, is the run authority:
+                // it already rejected Archive creation the selected profile does not support.
+                if (_routingPolicy.requests(cao::routing::RequestedWork::ArchiveCreation))
                     for (const auto& folder : _modsToProcess) {
                         if (_isCancelled) return false;
 

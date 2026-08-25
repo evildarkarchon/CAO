@@ -210,6 +210,9 @@ private slots:
 
     /// Verifies cancellation during the final Archive also skips definitive discovery.
     void finalArchiveCancellationSkipsDefinitiveDiscovery();
+
+    /// Verifies cancellation raised during the final Asset skips diagnostics and finalization.
+    void cancellationDuringFinalAssetSkipsFinalization();
 };
 
 void AssetRunTests::archiveExtractionPrecedesDefinitiveRoutedExecution()
@@ -667,6 +670,44 @@ void AssetRunTests::finalArchiveCancellationSkipsDefinitiveDiscovery()
     QVERIFY(result.cancelled());
     QCOMPARE(extractionAttempts, std::size_t{1});
     QVERIFY(result.ledger().routedAssets().empty());
+}
+
+void AssetRunTests::cancellationDuringFinalAssetSkipsFinalization()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+
+    const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString());
+    const std::array paths{root / "textures" / "first.dds",
+                           root / "textures" / "second.dds"};
+    for (const auto &path : paths)
+        writeFile(path);
+
+    std::size_t attempts = 0;
+    bool finalized = false;
+    bool reportedDiagnostics = false;
+    const AssetRun run(allLooseTargetsPolicy());
+    const auto result = run.execute(
+        paths,
+        AssetRunAdapters{
+            [](const cao::routing::RoutedAsset &) {
+                qFatal("No Archive should be selected in the final-Asset cancellation test");
+            },
+            [&](const cao::routing::RoutedAsset &) { ++attempts; },
+            {},
+            // Cancellation only becomes observable once the last attempt has completed, which is
+            // the case no loop head can catch.
+            [&] { return attempts == paths.size(); },
+            [&] {
+                finalized = true;
+                return true;
+            },
+            [&](const cao::run::AssetRunDiagnostics &) { reportedDiagnostics = true; }});
+
+    QVERIFY(result.cancelled());
+    QCOMPARE(attempts, paths.size());
+    QVERIFY(!finalized);
+    QVERIFY(!reportedDiagnostics);
 }
 
 QTEST_MAIN(AssetRunTests)

@@ -254,6 +254,18 @@ void MainWindow::setDarkTheme(const bool& enabled) {
 void MainWindow::initProcess() {
     saveUi();
 
+    // saveUi() has just settled the profile and the debug-log toggle, so the run's log destination
+    // and severity are only definitive from here on. This is a slot, so the redirect cannot be
+    // allowed to escape as an exception.
+    try {
+        cao::application::applyRunLogging(Profiles::logPath(), _options.bDebugLog);
+    } catch (const std::exception& e) {
+        QMessageBox::critical(
+            this, tr("Error"),
+            tr("The log file for this run could not be opened: ") + QString(e.what()));
+        return;
+    }
+
     const auto setup = cao::run::prepareApplicationRun(_options);
     if (!setup.hasPolicy()) {
         const auto messages = cao::run::policyValidationErrorMessages(setup.errors());

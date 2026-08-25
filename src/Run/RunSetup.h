@@ -15,6 +15,7 @@ struct ApplicationRunChoices final {
     bool optimizeTerrainMeshes{};
     bool optimizeAnimations{};
     bool extractArchives{};
+    bool createArchives{};
 };
 
 /// Selected-profile facts adapted without exposing the profile singleton to AssetRouting.
@@ -27,6 +28,7 @@ struct SelectedProfileFacts final {
     bool supportsAnimationOptimization{};
     bool supportsArchiveExtraction{};
     bool supportsMeshReferenceMaintenance{};
+    bool supportsArchiveCreation{};
 };
 
 /// Compiles application and selected-profile facts into one immutable Routing Policy outcome.

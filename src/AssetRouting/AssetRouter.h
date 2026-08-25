@@ -57,7 +57,10 @@ enum class RequestedWork {
     StandardMeshOptimization,
     TerrainMeshOptimization,
     AnimationOptimization,
-    ArchiveExtraction
+    ArchiveExtraction,
+    // Archive creation is a run finalization choice, not a per-Asset Routing Decision, but it is
+    // carried here so one compiled policy validates it against the selected profile.
+    ArchiveCreation
 };
 
 /// Closed game-profile capabilities understood by Routing Policy compilation.
@@ -68,7 +71,8 @@ enum class ProfileCapability {
     TerrainMeshOptimization,
     AnimationOptimization,
     ArchiveExtraction,
-    MeshReferenceMaintenance
+    MeshReferenceMaintenance,
+    ArchiveCreation
 };
 
 /// The execution mode and closed requested work from which one Routing Policy is compiled.
@@ -98,7 +102,7 @@ class RoutingPolicyRequest final {
         ExecutionMode mode, std::span<const RequestedWork> work) noexcept;
 
     ExecutionMode _executionMode{ExecutionMode::Apply};
-    std::array<bool, 6> _work{};
+    std::array<bool, 7> _work{};
 };
 
 /// Dedicated Profile Capability facts used to validate a Routing Policy Request.
@@ -134,7 +138,7 @@ class ProfileCapabilities final {
         std::span<const ProfileCapability> capabilities) noexcept;
 
     std::optional<std::string> _archiveExtension;
-    std::array<bool, 7> _capabilities{};
+    std::array<bool, 8> _capabilities{};
 };
 
 enum class MalformedArchiveExtensionReason { MissingLeadingPeriod, EmptySuffix, InvalidCharacter };
@@ -207,11 +211,11 @@ class RoutingPolicy final {
 
     /// Owns already-validated compiled facts, including the normalized Archive extension, for one
     /// immutable run.
-    RoutingPolicy(ExecutionMode executionMode, std::array<bool, 6> work,
+    RoutingPolicy(ExecutionMode executionMode, std::array<bool, 7> work,
                   bool meshReferenceMaintenance, std::string archiveExtension);
 
     const ExecutionMode _executionMode;
-    const std::array<bool, 6> _work;
+    const std::array<bool, 7> _work;
     const bool _meshReferenceMaintenance;
     const std::string _archiveExtension;
 };

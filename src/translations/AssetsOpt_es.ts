@@ -499,6 +499,10 @@ This program is distributed in the hope that it will be useful but WITHOUT ANY W
 </source>
         <translation type="unfinished"></translation>
     </message>
+    <message>
+        <source>The log file for this run could not be opened: </source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>TexturesFormatSelectDialog</name>

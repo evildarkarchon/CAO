@@ -581,6 +581,10 @@ G&apos;k制作
 </source>
         <translation type="unfinished"></translation>
     </message>
+    <message>
+        <source>The log file for this run could not be opened: </source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>TexturesFormatSelectDialog</name>

@@ -221,8 +221,21 @@ void OptionsCAO::readFromUi(Ui::MainWindow* ui) {
 }
 #endif
 
+namespace {
+/// Reads one unsigned command line dimension and rejects values Qt would silently coerce to zero.
+/// The ratio and size fields differ in width, so the caller widens the returned uint as needed.
+uint readDimension(const QCommandLineParser& parser, const QString& name) {
+    bool ok = false;
+    const auto value = parser.value(name).toUInt(&ok);
+    if (!ok) {
+        throw std::runtime_error("Invalid value for -" + name.toStdString() + ": '" +
+                                 parser.value(name).toStdString() + "'");
+    }
+    return value;
+}
+}  // namespace
+
 void OptionsCAO::parseArguments(const QStringList& args) {
-    if (args.count() < 4) throw std::runtime_error("Not enough arguments");
     QCommandLineParser parser;
 
     parser.addHelpOption();
@@ -245,12 +258,15 @@ void OptionsCAO::parseArguments(const QStringList& args) {
         {"t2", "Enables textures mipmaps generation"},
 
         {"trr", "Enables textures resizing by ratio"},
-        {"trrw", "The width ratio"},
-        {"trrh", "The height ratio"},
+        // These must declare a value name, otherwise QCommandLineParser treats them as boolean
+        // switches and parser.value() returns an empty string that converts to zero. A ratio
+        // default of 1 keeps --trr without explicit ratios a no-op instead of a division by zero.
+        {"trrw", "The width ratio", "value", "1"},
+        {"trrh", "The height ratio", "value", "1"},
 
         {"trs", "Enables textures resizing by fixed size"},
-        {"trsw", "The width size"},
-        {"trsh", "The height size"},
+        {"trsw", "The width size", "value", "0"},
+        {"trsh", "The height size", "value", "0"},
 
         {"a", "Enables animations processing"},
         {"mh", "Enables headparts detection and processing"},
@@ -264,12 +280,21 @@ void OptionsCAO::parseArguments(const QStringList& args) {
          settings "},*/
     });
 
+    // process() owns --help, --version, and malformed-option reporting, so positional validation
+    // has to run after it. Checking args.count() first would reject "--help" before Qt could print
+    // usage, and would accept three flag-only arguments that carry no positional value at all.
     parser.process(args);
 
-    const QString& path = QDir::cleanPath(parser.positionalArguments().at(0));
+    const QStringList positionalArguments = parser.positionalArguments();
+    if (positionalArguments.count() != 3) {
+        throw std::runtime_error(
+            "Expected exactly three positional arguments: folder, mode and profile.");
+    }
+
+    const QString& path = QDir::cleanPath(positionalArguments.at(0));
     userPath = path;
 
-    const QString readMode = parser.positionalArguments().at(1);
+    const QString readMode = positionalArguments.at(1);
     if (readMode == "om")
         mode = SingleMod;
     else if (readMode == "sm")
@@ -277,7 +302,12 @@ void OptionsCAO::parseArguments(const QStringList& args) {
     else
         throw std::runtime_error("Invalid argument for mode");
 
-    const QString& readGame = parser.positionalArguments().at(2);
+    // Profiles::loadProfile silently substitutes the default profile for an unknown name, which is
+    // the right behaviour for persisted GUI settings but would let a typo here process a mod with
+    // an entirely different game's texture, mesh, and archive settings.
+    const QString& readGame = positionalArguments.at(2);
+    if (!Profiles::exists(readGame))
+        throw std::runtime_error("This profile does not exist: " + readGame.toStdString());
     Profiles::setCurrentProfile(readGame);
 
     bDryRun = parser.isSet("dr");
@@ -292,12 +322,12 @@ void OptionsCAO::parseArguments(const QStringList& args) {
     bTexturesMipmaps = parser.isSet("t2");
 
     bTexturesResizeRatio = parser.isSet("trr");
-    iTexturesTargetWidthRatio = parser.value("trrw").toUInt();
-    iTexturesTargetHeightRatio = parser.value("trrh").toUInt();
+    iTexturesTargetWidthRatio = readDimension(parser, "trrw");
+    iTexturesTargetHeightRatio = readDimension(parser, "trrh");
 
     bTexturesResizeSize = parser.isSet("trs");
-    iTexturesTargetWidth = parser.value("trsw").toUInt();
-    iTexturesTargetHeight = parser.value("trsh").toUInt();
+    iTexturesTargetWidth = readDimension(parser, "trsw");
+    iTexturesTargetHeight = readDimension(parser, "trsh");
 
     bAnimationsOptimization = parser.isSet("a");
 
@@ -320,6 +350,14 @@ QString OptionsCAO::isValid() const {
 
     if (iTexturesTargetWidth % 2 != 0 || iTexturesTargetHeight % 2 != 0)
         return ("Textures target size has to be a power of two");
+
+    // A zero ratio divides the source dimensions in MainOptimizer::optimizeTexture, and a zero
+    // target size silently requests an empty texture, so both are rejected before a run starts.
+    if (bTexturesResizeRatio && (iTexturesTargetWidthRatio == 0 || iTexturesTargetHeightRatio == 0))
+        return "Textures resizing by ratio requires non-zero width and height ratios.";
+
+    if (bTexturesResizeSize && (iTexturesTargetWidth == 0 || iTexturesTargetHeight == 0))
+        return "Textures resizing by size requires non-zero width and height.";
 
     return QString();
 }

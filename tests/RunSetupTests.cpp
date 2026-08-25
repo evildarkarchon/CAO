@@ -50,6 +50,8 @@ private slots:
     void everyConflictVariantHasStructuredPresentation();
     /// Verifies the successfully compiled immutable policy can be copied into the later routing cutover.
     void validPolicyRemainsAvailableForLaterRouting();
+    /// Verifies requesting Archive creation under a profile without Archive support is rejected.
+    void unsupportedArchiveCreationIsRejected();
 };
 
 void RunSetupTests::validSetupCarriesEveryRequestedRoutingFact()
@@ -62,6 +64,7 @@ void RunSetupTests::validSetupCarriesEveryRequestedRoutingFact()
         .optimizeTerrainMeshes = true,
         .optimizeAnimations = true,
         .extractArchives = true,
+        .createArchives = true,
     };
     const SelectedProfileFacts profile{
         .archiveExtension = ".bsa",
@@ -72,6 +75,7 @@ void RunSetupTests::validSetupCarriesEveryRequestedRoutingFact()
         .supportsAnimationOptimization = true,
         .supportsArchiveExtraction = true,
         .supportsMeshReferenceMaintenance = true,
+        .supportsArchiveCreation = true,
     };
 
     const auto result = RunSetup::prepare(choices, profile);
@@ -86,6 +90,7 @@ void RunSetupTests::validSetupCarriesEveryRequestedRoutingFact()
     QVERIFY(policy->requests(RequestedWork::TerrainMeshOptimization));
     QVERIFY(policy->requests(RequestedWork::AnimationOptimization));
     QVERIFY(policy->requests(RequestedWork::ArchiveExtraction));
+    QVERIFY(policy->requests(RequestedWork::ArchiveCreation));
     QVERIFY(policy->maintainsMeshReferences());
 }
 
@@ -98,6 +103,7 @@ void RunSetupTests::eachApplicationChoiceMapsToOnlyItsRequestedWork()
         RequestedWork::TerrainMeshOptimization,
         RequestedWork::AnimationOptimization,
         RequestedWork::ArchiveExtraction,
+        RequestedWork::ArchiveCreation,
     };
     const SelectedProfileFacts profile{
         .archiveExtension = ".bsa",
@@ -108,6 +114,7 @@ void RunSetupTests::eachApplicationChoiceMapsToOnlyItsRequestedWork()
         .supportsAnimationOptimization = true,
         .supportsArchiveExtraction = true,
         .supportsMeshReferenceMaintenance = true,
+        .supportsArchiveCreation = true,
     };
 
     for (std::size_t selected = 0; selected < requestedWork.size(); ++selected) {
@@ -119,6 +126,7 @@ void RunSetupTests::eachApplicationChoiceMapsToOnlyItsRequestedWork()
             &choices.optimizeTerrainMeshes,
             &choices.optimizeAnimations,
             &choices.extractArchives,
+            &choices.createArchives,
         };
         *choiceFlags[selected] = true;
 
@@ -202,6 +210,32 @@ void RunSetupTests::validPolicyRemainsAvailableForLaterRouting()
     QVERIFY(asset != nullptr);
     QCOMPARE(asset->executionMode(), ExecutionMode::DryRun);
     QVERIFY(setup.policy()->requests(RequestedWork::NativeTextureOptimization));
+}
+
+void RunSetupTests::unsupportedArchiveCreationIsRejected()
+{
+    const ApplicationRunChoices choices{
+        .executionMode = ExecutionMode::Apply,
+        .optimizeNativeTextures = true,
+        .createArchives = true,
+    };
+    // Mirrors a custom profile with bsaEnabled=false driven by a CLI run that passed --bc.
+    const SelectedProfileFacts profile{
+        .archiveExtension = ".bsa",
+        .supportsNativeTextureOptimization = true,
+        .supportsArchiveExtraction = false,
+        .supportsArchiveCreation = false,
+    };
+
+    const auto result = RunSetup::prepare(choices, profile);
+
+    QVERIFY(!result.hasPolicy());
+    QCOMPARE(result.errors().size(), std::size_t(1));
+    const auto *unsupported = std::get_if<UnsupportedRequestedAssetKind>(&result.errors().front());
+    QVERIFY(unsupported != nullptr);
+    QCOMPARE(unsupported->request, RequestedWork::ArchiveCreation);
+    QCOMPARE(unsupported->kind, AssetKind::Archive);
+    QVERIFY(!policyValidationErrorMessage(result.errors().front()).empty());
 }
 
 QTEST_MAIN(RunSetupTests)

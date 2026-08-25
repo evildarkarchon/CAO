@@ -40,6 +40,15 @@ cao::execution::AssetExecutionResult MainOptimizer::process(
                    << QString::fromStdWString(asset.executionPath().wstring()) << "\n"
                    << result.message();
 
+        // Mesh Reference Maintenance rewrites every referenced .tga name to .dds, so a failed
+        // conversion would leave those references pointing at a DDS that was never produced. Asset
+        // Run always completes the Texture target before the Mesh target, so recording the failure
+        // here is definitive by the time any Mesh is executed.
+        if (asset.target() == cao::routing::OptimizerTarget::Texture &&
+            asset.operations().contains(cao::routing::AssetOperation::Conversion)) {
+            _textureConversionFailed = true;
+        }
+
         // Quarantine mutates the effective tree, so Dry Run only reports the load failure.
         if (asset.executionMode() == cao::routing::ExecutionMode::Apply &&
             result.failure() == cao::execution::AssetExecutionFailure::LoadFailed) {
@@ -132,6 +141,14 @@ cao::execution::OperationResult MainOptimizer::optimizeMesh(
 cao::execution::OperationResult MainOptimizer::maintainMeshReferences(
     const cao::routing::ExecutionMode mode) {
     if (!_loadedMesh) return cao::execution::OperationResult::failed("No Mesh is loaded.");
+
+    // Reporting this as unchanged rather than failed keeps any ordinary Mesh optimization on the
+    // same Mesh saved; only the dependent reference rewrite is withheld.
+    if (_textureConversionFailed) {
+        PLOG_WARNING << "Skipping referenced TGA Texture replacement because at least one Texture "
+                        "conversion failed during this run.";
+        return cao::execution::OperationResult::unchanged();
+    }
 
     if (mode == cao::routing::ExecutionMode::DryRun) {
         const bool wouldChange = cao::execution::hasReferencedTgaTexture(*_loadedMesh);

@@ -39,6 +39,8 @@ private slots:
     void disabledTextureWorkDoesNotRequestProfileConversion();
     /// Verifies the shipped FO4 conversion profile compiles without enabling Mesh optimization.
     void fo4ConversionCompilesWithoutMeshOptimization();
+    /// Verifies requesting Archive creation under an Archive-disabled profile fails setup.
+    void archiveCreationRequiresProfileArchiveSupport();
 
 private:
     QString _originalCurrentPath;
@@ -60,6 +62,18 @@ void ApplicationRunSetupTests::initTestCase()
                                                        + QStringLiteral("/profile.ini"));
         QVERIFY2(QFile::copy(source, destination), qPrintable(source));
     }
+
+    // A profile that declares no Archive support at all; the shipped profiles all enable BSAs.
+    const auto noArchivesDirectory = QStringLiteral("profiles/NoArchives");
+    QVERIFY(fixtureRoot.mkpath(noArchivesDirectory));
+    const auto noArchivesProfile = fixtureRoot.filePath(noArchivesDirectory
+                                                        + QStringLiteral("/profile.ini"));
+    QVERIFY(QFile::copy(QStringLiteral(CAO_SOURCE_DIR "/profiles/SSE/profile.ini"),
+                        noArchivesProfile));
+    QSettings noArchives(noArchivesProfile, QSettings::IniFormat);
+    noArchives.setValue(QStringLiteral("BSA/bsaEnabled"), false);
+    noArchives.sync();
+    QCOMPARE(noArchives.status(), QSettings::NoError);
 
     QSettings common(fixtureRoot.filePath(QStringLiteral("profiles/common.ini")),
                      QSettings::IniFormat);
@@ -102,6 +116,22 @@ void ApplicationRunSetupTests::fo4ConversionCompilesWithoutMeshOptimization()
     QVERIFY(result.policy()->maintainsMeshReferences());
     QVERIFY(!result.policy()->requests(RequestedWork::StandardMeshOptimization));
     QVERIFY(!result.policy()->requests(RequestedWork::TerrainMeshOptimization));
+}
+
+void ApplicationRunSetupTests::archiveCreationRequiresProfileArchiveSupport()
+{
+    Profiles::setCurrentProfile(QStringLiteral("NoArchives"));
+    OptionsCAO options;
+    disableTextureWork(options);
+    options.iMeshesOptimizationLevel = 0;
+    // The CLI accepts --bc for any profile, so setup is the only place this can still be caught
+    // before Manager packs Archives and deletes the Loose sources.
+    options.bBsaCreate = true;
+
+    const auto result = cao::run::prepareApplicationRun(options);
+
+    QVERIFY(!result.hasPolicy());
+    QVERIFY(!cao::run::policyValidationErrorMessages(result.errors()).isEmpty());
 }
 
 QTEST_APPLESS_MAIN(ApplicationRunSetupTests)

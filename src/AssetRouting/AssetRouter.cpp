@@ -37,6 +37,8 @@ constexpr std::array requestedWorkDefinitions{
     RequestedWorkDefinition{RequestedWork::AnimationOptimization,
                             ProfileCapability::AnimationOptimization, std::nullopt},
     RequestedWorkDefinition{RequestedWork::ArchiveExtraction, ProfileCapability::ArchiveExtraction,
+                            std::nullopt},
+    RequestedWorkDefinition{RequestedWork::ArchiveCreation, ProfileCapability::ArchiveCreation,
                             std::nullopt}};
 
 struct ProfileCapabilityDefinition final {
@@ -52,7 +54,8 @@ constexpr std::array profileCapabilityDefinitions{
     ProfileCapabilityDefinition{ProfileCapability::TerrainMeshOptimization, AssetKind::Mesh},
     ProfileCapabilityDefinition{ProfileCapability::AnimationOptimization, AssetKind::Animation},
     ProfileCapabilityDefinition{ProfileCapability::ArchiveExtraction, AssetKind::Archive},
-    ProfileCapabilityDefinition{ProfileCapability::MeshReferenceMaintenance, AssetKind::Mesh}};
+    ProfileCapabilityDefinition{ProfileCapability::MeshReferenceMaintenance, AssetKind::Mesh},
+    ProfileCapabilityDefinition{ProfileCapability::ArchiveCreation, AssetKind::Archive}};
 
 struct BuiltInExtension final {
     std::string_view extension;
@@ -128,7 +131,7 @@ std::string asciiLowercase(std::string value) {
 }
 
 /// Reports whether the profile supports any behavior within an Asset Kind.
-bool supportsAssetKind(const std::array<bool, 7>& capabilities, const AssetKind kind) noexcept {
+bool supportsAssetKind(const std::array<bool, 8>& capabilities, const AssetKind kind) noexcept {
     for (const auto& definition : profileCapabilityDefinitions) {
         if (contains(capabilities, definition.capability) && definition.kind == kind) return true;
     }
@@ -291,7 +294,7 @@ RoutingPolicyBuildResult RoutingPolicy::compile(RoutingPolicyRequest request,
                                                   std::move(normalizedArchiveExtension)));
 }
 
-RoutingPolicy::RoutingPolicy(const ExecutionMode executionMode, std::array<bool, 6> work,
+RoutingPolicy::RoutingPolicy(const ExecutionMode executionMode, std::array<bool, 7> work,
                              const bool meshReferenceMaintenance, std::string archiveExtension)
     : _executionMode(executionMode),
       _work(work),

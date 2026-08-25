@@ -24,6 +24,9 @@ ApplicationRunChoices choicesFrom(const OptionsCAO& options) {
         .optimizeTerrainMeshes = optimizeMeshes,
         .optimizeAnimations = options.bAnimationsOptimization,
         .extractArchives = options.bBsaExtract,
+        // Archive creation is validated here as well, otherwise a CLI run could pack and then
+        // delete Loose Assets under a profile that declares no Archive support at all.
+        .createArchives = options.bBsaCreate,
     };
 }
 
@@ -44,6 +47,7 @@ SelectedProfileFacts factsFromSelectedProfile() {
         .supportsAnimationOptimization = Profiles::animationsEnabled(),
         .supportsArchiveExtraction = Profiles::bsaEnabled(),
         .supportsMeshReferenceMaintenance = texturesEnabled,
+        .supportsArchiveCreation = Profiles::bsaEnabled(),
     };
 }
 }  // namespace

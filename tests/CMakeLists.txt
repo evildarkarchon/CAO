@@ -166,6 +166,33 @@ set_target_properties(cao_application_run_setup_tests PROPERTIES AUTOMOC ON)
 
 add_test(NAME cao_application_run_setup_tests COMMAND cao_application_run_setup_tests)
 
+add_executable(cao_options_tests
+    OptionsCAOTests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/OptionsCAO.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Profiles.cpp
+)
+
+target_link_libraries(cao_options_tests PRIVATE
+    Qt5::Test
+    Qt5::Widgets
+    nifly
+    Microsoft::DirectXTex
+    btu::bethutil
+    plog::plog
+)
+
+target_compile_definitions(cao_options_tests PRIVATE
+    CAO_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+
+target_include_directories(cao_options_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+set_target_properties(cao_options_tests PROPERTIES AUTOMOC ON)
+
+add_test(NAME cao_options_tests COMMAND cao_options_tests)
+
 add_executable(cao_optimization_run_tests
     OptimizationRunServiceTests.cpp
 )

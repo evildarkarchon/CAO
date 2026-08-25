@@ -39,6 +39,8 @@ std::string requestedWorkName(const routing::RequestedWork work) {
             return "Animation optimization";
         case routing::RequestedWork::ArchiveExtraction:
             return "Archive extraction";
+        case routing::RequestedWork::ArchiveCreation:
+            return "Archive creation";
     }
     return "requested work";
 }
@@ -76,7 +78,7 @@ std::string malformedArchiveExtensionReason(const routing::MalformedArchiveExten
 /// Maps named application choices into the closed request values accepted by AssetRouting.
 routing::RoutingPolicyRequest adaptedRequest(const ApplicationRunChoices& choices) {
     std::vector<routing::RequestedWork> work;
-    work.reserve(6);
+    work.reserve(7);
     const auto includeWhenSelected = [&work](const bool selected,
                                              const routing::RequestedWork requestedWork) {
         if (selected) work.push_back(requestedWork);
@@ -92,13 +94,14 @@ routing::RoutingPolicyRequest adaptedRequest(const ApplicationRunChoices& choice
                         routing::RequestedWork::TerrainMeshOptimization);
     includeWhenSelected(choices.optimizeAnimations, routing::RequestedWork::AnimationOptimization);
     includeWhenSelected(choices.extractArchives, routing::RequestedWork::ArchiveExtraction);
+    includeWhenSelected(choices.createArchives, routing::RequestedWork::ArchiveCreation);
     return routing::RoutingPolicyRequest::forWork(choices.executionMode, work);
 }
 
 /// Maps selected-profile facts into the closed capability values accepted by AssetRouting.
 routing::ProfileCapabilities adaptedCapabilities(const SelectedProfileFacts& profile) {
     std::vector<routing::ProfileCapability> capabilities;
-    capabilities.reserve(7);
+    capabilities.reserve(8);
     const auto includeWhenSupported = [&capabilities](const bool supported,
                                                       const routing::ProfileCapability capability) {
         if (supported) capabilities.push_back(capability);
@@ -118,6 +121,8 @@ routing::ProfileCapabilities adaptedCapabilities(const SelectedProfileFacts& pro
                          routing::ProfileCapability::ArchiveExtraction);
     includeWhenSupported(profile.supportsMeshReferenceMaintenance,
                          routing::ProfileCapability::MeshReferenceMaintenance);
+    includeWhenSupported(profile.supportsArchiveCreation,
+                         routing::ProfileCapability::ArchiveCreation);
 
     if (profile.archiveExtension.has_value())
         return routing::ProfileCapabilities::define(*profile.archiveExtension, capabilities);

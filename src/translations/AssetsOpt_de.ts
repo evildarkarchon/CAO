@@ -581,6 +581,10 @@ Dieses Programm wird verteilt der Hoffnung dass es nützlich ist aber OHNE GEWÄ
 </source>
         <translation type="unfinished"></translation>
     </message>
+    <message>
+        <source>The log file for this run could not be opened: </source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>TexturesFormatSelectDialog</name>

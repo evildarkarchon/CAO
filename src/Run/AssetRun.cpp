@@ -108,6 +108,13 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
             }
         }
     }
+    // Cancellation raised while the final attempt was in flight has no later loop head to observe
+    // it, and a finalizer is not required to check cancellation itself, so the run would otherwise
+    // report a cancelled attempt sequence as a completed run.
+    if (adapters.isCancelled && adapters.isCancelled()) {
+        result._cancelled = true;
+        return result;
+    }
     if (adapters.reportDiagnostics) {
         const AssetRunDiagnostics diagnostics(result);
         adapters.reportDiagnostics(diagnostics);
