@@ -2,6 +2,7 @@
 
 #include <btu/bsa/unpack.hpp>
 
+#include <algorithm>
 #include <map>
 #include <system_error>
 #include <unordered_set>
@@ -80,6 +81,7 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     routing::AssetRouter router(_policy);
     std::unordered_set<std::filesystem::path> recognizedArchivePaths;
     std::vector<routing::RoutedAsset> selectedArchives;
+    std::vector<std::filesystem::path> extractionDestinations;
     std::map<routing::SkipReason, std::size_t> skippedArchiveCounts;
     std::vector<std::filesystem::path> unsupportedExplicitPaths;
     visitRegularFiles(roots, [&](const std::filesystem::path& path, const bool explicitRoot) {
@@ -87,6 +89,18 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
         if (auto* routedAsset = std::get_if<routing::RoutedAsset>(&decision)) {
             if (routedAsset->kind() == routing::AssetKind::Archive &&
                 recognizedArchivePaths.insert(path.lexically_normal()).second) {
+                // Extraction writes beside the Archive, so an Archive named directly as a root
+                // needs its containing directory traversed later; re-traversing the Archive file
+                // itself would only rediscover the excluded Archive, or nothing at all once
+                // extraction removed it.
+                if (explicitRoot) {
+                    auto destination = path.parent_path();
+                    if (destination.empty()) destination = ".";
+                    if (std::find(extractionDestinations.begin(), extractionDestinations.end(),
+                                  destination) == extractionDestinations.end()) {
+                        extractionDestinations.push_back(std::move(destination));
+                    }
+                }
                 selectedArchives.push_back(std::move(*routedAsset));
             }
             return;
@@ -101,6 +115,14 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
         if (explicitRoot) unsupportedExplicitPaths.push_back(path);
     });
 
+    // A destination directory is only ever reached through the Archive a caller named explicitly,
+    // so the Assets it already holds were never requested. Censusing them before extraction is
+    // what keeps the definitive pass below limited to what extraction actually produced.
+    std::unordered_set<std::filesystem::path> preExistingDestinationPaths;
+    visitRegularFiles(extractionDestinations, [&](const std::filesystem::path& path, const bool) {
+        preExistingDestinationPaths.insert(path.lexically_normal());
+    });
+
     if (!selectedArchives.empty() && !extractArchive(selectedArchives)) {
         return ArchiveFirstAssetDiscoveryResult(EffectiveAssetTree({}),
                                                 std::move(skippedArchiveCounts),
@@ -112,6 +134,12 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     visitRegularFiles(roots, [&](const std::filesystem::path& path, const bool) {
         if (!recognizedArchivePaths.contains(path.lexically_normal()))
             effectivePaths.push_back(path);
+    });
+    visitRegularFiles(extractionDestinations, [&](const std::filesystem::path& path, const bool) {
+        const auto normalizedPath = path.lexically_normal();
+        if (recognizedArchivePaths.contains(normalizedPath)) return;
+        if (preExistingDestinationPaths.contains(normalizedPath)) return;
+        effectivePaths.push_back(path);
     });
     return ArchiveFirstAssetDiscoveryResult(EffectiveAssetTree(std::move(effectivePaths)),
                                             std::move(skippedArchiveCounts),

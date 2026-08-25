@@ -64,8 +64,14 @@ cao::execution::OperationResult MeshesOptimizer::optimize(
     const ScanResult scanResult = scan(nif);
     if (scanResult == doNotProcess) return cao::execution::OperationResult::unchanged();
 
+    // Discovery supplies native std::filesystem paths, so on Windows filepath arrives with
+    // backslashes while both customHeadparts.txt and plugin-derived headparts are stored with '/'
+    // separators by QDir::cleanPath. Matching has to run against a normalized copy, otherwise
+    // "/meshes/" is never found, relativeFilePath stays the full path, and no non-facegen headpart
+    // is ever recognized. filepath itself stays native for log output.
+    const QString normalizedFilePath = QDir::fromNativeSeparators(filepath);
     const QString relativeFilePath =
-        filepath.mid(filepath.indexOf("/meshes/", Qt::CaseInsensitive) + 1);
+        normalizedFilePath.mid(normalizedFilePath.indexOf("/meshes/", Qt::CaseInsensitive) + 1);
     if (mode == cao::routing::ExecutionMode::DryRun) {
         bool wouldChange = bMeshesResave;
         // Headparts have to get a special optimization.

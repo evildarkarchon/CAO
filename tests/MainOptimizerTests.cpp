@@ -148,8 +148,11 @@ private slots:
     /// Verifies reporting a malformed input never mutates a Dry Run tree.
     void dryRunLoadFailureDoesNotQuarantine();
 
-    /// Verifies a failed Texture conversion withholds the dependent referenced-TGA rewrite.
+    /// Verifies a failed Texture conversion withholds the rewrite of references to that Texture.
     void failedConversionSuppressesMeshReferenceMaintenance();
+
+    /// Verifies one failed conversion does not withhold references to Textures that converted.
+    void failedConversionKeepsUnrelatedMeshReferences();
 
     /// Verifies the referenced-TGA rewrite still applies when no conversion failed.
     void successfulRunStillMaintainsMeshReferences();
@@ -244,10 +247,10 @@ void MainOptimizerTests::failedConversionSuppressesMeshReferenceMaintenance()
     const ScopedCurrentDirectory isolatedWorkingDirectory(_temporaryDirectory.path());
 
     const auto root = std::filesystem::path(_temporaryDirectory.path().toStdWString());
-    const auto malformedTexture = root / "suppressed-conversion.tga";
+    const auto malformedTexture = root / "textures" / "armor" / "suppressed.tga";
     const auto mesh = root / "suppressed-reference.nif";
     writeFile(malformedTexture, QByteArrayLiteral("malformed"));
-    writeMeshWithTexture(mesh, "textures\\armor\\body.tga");
+    writeMeshWithTexture(mesh, "textures\\armor\\suppressed.tga");
 
     OptionsCAO options;
     options.mode = OptionsCAO::SingleMod;
@@ -262,10 +265,38 @@ void MainOptimizerTests::failedConversionSuppressesMeshReferenceMaintenance()
 
     const auto maintenance = optimizer.process(routeMaintenanceOnly(mesh));
 
-    // The Mesh itself is intact, so the run continues; only the rewrite that would point at a
-    // never-produced DDS is withheld.
+    // The Mesh itself is intact, so the run continues; only the rewrite that would point at the
+    // DDS this very conversion failed to produce is withheld.
     QVERIFY(maintenance.succeeded());
-    QCOMPARE(savedTextureSlot(mesh), std::string("textures\\armor\\body.tga"));
+    QCOMPARE(savedTextureSlot(mesh), std::string("textures\\armor\\suppressed.tga"));
+}
+
+void MainOptimizerTests::failedConversionKeepsUnrelatedMeshReferences()
+{
+    QVERIFY(_temporaryDirectory.isValid());
+
+    const ScopedCurrentDirectory isolatedWorkingDirectory(_temporaryDirectory.path());
+
+    const auto root = std::filesystem::path(_temporaryDirectory.path().toStdWString());
+    const auto malformedTexture = root / "textures" / "armor" / "unrelated-failure.tga";
+    const auto mesh = root / "unrelated-reference.nif";
+    writeFile(malformedTexture, QByteArrayLiteral("malformed"));
+    writeMeshWithTexture(mesh, "textures\\armor\\converted.tga");
+
+    OptionsCAO options;
+    options.mode = OptionsCAO::SingleMod;
+    options.userPath = _temporaryDirectory.path();
+    MainOptimizer optimizer(options);
+
+    const auto conversion = optimizer.process(routeMaintenanceOnly(malformedTexture));
+    QVERIFY(!conversion.succeeded());
+
+    const auto maintenance = optimizer.process(routeMaintenanceOnly(mesh));
+
+    // converted.tga is deleted once its own DDS replacement is saved, so a run-wide failure bit
+    // would leave this Mesh naming a file the run itself removed.
+    QVERIFY(maintenance.succeeded());
+    QCOMPARE(savedTextureSlot(mesh), std::string("textures\\armor\\converted.dds"));
 }
 
 void MainOptimizerTests::successfulRunStillMaintainsMeshReferences()

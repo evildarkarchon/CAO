@@ -65,9 +65,12 @@ class ArchiveFirstAssetDiscovery final {
     explicit ArchiveFirstAssetDiscovery(routing::RoutingPolicy policy) noexcept;
 
     /// Selects enabled Archives, passes the complete batch for synchronous extraction, then
-    /// traverses roots once for definitive paths. The operation returns false when extraction was
-    /// cancelled, which skips definitive traversal. Filesystem races and permission failures are
-    /// skipped during traversal; extraction exceptions propagate to the caller.
+    /// traverses roots once for definitive paths. An Archive supplied directly as a root also
+    /// contributes the Assets extraction newly produced in its containing directory; Assets that
+    /// already existed there were never named by the caller and stay out of the tree. The
+    /// operation returns false when extraction was cancelled, which skips definitive traversal.
+    /// Filesystem races and permission failures are skipped during traversal; extraction
+    /// exceptions propagate to the caller.
     /// Roots must not overlap; each filesystem occurrence is preserved in traversal order.
     [[nodiscard]] ArchiveFirstAssetDiscoveryResult discover(
         std::span<const std::filesystem::path> roots,

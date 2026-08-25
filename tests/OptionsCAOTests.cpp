@@ -40,6 +40,8 @@ private slots:
     void omittedResizeRatiosDefaultToOne();
     /// Verifies zero ratios and zero target sizes are rejected before a run can start.
     void rejectsZeroResizeDimensions();
+    /// Verifies a nonnumeric mesh level is reported instead of silently disabling optimization.
+    void rejectsNonNumericMeshOptimizationLevel();
 
 private:
     QString _originalCurrentPath;
@@ -166,6 +168,31 @@ void OptionsCAOTests::rejectsZeroResizeDimensions()
                                          QStringLiteral("--trs")}));
 
     QVERIFY(!zeroSize.isValid().isEmpty());
+}
+
+void OptionsCAOTests::rejectsNonNumericMeshOptimizationLevel()
+{
+    OptionsCAO options;
+
+    // "full" converts to zero, which isValid() accepts, so the run would silently proceed with
+    // mesh optimization disabled while any selected destructive work still ran.
+    QVERIFY_EXCEPTION_THROWN(
+        options.parseArguments(commandLine({_workingDirectory.path(),
+                                            QStringLiteral("om"),
+                                            QStringLiteral("SSE"),
+                                            QStringLiteral("-m"),
+                                            QStringLiteral("full")})),
+        std::runtime_error);
+
+    OptionsCAO validOptions;
+    validOptions.parseArguments(commandLine({_workingDirectory.path(),
+                                             QStringLiteral("om"),
+                                             QStringLiteral("SSE"),
+                                             QStringLiteral("-m"),
+                                             QStringLiteral("3")}));
+
+    QCOMPARE(validOptions.iMeshesOptimizationLevel, 3);
+    QCOMPARE(validOptions.isValid(), QString());
 }
 
 QTEST_MAIN(OptionsCAOTests)

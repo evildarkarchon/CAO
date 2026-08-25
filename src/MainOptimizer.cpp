@@ -7,6 +7,9 @@
 #include "MeshReferenceMaintenance.h"
 #include "TexturesOptimizer.h"
 
+#include <algorithm>
+#include <string>
+
 namespace {
 /// Renames an unreadable optimizer input to a collision-safe path outside packable Asset
 /// extensions.
@@ -20,6 +23,24 @@ void handleBadFile(const QString& path) {
     } else {
         PLOG_ERROR << QString("Please remove %1").arg(path);
     }
+}
+
+/// Folds a Texture path to the form used to compare Mesh references against execution paths: both
+/// separator conventions become '/' and case is discarded. Mesh references carry Windows
+/// separators regardless of the host, so this cannot defer to QDir::fromNativeSeparators.
+QString normalizeTexturePath(const QString& path) {
+    QString normalized = path;
+    normalized.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    return normalized.toLower();
+}
+
+/// Reports whether a normalized execution path names the Asset a normalized Mesh reference points
+/// at. Mesh references are relative to the game's Data directory while execution paths are rooted
+/// in the scanned mod, so the reference has to match a whole trailing component sequence.
+bool namesSameTexture(const QString& executionPath, const QString& reference) {
+    if (reference.isEmpty() || !executionPath.endsWith(reference)) return false;
+    return executionPath.size() == reference.size() ||
+           executionPath.at(executionPath.size() - reference.size() - 1) == QLatin1Char('/');
 }
 }  // namespace
 
@@ -40,13 +61,17 @@ cao::execution::AssetExecutionResult MainOptimizer::process(
                    << QString::fromStdWString(asset.executionPath().wstring()) << "\n"
                    << result.message();
 
-        // Mesh Reference Maintenance rewrites every referenced .tga name to .dds, so a failed
-        // conversion would leave those references pointing at a DDS that was never produced. Asset
-        // Run always completes the Texture target before the Mesh target, so recording the failure
-        // here is definitive by the time any Mesh is executed.
+        // Mesh Reference Maintenance rewrites a referenced .tga name to .dds, so a failed
+        // conversion would leave that reference pointing at a DDS that was never produced. The
+        // failing Texture is recorded by identity rather than as a run-wide bit, because every
+        // other TGA source in the same run was deleted once its DDS replacement was saved and its
+        // references therefore still have to be rewritten. Asset Run always completes the Texture
+        // target before the Mesh target, so the recorded set is definitive by the time any Mesh is
+        // executed.
         if (asset.target() == cao::routing::OptimizerTarget::Texture &&
             asset.operations().contains(cao::routing::AssetOperation::Conversion)) {
-            _textureConversionFailed = true;
+            _failedTextureConversions.append(
+                normalizeTexturePath(QString::fromStdWString(asset.executionPath().wstring())));
         }
 
         // Quarantine mutates the effective tree, so Dry Run only reports the load failure.
@@ -142,22 +167,36 @@ cao::execution::OperationResult MainOptimizer::maintainMeshReferences(
     const cao::routing::ExecutionMode mode) {
     if (!_loadedMesh) return cao::execution::OperationResult::failed("No Mesh is loaded.");
 
-    // Reporting this as unchanged rather than failed keeps any ordinary Mesh optimization on the
-    // same Mesh saved; only the dependent reference rewrite is withheld.
-    if (_textureConversionFailed) {
-        PLOG_WARNING << "Skipping referenced TGA Texture replacement because at least one Texture "
-                        "conversion failed during this run.";
-        return cao::execution::OperationResult::unchanged();
-    }
+    // A reference is withheld only when that specific Texture's own conversion failed, since only
+    // then is the DDS the rewrite would name absent. Withholding never fails the Mesh: reporting
+    // unchanged keeps any ordinary optimization on the same Mesh saved.
+    bool withheldReference = false;
+    const auto isEligible = [&](const std::string& reference) {
+        const auto normalizedReference = normalizeTexturePath(QString::fromStdString(reference));
+        const auto failed =
+            std::any_of(_failedTextureConversions.cbegin(), _failedTextureConversions.cend(),
+                        [&](const QString& failedTexture) {
+                            return namesSameTexture(failedTexture, normalizedReference);
+                        });
+        withheldReference = withheldReference || failed;
+        return !failed;
+    };
 
     if (mode == cao::routing::ExecutionMode::DryRun) {
-        const bool wouldChange = cao::execution::hasReferencedTgaTexture(*_loadedMesh);
+        const bool wouldChange = cao::execution::hasReferencedTgaTexture(*_loadedMesh, isEligible);
+        // Detection stops at the first eligible reference, so this reports that at least one
+        // rewrite is withheld rather than a complete count.
+        PLOG_WARNING_IF(withheldReference)
+            << "At least one referenced TGA Texture would keep its name because its own conversion "
+               "failed during this run.";
         PLOG_INFO_IF(wouldChange) << "Referenced TGA Texture names would be replaced with DDS.";
         return wouldChange ? cao::execution::OperationResult::changed()
                            : cao::execution::OperationResult::unchanged();
     }
 
-    const bool changed = cao::execution::replaceReferencedTgaTextureNames(*_loadedMesh);
+    const bool changed = cao::execution::replaceReferencedTgaTextureNames(*_loadedMesh, isEligible);
+    PLOG_WARNING_IF(withheldReference)
+        << "Kept a referenced TGA Texture name because its own conversion failed during this run.";
     PLOG_VERBOSE_IF(changed) << "Replaced referenced TGA Texture names with DDS.";
     return changed ? cao::execution::OperationResult::changed()
                    : cao::execution::OperationResult::unchanged();

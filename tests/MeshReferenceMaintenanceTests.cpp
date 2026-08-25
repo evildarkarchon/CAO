@@ -18,6 +18,9 @@ private slots:
 
     /// Verifies maintenance replaces referenced TGA Texture names and leaves unrelated names intact.
     void replacesReferencedTgaTextureNames();
+
+    /// Verifies an eligibility filter withholds only the referenced TGA names it rejects.
+    void eligibilityFilterWithholdsRejectedReferences();
 };
 
 namespace
@@ -66,6 +69,27 @@ void MeshReferenceMaintenanceTests::replacesReferencedTgaTextureNames()
     QCOMPARE(textureAt(convertibleMesh), std::string("textures\\armor\\body.dds"));
     QVERIFY(!cao::execution::replaceReferencedTgaTextureNames(nativeMesh));
     QCOMPARE(textureAt(nativeMesh), std::string("textures\\armor\\body.dds"));
+}
+
+void MeshReferenceMaintenanceTests::eligibilityFilterWithholdsRejectedReferences()
+{
+    // One filter, two Meshes: the rejected name models a Texture whose own conversion failed, so
+    // its DDS was never produced, while the accepted name models a Texture that did convert and
+    // whose TGA source was deleted once the replacement was saved.
+    const cao::execution::ReferencedTextureFilter isEligible =
+        [](const std::string &reference) { return reference.find("failed") == std::string::npos; };
+
+    auto rejectedMesh = meshWithTexture("textures\\armor\\failed.tga");
+    auto acceptedMesh = meshWithTexture("textures\\armor\\converted.tga");
+
+    QVERIFY(!cao::execution::hasReferencedTgaTexture(rejectedMesh, isEligible));
+    QVERIFY(!cao::execution::replaceReferencedTgaTextureNames(rejectedMesh, isEligible));
+    QCOMPARE(textureAt(rejectedMesh), std::string("textures\\armor\\failed.tga"));
+
+    QVERIFY(cao::execution::hasReferencedTgaTexture(acceptedMesh, isEligible));
+    QVERIFY(cao::execution::replaceReferencedTgaTextureNames(acceptedMesh, isEligible));
+    QCOMPARE(textureAt(acceptedMesh),
+             std::string("textures\\armor\\converted.dds"));
 }
 
 QTEST_APPLESS_MAIN(MeshReferenceMaintenanceTests)

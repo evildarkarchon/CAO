@@ -40,20 +40,29 @@ bool replaceTga(std::string& value) {
 }
 }  // namespace
 
-bool hasReferencedTgaTexture(const nifly::NifFile& mesh) {
+bool hasReferencedTgaTexture(const nifly::NifFile& mesh,
+                             const ReferencedTextureFilter& isEligible) {
     for (auto* shape : mesh.GetShapes()) {
         for (const auto texture : mesh.GetTexturePathRefs(shape)) {
-            if (containsTga(texture.get())) return true;
+            const std::string& reference = texture.get();
+            // The filter only ever sees names that would actually be rewritten, so a caller can
+            // treat every rejection as one withheld rewrite.
+            if (containsTga(reference) && (!isEligible || isEligible(reference))) return true;
         }
     }
     return false;
 }
 
-bool replaceReferencedTgaTextureNames(nifly::NifFile& mesh) {
+bool replaceReferencedTgaTextureNames(nifly::NifFile& mesh,
+                                      const ReferencedTextureFilter& isEligible) {
     bool changed = false;
     for (auto* shape : mesh.GetShapes()) {
-        for (auto texture : mesh.GetTexturePathRefs(shape))
-            changed = replaceTga(texture.get()) || changed;
+        for (auto texture : mesh.GetTexturePathRefs(shape)) {
+            std::string& reference = texture.get();
+            if (!containsTga(reference)) continue;
+            if (isEligible && !isEligible(reference)) continue;
+            changed = replaceTga(reference) || changed;
+        }
     }
     return changed;
 }

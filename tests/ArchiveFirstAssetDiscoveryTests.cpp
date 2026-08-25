@@ -123,6 +123,10 @@ private slots:
     /// Verifies an explicitly supplied Archive may disappear before pass two without escaping.
     void removedExplicitArchiveRootDoesNotThrow();
 
+    /// Verifies an Archive named directly as a root yields the Assets extraction produced beside
+    /// it, without adopting the unrelated Assets that directory already held.
+    void explicitArchiveRootDiscoversExtractedSiblings();
+
     /// Verifies a directory root may disappear before pass two without escaping.
     void removedDirectoryRootDoesNotThrow();
 };
@@ -304,6 +308,45 @@ void ArchiveFirstAssetDiscoveryTests::removedDirectoryRootDoesNotThrow()
 
     QVERIFY(result.has_value());
     QVERIFY(result->effectiveAssetTree().paths().empty());
+}
+
+void ArchiveFirstAssetDiscoveryTests::explicitArchiveRootDiscoversExtractedSiblings()
+{
+    QTemporaryDir modDirectory;
+    QTemporaryDir stagingDirectory;
+    QVERIFY(modDirectory.isValid());
+    QVERIFY(stagingDirectory.isValid());
+
+    const auto root = std::filesystem::path(modDirectory.path().toStdWString());
+    const auto stagingRoot = std::filesystem::path(stagingDirectory.path().toStdWString());
+    const auto archive = root / "content.bsa";
+    const auto extracted = root / "textures" / "archived-only.dds";
+    const auto preExisting = root / "textures" / "pre-existing.dds";
+    const auto staged = stagingRoot / "textures" / "archived-only.dds";
+    writeFile(staged, "archived only");
+    const std::array archivedFiles{staged};
+    createTextureArchive(archive, stagingRoot, archivedFiles);
+    writeFile(preExisting, "pre-existing");
+
+    const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy());
+    const std::array roots{archive};
+    const auto result = discovery.discover(
+        roots,
+        [](const std::span<const RoutedAsset> selectedArchives) {
+            for (const auto &selectedArchive : selectedArchives)
+                extractArchiveNoOverwrite(selectedArchive.executionPath(), false);
+            return true;
+        });
+
+    // Traversing the Archive file again would find only the excluded Archive, so the extracted
+    // Assets are reachable solely through the destination the extraction wrote into.
+    QVERIFY(std::filesystem::is_regular_file(extracted));
+    QCOMPARE(pathCount(result.effectiveAssetTree().paths(), extracted), std::size_t{1});
+    // The caller named an Archive rather than the directory, so Assets that were already there
+    // were never requested and stay out of the Effective Asset Tree.
+    QCOMPARE(pathCount(result.effectiveAssetTree().paths(), preExisting), std::size_t{0});
+    QCOMPARE(pathCount(result.effectiveAssetTree().paths(), archive), std::size_t{0});
+    QCOMPARE(result.effectiveAssetTree().paths().size(), std::size_t{1});
 }
 
 QTEST_MAIN(ArchiveFirstAssetDiscoveryTests)

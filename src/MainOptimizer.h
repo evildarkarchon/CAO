@@ -66,7 +66,8 @@ class MainOptimizer final : public QObject, private cao::execution::AssetExecuti
     AnimationsOptimizer _animOpt;
     TexturesOptimizer _texturesOpt;
     std::unique_ptr<nifly::NifFile> _loadedMesh;
-    /// Set when any convertible Texture failed, so dependent Mesh Reference Maintenance is skipped.
-    bool _textureConversionFailed = false;
+    /// Normalized execution paths of the convertible Textures whose conversion failed, so
+    /// dependent Mesh Reference Maintenance withholds only the references those failures broke.
+    QStringList _failedTextureConversions;
     cao::execution::AssetExecutor _assetExecutor;
 };

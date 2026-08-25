@@ -233,6 +233,18 @@ uint readDimension(const QCommandLineParser& parser, const QString& name) {
     }
     return value;
 }
+
+/// Reads one signed command line integer and rejects values Qt would silently coerce to zero.
+/// Range validation stays in isValid(), so this only rejects input that never parsed at all.
+int readInteger(const QCommandLineParser& parser, const QString& name) {
+    bool ok = false;
+    const auto value = parser.value(name).toInt(&ok);
+    if (!ok) {
+        throw std::runtime_error("Invalid value for -" + name.toStdString() + ": '" +
+                                 parser.value(name).toStdString() + "'");
+    }
+    return value;
+}
 }  // namespace
 
 void OptionsCAO::parseArguments(const QStringList& args) {
@@ -313,7 +325,7 @@ void OptionsCAO::parseArguments(const QStringList& args) {
     bDryRun = parser.isSet("dr");
     bDebugLog = parser.isSet("l");
 
-    iMeshesOptimizationLevel = parser.value("m").toInt();
+    iMeshesOptimizationLevel = readInteger(parser, "m");
     bMeshesHeadparts = parser.isSet("mh");
     bMeshesResave = parser.isSet("mr");
 
