@@ -52,3 +52,19 @@ add_library(cao_run_setup
 target_link_libraries(cao_run_setup PUBLIC cao_asset_routing)
 target_include_directories(cao_run_setup PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_compile_features(cao_run_setup PUBLIC cxx_std_20)
+
+find_package(Threads REQUIRED)
+
+add_library(cao_optimization_run
+    OptimizationRunService.cpp
+    OptimizationRunService.h
+    RunScheduler.cpp
+    RunScheduler.h
+)
+
+target_link_libraries(cao_optimization_run PUBLIC
+    cao_run_executor
+    Threads::Threads
+)
+target_include_directories(cao_optimization_run PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_compile_features(cao_optimization_run PUBLIC cxx_std_20)

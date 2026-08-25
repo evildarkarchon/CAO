@@ -40,6 +40,22 @@ _Avoid_: Asset Run, process, job
 The internal synchronous component that traverses the Run Phase sequence for one Optimization Run and commits its terminal result. It owns no scheduling, dispatches no events, and is the deepest deterministic seam beneath the public Optimization Run.
 _Avoid_: Runner, engine, worker
 
+**Optimization Run Service**:
+The public component that validates a Run Request, starts one Optimization Run, and hands it back as an owning Run Handle. It owns scheduling and the run services, so GUI and CLI adapters supply intent rather than orchestrating a run.
+_Avoid_: Manager, runner, job queue
+
+**Run Handle**:
+The movable, non-copyable owner of one started Optimization Run. It exposes terminal query and waiting, and its active destruction requests cancellation and waits for termination rather than abandoning the run. It offers no pause, resume, restart, mutable configuration, or Run Worker access.
+_Avoid_: Future, task, thread handle
+
+**Run Scheduler**:
+The injectable seam that starts the single Run Worker of one Optimization Run, keeping scheduling in standard C++ and outside presentation code. A scheduler that cannot start a Run Worker produces a terminal Failed result rather than a Start Error, because the run already exists.
+_Avoid_: Thread pool, task runner, worker pool
+
+**Run Worker**:
+The scheduled unit of execution that carries one Optimization Run to its terminal result. It is what a Run Scheduler starts and a Run Handle joins, and it is not the Run Executor, which is the synchronous component the worker invokes to traverse the Run Phase sequence.
+_Avoid_: Run Executor, thread, background task
+
 **Run Request**:
 The immutable Mod Selection, Archive Precedence, execution mode, profile identity, and requested work used to start one Optimization Run.
 _Avoid_: Options, command arguments

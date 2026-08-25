@@ -165,3 +165,16 @@ target_include_directories(cao_application_run_setup_tests PRIVATE
 set_target_properties(cao_application_run_setup_tests PROPERTIES AUTOMOC ON)
 
 add_test(NAME cao_application_run_setup_tests COMMAND cao_application_run_setup_tests)
+
+add_executable(cao_optimization_run_tests
+    OptimizationRunServiceTests.cpp
+)
+
+target_link_libraries(cao_optimization_run_tests PRIVATE
+    Qt5::Test
+    cao_optimization_run
+)
+
+set_target_properties(cao_optimization_run_tests PROPERTIES AUTOMOC ON)
+
+add_test(NAME cao_optimization_run_tests COMMAND cao_optimization_run_tests)
