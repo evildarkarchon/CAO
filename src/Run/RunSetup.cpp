@@ -82,7 +82,7 @@ std::string malformedArchiveExtensionReason(
 }
 
 /// Maps named application choices into the closed request values accepted by AssetRouting.
-routing::RunRequest adaptedRequest(const ApplicationRunChoices &choices)
+routing::RoutingPolicyRequest adaptedRequest(const ApplicationRunChoices &choices)
 {
     std::vector<routing::RequestedWork> work;
     work.reserve(6);
@@ -104,7 +104,7 @@ routing::RunRequest adaptedRequest(const ApplicationRunChoices &choices)
                         routing::RequestedWork::AnimationOptimization);
     includeWhenSelected(choices.extractArchives,
                         routing::RequestedWork::ArchiveExtraction);
-    return routing::RunRequest::forWork(choices.executionMode, work);
+    return routing::RoutingPolicyRequest::forWork(choices.executionMode, work);
 }
 
 /// Maps selected-profile facts into the closed capability values accepted by AssetRouting.

@@ -25,7 +25,7 @@ using cao::routing::ProfileCapability;
 using cao::routing::RequestedWork;
 using cao::routing::RoutedAsset;
 using cao::routing::RoutingPolicy;
-using cao::routing::RunRequest;
+using cao::routing::RoutingPolicyRequest;
 using cao::routing::TextureVariant;
 
 /// Defines complete test Profile Capabilities for every routed execution scenario.
@@ -47,7 +47,7 @@ RoutedAsset routeAsset(const ExecutionMode mode,
                        const std::initializer_list<RequestedWork> work,
                        const std::filesystem::path &path)
 {
-    const auto result = RoutingPolicy::compile(RunRequest::forWork(mode, work),
+    const auto result = RoutingPolicy::compile(RoutingPolicyRequest::forWork(mode, work),
                                                completeCapabilities());
     if (!result.hasPolicy())
         throw std::runtime_error("Test Routing Policy unexpectedly failed to compile.");

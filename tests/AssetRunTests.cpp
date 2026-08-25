@@ -19,7 +19,7 @@ using cao::routing::ProfileCapabilities;
 using cao::routing::ProfileCapability;
 using cao::routing::RequestedWork;
 using cao::routing::RoutingPolicy;
-using cao::routing::RunRequest;
+using cao::routing::RoutingPolicyRequest;
 using cao::routing::SkipReason;
 using cao::run::AssetRun;
 using cao::run::AssetRunAdapters;
@@ -35,7 +35,7 @@ RoutingPolicy compilePolicy(
     const std::initializer_list<ProfileCapability> capabilities,
     const char *failureMessage)
 {
-    const auto request = RunRequest::forWork(mode, work);
+    const auto request = RoutingPolicyRequest::forWork(mode, work);
     const auto profile = ProfileCapabilities::define(".bsa", capabilities);
     const auto result = RoutingPolicy::compile(request, profile);
     if (!result.hasPolicy())
@@ -254,10 +254,10 @@ void AssetRunTests::archiveExtractionPrecedesDefinitiveRoutedExecution()
              std::size_t{1});
     QCOMPARE(result.ledger().routedAssets().size(), std::size_t{2});
     QCOMPARE(progress.size(), std::size_t{3});
-    QCOMPARE(progress[0].phase, cao::routing::RunPhase::ArchiveExtraction);
+    QCOMPARE(progress[0].phase, cao::routing::RoutedAssetPhase::ArchiveExtraction);
     QCOMPARE(progress[0].completed, std::size_t{1});
     QCOMPARE(progress[0].total, std::size_t{1});
-    QCOMPARE(progress[1].phase, cao::routing::RunPhase::LooseAssetProcessing);
+    QCOMPARE(progress[1].phase, cao::routing::RoutedAssetPhase::LooseAssetProcessing);
     QCOMPARE(progress[1].completed, std::size_t{1});
     QCOMPARE(progress[1].total, std::size_t{2});
     QCOMPARE(progress[2].completed, std::size_t{2});

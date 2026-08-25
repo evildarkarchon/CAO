@@ -17,7 +17,7 @@ using RoutedAssetExecutionAdapter = std::function<void(const routing::RoutedAsse
 /// Reports completed Routed Asset attempts against the routed-only work total for one phase.
 struct AssetRunProgress final
 {
-    routing::RunPhase phase;
+    routing::RoutedAssetPhase phase;
     std::size_t completed;
     std::size_t total;
 };

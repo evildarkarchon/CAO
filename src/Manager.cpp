@@ -124,12 +124,12 @@ void Manager::runOptimization()
             },
             [&](const cao::run::AssetRunProgress &progress) {
                 _numberCompletedFiles = static_cast<int>(progress.completed);
-                const auto text = progress.phase == cao::routing::RunPhase::ArchiveExtraction
+                const auto text = progress.phase == cao::routing::RoutedAssetPhase::ArchiveExtraction
                                       ? QStringLiteral("Extracting BSAs")
                                       : QStringLiteral("Processing files");
                 const auto now = QDateTime::currentDateTime();
                 const bool shouldReport = progress.phase
-                                              == cao::routing::RunPhase::ArchiveExtraction
+                                              == cao::routing::RoutedAssetPhase::ArchiveExtraction
                                           || progress.completed == progress.total
                                           || now > lastLooseProgress.addMSecs(2000);
                 if (shouldReport) {

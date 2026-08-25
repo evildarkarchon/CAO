@@ -109,7 +109,7 @@ The policy-aware outcome that identifies an Asset and determines whether and whe
 _Avoid_: Dispatch result, file filter result
 
 **Routing Ledger**:
-The batch routing outcome that groups Routed Assets by run phase and counts recognized exclusions by Skip Reason without retaining unsupported paths, scheduling, or executing work.
+The batch routing outcome that groups Routed Assets by Routed Asset Phase and counts recognized exclusions by Skip Reason without retaining unsupported paths, scheduling, or executing work.
 _Avoid_: Routing plan, work queue
 
 **Routing Policy**:
@@ -120,8 +120,16 @@ _Avoid_: Options, profile settings
 The outcome carried by a Routing Decision: route the Asset, skip the recognized Asset for a stated reason, or report that the path is unsupported.
 _Avoid_: Status, result code
 
+**Routed Asset Phase**:
+The coarse stage of an Optimization Run in which one Routed Asset performs its work: Archive extraction or Loose Asset processing. It categorizes a single Asset, unlike Run Phase, which is a stage of the whole run.
+_Avoid_: Run Phase, step, stage
+
+**Routing Policy Request**:
+The execution mode and closed set of requested work from which one Routing Policy is compiled. It is not a Run Request: it carries no Mod Selection, Archive Precedence, or profile identity.
+_Avoid_: Run Request, options
+
 **Routed Asset**:
-A recognized Asset assigned to a run phase and optimizer by its Routing Decision. Only Routed Assets count as scheduled work and contribute to progress totals.
+A recognized Asset assigned to a Routed Asset Phase and optimizer by its Routing Decision. Only Routed Assets count as scheduled work and contribute to progress totals.
 _Avoid_: Queued file, eligible input
 
 **Asset Operation**:

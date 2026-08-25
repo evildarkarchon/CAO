@@ -22,8 +22,8 @@ using cao::routing::ProfileCapabilities;
 using cao::routing::RequestedWork;
 using cao::routing::RoutedAsset;
 using cao::routing::RoutingPolicy;
-using cao::routing::RunPhase;
-using cao::routing::RunRequest;
+using cao::routing::RoutedAssetPhase;
+using cao::routing::RoutingPolicyRequest;
 using cao::run::ArchiveFirstAssetDiscovery;
 using cao::run::extractArchiveNoOverwrite;
 
@@ -32,7 +32,7 @@ namespace
 /// Compiles the Archive-enabled policy shared by discovery integration tests.
 RoutingPolicy archiveEnabledPolicy()
 {
-    const auto request = RunRequest::forWork(
+    const auto request = RoutingPolicyRequest::forWork(
         ExecutionMode::Apply,
         {RequestedWork::NativeTextureOptimization, RequestedWork::ArchiveExtraction});
     const auto capabilities = ProfileCapabilities::define(
@@ -48,7 +48,7 @@ RoutingPolicy archiveEnabledPolicy()
 /// Compiles a policy that recognizes Archives but does not request their extraction.
 RoutingPolicy archiveDisabledPolicy()
 {
-    const auto request = RunRequest::forWork(
+    const auto request = RoutingPolicyRequest::forWork(
         ExecutionMode::Apply,
         {RequestedWork::NativeTextureOptimization});
     const auto capabilities = ProfileCapabilities::define(
@@ -152,7 +152,7 @@ void ArchiveFirstAssetDiscoveryTests::extractsEnabledArchivesBeforeDefinitiveDis
                 const auto &selectedArchive = selectedArchives.front();
                 selectedArchiveWasRoutedForExtraction = selectedArchive.kind() == AssetKind::Archive
                                                         && selectedArchive.phase()
-                                                               == RunPhase::ArchiveExtraction
+                                                               == RoutedAssetPhase::ArchiveExtraction
                                                         && selectedArchive.operations().contains(
                                                             AssetOperation::Extraction);
                 extractedArchives.push_back(selectedArchive.executionPath());

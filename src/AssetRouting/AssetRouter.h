@@ -48,7 +48,10 @@ enum class ExecutionMode
     DryRun
 };
 
-enum class RunPhase
+/// The coarse stage of an Optimization Run in which one Routed Asset performs its work.
+///
+/// This categorizes a single Asset, unlike `run::RunPhase`, which is a stage of the whole run.
+enum class RoutedAssetPhase
 {
     ArchiveExtraction,
     LooseAssetProcessing
@@ -88,7 +91,7 @@ private:
     std::array<bool, 4> _operations{};
 };
 
-/// Closed work choices that an input adapter can place in a run request.
+/// Closed work choices that an input adapter can place in a Run Request.
 enum class RequestedWork
 {
     NativeTextureOptimization,
@@ -111,35 +114,38 @@ enum class ProfileCapability
     MeshReferenceMaintenance
 };
 
-/// Dedicated run-request facts used to compile one run-scoped Routing Policy.
-class RunRequest final
+/// The execution mode and closed requested work from which one Routing Policy is compiled.
+///
+/// This is not the Run Request of the project glossary: it carries no Mod Selection, Archive
+/// Precedence, or profile identity, and exists only as the input to `RoutingPolicy::compile`.
+class RoutingPolicyRequest final
 {
 public:
     /// Owns the requested work as a closed set for the selected execution mode.
-    [[nodiscard]] static RunRequest forWork(ExecutionMode mode,
+    [[nodiscard]] static RoutingPolicyRequest forWork(ExecutionMode mode,
                                             std::initializer_list<RequestedWork> work) noexcept;
 
     /// Owns a dynamically adapted sequence of closed work choices for the selected execution mode.
-    [[nodiscard]] static RunRequest forWork(ExecutionMode mode,
+    [[nodiscard]] static RoutingPolicyRequest forWork(ExecutionMode mode,
                                             const std::vector<RequestedWork> &work) noexcept;
 
     /// Produces the tracer's dedicated request for native Texture optimization.
-    [[nodiscard]] static RunRequest optimizeNativeTextures() noexcept;
+    [[nodiscard]] static RoutingPolicyRequest optimizeNativeTextures() noexcept;
 
 private:
     friend class RoutingPolicy;
 
-    RunRequest() = default;
+    RoutingPolicyRequest() = default;
 
     /// Copies a borrowed sequence of closed choices into one dedicated request value.
-    [[nodiscard]] static RunRequest fromWork(ExecutionMode mode,
+    [[nodiscard]] static RoutingPolicyRequest fromWork(ExecutionMode mode,
                                              std::span<const RequestedWork> work) noexcept;
 
     ExecutionMode _executionMode{ExecutionMode::Apply};
     std::array<bool, 6> _work{};
 };
 
-/// Dedicated Profile Capability facts used to validate a run request.
+/// Dedicated Profile Capability facts used to validate a Routing Policy Request.
 class ProfileCapabilities final
 {
 public:
@@ -233,7 +239,7 @@ class RoutingPolicy final
 {
 public:
     /// Compiles dedicated request and Profile Capability values into either one policy or every validation error.
-    [[nodiscard]] static RoutingPolicyBuildResult compile(RunRequest request,
+    [[nodiscard]] static RoutingPolicyBuildResult compile(RoutingPolicyRequest request,
                                                           ProfileCapabilities capabilities);
 
     RoutingPolicy(const RoutingPolicy &) = default;
@@ -341,8 +347,8 @@ public:
     /// Returns the kind-specific identity selected by routing.
     [[nodiscard]] const AssetIdentity &identity() const noexcept;
 
-    /// Returns the run phase selected without requiring the caller to reinterpret policy.
-    [[nodiscard]] RunPhase phase() const noexcept;
+    /// Returns the Routed Asset Phase selected without requiring the caller to reinterpret policy.
+    [[nodiscard]] RoutedAssetPhase phase() const noexcept;
 
     /// Returns the optimizer target selected for execution.
     [[nodiscard]] OptimizerTarget target() const noexcept;
@@ -359,14 +365,14 @@ private:
     /// Owns all execution facts selected by one policy-aware routing decision.
     RoutedAsset(std::filesystem::path executionPath,
                 AssetIdentity identity,
-                RunPhase phase,
+                RoutedAssetPhase phase,
                 OptimizerTarget target,
                 ExecutionMode executionMode,
                 AssetOperations operations);
 
     std::filesystem::path _executionPath;
     AssetIdentity _identity;
-    RunPhase _phase;
+    RoutedAssetPhase _phase;
     OptimizerTarget _target;
     ExecutionMode _executionMode;
     AssetOperations _operations;
@@ -415,9 +421,9 @@ public:
     /// Returns every owned Routed Asset as a read-only span valid until this ledger is destroyed or replaced.
     [[nodiscard]] std::span<const RoutedAsset> routedAssets() const noexcept;
 
-    /// Returns read-only references matching one run phase in original relative order.
+    /// Returns read-only references matching one Routed Asset Phase in original relative order.
     /// References remain valid until this ledger is destroyed or replaced.
-    [[nodiscard]] RoutedAssetReferences routedAssets(RunPhase phase) const;
+    [[nodiscard]] RoutedAssetReferences routedAssets(RoutedAssetPhase phase) const;
 
     /// Returns read-only references matching one optimizer target in original relative order.
     /// References remain valid until this ledger is destroyed or replaced.

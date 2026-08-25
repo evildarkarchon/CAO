@@ -213,22 +213,22 @@ RoutedAssetReferences matchingRoutedAssets(const std::span<const RoutedAsset> ro
 
 namespace cao::routing
 {
-RunRequest RunRequest::forWork(const ExecutionMode mode,
+RoutingPolicyRequest RoutingPolicyRequest::forWork(const ExecutionMode mode,
                                const std::initializer_list<RequestedWork> work) noexcept
 {
     return fromWork(mode, work);
 }
 
-RunRequest RunRequest::forWork(const ExecutionMode mode,
+RoutingPolicyRequest RoutingPolicyRequest::forWork(const ExecutionMode mode,
                                const std::vector<RequestedWork> &work) noexcept
 {
     return fromWork(mode, work);
 }
 
-RunRequest RunRequest::fromWork(const ExecutionMode mode,
+RoutingPolicyRequest RoutingPolicyRequest::fromWork(const ExecutionMode mode,
                                 const std::span<const RequestedWork> work) noexcept
 {
-    auto request = RunRequest();
+    auto request = RoutingPolicyRequest();
     request._executionMode = mode;
     for (const auto choice : work)
         include(request._work, choice);
@@ -236,9 +236,9 @@ RunRequest RunRequest::fromWork(const ExecutionMode mode,
     return request;
 }
 
-RunRequest RunRequest::optimizeNativeTextures() noexcept
+RoutingPolicyRequest RoutingPolicyRequest::optimizeNativeTextures() noexcept
 {
-    return RunRequest::forWork(ExecutionMode::Apply,
+    return RoutingPolicyRequest::forWork(ExecutionMode::Apply,
                                {RequestedWork::NativeTextureOptimization});
 }
 
@@ -280,7 +280,7 @@ ProfileCapabilities ProfileCapabilities::fromDefinition(
     return profile;
 }
 
-RoutingPolicyBuildResult RoutingPolicy::compile(RunRequest request, ProfileCapabilities capabilities)
+RoutingPolicyBuildResult RoutingPolicy::compile(RoutingPolicyRequest request, ProfileCapabilities capabilities)
 {
     PolicyValidationErrors errors;
     errors.reserve(8);
@@ -437,7 +437,7 @@ bool AssetOperations::empty() const noexcept
 
 RoutedAsset::RoutedAsset(std::filesystem::path executionPath,
                          AssetIdentity identity,
-                         const RunPhase phase,
+                         const RoutedAssetPhase phase,
                          const OptimizerTarget target,
                          const ExecutionMode executionMode,
                          AssetOperations operations)
@@ -464,7 +464,7 @@ const AssetIdentity &RoutedAsset::identity() const noexcept
     return _identity;
 }
 
-RunPhase RoutedAsset::phase() const noexcept
+RoutedAssetPhase RoutedAsset::phase() const noexcept
 {
     return _phase;
 }
@@ -523,7 +523,7 @@ std::span<const RoutedAsset> RoutingLedger::routedAssets() const noexcept
     return _routedAssets;
 }
 
-RoutedAssetReferences RoutingLedger::routedAssets(const RunPhase phase) const
+RoutedAssetReferences RoutingLedger::routedAssets(const RoutedAssetPhase phase) const
 {
     return matchingRoutedAssets(std::span<const RoutedAsset>(_routedAssets),
                                 &RoutedAsset::phase,
@@ -568,12 +568,12 @@ RoutingDecision AssetRouter::route(const std::filesystem::path &executionPath) c
     };
     const auto finishDecision = [this, &executionPath, &kindHasWork](
                                     AssetIdentity identity,
-                                    const RunPhase phase,
+                                    const RoutedAssetPhase phase,
                                     const OptimizerTarget target,
                                     AssetOperations operations) -> RoutingDecision {
         const auto kind = assetKindOf(identity);
         // Dry Run disables Archive extraction before kind/variant eligibility is considered.
-        if (phase == RunPhase::ArchiveExtraction
+        if (phase == RoutedAssetPhase::ArchiveExtraction
             && _policy.executionMode() == ExecutionMode::DryRun) {
             return SkippedAsset(executionPath, std::move(identity), SkipReason::DisabledPhase);
         }
@@ -596,7 +596,7 @@ RoutingDecision AssetRouter::route(const std::filesystem::path &executionPath) c
         if (_policy.requests(RequestedWork::NativeTextureOptimization))
             operations.include(AssetOperation::Optimization);
         return finishDecision(TextureAsset(TextureVariant::Native),
-                              RunPhase::LooseAssetProcessing,
+                              RoutedAssetPhase::LooseAssetProcessing,
                               OptimizerTarget::Texture,
                               operations);
     }
@@ -605,7 +605,7 @@ RoutingDecision AssetRouter::route(const std::filesystem::path &executionPath) c
         if (_policy.requests(RequestedWork::ConvertibleTextureConversion))
             operations.include(AssetOperation::Conversion);
         return finishDecision(TextureAsset(TextureVariant::Convertible),
-                              RunPhase::LooseAssetProcessing,
+                              RoutedAssetPhase::LooseAssetProcessing,
                               OptimizerTarget::Texture,
                               operations);
     }
@@ -621,7 +621,7 @@ RoutingDecision AssetRouter::route(const std::filesystem::path &executionPath) c
         if (_policy.maintainsMeshReferences())
             operations.include(AssetOperation::MeshReferenceMaintenance);
         return finishDecision(MeshAsset(variant),
-                              RunPhase::LooseAssetProcessing,
+                              RoutedAssetPhase::LooseAssetProcessing,
                               OptimizerTarget::Mesh,
                               operations);
     }
@@ -630,7 +630,7 @@ RoutingDecision AssetRouter::route(const std::filesystem::path &executionPath) c
         if (_policy.requests(RequestedWork::AnimationOptimization))
             operations.include(AssetOperation::Optimization);
         return finishDecision(AnimationAsset{},
-                              RunPhase::LooseAssetProcessing,
+                              RoutedAssetPhase::LooseAssetProcessing,
                               OptimizerTarget::Animation,
                               operations);
     }
@@ -639,7 +639,7 @@ RoutingDecision AssetRouter::route(const std::filesystem::path &executionPath) c
         if (_policy.requests(RequestedWork::ArchiveExtraction))
             operations.include(AssetOperation::Extraction);
         return finishDecision(ArchiveAsset{},
-                              RunPhase::ArchiveExtraction,
+                              RoutedAssetPhase::ArchiveExtraction,
                               OptimizerTarget::Archive,
                               operations);
     }

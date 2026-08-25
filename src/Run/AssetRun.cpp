@@ -81,7 +81,7 @@ AssetRunResult AssetRun::execute(
                 ++completed;
                 if (adapters.reportProgress) {
                     adapters.reportProgress(AssetRunProgress{
-                        routing::RunPhase::ArchiveExtraction,
+                        routing::RoutedAssetPhase::ArchiveExtraction,
                         completed,
                         archives.size()});
                 }
@@ -130,7 +130,7 @@ AssetRunResult AssetRun::execute(
             ++completed;
             if (adapters.reportProgress) {
                 adapters.reportProgress(AssetRunProgress{
-                    routing::RunPhase::LooseAssetProcessing, completed, total});
+                    routing::RoutedAssetPhase::LooseAssetProcessing, completed, total});
             }
         }
     }

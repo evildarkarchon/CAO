@@ -32,8 +32,8 @@ using cao::routing::RoutedAssetReferences;
 using cao::routing::RoutingPolicy;
 using cao::routing::RoutingDecision;
 using cao::routing::RoutingLedger;
-using cao::routing::RunPhase;
-using cao::routing::RunRequest;
+using cao::routing::RoutedAssetPhase;
+using cao::routing::RoutingPolicyRequest;
 using cao::routing::SkipReason;
 using cao::routing::SkippedAsset;
 using cao::routing::TextureVariant;
@@ -91,7 +91,7 @@ enum class SkipCase
 /// Builds the shared all-work router used by recognition and carried-execution-fact matrices.
 AssetRouter fullyEnabledRouter()
 {
-    const auto request = RunRequest::forWork(ExecutionMode::Apply,
+    const auto request = RoutingPolicyRequest::forWork(ExecutionMode::Apply,
                                              {RequestedWork::NativeTextureOptimization,
                                               RequestedWork::ConvertibleTextureConversion,
                                               RequestedWork::StandardMeshOptimization,
@@ -183,7 +183,7 @@ private slots:
 
 void AssetRoutingTests::compilesCompleteRoutingPolicy()
 {
-    const auto request = RunRequest::forWork(ExecutionMode::DryRun,
+    const auto request = RoutingPolicyRequest::forWork(ExecutionMode::DryRun,
                                              {RequestedWork::NativeTextureOptimization,
                                               RequestedWork::ConvertibleTextureConversion,
                                               RequestedWork::StandardMeshOptimization,
@@ -220,7 +220,7 @@ void AssetRoutingTests::compilesCompleteRoutingPolicy()
 
 void AssetRoutingTests::returnsAllPolicyValidationErrors()
 {
-    const auto request = RunRequest::forWork(ExecutionMode::Apply,
+    const auto request = RoutingPolicyRequest::forWork(ExecutionMode::Apply,
                                              {RequestedWork::ConvertibleTextureConversion,
                                               RequestedWork::TerrainMeshOptimization,
                                               RequestedWork::AnimationOptimization});
@@ -309,7 +309,7 @@ void AssetRoutingTests::profileArchiveExtensionValidation()
     QFETCH(int, errorKind);
     QFETCH(int, malformedReason);
 
-    const auto request = RunRequest::optimizeNativeTextures();
+    const auto request = RoutingPolicyRequest::optimizeNativeTextures();
     const auto capabilities = ProfileCapabilities::define(
         archiveExtension.toStdString(), {ProfileCapability::NativeTextureOptimization});
 
@@ -355,7 +355,7 @@ void AssetRoutingTests::nativeTextureTracer()
     QFETCH(QString, executionPath);
     QFETCH(bool, shouldRoute);
 
-    const auto request = RunRequest::optimizeNativeTextures();
+    const auto request = RoutingPolicyRequest::optimizeNativeTextures();
     const auto capabilities = ProfileCapabilities::define(
         ".bsa", {ProfileCapability::NativeTextureOptimization});
     const auto result = RoutingPolicy::compile(request, capabilities);
@@ -463,32 +463,32 @@ void AssetRoutingTests::routedAssetFacts_data()
 
     QTest::newRow("native Texture")
         << QStringLiteral("Textures/Native.dds")
-        << static_cast<int>(RunPhase::LooseAssetProcessing)
+        << static_cast<int>(RoutedAssetPhase::LooseAssetProcessing)
         << static_cast<int>(OptimizerTarget::Texture)
         << false << true << false << false;
     QTest::newRow("convertible Texture")
         << QStringLiteral("Textures/Convertible.tga")
-        << static_cast<int>(RunPhase::LooseAssetProcessing)
+        << static_cast<int>(RoutedAssetPhase::LooseAssetProcessing)
         << static_cast<int>(OptimizerTarget::Texture)
         << false << false << true << false;
     QTest::newRow("standard Mesh")
         << QStringLiteral("Meshes/Standard.nif")
-        << static_cast<int>(RunPhase::LooseAssetProcessing)
+        << static_cast<int>(RoutedAssetPhase::LooseAssetProcessing)
         << static_cast<int>(OptimizerTarget::Mesh)
         << false << true << false << true;
     QTest::newRow("terrain Mesh")
         << QStringLiteral("Meshes/Terrain.btr")
-        << static_cast<int>(RunPhase::LooseAssetProcessing)
+        << static_cast<int>(RoutedAssetPhase::LooseAssetProcessing)
         << static_cast<int>(OptimizerTarget::Mesh)
         << false << true << false << true;
     QTest::newRow("Animation")
         << QStringLiteral("Animations/Behavior.hkx")
-        << static_cast<int>(RunPhase::LooseAssetProcessing)
+        << static_cast<int>(RoutedAssetPhase::LooseAssetProcessing)
         << static_cast<int>(OptimizerTarget::Animation)
         << false << true << false << false;
     QTest::newRow("Archive")
         << QStringLiteral("Archives/Assets.ba2")
-        << static_cast<int>(RunPhase::ArchiveExtraction)
+        << static_cast<int>(RoutedAssetPhase::ArchiveExtraction)
         << static_cast<int>(OptimizerTarget::Archive)
         << true << false << false << false;
 }
@@ -557,20 +557,20 @@ void AssetRoutingTests::skipReasonPrecedence()
     const auto skipCase = static_cast<SkipCase>(skipCaseValue);
     const auto request = [skipCase] {
         if (skipCase == SkipCase::DryRunArchive)
-            return RunRequest::forWork(ExecutionMode::DryRun, {});
+            return RoutingPolicyRequest::forWork(ExecutionMode::DryRun, {});
         if (skipCase == SkipCase::ExcludedNativeTexture) {
-            return RunRequest::forWork(ExecutionMode::Apply,
+            return RoutingPolicyRequest::forWork(ExecutionMode::Apply,
                                        {RequestedWork::ConvertibleTextureConversion});
         }
         if (skipCase == SkipCase::ExcludedConvertibleTexture) {
-            return RunRequest::forWork(ExecutionMode::Apply,
+            return RoutingPolicyRequest::forWork(ExecutionMode::Apply,
                                        {RequestedWork::NativeTextureOptimization});
         }
         if (skipCase == SkipCase::ExcludedTerrainMesh) {
-            return RunRequest::forWork(ExecutionMode::Apply,
+            return RoutingPolicyRequest::forWork(ExecutionMode::Apply,
                                        {RequestedWork::StandardMeshOptimization});
         }
-        return RunRequest::forWork(ExecutionMode::Apply, {});
+        return RoutingPolicyRequest::forWork(ExecutionMode::Apply, {});
     }();
     const auto capabilities = ProfileCapabilities::define(
         ".ba2", {ProfileCapability::NativeTextureOptimization,
@@ -595,7 +595,7 @@ void AssetRoutingTests::skipReasonPrecedence()
 
 void AssetRoutingTests::conversionOnlyRoutesTextureAndMaintainsMeshes()
 {
-    const auto request = RunRequest::forWork(
+    const auto request = RoutingPolicyRequest::forWork(
         ExecutionMode::Apply, {RequestedWork::ConvertibleTextureConversion});
     const auto capabilities = ProfileCapabilities::define(
         ".ba2", {ProfileCapability::ConvertibleTextureConversion,
@@ -626,7 +626,7 @@ void AssetRoutingTests::conversionOnlyRoutesTextureAndMaintainsMeshes()
 
 void AssetRoutingTests::dryRunPreservesLooseAssetOperations()
 {
-    const auto request = RunRequest::forWork(ExecutionMode::DryRun,
+    const auto request = RoutingPolicyRequest::forWork(ExecutionMode::DryRun,
                                              {RequestedWork::ConvertibleTextureConversion,
                                               RequestedWork::StandardMeshOptimization,
                                               RequestedWork::ArchiveExtraction});
@@ -659,7 +659,7 @@ void AssetRoutingTests::dryRunPreservesLooseAssetOperations()
 
 void AssetRoutingTests::routingIgnoresFilesystemState()
 {
-    const auto request = RunRequest::optimizeNativeTextures();
+    const auto request = RoutingPolicyRequest::optimizeNativeTextures();
     const auto capabilities = ProfileCapabilities::define(
         ".ba2", {ProfileCapability::NativeTextureOptimization});
     const auto result = RoutingPolicy::compile(request, capabilities);
@@ -712,7 +712,7 @@ void AssetRoutingTests::batchRoutingOwnsRoutedAssetsInInputOrder()
 
 void AssetRoutingTests::batchRoutingOmitsUnsupportedPathsAndCountsSkips()
 {
-    const auto request = RunRequest::forWork(ExecutionMode::DryRun,
+    const auto request = RoutingPolicyRequest::forWork(ExecutionMode::DryRun,
                                              {RequestedWork::ConvertibleTextureConversion,
                                               RequestedWork::ArchiveExtraction});
     const auto capabilities = ProfileCapabilities::define(
@@ -752,13 +752,13 @@ void AssetRoutingTests::ledgerQueriesRoutedAssetsByPhaseAndTarget()
         std::filesystem::path(L"Archives/Last.ba2")};
     const auto ledger = router.route(std::span<const std::filesystem::path>(paths));
 
-    const auto looseAssets = ledger.routedAssets(RunPhase::LooseAssetProcessing);
+    const auto looseAssets = ledger.routedAssets(RoutedAssetPhase::LooseAssetProcessing);
     QCOMPARE(looseAssets.size(), std::size_t{3});
     QVERIFY(looseAssets[0].get().executionPath() == paths[1]);
     QVERIFY(looseAssets[1].get().executionPath() == paths[2]);
     QVERIFY(looseAssets[2].get().executionPath() == paths[3]);
 
-    const auto archiveAssets = ledger.routedAssets(RunPhase::ArchiveExtraction);
+    const auto archiveAssets = ledger.routedAssets(RoutedAssetPhase::ArchiveExtraction);
     QCOMPARE(archiveAssets.size(), std::size_t{2});
     QVERIFY(archiveAssets[0].get().executionPath() == paths[0]);
     QVERIFY(archiveAssets[1].get().executionPath() == paths[4]);
@@ -776,7 +776,7 @@ void AssetRoutingTests::ledgerQueriesRoutedAssetsByPhaseAndTarget()
 
 void AssetRoutingTests::ledgerWorkTotalCountsRoutedAssetsNotOperations()
 {
-    const auto request = RunRequest::forWork(ExecutionMode::Apply,
+    const auto request = RoutingPolicyRequest::forWork(ExecutionMode::Apply,
                                              {RequestedWork::ConvertibleTextureConversion,
                                               RequestedWork::StandardMeshOptimization});
     const auto capabilities = ProfileCapabilities::define(
@@ -798,7 +798,7 @@ void AssetRoutingTests::ledgerWorkTotalCountsRoutedAssetsNotOperations()
 
 void AssetRoutingTests::batchRoutingMatchesSingleAssetDecisions()
 {
-    const auto request = RunRequest::forWork(
+    const auto request = RoutingPolicyRequest::forWork(
         ExecutionMode::Apply, {RequestedWork::ConvertibleTextureConversion});
     const auto capabilities = ProfileCapabilities::define(
         ".ba2", {ProfileCapability::ConvertibleTextureConversion,

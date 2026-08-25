@@ -19,7 +19,7 @@ using cao::routing::ProfileCapability;
 using cao::routing::RequestedWork;
 using cao::routing::RoutedAsset;
 using cao::routing::RoutingPolicy;
-using cao::routing::RunRequest;
+using cao::routing::RoutingPolicyRequest;
 
 class ScopedCurrentDirectory final
 {
@@ -50,7 +50,7 @@ RoutedAsset routeAsset(const std::filesystem::path &path,
                        const ExecutionMode mode = ExecutionMode::Apply)
 {
     const auto policyResult = RoutingPolicy::compile(
-        RunRequest::forWork(mode,
+        RoutingPolicyRequest::forWork(mode,
                             {RequestedWork::NativeTextureOptimization,
                              RequestedWork::ConvertibleTextureConversion,
                              RequestedWork::StandardMeshOptimization}),
