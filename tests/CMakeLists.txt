@@ -69,6 +69,19 @@ set_target_properties(cao_asset_run_tests PROPERTIES AUTOMOC ON)
 
 add_test(NAME cao_asset_run_tests COMMAND cao_asset_run_tests)
 
+add_executable(cao_run_executor_tests
+    RunExecutorTests.cpp
+)
+
+target_link_libraries(cao_run_executor_tests PRIVATE
+    Qt5::Test
+    cao_run_executor
+)
+
+set_target_properties(cao_run_executor_tests PROPERTIES AUTOMOC ON)
+
+add_test(NAME cao_run_executor_tests COMMAND cao_run_executor_tests)
+
 add_executable(cao_run_setup_tests
     RunSetupTests.cpp
 )

@@ -36,6 +36,10 @@ _Avoid_: Preview mode, simulation
 One attempt to evaluate or mutate selected mod Assets under a single immutable Routing Policy, ending in one Run Outcome.
 _Avoid_: Asset Run, process, job
 
+**Run Executor**:
+The internal synchronous component that traverses the Run Phase sequence for one Optimization Run and commits its terminal result. It owns no scheduling, dispatches no events, and is the deepest deterministic seam beneath the public Optimization Run.
+_Avoid_: Runner, engine, worker
+
 **Run Request**:
 The immutable Mod Selection, Archive Precedence, execution mode, profile identity, and requested work used to start one Optimization Run.
 _Avoid_: Options, command arguments
@@ -55,6 +59,10 @@ _Avoid_: Thread ID, task ID
 **Run Phase**:
 A stable lifecycle stage of an Optimization Run, from preparation through Safety Cleanup. A Run Phase may report determinate or indeterminate Run Progress.
 _Avoid_: Step, task
+
+**Phase Skip Reason**:
+A stable category explaining why an Optimization Run reported a Run Phase as inapplicable. It must state something the run knows when it skips, never the outcome of a phase that did not run. It is distinct from Skip Reason, which excludes one recognized Asset rather than a whole Run Phase.
+_Avoid_: Skip Reason, phase status, disabled phase
 
 **Run Progress**:
 A phase-local account of completed Asset or Archive attempts and the known total for the current Optimization Run phase. It describes advancement, not success or overall elapsed work.
