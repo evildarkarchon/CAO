@@ -5,8 +5,10 @@
 #include <cassert>
 #include <condition_variable>
 #include <mutex>
+#include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace cao::run {
 namespace {
@@ -51,6 +53,20 @@ class RunSharedState final {
     void execute() {
         const RunExecutor executor;
         commit(executor.execute(_request, RunServices{_safetyCleanup}));
+    }
+
+    /// Commits the terminal result of a run whose worker could never be started.
+    ///
+    /// The run already exists by the time scheduling is attempted, so it owes both the one Safety
+    /// Cleanup pass every terminal path owes and one terminal result. No work phase was traversed,
+    /// so only Safety Cleanup is recorded and Preparing is reported as the furthest phase reached:
+    /// a phase the run never entered may not claim an outcome it never observed.
+    void commitSchedulingFailure() {
+        _safetyCleanup.performSafetyCleanup();
+        std::vector<RunPhaseRecord> phases;
+        phases.push_back(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
+        commit(OptimizationRunResult::terminal(RunOutcome::Failed, RunPhase::Preparing,
+                                               std::move(phases)));
     }
 
     /// Commits the one terminal result of this run and releases every waiter.
@@ -154,9 +170,19 @@ RunStartResult OptimizationRunService::start(RunRequest request) {
     if (const auto conflict = findStructuralConflict(request)) return RunStartResult{*conflict};
 
     auto state = std::make_shared<RunSharedState>(std::move(request));
-    // The Run Worker holds its own reference to the run state, so the run survives a handle that
-    // is destroyed while the worker is still executing.
-    auto worker = _scheduler.schedule([state] { state->execute(); });
+    std::unique_ptr<ScheduledRunWorker> worker;
+    try {
+        // The Run Worker holds its own reference to the run state, so the run survives a handle
+        // that is destroyed while the worker is still executing.
+        worker = _scheduler.schedule([state] { state->execute(); });
+    } catch (...) {
+        // Only structural Run Request conflicts are Start Errors, and the request already cleared
+        // those, so a scheduler that cannot start a worker owes the terminal result its run was
+        // created to produce. A scheduler that throws started no work, so nothing else can commit
+        // this run, and the handle carries no worker and therefore owes no join.
+        state->commitSchedulingFailure();
+        return RunStartResult{RunHandle{std::move(state), nullptr}};
+    }
 
     return RunStartResult{RunHandle{std::move(state), std::move(worker)}};
 }

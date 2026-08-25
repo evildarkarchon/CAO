@@ -9,10 +9,11 @@ namespace cao::run {
 AssetRunResult::AssetRunResult(routing::RoutingLedger ledger,
                                std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
                                std::vector<std::filesystem::path> unsupportedExplicitPaths,
-                               const bool cancelled) noexcept
+                               const std::size_t nestedArchiveCount, const bool cancelled) noexcept
     : _ledger(std::move(ledger)),
       _skippedArchiveCounts(std::move(skippedArchiveCounts)),
       _unsupportedExplicitPaths(std::move(unsupportedExplicitPaths)),
+      _nestedArchiveCount(nestedArchiveCount),
       _cancelled(cancelled) {}
 
 const routing::RoutingLedger& AssetRunResult::ledger() const noexcept { return _ledger; }
@@ -29,6 +30,8 @@ std::span<const std::filesystem::path> AssetRunResult::unsupportedExplicitPaths(
     return _unsupportedExplicitPaths;
 }
 
+std::size_t AssetRunResult::nestedArchiveCount() const noexcept { return _nestedArchiveCount; }
+
 AssetRunDiagnostics::AssetRunDiagnostics(const AssetRunResult& result) noexcept : _result(result) {}
 
 std::size_t AssetRunDiagnostics::skippedAssetCount(
@@ -39,6 +42,10 @@ std::size_t AssetRunDiagnostics::skippedAssetCount(
 std::span<const std::filesystem::path> AssetRunDiagnostics::unsupportedExplicitPaths()
     const noexcept {
     return _result.unsupportedExplicitPaths();
+}
+
+std::size_t AssetRunDiagnostics::nestedArchiveCount() const noexcept {
+    return _result.nestedArchiveCount();
 }
 
 AssetRun::AssetRun(routing::RoutingPolicy policy) noexcept : _policy(std::move(policy)) {}
@@ -85,7 +92,7 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
         router.route(discoveryResult.effectiveAssetTree().paths()), std::move(skippedArchiveCounts),
         std::vector<std::filesystem::path>(discoveryResult.unsupportedExplicitPaths().begin(),
                                            discoveryResult.unsupportedExplicitPaths().end()),
-        cancelled);
+        discoveryResult.nestedArchiveCount(), cancelled);
     constexpr std::array targetOrder{routing::OptimizerTarget::Texture,
                                      routing::OptimizerTarget::Mesh,
                                      routing::OptimizerTarget::Animation};

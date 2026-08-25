@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <system_error>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -130,6 +131,20 @@ private:
     };
 };
 
+/// Fails every scheduling attempt the way a thread-backed scheduler out of resources would.
+///
+/// Throwing from `schedule` is the realistic failure: `std::thread`'s constructor reports an
+/// exhausted thread limit as a `std::system_error` rather than a return value.
+class ExhaustedRunScheduler final : public RunScheduler
+{
+public:
+    std::unique_ptr<ScheduledRunWorker> schedule(std::function<void()>) override
+    {
+        throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again),
+                                "No Run Worker could be started");
+    }
+};
+
 /// Builds a structurally valid Run Request that selects no work at all.
 RunRequest noWorkRequest()
 {
@@ -180,6 +195,9 @@ private slots:
 
     /// Verifies overwriting an owning handle joins the run it replaces.
     void moveAssigningOverAnActiveHandleJoinsTheReplacedRun();
+
+    /// Verifies a scheduler that cannot start a worker yields a terminal Failed run, not a throw.
+    void aSchedulerThatCannotStartAWorkerCommitsAFailedRun();
 };
 
 void OptimizationRunServiceTests::aRequestWithoutAProfileIdentityIsRejectedWithoutCreatingAWorker()
@@ -384,6 +402,31 @@ void OptimizationRunServiceTests::moveAssigningOverAnActiveHandleJoinsTheReplace
     // Overwriting an owning handle abandons its run unless the replaced worker is joined first.
     QCOMPARE(scheduler.completions(), std::size_t{1});
     QCOMPARE(scheduler.joins(), std::size_t{1});
+}
+
+void OptimizationRunServiceTests::aSchedulerThatCannotStartAWorkerCommitsAFailedRun()
+{
+    ExhaustedRunScheduler scheduler;
+    OptimizationRunService service{scheduler};
+
+    // The request cleared every structural conflict, so the run exists before scheduling is
+    // attempted and owes the caller a terminal result rather than an escaping exception.
+    auto result = service.start(noWorkRequest());
+
+    QVERIFY(result.started());
+    QVERIFY(!result.startError().has_value());
+    QVERIFY(result.handle() != nullptr);
+
+    // Waiting must return rather than block forever on a worker that was never started.
+    const auto &terminal = result.handle()->wait();
+
+    QCOMPARE(terminal.outcome(), RunOutcome::Failed);
+    // No work phase was traversed, so the run reports the first phase as the furthest it reached.
+    QCOMPARE(terminal.finalPhase(), RunPhase::Preparing);
+    // Every terminal path still owes exactly one Safety Cleanup pass, including this one.
+    QCOMPARE(terminal.phases().size(), std::size_t{1});
+    QCOMPARE(terminal.phases().back().phase(), RunPhase::SafetyCleanup);
+    QCOMPARE(terminal.phases().back().status(), RunPhaseStatus::Executed);
 }
 
 QTEST_MAIN(OptimizationRunServiceTests)

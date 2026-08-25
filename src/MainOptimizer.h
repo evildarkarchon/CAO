@@ -66,6 +66,10 @@ class MainOptimizer final : public QObject, private cao::execution::AssetExecuti
     AnimationsOptimizer _animOpt;
     TexturesOptimizer _texturesOpt;
     std::unique_ptr<nifly::NifFile> _loadedMesh;
+    /// Normalized execution path of the currently loaded Mesh, so Mesh Reference Maintenance can
+    /// tell a conversion failure in this Mesh's own Mod Root from an identically named one in a
+    /// sibling Mod Root scanned by the same Several Mods run.
+    QString _loadedMeshPath;
     /// Normalized execution paths of the convertible Textures whose conversion failed, so
     /// dependent Mesh Reference Maintenance withholds only the references those failures broke.
     QStringList _failedTextureConversions;

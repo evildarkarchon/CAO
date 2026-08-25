@@ -213,6 +213,9 @@ private slots:
 
     /// Verifies cancellation raised during the final Asset skips diagnostics and finalization.
     void cancellationDuringFinalAssetSkipsFinalization();
+
+    /// Verifies an Archive produced by extraction is reported but never counted as run work.
+    void nestedArchivesAreReportedWithoutInflatingTheWorkTotal();
 };
 
 void AssetRunTests::archiveExtractionPrecedesDefinitiveRoutedExecution()
@@ -708,6 +711,55 @@ void AssetRunTests::cancellationDuringFinalAssetSkipsFinalization()
     QCOMPARE(attempts, paths.size());
     QVERIFY(!finalized);
     QVERIFY(!reportedDiagnostics);
+}
+
+void AssetRunTests::nestedArchivesAreReportedWithoutInflatingTheWorkTotal()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+
+    const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString());
+    const auto archive = root / "content.bsa";
+    const auto nestedArchive = root / "textures" / "nested.bsa";
+    const auto extractedTexture = root / "textures" / "extracted.dds";
+    writeFile(archive);
+
+    std::vector<std::filesystem::path> executedPaths;
+    std::size_t reportedNestedArchives = 0;
+    std::size_t looseWorkTotal = 0;
+    const AssetRun run(archiveAndTexturePolicy());
+    const std::array roots{root};
+    const auto result = run.execute(
+        roots,
+        AssetRunAdapters{
+            [&](const cao::routing::RoutedAsset &) {
+                // The game reads no Archive nested inside another, so an Archive that extraction
+                // itself produced is malformed mod content rather than work a later round owes.
+                writeFile(nestedArchive);
+                writeFile(extractedTexture);
+            },
+            [&](const cao::routing::RoutedAsset &asset) {
+                executedPaths.push_back(asset.executionPath());
+            },
+            [&](const AssetRunProgress &update) {
+                if (update.phase == cao::routing::RoutedAssetPhase::LooseAssetProcessing)
+                    looseWorkTotal = update.total;
+            },
+            {},
+            {},
+            [&](const cao::run::AssetRunDiagnostics &diagnostics) {
+                reportedNestedArchives = diagnostics.nestedArchiveCount();
+            }});
+
+    QVERIFY(!result.cancelled());
+    // Routing it would have promised a Routed Asset that no post-extraction target executes, so
+    // progress would have reported a total the run could never complete.
+    QCOMPARE(executedPaths, std::vector<std::filesystem::path>{extractedTexture});
+    QCOMPARE(looseWorkTotal, std::size_t{1});
+    // Silence would leave the author believing the nested Archive's contents were processed, when
+    // the game will not read them either.
+    QCOMPARE(reportedNestedArchives, std::size_t{1});
+    QCOMPARE(result.nestedArchiveCount(), std::size_t{1});
 }
 
 QTEST_MAIN(AssetRunTests)

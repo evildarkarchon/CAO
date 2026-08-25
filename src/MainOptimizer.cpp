@@ -25,22 +25,38 @@ void handleBadFile(const QString& path) {
     }
 }
 
-/// Folds a Texture path to the form used to compare Mesh references against execution paths: both
+/// Folds an Asset path to the form used to compare Mesh references against execution paths: both
 /// separator conventions become '/' and case is discarded. Mesh references carry Windows
 /// separators regardless of the host, so this cannot defer to QDir::fromNativeSeparators.
-QString normalizeTexturePath(const QString& path) {
+QString normalizeAssetPath(const QString& path) {
     QString normalized = path;
     normalized.replace(QLatin1Char('\\'), QLatin1Char('/'));
     return normalized.toLower();
 }
 
-/// Reports whether a normalized execution path names the Asset a normalized Mesh reference points
-/// at. Mesh references are relative to the game's Data directory while execution paths are rooted
-/// in the scanned mod, so the reference has to match a whole trailing component sequence.
-bool namesSameTexture(const QString& executionPath, const QString& reference) {
+/// Reports whether a normalized Texture execution path names the very Asset a normalized Mesh
+/// reference points at, for a Mesh whose own normalized execution path is `meshPath`.
+///
+/// Mesh references are relative to the game's Data directory while execution paths are rooted in
+/// the scanned mod, so the reference has to match a whole trailing component sequence. What
+/// precedes that match is the Data directory the reference resolved against, and the referencing
+/// Mesh has to live beneath it: Several Mods mode scans sibling Mod Roots that routinely hold
+/// identically named Textures, so a suffix match alone would let one mod's failure withhold
+/// another mod's reference to a Texture that converted and whose TGA source was then deleted.
+bool namesSameTexture(const QString& executionPath, const QString& reference,
+                      const QString& meshPath) {
     if (reference.isEmpty() || !executionPath.endsWith(reference)) return false;
-    return executionPath.size() == reference.size() ||
-           executionPath.at(executionPath.size() - reference.size() - 1) == QLatin1Char('/');
+
+    const auto dataRootSize = executionPath.size() - reference.size();
+    if (dataRootSize != 0 && executionPath.at(dataRootSize - 1) != QLatin1Char('/')) return false;
+
+    // Drop the separator the boundary check just consumed. An empty Data directory means the
+    // reference matched the whole execution path, so both Assets are relative to the same
+    // traversal origin and no further containment can be checked.
+    const auto dataRoot = dataRootSize == 0 ? QString() : executionPath.left(dataRootSize - 1);
+    return dataRoot.isEmpty() ||
+           (meshPath.size() > dataRoot.size() && meshPath.startsWith(dataRoot) &&
+            meshPath.at(dataRoot.size()) == QLatin1Char('/'));
 }
 }  // namespace
 
@@ -71,7 +87,7 @@ cao::execution::AssetExecutionResult MainOptimizer::process(
         if (asset.target() == cao::routing::OptimizerTarget::Texture &&
             asset.operations().contains(cao::routing::AssetOperation::Conversion)) {
             _failedTextureConversions.append(
-                normalizeTexturePath(QString::fromStdWString(asset.executionPath().wstring())));
+                normalizeAssetPath(QString::fromStdWString(asset.executionPath().wstring())));
         }
 
         // Quarantine mutates the effective tree, so Dry Run only reports the load failure.
@@ -150,10 +166,15 @@ bool MainOptimizer::loadMesh(const std::filesystem::path& path,
     auto [loaded, mesh] = _meshesOpt.loadMesh(QString::fromStdWString(path.wstring()), variant);
     if (!loaded) {
         _loadedMesh.reset();
+        _loadedMeshPath.clear();
         return false;
     }
 
     _loadedMesh = std::make_unique<nifly::NifFile>(std::move(mesh));
+    // Mesh Reference Maintenance is told only the execution mode, so the Mesh's own location has
+    // to be captured here for it to decide which Mod Root a recorded conversion failure belongs
+    // to.
+    _loadedMeshPath = normalizeAssetPath(QString::fromStdWString(path.wstring()));
     return true;
 }
 
@@ -172,12 +193,12 @@ cao::execution::OperationResult MainOptimizer::maintainMeshReferences(
     // unchanged keeps any ordinary optimization on the same Mesh saved.
     bool withheldReference = false;
     const auto isEligible = [&](const std::string& reference) {
-        const auto normalizedReference = normalizeTexturePath(QString::fromStdString(reference));
-        const auto failed =
-            std::any_of(_failedTextureConversions.cbegin(), _failedTextureConversions.cend(),
-                        [&](const QString& failedTexture) {
-                            return namesSameTexture(failedTexture, normalizedReference);
-                        });
+        const auto normalizedReference = normalizeAssetPath(QString::fromStdString(reference));
+        const auto failed = std::any_of(
+            _failedTextureConversions.cbegin(), _failedTextureConversions.cend(),
+            [&](const QString& failedTexture) {
+                return namesSameTexture(failedTexture, normalizedReference, _loadedMeshPath);
+            });
         withheldReference = withheldReference || failed;
         return !failed;
     };

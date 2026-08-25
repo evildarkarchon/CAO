@@ -36,6 +36,9 @@ class AssetRunDiagnostics final {
     /// Returns unsupported roots that were explicitly supplied as files, never directory entries.
     [[nodiscard]] std::span<const std::filesystem::path> unsupportedExplicitPaths() const noexcept;
 
+    /// Returns how many distinct Archives appeared only after extraction and were left alone.
+    [[nodiscard]] std::size_t nestedArchiveCount() const noexcept;
+
    private:
     friend class AssetRun;
 
@@ -74,6 +77,10 @@ class AssetRunResult final {
     /// Returns unsupported roots that were explicitly supplied as files, never directory entries.
     [[nodiscard]] std::span<const std::filesystem::path> unsupportedExplicitPaths() const noexcept;
 
+    /// Returns how many distinct Archives appeared only after extraction, which the game would
+    /// not read nested and the run therefore left alone.
+    [[nodiscard]] std::size_t nestedArchiveCount() const noexcept;
+
    private:
     friend class AssetRun;
 
@@ -81,11 +88,12 @@ class AssetRunResult final {
     AssetRunResult(routing::RoutingLedger ledger,
                    std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
                    std::vector<std::filesystem::path> unsupportedExplicitPaths,
-                   bool cancelled) noexcept;
+                   std::size_t nestedArchiveCount, bool cancelled) noexcept;
 
     routing::RoutingLedger _ledger;
     std::map<routing::SkipReason, std::size_t> _skippedArchiveCounts;
     std::vector<std::filesystem::path> _unsupportedExplicitPaths;
+    std::size_t _nestedArchiveCount;
     bool _cancelled;
 };
 

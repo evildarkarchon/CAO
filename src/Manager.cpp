@@ -167,6 +167,15 @@ void Manager::runOptimization() {
                 for (const auto& path : diagnostics.unsupportedExplicitPaths()) {
                     PLOG_ERROR << "Cannot process: " + QString::fromStdWString(path.wstring());
                 }
+                // A warning rather than an error: the run is intact and every other Asset was
+                // processed. The author still needs telling, because the game will not read these
+                // Archives either, so their contents are silently absent in-game.
+                if (const auto nested = diagnostics.nestedArchiveCount(); nested != 0) {
+                    PLOG_WARNING << QStringLiteral(
+                                        "Ignored %1 Archives found inside another Archive, which "
+                                        "the game does not read")
+                                        .arg(nested);
+                }
             }});
 
     if (result.cancelled()) return;

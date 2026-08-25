@@ -129,6 +129,9 @@ private slots:
 
     /// Verifies a directory root may disappear before pass two without escaping.
     void removedDirectoryRootDoesNotThrow();
+
+    /// Verifies an Archive that extraction itself produced never enters the Effective Asset Tree.
+    void archivesProducedByExtractionStayOutOfTheTree();
 };
 
 void ArchiveFirstAssetDiscoveryTests::extractsEnabledArchivesBeforeDefinitiveDiscovery()
@@ -236,6 +239,10 @@ void ArchiveFirstAssetDiscoveryTests::excludedArchivesAreNotExtracted()
     QCOMPARE(pathCount(effectiveTree.effectiveAssetTree().paths(), looseAsset), std::size_t{1});
     QCOMPARE(pathCount(effectiveTree.effectiveAssetTree().paths(), archive), std::size_t{0});
     QCOMPARE(effectiveTree.effectiveAssetTree().paths().size(), std::size_t{1});
+    // Policy excluded this Archive, which the Archive pass already accounted for as a Skip Reason.
+    // Counting it as malformed nesting as well would warn about every Archive in a run that simply
+    // was not asked to extract them.
+    QCOMPARE(effectiveTree.nestedArchiveCount(), std::size_t{0});
 }
 
 void ArchiveFirstAssetDiscoveryTests::cancelledExtractionSkipsDefinitiveTraversal()
@@ -347,6 +354,47 @@ void ArchiveFirstAssetDiscoveryTests::explicitArchiveRootDiscoversExtractedSibli
     QCOMPARE(pathCount(result.effectiveAssetTree().paths(), preExisting), std::size_t{0});
     QCOMPARE(pathCount(result.effectiveAssetTree().paths(), archive), std::size_t{0});
     QCOMPARE(result.effectiveAssetTree().paths().size(), std::size_t{1});
+}
+
+void ArchiveFirstAssetDiscoveryTests::archivesProducedByExtractionStayOutOfTheTree()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+
+    const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString());
+    const auto archive = root / "content.bsa";
+    const auto nestedArchive = root / "textures" / "nested.bsa";
+    const auto extractedAsset = root / "textures" / "extracted.dds";
+    writeFile(archive, "archive placeholder");
+
+    std::size_t selectedArchiveCount = 0;
+    const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy());
+    const std::array roots{root};
+    const auto result = discovery.discover(
+        roots,
+        [&](const std::span<const RoutedAsset> selectedArchives) {
+            selectedArchiveCount = selectedArchives.size();
+            // Extraction produces an Archive of its own, which the Archive pass could not have
+            // offered for extraction because it did not exist while Archives were being selected.
+            // The game reads no Archive nested inside another, so this is malformed mod content
+            // that a run must ignore rather than work a later round should pick up.
+            writeFile(nestedArchive, "nested archive placeholder");
+            writeFile(extractedAsset, "extracted");
+            return true;
+        });
+
+    QCOMPARE(selectedArchiveCount, std::size_t{1});
+    // Admitting the nested Archive would route it as Archive work that no post-extraction target
+    // performs, inflating the run's work total with an Asset nothing can execute.
+    QCOMPARE(pathCount(result.effectiveAssetTree().paths(), nestedArchive), std::size_t{0});
+    QCOMPARE(pathCount(result.effectiveAssetTree().paths(), archive), std::size_t{0});
+    QCOMPARE(pathCount(result.effectiveAssetTree().paths(), extractedAsset), std::size_t{1});
+    QCOMPARE(result.effectiveAssetTree().paths().size(), std::size_t{1});
+
+    // Ignoring it silently would leave the author believing its contents were processed. The
+    // count is one, not two: the Archive the run did extract is accounted for by the extraction it
+    // received, so counting it as malformed nesting too would be a false alarm.
+    QCOMPARE(result.nestedArchiveCount(), std::size_t{1});
 }
 
 QTEST_MAIN(ArchiveFirstAssetDiscoveryTests)

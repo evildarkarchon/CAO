@@ -154,6 +154,9 @@ private slots:
     /// Verifies one failed conversion does not withhold references to Textures that converted.
     void failedConversionKeepsUnrelatedMeshReferences();
 
+    /// Verifies a failure in one Mod Root cannot withhold the same reference in a sibling root.
+    void failedConversionInAnotherModRootKeepsMeshReferences();
+
     /// Verifies the referenced-TGA rewrite still applies when no conversion failed.
     void successfulRunStillMaintainsMeshReferences();
 
@@ -297,6 +300,37 @@ void MainOptimizerTests::failedConversionKeepsUnrelatedMeshReferences()
     // would leave this Mesh naming a file the run itself removed.
     QVERIFY(maintenance.succeeded());
     QCOMPARE(savedTextureSlot(mesh), std::string("textures\\armor\\converted.dds"));
+}
+
+void MainOptimizerTests::failedConversionInAnotherModRootKeepsMeshReferences()
+{
+    QVERIFY(_temporaryDirectory.isValid());
+
+    const ScopedCurrentDirectory isolatedWorkingDirectory(_temporaryDirectory.path());
+
+    // Several Mods scans sibling Mod Roots in one pass, and the same Texture path routinely
+    // appears in more than one of them.
+    const auto root = std::filesystem::path(_temporaryDirectory.path().toStdWString());
+    const auto failedTexture = root / "mod-a" / "textures" / "armor" / "shared.tga";
+    const auto mesh = root / "mod-b" / "meshes" / "armor" / "shared-reference.nif";
+    writeFile(failedTexture, QByteArrayLiteral("malformed"));
+    writeMeshWithTexture(mesh, "textures\\armor\\shared.tga");
+
+    OptionsCAO options;
+    options.mode = OptionsCAO::SeveralMods;
+    options.userPath = _temporaryDirectory.path();
+    MainOptimizer optimizer(options);
+
+    const auto conversion = optimizer.process(routeMaintenanceOnly(failedTexture));
+    QVERIFY(!conversion.succeeded());
+
+    const auto maintenance = optimizer.process(routeMaintenanceOnly(mesh));
+
+    // mod-b's own copy of the Texture converted and its TGA source was deleted with it, so
+    // withholding this rewrite on the strength of mod-a's failure would leave the Mesh naming a
+    // file the run itself removed.
+    QVERIFY(maintenance.succeeded());
+    QCOMPARE(savedTextureSlot(mesh), std::string("textures\\armor\\shared.dds"));
 }
 
 void MainOptimizerTests::successfulRunStillMaintainsMeshReferences()

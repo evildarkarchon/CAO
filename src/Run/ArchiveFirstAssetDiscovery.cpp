@@ -52,10 +52,12 @@ std::span<const std::filesystem::path> EffectiveAssetTree::paths() const noexcep
 ArchiveFirstAssetDiscoveryResult::ArchiveFirstAssetDiscoveryResult(
     EffectiveAssetTree effectiveAssetTree,
     std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
-    std::vector<std::filesystem::path> unsupportedExplicitPaths) noexcept
+    std::vector<std::filesystem::path> unsupportedExplicitPaths,
+    const std::size_t nestedArchiveCount) noexcept
     : _effectiveAssetTree(std::move(effectiveAssetTree)),
       _skippedArchiveCounts(std::move(skippedArchiveCounts)),
-      _unsupportedExplicitPaths(std::move(unsupportedExplicitPaths)) {}
+      _unsupportedExplicitPaths(std::move(unsupportedExplicitPaths)),
+      _nestedArchiveCount(nestedArchiveCount) {}
 
 const EffectiveAssetTree& ArchiveFirstAssetDiscoveryResult::effectiveAssetTree() const noexcept {
     return _effectiveAssetTree;
@@ -72,6 +74,10 @@ std::span<const std::filesystem::path> ArchiveFirstAssetDiscoveryResult::unsuppo
     return _unsupportedExplicitPaths;
 }
 
+std::size_t ArchiveFirstAssetDiscoveryResult::nestedArchiveCount() const noexcept {
+    return _nestedArchiveCount;
+}
+
 ArchiveFirstAssetDiscovery::ArchiveFirstAssetDiscovery(routing::RoutingPolicy policy) noexcept
     : _policy(std::move(policy)) {}
 
@@ -79,6 +85,21 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     const std::span<const std::filesystem::path> roots,
     const ArchiveExtractionOperation& extractArchive) const {
     routing::AssetRouter router(_policy);
+    // Routing is filename-only, so recognizing an Archive is cheap enough to repeat during the
+    // definitive traversal. That traversal cannot ask the Archive pass instead: extraction can
+    // produce an Archive of its own, which by definition was never seen while Archives were being
+    // selected. Extracting that one in a second round would be wrong rather than merely expensive,
+    // because the game never reads an Archive nested inside another and so no such file is a real
+    // Archive Precedence participant.
+    const auto namesAnArchive = [&router](const std::filesystem::path& path) {
+        const auto decision = router.route(path);
+        if (const auto* routedAsset = std::get_if<routing::RoutedAsset>(&decision))
+            return routedAsset->kind() == routing::AssetKind::Archive;
+        if (const auto* skippedAsset = std::get_if<routing::SkippedAsset>(&decision))
+            return skippedAsset->kind() == routing::AssetKind::Archive;
+
+        return false;
+    };
     std::unordered_set<std::filesystem::path> recognizedArchivePaths;
     std::vector<routing::RoutedAsset> selectedArchives;
     std::vector<std::filesystem::path> extractionDestinations;
@@ -126,23 +147,47 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     if (!selectedArchives.empty() && !extractArchive(selectedArchives)) {
         return ArchiveFirstAssetDiscoveryResult(EffectiveAssetTree({}),
                                                 std::move(skippedArchiveCounts),
-                                                std::move(unsupportedExplicitPaths));
+                                                std::move(unsupportedExplicitPaths), 0);
     }
 
     // Extraction is synchronous so this is the single definitive view of all non-Archive paths.
+    // Every Archive is excluded by recognition rather than by the paths the Archive pass recorded,
+    // because an Archive that extraction itself produced was never offered for extraction: the
+    // post-extraction targets perform no Archive work, so admitting one would inflate the run's
+    // work total with an Asset nothing can execute and that the game would not have read anyway.
     std::vector<std::filesystem::path> effectivePaths;
+    // Distinct paths rather than visits: roots and an extraction destination can reach the same
+    // file, and a count that said two when one Archive was nested would misreport how malformed
+    // the mod actually is.
+    std::unordered_set<std::filesystem::path> nestedArchivePaths;
+    // Separates the two kinds of Archive this pass can see. One the Archive pass already recorded
+    // was either extracted or excluded by policy, and is accounted for either way; one it did not
+    // exists only because extraction wrote it, which is the malformed nesting worth counting.
+    const auto excludeArchive = [&](const std::filesystem::path& normalizedPath) {
+        if (recognizedArchivePaths.contains(normalizedPath)) return;
+
+        nestedArchivePaths.insert(normalizedPath);
+    };
     visitRegularFiles(roots, [&](const std::filesystem::path& path, const bool) {
-        if (!recognizedArchivePaths.contains(path.lexically_normal()))
-            effectivePaths.push_back(path);
+        if (namesAnArchive(path)) {
+            excludeArchive(path.lexically_normal());
+            return;
+        }
+        effectivePaths.push_back(path);
     });
     visitRegularFiles(extractionDestinations, [&](const std::filesystem::path& path, const bool) {
         const auto normalizedPath = path.lexically_normal();
-        if (recognizedArchivePaths.contains(normalizedPath)) return;
+        // An Asset the destination already held was never named by the caller, so it is neither
+        // the run's work nor the run's business to report, whatever kind it is.
         if (preExistingDestinationPaths.contains(normalizedPath)) return;
+        if (namesAnArchive(path)) {
+            excludeArchive(normalizedPath);
+            return;
+        }
         effectivePaths.push_back(path);
     });
-    return ArchiveFirstAssetDiscoveryResult(EffectiveAssetTree(std::move(effectivePaths)),
-                                            std::move(skippedArchiveCounts),
-                                            std::move(unsupportedExplicitPaths));
+    return ArchiveFirstAssetDiscoveryResult(
+        EffectiveAssetTree(std::move(effectivePaths)), std::move(skippedArchiveCounts),
+        std::move(unsupportedExplicitPaths), nestedArchivePaths.size());
 }
 }  // namespace cao::run
