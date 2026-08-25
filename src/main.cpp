@@ -11,8 +11,7 @@
 #include "Manager.h"
 #include "Run/ApplicationRunSetup.h"
 
-void displayError(const std::string &err)
-{
+void displayError(const std::string& err) {
 #ifdef GUI
     QMessageBox box(QMessageBox::Critical, "Unknown error", QString::fromStdString(err));
     box.exec();
@@ -23,8 +22,7 @@ void displayError(const std::string &err)
     PLOG_FATAL << err;
 }
 
-int main(int argc, char *argv[])
-{
+int main(int argc, char* argv[]) {
 #ifdef GUI
     QApplication app(argc, argv);
 #else
@@ -52,12 +50,12 @@ int main(int argc, char *argv[])
         cao::application::configureLogging(Profiles::logPath(), options.bDebugLog);
 
 #ifdef GUI
-        MainWindow *window = new MainWindow;
+        MainWindow* window = new MainWindow;
         window->show();
 #else
         const auto setup = cao::run::prepareApplicationRun(options);
         if (!setup.hasPolicy()) {
-            for (const auto &message : cao::run::policyValidationErrorMessages(setup.errors()))
+            for (const auto& message : cao::run::policyValidationErrorMessages(setup.errors()))
                 std::cerr << message.toStdString() << std::endl;
             return 1;
         }
@@ -65,7 +63,7 @@ int main(int argc, char *argv[])
         Manager manager(options, *setup.policy());
         manager.runOptimization();
 #endif
-    } catch (const std::exception &e) {
+    } catch (const std::exception& e) {
         displayError(e.what());
         return 1;
     }

@@ -16,36 +16,30 @@
 
 #include <stdexcept>
 
-namespace
-{
+namespace {
 QString applicationLogPath;
 }
 
-namespace cao::application
-{
-void configureLogging(const QString &logPath, const bool debugLog)
-{
+namespace cao::application {
+void configureLogging(const QString& logPath, const bool debugLog) {
     // A defensive repeat must not redirect or reconfigure the process-wide logger.
-    if (plog::get())
-        return;
+    if (plog::get()) return;
 
-    //Creating log folder
+    // Creating log folder
     const QDir dir;
     dir.mkpath(QFileInfo(logPath).path());
 
-    //Creating log file
+    // Creating log file
     QFile file(logPath);
 
     if (!file.open(QFile::ReadWrite | QFile::Append))
         throw std::runtime_error("Cannot open log file: " + logPath.toStdString());
 
     static plog::RollingFileAppender<plog::CustomDebugFormatter> debugAppender(qPrintable(logPath),
-                                                                               250'000,
-                                                                               1'000);
+                                                                               250'000, 1'000);
 
     static plog::RollingFileAppender<plog::CustomInfoFormatter> infoAppender(qPrintable(logPath),
-                                                                             250'000,
-                                                                             1'000);
+                                                                             250'000, 1'000);
 
     if (debugLog)
         plog::init(plog::Severity::verbose, &debugAppender);
@@ -55,8 +49,5 @@ void configureLogging(const QString &logPath, const bool debugLog)
     applicationLogPath = logPath;
 }
 
-QString configuredLogPath()
-{
-    return applicationLogPath;
-}
-}
+QString configuredLogPath() { return applicationLogPath; }
+}  // namespace cao::application

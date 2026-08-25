@@ -3,10 +3,8 @@
 #include <utility>
 #include <vector>
 
-namespace cao::run
-{
-namespace
-{
+namespace cao::run {
+namespace {
 /// Records the work phases a request with no requested work skips, in canonical order.
 ///
 /// Every phase reports the one reason the run actually knows: nothing was requested. A skipped
@@ -14,20 +12,16 @@ namespace
 /// cannot claim that no Archives were discovered, and one that skipped routing cannot claim there
 /// were no Routed Assets. Execution mode is deliberately not consulted either: a Dry Run that was
 /// asked for nothing is excluded by the empty request, not by its mode.
-void recordSkippedWorkPhases(std::vector<RunPhaseRecord> &phases)
-{
-    for (const auto phase : {RunPhase::DiscoveringArchives,
-                             RunPhase::ExtractingArchives,
-                             RunPhase::BuildingEffectiveAssetTree,
-                             RunPhase::ProcessingAssets,
+void recordSkippedWorkPhases(std::vector<RunPhaseRecord>& phases) {
+    for (const auto phase : {RunPhase::DiscoveringArchives, RunPhase::ExtractingArchives,
+                             RunPhase::BuildingEffectiveAssetTree, RunPhase::ProcessingAssets,
                              RunPhase::ArchiveFinalization})
         phases.push_back(RunPhaseRecord::skipped(phase, PhaseSkipReason::NoRequestedWork));
 }
-}
+}  // namespace
 
-OptimizationRunResult RunExecutor::execute(const RunRequest &request,
-                                           const RunServices &services) const
-{
+OptimizationRunResult RunExecutor::execute(const RunRequest& request,
+                                           const RunServices& services) const {
     std::vector<RunPhaseRecord> phases;
     phases.reserve(runPhaseSequence().size());
 
@@ -55,4 +49,4 @@ OptimizationRunResult RunExecutor::execute(const RunRequest &request,
 
     return OptimizationRunResult::terminal(outcome, finalPhase, std::move(phases));
 }
-}
+}  // namespace cao::run

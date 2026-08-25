@@ -11,37 +11,33 @@
 #include <filesystem>
 #include <vector>
 
-namespace
-{
+namespace {
 /// Returns the stable domain label used in one aggregate skip log message.
-QString skipReasonName(const cao::routing::SkipReason reason)
-{
+QString skipReasonName(const cao::routing::SkipReason reason) {
     switch (reason) {
-    case cao::routing::SkipReason::DisabledPhase:
-        return QStringLiteral("DisabledPhase");
-    case cao::routing::SkipReason::DisabledAssetKind:
-        return QStringLiteral("DisabledAssetKind");
-    case cao::routing::SkipReason::ExcludedAssetVariant:
-        return QStringLiteral("ExcludedAssetVariant");
+        case cao::routing::SkipReason::DisabledPhase:
+            return QStringLiteral("DisabledPhase");
+        case cao::routing::SkipReason::DisabledAssetKind:
+            return QStringLiteral("DisabledAssetKind");
+        case cao::routing::SkipReason::ExcludedAssetVariant:
+            return QStringLiteral("ExcludedAssetVariant");
     }
     return QStringLiteral("UnknownSkipReason");
 }
-}
+}  // namespace
 
-Manager::Manager(const OptionsCAO &opt, cao::routing::RoutingPolicy routingPolicy)
-  : _options(opt)
-  , _routingPolicy(std::move(routingPolicy))
+Manager::Manager(const OptionsCAO& opt, cao::routing::RoutingPolicy routingPolicy)
+    : _options(opt),
+      _routingPolicy(std::move(routingPolicy))
 
 {
     init();
 }
 
-void Manager::init()
-{
+void Manager::init() {
     PLOG_VERBOSE << "Checking settings...";
     const QString error = _options.isValid();
-    if (!error.isEmpty())
-    {
+    if (!error.isEmpty()) {
         PLOG_FATAL << error;
         throw std::runtime_error("Options are not valid." + error.toStdString());
     }
@@ -52,52 +48,46 @@ void Manager::init()
     listDirectories();
 }
 
-void Manager::listDirectories()
-{
+void Manager::listDirectories() {
     _modsToProcess.clear();
 
     if (_options.mode == OptionsCAO::SingleMod)
         _modsToProcess << _options.userPath;
 
-    else if (_options.mode == OptionsCAO::SeveralMods)
-    {
+    else if (_options.mode == OptionsCAO::SeveralMods) {
         const QDir dir(_options.userPath);
         for (auto subDir : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
-            if (!subDir.contains("separator")
-                && !_ignoredMods.contains(subDir, Qt::CaseInsensitive)) //Separators are empty directories used by MO2
+            if (!subDir.contains("separator") &&
+                !_ignoredMods.contains(
+                    subDir, Qt::CaseInsensitive))  // Separators are empty directories used by MO2
                 _modsToProcess << dir.filePath(subDir);
     }
 }
 
-void Manager::printProgress(const int &total, const QString &text = "Processing files")
-{
+void Manager::printProgress(const int& total, const QString& text = "Processing files") {
 #ifndef GUI
-    QTextStream(stdout) << "PROGRESS:|" << text << " - %v/%m - %p%|" << _numberCompletedFiles << '|' << total << endl;
+    QTextStream(stdout) << "PROGRESS:|" << text << " - %v/%m - %p%|" << _numberCompletedFiles << '|'
+                        << total << endl;
 #endif
 #ifdef GUI
     emit progressBarTextChanged(text + "- %v/%m - %p%", total, _numberCompletedFiles);
 #endif
 }
 
-void Manager::cancelProcess()
-{
-    _isCancelled = true;
-}
+void Manager::cancelProcess() { _isCancelled = true; }
 
-void Manager::readIgnoredMods()
-{
-    QFile &&ignoredModsFile = Profiles::getFile("ignoredMods.txt");
+void Manager::readIgnoredMods() {
+    QFile&& ignoredModsFile = Profiles::getFile("ignoredMods.txt");
     _ignoredMods = FilesystemOperations::readFile(ignoredModsFile);
 
-    if (_ignoredMods.isEmpty())
-    {
-        PLOG_WARNING << "ignoredMods.txt not found. All mods will be processed, including tools such as Nemesis or "
+    if (_ignoredMods.isEmpty()) {
+        PLOG_WARNING << "ignoredMods.txt not found. All mods will be processed, including tools "
+                        "such as Nemesis or "
                         "Bodyslide studio.";
     }
 }
 
-void Manager::runOptimization()
-{
+void Manager::runOptimization() {
     PLOG_DEBUG << "Game: " << Profiles::currentProfile();
     PLOG_INFO << "Processing: " + _options.userPath;
     PLOG_INFO << "Beginning...";
@@ -106,32 +96,30 @@ void Manager::runOptimization()
     BSAOptimizer bsaOptimizer;
     std::vector<std::filesystem::path> roots;
     roots.reserve(static_cast<std::size_t>(_modsToProcess.size()));
-    for (const auto &mod : _modsToProcess)
-        roots.emplace_back(mod.toStdWString());
+    for (const auto& mod : _modsToProcess) roots.emplace_back(mod.toStdWString());
 
     const cao::run::AssetRun assetRun(_routingPolicy);
     auto lastLooseProgress = QDateTime::currentDateTime();
     const auto result = assetRun.execute(
         roots,
         cao::run::AssetRunAdapters{
-            [&](const cao::routing::RoutedAsset &archive) {
-                bsaOptimizer.extract(
-                    QString::fromStdWString(archive.executionPath().wstring()),
-                    _options.bBsaDeleteBackup);
+            [&](const cao::routing::RoutedAsset& archive) {
+                bsaOptimizer.extract(QString::fromStdWString(archive.executionPath().wstring()),
+                                     _options.bBsaDeleteBackup);
             },
-            [&](const cao::routing::RoutedAsset &asset) {
+            [&](const cao::routing::RoutedAsset& asset) {
                 static_cast<void>(optimizer.process(asset));
             },
-            [&](const cao::run::AssetRunProgress &progress) {
+            [&](const cao::run::AssetRunProgress& progress) {
                 _numberCompletedFiles = static_cast<int>(progress.completed);
-                const auto text = progress.phase == cao::routing::RoutedAssetPhase::ArchiveExtraction
-                                      ? QStringLiteral("Extracting BSAs")
-                                      : QStringLiteral("Processing files");
+                const auto text =
+                    progress.phase == cao::routing::RoutedAssetPhase::ArchiveExtraction
+                        ? QStringLiteral("Extracting BSAs")
+                        : QStringLiteral("Processing files");
                 const auto now = QDateTime::currentDateTime();
-                const bool shouldReport = progress.phase
-                                              == cao::routing::RoutedAssetPhase::ArchiveExtraction
-                                          || progress.completed == progress.total
-                                          || now > lastLooseProgress.addMSecs(2000);
+                const bool shouldReport =
+                    progress.phase == cao::routing::RoutedAssetPhase::ArchiveExtraction ||
+                    progress.completed == progress.total || now > lastLooseProgress.addMSecs(2000);
                 if (shouldReport) {
                     // Loose Asset progress is throttled because GUI signal delivery and CLI
                     // output are comparatively expensive.
@@ -144,12 +132,10 @@ void Manager::runOptimization()
                 _numberCompletedFiles = 0;
                 printProgress(_modsToProcess.size(), "Packing BSAs");
 
-                //Packing BSAs
+                // Packing BSAs
                 if (_options.bBsaCreate)
-                    for (const auto &folder : _modsToProcess)
-                    {
-                        if (_isCancelled)
-                            return false;
+                    for (const auto& folder : _modsToProcess) {
+                        if (_isCancelled) return false;
 
                         if (QDir(folder).exists()) {
                             PLOG_INFO << "Creating BSA...";
@@ -157,14 +143,13 @@ void Manager::runOptimization()
                         }
                         ++_numberCompletedFiles;
                         printProgress(_modsToProcess.size(),
-                                      "Packing BSAs - Folder:  "
-                                          + QFileInfo(folder).fileName());
+                                      "Packing BSAs - Folder:  " + QFileInfo(folder).fileName());
                     }
 
                 FilesystemOperations::deleteEmptyDirectories(_options.userPath);
                 return true;
             },
-            [&](const cao::run::AssetRunDiagnostics &diagnostics) {
+            [&](const cao::run::AssetRunDiagnostics& diagnostics) {
                 for (const auto reason : {cao::routing::SkipReason::DisabledPhase,
                                           cao::routing::SkipReason::DisabledAssetKind,
                                           cao::routing::SkipReason::ExcludedAssetVariant}) {
@@ -175,14 +160,12 @@ void Manager::runOptimization()
                                          .arg(skipReasonName(reason));
                     }
                 }
-                for (const auto &path : diagnostics.unsupportedExplicitPaths()) {
-                    PLOG_ERROR << "Cannot process: "
-                                      + QString::fromStdWString(path.wstring());
+                for (const auto& path : diagnostics.unsupportedExplicitPaths()) {
+                    PLOG_ERROR << "Cannot process: " + QString::fromStdWString(path.wstring());
                 }
             }});
 
-    if (result.cancelled())
-        return;
+    if (result.cancelled()) return;
 
     PLOG_INFO << "Process completed<br><br><br>";
     emit end();

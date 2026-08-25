@@ -5,74 +5,54 @@
 #include <array>
 #include <utility>
 
-namespace cao::run
-{
-AssetRunResult::AssetRunResult(
-    routing::RoutingLedger ledger,
-    std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
-    std::vector<std::filesystem::path> unsupportedExplicitPaths,
-    const bool cancelled) noexcept
-    : _ledger(std::move(ledger))
-    , _skippedArchiveCounts(std::move(skippedArchiveCounts))
-    , _unsupportedExplicitPaths(std::move(unsupportedExplicitPaths))
-    , _cancelled(cancelled)
-{}
+namespace cao::run {
+AssetRunResult::AssetRunResult(routing::RoutingLedger ledger,
+                               std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
+                               std::vector<std::filesystem::path> unsupportedExplicitPaths,
+                               const bool cancelled) noexcept
+    : _ledger(std::move(ledger)),
+      _skippedArchiveCounts(std::move(skippedArchiveCounts)),
+      _unsupportedExplicitPaths(std::move(unsupportedExplicitPaths)),
+      _cancelled(cancelled) {}
 
-const routing::RoutingLedger &AssetRunResult::ledger() const noexcept
-{
-    return _ledger;
-}
+const routing::RoutingLedger& AssetRunResult::ledger() const noexcept { return _ledger; }
 
-bool AssetRunResult::cancelled() const noexcept
-{
-    return _cancelled;
-}
+bool AssetRunResult::cancelled() const noexcept { return _cancelled; }
 
-std::size_t AssetRunResult::skippedAssetCount(const routing::SkipReason reason) const noexcept
-{
+std::size_t AssetRunResult::skippedAssetCount(const routing::SkipReason reason) const noexcept {
     const auto archiveCount = _skippedArchiveCounts.find(reason);
-    return _ledger.skippedAssetCount(reason)
-           + (archiveCount == _skippedArchiveCounts.end() ? 0 : archiveCount->second);
+    return _ledger.skippedAssetCount(reason) +
+           (archiveCount == _skippedArchiveCounts.end() ? 0 : archiveCount->second);
 }
 
-std::span<const std::filesystem::path>
-AssetRunResult::unsupportedExplicitPaths() const noexcept
-{
+std::span<const std::filesystem::path> AssetRunResult::unsupportedExplicitPaths() const noexcept {
     return _unsupportedExplicitPaths;
 }
 
-AssetRunDiagnostics::AssetRunDiagnostics(const AssetRunResult &result) noexcept
-    : _result(result)
-{}
+AssetRunDiagnostics::AssetRunDiagnostics(const AssetRunResult& result) noexcept : _result(result) {}
 
 std::size_t AssetRunDiagnostics::skippedAssetCount(
-    const routing::SkipReason reason) const noexcept
-{
+    const routing::SkipReason reason) const noexcept {
     return _result.skippedAssetCount(reason);
 }
 
-std::span<const std::filesystem::path>
-AssetRunDiagnostics::unsupportedExplicitPaths() const noexcept
-{
+std::span<const std::filesystem::path> AssetRunDiagnostics::unsupportedExplicitPaths()
+    const noexcept {
     return _result.unsupportedExplicitPaths();
 }
 
-AssetRun::AssetRun(routing::RoutingPolicy policy) noexcept
-    : _policy(std::move(policy))
-{}
+AssetRun::AssetRun(routing::RoutingPolicy policy) noexcept : _policy(std::move(policy)) {}
 
-AssetRunResult AssetRun::execute(
-    const std::span<const std::filesystem::path> roots,
-    const AssetRunAdapters &adapters) const
-{
+AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> roots,
+                                 const AssetRunAdapters& adapters) const {
     const ArchiveFirstAssetDiscovery discovery(_policy);
     bool cancelled = false;
-    const auto discoveryResult = discovery.discover(
-        roots,
-        [&](const std::span<const routing::RoutedAsset> archives) {
+    const auto discoveryResult =
+        discovery.discover(roots, [&](const std::span<const routing::RoutedAsset> archives) {
             std::size_t completed = 0;
-            for (const auto &archive : archives) {
-                // An in-flight extraction must finish so cancellation cannot leave a partial Archive.
+            for (const auto& archive : archives) {
+                // An in-flight extraction must finish so cancellation cannot leave a partial
+                // Archive.
                 if (adapters.isCancelled && adapters.isCancelled()) {
                     cancelled = true;
                     break;
@@ -81,12 +61,11 @@ AssetRunResult AssetRun::execute(
                 ++completed;
                 if (adapters.reportProgress) {
                     adapters.reportProgress(AssetRunProgress{
-                        routing::RoutedAssetPhase::ArchiveExtraction,
-                        completed,
-                        archives.size()});
+                        routing::RoutedAssetPhase::ArchiveExtraction, completed, archives.size()});
                 }
-                // Re-sample after the in-flight extraction and its progress callback so cancellation
-                // during the final Archive can stop discovery before the definitive tree traversal.
+                // Re-sample after the in-flight extraction and its progress callback so
+                // cancellation during the final Archive can stop discovery before the definitive
+                // tree traversal.
                 if (adapters.isCancelled && adapters.isCancelled()) {
                     cancelled = true;
                     break;
@@ -96,26 +75,21 @@ AssetRunResult AssetRun::execute(
         });
     const routing::AssetRouter router(_policy);
     std::map<routing::SkipReason, std::size_t> skippedArchiveCounts;
-    for (const auto reason : {routing::SkipReason::DisabledPhase,
-                              routing::SkipReason::DisabledAssetKind,
-                              routing::SkipReason::ExcludedAssetVariant}) {
+    for (const auto reason :
+         {routing::SkipReason::DisabledPhase, routing::SkipReason::DisabledAssetKind,
+          routing::SkipReason::ExcludedAssetVariant}) {
         const auto count = discoveryResult.skippedArchiveCount(reason);
-        if (count != 0)
-            skippedArchiveCounts.emplace(reason, count);
+        if (count != 0) skippedArchiveCounts.emplace(reason, count);
     }
     auto result = AssetRunResult(
-        router.route(discoveryResult.effectiveAssetTree().paths()),
-        std::move(skippedArchiveCounts),
-        std::vector<std::filesystem::path>(
-            discoveryResult.unsupportedExplicitPaths().begin(),
-            discoveryResult.unsupportedExplicitPaths().end()),
+        router.route(discoveryResult.effectiveAssetTree().paths()), std::move(skippedArchiveCounts),
+        std::vector<std::filesystem::path>(discoveryResult.unsupportedExplicitPaths().begin(),
+                                           discoveryResult.unsupportedExplicitPaths().end()),
         cancelled);
-    constexpr std::array targetOrder{
-        routing::OptimizerTarget::Texture,
-        routing::OptimizerTarget::Mesh,
-        routing::OptimizerTarget::Animation};
-    if (result.cancelled())
-        return result;
+    constexpr std::array targetOrder{routing::OptimizerTarget::Texture,
+                                     routing::OptimizerTarget::Mesh,
+                                     routing::OptimizerTarget::Animation};
+    if (result.cancelled()) return result;
     const auto total = result.ledger().routedAssets().size();
     std::size_t completed = 0;
     for (const auto target : targetOrder) {
@@ -141,10 +115,10 @@ AssetRunResult AssetRun::execute(
 
     // The immutable policy is the run authority, so mismatched CLI or programmatic options cannot
     // re-enable Archive packing, creation, source deletion, or cleanup during Dry Run.
-    if (_policy.executionMode() == routing::ExecutionMode::Apply
-        && adapters.finalizeArchiveLifecycle) {
+    if (_policy.executionMode() == routing::ExecutionMode::Apply &&
+        adapters.finalizeArchiveLifecycle) {
         result._cancelled = !adapters.finalizeArchiveLifecycle();
     }
     return result;
 }
-}
+}  // namespace cao::run

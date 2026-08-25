@@ -9,14 +9,12 @@
 #include <string>
 #include <vector>
 
-namespace cao::run
-{
+namespace cao::run {
 /// The stable lifecycle stages every Optimization Run traverses, in traversal order.
 ///
 /// This is the canonical Run Phase of the project glossary and is distinct from
 /// `routing::RoutedAssetPhase`, which only groups Routed Assets into Archive or Loose Asset work.
-enum class RunPhase
-{
+enum class RunPhase {
     Preparing,
     DiscoveringArchives,
     ExtractingArchives,
@@ -30,11 +28,7 @@ enum class RunPhase
 [[nodiscard]] std::span<const RunPhase> runPhaseSequence() noexcept;
 
 /// Whether a traversed Run Phase performed its work or was reported inapplicable.
-enum class RunPhaseStatus
-{
-    Executed,
-    Skipped
-};
+enum class RunPhaseStatus { Executed, Skipped };
 
 /// Stable structured reasons a traversed Run Phase was inapplicable to the run.
 ///
@@ -45,19 +39,10 @@ enum class RunPhaseStatus
 ///
 /// This is distinct from `routing::SkipReason`, which explains why Routing Policy excludes one
 /// recognized Asset. See "Phase Skip Reason" and "Skip Reason" in the project glossary.
-enum class PhaseSkipReason
-{
-    NoRequestedWork
-};
+enum class PhaseSkipReason { NoRequestedWork };
 
 /// The terminal classification of one Optimization Run.
-enum class RunOutcome
-{
-    Succeeded,
-    CompletedWithFailures,
-    Cancelled,
-    Failed
-};
+enum class RunOutcome { Succeeded, CompletedWithFailures, Cancelled, Failed };
 
 /// The phase-local account of determinate work attempted during one Run Phase.
 ///
@@ -68,15 +53,13 @@ enum class RunOutcome
 ///
 /// This is the lifecycle-wide account and is distinct from `AssetRunProgress`, which the Asset Run
 /// orchestrator reports per Routed Asset attempt until that orchestrator is deleted.
-class RunProgress final
-{
-public:
+class RunProgress final {
+   public:
     /// Records a determinate phase account against its immutable total.
     ///
     /// Attempt counts are supplied rather than advanced through mutators, so the account stays an
     /// immutable value. Passing only a total yields the zeroed account a phase starts with.
-    [[nodiscard]] static RunProgress determinate(std::size_t total,
-                                                 std::size_t succeeded = 0,
+    [[nodiscard]] static RunProgress determinate(std::size_t total, std::size_t succeeded = 0,
                                                  std::size_t failed = 0) noexcept;
 
     /// Returns the immutable count of attempts the phase planned before it began.
@@ -91,7 +74,7 @@ public:
     /// Returns completed attempts, always the sum of succeeded and failed attempts.
     [[nodiscard]] std::size_t completed() const noexcept;
 
-private:
+   private:
     RunProgress(std::size_t total, std::size_t succeeded, std::size_t failed) noexcept;
 
     std::size_t _total{};
@@ -100,9 +83,8 @@ private:
 };
 
 /// One traversed Run Phase together with its status, skip reason, and phase-local progress.
-class RunPhaseRecord final
-{
-public:
+class RunPhaseRecord final {
+   public:
     /// Records one executed Run Phase and the determinate progress it accounted, if any.
     [[nodiscard]] static RunPhaseRecord executed(RunPhase phase,
                                                  std::optional<RunProgress> progress = {}) noexcept;
@@ -118,12 +100,10 @@ public:
     [[nodiscard]] std::optional<PhaseSkipReason> skipReason() const noexcept;
 
     /// Returns determinate phase-local progress. Indeterminate and skipped phases have none.
-    [[nodiscard]] const std::optional<RunProgress> &progress() const noexcept;
+    [[nodiscard]] const std::optional<RunProgress>& progress() const noexcept;
 
-private:
-    RunPhaseRecord(RunPhase phase,
-                   RunPhaseStatus status,
-                   std::optional<PhaseSkipReason> skipReason,
+   private:
+    RunPhaseRecord(RunPhase phase, RunPhaseStatus status, std::optional<PhaseSkipReason> skipReason,
                    std::optional<RunProgress> progress) noexcept;
 
     RunPhase _phase;
@@ -133,19 +113,14 @@ private:
 };
 
 /// Whether a Mod Selection names one Mod Root or the mods directory holding several of them.
-enum class ModSelectionKind
-{
-    SingleModRoot,
-    ChildModRoots
-};
+enum class ModSelectionKind { SingleModRoot, ChildModRoots };
 
 /// The requested scope of mod directories for one Optimization Run.
 ///
 /// A Mod Selection is user intent only. Preparing resolves it into the ordered, canonicalized,
 /// non-overlapping Mod Roots the run actually processes.
-class ModSelection final
-{
-public:
+class ModSelection final {
+   public:
     /// Selects one Mod Root processed as a single Archive Precedence scope.
     [[nodiscard]] static ModSelection singleModRoot(std::filesystem::path root);
 
@@ -155,9 +130,9 @@ public:
     [[nodiscard]] ModSelectionKind kind() const noexcept;
 
     /// Returns the selected directory: the Mod Root itself, or the mods directory holding them.
-    [[nodiscard]] const std::filesystem::path &directory() const noexcept;
+    [[nodiscard]] const std::filesystem::path& directory() const noexcept;
 
-private:
+   private:
     ModSelection(ModSelectionKind kind, std::filesystem::path directory);
 
     ModSelectionKind _kind;
@@ -177,20 +152,19 @@ private:
 /// This is the canonical Run Request of the project glossary. It is distinct from
 /// `routing::RoutingPolicyRequest`, which carries only the facts needed to compile one Routing
 /// Policy.
-class RunRequest final
-{
-public:
+class RunRequest final {
+   public:
     /// Owns one request's intent, retaining each requested work choice once in enumeration order.
     [[nodiscard]] static RunRequest create(std::string profileIdentity,
                                            routing::ExecutionMode executionMode,
                                            ModSelection modSelection,
                                            std::vector<routing::RequestedWork> requestedWork);
 
-    [[nodiscard]] const std::string &profileIdentity() const noexcept;
+    [[nodiscard]] const std::string& profileIdentity() const noexcept;
 
     [[nodiscard]] routing::ExecutionMode executionMode() const noexcept;
 
-    [[nodiscard]] const ModSelection &modSelection() const noexcept;
+    [[nodiscard]] const ModSelection& modSelection() const noexcept;
 
     /// Returns the deduplicated requested work in enumeration order, so runs are reproducible.
     [[nodiscard]] std::span<const routing::RequestedWork> requestedWork() const noexcept;
@@ -201,11 +175,9 @@ public:
     /// Reports whether the request selects any work at all.
     [[nodiscard]] bool hasRequestedWork() const noexcept;
 
-private:
-    RunRequest(std::string profileIdentity,
-               routing::ExecutionMode executionMode,
-               ModSelection modSelection,
-               std::vector<routing::RequestedWork> requestedWork);
+   private:
+    RunRequest(std::string profileIdentity, routing::ExecutionMode executionMode,
+               ModSelection modSelection, std::vector<routing::RequestedWork> requestedWork);
 
     std::string _profileIdentity;
     routing::ExecutionMode _executionMode;
@@ -217,17 +189,15 @@ private:
 ///
 /// It owns every value it exposes, so it stays readable after the Run Executor, its services, and
 /// the originating Run Request have been destroyed.
-class OptimizationRunResult final
-{
-public:
+class OptimizationRunResult final {
+   public:
     /// Takes ownership of the traversed phase records once the run reaches its terminal state.
     ///
     /// The result exposes no mutator, so committing it here is what makes it immutable. It is a
     /// named public factory rather than a friendship because the Run Executor, and later the
     /// asynchronous Optimization Run service, both commit terminal results from libraries that
     /// link this one.
-    [[nodiscard]] static OptimizationRunResult terminal(RunOutcome outcome,
-                                                        RunPhase finalPhase,
+    [[nodiscard]] static OptimizationRunResult terminal(RunOutcome outcome, RunPhase finalPhase,
                                                         std::vector<RunPhaseRecord> phases);
 
     [[nodiscard]] RunOutcome outcome() const noexcept;
@@ -246,15 +216,14 @@ public:
     [[nodiscard]] std::span<const RunPhaseRecord> phases() const noexcept;
 
     /// Returns the record for one Run Phase, or nullptr when the run never traversed it.
-    [[nodiscard]] const RunPhaseRecord *phase(RunPhase phase) const noexcept;
+    [[nodiscard]] const RunPhaseRecord* phase(RunPhase phase) const noexcept;
 
-private:
-    OptimizationRunResult(RunOutcome outcome,
-                          RunPhase finalPhase,
+   private:
+    OptimizationRunResult(RunOutcome outcome, RunPhase finalPhase,
                           std::vector<RunPhaseRecord> phases) noexcept;
 
     RunOutcome _outcome;
     RunPhase _finalPhase;
     std::vector<RunPhaseRecord> _phases;
 };
-}
+}  // namespace cao::run

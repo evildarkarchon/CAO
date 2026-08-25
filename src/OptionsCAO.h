@@ -19,21 +19,20 @@ namespace plog
     }
 }*/
 
-class OptionsCAO final : public QObject
-{
-public:
-    void parseArguments(const QStringList &args);
+class OptionsCAO final : public QObject {
+   public:
+    void parseArguments(const QStringList& args);
 
-    void saveToIni(QSettings *settings);
-    void readFromIni(QSettings *settings);
+    void saveToIni(QSettings* settings);
+    void readFromIni(QSettings* settings);
 #ifdef GUI
-    void saveToUi(Ui::MainWindow *ui);
-    void readFromUi(Ui::MainWindow *ui);
+    void saveToUi(Ui::MainWindow* ui);
+    void readFromUi(Ui::MainWindow* ui);
 #endif
 
     /*!
-   * \brief Checks if the current settings are allowed
-   */
+     * \brief Checks if the current settings are allowed
+     */
     QString isValid() const;
 
     /*--------------VARS-------------------*/
@@ -70,19 +69,15 @@ public:
     bool bDebugLog = false;
 
     /*!
-   * \brief The optimization mode
-   */
-    enum OptimizationMode
-    {
-        SingleMod = 0,
-        SeveralMods = 1
-    } mode;
+     * \brief The optimization mode
+     */
+    enum OptimizationMode { SingleMod = 0, SeveralMods = 1 } mode;
 
     Q_ENUM(OptimizationMode)
 
     /*!
-    * \brief The path given by the user
-    */
+     * \brief The path given by the user
+     */
     QString userPath;
     /*-----------END OF VARS---------------*/
 };

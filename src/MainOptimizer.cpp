@@ -7,11 +7,10 @@
 #include "MeshReferenceMaintenance.h"
 #include "TexturesOptimizer.h"
 
-namespace
-{
-/// Renames an unreadable optimizer input to a collision-safe path outside packable Asset extensions.
-void handleBadFile(const QString &path)
-{
+namespace {
+/// Renames an unreadable optimizer input to a collision-safe path outside packable Asset
+/// extensions.
+void handleBadFile(const QString& path) {
     auto quarantinePath = path + ".caobad";
     for (quint64 suffix = 1; QFileInfo::exists(quarantinePath); ++suffix)
         quarantinePath = path + ".caobad." + QString::number(suffix);
@@ -22,71 +21,61 @@ void handleBadFile(const QString &path)
         PLOG_ERROR << QString("Please remove %1").arg(path);
     }
 }
-}
+}  // namespace
 
-MainOptimizer::MainOptimizer(const OptionsCAO &optOptions)
-    : _optOptions(optOptions)
-    , _meshesOpt(
-          MeshesOptimizer(_optOptions.bMeshesHeadparts, optOptions.iMeshesOptimizationLevel, optOptions.bMeshesResave))
-    , _assetExecutor(*this)
-{
+MainOptimizer::MainOptimizer(const OptionsCAO& optOptions)
+    : _optOptions(optOptions),
+      _meshesOpt(MeshesOptimizer(_optOptions.bMeshesHeadparts, optOptions.iMeshesOptimizationLevel,
+                                 optOptions.bMeshesResave)),
+      _assetExecutor(*this) {
     addHeadparts();
     addLandscapeTextures();
 }
 
 cao::execution::AssetExecutionResult MainOptimizer::process(
-    const cao::routing::RoutedAsset &asset)
-{
+    const cao::routing::RoutedAsset& asset) {
     const auto result = _assetExecutor.execute(asset);
     if (!result.succeeded()) {
         PLOG_ERROR << "Cannot process Routed Asset: "
-                   << QString::fromStdWString(asset.executionPath().wstring())
-                   << "\n" << result.message();
+                   << QString::fromStdWString(asset.executionPath().wstring()) << "\n"
+                   << result.message();
 
         // Quarantine mutates the effective tree, so Dry Run only reports the load failure.
-        if (asset.executionMode() == cao::routing::ExecutionMode::Apply
-            && result.failure() == cao::execution::AssetExecutionFailure::LoadFailed) {
+        if (asset.executionMode() == cao::routing::ExecutionMode::Apply &&
+            result.failure() == cao::execution::AssetExecutionFailure::LoadFailed) {
             handleBadFile(QString::fromStdWString(asset.executionPath().wstring()));
         }
     }
     return result;
 }
 
-void MainOptimizer::addHeadparts()
-{
+void MainOptimizer::addHeadparts() {
     _meshesOpt.listHeadparts(_optOptions.userPath);
-    if (_optOptions.mode == OptionsCAO::SeveralMods)
-    {
+    if (_optOptions.mode == OptionsCAO::SeveralMods) {
         const QDir dir(_optOptions.userPath);
-        for (const auto &directory : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
+        for (const auto& directory : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
             _meshesOpt.listHeadparts(dir.filePath(directory));
     }
 }
 
-void MainOptimizer::addLandscapeTextures()
-{
+void MainOptimizer::addLandscapeTextures() {
     _meshesOpt.listHeadparts(_optOptions.userPath);
-    if (_optOptions.mode == OptionsCAO::SeveralMods)
-    {
+    if (_optOptions.mode == OptionsCAO::SeveralMods) {
         const QDir dir(_optOptions.userPath);
-        for (const auto &directory : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
+        for (const auto& directory : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
             _meshesOpt.listHeadparts(dir.filePath(directory));
     }
 }
 
-bool MainOptimizer::loadTexture(const std::filesystem::path &path,
-                                const cao::routing::TextureVariant variant)
-{
-    const auto type = variant == cao::routing::TextureVariant::Native
-                          ? TexturesOptimizer::DDS
-                          : TexturesOptimizer::TGA;
+bool MainOptimizer::loadTexture(const std::filesystem::path& path,
+                                const cao::routing::TextureVariant variant) {
+    const auto type = variant == cao::routing::TextureVariant::Native ? TexturesOptimizer::DDS
+                                                                      : TexturesOptimizer::TGA;
     return _texturesOpt.open(QString::fromStdWString(path.wstring()), type);
 }
 
 cao::execution::OperationResult MainOptimizer::optimizeTexture(
-    const cao::routing::AssetOperations &operations,
-    const cao::routing::ExecutionMode mode)
-{
+    const cao::routing::AssetOperations& operations, const cao::routing::ExecutionMode mode) {
     const bool optimize = operations.contains(cao::routing::AssetOperation::Optimization);
     const bool convert = operations.contains(cao::routing::AssetOperation::Conversion);
     std::optional<size_t> width;
@@ -114,19 +103,16 @@ cao::execution::OperationResult MainOptimizer::optimizeTexture(
     return cao::execution::OperationResult::unchanged();
 }
 
-bool MainOptimizer::saveTexture(const std::filesystem::path &path)
-{
+bool MainOptimizer::saveTexture(const std::filesystem::path& path) {
     return _texturesOpt.saveToFile(QString::fromStdWString(path.wstring()));
 }
 
-bool MainOptimizer::removeTexture(const std::filesystem::path &path)
-{
+bool MainOptimizer::removeTexture(const std::filesystem::path& path) {
     return QFile(QString::fromStdWString(path.wstring())).remove();
 }
 
-bool MainOptimizer::loadMesh(const std::filesystem::path &path,
-                             const cao::routing::MeshVariant variant)
-{
+bool MainOptimizer::loadMesh(const std::filesystem::path& path,
+                             const cao::routing::MeshVariant variant) {
     auto [loaded, mesh] = _meshesOpt.loadMesh(QString::fromStdWString(path.wstring()), variant);
     if (!loaded) {
         _loadedMesh.reset();
@@ -138,26 +124,18 @@ bool MainOptimizer::loadMesh(const std::filesystem::path &path,
 }
 
 cao::execution::OperationResult MainOptimizer::optimizeMesh(
-    const std::filesystem::path &path,
-    const cao::routing::ExecutionMode mode)
-{
-    if (!_loadedMesh)
-        return cao::execution::OperationResult::failed("No Mesh is loaded.");
-    return _meshesOpt.optimize(*_loadedMesh,
-                              QString::fromStdWString(path.wstring()),
-                              mode);
+    const std::filesystem::path& path, const cao::routing::ExecutionMode mode) {
+    if (!_loadedMesh) return cao::execution::OperationResult::failed("No Mesh is loaded.");
+    return _meshesOpt.optimize(*_loadedMesh, QString::fromStdWString(path.wstring()), mode);
 }
 
 cao::execution::OperationResult MainOptimizer::maintainMeshReferences(
-    const cao::routing::ExecutionMode mode)
-{
-    if (!_loadedMesh)
-        return cao::execution::OperationResult::failed("No Mesh is loaded.");
+    const cao::routing::ExecutionMode mode) {
+    if (!_loadedMesh) return cao::execution::OperationResult::failed("No Mesh is loaded.");
 
     if (mode == cao::routing::ExecutionMode::DryRun) {
         const bool wouldChange = cao::execution::hasReferencedTgaTexture(*_loadedMesh);
-        PLOG_INFO_IF(wouldChange)
-            << "Referenced TGA Texture names would be replaced with DDS.";
+        PLOG_INFO_IF(wouldChange) << "Referenced TGA Texture names would be replaced with DDS.";
         return wouldChange ? cao::execution::OperationResult::changed()
                            : cao::execution::OperationResult::unchanged();
     }
@@ -168,16 +146,13 @@ cao::execution::OperationResult MainOptimizer::maintainMeshReferences(
                    : cao::execution::OperationResult::unchanged();
 }
 
-bool MainOptimizer::saveMesh(const std::filesystem::path &path)
-{
-    return _loadedMesh
-           && _meshesOpt.saveMesh(*_loadedMesh, QString::fromStdWString(path.wstring()));
+bool MainOptimizer::saveMesh(const std::filesystem::path& path) {
+    return _loadedMesh &&
+           _meshesOpt.saveMesh(*_loadedMesh, QString::fromStdWString(path.wstring()));
 }
 
 cao::execution::OperationResult MainOptimizer::optimizeAnimation(
-    const std::filesystem::path &path,
-    const cao::routing::ExecutionMode mode)
-{
+    const std::filesystem::path& path, const cao::routing::ExecutionMode mode) {
     const auto executionPath = QString::fromStdWString(path.wstring());
     if (mode == cao::routing::ExecutionMode::DryRun) {
         PLOG_INFO << executionPath + " would be converted to the appropriate format.";

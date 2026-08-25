@@ -7,15 +7,14 @@
 
 class QString;
 
-namespace cao::application
-{
+namespace cao::application {
 /**
  * Configures the process-wide application logger if it has not already been configured.
  * The first successful call owns the logger path and severity for the lifetime of the process.
  * @throws std::runtime_error when the log file cannot be opened.
  */
-void configureLogging(const QString &logPath, bool debugLog);
+void configureLogging(const QString& logPath, bool debugLog);
 
 /** Returns the immutable path selected by the successful bootstrap configuration. */
 [[nodiscard]] QString configuredLogPath();
-}
+}  // namespace cao::application

@@ -10,14 +10,13 @@
  * \brief The AnimationsOptimizer class will handle all operations related to animations (hkx files)
  */
 
-class AnimationsOptimizer final : public QObject
-{
-public:
+class AnimationsOptimizer final : public QObject {
+   public:
     /// Ports an Oldrim Animation with the Havok post-processor and reports every execution failure.
     /// Returns true only after the converted output replaces the original execution path.
-    [[nodiscard]] bool convert(const QString &filePath);
+    [[nodiscard]] bool convert(const QString& filePath);
 
-private:
+   private:
     bool hkxcmdFound = false;
     std::once_flag onceFlag;
 

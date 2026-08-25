@@ -9,21 +9,19 @@
 #include "pch.h"
 #include "ui_mainWindow.h"
 
-namespace Ui
-{
+namespace Ui {
 class MainWindow;
 }
 
-class MainWindow final : public QMainWindow
-{
+class MainWindow final : public QMainWindow {
     Q_DECLARE_TR_FUNCTIONS(MainWindow)
 
-public:
+   public:
     MainWindow();
     ~MainWindow();
 
-private:
-    Ui::MainWindow *_ui;
+   private:
+    Ui::MainWindow* _ui;
 
     bool _bLockVariables = false;
 
@@ -32,25 +30,25 @@ private:
     void refreshProfiles();
     void createProfile();
 
-    void setDarkTheme(const bool &enabled);
+    void setDarkTheme(const bool& enabled);
 
     void resetUi() const;
 
-    void setGameMode(const QString &mode);
+    void setGameMode(const QString& mode);
 
-    void showTutorialWindow(const QString &title, const QString &text);
+    void showTutorialWindow(const QString& title, const QString& text);
 
     void updateLog() const;
     /// Compiles and validates one Routing Policy before constructing the discovery-owning Manager.
     void initProcess();
     void endProcess();
-    void readProgress(const QString &text, const int &max, const int &value) const;
+    void readProgress(const QString& text, const int& max, const int& value) const;
 
-    void setAdvancedSettingsEnabled(const bool &value);
+    void setAdvancedSettingsEnabled(const bool& value);
 
-    void closeEvent(QCloseEvent *event);
-    void dragEnterEvent(QDragEnterEvent *e);
-    void dropEvent(QDropEvent *e);
+    void closeEvent(QCloseEvent* event);
+    void dragEnterEvent(QDragEnterEvent* e);
+    void dropEvent(QDropEvent* e);
 
     void firstStart();
 
@@ -59,6 +57,6 @@ private:
     OptionsCAO _options;
     std::unique_ptr<Manager> _caoProcess;
     bool _showTutorials;
-    TexturesFormatSelectDialog *texturesFormatDialog;
+    TexturesFormatSelectDialog* texturesFormatDialog;
     QTimer logTimer;
 };

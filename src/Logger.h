@@ -16,30 +16,39 @@
 #include <string>
 
 namespace plog {
-class CustomDebugFormatter
-{
-public:
-    static util::nstring header()
-    {
-        //For spacing
+class CustomDebugFormatter {
+   public:
+    static util::nstring header() {
+        // For spacing
         return util::nstring(L"<style>html{line-height:1.5rem}pre{line-height:1rem}</style>");
     }
 
-    static util::nstring format(const Record &record)
-    {
+    static util::nstring format(const Record& record) {
         util::nostringstream ss;
 
         util::nstring color;
 
-        switch (record.getSeverity())
-        {
-            case none: break;
-            case fatal: color = L"<font color=DarkRed>"; break;
-            case error: color = L"<font color=Red>"; break;
-            case warning: color = L"<font color=Orange>"; break;
-            case info: color = L"<font color=Green>"; break;
-            case debug: color = L"<font color=Blue>"; break;
-            case verbose: color = L"<font color=Purple>"; break;
+        switch (record.getSeverity()) {
+            case none:
+                break;
+            case fatal:
+                color = L"<font color=DarkRed>";
+                break;
+            case error:
+                color = L"<font color=Red>";
+                break;
+            case warning:
+                color = L"<font color=Orange>";
+                break;
+            case info:
+                color = L"<font color=Green>";
+                break;
+            case debug:
+                color = L"<font color=Blue>";
+                break;
+            case verbose:
+                color = L"<font color=Purple>";
+                break;
         }
 
         tm t;
@@ -49,47 +58,58 @@ public:
 
         ss << PLOG_NSTR("<br>")
            << color
-           //Time
-           << t.tm_year + 1900 << "-" << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_mon + 1
-           << PLOG_NSTR("-") << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_mday << PLOG_NSTR(" ")
-           << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_hour << PLOG_NSTR(":")
-           << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_min << PLOG_NSTR(":")
-           << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_sec << PLOG_NSTR(".")
-           << std::setfill(PLOG_NSTR('0')) << std::setw(3) << record.getTime().millitm << PLOG_NSTR(" ")
-           << std::setfill(PLOG_NSTR(' ')) << std::setw(5)
+           // Time
+           << t.tm_year + 1900 << "-" << std::setfill(PLOG_NSTR('0')) << std::setw(2)
+           << t.tm_mon + 1 << PLOG_NSTR("-") << std::setfill(PLOG_NSTR('0')) << std::setw(2)
+           << t.tm_mday << PLOG_NSTR(" ") << std::setfill(PLOG_NSTR('0')) << std::setw(2)
+           << t.tm_hour << PLOG_NSTR(":") << std::setfill(PLOG_NSTR('0')) << std::setw(2)
+           << t.tm_min << PLOG_NSTR(":") << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_sec
+           << PLOG_NSTR(".") << std::setfill(PLOG_NSTR('0')) << std::setw(3)
+           << record.getTime().millitm << PLOG_NSTR(" ") << std::setfill(PLOG_NSTR(' '))
+           << std::setw(5)
            << std::left
-           //Actual message
-           << severityToString(record.getSeverity()) << PLOG_NSTR('{') << record.getFunc() << PLOG_NSTR('@')
-           << record.getLine() << PLOG_NSTR("} ") << message << PLOG_NSTR("</font>");
+           // Actual message
+           << severityToString(record.getSeverity()) << PLOG_NSTR('{') << record.getFunc()
+           << PLOG_NSTR('@') << record.getLine() << PLOG_NSTR("} ") << message
+           << PLOG_NSTR("</font>");
 
         return ss.str();
     }
 };
 
-class CustomInfoFormatter
-{
-public:
-    static util::nstring header()
-    {
-        //For spacing
+class CustomInfoFormatter {
+   public:
+    static util::nstring header() {
+        // For spacing
         return util::nstring(L"<style>html{line-height:1.5rem}pre{line-height:1rem}</style>");
     }
 
-    static util::nstring format(const Record &record)
-    {
+    static util::nstring format(const Record& record) {
         util::nostringstream ss;
 
         util::nstring color;
 
-        switch (record.getSeverity())
-        {
-            case none: break;
-            case fatal: color = L"<font color=DarkRed>"; break;
-            case error: color = L"<font color=Red>"; break;
-            case warning: color = L"<font color=Orange>"; break;
-            case info: color = L"<font color=Green>"; break;
-            case debug: color = L"<font color=Blue>"; break;
-            case verbose: color = L"<font color=Purple>"; break;
+        switch (record.getSeverity()) {
+            case none:
+                break;
+            case fatal:
+                color = L"<font color=DarkRed>";
+                break;
+            case error:
+                color = L"<font color=Red>";
+                break;
+            case warning:
+                color = L"<font color=Orange>";
+                break;
+            case info:
+                color = L"<font color=Green>";
+                break;
+            case debug:
+                color = L"<font color=Blue>";
+                break;
+            case verbose:
+                color = L"<font color=Purple>";
+                break;
         }
 
         tm t;
@@ -97,18 +117,18 @@ public:
 
         ss << PLOG_NSTR("<br>")
            << color
-           //Time
-           << t.tm_year + 1900 << "-" << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_mon + 1 << PLOG_NSTR("-")
-           << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_mday << PLOG_NSTR(" ")
-           << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_hour << PLOG_NSTR(":")
-           << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_min << PLOG_NSTR(":") << std::setfill(PLOG_NSTR('0'))
-           << std::setw(2) << t.tm_sec
+           // Time
+           << t.tm_year + 1900 << "-" << std::setfill(PLOG_NSTR('0')) << std::setw(2)
+           << t.tm_mon + 1 << PLOG_NSTR("-") << std::setfill(PLOG_NSTR('0')) << std::setw(2)
+           << t.tm_mday << PLOG_NSTR(" ") << std::setfill(PLOG_NSTR('0')) << std::setw(2)
+           << t.tm_hour << PLOG_NSTR(":") << std::setfill(PLOG_NSTR('0')) << std::setw(2)
+           << t.tm_min << PLOG_NSTR(":") << std::setfill(PLOG_NSTR('0')) << std::setw(2) << t.tm_sec
            << std::left
-           //Actual message
-           << PLOG_NSTR(" [") << severityToString(record.getSeverity()) << PLOG_NSTR("] ") << record.getMessage()
-           << PLOG_NSTR("</font>");
+           // Actual message
+           << PLOG_NSTR(" [") << severityToString(record.getSeverity()) << PLOG_NSTR("] ")
+           << record.getMessage() << PLOG_NSTR("</font>");
 
         return ss.str();
     }
 };
-} // namespace plog
+}  // namespace plog

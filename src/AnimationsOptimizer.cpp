@@ -1,22 +1,20 @@
 /*!
-  * Stripped down version of this file https://github.com/aerisarn/ck-cmd/blob/master/src/commands/hkx/Convert.cpp
-  */
+ * Stripped down version of this file
+ * https://github.com/aerisarn/ck-cmd/blob/master/src/commands/hkx/Convert.cpp
+ */
 
 #include "AnimationsOptimizer.h"
 
-bool AnimationsOptimizer::convert(const QString &filePath)
-{
+bool AnimationsOptimizer::convert(const QString& filePath) {
     std::call_once(onceFlag, [this] {
         hkxcmdFound = QFile::exists(hkxcmdPath);
-        if (!hkxcmdFound)
-        {
+        if (!hkxcmdFound) {
             PLOG_ERROR << "HKXCMD not found. Animations won't be processed";
             return;
         }
     });
 
-    if (!hkxcmdFound)
-        return false;
+    if (!hkxcmdFound) return false;
 
     const QString tempHkx = "___tempAnimFile.hkx";
     const QString outHkx = "___tempAnimFile-out.hkx";
@@ -41,13 +39,15 @@ bool AnimationsOptimizer::convert(const QString &filePath)
     const bool success = !output.contains("not loadable");
 
     if (!success) {
-        PLOG_WARNING << QString("Cannot convert %1, it is probably already converted.").arg(filePath);
+        PLOG_WARNING
+            << QString("Cannot convert %1, it is probably already converted.").arg(filePath);
         return false;
     }
 
     QFile::remove(filePath);
     if (!QFile::rename(outHkx, filePath)) {
-        PLOG_ERROR << QString("Failed to convert %1: Cannot copy it back to its path").arg(filePath);
+        PLOG_ERROR
+            << QString("Failed to convert %1: Cannot copy it back to its path").arg(filePath);
         return false;
     }
 
