@@ -132,7 +132,221 @@ private slots:
 
     /// Verifies an Archive that extraction itself produced never enters the Effective Asset Tree.
     void archivesProducedByExtractionStayOutOfTheTree();
+
+    /// Verifies linked files cannot make discovery extract or optimize outside the Mod Root.
+    void escapingFileLinksAreExcluded();
+
+    /// Covers contained and escaping directory aliases for each available link type.
+    void directoryLinksAreExcluded_data();
+
+    /// Verifies directory links, including Windows junctions, are never traversed.
+    void directoryLinksAreExcluded();
+
+    /// Verifies a contained file link remains eligible for ordinary Loose Asset work.
+    void containedFileLinkIsDiscovered();
+
+    /// Verifies unresolved links cannot silently disappear from the run's diagnostics.
+    void danglingFileLinkIsDiagnosed();
+
+    /// Verifies the definitive pass applies containment to links produced by extraction.
+    void extractionProducedLinksAreExcluded();
+
+    /// Verifies a selected directory alias is resolved once, even if extraction retargets it.
+    void selectedDirectoryAliasKeepsItsOriginalTarget();
 };
+
+void ArchiveFirstAssetDiscoveryTests::escapingFileLinksAreExcluded()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const auto base = std::filesystem::path(temporaryDirectory.path().toStdWString());
+    const auto root = base / "mod";
+    const auto outside = base / "outside";
+    writeFile(root / "inside.dds", "inside");
+    writeFile(outside / "outside.dds", "outside");
+    writeFile(outside / "outside.bsa", "outside archive");
+    std::error_code error;
+    std::filesystem::create_symlink(outside / "outside.dds", root / "linked.dds", error);
+    if (error) QSKIP("File symlink creation is unavailable on this host");
+    std::filesystem::create_symlink(outside / "outside.bsa", root / "linked.bsa", error);
+    QVERIFY2(!error, error.message().c_str());
+
+    std::size_t selectedArchiveCount = 0;
+    const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy());
+    const std::array roots{root};
+    const auto result = discovery.discover(roots, [&](const std::span<const RoutedAsset> archives) {
+        selectedArchiveCount += archives.size();
+        return true;
+    });
+
+    QVERIFY(std::filesystem::remove(root / "linked.dds", error));
+    QVERIFY(std::filesystem::remove(root / "linked.bsa", error));
+    QCOMPARE(selectedArchiveCount, std::size_t{0});
+    QCOMPARE(result.effectiveAssetTree().paths().size(), std::size_t{1});
+    QCOMPARE(result.effectiveAssetTree().paths().front(), root / "inside.dds");
+    QCOMPARE(result.diagnostics().size(), std::size_t{2});
+    for (const auto& diagnostic : result.diagnostics()) {
+        QCOMPARE(diagnostic.code(), cao::run::RunDiagnosticCode::LinkedEntryExcluded);
+        QCOMPARE(diagnostic.phase(), cao::run::RunPhase::DiscoveringArchives);
+        QVERIFY(diagnostic.path() == root / "linked.dds" || diagnostic.path() == root / "linked.bsa");
+        QVERIFY(!diagnostic.detail().empty());
+    }
+}
+
+void ArchiveFirstAssetDiscoveryTests::directoryLinksAreExcluded_data()
+{
+    QTest::addColumn<bool>("junction");
+    QTest::addColumn<bool>("contained");
+    QTest::newRow("escaping symlink") << false << false;
+    QTest::newRow("contained symlink") << false << true;
+#ifdef _WIN32
+    QTest::newRow("escaping junction") << true << false;
+    QTest::newRow("contained junction") << true << true;
+#endif
+}
+
+void ArchiveFirstAssetDiscoveryTests::directoryLinksAreExcluded()
+{
+    QFETCH(bool, junction);
+    QFETCH(bool, contained);
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const auto base = std::filesystem::path(temporaryDirectory.path().toStdWString());
+    const auto root = base / "mod";
+    const auto target = (contained ? root : base) / "target";
+    const auto link = root / "linked";
+    writeFile(root / "inside.dds", "inside");
+    writeFile(target / "target.dds", "linked content");
+    std::error_code error;
+    if (junction) {
+        // Junction creation needs no symlink privilege, so Windows CI exercises reparse traversal
+        // even when its account cannot create symbolic links.
+        QProcess process;
+        auto quotedPath = [](const std::filesystem::path& path) {
+            auto value = QString::fromStdWString(path.wstring());
+            value.replace("'", "''");
+            return "'" + value + "'";
+        };
+        process.start("powershell.exe", {"-NoProfile", "-NonInteractive", "-Command",
+            "New-Item -ItemType Junction -Path " + quotedPath(link) + " -Value " +
+            quotedPath(target) + " -ErrorAction Stop | Out-Null"});
+        QVERIFY(process.waitForFinished());
+        QCOMPARE(process.exitCode(), 0);
+    } else {
+        std::filesystem::create_directory_symlink(target, link, error);
+        if (error) QSKIP("Directory symlink creation is unavailable on this host");
+    }
+
+    const ArchiveFirstAssetDiscovery discovery(archiveDisabledPolicy());
+    const std::array roots{root};
+    const auto result = discovery.discover(roots, [](auto) { return true; });
+
+    // Remove only the link before QTemporaryDir cleanup; its target is separate fixture content.
+    QVERIFY(std::filesystem::remove(link, error));
+    QVERIFY2(!error, error.message().c_str());
+    QCOMPARE(pathCount(result.effectiveAssetTree().paths(), link / "target.dds"), std::size_t{0});
+    QCOMPARE(result.effectiveAssetTree().paths().size(), contained ? std::size_t{2} : std::size_t{1});
+    QCOMPARE(result.diagnostics().size(), std::size_t{1});
+    QCOMPARE(result.diagnostics().front().code(), cao::run::RunDiagnosticCode::LinkedEntryExcluded);
+    QCOMPARE(result.diagnostics().front().path(), link);
+}
+
+void ArchiveFirstAssetDiscoveryTests::containedFileLinkIsDiscovered()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString());
+    writeFile(root / "original.dds", "inside");
+    std::error_code error;
+    std::filesystem::create_symlink(root / "original.dds", root / "linked.dds", error);
+    if (error) QSKIP("File symlink creation is unavailable on this host");
+
+    const ArchiveFirstAssetDiscovery discovery(archiveDisabledPolicy());
+    const std::array roots{root};
+    const auto result = discovery.discover(roots, [](auto) { return true; });
+    QVERIFY(std::filesystem::remove(root / "linked.dds", error));
+    QCOMPARE(pathCount(result.effectiveAssetTree().paths(), root / "linked.dds"), std::size_t{1});
+    QCOMPARE(result.effectiveAssetTree().paths().size(), std::size_t{2});
+    QVERIFY(result.diagnostics().empty());
+}
+
+void ArchiveFirstAssetDiscoveryTests::danglingFileLinkIsDiagnosed()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString());
+    const auto link = root / "dangling.dds";
+    std::error_code error;
+    std::filesystem::create_symlink(root / "missing.dds", link, error);
+    if (error) QSKIP("File symlink creation is unavailable on this host");
+
+    const ArchiveFirstAssetDiscovery discovery(archiveDisabledPolicy());
+    const std::array roots{root};
+    const auto result = discovery.discover(roots, [](auto) { return true; });
+    QVERIFY(std::filesystem::remove(link, error));
+    QVERIFY(result.effectiveAssetTree().paths().empty());
+    QCOMPARE(result.diagnostics().size(), std::size_t{1});
+    QCOMPARE(result.diagnostics().front().code(), cao::run::RunDiagnosticCode::LinkedEntryExcluded);
+    QCOMPARE(result.diagnostics().front().path(), link);
+}
+
+void ArchiveFirstAssetDiscoveryTests::extractionProducedLinksAreExcluded()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const auto base = std::filesystem::path(temporaryDirectory.path().toStdWString());
+    const auto root = base / "mod";
+    const auto outside = base / "outside.dds";
+    const auto link = root / "extracted.dds";
+    writeFile(root / "content.bsa", "archive");
+    writeFile(outside, "outside");
+    std::error_code error;
+    std::filesystem::create_symlink(outside, link, error);
+    if (error) QSKIP("File symlink creation is unavailable on this host");
+    QVERIFY(std::filesystem::remove(link, error));
+
+    const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy());
+    const std::array roots{root};
+    const auto result = discovery.discover(roots, [&](auto) {
+        std::filesystem::create_symlink(outside, link, error);
+        return !error;
+    });
+    QVERIFY2(!error, error.message().c_str());
+    QVERIFY(std::filesystem::remove(link, error));
+    QVERIFY(result.effectiveAssetTree().paths().empty());
+    QCOMPARE(result.diagnostics().size(), std::size_t{1});
+    QCOMPARE(result.diagnostics().front().phase(), cao::run::RunPhase::BuildingEffectiveAssetTree);
+    QCOMPARE(result.diagnostics().front().path(), link);
+}
+
+void ArchiveFirstAssetDiscoveryTests::selectedDirectoryAliasKeepsItsOriginalTarget()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const auto base = std::filesystem::path(temporaryDirectory.path().toStdWString());
+    const auto original = base / "original";
+    const auto replacement = base / "replacement";
+    const auto alias = base / "selected";
+    writeFile(original / "content.bsa", "archive");
+    writeFile(original / "original.dds", "original");
+    writeFile(replacement / "replacement.dds", "replacement");
+    std::error_code error;
+    std::filesystem::create_directory_symlink(original, alias, error);
+    if (error) QSKIP("Directory symlink creation is unavailable on this host");
+
+    const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy());
+    const std::array roots{alias};
+    const auto result = discovery.discover(roots, [&](auto) {
+        if (!std::filesystem::remove(alias, error)) return false;
+        std::filesystem::create_directory_symlink(replacement, alias, error);
+        return !error;
+    });
+    QVERIFY2(!error, error.message().c_str());
+    QVERIFY(std::filesystem::remove(alias, error));
+    QVERIFY(!result.cancelled());
+    QCOMPARE(result.effectiveAssetTree().paths().size(), std::size_t{1});
+    QCOMPARE(result.effectiveAssetTree().paths().front(), original / "original.dds");
+}
 
 void ArchiveFirstAssetDiscoveryTests::extractsEnabledArchivesBeforeDefinitiveDiscovery()
 {

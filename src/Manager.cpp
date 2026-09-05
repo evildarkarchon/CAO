@@ -157,6 +157,11 @@ bool Manager::runOptimization() {
                 return true;
             },
             [&](const cao::run::AssetRunDiagnostics& diagnostics) {
+                for (const auto& diagnostic : diagnostics.diagnostics()) {
+                    PLOG_WARNING << QStringLiteral("%1: %2")
+                                        .arg(QString::fromStdString(diagnostic.detail()))
+                                        .arg(QString::fromStdWString(diagnostic.path().wstring()));
+                }
                 for (const auto reason : {cao::routing::SkipReason::DisabledPhase,
                                           cao::routing::SkipReason::DisabledAssetKind,
                                           cao::routing::SkipReason::ExcludedAssetVariant}) {

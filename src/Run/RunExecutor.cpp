@@ -29,7 +29,21 @@ std::string relativeName(const std::filesystem::path& path) {
     return std::string(utf8.begin(), utf8.end());
 }
 
-/// Resolves existing roots without recursion or mutation; traversal errors fail all preparation.
+/// Tests existing directory identities, including platform-specific case and path aliases.
+/// Filesystem lookup failures propagate to Preparing instead of accepting uncertain containment.
+bool containsDirectory(const std::filesystem::path& boundary, std::filesystem::path directory) {
+    // String prefixes confuse siblings such as Mod and Mod2, and cannot recognize filesystem
+    // aliases.
+    for (;;) {
+        if (std::filesystem::equivalent(boundary, directory)) return true;
+        auto parent = directory.parent_path();
+        if (parent == directory || parent.empty()) return false;
+        directory = std::move(parent);
+    }
+}
+
+/// Resolves independent roots without recursion or mutation; lookup errors fail all preparation.
+/// Each linked selection is resolved once, and overlapping directory identities are rejected.
 std::variant<std::vector<std::filesystem::path>, RunFailure> resolveModRoots(
     const ModSelection& selection, const RunConfiguration& configuration,
     RunObservationSink* observations, std::stop_token stop) {
@@ -86,7 +100,14 @@ std::variant<std::vector<std::filesystem::path>, RunFailure> resolveModRoots(
             }
             // Sort the selected entry names before resolving links: target names do not define run
             // order.
-            roots.push_back(std::filesystem::canonical(child.path));
+            auto resolved = std::filesystem::canonical(child.path);
+            for (const auto& existing : roots) {
+                if (containsDirectory(existing, resolved) || containsDirectory(resolved, existing))
+                    return RunFailure{RunFailureCode::ConflictingModRoots, RunPhase::Preparing,
+                                      "The selected Mod Roots overlap: " + relativeName(existing) +
+                                          " and " + relativeName(child.path)};
+            }
+            roots.push_back(std::move(resolved));
         }
         return roots;
     } catch (const std::exception& error) {

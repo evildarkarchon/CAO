@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AssetRouting/AssetRouter.h"
+#include "RunLifecycle.h"
 
 #include <cstddef>
 #include <filesystem>
@@ -38,6 +39,9 @@ class AssetRunDiagnostics final {
 
     /// Returns how many distinct Archives appeared only after extraction and were left alone.
     [[nodiscard]] std::size_t nestedArchiveCount() const noexcept;
+
+    /// Borrows structured discovery observations for the duration of the reporting callback.
+    [[nodiscard]] std::span<const RunDiagnostic> diagnostics() const noexcept;
 
    private:
     friend class AssetRun;
@@ -81,6 +85,9 @@ class AssetRunResult final {
     /// not read nested and the run therefore left alone.
     [[nodiscard]] std::size_t nestedArchiveCount() const noexcept;
 
+    /// Borrows owned discovery observations, including excluded linked entries and their paths.
+    [[nodiscard]] std::span<const RunDiagnostic> diagnostics() const noexcept;
+
    private:
     friend class AssetRun;
 
@@ -88,13 +95,15 @@ class AssetRunResult final {
     AssetRunResult(routing::RoutingLedger ledger,
                    std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
                    std::vector<std::filesystem::path> unsupportedExplicitPaths,
-                   std::size_t nestedArchiveCount, bool cancelled) noexcept;
+                   std::size_t nestedArchiveCount, bool cancelled,
+                   std::vector<RunDiagnostic> diagnostics) noexcept;
 
     routing::RoutingLedger _ledger;
     std::map<routing::SkipReason, std::size_t> _skippedArchiveCounts;
     std::vector<std::filesystem::path> _unsupportedExplicitPaths;
     std::size_t _nestedArchiveCount;
     bool _cancelled;
+    std::vector<RunDiagnostic> _diagnostics;
 };
 
 /// Orchestrates Archive-first discovery, definitive routing, and carried Asset execution.

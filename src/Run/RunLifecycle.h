@@ -60,7 +60,8 @@ enum class RunDiagnosticCode {
     ObserverFailed,
     DispatcherFailed,
     IgnoredModExcluded,
-    SeparatorModExcluded
+    SeparatorModExcluded,
+    LinkedEntryExcluded
 };
 
 /// An owning informational observation, including presentation failures after terminal commit.
@@ -94,7 +95,8 @@ enum class RunFailureCode {
     RequestedWorkUnavailable,
     PolicyConflict,
     ConfigurationLoadingFailed,
-    ModSelectionResolutionFailed
+    ModSelectionResolutionFailed,
+    ConflictingModRoots
 };
 
 /// An owning run-level failure; Asset/Archive mutation failures belong to their service slices.

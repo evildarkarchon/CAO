@@ -199,6 +199,9 @@ private slots:
     /// Verifies applying runs retain post-execution Archive finalization ordering.
     void applyFinalizesArchivesAfterRoutedExecution();
 
+    /// Verifies excluded links retain structured diagnostics before finalization and on return.
+    void linkedAssetsAreReportedBeforeFinalizationWithoutExecution();
+
     /// Verifies a cancelled Archive finalizer becomes the run's terminal state.
     void cancelledArchiveFinalizationIsReported();
 
@@ -485,6 +488,69 @@ void AssetRunTests::applyFinalizesArchivesAfterRoutedExecution()
                                                  QByteArrayLiteral("report"),
                                                  QByteArrayLiteral("finalize")};
     QCOMPARE(events, expectedEvents);
+}
+
+void AssetRunTests::linkedAssetsAreReportedBeforeFinalizationWithoutExecution()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+
+    const auto base = std::filesystem::path(temporaryDirectory.path().toStdWString());
+    const auto root = base / "mod";
+    const auto texture = root / "native.dds";
+    const auto outside = base / "outside.dds";
+    const auto link = root / "linked.dds";
+    writeFile(texture);
+    writeFile(outside, "outside bytes");
+    std::error_code error;
+    std::filesystem::create_symlink(outside, link, error);
+    QVERIFY2(!error, error.message().c_str());
+
+    std::vector<std::filesystem::path> executedPaths;
+    std::vector<cao::run::RunDiagnostic> reportedDiagnostics;
+    bool finalizedAfterReport = false;
+    const AssetRun run(archiveAndTexturePolicy());
+    const std::array roots{root};
+    const auto result = run.execute(
+        roots,
+        AssetRunAdapters{
+            [](const cao::routing::RoutedAsset &) {
+                qFatal("No Archive should be selected in the linked-Asset reporting test");
+            },
+            [&](const cao::routing::RoutedAsset &asset) {
+                executedPaths.push_back(asset.executionPath());
+            },
+            {},
+            {},
+            [&] {
+                finalizedAfterReport = !reportedDiagnostics.empty();
+                return true;
+            },
+            [&](const cao::run::AssetRunDiagnostics &diagnostics) {
+                reportedDiagnostics.assign(diagnostics.diagnostics().begin(),
+                                           diagnostics.diagnostics().end());
+            }});
+
+    // Remove the link itself before QTemporaryDir cleanup, which does not handle Windows links.
+    QVERIFY(std::filesystem::remove(link));
+    QVERIFY(!result.cancelled());
+    QCOMPARE(executedPaths, std::vector<std::filesystem::path>{texture});
+    QCOMPARE(result.ledger().routedAssets().size(), std::size_t{1});
+    QVERIFY(finalizedAfterReport);
+    QCOMPARE(reportedDiagnostics.size(), std::size_t{1});
+    QCOMPARE(result.diagnostics().size(), reportedDiagnostics.size());
+    for (std::size_t index = 0; index < reportedDiagnostics.size(); ++index) {
+        const auto &reported = reportedDiagnostics[index];
+        const auto &retained = result.diagnostics()[index];
+        QCOMPARE(reported.code(), cao::run::RunDiagnosticCode::LinkedEntryExcluded);
+        QCOMPARE(reported.phase(), cao::run::RunPhase::DiscoveringArchives);
+        QVERIFY(reported.path() == link);
+        QCOMPARE(retained.code(), reported.code());
+        QCOMPARE(retained.phase(), reported.phase());
+        QCOMPARE(retained.detail(), reported.detail());
+        QVERIFY(retained.path() == reported.path());
+    }
+    QCOMPARE(readFile(outside), QByteArrayLiteral("outside bytes"));
 }
 
 void AssetRunTests::cancelledArchiveFinalizationIsReported()

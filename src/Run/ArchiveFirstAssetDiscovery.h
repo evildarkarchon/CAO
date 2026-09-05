@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AssetRouting/AssetRouter.h"
+#include "RunLifecycle.h"
 
 #include <filesystem>
 #include <functional>
@@ -41,6 +42,9 @@ class ArchiveFirstAssetDiscoveryResult final {
     /// Reports interruption during traversal or extraction; partial trees are never returned.
     [[nodiscard]] bool cancelled() const noexcept;
 
+    /// Borrows structured exclusions in first-observation order; each linked entry appears once.
+    [[nodiscard]] std::span<const RunDiagnostic> diagnostics() const noexcept { return _diagnostics; }
+
     /// Returns the number of recognized Archives excluded for one stable Skip Reason.
     [[nodiscard]] std::size_t skippedArchiveCount(routing::SkipReason reason) const noexcept;
 
@@ -62,13 +66,15 @@ class ArchiveFirstAssetDiscoveryResult final {
         EffectiveAssetTree effectiveAssetTree,
         std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
         std::vector<std::filesystem::path> unsupportedExplicitPaths,
-        std::size_t nestedArchiveCount, bool cancelled = false) noexcept;
+        std::size_t nestedArchiveCount, std::vector<RunDiagnostic> diagnostics,
+        bool cancelled = false) noexcept;
 
     EffectiveAssetTree _effectiveAssetTree;
     std::map<routing::SkipReason, std::size_t> _skippedArchiveCounts;
     std::vector<std::filesystem::path> _unsupportedExplicitPaths;
     std::size_t _nestedArchiveCount;
     bool _cancelled;
+    std::vector<RunDiagnostic> _diagnostics;
 };
 
 /// Orchestrates Archive selection and extraction before one definitive Effective Asset Tree
@@ -90,6 +96,8 @@ class ArchiveFirstAssetDiscovery final {
     /// returns a cancelled result with an empty tree. In-flight extraction is never interrupted.
     /// Filesystem races and permission failures are skipped during traversal; extraction
     /// exceptions propagate to the caller.
+    /// Selected directory aliases resolve once before discovery. Directory links within a tree
+    /// are never followed; unresolved and escaping file links are skipped with Run Diagnostics.
     /// Roots must not overlap; each filesystem occurrence is preserved in traversal order.
     [[nodiscard]] ArchiveFirstAssetDiscoveryResult discover(
         std::span<const std::filesystem::path> roots,

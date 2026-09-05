@@ -183,6 +183,16 @@ class OptimizationRunServiceTests final : public QObject
     Q_OBJECT
 
 private slots:
+ /// Exercises symbolic links and Windows junctions as duplicate Mod Root aliases.
+ void severalModsRejectsDuplicateLinkedRoots_data();
+ /// Verifies aliases cannot select the same Mod Root twice and failure still reaches cleanup.
+ void severalModsRejectsDuplicateLinkedRoots();
+ /// Exercises both selection orders for a root and a linked descendant.
+ void severalModsRejectsNestedLinkedRoots_data();
+ /// Verifies ancestor overlap fails regardless of which selected root sorts first.
+ void severalModsRejectsNestedLinkedRoots();
+ /// Verifies linked roots record their resolved identity while similarly prefixed siblings coexist.
+ void linkedModRootsRetainCanonicalIdentities();
  /// Verifies Several Mods resolves only immediate directories and records their stable run order.
  void severalModsRecordsOrderedImmediateRoots();
 
@@ -309,6 +319,117 @@ private slots:
  /// Verifies scheduling failure releases the slot while the failed handle remains readable.
  void schedulingFailureReleasesTheActiveSlot();
 };
+
+void OptimizationRunServiceTests::severalModsRejectsDuplicateLinkedRoots_data() {
+    QTest::addColumn<bool>("junction");
+    QTest::newRow("symlink") << false;
+#ifdef _WIN32
+    QTest::newRow("junction") << true;
+#endif
+}
+
+void OptimizationRunServiceTests::severalModsRejectsDuplicateLinkedRoots() {
+    QFETCH(bool, junction);
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto mods = std::filesystem::path(temporary.path().toStdWString());
+    QVERIFY(std::filesystem::create_directory(mods / "original"));
+    std::error_code error;
+    if (junction) {
+        // mklink treats Qt's forward-slash temporary paths as switches, so use native separators.
+        QCOMPARE(QProcess::execute("cmd.exe",
+            {"/c", "mklink", "/J",
+             QDir::toNativeSeparators(QString::fromStdWString((mods / "alias").wstring())),
+             QDir::toNativeSeparators(QString::fromStdWString((mods / "original").wstring()))}), 0);
+    } else {
+        std::filesystem::create_directory_symlink(mods / "original", mods / "alias", error);
+    }
+    QVERIFY2(!error, error.message().c_str());
+
+    OptimizationRunService service{testRunConfiguration()};
+    auto started = service.start(RunRequest::create(
+        "profile", ExecutionMode::DryRun, ModSelection::childModRoots(mods), {}));
+    QVERIFY(started.started());
+    const auto& result = started.handle()->wait();
+    // Remove the link itself before Qt's recursive temporary-directory cleanup sees it.
+    QVERIFY(std::filesystem::remove(mods / "alias"));
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(result.finalPhase(), RunPhase::Preparing);
+    QVERIFY(result.preparation() == nullptr);
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().code(), cao::run::RunFailureCode::ConflictingModRoots);
+    QVERIFY(result.phase(RunPhase::DiscoveringArchives) == nullptr);
+    QVERIFY(result.phase(RunPhase::SafetyCleanup) != nullptr);
+}
+
+void OptimizationRunServiceTests::severalModsRejectsNestedLinkedRoots_data() {
+    QTest::addColumn<bool>("descendantFirst");
+    QTest::newRow("ancestor-first") << false;
+    QTest::newRow("descendant-first") << true;
+}
+
+void OptimizationRunServiceTests::severalModsRejectsNestedLinkedRoots() {
+    QFETCH(bool, descendantFirst);
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto base = std::filesystem::path(temporary.path().toStdWString());
+    const auto mods = base / "selected";
+    const auto target = base / "target";
+    QVERIFY(std::filesystem::create_directory(mods));
+    QVERIFY(std::filesystem::create_directories(target / "nested"));
+    const auto ancestor = mods / (descendantFirst ? "z-ancestor" : "a-ancestor");
+    const auto descendant = mods / (descendantFirst ? "a-descendant" : "z-descendant");
+    std::filesystem::create_directory_symlink(target, ancestor);
+    std::filesystem::create_directory_symlink(target / "nested", descendant);
+
+    OptimizationRunService service{testRunConfiguration()};
+    auto started = service.start(RunRequest::create(
+        "profile", ExecutionMode::Apply, ModSelection::childModRoots(mods), {}));
+    QVERIFY(started.started());
+    const auto& result = started.handle()->wait();
+    QVERIFY(std::filesystem::remove(ancestor));
+    QVERIFY(std::filesystem::remove(descendant));
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(result.finalPhase(), RunPhase::Preparing);
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().code(), cao::run::RunFailureCode::ConflictingModRoots);
+    QVERIFY(result.preparation() == nullptr);
+    QVERIFY(result.phase(RunPhase::SafetyCleanup) != nullptr);
+}
+
+void OptimizationRunServiceTests::linkedModRootsRetainCanonicalIdentities() {
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto base = std::filesystem::path(temporary.path().toStdWString());
+    const auto mods = base / "selected";
+    const auto target = base / "target";
+    const auto sibling = base / "target-more";
+    QVERIFY(std::filesystem::create_directory(mods));
+    QVERIFY(std::filesystem::create_directory(target));
+    QVERIFY(std::filesystem::create_directory(sibling));
+    std::filesystem::create_directory_symlink(target, mods / "z-first-target");
+    std::filesystem::create_directory_symlink(sibling, mods / "a-second-target");
+
+    OptimizationRunService service{testRunConfiguration()};
+    auto single = service.start(RunRequest::create("profile", ExecutionMode::DryRun,
+        ModSelection::singleModRoot(mods / "z-first-target"), {}));
+    QVERIFY(single.started());
+    const auto singleResult = single.handle()->wait();
+    auto several = service.start(RunRequest::create("profile", ExecutionMode::Apply,
+        ModSelection::childModRoots(mods), {}));
+    QVERIFY(several.started());
+    const auto severalResult = several.handle()->wait();
+    // Removing aliases must not change the immutable identities retained by either result.
+    QVERIFY(std::filesystem::remove(mods / "z-first-target"));
+    QVERIFY(std::filesystem::remove(mods / "a-second-target"));
+    QCOMPARE(singleResult.outcome(), RunOutcome::Succeeded);
+    QCOMPARE(singleResult.preparation()->modRoots().front(), std::filesystem::canonical(target));
+    QCOMPARE(severalResult.outcome(), RunOutcome::Succeeded);
+    const auto roots = severalResult.preparation()->modRoots();
+    QCOMPARE(roots.size(), std::size_t{2});
+    QCOMPARE(roots[0], std::filesystem::canonical(sibling));
+    QCOMPARE(roots[1], std::filesystem::canonical(target));
+}
 
 void OptimizationRunServiceTests::severalModsRecordsOrderedImmediateRoots() {
     QTemporaryDir temporary;
