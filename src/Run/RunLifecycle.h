@@ -96,7 +96,9 @@ enum class RunFailureCode {
     PolicyConflict,
     ConfigurationLoadingFailed,
     ModSelectionResolutionFailed,
-    ConflictingModRoots
+    ConflictingModRoots,
+    TemporaryArtifactCleanupFailed,
+    SafetyCleanupServiceFailed
 };
 
 /// An owning run-level failure; Asset/Archive mutation failures belong to their service slices.
@@ -104,11 +106,13 @@ class RunFailure final {
    public:
     /// Records the failing boundary and its detail without retaining exception or service objects.
     RunFailure(RunFailureCode code, RunPhase phase, std::string detail,
-               routing::PolicyValidationErrors policyConflicts = {})
+               routing::PolicyValidationErrors policyConflicts = {},
+               std::filesystem::path path = {})
         : _code(code),
           _phase(phase),
           _detail(std::move(detail)),
-          _policyConflicts(std::move(policyConflicts)) {}
+          _policyConflicts(std::move(policyConflicts)),
+          _path(std::move(path)) {}
 
     /// Returns the stable unsuccessful scheduling or execution category.
     [[nodiscard]] RunFailureCode code() const noexcept { return _code; }
@@ -116,6 +120,9 @@ class RunFailure final {
     [[nodiscard]] RunPhase phase() const noexcept { return _phase; }
     /// Borrows explanatory text for this value's lifetime.
     [[nodiscard]] const std::string& detail() const noexcept { return _detail; }
+
+    /// Borrows the affected path, or an empty path for failures unrelated to one artifact.
+    [[nodiscard]] const std::filesystem::path& path() const noexcept { return _path; }
 
     /// Borrows all policy conflicts in compiler order; empty for other failure categories.
     [[nodiscard]] std::span<const routing::PolicyValidationError> policyConflicts() const noexcept {
@@ -127,6 +134,7 @@ class RunFailure final {
     RunPhase _phase;
     std::string _detail;
     routing::PolicyValidationErrors _policyConflicts;
+    std::filesystem::path _path;
 };
 
 /// The phase-local account of determinate work attempted during one Run Phase.
@@ -327,7 +335,8 @@ class OptimizationRunResult final {
     [[nodiscard]] static OptimizationRunResult terminal(
         RunOutcome outcome, RunPhase finalPhase, std::vector<RunPhaseRecord> phases,
         RunId runId = createRunId(), std::vector<RunFailure> failures = {},
-        std::shared_ptr<const RunPreparation> preparation = {});
+        std::shared_ptr<const RunPreparation> preparation = {},
+        std::vector<RunFailure> cleanupFailures = {});
 
     /// Borrows owned preparation facts, or nullptr if preparation did not complete successfully.
     [[nodiscard]] const RunPreparation* preparation() const noexcept { return _preparation.get(); }
@@ -335,8 +344,13 @@ class OptimizationRunResult final {
     /// Borrows the identity shared with this run's observations for the result's lifetime.
     [[nodiscard]] const RunId& runId() const noexcept { return _runId; }
 
-    /// Returns owned failures recorded before terminal commit, in observation order.
+    /// Returns primary/work failures in observation order; cleanupFailures retains cleanup errors.
     [[nodiscard]] std::span<const RunFailure> failures() const noexcept { return _failures; }
+
+    /// Borrows all cleanup failures in attempted removal order, separately from the primary cause.
+    [[nodiscard]] std::span<const RunFailure> cleanupFailures() const noexcept {
+        return _cleanupFailures;
+    }
 
     [[nodiscard]] RunOutcome outcome() const noexcept;
 
@@ -360,7 +374,8 @@ class OptimizationRunResult final {
     OptimizationRunResult(RunOutcome outcome, RunPhase finalPhase,
                           std::vector<RunPhaseRecord> phases, RunId runId,
                           std::vector<RunFailure> failures,
-                          std::shared_ptr<const RunPreparation> preparation) noexcept;
+                          std::shared_ptr<const RunPreparation> preparation,
+                          std::vector<RunFailure> cleanupFailures) noexcept;
 
     RunId _runId;
     RunOutcome _outcome;
@@ -368,6 +383,7 @@ class OptimizationRunResult final {
     std::vector<RunPhaseRecord> _phases;
     std::vector<RunFailure> _failures;
     std::shared_ptr<const RunPreparation> _preparation;
+    std::vector<RunFailure> _cleanupFailures;
 };
 
 /// An owning immutable observation; copies keep terminal payloads alive independently of handles.

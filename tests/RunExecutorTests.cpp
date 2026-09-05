@@ -1,4 +1,5 @@
 #include "Run/RunExecutor.h"
+#include "Run/TemporaryArtifactRegistry.h"
 #include "RunTestConfiguration.h"
 
 #include <QtTest>
@@ -32,7 +33,11 @@ namespace
 class CountingSafetyCleanup final : public SafetyCleanupService
 {
 public:
-    void performSafetyCleanup() override { ++_invocations; }
+    /// Records one pass and reports an empty failure set.
+    std::vector<cao::run::RunFailure> performSafetyCleanup() override {
+        ++_invocations;
+        return {};
+    }
 
     [[nodiscard]] std::size_t invocations() const noexcept { return _invocations; }
 
@@ -95,6 +100,27 @@ private slots:
  /// Verifies Safety Cleanup still runs exactly once when the run terminates as Failed.
  void safetyCleanupRunsOnEveryTerminalPath();
 
+ /// Verifies cleanup owns paths before creation and releases only explicitly committed output.
+ void registeredArtifactsAreCleanedAndCommittedOutputSurvives();
+
+ /// Verifies retained children survive, every cleanup is attempted, and failures remain terminal data.
+ void cleanupFailuresAreAggregatedWithoutDeletingRetainedMaterial();
+
+ /// Verifies reverse-order directory cleanup and once-only ownership on success, failure, and cancel.
+ void registeredArtifactsAreCleanedOnEveryTerminalPath();
+
+ /// Verifies cleanup errors remain secondary to a fatal failure or observed cancellation.
+ void cleanupFailuresPreserveThePrimaryOutcome();
+
+ /// Verifies an unexpected cleanup exception becomes a terminal service-contract failure.
+ void cleanupServiceExceptionsAreTerminal();
+
+ /// Verifies existing paths, aliases, and foreign receipts cannot transfer cleanup ownership.
+ void artifactRegistrationRejectsUnownedPaths();
+
+ /// Verifies a replaced parent cannot redirect registered cleanup into unrelated material.
+ void cleanupDoesNotFollowAReplacedParent();
+
  /// Verifies a run that stops early records no phase it never reached.
  void aRunThatStopsEarlyRecordsOnlyThePhasesItTraversed();
 
@@ -113,6 +139,250 @@ private slots:
  /// Verifies completed attempts follow succeeded plus failed, so failures advance progress.
  void failedAttemptsAdvanceCompletedProgress();
 };
+
+void RunExecutorTests::registeredArtifactsAreCleanedAndCommittedOutputSurvives() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto temporary = root / "temporary.bin";
+    const auto output = root / "output.bin";
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto temporaryRegistration = artifacts.registerArtifact(temporary);
+    const auto outputRegistration = artifacts.registerArtifact(output);
+    QVERIFY(!std::filesystem::exists(temporary));
+    QVERIFY(!std::filesystem::exists(output));
+    for (const auto& path : {temporary, output}) {
+        QFile file(QString::fromStdWString(path.wstring()));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("asset"), qint64{5});
+    }
+    artifacts.commit(outputRegistration);
+    const auto result =
+        RunExecutor{}.execute(noWorkRequest(ExecutionMode::Apply),
+                              RunServices{artifacts, nullptr, testRunConfiguration().get()});
+    QCOMPARE(result.outcome(), RunOutcome::Succeeded);
+    QVERIFY(!std::filesystem::exists(temporary));
+    QVERIFY(std::filesystem::exists(output));
+    // A consumed registration cannot acquire ownership again after terminal cleanup.
+    QVERIFY_EXCEPTION_THROWN(artifacts.commit(temporaryRegistration), std::logic_error);
+}
+
+void RunExecutorTests::cleanupFailuresAreAggregatedWithoutDeletingRetainedMaterial() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto temporary = root / "temporary";
+    (void)artifacts.registerArtifact(temporary);
+    QVERIFY(std::filesystem::create_directory(temporary));
+    const auto staging = root / "staging";
+    const auto evidence = root / "evidence";
+    for (const auto& path : {staging, evidence}) {
+        (void)artifacts.registerArtifact(path);
+        QVERIFY(std::filesystem::create_directory(path));
+    }
+    const auto output = staging / "committed.bin";
+    const auto committed = artifacts.registerArtifact(output);
+    for (const auto& path : {output, staging / "backup.bsa", evidence / "failed.bin"}) {
+        QFile file(QString::fromStdWString(path.wstring()));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("retained"), qint64{8});
+    }
+    artifacts.commit(committed);
+    std::optional<OptimizationRunResult> result;
+    try {
+        result =
+            RunExecutor{}.execute(noWorkRequest(ExecutionMode::Apply),
+                                  RunServices{artifacts, nullptr, testRunConfiguration().get()});
+    } catch (const std::exception& error) {
+        QFAIL(error.what());
+    }
+    QCOMPARE(result->outcome(), RunOutcome::CompletedWithFailures);
+    QCOMPARE(result->cleanupFailures().size(), std::size_t{2});
+    QCOMPARE(result->cleanupFailures()[0].path(), std::filesystem::canonical(evidence));
+    QCOMPARE(result->cleanupFailures()[1].path(), std::filesystem::canonical(staging));
+    for (const auto& failure : result->cleanupFailures()) {
+        QCOMPARE(failure.code(), cao::run::RunFailureCode::TemporaryArtifactCleanupFailed);
+        QCOMPARE(failure.phase(), RunPhase::SafetyCleanup);
+        QVERIFY(!failure.detail().empty());
+    }
+    QVERIFY(!std::filesystem::exists(temporary));
+    for (const auto& path : {output, staging / "backup.bsa", evidence / "failed.bin"}) {
+        QFile file(QString::fromStdWString(path.wstring()));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("retained"));
+    }
+}
+
+void RunExecutorTests::registeredArtifactsAreCleanedOnEveryTerminalPath() {
+    for (const auto expected : {RunOutcome::Succeeded, RunOutcome::Cancelled, RunOutcome::Failed}) {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto root = std::filesystem::path(directory.path().toStdWString());
+        cao::run::TemporaryArtifactRegistry artifacts;
+        const auto parent = root / "staging";
+        const auto child = parent / "child";
+        (void)artifacts.registerArtifact(parent);
+        (void)artifacts.registerArtifact(child);
+        // Creation may never start, or fail midway, after registration.
+        (void)artifacts.registerArtifact(child / "never-created.bin");
+        QVERIFY(std::filesystem::create_directories(child));
+        std::stop_source stop;
+        if (expected == RunOutcome::Cancelled) stop.request_stop();
+        const auto result = RunExecutor{}.execute(
+            noWorkRequest(ExecutionMode::Apply),
+            RunServices{artifacts, nullptr,
+                        expected == RunOutcome::Failed ? nullptr : testRunConfiguration().get()},
+            stop.get_token());
+        QCOMPARE(result.outcome(), expected);
+        QVERIFY(result.cleanupFailures().empty());
+        QVERIFY(!std::filesystem::exists(parent));
+        QCOMPARE(std::count_if(
+                     result.phases().begin(), result.phases().end(),
+                     [](const auto& phase) { return phase.phase() == RunPhase::SafetyCleanup; }),
+                 1);
+        // Recreating a name after terminal must not let a second cleanup pass delete new data.
+        QVERIFY(std::filesystem::create_directories(child));
+        QVERIFY(artifacts.performSafetyCleanup().empty());
+        QVERIFY(std::filesystem::exists(child));
+        QVERIFY_EXCEPTION_THROWN((void)artifacts.registerArtifact(root / "late"), std::logic_error);
+    }
+}
+
+void RunExecutorTests::cleanupFailuresPreserveThePrimaryOutcome() {
+    for (const bool fatal : {false, true}) {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto root = std::filesystem::path(directory.path().toStdWString());
+        cao::run::TemporaryArtifactRegistry artifacts;
+        const auto retained = root / "retained";
+        (void)artifacts.registerArtifact(retained);
+        QVERIFY(std::filesystem::create_directories(retained / "unregistered"));
+        std::stop_source stop;
+        class CleanupObservation final : public cao::run::RunObservationSink {
+           public:
+            /// Cancels at cleanup entry and observes failure ordering without interrupting removal.
+            explicit CleanupObservation(std::stop_source& stop) : _stop(stop) {}
+            /// Requests cancellation after the work outcome has already been determined.
+            void recordPhase(const RunPhaseRecord& phase) override {
+                lastPhase = phase.phase();
+                if (lastPhase == RunPhase::SafetyCleanup) _stop.request_stop();
+            }
+            /// Captures the phase associated with each failure for ordering assertions.
+            void recordFailure(const cao::run::RunFailure&) override {
+                failurePhases.push_back(lastPhase);
+            }
+            /// Diagnostics do not participate in these cleanup observations.
+            void recordDiagnostic(const cao::run::RunDiagnostic&) override {
+                // This test observes only cleanup phase and failure ordering.
+            }
+            std::vector<RunPhase> failurePhases;
+            RunPhase lastPhase{RunPhase::Preparing};
+
+           private:
+            std::stop_source& _stop;
+        } observations(stop);
+        const auto result = RunExecutor{}.execute(
+            noWorkRequest(ExecutionMode::Apply),
+            RunServices{artifacts, &observations, fatal ? nullptr : testRunConfiguration().get()},
+            stop.get_token());
+        QCOMPARE(result.outcome(), fatal ? RunOutcome::Failed : RunOutcome::Cancelled);
+        QCOMPARE(result.cleanupFailures().size(), std::size_t{1});
+        QCOMPARE(result.failures().size(), fatal ? std::size_t{1} : std::size_t{0});
+        QCOMPARE(observations.failurePhases.back(), RunPhase::SafetyCleanup);
+        QVERIFY(std::filesystem::exists(retained / "unregistered"));
+    }
+}
+
+void RunExecutorTests::cleanupServiceExceptionsAreTerminal() {
+    for (const bool standard : {false, true}) {
+        class ThrowingCleanup final : public SafetyCleanupService {
+           public:
+            /// Selects a standard or non-standard service exception.
+            explicit ThrowingCleanup(bool standard) : _standard(standard) {}
+            /// Simulates an unexpected service failure after cleanup has started.
+            std::vector<cao::run::RunFailure> performSafetyCleanup() override {
+                ++invocations;
+                if (_standard) throw std::runtime_error("cleanup service failure");
+                throw 42;
+            }
+            int invocations{};
+
+           private:
+            bool _standard;
+        } cleanup(standard);
+        const auto result =
+            RunExecutor{}.execute(noWorkRequest(ExecutionMode::Apply),
+                                  RunServices{cleanup, nullptr, testRunConfiguration().get()});
+        QCOMPARE(result.outcome(), RunOutcome::Failed);
+        QCOMPARE(cleanup.invocations, 1);
+        QCOMPARE(result.cleanupFailures().size(), std::size_t{1});
+        QCOMPARE(result.cleanupFailures().front().code(),
+                 cao::run::RunFailureCode::SafetyCleanupServiceFailed);
+    }
+}
+
+void RunExecutorTests::artifactRegistrationRejectsUnownedPaths() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    cao::run::TemporaryArtifactRegistry artifacts;
+    cao::run::TemporaryArtifactRegistry other;
+    QVERIFY_EXCEPTION_THROWN((void)artifacts.registerArtifact(root), std::invalid_argument);
+    QVERIFY_EXCEPTION_THROWN((void)artifacts.registerArtifact("relative.bin"),
+                             std::invalid_argument);
+    const auto receipt = artifacts.registerArtifact(root / "Output.bin");
+    QVERIFY_EXCEPTION_THROWN((void)artifacts.registerArtifact(root / "." / "Output.bin"),
+                             std::invalid_argument);
+#ifdef _WIN32
+    QVERIFY_EXCEPTION_THROWN((void)artifacts.registerArtifact(root / "output.bin"),
+                             std::invalid_argument);
+    for (const auto* alias : {"Output.bin.", "Output.bin ", "Output.bin:stream"})
+        QVERIFY_EXCEPTION_THROWN((void)artifacts.registerArtifact(root / alias),
+                                 std::invalid_argument);
+#endif
+    QVERIFY_EXCEPTION_THROWN(other.commit(receipt), std::logic_error);
+    QFile output(QString::fromStdWString((root / "Output.bin").wstring()));
+    QVERIFY(output.open(QIODevice::WriteOnly));
+    QCOMPARE(output.write("committed"), qint64{9});
+    output.close();
+    artifacts.commit(receipt);
+    QVERIFY_EXCEPTION_THROWN(artifacts.commit(receipt), std::logic_error);
+    QVERIFY_EXCEPTION_THROWN((void)artifacts.registerArtifact(root / "Output.bin"),
+                             std::invalid_argument);
+    const auto result = RunExecutor{}.execute(noWorkRequest(ExecutionMode::Apply),
+        RunServices{artifacts, nullptr, testRunConfiguration().get()});
+    QCOMPARE(result.outcome(), RunOutcome::Succeeded);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    QCOMPARE(output.readAll(), QByteArray("committed"));
+}
+
+void RunExecutorTests::cleanupDoesNotFollowAReplacedParent() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto staging = root / "staging";
+    const auto external = root / "unrelated";
+    QVERIFY(std::filesystem::create_directory(external));
+    QFile file(QString::fromStdWString((external / "asset.bin").wstring()));
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write("original"), qint64{8});
+    file.close();
+    cao::run::TemporaryArtifactRegistry artifacts;
+    (void)artifacts.registerArtifact(staging);
+    (void)artifacts.registerArtifact(staging / "asset.bin");
+    std::error_code error;
+    std::filesystem::create_directory_symlink(external, staging, error);
+    QVERIFY2(!error, error.message().c_str());
+    const auto result =
+        RunExecutor{}.execute(noWorkRequest(ExecutionMode::Apply),
+                              RunServices{artifacts, nullptr, testRunConfiguration().get()});
+    QVERIFY(!std::filesystem::exists(staging));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), QByteArray("original"));
+    QCOMPARE(result.outcome(), RunOutcome::CompletedWithFailures);
+    QCOMPARE(result.cleanupFailures().size(), std::size_t{1});
+}
 
 void RunExecutorTests::noWorkApplyRunTraversesTheStablePhaseSequence()
 {

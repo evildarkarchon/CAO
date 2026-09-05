@@ -1,6 +1,7 @@
 #include "OptimizationRunService.h"
 
 #include "Run/RunExecutor.h"
+#include "Run/TemporaryArtifactRegistry.h"
 
 #include <cassert>
 #include <algorithm>
@@ -43,18 +44,6 @@ class RunExecutionScope final {
     const RunSharedState* _state;
     const RunExecutionScope* _previous;
     static inline thread_local const RunExecutionScope* _current{};
-};
-
-/// Performs the Safety Cleanup pass of a run that registered no temporary artifacts.
-///
-/// No phase registers artifacts yet, so the pass covers an empty set. It is a real pass rather
-/// than a stub: every terminal path owes exactly one, and the registry slice replaces this with
-/// the reverse-order cleanup of registered artifacts without changing when it happens.
-class UnregisteredArtifactSafetyCleanup final : public SafetyCleanupService {
-   public:
-    // Nothing was registered, so there is nothing to remove. Backups, committed output, and
-    // failed-output evidence are never Safety Cleanup's to touch in the first place.
-    void performSafetyCleanup() override {}
 };
 
 /// Returns the structural conflict that prevents a Run Request from starting, if any.
@@ -158,12 +147,14 @@ class RunSharedState final : public RunObservationSink,
         std::vector<RunFailure> failures{
             RunFailure{RunFailureCode::SchedulingFailed, RunPhase::Preparing, std::move(detail)}};
         recordFailure(failures.front());
-        _safetyCleanup.performSafetyCleanup();
         std::vector<RunPhaseRecord> phases;
         phases.push_back(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
         recordPhase(phases.back());
+        auto cleanupFailures = collectSafetyCleanupFailures(_safetyCleanup);
+        for (const auto& failure : cleanupFailures) recordFailure(failure);
         commit(OptimizationRunResult::terminal(RunOutcome::Failed, RunPhase::Preparing,
-                                               std::move(phases), _runId, std::move(failures)));
+                                               std::move(phases), _runId, std::move(failures), {},
+                                               std::move(cleanupFailures)));
     }
 
     /// Commits the one terminal result of this run and releases every waiter.
@@ -336,7 +327,7 @@ class RunSharedState final : public RunObservationSink,
     std::uint64_t _sequence{};
     std::size_t _dispatching{};
     bool _terminalEnqueued{};
-    UnregisteredArtifactSafetyCleanup _safetyCleanup;
+    TemporaryArtifactRegistry _safetyCleanup;
     std::shared_ptr<const OptimizationRunResult> _result;
     std::stop_source _stop;
 };

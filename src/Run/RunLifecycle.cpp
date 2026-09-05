@@ -132,20 +132,21 @@ bool RunRequest::hasRequestedWork() const noexcept { return !_requestedWork.empt
 OptimizationRunResult::OptimizationRunResult(
     const RunOutcome outcome, const RunPhase finalPhase, std::vector<RunPhaseRecord> phases,
     RunId runId, std::vector<RunFailure> failures,
-    std::shared_ptr<const RunPreparation> preparation) noexcept
+    std::shared_ptr<const RunPreparation> preparation, std::vector<RunFailure> cleanupFailures) noexcept
     : _runId(std::move(runId)),
       _outcome(outcome),
       _finalPhase(finalPhase),
       _phases(std::move(phases)),
       _failures(std::move(failures)),
-      _preparation(std::move(preparation)) {}
+      _preparation(std::move(preparation)),
+      _cleanupFailures(std::move(cleanupFailures)) {}
 
 OptimizationRunResult OptimizationRunResult::terminal(
     const RunOutcome outcome, const RunPhase finalPhase, std::vector<RunPhaseRecord> phases,
     RunId runId, std::vector<RunFailure> failures,
-    std::shared_ptr<const RunPreparation> preparation) {
+    std::shared_ptr<const RunPreparation> preparation, std::vector<RunFailure> cleanupFailures) {
     return OptimizationRunResult(outcome, finalPhase, std::move(phases), std::move(runId),
-                                 std::move(failures), std::move(preparation));
+                                 std::move(failures), std::move(preparation), std::move(cleanupFailures));
 }
 
 RunOutcome OptimizationRunResult::outcome() const noexcept { return _outcome; }

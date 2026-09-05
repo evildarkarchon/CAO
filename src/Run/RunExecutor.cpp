@@ -188,6 +188,18 @@ RunPhase recordSkippedWorkPhases(std::vector<RunPhaseRecord>& phases,
 }
 }  // namespace
 
+std::vector<RunFailure> collectSafetyCleanupFailures(SafetyCleanupService& service) {
+    try {
+        return service.performSafetyCleanup();
+    } catch (const std::exception& error) {
+        return {RunFailure{RunFailureCode::SafetyCleanupServiceFailed, RunPhase::SafetyCleanup,
+                           error.what()}};
+    } catch (...) {
+        return {RunFailure{RunFailureCode::SafetyCleanupServiceFailed, RunPhase::SafetyCleanup,
+                           "The cleanup service threw a non-standard exception"}};
+    }
+}
+
 OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunServices& services,
                                            std::stop_token stop, RunId runId) const {
     std::vector<RunPhaseRecord> phases;
@@ -232,15 +244,25 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
 
     // Safety Cleanup runs exactly once on every terminal path, before the terminal result is
     // committed, so cancellation and failure cannot litter Mod Roots with run-owned artifacts.
-    services.safetyCleanup.performSafetyCleanup();
     phases.push_back(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
     if (services.observations != nullptr) services.observations->recordPhase(phases.back());
+    auto cleanupFailures = collectSafetyCleanupFailures(services.safetyCleanup);
+    for (const auto& failure : cleanupFailures)
+        if (services.observations != nullptr) services.observations->recordFailure(failure);
+    // A service-contract exception cannot establish that all owned artifacts were attempted.
+    if (std::any_of(cleanupFailures.begin(), cleanupFailures.end(), [](const RunFailure& failure) {
+            return failure.code() == RunFailureCode::SafetyCleanupServiceFailed;
+        }))
+        outcome = RunOutcome::Failed;
 
     // A fatal failure keeps precedence; cancellation observed during cleanup still records a
     // cancelled run, without ever interrupting the cleanup pass.
     if (outcome != RunOutcome::Failed && stop.stop_requested()) outcome = RunOutcome::Cancelled;
+    if (outcome == RunOutcome::Succeeded && !cleanupFailures.empty())
+        outcome = RunOutcome::CompletedWithFailures;
 
     return OptimizationRunResult::terminal(outcome, finalPhase, std::move(phases), std::move(runId),
-                                           std::move(failures), std::move(preparation));
+                                           std::move(failures), std::move(preparation),
+                                           std::move(cleanupFailures));
 }
 }  // namespace cao::run

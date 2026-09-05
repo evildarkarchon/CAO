@@ -34,9 +34,14 @@ class SafetyCleanupService {
     SafetyCleanupService& operator=(SafetyCleanupService&&) = delete;
     virtual ~SafetyCleanupService() = default;
 
-    /// Removes every remaining registered temporary artifact, attempting all of them.
-    virtual void performSafetyCleanup() = 0;
+    /// Attempts every remaining artifact and returns owning failures in cleanup order.
+    /// Implementations isolate individual errors and accept no cancellation token.
+    virtual std::vector<RunFailure> performSafetyCleanup() = 0;
 };
+
+/// Invokes one mandatory cleanup pass and converts unexpected service exceptions to failures.
+/// Returned failures own their details; publication and terminal classification belong to the run.
+[[nodiscard]] std::vector<RunFailure> collectSafetyCleanupFailures(SafetyCleanupService& service);
 
 /// The narrow services the Run Executor borrows for the duration of one synchronous run.
 ///

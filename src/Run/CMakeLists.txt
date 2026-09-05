@@ -39,6 +39,8 @@ target_compile_features(cao_run_lifecycle PUBLIC cxx_std_20)
 add_library(cao_run_executor
     RunExecutor.cpp
     RunExecutor.h
+    TemporaryArtifactRegistry.cpp
+    TemporaryArtifactRegistry.h
 )
 
 target_link_libraries(cao_run_executor PUBLIC cao_run_lifecycle cao_run_setup)
