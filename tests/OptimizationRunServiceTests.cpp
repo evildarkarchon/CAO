@@ -3,9 +3,15 @@
 #include <QtTest>
 
 #include <cstddef>
+#include <barrier>
+#include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <semaphore>
+#include <stdexcept>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <type_traits>
@@ -68,6 +74,8 @@ public:
     /// Returns how many times a scheduled worker was joined, including redundant joins.
     [[nodiscard]] std::size_t joins() const noexcept { return _joins; }
 
+    std::function<void()> afterWork;
+
 private:
     class DeferredWorker final : public ScheduledRunWorker
     {
@@ -86,8 +94,12 @@ private:
 
             const auto work = std::exchange(_work, nullptr);
             work();
+            if (_owner.afterWork) _owner.afterWork();
             ++_owner._completions;
         }
+
+        /// No execution thread exists until this deterministic worker is joined.
+        [[nodiscard]] bool isCurrentThread() const noexcept override { return false; }
 
     private:
         DeferredRunScheduler &_owner;
@@ -96,39 +108,6 @@ private:
 
     std::size_t _completions{};
     std::size_t _joins{};
-};
-
-/// Runs each worker on its own thread, so waiting is a real cross-thread wait.
-class ThreadRunScheduler final : public RunScheduler
-{
-public:
-    std::unique_ptr<ScheduledRunWorker> schedule(std::function<void()> work) override
-    {
-        return std::make_unique<ThreadWorker>(std::move(work));
-    }
-
-private:
-    class ThreadWorker final : public ScheduledRunWorker
-    {
-    public:
-        explicit ThreadWorker(std::function<void()> work)
-            : _thread(std::move(work))
-        {
-        }
-
-        // A started thread must be joined before it is destroyed, so the substitute joins as a
-        // last resort even though the Run Handle is expected to have joined it already.
-        ~ThreadWorker() override { ThreadWorker::join(); }
-
-        void join() override
-        {
-            if (_thread.joinable())
-                _thread.join();
-        }
-
-    private:
-        std::thread _thread;
-    };
 };
 
 /// Fails every scheduling attempt the way a thread-backed scheduler out of resources would.
@@ -143,6 +122,32 @@ public:
         throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again),
                                 "No Run Worker could be started");
     }
+};
+
+/// Gates the real production worker so callers can inspect or cancel a known-active run.
+class GatedRunScheduler final : public RunScheduler
+{
+public:
+    /// Starts the production worker, withholding invocation until release() publishes test state.
+    std::unique_ptr<ScheduledRunWorker> schedule(std::function<void()> work) override
+    {
+        return _production.schedule([this, work = std::move(work)] {
+            _released.acquire();
+            if (beforeWork) beforeWork();
+            work();
+            if (afterWork) afterWork();
+        });
+    }
+
+    /// Allows the worker to execute after all captured handle references have been initialized.
+    void release() { _released.release(); }
+
+    std::function<void()> beforeWork;
+    std::function<void()> afterWork;
+
+private:
+    cao::run::StandardRunScheduler _production;
+    std::binary_semaphore _released{0};
 };
 
 /// Builds a structurally valid Run Request that selects no work at all.
@@ -198,6 +203,36 @@ private slots:
 
     /// Verifies a scheduler that cannot start a worker yields a terminal Failed run, not a throw.
     void aSchedulerThatCannotStartAWorkerCommitsAFailedRun();
+
+    /// Verifies the active slot is shared across services and rejects without scheduling.
+    void aSecondActiveRunIsRejectedAcrossServices();
+
+    /// Verifies service destruction completes cancellation even when its handle survives.
+    void destroyingTheServiceCancelsAndJoinsARetainedHandle();
+
+    /// Verifies a worker cannot deadlock itself by waiting for its own result.
+    void waitingFromTheWorkerIsDiagnosed();
+
+    /// Verifies adapters need no scheduler ownership for a production run.
+    void theDefaultServiceSchedulesAProductionRun();
+
+    /// Verifies repeated cancellation is cooperative and cannot release the active slot early.
+    void cancellationKeepsTheSlotUntilTerminalCommit();
+
+    /// Verifies each forbidden worker-side destructor fails promptly with a contract diagnostic.
+    void destructionFromTheWorkerIsDiagnosed();
+
+    /// Verifies commit releases the slot while the previous worker still has an epilogue to join.
+    void terminalCommitReleasesTheSlotBeforeWorkerJoin();
+
+    /// Verifies racing starts reserve one process-wide slot atomically.
+    void simultaneousStartsAdmitExactlyOneRun();
+
+    /// Verifies handle teardown requests cancellation before joining its deferred worker.
+    void destroyingTheHandleRequestsCancellationBeforeJoin();
+
+    /// Verifies scheduling failure releases the slot while the failed handle remains readable.
+    void schedulingFailureReleasesTheActiveSlot();
 };
 
 void OptimizationRunServiceTests::aRequestWithoutAProfileIdentityIsRejectedWithoutCreatingAWorker()
@@ -325,7 +360,7 @@ void OptimizationRunServiceTests::waitingRepeatedlyObservesTheSameCommittedResul
 
 void OptimizationRunServiceTests::theRunOwnsItsRequestAfterStartReturns()
 {
-    ThreadRunScheduler scheduler;
+    cao::run::StandardRunScheduler scheduler;
     OptimizationRunService service{scheduler};
 
     // The request is a temporary that dies when start returns, while the worker is still using
@@ -429,5 +464,211 @@ void OptimizationRunServiceTests::aSchedulerThatCannotStartAWorkerCommitsAFailed
     QCOMPARE(terminal.phases().back().status(), RunPhaseStatus::Executed);
 }
 
-QTEST_MAIN(OptimizationRunServiceTests)
+void OptimizationRunServiceTests::aSecondActiveRunIsRejectedAcrossServices()
+{
+    DeferredRunScheduler firstScheduler;
+    CountingInlineScheduler secondScheduler;
+    OptimizationRunService firstService{firstScheduler};
+    OptimizationRunService secondService{secondScheduler};
+    auto first = firstService.start(noWorkRequest());
+
+    auto second = secondService.start(noWorkRequest());
+
+    QVERIFY(!second.started());
+    QCOMPARE(second.startError(), std::optional{StartError::ActiveRun});
+    QCOMPARE(secondScheduler.scheduled(), std::size_t{0});
+    QVERIFY(first.handle()->terminalResult() == nullptr);
+}
+
+void OptimizationRunServiceTests::destroyingTheServiceCancelsAndJoinsARetainedHandle()
+{
+    DeferredRunScheduler scheduler;
+    auto service = std::make_unique<OptimizationRunService>(scheduler);
+    auto started = service->start(noWorkRequest());
+    auto handle = std::move(*started.handle());
+
+    service.reset();
+
+    QVERIFY(handle.terminalResult() != nullptr);
+    QCOMPARE(handle.wait().outcome(), RunOutcome::Cancelled);
+    QCOMPARE(handle.wait().phases().back().phase(), RunPhase::SafetyCleanup);
+    QCOMPARE(scheduler.joins(), std::size_t{1});
+}
+
+void OptimizationRunServiceTests::waitingFromTheWorkerIsDiagnosed()
+{
+    GatedRunScheduler scheduler;
+    OptimizationRunService service{scheduler};
+    auto started = service.start(noWorkRequest());
+    bool diagnosed = false;
+    scheduler.beforeWork = [&] {
+        try {
+            static_cast<void>(started.handle()->wait());
+        } catch (const std::logic_error&) {
+            diagnosed = true;
+        }
+    };
+    scheduler.release();
+
+    QCOMPARE(started.handle()->wait().outcome(), RunOutcome::Succeeded);
+    QVERIFY(diagnosed);
+}
+
+void OptimizationRunServiceTests::theDefaultServiceSchedulesAProductionRun()
+{
+    OptimizationRunService service;
+    auto started = service.start(noWorkRequest());
+    QCOMPARE(started.handle()->wait().outcome(), RunOutcome::Succeeded);
+}
+
+void OptimizationRunServiceTests::cancellationKeepsTheSlotUntilTerminalCommit()
+{
+    GatedRunScheduler scheduler;
+    OptimizationRunService service{scheduler};
+    CountingInlineScheduler nextScheduler;
+    OptimizationRunService nextService{nextScheduler};
+    auto started = service.start(noWorkRequest());
+    started.handle()->requestCancellation();
+    started.handle()->requestCancellation();
+    auto blocked = nextService.start(noWorkRequest());
+    const auto* beforeCommit = started.handle()->terminalResult();
+    scheduler.release();
+
+    QCOMPARE(blocked.startError(), std::optional{StartError::ActiveRun});
+    QVERIFY(beforeCommit == nullptr);
+    const auto& terminal = started.handle()->wait();
+    QCOMPARE(terminal.outcome(), RunOutcome::Cancelled);
+    QCOMPARE(terminal.phases().size(), std::size_t{2});
+    QCOMPARE(terminal.phases().back().phase(), RunPhase::SafetyCleanup);
+    auto next = nextService.start(noWorkRequest());
+    QVERIFY(next.started());
+    QCOMPARE(next.handle()->wait().outcome(), RunOutcome::Succeeded);
+    started.handle()->requestCancellation();
+    QVERIFY(started.handle()->terminalResult() == &terminal);
+}
+
+void OptimizationRunServiceTests::destructionFromTheWorkerIsDiagnosed()
+{
+    for (const auto& owner : {QStringLiteral("handle"), QStringLiteral("service")}) {
+        QProcess child;
+        child.start(QCoreApplication::applicationFilePath(),
+                    {QStringLiteral("--self-destruction"), owner});
+        QVERIFY(child.waitForStarted());
+        const bool finished = child.waitForFinished(5000);
+        if (!finished) {
+            child.kill();
+            child.waitForFinished();
+        }
+        QVERIFY2(finished, "Worker-side destruction deadlocked instead of being diagnosed");
+        QCOMPARE(child.exitCode(), 86);
+        QVERIFY(child.readAllStandardError().contains("An Optimization Run cannot destroy"));
+    }
+}
+
+void OptimizationRunServiceTests::terminalCommitReleasesTheSlotBeforeWorkerJoin()
+{
+    GatedRunScheduler scheduler;
+    std::binary_semaphore committed{0};
+    std::binary_semaphore finishWorker{0};
+    scheduler.afterWork = [&] {
+        committed.release();
+        finishWorker.acquire();
+    };
+    OptimizationRunService service{scheduler};
+    auto first = service.start(noWorkRequest());
+    scheduler.release();
+    committed.acquire();
+    OptimizationRunService nextService;
+    auto next = nextService.start(noWorkRequest());
+    finishWorker.release();
+
+    QVERIFY(first.handle()->terminalResult() != nullptr);
+    QVERIFY(next.started());
+    QCOMPARE(next.handle()->wait().outcome(), RunOutcome::Succeeded);
+}
+
+void OptimizationRunServiceTests::simultaneousStartsAdmitExactlyOneRun()
+{
+    GatedRunScheduler firstScheduler;
+    GatedRunScheduler secondScheduler;
+    OptimizationRunService firstService{firstScheduler};
+    OptimizationRunService secondService{secondScheduler};
+    std::barrier startTogether{3};
+    std::optional<cao::run::RunStartResult> first;
+    std::optional<cao::run::RunStartResult> second;
+    std::jthread firstCaller([&] {
+        startTogether.arrive_and_wait();
+        first.emplace(firstService.start(noWorkRequest()));
+    });
+    std::jthread secondCaller([&] {
+        startTogether.arrive_and_wait();
+        second.emplace(secondService.start(noWorkRequest()));
+    });
+    startTogether.arrive_and_wait();
+    firstCaller.join();
+    secondCaller.join();
+    firstScheduler.release();
+    secondScheduler.release();
+
+    QVERIFY(first->started() != second->started());
+    const auto& rejected = first->started() ? *second : *first;
+    QCOMPARE(rejected.startError(), std::optional{StartError::ActiveRun});
+    auto& admitted = first->started() ? *first : *second;
+    QCOMPARE(admitted.handle()->wait().outcome(), RunOutcome::Succeeded);
+}
+
+void OptimizationRunServiceTests::destroyingTheHandleRequestsCancellationBeforeJoin()
+{
+    DeferredRunScheduler scheduler;
+    OptimizationRunService service{scheduler};
+    std::optional<RunOutcome> outcome;
+    {
+        auto started = service.start(noWorkRequest());
+        // This observer executes inside the join while the handle's destructor still retains
+        // its state. Querying the public result proves cancellation reached the Run Executor.
+        scheduler.afterWork = [&] { outcome = started.handle()->terminalResult()->outcome(); };
+    }
+    QCOMPARE(outcome, std::optional{RunOutcome::Cancelled});
+}
+
+void OptimizationRunServiceTests::schedulingFailureReleasesTheActiveSlot()
+{
+    ExhaustedRunScheduler scheduler;
+    OptimizationRunService failedService{scheduler};
+    auto failed = failedService.start(noWorkRequest());
+    const auto* terminal = failed.handle()->terminalResult();
+    OptimizationRunService nextService;
+    auto next = nextService.start(noWorkRequest());
+
+    QVERIFY(next.started());
+    QCOMPARE(next.handle()->wait().outcome(), RunOutcome::Succeeded);
+    QVERIFY(failed.handle()->terminalResult() == terminal);
+    QCOMPARE(terminal->outcome(), RunOutcome::Failed);
+}
+
+/// Runs fatal lifetime violations in isolation so the parent can assert the diagnosis and timeout.
+int main(int argc, char** argv)
+{
+    if (argc == 3 && std::string_view(argv[1]) == "--self-destruction") {
+        GatedRunScheduler scheduler;
+        auto service = std::make_unique<OptimizationRunService>(scheduler);
+        auto started = service->start(noWorkRequest());
+        std::optional<RunHandle> handle{std::move(*started.handle())};
+        std::binary_semaphore finished{0};
+        scheduler.beforeWork = [&] {
+            // MSVC keeps the terminate handler per thread, so install it on the violating worker.
+            // The parent also requires the diagnostic, rather than accepting any termination.
+            std::set_terminate([] { std::_Exit(86); });
+            if (std::string_view(argv[2]) == "handle") handle.reset();
+            else service.reset();
+        };
+        scheduler.afterWork = [&] { finished.release(); };
+        scheduler.release();
+        finished.acquire();
+        return 0;
+    }
+    QCoreApplication application(argc, argv);
+    OptimizationRunServiceTests tests;
+    return QTest::qExec(&tests, argc, argv);
+}
 #include "OptimizationRunServiceTests.moc"

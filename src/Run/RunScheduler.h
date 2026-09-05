@@ -6,7 +6,7 @@
 namespace cao::run {
 /// The single worker one Run Scheduler started for one Optimization Run.
 ///
-/// The Run Handle owns the worker and joins it before the run could be abandoned, so a worker
+/// The run lifetime owns the worker and joins it before the run could be abandoned, so a worker
 /// never outlives the run state it borrows. A scheduler implementation that cannot survive an
 /// unjoined worker, such as one backed by a thread, must join defensively in its own destructor.
 class ScheduledRunWorker {
@@ -20,9 +20,15 @@ class ScheduledRunWorker {
 
     /// Blocks until the scheduled work has finished.
     ///
-    /// Joining is idempotent: the Run Handle may join in response to either destruction or being
-    /// overwritten, and the work still runs at most once.
+    /// Joining is idempotent; the run lifetime serializes callers so the worker need not support
+    /// simultaneous joins. Joining from this worker is a diagnosed contract violation.
     virtual void join() = 0;
+
+    /// Reports whether the caller is this worker, including while another caller joins it.
+    ///
+    /// This query must be thread-safe and must not wait for the worker to finish: the lifetime
+    /// checks it before acquiring its join lock to diagnose self-wait without deadlocking.
+    [[nodiscard]] virtual bool isCurrentThread() const noexcept = 0;
 };
 
 /// Starts the single worker of one Optimization Run.
@@ -44,20 +50,27 @@ class RunScheduler {
 
     /// Starts `work` and returns the joinable Run Worker running it.
     ///
-    /// An implementation must return a worker: the Optimization Run has already been created by
-    /// the time it is scheduled, so it owes its caller a terminal result. Reporting a scheduler
-    /// that cannot start work arrives with the production scheduler, which is the first
-    /// implementation that can fail.
+    /// An implementation must return a worker or throw before invoking `work`. The service turns
+    /// that scheduling failure into the started run's terminal Failed result. The callback must
+    /// not throw, because work already invoked cannot be reported as a scheduling failure.
     [[nodiscard]] virtual std::unique_ptr<ScheduledRunWorker> schedule(
         std::function<void()> work) = 0;
+};
+
+/// Runs each Optimization Run on one owned standard-C++ thread.
+///
+/// The worker owns all thread resources and can be joined after the scheduler has been destroyed.
+/// Cooperative cancellation belongs to the run state; thread ownership stays inside this seam.
+class StandardRunScheduler final : public RunScheduler {
+   public:
+    /// Starts `work` on a new thread, throwing only if no work could be started.
+    [[nodiscard]] std::unique_ptr<ScheduledRunWorker> schedule(std::function<void()> work) override;
 };
 
 /// Runs each scheduled worker inline on the calling thread before scheduling returns.
 ///
 /// This makes an Optimization Run deterministic for callers that want the lifecycle contract
-/// without concurrency, so a run is already terminal by the time its Run Handle exists. It is the
-/// scheduling seam this lifecycle slice ships; production threading arrives with its own
-/// scheduler.
+/// without concurrency, so a run is already terminal by the time its Run Handle exists.
 class InlineRunScheduler final : public RunScheduler {
    public:
     /// Runs `work` to completion, then returns a worker that has nothing left to join.

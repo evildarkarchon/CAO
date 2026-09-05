@@ -2,6 +2,8 @@
 
 #include "Run/RunLifecycle.h"
 
+#include <stop_token>
+
 namespace cao::run {
 /// Removes the temporary artifacts one Optimization Run registered.
 ///
@@ -49,8 +51,10 @@ class RunExecutor final {
     /// a stable reason, then performs Safety Cleanup exactly once and commits the terminal result.
     ///
     /// Returns an owning, self-contained result that outlives this executor, the request, and the
-    /// borrowed services.
+    /// borrowed services. The optional stop token is observed between phases; Safety Cleanup
+    /// always finishes even when cancellation was requested.
     [[nodiscard]] OptimizationRunResult execute(const RunRequest& request,
-                                                const RunServices& services) const;
+                                                const RunServices& services,
+                                                std::stop_token stop = {}) const;
 };
 }  // namespace cao::run

@@ -4,30 +4,32 @@
 #include "Run/RunScheduler.h"
 
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <variant>
+#include <vector>
 
 namespace cao::run {
-/// Stable structural conflicts that prevent an Optimization Run from starting at all.
+/// Stable request or active-run conflicts that prevent an Optimization Run from starting at all.
 ///
 /// A Start Error is detected before any worker exists, so it produces no Run Outcome and no Run
-/// Handle. Only malformed Run Request structure is a Start Error: anything that goes wrong once
-/// the run exists, including scheduling failure, becomes a terminal result instead. Facts that
-/// need the filesystem or the profile, such as whether a Mod Root exists, are not structural and
-/// belong to Preparing.
-enum class StartError { MissingProfileIdentity, MissingModSelectionDirectory };
+/// Handle. Malformed Run Request structure and an active-run conflict are Start Errors. Anything
+/// that goes wrong once the run exists, including scheduling failure, becomes a terminal result
+/// instead. Facts that need the filesystem or the profile, such as whether a Mod Root exists,
+/// are not structural and belong to Preparing.
+enum class StartError { MissingProfileIdentity, MissingModSelectionDirectory, ActiveRun };
 
 /// The internal state one started Optimization Run shares between its worker and its Run Handle.
 class RunSharedState;
+class RunWorkerLifetime;
 
 /// The owning caller-side handle to one started Optimization Run.
 ///
 /// A handle is movable and non-copyable, so exactly one owner is responsible for the run at any
 /// time. It exposes no pause, resume, restart, mutable configuration, or worker access.
 ///
-/// Destroying or overwriting an owning handle joins its worker first, so a run is never abandoned
-/// while it is still executing. Requesting cancellation before that join arrives with the
-/// production scheduler; an inline seam has no work left to cancel once the handle exists.
+/// Destroying or overwriting an owning handle requests cancellation and joins its worker, so a
+/// run is never abandoned while it is still executing.
 ///
 /// Observing a moved-from handle is a contract violation: the run moved to its new owner.
 class RunHandle final {
@@ -38,6 +40,10 @@ class RunHandle final {
     RunHandle& operator=(RunHandle&& other) noexcept;
     ~RunHandle();
 
+    /// Requests cancellation idempotently from any thread without blocking or interrupting work.
+    /// The handle must remain alive and unmoved for the duration of this call.
+    void requestCancellation() const noexcept;
+
     /// Returns the committed terminal result, or nullptr while the run is still active.
     ///
     /// The returned result is immutable and stays valid for the lifetime of this handle, because
@@ -46,21 +52,22 @@ class RunHandle final {
 
     /// Blocks until the Optimization Run commits its terminal result, then returns it.
     ///
-    /// Waiting from the run's own worker would deadlock and is a contract violation; diagnosing
-    /// it arrives with the production scheduler, which is the first seam that can detect it.
+    /// Throws std::logic_error from the run's own worker, including its inline callbacks.
+    /// Active destruction from that context is a fatal contract violation (std::terminate).
     [[nodiscard]] const OptimizationRunResult& wait() const;
 
    private:
     friend class OptimizationRunService;
 
+    /// Retains the immutable result state and the join obligation shared with the service.
     RunHandle(std::shared_ptr<RunSharedState> state,
-              std::unique_ptr<ScheduledRunWorker> worker) noexcept;
+              std::shared_ptr<RunWorkerLifetime> worker) noexcept;
 
-    /// Joins the owned worker, if this handle still owns one, and releases it.
+    /// Cancels and joins the owned worker, if this handle still owns one, and releases it.
     void releaseOwnedRun() noexcept;
 
     std::shared_ptr<RunSharedState> _state;
-    std::unique_ptr<ScheduledRunWorker> _worker;
+    std::shared_ptr<RunWorkerLifetime> _worker;
 };
 
 /// The outcome of one start attempt: either the owning Run Handle or a synchronous Start Error.
@@ -78,7 +85,7 @@ class RunStartResult final {
     /// Returns the owning Run Handle to move out of, or nullptr when the start was rejected.
     [[nodiscard]] RunHandle* handle() noexcept;
 
-    /// Returns the structural Start Error, or no value when the run started.
+    /// Returns the request or active-run Start Error, or no value when the run started.
     [[nodiscard]] std::optional<StartError> startError() const noexcept;
 
    private:
@@ -98,20 +105,35 @@ class RunStartResult final {
 /// it, the Run Executor remains the synchronous deterministic seam.
 ///
 /// The injected scheduler must outlive this service and every Run Handle started through it.
+/// Concurrent start() calls are supported; destroying the service must not overlap start().
 class OptimizationRunService final {
    public:
+    /// Owns the standard-C++ production scheduler; adapters need no worker or scheduler objects.
+    OptimizationRunService() noexcept;
+
     /// Starts runs on `scheduler`, which the caller owns.
     explicit OptimizationRunService(RunScheduler& scheduler) noexcept;
 
+    OptimizationRunService(const OptimizationRunService&) = delete;
+    OptimizationRunService& operator=(const OptimizationRunService&) = delete;
+
+    /// Cancels and joins every retained run before the service's dependencies disappear.
+    /// Destruction must not overlap start(); destruction from its worker terminates with a
+    /// diagnostic.
+    ~OptimizationRunService();
+
     /// Validates the Run Request structure and starts the Optimization Run.
     ///
-    /// Structural conflicts are reported synchronously as a Start Error and create no worker.
+    /// Request and active-run conflicts are synchronous Start Errors and create no worker.
     /// Otherwise the run takes ownership of `request` and is scheduled, and the returned handle
     /// owns it. A failure after that point, including a scheduler that cannot start a worker,
     /// commits a terminal Failed result rather than a Start Error.
     [[nodiscard]] RunStartResult start(RunRequest request);
 
    private:
+    StandardRunScheduler _productionScheduler;
     RunScheduler& _scheduler;
+    std::mutex _runsMutex;
+    std::vector<std::weak_ptr<RunWorkerLifetime>> _runs;
 };
 }  // namespace cao::run

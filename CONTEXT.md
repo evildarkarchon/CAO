@@ -61,7 +61,7 @@ The immutable Mod Selection, Archive Precedence, execution mode, profile identit
 _Avoid_: Options, command arguments
 
 **Start Error**:
-A structural Run Request conflict detected before an Optimization Run starts. It produces no Run Outcome.
+A structural Run Request conflict or an already-active Optimization Run that prevents a new run from starting. It produces no Run Outcome.
 _Avoid_: Failed run, exception
 
 **Run Outcome**:

@@ -3,15 +3,24 @@
 #include "Run/RunExecutor.h"
 
 #include <cassert>
+#include <algorithm>
 #include <condition_variable>
+#include <cstdio>
+#include <exception>
 #include <mutex>
 #include <memory>
 #include <optional>
+#include <stop_token>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
 namespace cao::run {
 namespace {
+// Every service shares this lease because profiles, logging, and filesystem work are process-wide.
+std::mutex activeRunMutex;
+std::weak_ptr<RunSharedState> activeRun;
+
 /// Performs the Safety Cleanup pass of a run that registered no temporary artifacts.
 ///
 /// No phase registers artifacts yet, so the pass covers an empty set. It is a real pass rather
@@ -52,8 +61,11 @@ class RunSharedState final {
     /// Runs the Optimization Run through the synchronous Run Executor and commits its result.
     void execute() {
         const RunExecutor executor;
-        commit(executor.execute(_request, RunServices{_safetyCleanup}));
+        commit(executor.execute(_request, RunServices{_safetyCleanup}, _stop.get_token()));
     }
+
+    /// Requests cooperative cancellation without interrupting an atomic operation or cleanup.
+    void requestCancellation() noexcept { _stop.request_stop(); }
 
     /// Commits the terminal result of a run whose worker could never be started.
     ///
@@ -74,6 +86,10 @@ class RunSharedState final {
         {
             const std::lock_guard lock(_mutex);
             _result.emplace(std::move(result));
+            // Publish the result and release the slot together: a waiter must never observe a
+            // terminal result while a subsequent start would still see this run as active.
+            const std::lock_guard activeLock(activeRunMutex);
+            activeRun.reset();
         }
 
         // Notifying outside the lock keeps a woken waiter from immediately blocking again on a
@@ -102,15 +118,58 @@ class RunSharedState final {
     RunRequest _request;
     UnregisteredArtifactSafetyCleanup _safetyCleanup;
     std::optional<OptimizationRunResult> _result;
+    std::stop_source _stop;
+};
+
+/// Shares the join obligation between the owning handle and service without owning a callback
+/// that captures itself. The worker captures only RunSharedState, avoiding an ownership cycle.
+class RunWorkerLifetime final {
+   public:
+    /// Retains run state until both owners have finished with the scheduled worker.
+    explicit RunWorkerLifetime(std::shared_ptr<RunSharedState> state) noexcept
+        : _state(std::move(state)) {}
+
+    /// Installs the worker before start() publishes the handle to another thread.
+    void setWorker(std::unique_ptr<ScheduledRunWorker> worker) noexcept {
+        _worker = std::move(worker);
+    }
+
+    /// Cancels active work and joins exactly once, including concurrent service/handle teardown.
+    void cancelAndJoin() noexcept {
+        // This must precede the join lock: another caller may already hold it while waiting
+        // for this very worker to return from its inline callback.
+        if (_worker != nullptr && _worker->isCurrentThread()) {
+            // Destruction cannot return safely or throw; report the contract violation before
+            // invoking the application's terminate handler.
+            std::fputs("An Optimization Run cannot destroy its own worker\n", stderr);
+            std::terminate();
+        }
+        _state->requestCancellation();
+        const std::lock_guard lock(_joinMutex);
+        if (!_joined && _worker != nullptr) _worker->join();
+        _joined = true;
+    }
+
+    /// Throws logic_error when a caller would wait for its own worker to finish.
+    void diagnoseSelfWait() const {
+        if (_worker != nullptr && _worker->isCurrentThread())
+            throw std::logic_error("An Optimization Run cannot wait for or destroy its own worker");
+    }
+
+   private:
+    std::shared_ptr<RunSharedState> _state;
+    std::unique_ptr<ScheduledRunWorker> _worker;
+    std::mutex _joinMutex;
+    bool _joined{};
 };
 
 RunHandle::RunHandle(std::shared_ptr<RunSharedState> state,
-                     std::unique_ptr<ScheduledRunWorker> worker) noexcept
+                     std::shared_ptr<RunWorkerLifetime> worker) noexcept
     : _state(std::move(state)), _worker(std::move(worker)) {}
 
 RunHandle::RunHandle(RunHandle&& other) noexcept
     : _state(std::move(other._state)), _worker(std::move(other._worker)) {
-    // Moving from a shared_ptr and a unique_ptr already emptied the source, so the moved-from
+    // Moving the shared pointers already emptied the source, so the moved-from
     // handle owes no join and its destructor does nothing.
 }
 
@@ -126,8 +185,14 @@ RunHandle& RunHandle::operator=(RunHandle&& other) noexcept {
 
 RunHandle::~RunHandle() { releaseOwnedRun(); }
 
+void RunHandle::requestCancellation() const noexcept {
+    assert(_state != nullptr &&
+           "Cancelling a moved-from Run Handle: the run moved to its new owner");
+    _state->requestCancellation();
+}
+
 void RunHandle::releaseOwnedRun() noexcept {
-    if (_worker != nullptr) _worker->join();
+    if (_worker != nullptr) _worker->cancelAndJoin();
 
     _worker.reset();
     // The run state is released only after the join, so the worker can never observe it being
@@ -144,6 +209,7 @@ const OptimizationRunResult* RunHandle::terminalResult() const {
 const OptimizationRunResult& RunHandle::wait() const {
     assert(_state != nullptr &&
            "Waiting on a moved-from Run Handle: the run moved to its new owner");
+    _worker->diagnoseSelfWait();
     return _state->awaitCommittedResult();
 }
 
@@ -166,24 +232,45 @@ std::optional<StartError> RunStartResult::startError() const noexcept {
 OptimizationRunService::OptimizationRunService(RunScheduler& scheduler) noexcept
     : _scheduler(scheduler) {}
 
+OptimizationRunService::OptimizationRunService() noexcept : _scheduler(_productionScheduler) {}
+
+OptimizationRunService::~OptimizationRunService() {
+    // No start() may overlap destruction; joining outside the registry lock also lets worker
+    // completion inspect run state without depending on a service lock held by its waiter.
+    for (const auto& run : _runs) {
+        if (const auto lifetime = run.lock()) lifetime->cancelAndJoin();
+    }
+}
+
 RunStartResult OptimizationRunService::start(RunRequest request) {
     if (const auto conflict = findStructuralConflict(request)) return RunStartResult{*conflict};
 
-    auto state = std::make_shared<RunSharedState>(std::move(request));
-    std::unique_ptr<ScheduledRunWorker> worker;
+    std::shared_ptr<RunSharedState> state;
+    {
+        const std::lock_guard lock(activeRunMutex);
+        if (!activeRun.expired()) return RunStartResult{StartError::ActiveRun};
+        state = std::make_shared<RunSharedState>(std::move(request));
+        activeRun = state;
+    }
+    auto lifetime = std::make_shared<RunWorkerLifetime>(state);
+    {
+        const std::lock_guard lock(_runsMutex);
+        std::erase_if(_runs, [](const auto& run) { return run.expired(); });
+        _runs.push_back(lifetime);
+    }
     try {
         // The Run Worker holds its own reference to the run state, so the run survives a handle
         // that is destroyed while the worker is still executing.
-        worker = _scheduler.schedule([state] { state->execute(); });
+        lifetime->setWorker(_scheduler.schedule([state] { state->execute(); }));
     } catch (...) {
-        // Only structural Run Request conflicts are Start Errors, and the request already cleared
-        // those, so a scheduler that cannot start a worker owes the terminal result its run was
+        // The request cleared both structural conflicts and the active-run check, so a scheduler
+        // that cannot start a worker owes the terminal result its run was
         // created to produce. A scheduler that throws started no work, so nothing else can commit
         // this run, and the handle carries no worker and therefore owes no join.
         state->commitSchedulingFailure();
-        return RunStartResult{RunHandle{std::move(state), nullptr}};
+        return RunStartResult{RunHandle{std::move(state), std::move(lifetime)}};
     }
 
-    return RunStartResult{RunHandle{std::move(state), std::move(worker)}};
+    return RunStartResult{RunHandle{std::move(state), std::move(lifetime)}};
 }
 }  // namespace cao::run

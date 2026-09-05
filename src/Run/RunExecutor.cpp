@@ -20,8 +20,8 @@ void recordSkippedWorkPhases(std::vector<RunPhaseRecord>& phases) {
 }
 }  // namespace
 
-OptimizationRunResult RunExecutor::execute(const RunRequest& request,
-                                           const RunServices& services) const {
+OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunServices& services,
+                                           std::stop_token stop) const {
     std::vector<RunPhaseRecord> phases;
     phases.reserve(runPhaseSequence().size());
 
@@ -31,7 +31,9 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request,
     auto finalPhase = RunPhase::Preparing;
     auto outcome = RunOutcome::Succeeded;
 
-    if (request.hasRequestedWork()) {
+    if (stop.stop_requested()) {
+        outcome = RunOutcome::Cancelled;
+    } else if (request.hasRequestedWork()) {
         // Requested work needs service seams this slice does not yet own. Traversing the work
         // phases here would report a Succeeded run that touched nothing, so Preparing fails and
         // the run still reaches Safety Cleanup. Later lifecycle slices replace this branch with
@@ -46,6 +48,10 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request,
     // committed, so cancellation and failure cannot litter Mod Roots with run-owned artifacts.
     services.safetyCleanup.performSafetyCleanup();
     phases.push_back(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
+
+    // A fatal failure keeps precedence; cancellation observed during cleanup still records a
+    // cancelled run, without ever interrupting the cleanup pass.
+    if (outcome != RunOutcome::Failed && stop.stop_requested()) outcome = RunOutcome::Cancelled;
 
     return OptimizationRunResult::terminal(outcome, finalPhase, std::move(phases));
 }
