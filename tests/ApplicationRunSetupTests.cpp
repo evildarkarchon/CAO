@@ -39,6 +39,10 @@ private slots:
     void disabledTextureWorkDoesNotRequestProfileConversion();
     /// Verifies the shipped FO4 conversion profile compiles without enabling Mesh optimization.
     void fo4ConversionCompilesWithoutMeshOptimization();
+    /// Covers resave-only, optimization-only, combined, and disabled Mesh work choices.
+    void meshWorkRoutesStandardAndTerrainMeshes_data();
+    /// Verifies application choices route both Mesh variants even for resave-only runs.
+    void meshWorkRoutesStandardAndTerrainMeshes();
     /// Verifies requesting Archive creation under an Archive-disabled profile fails setup.
     void archiveCreationRequiresProfileArchiveSupport();
 
@@ -116,6 +120,40 @@ void ApplicationRunSetupTests::fo4ConversionCompilesWithoutMeshOptimization()
     QVERIFY(result.policy()->maintainsMeshReferences());
     QVERIFY(!result.policy()->requests(RequestedWork::StandardMeshOptimization));
     QVERIFY(!result.policy()->requests(RequestedWork::TerrainMeshOptimization));
+}
+
+void ApplicationRunSetupTests::meshWorkRoutesStandardAndTerrainMeshes_data()
+{
+    QTest::addColumn<int>("optimizationLevel");
+    QTest::addColumn<bool>("resave");
+    QTest::addColumn<bool>("shouldRoute");
+
+    QTest::newRow("disabled") << 0 << false << false;
+    QTest::newRow("resave only") << 0 << true << true;
+    QTest::newRow("optimization only") << 1 << false << true;
+    QTest::newRow("optimization and resave") << 1 << true << true;
+}
+
+void ApplicationRunSetupTests::meshWorkRoutesStandardAndTerrainMeshes()
+{
+    QFETCH(int, optimizationLevel);
+    QFETCH(bool, resave);
+    QFETCH(bool, shouldRoute);
+
+    Profiles::setCurrentProfile(QStringLiteral("SSE"));
+    OptionsCAO options;
+    disableTextureWork(options);
+    options.iMeshesOptimizationLevel = optimizationLevel;
+    options.bMeshesResave = resave;
+
+    const auto result = cao::run::prepareApplicationRun(options);
+
+    QVERIFY(result.hasPolicy());
+    const cao::routing::AssetRouter router(*result.policy());
+    for (const auto *path : {"meshes/armor.nif", "meshes/terrain.btr"}) {
+        const auto decision = router.route(std::filesystem::path(path));
+        QCOMPARE(std::holds_alternative<cao::routing::RoutedAsset>(decision), shouldRoute);
+    }
 }
 
 void ApplicationRunSetupTests::archiveCreationRequiresProfileArchiveSupport()

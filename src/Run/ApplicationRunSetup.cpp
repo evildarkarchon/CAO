@@ -12,7 +12,8 @@ ApplicationRunChoices choicesFrom(const OptionsCAO& options) {
                                         options.bTexturesResizeRatio;
     // The application has one Mesh level, while routing keeps Standard and Terrain choices
     // explicit.
-    const bool optimizeMeshes = options.iMeshesOptimizationLevel > 0;
+    // Resaving is independent of optimization level, so resave-only runs still need Mesh routing.
+    const bool optimizeMeshes = options.iMeshesOptimizationLevel > 0 || options.bMeshesResave;
     // A profile's TGA preference only participates when the user selected Texture work for this
     // run.
     return ApplicationRunChoices{
