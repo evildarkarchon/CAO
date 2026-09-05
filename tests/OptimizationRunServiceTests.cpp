@@ -1,4 +1,5 @@
 #include "Run/OptimizationRunService.h"
+#include "RunTestConfiguration.h"
 
 #include <QtTest>
 
@@ -12,6 +13,7 @@
 #include <memory>
 #include <semaphore>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
@@ -36,6 +38,23 @@ using cao::run::StartError;
 
 namespace
 {
+/// Runs a test's loader on the execution boundary while retaining its callback by value.
+class CallbackRunConfigurationProvider final : public cao::run::RunConfigurationProvider {
+   public:
+    /// Owns a loader whose captured test state remains valid until its run has been joined.
+    explicit CallbackRunConfigurationProvider(
+        std::function<cao::run::RunConfiguration(std::string_view)> loader)
+        : _loader(std::move(loader)) {}
+
+    /// Delegates loading so tests can observe thread identity, ordering, and thrown failures.
+    [[nodiscard]] cao::run::RunConfiguration load(std::string_view profileIdentity) const override {
+        return _loader(profileIdentity);
+    }
+
+   private:
+    std::function<cao::run::RunConfiguration(std::string_view)> _loader;
+};
+
 /// Runs each worker inline while counting how many workers the service asked it to start.
 ///
 /// The count is what proves a rejected start created no worker at all, rather than creating one
@@ -151,13 +170,11 @@ private:
     std::binary_semaphore _released{0};
 };
 
-/// Builds a structurally valid Run Request that selects no work at all.
+/// Builds a no-work Run Request whose Mod Root passes filesystem preparation.
 RunRequest noWorkRequest()
 {
-    return RunRequest::create("SkyrimSE",
-                              ExecutionMode::Apply,
-                              ModSelection::singleModRoot(std::filesystem::path("mods/Example")),
-                              {});
+    return RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+                              ModSelection::singleModRoot(testModRoot()), {});
 }
 }
 
@@ -166,109 +183,289 @@ class OptimizationRunServiceTests final : public QObject
     Q_OBJECT
 
 private slots:
-    /// Catches missing, reordered, or unidentified phase and terminal observations.
-    void inlineEventsOwnAnOrderedRunHistory();
+ /// Verifies the worker loads the request's exact identity after publishing Preparing.
+ void configurationLoadsInsidePreparingOnTheWorker();
 
-    /// Catches caller queues losing events or borrowing state that dies with the handle.
-    void queuedEventsOutliveTheRunOwners();
+ /// Verifies missing and throwing providers fail a started run instead of rejecting its request.
+ void configurationLoadingFailuresAreTerminalFailures();
 
-    /// Catches presentation exceptions changing work or suppressing a healthy observer's history.
-    void presentationFailuresDisableOnlyTheFailingObserver();
+ /// Verifies policy conflicts retain typed details behind the public asynchronous boundary.
+ void policyConflictsAreTerminalFailures();
 
-    /// Catches failures disappearing between phase observations and terminal classification.
-    void failureEventsPrecedeCleanupAndTerminal();
+ /// Verifies a nonempty missing directory is a preparation failure rather than a Start Error.
+ void missingModRootsAreTerminalFailures();
 
-    /// Catches stale state at enqueue, callbacks under locks, and worker-side callback self-wait.
-    void inlineCallbacksObservePublishedStateAndCanCancel();
+ /// Verifies copied terminal facts outlive the service, provider, handle, and request.
+ void copiedResultsOwnTheirPreparationFacts();
 
-    /// Catches state publication delayed until callback execution rather than dispatcher admission.
-    void snapshotsArePublishedBeforeDispatch();
+ /// Catches missing, reordered, or unidentified phase and terminal observations.
+ void inlineEventsOwnAnOrderedRunHistory();
 
-    /// Catches racing cancellation losing the request or changing an already captured snapshot.
-    void concurrentCancellationAndSnapshotsPreserveRunState();
+ /// Catches caller queues losing events or borrowing state that dies with the handle.
+ void queuedEventsOutliveTheRunOwners();
 
-    /// Catches inconsistent snapshots while a real worker publishes phase and terminal changes.
-    void concurrentReadersObservePublishedPhaseTransitions();
+ /// Catches presentation exceptions changing work or suppressing a healthy observer's history.
+ void presentationFailuresDisableOnlyTheFailingObserver();
 
-    /// Catches an event-driven cancellation traversing phases beyond its observation boundary.
-    void cancellationFromASkippedPhaseStopsFurtherTraversal();
+ /// Catches failures disappearing between phase observations and terminal classification.
+ void failureEventsPrecedeCleanupAndTerminal();
 
-    /// Verifies a Run Request naming no profile is rejected before any worker exists.
-    void aRequestWithoutAProfileIdentityIsRejectedWithoutCreatingAWorker();
+ /// Catches stale state at enqueue, callbacks under locks, and worker-side callback self-wait.
+ void inlineCallbacksObservePublishedStateAndCanCancel();
 
-    /// Verifies a Mod Selection naming no directory is rejected for either selection kind.
-    void aModSelectionWithoutADirectoryIsRejectedWithoutCreatingAWorker();
+ /// Catches state publication delayed until callback execution rather than dispatcher admission.
+ void snapshotsArePublishedBeforeDispatch();
 
-    /// Verifies a rejected start reports its Start Error instead of a Run Handle.
-    void aRejectedStartExposesAStartErrorInsteadOfAHandle();
+ /// Catches racing cancellation losing the request or changing an already captured snapshot.
+ void concurrentCancellationAndSnapshotsPreserveRunState();
 
-    /// Verifies a structurally valid start schedules exactly one worker and returns a handle.
-    void aValidStartSchedulesOneWorkerAndReturnsAHandle();
+ /// Catches inconsistent snapshots while a real worker publishes phase and terminal changes.
+ void concurrentReadersObservePublishedPhaseTransitions();
 
-    /// Verifies the Run Handle owns its run exclusively: it may be moved but never copied.
-    void aRunHandleIsMovableButNotCopyable();
+ /// Catches an event-driven cancellation traversing phases beyond its observation boundary.
+ void cancellationFromASkippedPhaseStopsFurtherTraversal();
 
-    /// Verifies waiting returns the immutable terminal result of the no-work run.
-    void waitingReturnsTheImmutableTerminalResult();
+ /// Verifies a Run Request naming no profile is rejected before any worker exists.
+ void aRequestWithoutAProfileIdentityIsRejectedWithoutCreatingAWorker();
 
-    /// Verifies repeated waiting observes the same committed result rather than re-running.
-    void waitingRepeatedlyObservesTheSameCommittedResult();
+ /// Verifies a Mod Selection naming no directory is rejected for either selection kind.
+ void aModSelectionWithoutADirectoryIsRejectedWithoutCreatingAWorker();
 
-    /// Verifies the run owns its request, so a caller's temporary request may die at once.
-    void theRunOwnsItsRequestAfterStartReturns();
+ /// Verifies a rejected start reports its Start Error instead of a Run Handle.
+ void aRejectedStartExposesAStartErrorInsteadOfAHandle();
 
-    /// Verifies terminal query reports an active run before its worker has committed.
-    void terminalQueryReportsAnActiveRunAsUncommitted();
+ /// Verifies a structurally valid start schedules exactly one worker and returns a handle.
+ void aValidStartSchedulesOneWorkerAndReturnsAHandle();
 
-    /// Verifies destroying an owning handle joins its worker instead of abandoning the run.
-    void destroyingAnActiveHandleJoinsItsWorker();
+ /// Verifies the Run Handle owns its run exclusively: it may be moved but never copied.
+ void aRunHandleIsMovableButNotCopyable();
 
-    /// Verifies a moved-from handle owes no join, so ownership transfers exactly once.
-    void movingAHandleTransfersTheJoinObligationExactlyOnce();
+ /// Verifies waiting returns the immutable terminal result of the no-work run.
+ void waitingReturnsTheImmutableTerminalResult();
 
-    /// Verifies overwriting an owning handle joins the run it replaces.
-    void moveAssigningOverAnActiveHandleJoinsTheReplacedRun();
+ /// Verifies repeated waiting observes the same committed result rather than re-running.
+ void waitingRepeatedlyObservesTheSameCommittedResult();
 
-    /// Verifies a scheduler that cannot start a worker yields a terminal Failed run, not a throw.
-    void aSchedulerThatCannotStartAWorkerCommitsAFailedRun();
+ /// Verifies the run owns its request, so a caller's temporary request may die at once.
+ void theRunOwnsItsRequestAfterStartReturns();
 
-    /// Verifies the active slot is shared across services and rejects without scheduling.
-    void aSecondActiveRunIsRejectedAcrossServices();
+ /// Verifies terminal query reports an active run before its worker has committed.
+ void terminalQueryReportsAnActiveRunAsUncommitted();
 
-    /// Verifies service destruction completes cancellation even when its handle survives.
-    void destroyingTheServiceCancelsAndJoinsARetainedHandle();
+ /// Verifies destroying an owning handle joins its worker instead of abandoning the run.
+ void destroyingAnActiveHandleJoinsItsWorker();
 
-    /// Verifies a worker cannot deadlock itself by waiting for its own result.
-    void waitingFromTheWorkerIsDiagnosed();
+ /// Verifies a moved-from handle owes no join, so ownership transfers exactly once.
+ void movingAHandleTransfersTheJoinObligationExactlyOnce();
 
-    /// Verifies adapters need no scheduler ownership for a production run.
-    void theDefaultServiceSchedulesAProductionRun();
+ /// Verifies overwriting an owning handle joins the run it replaces.
+ void moveAssigningOverAnActiveHandleJoinsTheReplacedRun();
 
-    /// Verifies repeated cancellation is cooperative and cannot release the active slot early.
-    void cancellationKeepsTheSlotUntilTerminalCommit();
+ /// Verifies a scheduler that cannot start a worker yields a terminal Failed run, not a throw.
+ void aSchedulerThatCannotStartAWorkerCommitsAFailedRun();
 
-    /// Verifies each forbidden worker-side destructor fails promptly with a contract diagnostic.
-    void destructionFromTheWorkerIsDiagnosed();
+ /// Verifies the active slot is shared across services and rejects without scheduling.
+ void aSecondActiveRunIsRejectedAcrossServices();
 
-    /// Verifies commit releases the slot while the previous worker still has an epilogue to join.
-    void terminalCommitReleasesTheSlotBeforeWorkerJoin();
+ /// Verifies service destruction completes cancellation even when its handle survives.
+ void destroyingTheServiceCancelsAndJoinsARetainedHandle();
 
-    /// Verifies racing starts reserve one process-wide slot atomically.
-    void simultaneousStartsAdmitExactlyOneRun();
+ /// Verifies a worker cannot deadlock itself by waiting for its own result.
+ void waitingFromTheWorkerIsDiagnosed();
 
-    /// Verifies handle teardown requests cancellation before joining its deferred worker.
-    void destroyingTheHandleRequestsCancellationBeforeJoin();
+ /// Verifies adapters need no scheduler ownership for a production run.
+ void theDefaultServiceSchedulesAProductionRun();
 
-    /// Verifies scheduling failure releases the slot while the failed handle remains readable.
-    void schedulingFailureReleasesTheActiveSlot();
+ /// Verifies repeated cancellation is cooperative and cannot release the active slot early.
+ void cancellationKeepsTheSlotUntilTerminalCommit();
+
+ /// Verifies each forbidden worker-side destructor fails promptly with a contract diagnostic.
+ void destructionFromTheWorkerIsDiagnosed();
+
+ /// Verifies commit releases the slot while the previous worker still has an epilogue to join.
+ void terminalCommitReleasesTheSlotBeforeWorkerJoin();
+
+ /// Verifies racing starts reserve one process-wide slot atomically.
+ void simultaneousStartsAdmitExactlyOneRun();
+
+ /// Verifies handle teardown requests cancellation before joining its deferred worker.
+ void destroyingTheHandleRequestsCancellationBeforeJoin();
+
+ /// Verifies scheduling failure releases the slot while the failed handle remains readable.
+ void schedulingFailureReleasesTheActiveSlot();
 };
+
+void OptimizationRunServiceTests::configurationLoadsInsidePreparingOnTheWorker() {
+    GatedRunScheduler scheduler;
+    const auto callerThread = std::this_thread::get_id();
+    std::thread::id preparingThread;
+    std::thread::id loadingThread;
+    std::vector<std::string> order;
+    std::string loadedIdentity;
+    std::atomic<unsigned> loads{};
+    auto provider =
+        std::make_shared<CallbackRunConfigurationProvider>([&](std::string_view identity) {
+            ++loads;
+            loadingThread = std::this_thread::get_id();
+            loadedIdentity = identity;
+            order.push_back("loaded");
+            auto profile = testRunConfiguration()->load(identity).profile();
+            profile.archiveExtension = identity == "RequestedFO4" ? ".ba2" : ".bsa";
+            return cao::run::RunConfiguration(std::move(profile));
+        });
+    OptimizationRunService service{scheduler, provider};
+    auto started = service.start(RunRequest::create("RequestedFO4", ExecutionMode::DryRun,
+                                                    ModSelection::singleModRoot(testModRoot()), {}),
+                                 [&](const cao::run::RunEvent& event) {
+                                     const auto* phase =
+                                         std::get_if<cao::run::RunPhaseRecord>(&event.payload());
+                                     if (phase && phase->phase() == RunPhase::Preparing) {
+                                         preparingThread = std::this_thread::get_id();
+                                         order.push_back("preparing");
+                                     }
+                                 });
+    const auto loadsBeforeRelease = loads.load();
+    // Release before assertions so an unexpected start failure cannot strand the gated worker.
+    scheduler.release();
+    QVERIFY(started.started());
+    QVERIFY(!started.startError().has_value());
+    const auto& result = started.handle()->wait();
+
+    QCOMPARE(loadsBeforeRelease, 0U);
+    QCOMPARE(loads.load(), 1U);
+    QVERIFY(loadingThread != callerThread);
+    QVERIFY(preparingThread == loadingThread);
+    QVERIFY(order == std::vector<std::string>({"preparing", "loaded"}));
+    QCOMPARE(loadedIdentity, std::string("RequestedFO4"));
+    QCOMPARE(result.outcome(), RunOutcome::Succeeded);
+    QVERIFY(result.preparation() != nullptr);
+    QCOMPARE(result.preparation()->policy().archiveExtension(), std::string(".ba2"));
+    QCOMPARE(result.preparation()->policy().executionMode(), ExecutionMode::DryRun);
+}
+
+void OptimizationRunServiceTests::configurationLoadingFailuresAreTerminalFailures() {
+    enum class LoadingFailure { MissingProvider, StandardException, NonstandardException };
+    for (const auto failureKind :
+         {LoadingFailure::MissingProvider, LoadingFailure::StandardException,
+          LoadingFailure::NonstandardException}) {
+        std::shared_ptr<const cao::run::RunConfigurationProvider> provider;
+        if (failureKind != LoadingFailure::MissingProvider) {
+            provider = std::make_shared<CallbackRunConfigurationProvider>(
+                [failureKind](std::string_view) -> cao::run::RunConfiguration {
+                    if (failureKind == LoadingFailure::StandardException)
+                        throw std::runtime_error("Profile could not be loaded");
+                    throw 42;
+                });
+        }
+        auto service = failureKind == LoadingFailure::MissingProvider
+                           ? std::make_unique<OptimizationRunService>()
+                           : std::make_unique<OptimizationRunService>(provider);
+        auto started = service->start(noWorkRequest());
+        QVERIFY(started.started());
+        QVERIFY(!started.startError().has_value());
+        const auto& result = started.handle()->wait();
+        QCOMPARE(result.outcome(), RunOutcome::Failed);
+        QCOMPARE(result.finalPhase(), RunPhase::Preparing);
+        QCOMPARE(result.failures().size(), std::size_t{1});
+        QCOMPARE(result.failures().front().code(),
+                 cao::run::RunFailureCode::ConfigurationLoadingFailed);
+        QCOMPARE(result.failures().front().phase(), RunPhase::Preparing);
+        QVERIFY(result.failures().front().policyConflicts().empty());
+        QVERIFY(!result.failures().front().detail().empty());
+        QVERIFY(result.preparation() == nullptr);
+        QVERIFY(result.phase(RunPhase::SafetyCleanup) != nullptr);
+    }
+}
+
+void OptimizationRunServiceTests::policyConflictsAreTerminalFailures() {
+    auto provider = std::make_shared<CallbackRunConfigurationProvider>([](std::string_view) {
+        auto profile = testRunConfiguration()->load("profile").profile();
+        profile.supportsNativeTextureOptimization = false;
+        return cao::run::RunConfiguration(std::move(profile));
+    });
+    OptimizationRunService service{provider};
+    auto started = service.start(RunRequest::create("profile", ExecutionMode::Apply,
+                                                    ModSelection::singleModRoot(testModRoot()),
+                                                    {RequestedWork::NativeTextureOptimization}));
+    QVERIFY(started.started());
+    QVERIFY(!started.startError().has_value());
+    const auto& result = started.handle()->wait();
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(result.finalPhase(), RunPhase::Preparing);
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    const auto& failure = result.failures().front();
+    QCOMPARE(failure.code(), cao::run::RunFailureCode::PolicyConflict);
+    QCOMPARE(failure.phase(), RunPhase::Preparing);
+    QCOMPARE(failure.policyConflicts().size(), std::size_t{1});
+    const auto* conflict = std::get_if<cao::routing::UnsupportedRequestedAssetVariant>(
+        &failure.policyConflicts().front());
+    QVERIFY(conflict != nullptr);
+    QCOMPARE(conflict->request, RequestedWork::NativeTextureOptimization);
+    QVERIFY(result.preparation() == nullptr);
+    QVERIFY(result.phase(RunPhase::SafetyCleanup) != nullptr);
+}
+
+void OptimizationRunServiceTests::missingModRootsAreTerminalFailures() {
+    OptimizationRunService service{testRunConfiguration()};
+    auto started = service.start(
+        RunRequest::create("profile", ExecutionMode::Apply,
+                           ModSelection::singleModRoot(testModRoot() / "missing-mod"), {}));
+    QVERIFY(started.started());
+    QVERIFY(!started.startError().has_value());
+    const auto& result = started.handle()->wait();
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(result.finalPhase(), RunPhase::Preparing);
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().code(),
+             cao::run::RunFailureCode::ModSelectionResolutionFailed);
+    QCOMPARE(result.failures().front().phase(), RunPhase::Preparing);
+    QVERIFY(result.preparation() == nullptr);
+    QVERIFY(result.phase(RunPhase::SafetyCleanup) != nullptr);
+}
+
+void OptimizationRunServiceTests::copiedResultsOwnTheirPreparationFacts() {
+    std::optional<OptimizationRunResult> copied;
+    std::weak_ptr<const cao::run::RunConfigurationProvider> releasedProvider;
+    const auto canonicalRoot = std::filesystem::canonical(testModRoot());
+    {
+        auto provider =
+            std::make_shared<CallbackRunConfigurationProvider>([](std::string_view identity) {
+                auto profile = testRunConfiguration()->load(identity).profile();
+                profile.archiveExtension = identity == "OwnedFO4" ? ".ba2" : ".bsa";
+                return cao::run::RunConfiguration(std::move(profile), {"IgnoredChild"});
+            });
+        releasedProvider = provider;
+        OptimizationRunService service{provider};
+        auto started = service.start(RunRequest::create(
+            "OwnedFO4", ExecutionMode::DryRun, ModSelection::singleModRoot(testModRoot()),
+            {RequestedWork::ConvertibleTextureConversion}));
+        QVERIFY(started.started());
+        copied.emplace(started.handle()->wait());
+    }
+
+    QVERIFY(releasedProvider.expired());
+    QCOMPARE(copied->outcome(), RunOutcome::Failed);
+    QCOMPARE(copied->failures().size(), std::size_t{1});
+    QCOMPARE(copied->failures().front().code(), cao::run::RunFailureCode::RequestedWorkUnavailable);
+    const auto* preparation = copied->preparation();
+    QVERIFY(preparation != nullptr);
+    QCOMPARE(preparation->modRoots().size(), std::size_t{1});
+    QVERIFY(preparation->modRoots().front() == canonicalRoot);
+    QCOMPARE(preparation->configuration().profile().archiveExtension.value(), std::string(".ba2"));
+    QCOMPARE(preparation->configuration().ignoredMods().size(), std::size_t{1});
+    QCOMPARE(preparation->configuration().ignoredMods().front(), std::string("IgnoredChild"));
+    QCOMPARE(preparation->policy().archiveExtension(), std::string(".ba2"));
+    QCOMPARE(preparation->policy().executionMode(), ExecutionMode::DryRun);
+    QVERIFY(preparation->policy().requests(RequestedWork::ConvertibleTextureConversion));
+    QVERIFY(preparation->policy().maintainsMeshReferences());
+}
 
 void OptimizationRunServiceTests::inlineEventsOwnAnOrderedRunHistory()
 {
     std::vector<cao::run::RunEvent> events;
     {
         CountingInlineScheduler scheduler;
-        OptimizationRunService service{scheduler};
+        OptimizationRunService service{scheduler, testRunConfiguration()};
         auto started = service.start(noWorkRequest(),
             [&](const cao::run::RunEvent& event) { events.push_back(event); });
         QCOMPARE(started.handle()->wait().outcome(), RunOutcome::Succeeded);
@@ -305,7 +502,7 @@ void OptimizationRunServiceTests::queuedEventsOutliveTheRunOwners()
     std::vector<cao::run::RunEvent> events;
     {
         CountingInlineScheduler scheduler;
-        OptimizationRunService service{scheduler};
+        OptimizationRunService service{scheduler, testRunConfiguration()};
         auto started = service.start(noWorkRequest(),
             [&](const cao::run::RunEvent& event) { events.push_back(event); },
             [&](std::function<void()> delivery) { pending.push_back(std::move(delivery)); });
@@ -324,7 +521,7 @@ void OptimizationRunServiceTests::presentationFailuresDisableOnlyTheFailingObser
 {
     for (const bool dispatcherFails : {false, true}) {
         CountingInlineScheduler scheduler;
-        OptimizationRunService service{scheduler};
+        OptimizationRunService service{scheduler, testRunConfiguration()};
         std::vector<cao::run::RunEvent> healthy;
         std::size_t attempts{};
         std::vector<cao::run::RunObservation> observations;
@@ -360,11 +557,14 @@ void OptimizationRunServiceTests::failureEventsPrecedeCleanupAndTerminal()
     for (const bool schedulingFails : {false, true}) {
         CountingInlineScheduler inlineScheduler;
         ExhaustedRunScheduler exhausted;
-        OptimizationRunService service{schedulingFails ? static_cast<RunScheduler&>(exhausted)
-                                                       : static_cast<RunScheduler&>(inlineScheduler)};
+        OptimizationRunService service{schedulingFails
+                                           ? static_cast<RunScheduler&>(exhausted)
+                                           : static_cast<RunScheduler&>(inlineScheduler),
+                                       testRunConfiguration()};
         std::vector<cao::run::RunEvent> events;
         auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
-            ModSelection::singleModRoot("mods/Example"), {RequestedWork::NativeTextureOptimization});
+                                          ModSelection::singleModRoot(testModRoot()),
+                                          {RequestedWork::NativeTextureOptimization});
         auto started = service.start(std::move(request),
             [&](const cao::run::RunEvent& event) { events.push_back(event); });
         const auto& result = started.handle()->wait();
@@ -390,7 +590,7 @@ void OptimizationRunServiceTests::inlineCallbacksObservePublishedStateAndCanCanc
     GatedRunScheduler scheduler;
     std::binary_semaphore finished{0};
     scheduler.afterWork = [&] { finished.release(); };
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     RunHandle* handle{};
     std::vector<RunPhase> phases;
     bool selfWaitDiagnosed{};
@@ -428,12 +628,13 @@ void OptimizationRunServiceTests::snapshotsArePublishedBeforeDispatch()
     GatedRunScheduler scheduler;
     std::binary_semaphore finished{0};
     scheduler.afterWork = [&] { finished.release(); };
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     RunHandle* handle{};
     std::optional<cao::run::RunSnapshot> admittedState;
     std::vector<std::pair<cao::run::RunEvent, cao::run::RunSnapshot>> observations;
     auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
-        ModSelection::singleModRoot("mods/Example"), {RequestedWork::NativeTextureOptimization});
+                                      ModSelection::singleModRoot(testModRoot()),
+                                      {RequestedWork::NativeTextureOptimization});
     auto started = service.start(std::move(request), std::vector<cao::run::RunObservation>{
         {[](const cao::run::RunEvent&) { throw std::runtime_error("presentation failed"); }, {}},
         {[&](const cao::run::RunEvent& event) { observations.emplace_back(event, *admittedState); },
@@ -478,7 +679,7 @@ void OptimizationRunServiceTests::snapshotsArePublishedBeforeDispatch()
 void OptimizationRunServiceTests::concurrentCancellationAndSnapshotsPreserveRunState()
 {
     GatedRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     auto started = service.start(noWorkRequest());
     const auto initial = started.handle()->snapshot();
     std::barrier begin{9};
@@ -519,7 +720,7 @@ void OptimizationRunServiceTests::concurrentCancellationAndSnapshotsPreserveRunS
 void OptimizationRunServiceTests::concurrentReadersObservePublishedPhaseTransitions()
 {
     GatedRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     std::barrier phasePublished{4}, snapshotsRead{4};
     const std::vector<RunPhase> expected{
         RunPhase::Preparing, RunPhase::DiscoveringArchives, RunPhase::ExtractingArchives,
@@ -563,7 +764,7 @@ void OptimizationRunServiceTests::cancellationFromASkippedPhaseStopsFurtherTrave
     GatedRunScheduler scheduler;
     std::binary_semaphore finished{0};
     scheduler.afterWork = [&] { finished.release(); };
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     RunHandle* handle{};
     std::vector<RunPhase> phases;
     auto started = service.start(noWorkRequest(), [&](const cao::run::RunEvent& event) {
@@ -585,13 +786,10 @@ void OptimizationRunServiceTests::cancellationFromASkippedPhaseStopsFurtherTrave
 void OptimizationRunServiceTests::aRequestWithoutAProfileIdentityIsRejectedWithoutCreatingAWorker()
 {
     CountingInlineScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
 
-    auto result = service.start(
-        RunRequest::create("",
-                           ExecutionMode::Apply,
-                           ModSelection::singleModRoot(std::filesystem::path("mods/Example")),
-                           {}));
+    auto result = service.start(RunRequest::create("", ExecutionMode::Apply,
+                                                   ModSelection::singleModRoot(testModRoot()), {}));
 
     QVERIFY(!result.started());
     QCOMPARE(result.startError(), std::optional{StartError::MissingProfileIdentity});
@@ -602,7 +800,7 @@ void OptimizationRunServiceTests::aRequestWithoutAProfileIdentityIsRejectedWitho
 void OptimizationRunServiceTests::aModSelectionWithoutADirectoryIsRejectedWithoutCreatingAWorker()
 {
     CountingInlineScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
 
     auto single = service.start(RunRequest::create("SkyrimSE",
                                                    ExecutionMode::Apply,
@@ -621,7 +819,7 @@ void OptimizationRunServiceTests::aModSelectionWithoutADirectoryIsRejectedWithou
 void OptimizationRunServiceTests::aRejectedStartExposesAStartErrorInsteadOfAHandle()
 {
     CountingInlineScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
 
     auto rejected = service.start(RunRequest::create("",
                                                      ExecutionMode::Apply,
@@ -637,7 +835,7 @@ void OptimizationRunServiceTests::aRejectedStartExposesAStartErrorInsteadOfAHand
 void OptimizationRunServiceTests::aValidStartSchedulesOneWorkerAndReturnsAHandle()
 {
     CountingInlineScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
 
     auto result = service.start(noWorkRequest());
 
@@ -658,7 +856,7 @@ void OptimizationRunServiceTests::aRunHandleIsMovableButNotCopyable()
     static_assert(std::is_move_assignable_v<RunHandle>, "A Run Handle must be movable");
 
     CountingInlineScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     auto result = service.start(noWorkRequest());
 
     // Moving must carry the run with it: the destination observes the same terminal result.
@@ -676,7 +874,7 @@ void OptimizationRunServiceTests::waitingReturnsTheImmutableTerminalResult()
         "Waiting must expose the terminal result immutably");
 
     CountingInlineScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     auto result = service.start(noWorkRequest());
     auto handle = std::move(*result.handle());
 
@@ -692,7 +890,7 @@ void OptimizationRunServiceTests::waitingReturnsTheImmutableTerminalResult()
 void OptimizationRunServiceTests::waitingRepeatedlyObservesTheSameCommittedResult()
 {
     CountingInlineScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     auto result = service.start(noWorkRequest());
     auto handle = std::move(*result.handle());
 
@@ -708,7 +906,7 @@ void OptimizationRunServiceTests::waitingRepeatedlyObservesTheSameCommittedResul
 void OptimizationRunServiceTests::theRunOwnsItsRequestAfterStartReturns()
 {
     cao::run::StandardRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
 
     // The request is a temporary that dies when start returns, while the worker is still using
     // it on another thread. The run must have taken ownership rather than borrowed it.
@@ -721,7 +919,7 @@ void OptimizationRunServiceTests::theRunOwnsItsRequestAfterStartReturns()
 void OptimizationRunServiceTests::terminalQueryReportsAnActiveRunAsUncommitted()
 {
     DeferredRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
 
     auto result = service.start(noWorkRequest());
     auto handle = std::move(*result.handle());
@@ -733,7 +931,7 @@ void OptimizationRunServiceTests::terminalQueryReportsAnActiveRunAsUncommitted()
 void OptimizationRunServiceTests::destroyingAnActiveHandleJoinsItsWorker()
 {
     DeferredRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
 
     {
         auto result = service.start(noWorkRequest());
@@ -749,7 +947,7 @@ void OptimizationRunServiceTests::destroyingAnActiveHandleJoinsItsWorker()
 void OptimizationRunServiceTests::movingAHandleTransfersTheJoinObligationExactlyOnce()
 {
     DeferredRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
 
     auto result = service.start(noWorkRequest());
     {
@@ -771,7 +969,7 @@ void OptimizationRunServiceTests::movingAHandleTransfersTheJoinObligationExactly
 void OptimizationRunServiceTests::moveAssigningOverAnActiveHandleJoinsTheReplacedRun()
 {
     DeferredRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
 
     auto result = service.start(noWorkRequest());
     auto handle = std::move(*result.handle());
@@ -789,7 +987,7 @@ void OptimizationRunServiceTests::moveAssigningOverAnActiveHandleJoinsTheReplace
 void OptimizationRunServiceTests::aSchedulerThatCannotStartAWorkerCommitsAFailedRun()
 {
     ExhaustedRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
 
     // The request cleared every structural conflict, so the run exists before scheduling is
     // attempted and owes the caller a terminal result rather than an escaping exception.
@@ -815,8 +1013,8 @@ void OptimizationRunServiceTests::aSecondActiveRunIsRejectedAcrossServices()
 {
     DeferredRunScheduler firstScheduler;
     CountingInlineScheduler secondScheduler;
-    OptimizationRunService firstService{firstScheduler};
-    OptimizationRunService secondService{secondScheduler};
+    OptimizationRunService firstService{firstScheduler, testRunConfiguration()};
+    OptimizationRunService secondService{secondScheduler, testRunConfiguration()};
     auto first = firstService.start(noWorkRequest());
 
     auto second = secondService.start(noWorkRequest());
@@ -830,7 +1028,7 @@ void OptimizationRunServiceTests::aSecondActiveRunIsRejectedAcrossServices()
 void OptimizationRunServiceTests::destroyingTheServiceCancelsAndJoinsARetainedHandle()
 {
     DeferredRunScheduler scheduler;
-    auto service = std::make_unique<OptimizationRunService>(scheduler);
+    auto service = std::make_unique<OptimizationRunService>(scheduler, testRunConfiguration());
     auto started = service->start(noWorkRequest());
     auto handle = std::move(*started.handle());
 
@@ -845,7 +1043,7 @@ void OptimizationRunServiceTests::destroyingTheServiceCancelsAndJoinsARetainedHa
 void OptimizationRunServiceTests::waitingFromTheWorkerIsDiagnosed()
 {
     GatedRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     auto started = service.start(noWorkRequest());
     bool diagnosed = false;
     scheduler.beforeWork = [&] {
@@ -863,7 +1061,7 @@ void OptimizationRunServiceTests::waitingFromTheWorkerIsDiagnosed()
 
 void OptimizationRunServiceTests::theDefaultServiceSchedulesAProductionRun()
 {
-    OptimizationRunService service;
+    OptimizationRunService service{testRunConfiguration()};
     auto started = service.start(noWorkRequest());
     QCOMPARE(started.handle()->wait().outcome(), RunOutcome::Succeeded);
 }
@@ -871,9 +1069,9 @@ void OptimizationRunServiceTests::theDefaultServiceSchedulesAProductionRun()
 void OptimizationRunServiceTests::cancellationKeepsTheSlotUntilTerminalCommit()
 {
     GatedRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     CountingInlineScheduler nextScheduler;
-    OptimizationRunService nextService{nextScheduler};
+    OptimizationRunService nextService{nextScheduler, testRunConfiguration()};
     auto started = service.start(noWorkRequest());
     started.handle()->requestCancellation();
     started.handle()->requestCancellation();
@@ -922,11 +1120,11 @@ void OptimizationRunServiceTests::terminalCommitReleasesTheSlotBeforeWorkerJoin(
         committed.release();
         finishWorker.acquire();
     };
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     auto first = service.start(noWorkRequest());
     scheduler.release();
     committed.acquire();
-    OptimizationRunService nextService;
+    OptimizationRunService nextService{testRunConfiguration()};
     auto next = nextService.start(noWorkRequest());
     finishWorker.release();
 
@@ -939,8 +1137,8 @@ void OptimizationRunServiceTests::simultaneousStartsAdmitExactlyOneRun()
 {
     GatedRunScheduler firstScheduler;
     GatedRunScheduler secondScheduler;
-    OptimizationRunService firstService{firstScheduler};
-    OptimizationRunService secondService{secondScheduler};
+    OptimizationRunService firstService{firstScheduler, testRunConfiguration()};
+    OptimizationRunService secondService{secondScheduler, testRunConfiguration()};
     std::barrier startTogether{3};
     std::optional<cao::run::RunStartResult> first;
     std::optional<cao::run::RunStartResult> second;
@@ -968,7 +1166,7 @@ void OptimizationRunServiceTests::simultaneousStartsAdmitExactlyOneRun()
 void OptimizationRunServiceTests::destroyingTheHandleRequestsCancellationBeforeJoin()
 {
     DeferredRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     std::optional<RunOutcome> outcome;
     {
         auto started = service.start(noWorkRequest());
@@ -982,10 +1180,10 @@ void OptimizationRunServiceTests::destroyingTheHandleRequestsCancellationBeforeJ
 void OptimizationRunServiceTests::schedulingFailureReleasesTheActiveSlot()
 {
     ExhaustedRunScheduler scheduler;
-    OptimizationRunService failedService{scheduler};
+    OptimizationRunService failedService{scheduler, testRunConfiguration()};
     auto failed = failedService.start(noWorkRequest());
     const auto* terminal = failed.handle()->terminalResult();
-    OptimizationRunService nextService;
+    OptimizationRunService nextService{testRunConfiguration()};
     auto next = nextService.start(noWorkRequest());
 
     QVERIFY(next.started());
@@ -1002,13 +1200,14 @@ int main(int argc, char** argv)
             // Inline delivery precedes worker publication, but still owes the same diagnosis.
             std::set_terminate([] { std::_Exit(86); });
             cao::run::InlineRunScheduler scheduler;
-            auto service = std::make_unique<OptimizationRunService>(scheduler);
+            auto service =
+                std::make_unique<OptimizationRunService>(scheduler, testRunConfiguration());
             auto started = service->start(noWorkRequest(),
                 [&](const cao::run::RunEvent&) { service.reset(); });
             return 0;
         }
         GatedRunScheduler scheduler;
-        auto service = std::make_unique<OptimizationRunService>(scheduler);
+        auto service = std::make_unique<OptimizationRunService>(scheduler, testRunConfiguration());
         auto started = service->start(noWorkRequest());
         std::optional<RunHandle> handle{std::move(*started.handle())};
         std::binary_semaphore finished{0};

@@ -92,22 +92,25 @@ ModSelectionKind ModSelection::kind() const noexcept { return _kind; }
 const std::filesystem::path& ModSelection::directory() const noexcept { return _directory; }
 
 RunRequest::RunRequest(std::string profileIdentity, const routing::ExecutionMode executionMode,
-                       ModSelection modSelection, std::vector<routing::RequestedWork> requestedWork)
+                       ModSelection modSelection, std::vector<routing::RequestedWork> requestedWork,
+                       ArchivePrecedence archivePrecedence)
     : _profileIdentity(std::move(profileIdentity)),
       _executionMode(executionMode),
       _modSelection(std::move(modSelection)),
-      _requestedWork(std::move(requestedWork)) {}
+      _requestedWork(std::move(requestedWork)),
+      _archivePrecedence(std::move(archivePrecedence)) {}
 
 RunRequest RunRequest::create(std::string profileIdentity,
                               const routing::ExecutionMode executionMode, ModSelection modSelection,
-                              std::vector<routing::RequestedWork> requestedWork) {
+                              std::vector<routing::RequestedWork> requestedWork,
+                              ArchivePrecedence archivePrecedence) {
     // Callers assemble work from independent GUI and CLI choices, so the request normalizes the
     // sequence into a closed set in enumeration order. Repeated runs then observe one order.
     std::sort(requestedWork.begin(), requestedWork.end());
     requestedWork.erase(std::unique(requestedWork.begin(), requestedWork.end()),
                         requestedWork.end());
     return RunRequest(std::move(profileIdentity), executionMode, std::move(modSelection),
-                      std::move(requestedWork));
+                      std::move(requestedWork), std::move(archivePrecedence));
 }
 
 const std::string& RunRequest::profileIdentity() const noexcept { return _profileIdentity; }
@@ -126,19 +129,23 @@ bool RunRequest::requests(const routing::RequestedWork work) const noexcept {
 
 bool RunRequest::hasRequestedWork() const noexcept { return !_requestedWork.empty(); }
 
-OptimizationRunResult::OptimizationRunResult(const RunOutcome outcome, const RunPhase finalPhase,
-                                             std::vector<RunPhaseRecord> phases, RunId runId,
-                                             std::vector<RunFailure> failures) noexcept
-    : _runId(std::move(runId)), _outcome(outcome), _finalPhase(finalPhase),
-      _phases(std::move(phases)), _failures(std::move(failures)) {}
+OptimizationRunResult::OptimizationRunResult(
+    const RunOutcome outcome, const RunPhase finalPhase, std::vector<RunPhaseRecord> phases,
+    RunId runId, std::vector<RunFailure> failures,
+    std::shared_ptr<const RunPreparation> preparation) noexcept
+    : _runId(std::move(runId)),
+      _outcome(outcome),
+      _finalPhase(finalPhase),
+      _phases(std::move(phases)),
+      _failures(std::move(failures)),
+      _preparation(std::move(preparation)) {}
 
-OptimizationRunResult OptimizationRunResult::terminal(const RunOutcome outcome,
-                                                      const RunPhase finalPhase,
-                                                      std::vector<RunPhaseRecord> phases,
-                                                      RunId runId,
-                                                      std::vector<RunFailure> failures) {
+OptimizationRunResult OptimizationRunResult::terminal(
+    const RunOutcome outcome, const RunPhase finalPhase, std::vector<RunPhaseRecord> phases,
+    RunId runId, std::vector<RunFailure> failures,
+    std::shared_ptr<const RunPreparation> preparation) {
     return OptimizationRunResult(outcome, finalPhase, std::move(phases), std::move(runId),
-                                 std::move(failures));
+                                 std::move(failures), std::move(preparation));
 }
 
 RunOutcome OptimizationRunResult::outcome() const noexcept { return _outcome; }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AssetRouting/AssetRouter.h"
+#include "Run/RunPreparation.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -77,15 +78,25 @@ class RunDiagnostic final {
     std::string _detail;
 };
 
-/// Stable failures currently reachable at the scheduling and no-work execution seams.
-enum class RunFailureCode { SchedulingFailed, RequestedWorkUnavailable };
+/// Stable failures reachable at scheduling, preparation, and execution boundaries.
+enum class RunFailureCode {
+    SchedulingFailed,
+    RequestedWorkUnavailable,
+    PolicyConflict,
+    ConfigurationLoadingFailed,
+    ModSelectionResolutionFailed
+};
 
 /// An owning run-level failure; Asset/Archive mutation failures belong to their service slices.
 class RunFailure final {
    public:
     /// Records the failing boundary and its detail without retaining exception or service objects.
-    RunFailure(RunFailureCode code, RunPhase phase, std::string detail)
-        : _code(code), _phase(phase), _detail(std::move(detail)) {}
+    RunFailure(RunFailureCode code, RunPhase phase, std::string detail,
+               routing::PolicyValidationErrors policyConflicts = {})
+        : _code(code),
+          _phase(phase),
+          _detail(std::move(detail)),
+          _policyConflicts(std::move(policyConflicts)) {}
 
     /// Returns the stable unsuccessful scheduling or execution category.
     [[nodiscard]] RunFailureCode code() const noexcept { return _code; }
@@ -94,10 +105,16 @@ class RunFailure final {
     /// Borrows explanatory text for this value's lifetime.
     [[nodiscard]] const std::string& detail() const noexcept { return _detail; }
 
+    /// Borrows all policy conflicts in compiler order; empty for other failure categories.
+    [[nodiscard]] std::span<const routing::PolicyValidationError> policyConflicts() const noexcept {
+        return _policyConflicts;
+    }
+
    private:
     RunFailureCode _code;
     RunPhase _phase;
     std::string _detail;
+    routing::PolicyValidationErrors _policyConflicts;
 };
 
 /// The phase-local account of determinate work attempted during one Run Phase.
@@ -233,13 +250,12 @@ class ModSelection final {
 
 /// The immutable user intent used to start one Optimization Run.
 ///
-/// It owns profile identity, execution mode, Mod Selection, and the closed set of requested work.
+/// It owns profile identity, execution mode, Mod Selection, Archive Precedence intent, and the
+/// closed set of requested work.
 /// It deliberately holds no application singleton, mutable presentation state, or profile object;
 /// Preparing loads profile facts from the identity recorded here.
 ///
-/// The glossary's Run Request also carries Archive Precedence intent. That field is deliberately
-/// absent until the Archive Precedence slice can give it behaviour, because a recorded precedence
-/// order that no phase honours would misreport how Archive Collisions will be resolved.
+/// Archive Precedence is intent only until discovery validates it against enabled Archives.
 ///
 /// This is the canonical Run Request of the project glossary. It is distinct from
 /// `routing::RoutingPolicyRequest`, which carries only the facts needed to compile one Routing
@@ -247,16 +263,21 @@ class ModSelection final {
 class RunRequest final {
    public:
     /// Owns one request's intent, retaining each requested work choice once in enumeration order.
-    [[nodiscard]] static RunRequest create(std::string profileIdentity,
-                                           routing::ExecutionMode executionMode,
-                                           ModSelection modSelection,
-                                           std::vector<routing::RequestedWork> requestedWork);
+    [[nodiscard]] static RunRequest create(
+        std::string profileIdentity, routing::ExecutionMode executionMode,
+        ModSelection modSelection, std::vector<routing::RequestedWork> requestedWork,
+        ArchivePrecedence archivePrecedence = ArchivePrecedence::deterministicDiscovery());
 
     [[nodiscard]] const std::string& profileIdentity() const noexcept;
 
     [[nodiscard]] routing::ExecutionMode executionMode() const noexcept;
 
     [[nodiscard]] const ModSelection& modSelection() const noexcept;
+
+    /// Borrows the owned Archive ordering intent for this request's lifetime.
+    [[nodiscard]] const ArchivePrecedence& archivePrecedence() const noexcept {
+        return _archivePrecedence;
+    }
 
     /// Returns the deduplicated requested work in enumeration order, so runs are reproducible.
     [[nodiscard]] std::span<const routing::RequestedWork> requestedWork() const noexcept;
@@ -269,12 +290,14 @@ class RunRequest final {
 
    private:
     RunRequest(std::string profileIdentity, routing::ExecutionMode executionMode,
-               ModSelection modSelection, std::vector<routing::RequestedWork> requestedWork);
+               ModSelection modSelection, std::vector<routing::RequestedWork> requestedWork,
+               ArchivePrecedence archivePrecedence);
 
     std::string _profileIdentity;
     routing::ExecutionMode _executionMode;
     ModSelection _modSelection;
     std::vector<routing::RequestedWork> _requestedWork;
+    ArchivePrecedence _archivePrecedence;
 };
 
 /// The immutable, self-contained terminal result of one Optimization Run.
@@ -289,10 +312,13 @@ class OptimizationRunResult final {
     /// named public factory rather than a friendship because the Run Executor, and later the
     /// asynchronous Optimization Run service, both commit terminal results from libraries that
     /// link this one.
-    [[nodiscard]] static OptimizationRunResult terminal(RunOutcome outcome, RunPhase finalPhase,
-                                                        std::vector<RunPhaseRecord> phases,
-                                                        RunId runId = createRunId(),
-                                                        std::vector<RunFailure> failures = {});
+    [[nodiscard]] static OptimizationRunResult terminal(
+        RunOutcome outcome, RunPhase finalPhase, std::vector<RunPhaseRecord> phases,
+        RunId runId = createRunId(), std::vector<RunFailure> failures = {},
+        std::shared_ptr<const RunPreparation> preparation = {});
+
+    /// Borrows owned preparation facts, or nullptr if preparation did not complete successfully.
+    [[nodiscard]] const RunPreparation* preparation() const noexcept { return _preparation.get(); }
 
     /// Borrows the identity shared with this run's observations for the result's lifetime.
     [[nodiscard]] const RunId& runId() const noexcept { return _runId; }
@@ -321,13 +347,15 @@ class OptimizationRunResult final {
    private:
     OptimizationRunResult(RunOutcome outcome, RunPhase finalPhase,
                           std::vector<RunPhaseRecord> phases, RunId runId,
-                          std::vector<RunFailure> failures) noexcept;
+                          std::vector<RunFailure> failures,
+                          std::shared_ptr<const RunPreparation> preparation) noexcept;
 
     RunId _runId;
     RunOutcome _outcome;
     RunPhase _finalPhase;
     std::vector<RunPhaseRecord> _phases;
     std::vector<RunFailure> _failures;
+    std::shared_ptr<const RunPreparation> _preparation;
 };
 
 /// An owning immutable observation; copies keep terminal payloads alive independently of handles.

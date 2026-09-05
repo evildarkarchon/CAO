@@ -135,6 +135,11 @@ routing::RoutingPolicyBuildResult RunSetup::prepare(const ApplicationRunChoices&
     return routing::RoutingPolicy::compile(adaptedRequest(choices), adaptedCapabilities(profile));
 }
 
+routing::RoutingPolicyBuildResult RunSetup::prepare(routing::RoutingPolicyRequest request,
+                                                    const SelectedProfileFacts& profile) {
+    return routing::RoutingPolicy::compile(std::move(request), adaptedCapabilities(profile));
+}
+
 std::string policyValidationErrorMessage(const routing::PolicyValidationError& error) {
     return std::visit(
         Overloaded{

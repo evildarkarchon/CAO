@@ -38,6 +38,10 @@ class RunSetup final {
     /// conflict.
     [[nodiscard]] static routing::RoutingPolicyBuildResult prepare(
         const ApplicationRunChoices& choices, const SelectedProfileFacts& profile);
+
+    /// Compiles immutable run intent with loaded profile facts without application option objects.
+    [[nodiscard]] static routing::RoutingPolicyBuildResult prepare(
+        routing::RoutingPolicyRequest request, const SelectedProfileFacts& profile);
 };
 
 /// Produces a caller-facing message by visiting one structured policy validation conflict.

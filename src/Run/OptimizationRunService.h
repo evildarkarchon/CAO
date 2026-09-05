@@ -140,11 +140,15 @@ class RunStartResult final {
 /// Concurrent start() calls are supported; destroying the service must not overlap start().
 class OptimizationRunService final {
    public:
-    /// Owns the standard-C++ production scheduler; adapters need no worker or scheduler objects.
-    OptimizationRunService() noexcept;
+    /// Owns the production scheduler and retains the provider for each run. A missing provider
+    /// becomes a configuration-loading failure during Preparing, never a synchronous Start Error.
+    explicit OptimizationRunService(
+        std::shared_ptr<const RunConfigurationProvider> configuration = {}) noexcept;
 
-    /// Starts runs on `scheduler`, which the caller owns.
-    explicit OptimizationRunService(RunScheduler& scheduler) noexcept;
+    /// Starts runs on the caller-owned scheduler and shares ownership of the read-only provider.
+    explicit OptimizationRunService(
+        RunScheduler& scheduler,
+        std::shared_ptr<const RunConfigurationProvider> configuration = {}) noexcept;
 
     OptimizationRunService(const OptimizationRunService&) = delete;
     OptimizationRunService& operator=(const OptimizationRunService&) = delete;
@@ -170,6 +174,7 @@ class OptimizationRunService final {
    private:
     StandardRunScheduler _productionScheduler;
     RunScheduler& _scheduler;
+    std::shared_ptr<const RunConfigurationProvider> _configuration;
     std::mutex _runsMutex;
     std::vector<std::weak_ptr<RunWorkerLifetime>> _runs;
 };

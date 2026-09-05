@@ -1,10 +1,71 @@
 #include "RunExecutor.h"
 
 #include <utility>
+#include <exception>
 #include <vector>
 
 namespace cao::run {
 namespace {
+/// Resolves one existing directory without enumerating or changing any Asset or Archive.
+std::variant<std::filesystem::path, RunFailure> resolveSingleModRoot(
+    const ModSelection& selection) {
+    if (selection.kind() != ModSelectionKind::SingleModRoot)
+        return RunFailure{RunFailureCode::ModSelectionResolutionFailed, RunPhase::Preparing,
+                          "Child Mod Root preparation is not yet available"};
+    std::error_code error;
+    auto root = std::filesystem::canonical(selection.directory(), error);
+    if (error || !std::filesystem::is_directory(root, error))
+        return RunFailure{RunFailureCode::ModSelectionResolutionFailed, RunPhase::Preparing,
+                          "The selected Mod Root could not be resolved to an existing directory"};
+    return root;
+}
+
+/// Loads independent configuration values and converts provider exceptions into run failures.
+std::variant<RunConfiguration, RunFailure> loadConfiguration(
+    const RunRequest& request, const RunConfigurationProvider* provider) {
+    if (provider == nullptr)
+        return RunFailure{RunFailureCode::ConfigurationLoadingFailed, RunPhase::Preparing,
+                          "No run configuration provider is available"};
+    try {
+        return provider->load(request.profileIdentity());
+    } catch (const std::exception& error) {
+        return RunFailure{RunFailureCode::ConfigurationLoadingFailed, RunPhase::Preparing,
+                          error.what()};
+    } catch (...) {
+        return RunFailure{RunFailureCode::ConfigurationLoadingFailed, RunPhase::Preparing,
+                          "The configuration provider threw a non-standard exception"};
+    }
+}
+
+/// Prepares immutable facts without mutation; a null success value means loading was cancelled.
+std::variant<std::shared_ptr<const RunPreparation>, RunFailure> prepareSingleModRun(
+    const RunRequest& request, const RunConfigurationProvider* provider, std::stop_token stop) {
+    auto loaded = loadConfiguration(request, provider);
+    if (auto* failure = std::get_if<RunFailure>(&loaded)) return std::move(*failure);
+    // A provider may finish an atomic read after cancellation. Do not resolve roots or compile
+    // additional facts once that read returns and the cancellation can be observed safely.
+    if (stop.stop_requested()) return std::shared_ptr<const RunPreparation>{};
+
+    auto configuration = std::move(std::get<RunConfiguration>(loaded));
+    const auto policy =
+        RunSetup::prepare(routing::RoutingPolicyRequest::forWork(
+                              request.executionMode(),
+                              std::vector<routing::RequestedWork>(request.requestedWork().begin(),
+                                                                  request.requestedWork().end())),
+                          configuration.profile());
+    if (!policy.hasPolicy())
+        return RunFailure{
+            RunFailureCode::PolicyConflict, RunPhase::Preparing,
+            "The loaded profile conflicts with the requested Routing Policy",
+            routing::PolicyValidationErrors(policy.errors().begin(), policy.errors().end())};
+
+    auto resolved = resolveSingleModRoot(request.modSelection());
+    if (auto* failure = std::get_if<RunFailure>(&resolved)) return std::move(*failure);
+    return std::make_shared<const RunPreparation>(
+        std::vector{std::move(std::get<std::filesystem::path>(resolved))}, std::move(configuration),
+        *policy.policy(), request.archivePrecedence());
+}
+
 /// Records the work phases a request with no requested work skips, in canonical order.
 ///
 /// Every phase reports the one reason the run actually knows: nothing was requested. A skipped
@@ -41,8 +102,22 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
     if (services.observations != nullptr) services.observations->recordPhase(phases.back());
     auto finalPhase = RunPhase::Preparing;
     auto outcome = RunOutcome::Succeeded;
+    std::shared_ptr<const RunPreparation> preparation;
+    if (!stop.stop_requested()) {
+        auto prepared = prepareSingleModRun(request, services.configuration, stop);
+        if (auto* failure = std::get_if<RunFailure>(&prepared)) {
+            outcome = RunOutcome::Failed;
+            failures.push_back(std::move(*failure));
+            if (services.observations != nullptr)
+                services.observations->recordFailure(failures.back());
+        } else {
+            preparation = std::move(std::get<std::shared_ptr<const RunPreparation>>(prepared));
+        }
+    }
 
-    if (stop.stop_requested()) {
+    if (outcome == RunOutcome::Failed) {
+        // Preparation failure stops traversal, but never bypasses the mandatory cleanup pass.
+    } else if (stop.stop_requested()) {
         outcome = RunOutcome::Cancelled;
     } else if (request.hasRequestedWork()) {
         // Requested work needs service seams this slice does not yet own. Traversing the work
@@ -68,6 +143,6 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
     if (outcome != RunOutcome::Failed && stop.stop_requested()) outcome = RunOutcome::Cancelled;
 
     return OptimizationRunResult::terminal(outcome, finalPhase, std::move(phases), std::move(runId),
-                                           std::move(failures));
+                                           std::move(failures), std::move(preparation));
 }
 }  // namespace cao::run

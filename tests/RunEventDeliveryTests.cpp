@@ -1,4 +1,5 @@
 #include "Run/OptimizationRunService.h"
+#include "RunTestConfiguration.h"
 
 #include <QtTest>
 
@@ -16,10 +17,10 @@ using namespace cao::run;
 using namespace std::chrono_literals;
 
 namespace {
-/// Creates a request whose deterministic phase traversal needs no filesystem services.
+/// Creates a no-work request backed by an existing empty Mod Root.
 RunRequest noWorkRequest() {
     return RunRequest::create("profile", cao::routing::ExecutionMode::Apply,
-                              ModSelection::singleModRoot("mod"), {});
+                              ModSelection::singleModRoot(testModRoot()), {});
 }
 }  // namespace
 
@@ -47,7 +48,7 @@ class RunEventDeliveryTests final : public QObject {
 
 void RunEventDeliveryTests::queuedFailureAfterWaitPreservesTheResult() {
     InlineRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     std::vector<std::function<void()>> queued;
     std::vector<RunEvent> healthy;
     std::size_t failingCalls{};
@@ -90,7 +91,7 @@ void RunEventDeliveryTests::queuedFailureAfterWaitPreservesTheResult() {
 
 void RunEventDeliveryTests::dispatcherThatQueuesThenThrowsDisablesDelivery() {
     InlineRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     std::function<void()> retained;
     std::size_t observerCalls{};
     std::size_t dispatchCalls{};
@@ -113,7 +114,7 @@ void RunEventDeliveryTests::dispatcherThatQueuesThenThrowsDisablesDelivery() {
 
 void RunEventDeliveryTests::dispatcherThatDeliversThenThrowsIsDiagnosedOnce() {
     InlineRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     std::size_t observerCalls{};
     std::size_t dispatchCalls{};
     auto started = service.start(noWorkRequest(),
@@ -133,7 +134,7 @@ void RunEventDeliveryTests::dispatcherThatDeliversThenThrowsIsDiagnosedOnce() {
 
 void RunEventDeliveryTests::concurrentDispatcherPreservesSerializedSequences() {
     InlineRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     std::binary_semaphore firstEntered{0};
     std::binary_semaphore releaseFirst{0};
     std::atomic<unsigned> active{};
@@ -179,8 +180,8 @@ void RunEventDeliveryTests::concurrentDispatcherPreservesSerializedSequences() {
 
 void RunEventDeliveryTests::terminalObserverStartsTheNextRun() {
     InlineRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
-    OptimizationRunService nextService{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
+    OptimizationRunService nextService{scheduler, testRunConfiguration()};
     std::optional<RunStartResult> next;
     auto started = service.start(noWorkRequest(), [&](const RunEvent& event) {
         if (std::holds_alternative<std::shared_ptr<const OptimizationRunResult>>(event.payload()))
@@ -195,15 +196,17 @@ void RunEventDeliveryTests::terminalObserverStartsTheNextRun() {
 
 void RunEventDeliveryTests::rejectedStartsEmitNoEvents() {
     InlineRunScheduler scheduler;
-    OptimizationRunService service{scheduler};
+    OptimizationRunService service{scheduler, testRunConfiguration()};
     std::size_t rejectedEvents{}, rejectedDispatches{};
     auto observer = [&](const RunEvent&) { ++rejectedEvents; };
     auto dispatcher = [&](std::function<void()> delivery) {
         ++rejectedDispatches;
         delivery();
     };
-    auto malformed = service.start(RunRequest::create("", cao::routing::ExecutionMode::Apply,
-        ModSelection::singleModRoot("mod"), {}), observer, dispatcher);
+    auto malformed =
+        service.start(RunRequest::create("", cao::routing::ExecutionMode::Apply,
+                                         ModSelection::singleModRoot(testModRoot()), {}),
+                      observer, dispatcher);
     QCOMPARE(malformed.startError(), std::optional{StartError::MissingProfileIdentity});
     std::optional<StartError> conflict;
     auto started = service.start(noWorkRequest(), [&](const RunEvent& event) {
@@ -221,7 +224,7 @@ void RunEventDeliveryTests::waitIncludesTerminalDispatcherAdmission() {
     std::function<void()> terminalDelivery;
     std::size_t dispatched{};
     std::atomic<std::size_t> delivered{};
-    OptimizationRunService service;
+    OptimizationRunService service{testRunConfiguration()};
     auto started = service.start(noWorkRequest(),
         [&](const RunEvent&) { ++delivered; },
         [&](std::function<void()> delivery) {
@@ -250,7 +253,7 @@ void RunEventDeliveryTests::waitIncludesTerminalDispatcherAdmission() {
 
 void RunEventDeliveryTests::blockedTerminalObserverCanRestartWhileAnotherThreadWaits() {
     std::binary_semaphore terminalEntered{0}, releaseTerminal{0}, waitReturned{0};
-    OptimizationRunService service;
+    OptimizationRunService service{testRunConfiguration()};
     std::optional<RunStartResult> next;
     auto started = service.start(noWorkRequest(), [&](const RunEvent& event) {
         if (!std::holds_alternative<std::shared_ptr<const OptimizationRunResult>>(event.payload())) return;

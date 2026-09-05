@@ -29,6 +29,7 @@ target_compile_features(cao_asset_run PUBLIC cxx_std_20)
 add_library(cao_run_lifecycle
     RunLifecycle.cpp
     RunLifecycle.h
+    RunPreparation.h
 )
 
 target_link_libraries(cao_run_lifecycle PUBLIC cao_asset_routing)
@@ -40,7 +41,7 @@ add_library(cao_run_executor
     RunExecutor.h
 )
 
-target_link_libraries(cao_run_executor PUBLIC cao_run_lifecycle)
+target_link_libraries(cao_run_executor PUBLIC cao_run_lifecycle cao_run_setup)
 target_include_directories(cao_run_executor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_compile_features(cao_run_executor PUBLIC cxx_std_20)
 
