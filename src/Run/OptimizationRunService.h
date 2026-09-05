@@ -50,6 +50,8 @@ class RunWorkerLifetime;
 /// run is never abandoned while it is still executing.
 ///
 /// Observing a moved-from handle is a contract violation: the run moved to its new owner.
+/// Cancellation, snapshot/diagnostic reads, terminal query, and wait may run concurrently while
+/// the handle remains alive and unmoved. Moving or destroying it requires caller synchronization.
 class RunHandle final {
    public:
     RunHandle(const RunHandle&) = delete;
@@ -60,6 +62,8 @@ class RunHandle final {
 
     /// Requests cancellation idempotently from any thread without blocking or interrupting work.
     /// The handle must remain alive and unmoved for the duration of this call.
+    /// A request after terminal commit remains visible in snapshots but cannot change the result
+    /// or cancel a subsequent run, even when that run started from this run's terminal observer.
     void requestCancellation() const noexcept;
 
     /// Returns the committed terminal result, or nullptr while the run is still active.
@@ -73,6 +77,8 @@ class RunHandle final {
     [[nodiscard]] std::vector<RunDiagnostic> diagnostics() const;
 
     /// Copies the current state from any thread, including an inline observer or dispatcher.
+    /// State is published before its event is enqueued; delayed callbacks may see newer state.
+    /// Retained copies do not change as the run advances or late presentation diagnostics arrive.
     [[nodiscard]] RunSnapshot snapshot() const;
 
     /// Blocks until terminal commit and dispatcher admission of every event through terminal.

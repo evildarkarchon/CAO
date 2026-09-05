@@ -3,6 +3,7 @@
 #include <QtTest>
 
 #include <cstddef>
+#include <atomic>
 #include <barrier>
 #include <cstdlib>
 #include <exception>
@@ -179,6 +180,15 @@ private slots:
 
     /// Catches stale state at enqueue, callbacks under locks, and worker-side callback self-wait.
     void inlineCallbacksObservePublishedStateAndCanCancel();
+
+    /// Catches state publication delayed until callback execution rather than dispatcher admission.
+    void snapshotsArePublishedBeforeDispatch();
+
+    /// Catches racing cancellation losing the request or changing an already captured snapshot.
+    void concurrentCancellationAndSnapshotsPreserveRunState();
+
+    /// Catches inconsistent snapshots while a real worker publishes phase and terminal changes.
+    void concurrentReadersObservePublishedPhaseTransitions();
 
     /// Catches an event-driven cancellation traversing phases beyond its observation boundary.
     void cancellationFromASkippedPhaseStopsFurtherTraversal();
@@ -411,6 +421,141 @@ void OptimizationRunServiceTests::inlineCallbacksObservePublishedStateAndCanCanc
     QVERIFY(selfWaitDiagnosed);
     QVERIFY(statePublished);
     QCOMPARE(phases, (std::vector<RunPhase>{RunPhase::Preparing, RunPhase::SafetyCleanup}));
+}
+
+void OptimizationRunServiceTests::snapshotsArePublishedBeforeDispatch()
+{
+    GatedRunScheduler scheduler;
+    std::binary_semaphore finished{0};
+    scheduler.afterWork = [&] { finished.release(); };
+    OptimizationRunService service{scheduler};
+    RunHandle* handle{};
+    std::optional<cao::run::RunSnapshot> admittedState;
+    std::vector<std::pair<cao::run::RunEvent, cao::run::RunSnapshot>> observations;
+    auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+        ModSelection::singleModRoot("mods/Example"), {RequestedWork::NativeTextureOptimization});
+    auto started = service.start(std::move(request), std::vector<cao::run::RunObservation>{
+        {[](const cao::run::RunEvent&) { throw std::runtime_error("presentation failed"); }, {}},
+        {[&](const cao::run::RunEvent& event) { observations.emplace_back(event, *admittedState); },
+         [&](std::function<void()> delivery) {
+             // Capture before invoking the closure: observer-only checks miss late publication.
+             admittedState = handle->snapshot();
+             delivery();
+         }}});
+    handle = started.handle();
+    const auto initial = handle->snapshot();
+    scheduler.release();
+    const auto& terminal = handle->wait();
+    finished.acquire();
+
+    QCOMPARE(observations.size(), std::size_t{5});
+    for (const auto& [event, snapshot] : observations) {
+        QCOMPARE(snapshot.runId(), initial.runId());
+        QCOMPARE(snapshot.runId(), event.runId());
+        QVERIFY(!snapshot.progress().has_value());
+        QVERIFY(!snapshot.cancellationRequested());
+        QCOMPARE(snapshot.diagnosticCount(), std::size_t{1});
+        if (const auto* phase = std::get_if<cao::run::RunPhaseRecord>(&event.payload())) {
+            QCOMPARE(snapshot.phase(), phase->phase());
+            QVERIFY(!snapshot.outcome().has_value());
+        } else if (std::holds_alternative<cao::run::RunFailure>(event.payload())) {
+            QCOMPARE(snapshot.failureCount(), std::size_t{1});
+            QVERIFY(!snapshot.outcome().has_value());
+        } else if (std::holds_alternative<std::shared_ptr<const OptimizationRunResult>>(event.payload())) {
+            QCOMPARE(snapshot.outcome(), std::optional{RunOutcome::Failed});
+            QCOMPARE(snapshot.phase(), RunPhase::SafetyCleanup);
+            QCOMPARE(snapshot.failureCount(), std::size_t{1});
+        }
+    }
+    QCOMPARE(terminal.outcome(), RunOutcome::Failed);
+    // Retained values do not borrow the live counts or terminal state.
+    QCOMPARE(initial.phase(), RunPhase::Preparing);
+    QCOMPARE(initial.diagnosticCount(), std::size_t{0});
+    QCOMPARE(initial.failureCount(), std::size_t{0});
+    QVERIFY(!initial.outcome().has_value());
+}
+
+void OptimizationRunServiceTests::concurrentCancellationAndSnapshotsPreserveRunState()
+{
+    GatedRunScheduler scheduler;
+    OptimizationRunService service{scheduler};
+    auto started = service.start(noWorkRequest());
+    const auto initial = started.handle()->snapshot();
+    std::barrier begin{9};
+    std::atomic<bool> invalidState{};
+    std::vector<std::jthread> callers;
+    for (unsigned i = 0; i < 8; ++i) {
+        callers.emplace_back([&] {
+            begin.arrive_and_wait();
+            for (unsigned attempt = 0; attempt < 100; ++attempt) {
+                started.handle()->requestCancellation();
+                const auto snapshot = started.handle()->snapshot();
+                if (!snapshot.cancellationRequested() || snapshot.runId() != initial.runId()
+                    || snapshot.phase() != RunPhase::Preparing || snapshot.progress().has_value()
+                    || snapshot.outcome().has_value() || snapshot.diagnosticCount() != 0
+                    || snapshot.failureCount() != 0 || started.handle()->terminalResult() != nullptr)
+                    invalidState.store(true);
+            }
+        });
+    }
+    begin.arrive_and_wait();
+    for (auto& caller : callers) caller.join();
+    const auto cancelled = started.handle()->snapshot();
+    scheduler.release();
+    const auto& terminal = started.handle()->wait();
+
+    QVERIFY(!invalidState.load());
+    QVERIFY(!initial.cancellationRequested());
+    QVERIFY(cancelled.cancellationRequested());
+    QVERIFY(!cancelled.outcome().has_value());
+    QCOMPARE(terminal.outcome(), RunOutcome::Cancelled);
+    QCOMPARE(terminal.phases().size(), std::size_t{2});
+    QCOMPARE(started.handle()->snapshot().phase(), RunPhase::SafetyCleanup);
+    QCOMPARE(started.handle()->snapshot().outcome(), std::optional{RunOutcome::Cancelled});
+    started.handle()->requestCancellation();
+    QVERIFY(&started.handle()->wait() == &terminal);
+}
+
+void OptimizationRunServiceTests::concurrentReadersObservePublishedPhaseTransitions()
+{
+    GatedRunScheduler scheduler;
+    OptimizationRunService service{scheduler};
+    std::barrier phasePublished{4}, snapshotsRead{4};
+    const std::vector<RunPhase> expected{
+        RunPhase::Preparing, RunPhase::DiscoveringArchives, RunPhase::ExtractingArchives,
+        RunPhase::BuildingEffectiveAssetTree, RunPhase::ProcessingAssets,
+        RunPhase::ArchiveFinalization, RunPhase::SafetyCleanup, RunPhase::SafetyCleanup};
+    auto started = service.start(noWorkRequest(), [&](const cao::run::RunEvent&) {
+        // Let all readers inspect this publication before the worker can publish the next one.
+        phasePublished.arrive_and_wait();
+        snapshotsRead.arrive_and_wait();
+    });
+    const auto initial = started.handle()->snapshot();
+    std::atomic<bool> invalidState{};
+    std::vector<std::jthread> readers;
+    for (unsigned i = 0; i < 3; ++i) {
+        readers.emplace_back([&] {
+            for (std::size_t index = 0; index < expected.size(); ++index) {
+                phasePublished.arrive_and_wait();
+                const auto snapshot = started.handle()->snapshot();
+                const auto outcome = index == 7 ? std::optional{RunOutcome::Succeeded} : std::nullopt;
+                if (snapshot.runId() != initial.runId() || snapshot.phase() != expected[index]
+                    || snapshot.outcome() != outcome || snapshot.progress().has_value()
+                    || snapshot.cancellationRequested() || snapshot.failureCount() != 0
+                    || snapshot.diagnosticCount() != 0)
+                    invalidState.store(true);
+                snapshotsRead.arrive_and_wait();
+            }
+        });
+    }
+    scheduler.release();
+    const auto& terminal = started.handle()->wait();
+    for (auto& reader : readers) reader.join();
+
+    QVERIFY(!invalidState.load());
+    QCOMPARE(terminal.outcome(), RunOutcome::Succeeded);
+    QCOMPARE(initial.phase(), RunPhase::Preparing);
+    QVERIFY(!initial.outcome().has_value());
 }
 
 void OptimizationRunServiceTests::cancellationFromASkippedPhaseStopsFurtherTraversal()

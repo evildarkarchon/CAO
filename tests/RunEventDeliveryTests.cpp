@@ -41,6 +41,8 @@ class RunEventDeliveryTests final : public QObject {
     void rejectedStartsEmitNoEvents();
     /// Catches wait returning while terminal delivery has not reached the caller's queue yet.
     void waitIncludesTerminalDispatcherAdmission();
+    /// Catches callback completion blocking wait or cancellation of an old run leaking into its successor.
+    void blockedTerminalObserverCanRestartWhileAnotherThreadWaits();
 };
 
 void RunEventDeliveryTests::queuedFailureAfterWaitPreservesTheResult() {
@@ -57,6 +59,7 @@ void RunEventDeliveryTests::queuedFailureAfterWaitPreservesTheResult() {
          [&](std::function<void()> delivery) { queued.push_back(std::move(delivery)); }},
         {[&](const RunEvent& event) { healthy.push_back(event); }, {}}});
     const auto* terminal = &started.handle()->wait();
+    const auto beforeDelivery = started.handle()->snapshot();
     const auto id = terminal->runId();
     const auto phaseCount = terminal->phases().size();
     QVERIFY(started.handle()->diagnostics().empty());
@@ -75,6 +78,9 @@ void RunEventDeliveryTests::queuedFailureAfterWaitPreservesTheResult() {
     QCOMPARE(diagnostics.size(), std::size_t{1});
     QCOMPARE(diagnostics.front().code(), RunDiagnosticCode::ObserverFailed);
     QCOMPARE(diagnostics.front().detail(), std::string{"late presentation failure"});
+    QCOMPARE(beforeDelivery.diagnosticCount(), std::size_t{0});
+    QCOMPARE(started.handle()->snapshot().diagnosticCount(), std::size_t{1});
+    QCOMPARE(started.handle()->snapshot().outcome(), std::optional{RunOutcome::Succeeded});
     QVERIFY(std::holds_alternative<RunDiagnostic>(healthy.back().payload()));
     for (std::size_t i = 0; i < healthy.size(); ++i) {
         QCOMPARE(healthy[i].runId(), id);
@@ -154,7 +160,8 @@ void RunEventDeliveryTests::concurrentDispatcherPreservesSerializedSequences() {
             if (deliveries.size() == 1 && !firstEntered.try_acquire_for(5s))
                 timedOut.store(true);
         });
-    const auto* terminal = started.handle()->terminalResult();
+    // The first queued callback is still blocked, but its admitted drain owns the terminal event.
+    const auto* terminal = &started.handle()->wait();
     releaseFirst.release();
     for (auto& delivery : deliveries) delivery.join();
 
@@ -239,6 +246,43 @@ void RunEventDeliveryTests::waitIncludesTerminalDispatcherAdmission() {
     QVERIFY(static_cast<bool>(terminalDelivery));
     terminalDelivery();
     QCOMPARE(delivered.load(), std::size_t{8});
+}
+
+void RunEventDeliveryTests::blockedTerminalObserverCanRestartWhileAnotherThreadWaits() {
+    std::binary_semaphore terminalEntered{0}, releaseTerminal{0}, waitReturned{0};
+    OptimizationRunService service;
+    std::optional<RunStartResult> next;
+    auto started = service.start(noWorkRequest(), [&](const RunEvent& event) {
+        if (!std::holds_alternative<std::shared_ptr<const OptimizationRunResult>>(event.payload())) return;
+        next.emplace(service.start(noWorkRequest()));
+        terminalEntered.release();
+        releaseTerminal.acquire();
+    });
+    terminalEntered.acquire();
+    const auto beforeCancellation = started.handle()->snapshot();
+    // This request races the old callback's lifetime after the slot has already been reused.
+    started.handle()->requestCancellation();
+    const auto afterCancellation = started.handle()->snapshot();
+    std::jthread waiter([&] {
+        static_cast<void>(started.handle()->wait());
+        waitReturned.release();
+    });
+    const bool returnedWhileCallbackBlocked = waitReturned.try_acquire_for(5s);
+    // Release before assertions so a failed wait contract cannot strand owner destruction.
+    releaseTerminal.release();
+    waiter.join();
+
+    QVERIFY(returnedWhileCallbackBlocked);
+    QVERIFY(next.has_value());
+    QVERIFY(next->started());
+    QCOMPARE(beforeCancellation.outcome(), std::optional{RunOutcome::Succeeded});
+    QVERIFY(!beforeCancellation.cancellationRequested());
+    QVERIFY(afterCancellation.cancellationRequested());
+    QCOMPARE(afterCancellation.outcome(), std::optional{RunOutcome::Succeeded});
+    QCOMPARE(started.handle()->wait().outcome(), RunOutcome::Succeeded);
+    QCOMPARE(next->handle()->wait().outcome(), RunOutcome::Succeeded);
+    QVERIFY(!next->handle()->snapshot().cancellationRequested());
+    QVERIFY(next->handle()->snapshot().runId() != beforeCancellation.runId());
 }
 
 QTEST_GUILESS_MAIN(RunEventDeliveryTests)
