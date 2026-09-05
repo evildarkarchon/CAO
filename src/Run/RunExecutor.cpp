@@ -1,4 +1,5 @@
 #include "RunExecutor.h"
+#include "StagingRecovery.h"
 
 #include <utf8proc.h>
 
@@ -213,6 +214,7 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
     auto finalPhase = RunPhase::Preparing;
     auto outcome = RunOutcome::Succeeded;
     std::shared_ptr<const RunPreparation> preparation;
+    StagingRecovery staging;
     if (!stop.stop_requested()) {
         auto prepared = prepareRun(request, services.configuration, services.observations, stop);
         if (auto* failure = std::get_if<RunFailure>(&prepared)) {
@@ -222,6 +224,19 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
                 services.observations->recordFailure(failures.back());
         } else {
             preparation = std::move(std::get<std::shared_ptr<const RunPreparation>>(prepared));
+        }
+    }
+
+    if (preparation && request.executionMode() == routing::ExecutionMode::Apply) {
+        for (const auto& root : preparation->modRoots()) {
+            if (stop.stop_requested()) break;
+            if (auto failure = staging.recover(root, stop)) {
+                outcome = RunOutcome::Failed;
+                failures.push_back(std::move(*failure));
+                if (services.observations != nullptr)
+                    services.observations->recordFailure(failures.back());
+                break;
+            }
         }
     }
 

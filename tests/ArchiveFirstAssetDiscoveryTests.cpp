@@ -108,6 +108,8 @@ class ArchiveFirstAssetDiscoveryTests final : public QObject
     Q_OBJECT
 
 private slots:
+    /// Verifies staging and unknown staging-like trees never enter either discovery pass.
+    void stagingIsExcludedFromDiscovery();
     /// Verifies enabled Archives extract before one definitive non-Archive tree is returned.
     void extractsEnabledArchivesBeforeDefinitiveDiscovery();
 
@@ -154,6 +156,27 @@ private slots:
     /// Verifies a selected directory alias is resolved once, even if extraction retargets it.
     void selectedDirectoryAliasKeepsItsOriginalTarget();
 };
+
+void ArchiveFirstAssetDiscoveryTests::stagingIsExcludedFromDiscovery() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "loose.dds", "loose");
+    for (const auto* name : {".cao-staging", ".CAO-Staging-abandoned"}) {
+        writeFile(root / name / "temporary.dds", "temporary");
+        writeFile(root / name / "archive.bsa", "uncommitted archive");
+    }
+    std::size_t extractions{};
+    const auto result = ArchiveFirstAssetDiscovery(archiveEnabledPolicy()).discover(
+        std::vector{root}, [&](const auto& archives) {
+            extractions += archives.size();
+            return true;
+        });
+    QCOMPARE(extractions, std::size_t{0});
+    QCOMPARE(result.effectiveAssetTree().paths().size(), std::size_t{1});
+    QCOMPARE(result.effectiveAssetTree().paths().front(), root / "loose.dds");
+    QCOMPARE(readFile(root / ".cao-staging" / "temporary.dds"), QByteArray("temporary"));
+}
 
 void ArchiveFirstAssetDiscoveryTests::escapingFileLinksAreExcluded()
 {

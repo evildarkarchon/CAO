@@ -98,7 +98,10 @@ enum class RunFailureCode {
     ModSelectionResolutionFailed,
     ConflictingModRoots,
     TemporaryArtifactCleanupFailed,
-    SafetyCleanupServiceFailed
+    SafetyCleanupServiceFailed,
+    StagingOwnershipUnverified,
+    StagingActive,
+    StagingRecoveryFailed
 };
 
 /// An owning run-level failure; Asset/Archive mutation failures belong to their service slices.

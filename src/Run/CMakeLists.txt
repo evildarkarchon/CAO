@@ -41,6 +41,9 @@ add_library(cao_run_executor
     RunExecutor.h
     TemporaryArtifactRegistry.cpp
     TemporaryArtifactRegistry.h
+    StagingRecovery.cpp
+    StagingRecovery.h
+    StagingPaths.h
 )
 
 target_link_libraries(cao_run_executor PUBLIC cao_run_lifecycle cao_run_setup)

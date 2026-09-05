@@ -1,5 +1,6 @@
 #include "Run/RunExecutor.h"
 #include "Run/TemporaryArtifactRegistry.h"
+#include "Run/StagingRecovery.h"
 #include "RunTestConfiguration.h"
 
 #include <QtTest>
@@ -7,6 +8,9 @@
 #include <algorithm>
 #include <cstddef>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -29,6 +33,36 @@ using cao::run::SafetyCleanupService;
 
 namespace
 {
+const std::string staleChildName = "run-407-0123456789abcdef0123456789abcdef";
+
+/// Builds a literal v1 ownership fixture independently of the recovery parser.
+std::string staleManifest(const std::filesystem::path& root) {
+    const auto utf8 = root.generic_u8string();
+    std::ostringstream manifest;
+    manifest << "CAO-STAGING 1\n" << std::quoted(std::string(utf8.begin(), utf8.end())) << '\n'
+             << "\"407\" \"" << staleChildName << "\"\n2\nD \"" << staleChildName
+             << "\"\nF \"" << staleChildName << "/temporary.dds\"\n";
+    return manifest.str();
+}
+
+/// Seeds abandoned registered staging and returns its child; the lock file is present but unlocked.
+std::filesystem::path seedStaleStaging(const std::filesystem::path& root) {
+    const auto staging = root / ".cao-staging";
+    const auto child = staging / staleChildName;
+    std::filesystem::create_directories(child);
+    std::ofstream(child / "temporary.dds") << "temporary";
+    std::ofstream(staging / "owner.lock");
+    std::ofstream(staging / "ownership.manifest", std::ios::binary) << staleManifest(root);
+    return child;
+}
+
+/// Reads fixture bytes for preservation assertions, including truncated or invalid manifests.
+QByteArray stagingBytes(const std::filesystem::path& path) {
+    QFile file(QString::fromStdWString(path.wstring()));
+    if (!file.open(QIODevice::ReadOnly)) qFatal("Could not read staging fixture");
+    return file.readAll();
+}
+
 /// Counts Safety Cleanup invocations so tests can prove it happens exactly once per terminal path.
 class CountingSafetyCleanup final : public SafetyCleanupService
 {
@@ -76,6 +110,26 @@ class RunExecutorTests final : public QObject
     Q_OBJECT
 
 private slots:
+ /// Verifies the filesystem recovery seam observes cancellation before attempting a deletion.
+ void cancelledRecoveryPreservesUnattemptedArtifacts();
+ /// Verifies linked staging and hard-linked control files never authorize external deletion.
+ void linkedStagingIsPreserved();
+ /// Verifies a deletion error stops work, retains the remaining artifact, and still cleans up.
+ void recoveryFailureStillPerformsSafetyCleanup();
+ /// Exercises malformed, mismatched, aliased, and unknown ownership without deleting any contents.
+ void unverifiableStagingIsPreserved_data();
+ /// Verifies every malformed fixture remains byte-for-byte intact after Preparing fails.
+ void unverifiableStagingIsPreserved();
+ /// Verifies Dry Run does not recover, rewrite, or create staging, even with valid stale ownership.
+ void dryRunLeavesStagingUntouched();
+ /// Verifies a separate process's real OS lock blocks Apply, then its exit permits recovery.
+ void activeStagingBlocksUntilItsOwnerExits();
+ /// Verifies the recovery lock remains held throughout the mandatory Safety Cleanup pass.
+ void recoveryLockSurvivesThroughSafetyCleanup();
+ /// Verifies versioned ownership recovers registered stale entries before work phases begin.
+ void verifiedStaleStagingIsRecoveredBeforeWork();
+ /// Verifies a reserved staging name never authorizes deleting user material during Preparing.
+ void unownedStagingBlocksApplyAndRemainsUntouched();
  /// Verifies Preparing loads owned facts and retains one canonical Mod Root and its policy.
  void preparingRetainsTheResolvedRootAndPolicy();
  /// Verifies invalid profile facts fail Preparing before any work phases and still clean up.
@@ -139,6 +193,288 @@ private slots:
  /// Verifies completed attempts follow succeeded plus failed, so failures advance progress.
  void failedAttemptsAdvanceCompletedProgress();
 };
+
+void RunExecutorTests::cancelledRecoveryPreservesUnattemptedArtifacts() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    const auto child = seedStaleStaging(root);
+    std::stop_source cancellation;
+    cancellation.request_stop();
+    cao::run::StagingRecovery recovery;
+    QVERIFY(!recovery.recover(root, cancellation.get_token()).has_value());
+    QVERIFY(std::filesystem::exists(child / "temporary.dds"));
+}
+
+void RunExecutorTests::linkedStagingIsPreserved() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto base = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    const auto root = base / "mod";
+    const auto outside = base / "outside";
+    std::filesystem::create_directory(root);
+    std::filesystem::create_directory(outside);
+    const auto child = seedStaleStaging(root);
+    std::ofstream(outside / "keep.dds") << "external";
+    std::error_code linkError;
+    std::filesystem::create_directory_symlink(outside, child / "linked", linkError);
+    if (linkError) QSKIP("Directory symlink creation is unavailable on this host");
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+                                           ModSelection::singleModRoot(root), {});
+    auto result = RunExecutor{}.execute(request, RunServices{cleanup, nullptr, configuration.get()});
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(stagingBytes(outside / "keep.dds"), QByteArray("external"));
+    QCOMPARE(stagingBytes(child / "temporary.dds"), QByteArray("temporary"));
+    std::filesystem::remove(child / "linked");
+    std::filesystem::create_hard_link(root / ".cao-staging" / "ownership.manifest", outside / "copy");
+    result = RunExecutor{}.execute(request, RunServices{cleanup, nullptr, configuration.get()});
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(result.failures().front().code(), cao::run::RunFailureCode::StagingOwnershipUnverified);
+    QCOMPARE(stagingBytes(child / "temporary.dds"), QByteArray("temporary"));
+}
+
+void RunExecutorTests::recoveryFailureStillPerformsSafetyCleanup() {
+#ifdef _WIN32
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    const auto child = seedStaleStaging(root);
+    const auto temporary = child / "temporary.dds";
+    const auto permissions = std::filesystem::status(temporary).permissions();
+    std::filesystem::permissions(temporary, std::filesystem::perms::owner_read,
+                                std::filesystem::perm_options::replace);
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+                                           ModSelection::singleModRoot(root), {});
+    const auto result = RunExecutor{}.execute(request, RunServices{cleanup, nullptr, configuration.get()});
+    // Restore fixture permissions even if the result assertions below fail.
+    std::filesystem::permissions(temporary, permissions);
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(result.finalPhase(), RunPhase::Preparing);
+    QCOMPARE(result.failures().front().code(), cao::run::RunFailureCode::StagingRecoveryFailed);
+    QCOMPARE(result.failures().front().path(), temporary);
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+    QCOMPARE(stagingBytes(temporary), QByteArray("temporary"));
+#else
+    QSKIP("Windows read-only deletion behavior is the failure fixture");
+#endif
+}
+
+void RunExecutorTests::unverifiableStagingIsPreserved_data() {
+    QTest::addColumn<QString>("problem");
+    for (const auto* problem : {"invalid", "version", "root", "run", "truncated", "trailing",
+                                "traversal", "alias", "duplicate", "wrong-type", "unknown-child",
+                                "unknown-sibling", "missing-lock", "reserved-file", "lookalike"})
+        QTest::newRow(problem) << QString(problem);
+}
+
+void RunExecutorTests::unverifiableStagingIsPreserved() {
+    QFETCH(QString, problem);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    auto child = seedStaleStaging(root);
+    auto staging = root / ".cao-staging";
+    auto manifestPath = staging / "ownership.manifest";
+    auto manifest = staleManifest(root);
+    if (problem == "invalid") manifest = "not CAO ownership";
+    if (problem == "version") manifest.replace(manifest.find(" 1"), 2, " 9");
+    if (problem == "root") manifest = staleManifest(root / "other-mod");
+    if (problem == "run") manifest.replace(manifest.find("\"407\""), 5, "\"408\"");
+    if (problem == "truncated") manifest.resize(manifest.size() - 8);
+    if (problem == "trailing") manifest += "retained\n";
+    if (problem == "traversal") manifest.replace(manifest.find("/temporary.dds"), 14, "/../outside.dds");
+    if (problem == "alias") manifest.replace(manifest.find("temporary.dds"), 13, "temporary.dds.");
+    if (problem == "duplicate") {
+        manifest.replace(manifest.find("\n2\n"), 3, "\n3\n");
+        manifest += "F \"" + staleChildName + "/temporary.dds\"\n";
+    }
+    if (problem == "wrong-type") manifest.replace(manifest.find("\nF "), 3, "\nD ");
+    if (problem == "unknown-child") std::ofstream(child / "retained.bsa") << "evidence";
+    if (problem == "unknown-sibling") std::ofstream(staging / "backup.bsa") << "evidence";
+    if (problem == "missing-lock") std::filesystem::remove(staging / "owner.lock");
+    std::ofstream(manifestPath, std::ios::binary | std::ios::trunc) << manifest;
+    if (problem == "reserved-file") {
+        std::filesystem::rename(staging, root / "user-material");
+        std::ofstream(staging) << "reserved filename is user material";
+        child = root / "user-material" / staleChildName;
+        manifestPath = root / "user-material" / "ownership.manifest";
+    }
+    if (problem == "lookalike") {
+        std::filesystem::rename(staging, root / ".CAO-Staging-abandoned");
+        staging = root / ".CAO-Staging-abandoned";
+        child = staging / staleChildName;
+        manifestPath = staging / "ownership.manifest";
+    }
+    const auto before = stagingBytes(manifestPath);
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+                                           ModSelection::singleModRoot(root), {});
+    const auto result = RunExecutor{}.execute(request, RunServices{cleanup, nullptr, configuration.get()});
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(result.failures().front().code(), cao::run::RunFailureCode::StagingOwnershipUnverified);
+    QCOMPARE(result.finalPhase(), RunPhase::Preparing);
+    QVERIFY(result.failures().front().detail().find("retry") != std::string::npos);
+    QCOMPARE(stagingBytes(manifestPath), before);
+    QCOMPARE(stagingBytes(child / "temporary.dds"), QByteArray("temporary"));
+    if (problem == "unknown-child") QCOMPARE(stagingBytes(child / "retained.bsa"), QByteArray("evidence"));
+    if (problem == "unknown-sibling") QCOMPARE(stagingBytes(staging / "backup.bsa"), QByteArray("evidence"));
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+}
+
+void RunExecutorTests::dryRunLeavesStagingUntouched() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    const auto child = seedStaleStaging(root);
+    const auto manifest = root / ".cao-staging" / "ownership.manifest";
+    const auto before = stagingBytes(manifest);
+    const auto modified = std::filesystem::last_write_time(manifest);
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::DryRun,
+                                           ModSelection::singleModRoot(root), {});
+    const auto result = RunExecutor{}.execute(request, RunServices{cleanup, nullptr, configuration.get()});
+    QCOMPARE(result.outcome(), RunOutcome::Succeeded);
+    QCOMPARE(stagingBytes(manifest), before);
+    QVERIFY(std::filesystem::last_write_time(manifest) == modified);
+    QCOMPARE(stagingBytes(child / "temporary.dds"), QByteArray("temporary"));
+}
+
+void RunExecutorTests::activeStagingBlocksUntilItsOwnerExits() {
+#ifdef _WIN32
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    const auto child = seedStaleStaging(root);
+    const auto manifest = root / ".cao-staging" / "ownership.manifest";
+    const auto before = stagingBytes(manifest);
+    QProcess owner;
+    auto lockPath = QString::fromStdWString((root / ".cao-staging" / "owner.lock").wstring());
+    lockPath.replace("'", "''");
+    owner.start("powershell.exe", {"-NoProfile", "-NonInteractive", "-Command",
+        "$stream = [IO.File]::Open('" + lockPath +
+        "', [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None); "
+        "[Console]::Out.WriteLine('locked'); [Console]::Out.Flush(); "
+        "[Threading.Thread]::Sleep(-1)"});
+    QVERIFY(owner.waitForStarted());
+    QVERIFY(owner.waitForReadyRead());
+    QCOMPARE(owner.readAllStandardOutput().trimmed(), QByteArray("locked"));
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+                                           ModSelection::singleModRoot(root), {});
+    const auto active = RunExecutor{}.execute(request, RunServices{cleanup, nullptr, configuration.get()});
+    QCOMPARE(active.outcome(), RunOutcome::Failed);
+    QCOMPARE(active.failures().front().code(), cao::run::RunFailureCode::StagingActive);
+    QCOMPARE(stagingBytes(manifest), before);
+    QCOMPARE(stagingBytes(child / "temporary.dds"), QByteArray("temporary"));
+    // Simulate a crashed owner: the OS, rather than orderly application cleanup, releases the lock.
+    owner.kill();
+    QVERIFY(owner.waitForFinished());
+    const auto stale = RunExecutor{}.execute(request, RunServices{cleanup, nullptr, configuration.get()});
+    QCOMPARE(stale.outcome(), RunOutcome::Succeeded);
+    QVERIFY(!std::filesystem::exists(child));
+#else
+    QSKIP("The separate-process fixture uses the supported Windows host's FileShare lock");
+#endif
+}
+
+void RunExecutorTests::recoveryLockSurvivesThroughSafetyCleanup() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    seedStaleStaging(root);
+    class ContendingCleanup final : public SafetyCleanupService {
+       public:
+        std::filesystem::path root;
+        bool blocked{};
+        /// Attempts another real run while the first run is still performing Safety Cleanup.
+        std::vector<cao::run::RunFailure> performSafetyCleanup() override {
+            CountingSafetyCleanup inner;
+            const auto configuration = testRunConfiguration();
+            const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+                                                   ModSelection::singleModRoot(root), {});
+            const auto result = RunExecutor{}.execute(request, RunServices{inner, nullptr, configuration.get()});
+            blocked = result.outcome() == RunOutcome::Failed && !result.failures().empty() &&
+                      result.failures().front().code() == cao::run::RunFailureCode::StagingActive;
+            return {};
+        }
+    } cleanup;
+    cleanup.root = root;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+                                           ModSelection::singleModRoot(root), {});
+    const auto result = RunExecutor{}.execute(request, RunServices{cleanup, nullptr, configuration.get()});
+    QCOMPARE(result.outcome(), RunOutcome::Succeeded);
+    QVERIFY(cleanup.blocked);
+    CountingSafetyCleanup after;
+    QCOMPARE(RunExecutor{}.execute(request, RunServices{after, nullptr, configuration.get()}).outcome(),
+             RunOutcome::Succeeded);
+}
+
+void RunExecutorTests::verifiedStaleStagingIsRecoveredBeforeWork() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    const auto staging = root / ".cao-staging";
+    const auto child = seedStaleStaging(root);
+    class RecoveryObserver final : public cao::run::RunObservationSink {
+       public:
+        std::filesystem::path child;
+        bool recoveredBeforeWork{};
+        /// Records whether recovery finished before the first work phase was published.
+        void recordPhase(const RunPhaseRecord& phase) override {
+            if (phase.phase() == RunPhase::DiscoveringArchives)
+                recoveredBeforeWork = !std::filesystem::exists(child);
+        }
+        /// No failure or diagnostic is expected by this successful recovery fixture.
+        void recordFailure(const cao::run::RunFailure&) override {}
+        void recordDiagnostic(const cao::run::RunDiagnostic&) override {}
+    } observer;
+    observer.child = child;
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+                                           ModSelection::singleModRoot(root), {});
+    const auto result = RunExecutor{}.execute(request, RunServices{cleanup, &observer, configuration.get()});
+    QCOMPARE(result.outcome(), RunOutcome::Succeeded);
+    QVERIFY(observer.recoveredBeforeWork);
+    QVERIFY(!std::filesystem::exists(child));
+    // The stable control files must survive so a waiter cannot acquire a different lock inode.
+    QVERIFY(std::filesystem::exists(staging / "owner.lock"));
+    QVERIFY(std::filesystem::exists(staging / "ownership.manifest"));
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+}
+
+void RunExecutorTests::unownedStagingBlocksApplyAndRemainsUntouched() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto staging = root / ".cao-staging";
+    std::filesystem::create_directory(staging);
+    QFile evidence(QString::fromStdWString((staging / "user.dds").wstring()));
+    QVERIFY(evidence.open(QIODevice::WriteOnly));
+    QCOMPARE(evidence.write("retain me"), qint64{9});
+    evidence.close();
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+                                           ModSelection::singleModRoot(root), {});
+    const auto result = RunExecutor{}.execute(request, RunServices{cleanup, nullptr, configuration.get()});
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(result.finalPhase(), RunPhase::Preparing);
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().path(), std::filesystem::canonical(staging));
+    QVERIFY(!result.failures().front().detail().empty());
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+    QVERIFY(evidence.open(QIODevice::ReadOnly));
+    QCOMPARE(evidence.readAll(), QByteArray("retain me"));
+}
 
 void RunExecutorTests::registeredArtifactsAreCleanedAndCommittedOutputSurvives() {
     QTemporaryDir directory;

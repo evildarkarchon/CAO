@@ -1,4 +1,5 @@
 #include "ArchiveFirstAssetDiscovery.h"
+#include "StagingPaths.h"
 
 #include <btu/bsa/unpack.hpp>
 
@@ -80,6 +81,7 @@ bool visitRegularFiles(const std::span<const std::filesystem::path> roots,
                        ExcludedVisitor&& excluded, Visitor&& visitor) {
     for (const auto& root : roots) {
         if (isCancelled && isCancelled()) return false;
+        if (isStagingName(root)) continue;
         std::error_code error;
         const auto directoryRoot = std::filesystem::is_directory(root, error);
         auto boundary = directoryRoot ? root : root.parent_path();
@@ -104,7 +106,10 @@ bool visitRegularFiles(const std::span<const std::filesystem::path> roots,
             // Poll even for directories and unsupported files: they may comprise the entire tree,
             // so neither extraction nor execution is guaranteed to offer a cancellation seam.
             if (isCancelled && isCancelled()) return false;
-            if (!entryIsWithinScope(entry->path(), canonicalRoot, excluded)) {
+            if (isStagingName(entry->path())) {
+                // Stale or unverified temporary material must never become optimization input.
+                entry.disable_recursion_pending();
+            } else if (!entryIsWithinScope(entry->path(), canonicalRoot, excluded)) {
                 // Disable recursion explicitly even when the standard iterator currently declines
                 // symlinks: Windows reparse tags must never become another Mod Root's work.
                 entry.disable_recursion_pending();

@@ -64,8 +64,9 @@ struct RunServices final {
 /// service. It owns phase sequencing, phase applicability, Safety Cleanup, and terminal
 /// classification. It performs no scheduling, dispatches no events, and never reconfigures logging.
 ///
-/// Preparing loads owned facts, resolves the Mod Selection, and compiles policy. Requested work needs
-/// the Archive discovery, Asset execution, and Archive Finalization service seams that later
+/// Preparing loads owned facts, resolves the Mod Selection, and compiles policy. Apply Preparing
+/// also recovers verified stale staging under OS locks retained through cleanup. Requested work
+/// needs the Archive discovery, Asset execution, and Archive Finalization service seams that later
 /// lifecycle slices introduce, so it terminates as Failed at Preparing rather than reporting a
 /// Succeeded run that performed nothing.
 class RunExecutor final {
