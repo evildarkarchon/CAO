@@ -205,3 +205,8 @@ target_link_libraries(cao_optimization_run_tests PRIVATE
 set_target_properties(cao_optimization_run_tests PROPERTIES AUTOMOC ON)
 
 add_test(NAME cao_optimization_run_tests COMMAND cao_optimization_run_tests)
+
+add_executable(cao_run_event_delivery_tests RunEventDeliveryTests.cpp)
+target_link_libraries(cao_run_event_delivery_tests PRIVATE Qt5::Test cao_optimization_run)
+set_target_properties(cao_run_event_delivery_tests PROPERTIES AUTOMOC ON)
+add_test(NAME cao_run_event_delivery_tests COMMAND cao_run_event_delivery_tests)

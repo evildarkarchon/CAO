@@ -2,9 +2,21 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <random>
 #include <utility>
 
 namespace cao::run {
+RunId createRunId() {
+    // A process nonce separates launches; a counter makes identities unique within this process.
+    static const auto nonce = [] {
+        std::random_device random;
+        return std::to_string(random()) + "-" + std::to_string(random()) + "-";
+    }();
+    static std::atomic<std::uint64_t> next{0};
+    return nonce + std::to_string(next.fetch_add(1, std::memory_order_relaxed));
+}
+
 std::span<const RunPhase> runPhaseSequence() noexcept {
     // The sequence is the contract, not an implementation detail: adapters render it, skipped
     // phases still appear in it, and Safety Cleanup always terminates it.
@@ -115,13 +127,18 @@ bool RunRequest::requests(const routing::RequestedWork work) const noexcept {
 bool RunRequest::hasRequestedWork() const noexcept { return !_requestedWork.empty(); }
 
 OptimizationRunResult::OptimizationRunResult(const RunOutcome outcome, const RunPhase finalPhase,
-                                             std::vector<RunPhaseRecord> phases) noexcept
-    : _outcome(outcome), _finalPhase(finalPhase), _phases(std::move(phases)) {}
+                                             std::vector<RunPhaseRecord> phases, RunId runId,
+                                             std::vector<RunFailure> failures) noexcept
+    : _runId(std::move(runId)), _outcome(outcome), _finalPhase(finalPhase),
+      _phases(std::move(phases)), _failures(std::move(failures)) {}
 
 OptimizationRunResult OptimizationRunResult::terminal(const RunOutcome outcome,
                                                       const RunPhase finalPhase,
-                                                      std::vector<RunPhaseRecord> phases) {
-    return OptimizationRunResult(outcome, finalPhase, std::move(phases));
+                                                      std::vector<RunPhaseRecord> phases,
+                                                      RunId runId,
+                                                      std::vector<RunFailure> failures) {
+    return OptimizationRunResult(outcome, finalPhase, std::move(phases), std::move(runId),
+                                 std::move(failures));
 }
 
 RunOutcome OptimizationRunResult::outcome() const noexcept { return _outcome; }

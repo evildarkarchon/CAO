@@ -165,6 +165,24 @@ class OptimizationRunServiceTests final : public QObject
     Q_OBJECT
 
 private slots:
+    /// Catches missing, reordered, or unidentified phase and terminal observations.
+    void inlineEventsOwnAnOrderedRunHistory();
+
+    /// Catches caller queues losing events or borrowing state that dies with the handle.
+    void queuedEventsOutliveTheRunOwners();
+
+    /// Catches presentation exceptions changing work or suppressing a healthy observer's history.
+    void presentationFailuresDisableOnlyTheFailingObserver();
+
+    /// Catches failures disappearing between phase observations and terminal classification.
+    void failureEventsPrecedeCleanupAndTerminal();
+
+    /// Catches stale state at enqueue, callbacks under locks, and worker-side callback self-wait.
+    void inlineCallbacksObservePublishedStateAndCanCancel();
+
+    /// Catches an event-driven cancellation traversing phases beyond its observation boundary.
+    void cancellationFromASkippedPhaseStopsFurtherTraversal();
+
     /// Verifies a Run Request naming no profile is rejected before any worker exists.
     void aRequestWithoutAProfileIdentityIsRejectedWithoutCreatingAWorker();
 
@@ -234,6 +252,190 @@ private slots:
     /// Verifies scheduling failure releases the slot while the failed handle remains readable.
     void schedulingFailureReleasesTheActiveSlot();
 };
+
+void OptimizationRunServiceTests::inlineEventsOwnAnOrderedRunHistory()
+{
+    std::vector<cao::run::RunEvent> events;
+    {
+        CountingInlineScheduler scheduler;
+        OptimizationRunService service{scheduler};
+        auto started = service.start(noWorkRequest(),
+            [&](const cao::run::RunEvent& event) { events.push_back(event); });
+        QCOMPARE(started.handle()->wait().outcome(), RunOutcome::Succeeded);
+        QCOMPARE(events.size(), std::size_t{8});
+        QVERIFY(!events.front().runId().empty());
+        QCOMPARE(events.front().runId(), started.handle()->wait().runId());
+    }
+
+    // Copies retain their payloads after the service, handle, and worker have gone away.
+    const std::vector<RunPhase> expected{
+        RunPhase::Preparing, RunPhase::DiscoveringArchives, RunPhase::ExtractingArchives,
+        RunPhase::BuildingEffectiveAssetTree, RunPhase::ProcessingAssets,
+        RunPhase::ArchiveFinalization, RunPhase::SafetyCleanup};
+    for (std::size_t i = 0; i < events.size(); ++i) {
+        QCOMPARE(events[i].sequence(), static_cast<std::uint64_t>(i + 1));
+        QCOMPARE(events[i].runId(), events.front().runId());
+        if (i < expected.size()) {
+            const auto* phase = std::get_if<cao::run::RunPhaseRecord>(&events[i].payload());
+            QVERIFY(phase != nullptr);
+            QCOMPARE(phase->phase(), expected[i]);
+            if (i > 0 && i < 6)
+                QCOMPARE(phase->skipReason(), std::optional{cao::run::PhaseSkipReason::NoRequestedWork});
+        }
+    }
+    const auto* terminal = std::get_if<std::shared_ptr<const OptimizationRunResult>>(
+        &events.back().payload());
+    QVERIFY(terminal != nullptr);
+    QCOMPARE((*terminal)->outcome(), RunOutcome::Succeeded);
+}
+
+void OptimizationRunServiceTests::queuedEventsOutliveTheRunOwners()
+{
+    std::vector<std::function<void()>> pending;
+    std::vector<cao::run::RunEvent> events;
+    {
+        CountingInlineScheduler scheduler;
+        OptimizationRunService service{scheduler};
+        auto started = service.start(noWorkRequest(),
+            [&](const cao::run::RunEvent& event) { events.push_back(event); },
+            [&](std::function<void()> delivery) { pending.push_back(std::move(delivery)); });
+        QCOMPARE(started.handle()->wait().outcome(), RunOutcome::Succeeded);
+        QVERIFY(events.empty());
+    }
+    // An adversarial queue may execute posted work in reverse order. The run must serialize it.
+    for (auto task = pending.rbegin(); task != pending.rend(); ++task) (*task)();
+    QCOMPARE(events.size(), std::size_t{8});
+    for (std::size_t i = 0; i < events.size(); ++i)
+        QCOMPARE(events[i].sequence(), static_cast<std::uint64_t>(i + 1));
+    QVERIFY(std::holds_alternative<std::shared_ptr<const OptimizationRunResult>>(events.back().payload()));
+}
+
+void OptimizationRunServiceTests::presentationFailuresDisableOnlyTheFailingObserver()
+{
+    for (const bool dispatcherFails : {false, true}) {
+        CountingInlineScheduler scheduler;
+        OptimizationRunService service{scheduler};
+        std::vector<cao::run::RunEvent> healthy;
+        std::size_t attempts{};
+        std::vector<cao::run::RunObservation> observations;
+        observations.push_back({
+            [&](const cao::run::RunEvent&) {
+                ++attempts;
+                if (!dispatcherFails) throw std::runtime_error("view unavailable");
+            },
+            [&](std::function<void()> delivery) {
+                if (dispatcherFails) { ++attempts; throw 42; }
+                delivery();
+            }});
+        observations.push_back({[&](const cao::run::RunEvent& event) { healthy.push_back(event); }, {}});
+        auto started = service.start(noWorkRequest(), std::move(observations));
+
+        QCOMPARE(started.handle()->wait().outcome(), RunOutcome::Succeeded);
+        QCOMPARE(attempts, std::size_t{1});
+        const auto diagnostics = started.handle()->diagnostics();
+        QCOMPARE(diagnostics.size(), std::size_t{1});
+        QCOMPARE(diagnostics.front().code(), dispatcherFails ? cao::run::RunDiagnosticCode::DispatcherFailed
+                                                            : cao::run::RunDiagnosticCode::ObserverFailed);
+        QCOMPARE(healthy.size(), std::size_t{9});
+        QVERIFY(std::holds_alternative<cao::run::RunPhaseRecord>(healthy[0].payload()));
+        QVERIFY(std::holds_alternative<cao::run::RunDiagnostic>(healthy[1].payload()));
+        for (std::size_t i = 0; i < healthy.size(); ++i)
+            QCOMPARE(healthy[i].sequence(), static_cast<std::uint64_t>(i + 1));
+        QVERIFY(std::holds_alternative<std::shared_ptr<const OptimizationRunResult>>(healthy.back().payload()));
+    }
+}
+
+void OptimizationRunServiceTests::failureEventsPrecedeCleanupAndTerminal()
+{
+    for (const bool schedulingFails : {false, true}) {
+        CountingInlineScheduler inlineScheduler;
+        ExhaustedRunScheduler exhausted;
+        OptimizationRunService service{schedulingFails ? static_cast<RunScheduler&>(exhausted)
+                                                       : static_cast<RunScheduler&>(inlineScheduler)};
+        std::vector<cao::run::RunEvent> events;
+        auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+            ModSelection::singleModRoot("mods/Example"), {RequestedWork::NativeTextureOptimization});
+        auto started = service.start(std::move(request),
+            [&](const cao::run::RunEvent& event) { events.push_back(event); });
+        const auto& result = started.handle()->wait();
+        QCOMPARE(result.outcome(), RunOutcome::Failed);
+        QCOMPARE(events.size(), schedulingFails ? std::size_t{3} : std::size_t{4});
+        const auto& failureEvent = events[events.size() - 3];
+        const auto* failure = std::get_if<cao::run::RunFailure>(&failureEvent.payload());
+        QVERIFY(failure != nullptr);
+        QCOMPARE(failure->code(), schedulingFails ? cao::run::RunFailureCode::SchedulingFailed
+                                                 : cao::run::RunFailureCode::RequestedWorkUnavailable);
+        QCOMPARE(failure->phase(), RunPhase::Preparing);
+        QVERIFY(!failure->detail().empty());
+        QCOMPARE(result.failures().size(), std::size_t{1});
+        QCOMPARE(result.failures()[0].code(), failure->code());
+        QCOMPARE(std::get<cao::run::RunPhaseRecord>(events[events.size() - 2].payload()).phase(),
+                 RunPhase::SafetyCleanup);
+        QVERIFY(std::holds_alternative<std::shared_ptr<const OptimizationRunResult>>(events.back().payload()));
+    }
+}
+
+void OptimizationRunServiceTests::inlineCallbacksObservePublishedStateAndCanCancel()
+{
+    GatedRunScheduler scheduler;
+    std::binary_semaphore finished{0};
+    scheduler.afterWork = [&] { finished.release(); };
+    OptimizationRunService service{scheduler};
+    RunHandle* handle{};
+    std::vector<RunPhase> phases;
+    bool selfWaitDiagnosed{};
+    bool statePublished = true;
+    auto started = service.start(noWorkRequest(), [&](const cao::run::RunEvent& event) {
+        const auto snapshot = handle->snapshot();
+        statePublished = statePublished && snapshot.runId() == event.runId();
+        if (const auto* phase = std::get_if<cao::run::RunPhaseRecord>(&event.payload())) {
+            phases.push_back(phase->phase());
+            statePublished = statePublished && snapshot.phase() == phase->phase()
+                && !snapshot.progress().has_value();
+            if (phase->phase() == RunPhase::Preparing) {
+                try { static_cast<void>(handle->wait()); }
+                catch (const std::logic_error&) { selfWaitDiagnosed = true; }
+                handle->requestCancellation();
+                statePublished = statePublished && handle->snapshot().cancellationRequested();
+            }
+        } else if (std::holds_alternative<std::shared_ptr<const OptimizationRunResult>>(event.payload())) {
+            statePublished = statePublished && handle->terminalResult() != nullptr
+                && snapshot.outcome() == std::optional{RunOutcome::Cancelled};
+        }
+    });
+    handle = started.handle();
+    scheduler.release();
+    QCOMPARE(handle->wait().outcome(), RunOutcome::Cancelled);
+    // Synchronize before reading callback-owned values: wait promises enqueue, not execution.
+    finished.acquire();
+    QVERIFY(selfWaitDiagnosed);
+    QVERIFY(statePublished);
+    QCOMPARE(phases, (std::vector<RunPhase>{RunPhase::Preparing, RunPhase::SafetyCleanup}));
+}
+
+void OptimizationRunServiceTests::cancellationFromASkippedPhaseStopsFurtherTraversal()
+{
+    GatedRunScheduler scheduler;
+    std::binary_semaphore finished{0};
+    scheduler.afterWork = [&] { finished.release(); };
+    OptimizationRunService service{scheduler};
+    RunHandle* handle{};
+    std::vector<RunPhase> phases;
+    auto started = service.start(noWorkRequest(), [&](const cao::run::RunEvent& event) {
+        if (const auto* phase = std::get_if<cao::run::RunPhaseRecord>(&event.payload())) {
+            phases.push_back(phase->phase());
+            if (phase->phase() == RunPhase::DiscoveringArchives) handle->requestCancellation();
+        }
+    });
+    handle = started.handle();
+    scheduler.release();
+    const auto& terminal = handle->wait();
+    finished.acquire();
+    QCOMPARE(terminal.outcome(), RunOutcome::Cancelled);
+    QCOMPARE(terminal.finalPhase(), RunPhase::DiscoveringArchives);
+    QCOMPARE(phases, (std::vector<RunPhase>{RunPhase::Preparing, RunPhase::DiscoveringArchives,
+                                          RunPhase::SafetyCleanup}));
+}
 
 void OptimizationRunServiceTests::aRequestWithoutAProfileIdentityIsRejectedWithoutCreatingAWorker()
 {
@@ -549,7 +751,8 @@ void OptimizationRunServiceTests::cancellationKeepsTheSlotUntilTerminalCommit()
 
 void OptimizationRunServiceTests::destructionFromTheWorkerIsDiagnosed()
 {
-    for (const auto& owner : {QStringLiteral("handle"), QStringLiteral("service")}) {
+    for (const auto& owner : {QStringLiteral("handle"), QStringLiteral("service"),
+                              QStringLiteral("inline-service")}) {
         QProcess child;
         child.start(QCoreApplication::applicationFilePath(),
                     {QStringLiteral("--self-destruction"), owner});
@@ -650,6 +853,15 @@ void OptimizationRunServiceTests::schedulingFailureReleasesTheActiveSlot()
 int main(int argc, char** argv)
 {
     if (argc == 3 && std::string_view(argv[1]) == "--self-destruction") {
+        if (std::string_view(argv[2]) == "inline-service") {
+            // Inline delivery precedes worker publication, but still owes the same diagnosis.
+            std::set_terminate([] { std::_Exit(86); });
+            cao::run::InlineRunScheduler scheduler;
+            auto service = std::make_unique<OptimizationRunService>(scheduler);
+            auto started = service->start(noWorkRequest(),
+                [&](const cao::run::RunEvent&) { service.reset(); });
+            return 0;
+        }
         GatedRunScheduler scheduler;
         auto service = std::make_unique<OptimizationRunService>(scheduler);
         auto started = service->start(noWorkRequest());

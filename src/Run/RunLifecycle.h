@@ -3,13 +3,23 @@
 #include "AssetRouting/AssetRouter.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
+#include <variant>
 #include <vector>
 
 namespace cao::run {
+/// An opaque identity retained by every observation and terminal result of a run.
+using RunId = std::string;
+
+/// Generates an identity distinct across runs, including separate application invocations.
+[[nodiscard]] RunId createRunId();
+
 /// The stable lifecycle stages every Optimization Run traverses, in traversal order.
 ///
 /// This is the canonical Run Phase of the project glossary and is distinct from
@@ -43,6 +53,52 @@ enum class PhaseSkipReason { NoRequestedWork };
 
 /// The terminal classification of one Optimization Run.
 enum class RunOutcome { Succeeded, CompletedWithFailures, Cancelled, Failed };
+
+/// Presentation failures are observations and never affect Run Outcome.
+enum class RunDiagnosticCode { ObserverFailed, DispatcherFailed };
+
+/// An owning informational observation, including presentation failures after terminal commit.
+class RunDiagnostic final {
+   public:
+    /// Retains a stable category, the observed phase, and the boundary's human-readable detail.
+    RunDiagnostic(RunDiagnosticCode code, RunPhase phase, std::string detail)
+        : _code(code), _phase(phase), _detail(std::move(detail)) {}
+
+    /// Returns the presentation boundary that failed.
+    [[nodiscard]] RunDiagnosticCode code() const noexcept { return _code; }
+    /// Returns the run's phase when the diagnostic was recorded, including late queued failures.
+    [[nodiscard]] RunPhase phase() const noexcept { return _phase; }
+    /// Borrows explanatory text for this value's lifetime.
+    [[nodiscard]] const std::string& detail() const noexcept { return _detail; }
+
+   private:
+    RunDiagnosticCode _code;
+    RunPhase _phase;
+    std::string _detail;
+};
+
+/// Stable failures currently reachable at the scheduling and no-work execution seams.
+enum class RunFailureCode { SchedulingFailed, RequestedWorkUnavailable };
+
+/// An owning run-level failure; Asset/Archive mutation failures belong to their service slices.
+class RunFailure final {
+   public:
+    /// Records the failing boundary and its detail without retaining exception or service objects.
+    RunFailure(RunFailureCode code, RunPhase phase, std::string detail)
+        : _code(code), _phase(phase), _detail(std::move(detail)) {}
+
+    /// Returns the stable unsuccessful scheduling or execution category.
+    [[nodiscard]] RunFailureCode code() const noexcept { return _code; }
+    /// Returns the phase in which the run failed.
+    [[nodiscard]] RunPhase phase() const noexcept { return _phase; }
+    /// Borrows explanatory text for this value's lifetime.
+    [[nodiscard]] const std::string& detail() const noexcept { return _detail; }
+
+   private:
+    RunFailureCode _code;
+    RunPhase _phase;
+    std::string _detail;
+};
 
 /// The phase-local account of determinate work attempted during one Run Phase.
 ///
@@ -80,6 +136,42 @@ class RunProgress final {
     std::size_t _total{};
     std::size_t _succeeded{};
     std::size_t _failed{};
+};
+
+/// A lightweight immutable copy of authoritative state, published before its corresponding event.
+class RunSnapshot final {
+   public:
+    /// Captures one synchronized observation without borrowing a worker's mutable state.
+    RunSnapshot(RunId runId, RunPhase phase, std::optional<RunProgress> progress,
+                bool cancellationRequested, std::size_t diagnosticCount, std::size_t failureCount,
+                std::optional<RunOutcome> outcome)
+        : _runId(std::move(runId)), _phase(phase), _progress(progress),
+          _cancellationRequested(cancellationRequested), _diagnosticCount(diagnosticCount),
+          _failureCount(failureCount), _outcome(outcome) {}
+
+    /// Borrows the captured run identity for this snapshot's lifetime.
+    [[nodiscard]] const RunId& runId() const noexcept { return _runId; }
+    /// Returns the latest observed phase, including Safety Cleanup.
+    [[nodiscard]] RunPhase phase() const noexcept { return _phase; }
+    /// Borrows phase-local progress; skipped and indeterminate phases have no value.
+    [[nodiscard]] const std::optional<RunProgress>& progress() const noexcept { return _progress; }
+    /// Reports whether cooperative cancellation had been requested when this copy was captured.
+    [[nodiscard]] bool cancellationRequested() const noexcept { return _cancellationRequested; }
+    /// Counts recorded diagnostics, including presentation failures observed after terminal commit.
+    [[nodiscard]] std::size_t diagnosticCount() const noexcept { return _diagnosticCount; }
+    /// Counts run failures published before this snapshot was captured.
+    [[nodiscard]] std::size_t failureCount() const noexcept { return _failureCount; }
+    /// Returns no value until the immutable terminal result is committed.
+    [[nodiscard]] std::optional<RunOutcome> outcome() const noexcept { return _outcome; }
+
+   private:
+    RunId _runId;
+    RunPhase _phase;
+    std::optional<RunProgress> _progress;
+    bool _cancellationRequested;
+    std::size_t _diagnosticCount;
+    std::size_t _failureCount;
+    std::optional<RunOutcome> _outcome;
 };
 
 /// One traversed Run Phase together with its status, skip reason, and phase-local progress.
@@ -198,7 +290,15 @@ class OptimizationRunResult final {
     /// asynchronous Optimization Run service, both commit terminal results from libraries that
     /// link this one.
     [[nodiscard]] static OptimizationRunResult terminal(RunOutcome outcome, RunPhase finalPhase,
-                                                        std::vector<RunPhaseRecord> phases);
+                                                        std::vector<RunPhaseRecord> phases,
+                                                        RunId runId = createRunId(),
+                                                        std::vector<RunFailure> failures = {});
+
+    /// Borrows the identity shared with this run's observations for the result's lifetime.
+    [[nodiscard]] const RunId& runId() const noexcept { return _runId; }
+
+    /// Returns owned failures recorded before terminal commit, in observation order.
+    [[nodiscard]] std::span<const RunFailure> failures() const noexcept { return _failures; }
 
     [[nodiscard]] RunOutcome outcome() const noexcept;
 
@@ -220,10 +320,36 @@ class OptimizationRunResult final {
 
    private:
     OptimizationRunResult(RunOutcome outcome, RunPhase finalPhase,
-                          std::vector<RunPhaseRecord> phases) noexcept;
+                          std::vector<RunPhaseRecord> phases, RunId runId,
+                          std::vector<RunFailure> failures) noexcept;
 
+    RunId _runId;
     RunOutcome _outcome;
     RunPhase _finalPhase;
     std::vector<RunPhaseRecord> _phases;
+    std::vector<RunFailure> _failures;
+};
+
+/// An owning immutable observation; copies keep terminal payloads alive independently of handles.
+class RunEvent final {
+   public:
+    using Payload = std::variant<RunPhaseRecord, RunDiagnostic, RunFailure,
+                                 std::shared_ptr<const OptimizationRunResult>>;
+
+    /// Takes an already ordered observation; sequences start at one within each Run ID.
+    RunEvent(RunId runId, std::uint64_t sequence, Payload payload)
+        : _runId(std::move(runId)), _sequence(sequence), _payload(std::move(payload)) {}
+
+    /// Borrows this observation's run identity for the event value's lifetime.
+    [[nodiscard]] const RunId& runId() const noexcept { return _runId; }
+    /// Returns its monotonically increasing position in this Run ID's history, starting at one.
+    [[nodiscard]] std::uint64_t sequence() const noexcept { return _sequence; }
+    /// Borrows the immutable payload; copying the event retains all referenced terminal data.
+    [[nodiscard]] const Payload& payload() const noexcept { return _payload; }
+
+   private:
+    RunId _runId;
+    std::uint64_t _sequence;
+    Payload _payload;
 };
 }  // namespace cao::run

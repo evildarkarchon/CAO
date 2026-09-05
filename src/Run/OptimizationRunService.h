@@ -4,12 +4,30 @@
 #include "Run/RunScheduler.h"
 
 #include <memory>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <variant>
 #include <vector>
 
 namespace cao::run {
+/// Receives immutable observations. Copy an event to retain it beyond the callback.
+using RunObserver = std::function<void(const RunEvent&)>;
+
+/// Accepts a delivery closure for inline or queued execution. Empty dispatchers execute inline.
+/// Queued closures own their run state and may execute after wait() and owner destruction.
+/// Returning successfully accepts the closure; throwing disables this registration. A dispatcher
+/// must eventually execute or release accepted closures, and keep its captured targets valid.
+using RunEventDispatcher = std::function<void(std::function<void()>)>;
+
+/// One independently isolated observer and its caller-selected delivery context, owned by the run.
+/// Callbacks are serialized per registration and run outside lifecycle locks. Work terminal delivery
+/// may be followed by diagnostics from delayed presentation failures; those never alter Run Outcome.
+struct RunObservation final {
+    RunObserver observer;
+    RunEventDispatcher dispatcher;
+};
+
 /// Stable request or active-run conflicts that prevent an Optimization Run from starting at all.
 ///
 /// A Start Error is detected before any worker exists, so it produces no Run Outcome and no Run
@@ -50,7 +68,15 @@ class RunHandle final {
     /// a run commits exactly one terminal result and never replaces it.
     [[nodiscard]] const OptimizationRunResult* terminalResult() const;
 
-    /// Blocks until the Optimization Run commits its terminal result, then returns it.
+    /// Copies diagnostics under synchronization, including queued presentation failures after wait().
+    /// Late diagnostics never mutate the committed terminal result or its Run Outcome.
+    [[nodiscard]] std::vector<RunDiagnostic> diagnostics() const;
+
+    /// Copies the current state from any thread, including an inline observer or dispatcher.
+    [[nodiscard]] RunSnapshot snapshot() const;
+
+    /// Blocks until terminal commit and dispatcher admission of every event through terminal.
+    /// Queued callbacks need not have executed; a dispatcher failure counts as diagnosed rejection.
     ///
     /// Throws std::logic_error from the run's own worker, including its inline callbacks.
     /// Active destruction from that context is a fatal contract violation (std::terminate).
@@ -128,7 +154,12 @@ class OptimizationRunService final {
     /// Otherwise the run takes ownership of `request` and is scheduled, and the returned handle
     /// owns it. A failure after that point, including a scheduler that cannot start a worker,
     /// commits a terminal Failed result rather than a Start Error.
-    [[nodiscard]] RunStartResult start(RunRequest request);
+    [[nodiscard]] RunStartResult start(RunRequest request, RunObserver observer = {},
+                                       RunEventDispatcher dispatcher = {});
+
+    /// Starts with independently isolated observers; failure disables only that registration.
+    /// Every enabled observer receives the same ordered history, including presentation diagnostics.
+    [[nodiscard]] RunStartResult start(RunRequest request, std::vector<RunObservation> observations);
 
    private:
     StandardRunScheduler _productionScheduler;

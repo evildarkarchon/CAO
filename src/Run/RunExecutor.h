@@ -5,6 +5,18 @@
 #include <stop_token>
 
 namespace cao::run {
+/// Receives executor facts synchronously; the owning run handles presentation and isolation.
+class RunObservationSink {
+   public:
+    virtual ~RunObservationSink() = default;
+
+    /// Records a traversed phase before the executor proceeds; implementations must isolate observers.
+    virtual void recordPhase(const RunPhaseRecord& phase) = 0;
+
+    /// Records a run-level failure before cleanup and terminal commit.
+    virtual void recordFailure(const RunFailure& failure) = 0;
+};
+
 /// Removes the temporary artifacts one Optimization Run registered.
 ///
 /// Safety Cleanup never rolls back Committed Mutations and never removes backups or failed-output
@@ -33,6 +45,7 @@ class SafetyCleanupService {
 /// executed phase indistinguishable from one that never happened.
 struct RunServices final {
     SafetyCleanupService& safetyCleanup;
+    RunObservationSink* observations{};
 };
 
 /// Executes one Optimization Run synchronously through the stable Run Phase sequence.
@@ -52,9 +65,12 @@ class RunExecutor final {
     ///
     /// Returns an owning, self-contained result that outlives this executor, the request, and the
     /// borrowed services. The optional stop token is observed between phases; Safety Cleanup
-    /// always finishes even when cancellation was requested.
+    /// always finishes even when cancellation was requested. The caller may supply the public
+    /// run's identity; standalone executions generate one. Observations record synchronous facts
+    /// through RunServices, while scheduling and presentation dispatch stay with the owning run.
     [[nodiscard]] OptimizationRunResult execute(const RunRequest& request,
                                                 const RunServices& services,
-                                                std::stop_token stop = {}) const;
+                                                std::stop_token stop = {},
+                                                RunId runId = createRunId()) const;
 };
 }  // namespace cao::run
