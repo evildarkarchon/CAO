@@ -87,7 +87,7 @@ void Manager::readIgnoredMods() {
     }
 }
 
-void Manager::runOptimization() {
+bool Manager::runOptimization() {
     PLOG_DEBUG << "Game: " << Profiles::currentProfile();
     PLOG_INFO << "Processing: " + _options.userPath;
     PLOG_INFO << "Beginning...";
@@ -99,6 +99,7 @@ void Manager::runOptimization() {
     for (const auto& mod : _modsToProcess) roots.emplace_back(mod.toStdWString());
 
     const cao::run::AssetRun assetRun(_routingPolicy);
+    std::size_t failedAssets = 0;
     auto lastLooseProgress = QDateTime::currentDateTime();
     const auto result = assetRun.execute(
         roots,
@@ -111,7 +112,9 @@ void Manager::runOptimization() {
                 // MainOptimizer owns the outcome: it quarantines unreadable inputs and records
                 // failed Texture conversions so the later Mesh phase withholds the dependent
                 // reference rewrite. The run itself continues past a single failed Asset.
-                static_cast<void>(optimizer.process(asset));
+                // Preserve failures for the terminal status even when quarantine or dependent
+                // reference handling lets the remaining work finish safely.
+                if (!optimizer.process(asset).succeeded()) ++failedAssets;
             },
             [&](const cao::run::AssetRunProgress& progress) {
                 _numberCompletedFiles = static_cast<int>(progress.completed);
@@ -130,7 +133,7 @@ void Manager::runOptimization() {
                     lastLooseProgress = now;
                 }
             },
-            [&] { return _isCancelled; },
+            [&] { return _isCancelled.load(); },
             [&] {
                 _numberCompletedFiles = 0;
                 printProgress(_modsToProcess.size(), "Packing BSAs");
@@ -178,8 +181,14 @@ void Manager::runOptimization() {
                 }
             }});
 
-    if (result.cancelled()) return;
+    if (result.cancelled()) return false;
 
-    PLOG_INFO << "Process completed<br><br><br>";
+    if (failedAssets != 0) {
+        PLOG_ERROR << QStringLiteral("Process completed with %1 failed Assets<br><br><br>")
+                          .arg(failedAssets);
+    } else {
+        PLOG_INFO << "Process completed<br><br><br>";
+    }
     emit end();
+    return failedAssets == 0;
 }

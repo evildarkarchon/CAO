@@ -210,3 +210,15 @@ add_executable(cao_run_event_delivery_tests RunEventDeliveryTests.cpp)
 target_link_libraries(cao_run_event_delivery_tests PRIVATE Qt5::Test cao_optimization_run)
 set_target_properties(cao_run_event_delivery_tests PROPERTIES AUTOMOC ON)
 add_test(NAME cao_run_event_delivery_tests COMMAND cao_run_event_delivery_tests)
+
+if(NOT CAO_BUILD_GUI)
+    add_executable(cao_cli_execution_tests CliExecutionTests.cpp)
+    target_link_libraries(cao_cli_execution_tests PRIVATE Qt5::Test)
+    target_compile_definitions(cao_cli_execution_tests PRIVATE
+        CAO_CLI_PATH="$<TARGET_FILE:Cathedral_Assets_Optimizer>"
+        CAO_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    )
+    add_dependencies(cao_cli_execution_tests Cathedral_Assets_Optimizer)
+    set_target_properties(cao_cli_execution_tests PROPERTIES AUTOMOC ON)
+    add_test(NAME cao_cli_execution_tests COMMAND cao_cli_execution_tests)
+endif()

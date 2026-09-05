@@ -79,7 +79,8 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
                 }
             }
             return !cancelled;
-        });
+        },
+        adapters.isCancelled);
     const routing::AssetRouter router(_policy);
     std::map<routing::SkipReason, std::size_t> skippedArchiveCounts;
     for (const auto reason :
@@ -92,7 +93,7 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
         router.route(discoveryResult.effectiveAssetTree().paths()), std::move(skippedArchiveCounts),
         std::vector<std::filesystem::path>(discoveryResult.unsupportedExplicitPaths().begin(),
                                            discoveryResult.unsupportedExplicitPaths().end()),
-        discoveryResult.nestedArchiveCount(), cancelled);
+        discoveryResult.nestedArchiveCount(), discoveryResult.cancelled());
     constexpr std::array targetOrder{routing::OptimizerTarget::Texture,
                                      routing::OptimizerTarget::Mesh,
                                      routing::OptimizerTarget::Animation};

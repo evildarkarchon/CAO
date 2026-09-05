@@ -105,11 +105,11 @@ class AssetRun final {
 
     /// Extracts routed Archives, batch-routes the resulting Effective Asset Tree once, offers the
     /// owned Routed Assets to the execution adapter, reports definitive routing diagnostics, then
-    /// finalizes Archives in Apply mode only. Cancellation is observed only between attempts, and
-    /// once more after the final attempt, so an adapter is never abandoned mid-operation and a
-    /// cancelled run never reaches diagnostics or finalization. A finalizer reports cancellation by
-    /// returning false. Filesystem races are skipped during discovery; adapter exceptions
-    /// propagate.
+    /// finalizes Archives in Apply mode only. Cancellation is observed between filesystem entries
+    /// and attempts, and once more after the final attempt, so an adapter is never abandoned
+    /// mid-operation and a cancelled run never reaches diagnostics or finalization. A finalizer
+    /// reports cancellation by returning false. Filesystem races are skipped during discovery;
+    /// adapter exceptions propagate.
     [[nodiscard]] AssetRunResult execute(std::span<const std::filesystem::path> roots,
                                          const AssetRunAdapters& adapters) const;
 

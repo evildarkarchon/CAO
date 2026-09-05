@@ -61,7 +61,7 @@ int main(int argc, char* argv[]) {
         }
 
         Manager manager(options, *setup.policy());
-        manager.runOptimization();
+        return manager.runOptimization() ? 0 : 1;
 #endif
     } catch (const std::exception& e) {
         displayError(e.what());

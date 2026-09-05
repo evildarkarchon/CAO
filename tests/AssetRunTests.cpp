@@ -178,6 +178,12 @@ class AssetRunTests final : public QObject
     Q_OBJECT
 
 private slots:
+    /// Covers cancellation in Archive selection, destination census, and definitive traversal.
+    void filesystemTraversalPollsCancellation_data();
+
+    /// Verifies filesystem polling stops the run before execution, diagnostics, or finalization.
+    void filesystemTraversalPollsCancellation();
+
     /// Verifies Archive extraction precedes the one definitive Routed Asset work set.
     void archiveExtractionPrecedesDefinitiveRoutedExecution();
 
@@ -217,6 +223,56 @@ private slots:
     /// Verifies an Archive produced by extraction is reported but never counted as run work.
     void nestedArchivesAreReportedWithoutInflatingTheWorkTotal();
 };
+
+void AssetRunTests::filesystemTraversalPollsCancellation_data()
+{
+    QTest::addColumn<int>("scenario");
+    QTest::newRow("extraction-disabled") << 0;
+    QTest::newRow("no-selected-archives") << 1;
+    QTest::newRow("explicit-archive-destination-census") << 2;
+    QTest::newRow("definitive-mod-tree") << 3;
+    QTest::newRow("definitive-extraction-destination") << 4;
+}
+
+void AssetRunTests::filesystemTraversalPollsCancellation()
+{
+    QFETCH(int, scenario);
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString());
+    const auto archive = root / "content.bsa";
+    if (scenario >= 2) writeFile(archive);
+    // Unsupported files still require directory traversal, but never provide an execution
+    // callback where the old implementation could happen to notice cancellation instead.
+    for (int index = 0; index < 100; ++index)
+        writeFile(root / (std::to_string(index) + ".txt"));
+
+    const AssetRun run(scenario == 0 ? allLooseTargetsPolicy() : archiveAndTexturePolicy());
+    const std::array roots{scenario == 2 || scenario == 4 ? archive : root};
+    bool armed = scenario < 3;
+    int polls = 0;
+    int extractions = 0;
+    bool executed = false;
+    bool finalized = false;
+    bool diagnosed = false;
+    const auto result = run.execute(roots, AssetRunAdapters{
+        [&](const cao::routing::RoutedAsset &) {
+            ++extractions;
+            armed = true;
+        },
+        [&](const cao::routing::RoutedAsset &) { executed = true; },
+        {},
+        [&] { return armed && ++polls >= 4; },
+        [&] { finalized = true; return true; },
+        [&](const cao::run::AssetRunDiagnostics &) { diagnosed = true; }});
+
+    QVERIFY(result.cancelled());
+    QVERIFY(result.ledger().routedAssets().empty());
+    QCOMPARE(extractions, scenario < 3 ? 0 : 1);
+    QVERIFY(!executed);
+    QVERIFY(!finalized);
+    QVERIFY(!diagnosed);
+}
 
 void AssetRunTests::archiveExtractionPrecedesDefinitiveRoutedExecution()
 {

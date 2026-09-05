@@ -18,9 +18,12 @@ void extractArchiveNoOverwrite(const std::filesystem::path& archivePath, const b
 
 namespace {
 /// Visits each regular file and tells the visitor whether the path was an explicitly supplied root.
+/// Returns false as soon as cancellation is observed before a root or directory entry.
 template <typename Visitor>
-void visitRegularFiles(const std::span<const std::filesystem::path> roots, Visitor&& visitor) {
+bool visitRegularFiles(const std::span<const std::filesystem::path> roots,
+                       const AssetDiscoveryCancellationPredicate& isCancelled, Visitor&& visitor) {
     for (const auto& root : roots) {
+        if (isCancelled && isCancelled()) return false;
         std::error_code error;
         if (std::filesystem::is_regular_file(root, error)) {
             visitor(root, true);
@@ -34,6 +37,9 @@ void visitRegularFiles(const std::span<const std::filesystem::path> roots, Visit
             root, std::filesystem::directory_options::skip_permission_denied, error);
         const auto end = std::filesystem::recursive_directory_iterator();
         while (entry != end) {
+            // Poll even for directories and unsupported files: they may comprise the entire tree,
+            // so neither extraction nor execution is guaranteed to offer a cancellation seam.
+            if (isCancelled && isCancelled()) return false;
             error.clear();
             if (entry->is_regular_file(error)) visitor(entry->path(), false);
 
@@ -41,6 +47,7 @@ void visitRegularFiles(const std::span<const std::filesystem::path> roots, Visit
             entry.increment(error);
         }
     }
+    return true;
 }
 }  // namespace
 
@@ -53,15 +60,18 @@ ArchiveFirstAssetDiscoveryResult::ArchiveFirstAssetDiscoveryResult(
     EffectiveAssetTree effectiveAssetTree,
     std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
     std::vector<std::filesystem::path> unsupportedExplicitPaths,
-    const std::size_t nestedArchiveCount) noexcept
+    const std::size_t nestedArchiveCount, const bool cancelled) noexcept
     : _effectiveAssetTree(std::move(effectiveAssetTree)),
       _skippedArchiveCounts(std::move(skippedArchiveCounts)),
       _unsupportedExplicitPaths(std::move(unsupportedExplicitPaths)),
-      _nestedArchiveCount(nestedArchiveCount) {}
+      _nestedArchiveCount(nestedArchiveCount),
+      _cancelled(cancelled) {}
 
 const EffectiveAssetTree& ArchiveFirstAssetDiscoveryResult::effectiveAssetTree() const noexcept {
     return _effectiveAssetTree;
 }
+
+bool ArchiveFirstAssetDiscoveryResult::cancelled() const noexcept { return _cancelled; }
 
 std::size_t ArchiveFirstAssetDiscoveryResult::skippedArchiveCount(
     const routing::SkipReason reason) const noexcept {
@@ -83,7 +93,8 @@ ArchiveFirstAssetDiscovery::ArchiveFirstAssetDiscovery(routing::RoutingPolicy po
 
 ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     const std::span<const std::filesystem::path> roots,
-    const ArchiveExtractionOperation& extractArchive) const {
+    const ArchiveExtractionOperation& extractArchive,
+    const AssetDiscoveryCancellationPredicate& isCancelled) const {
     routing::AssetRouter router(_policy);
     // Routing is filename-only, so recognizing an Archive is cheap enough to repeat during the
     // definitive traversal. That traversal cannot ask the Archive pass instead: extraction can
@@ -105,49 +116,57 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     std::vector<std::filesystem::path> extractionDestinations;
     std::map<routing::SkipReason, std::size_t> skippedArchiveCounts;
     std::vector<std::filesystem::path> unsupportedExplicitPaths;
-    visitRegularFiles(roots, [&](const std::filesystem::path& path, const bool explicitRoot) {
-        auto decision = router.route(path);
-        if (auto* routedAsset = std::get_if<routing::RoutedAsset>(&decision)) {
-            if (routedAsset->kind() == routing::AssetKind::Archive &&
-                recognizedArchivePaths.insert(path.lexically_normal()).second) {
-                // Extraction writes beside the Archive, so an Archive named directly as a root
-                // needs its containing directory traversed later; re-traversing the Archive file
-                // itself would only rediscover the excluded Archive, or nothing at all once
-                // extraction removed it.
-                if (explicitRoot) {
-                    auto destination = path.parent_path();
-                    if (destination.empty()) destination = ".";
-                    if (std::find(extractionDestinations.begin(), extractionDestinations.end(),
-                                  destination) == extractionDestinations.end()) {
-                        extractionDestinations.push_back(std::move(destination));
+    // A partial scan is not a definitive tree and must never become executable work.
+    const auto cancelledResult = [&] {
+        return ArchiveFirstAssetDiscoveryResult(EffectiveAssetTree({}),
+                                                std::move(skippedArchiveCounts),
+                                                std::move(unsupportedExplicitPaths), 0, true);
+    };
+    const auto archivePassComplete = visitRegularFiles(
+        roots, isCancelled, [&](const std::filesystem::path& path, const bool explicitRoot) {
+            auto decision = router.route(path);
+            if (auto* routedAsset = std::get_if<routing::RoutedAsset>(&decision)) {
+                if (routedAsset->kind() == routing::AssetKind::Archive &&
+                    recognizedArchivePaths.insert(path.lexically_normal()).second) {
+                    // Extraction writes beside the Archive, so an Archive named directly as a root
+                    // needs its containing directory traversed later; re-traversing the Archive file
+                    // itself would only rediscover the excluded Archive, or nothing at all once
+                    // extraction removed it.
+                    if (explicitRoot) {
+                        auto destination = path.parent_path();
+                        if (destination.empty()) destination = ".";
+                        if (std::find(extractionDestinations.begin(), extractionDestinations.end(),
+                                      destination) == extractionDestinations.end()) {
+                            extractionDestinations.push_back(std::move(destination));
+                        }
                     }
+                    selectedArchives.push_back(std::move(*routedAsset));
                 }
-                selectedArchives.push_back(std::move(*routedAsset));
+                return;
             }
-            return;
-        }
-        if (const auto* skippedAsset = std::get_if<routing::SkippedAsset>(&decision)) {
-            if (skippedAsset->kind() == routing::AssetKind::Archive &&
-                recognizedArchivePaths.insert(path.lexically_normal()).second) {
-                ++skippedArchiveCounts[skippedAsset->reason()];
+            if (const auto* skippedAsset = std::get_if<routing::SkippedAsset>(&decision)) {
+                if (skippedAsset->kind() == routing::AssetKind::Archive &&
+                    recognizedArchivePaths.insert(path.lexically_normal()).second) {
+                    ++skippedArchiveCounts[skippedAsset->reason()];
+                }
+                return;
             }
-            return;
-        }
-        if (explicitRoot) unsupportedExplicitPaths.push_back(path);
-    });
+            if (explicitRoot) unsupportedExplicitPaths.push_back(path);
+        });
+    if (!archivePassComplete) return cancelledResult();
 
     // A destination directory is only ever reached through the Archive a caller named explicitly,
     // so the Assets it already holds were never requested. Censusing them before extraction is
     // what keeps the definitive pass below limited to what extraction actually produced.
     std::unordered_set<std::filesystem::path> preExistingDestinationPaths;
-    visitRegularFiles(extractionDestinations, [&](const std::filesystem::path& path, const bool) {
-        preExistingDestinationPaths.insert(path.lexically_normal());
-    });
+    const auto censusComplete = visitRegularFiles(
+        extractionDestinations, isCancelled, [&](const std::filesystem::path& path, const bool) {
+            preExistingDestinationPaths.insert(path.lexically_normal());
+        });
+    if (!censusComplete) return cancelledResult();
 
     if (!selectedArchives.empty() && !extractArchive(selectedArchives)) {
-        return ArchiveFirstAssetDiscoveryResult(EffectiveAssetTree({}),
-                                                std::move(skippedArchiveCounts),
-                                                std::move(unsupportedExplicitPaths), 0);
+        return cancelledResult();
     }
 
     // Extraction is synchronous so this is the single definitive view of all non-Archive paths.
@@ -168,24 +187,28 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
 
         nestedArchivePaths.insert(normalizedPath);
     };
-    visitRegularFiles(roots, [&](const std::filesystem::path& path, const bool) {
-        if (namesAnArchive(path)) {
-            excludeArchive(path.lexically_normal());
-            return;
-        }
-        effectivePaths.push_back(path);
-    });
-    visitRegularFiles(extractionDestinations, [&](const std::filesystem::path& path, const bool) {
-        const auto normalizedPath = path.lexically_normal();
-        // An Asset the destination already held was never named by the caller, so it is neither
-        // the run's work nor the run's business to report, whatever kind it is.
-        if (preExistingDestinationPaths.contains(normalizedPath)) return;
-        if (namesAnArchive(path)) {
-            excludeArchive(normalizedPath);
-            return;
-        }
-        effectivePaths.push_back(path);
-    });
+    const auto rootPassComplete = visitRegularFiles(
+        roots, isCancelled, [&](const std::filesystem::path& path, const bool) {
+            if (namesAnArchive(path)) {
+                excludeArchive(path.lexically_normal());
+                return;
+            }
+            effectivePaths.push_back(path);
+        });
+    if (!rootPassComplete) return cancelledResult();
+    const auto destinationPassComplete = visitRegularFiles(
+        extractionDestinations, isCancelled, [&](const std::filesystem::path& path, const bool) {
+            const auto normalizedPath = path.lexically_normal();
+            // An Asset the destination already held was never named by the caller, so it is neither
+            // the run's work nor the run's business to report, whatever kind it is.
+            if (preExistingDestinationPaths.contains(normalizedPath)) return;
+            if (namesAnArchive(path)) {
+                excludeArchive(normalizedPath);
+                return;
+            }
+            effectivePaths.push_back(path);
+        });
+    if (!destinationPassComplete) return cancelledResult();
     return ArchiveFirstAssetDiscoveryResult(
         EffectiveAssetTree(std::move(effectivePaths)), std::move(skippedArchiveCounts),
         std::move(unsupportedExplicitPaths), nestedArchivePaths.size());

@@ -9,6 +9,8 @@
 #include "OptionsCAO.h"
 #include "pch.h"
 
+#include <atomic>
+
 class Manager final : public QObject {
     Q_OBJECT
    public:
@@ -20,10 +22,12 @@ class Manager final : public QObject {
     Manager(const OptionsCAO& opt, cao::routing::RoutingPolicy routingPolicy);
     /**
      * Runs Archive-first discovery, definitive routing, ordered execution, aggregate reporting,
-     * and optional post-execution packing. Cancellation is observed between carried Asset attempts
-     * and between Archive-finalization folders.
+     * and optional post-execution packing. Cancellation is observed between filesystem entries,
+     * carried Asset attempts, and Archive-finalization folders.
+     * Returns true only after the run finishes without cancellation or Asset execution failures;
+     * individual failures are accumulated while remaining Assets continue processing.
      */
-    void runOptimization();
+    bool runOptimization();
     /*!
      * \brief Print the progress to stdout
      * \param text The text to display
@@ -31,6 +35,7 @@ class Manager final : public QObject {
      */
     void printProgress(const int& total, const QString& text);
 
+    /// Requests cancellation from the GUI thread for the worker's next cancellation seam.
     void cancelProcess();
 
    private:
@@ -70,7 +75,8 @@ class Manager final : public QObject {
      * \brief Used to read the INI
      */
     QSettings* _settings;
-    bool _isCancelled = false;
+    // The GUI requests cancellation while discovery and execution poll on the run worker.
+    std::atomic_bool _isCancelled{false};
 
    signals:
     void progressBarTextChanged(QString, int, int);
