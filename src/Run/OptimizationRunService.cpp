@@ -125,6 +125,17 @@ class RunSharedState final : public RunObservationSink,
         dispatchPending(dispatch);
     }
 
+    /// Publishes the diagnostic count before enqueueing its event, with callbacks outside locks.
+    void recordDiagnostic(const RunDiagnostic& diagnostic) override {
+        std::vector<DispatchRequest> dispatch;
+        {
+            const std::lock_guard lock(_mutex);
+            _diagnostics.push_back(diagnostic);
+            dispatch = enqueue(diagnostic);
+        }
+        dispatchPending(dispatch);
+    }
+
     /// Runs the Optimization Run through the synchronous Run Executor and commits its result.
     void execute() {
         const RunExecutionScope scope(this);

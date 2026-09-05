@@ -8,6 +8,7 @@
     "nifly",
     "plog",
     "qt5-base",
-    "qt5-tools"
+    "qt5-tools",
+    "utf8proc"
   ]
 }

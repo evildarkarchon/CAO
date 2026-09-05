@@ -183,6 +183,21 @@ class OptimizationRunServiceTests final : public QObject
     Q_OBJECT
 
 private slots:
+ /// Verifies Several Mods resolves only immediate directories and records their stable run order.
+ void severalModsRecordsOrderedImmediateRoots();
+
+ /// Verifies exact Unicode-insensitive ignore matching and one observation per excluded child.
+ void severalModsDiagnosesIgnoredChildrenOnce();
+
+ /// Verifies separator policy is provider-owned, applies only to children, and diagnoses once.
+ void severalModsUsesConfiguredSeparatorExclusions();
+
+ /// Verifies empty and wholly excluded selections retain an empty definitive root list.
+ void severalModsCanPrepareNoSelectedRoots();
+
+ /// Verifies diagnostic publication precedes callbacks and cancellation stops further selection.
+ void cancellationFromAnExclusionStopsPreparing();
+
  /// Verifies the worker loads the request's exact identity after publishing Preparing.
  void configurationLoadsInsidePreparingOnTheWorker();
 
@@ -294,6 +309,189 @@ private slots:
  /// Verifies scheduling failure releases the slot while the failed handle remains readable.
  void schedulingFailureReleasesTheActiveSlot();
 };
+
+void OptimizationRunServiceTests::severalModsRecordsOrderedImmediateRoots() {
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto mods = std::filesystem::path(temporary.path().toStdWString());
+    QVERIFY(std::filesystem::create_directories(mods / "Zebra" / "nested"));
+    QVERIFY(std::filesystem::create_directory(mods / "alpha"));
+    QVERIFY(std::filesystem::create_directory(mods / "Bravo"));
+    QVERIFY(std::filesystem::create_directory(mods / u8"Stra\u00dfe"));
+    QVERIFY(std::filesystem::create_directory(mods / "STRASSE"));
+    QFile loose(temporary.filePath("not-a-mod.txt"));
+    QVERIFY(loose.open(QIODevice::WriteOnly));
+    loose.close();
+
+    OptimizationRunService service{testRunConfiguration()};
+    auto started = service.start(RunRequest::create("profile", ExecutionMode::DryRun,
+                                                    ModSelection::childModRoots(mods / "."), {}));
+    QVERIFY(started.started());
+    const auto result = started.handle()->wait();
+    QCOMPARE(result.outcome(), RunOutcome::Succeeded);
+    QVERIFY(result.preparation() != nullptr);
+    const auto roots = result.preparation()->modRoots();
+    const auto canonicalMods = std::filesystem::canonical(mods);
+    QVERIFY(
+        std::vector(roots.begin(), roots.end()) ==
+        std::vector({canonicalMods / "alpha", canonicalMods / "Bravo", canonicalMods / "STRASSE",
+                     canonicalMods / u8"Stra\u00dfe", canonicalMods / "Zebra"}));
+    QVERIFY(std::filesystem::is_directory(mods / "Zebra" / "nested"));
+    QVERIFY(loose.exists());
+}
+
+void OptimizationRunServiceTests::severalModsDiagnosesIgnoredChildrenOnce() {
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto mods = std::filesystem::path(temporary.path().toStdWString());
+    for (const auto& name :
+         {std::filesystem::path("Nemesis"), std::filesystem::path(u8"\u0100ssets"),
+          std::filesystem::path("Nemesis Extended")})
+        QVERIFY(std::filesystem::create_directory(mods / name));
+    auto provider =
+        std::make_shared<CallbackRunConfigurationProvider>([](std::string_view identity) {
+            return cao::run::RunConfiguration(testRunConfiguration()->load(identity).profile(),
+                                              {"nEmEsIs", "NEMESIS", "\xc4\x81ssets"});
+        });
+    std::vector<cao::run::RunEvent> events;
+    OptimizationRunService service{provider};
+    auto started = service.start(
+        RunRequest::create("profile", ExecutionMode::Apply, ModSelection::childModRoots(mods), {}),
+        [&](const cao::run::RunEvent& event) { events.push_back(event); });
+    QVERIFY(started.started());
+    const auto& result = started.handle()->wait();
+    QCOMPARE(result.outcome(), RunOutcome::Succeeded);
+    QVERIFY(result.preparation() != nullptr);
+    const auto roots = result.preparation()->modRoots();
+    QCOMPARE(roots.size(), std::size_t{1});
+    QVERIFY(roots.front() == std::filesystem::canonical(mods / "Nemesis Extended"));
+    QCOMPARE(started.handle()->diagnostics().size(), std::size_t{2});
+    QCOMPARE(started.handle()->snapshot().diagnosticCount(), std::size_t{2});
+    std::size_t diagnosticEvents = 0;
+    for (const auto& event : events) {
+        if (const auto* diagnostic = std::get_if<cao::run::RunDiagnostic>(&event.payload())) {
+            ++diagnosticEvents;
+            QCOMPARE(diagnostic->phase(), RunPhase::Preparing);
+        }
+    }
+    QCOMPARE(diagnosticEvents, std::size_t{2});
+}
+
+void OptimizationRunServiceTests::severalModsUsesConfiguredSeparatorExclusions() {
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto mods = std::filesystem::path(temporary.path().toStdWString()) / "parent_separator";
+    for (const auto* name : {"a_separator", "b_SECTION", "c_SEPARATOR", "keep"})
+        QVERIFY(std::filesystem::create_directories(mods / name));
+    auto provider =
+        std::make_shared<CallbackRunConfigurationProvider>([](std::string_view identity) {
+            return cao::run::RunConfiguration(testRunConfiguration()->load(identity).profile(),
+                                              {"a_separator"},
+                                              {"separator", "SECTION", "separator", ""});
+        });
+    OptimizationRunService service{provider};
+    auto started = service.start(RunRequest::create("profile", ExecutionMode::DryRun,
+                                                    ModSelection::childModRoots(mods), {}));
+    QVERIFY(started.started());
+    const auto& result = started.handle()->wait();
+    QCOMPARE(result.outcome(), RunOutcome::Succeeded);
+    QVERIFY(result.preparation() != nullptr);
+    const auto roots = result.preparation()->modRoots();
+    const auto canonicalMods = std::filesystem::canonical(mods);
+    QVERIFY(std::vector(roots.begin(), roots.end()) ==
+            std::vector({canonicalMods / "c_SEPARATOR", canonicalMods / "keep"}));
+    const auto diagnostics = started.handle()->diagnostics();
+    QCOMPARE(diagnostics.size(), std::size_t{2});
+    for (std::size_t index = 0; index < diagnostics.size(); ++index) {
+        QCOMPARE(diagnostics[index].code(), cao::run::RunDiagnosticCode::SeparatorModExcluded);
+        QCOMPARE(diagnostics[index].phase(), RunPhase::Preparing);
+        QVERIFY(diagnostics[index].path() ==
+                canonicalMods / (index == 0 ? "a_separator" : "b_SECTION"));
+    }
+
+    auto single = service.start(RunRequest::create(
+        "profile", ExecutionMode::Apply, ModSelection::singleModRoot(mods / "a_separator"), {}));
+    QVERIFY(single.started());
+    QCOMPARE(single.handle()->wait().preparation()->modRoots().size(), std::size_t{1});
+    QVERIFY(single.handle()->diagnostics().empty());
+
+    OptimizationRunService unfiltered{testRunConfiguration()};
+    auto all = unfiltered.start(
+        RunRequest::create("profile", ExecutionMode::Apply, ModSelection::childModRoots(mods), {}));
+    QVERIFY(all.started());
+    QCOMPARE(all.handle()->wait().preparation()->modRoots().size(), std::size_t{4});
+}
+
+void OptimizationRunServiceTests::severalModsCanPrepareNoSelectedRoots() {
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto mods = std::filesystem::path(temporary.path().toStdWString());
+    auto provider =
+        std::make_shared<CallbackRunConfigurationProvider>([](std::string_view identity) {
+            return cao::run::RunConfiguration(testRunConfiguration()->load(identity).profile(),
+                                              {"ignored"});
+        });
+    OptimizationRunService service{provider};
+    for (bool excluded : {false, true}) {
+        if (excluded) QVERIFY(std::filesystem::create_directory(mods / "Ignored"));
+        auto started = service.start(RunRequest::create("profile", ExecutionMode::DryRun,
+                                                        ModSelection::childModRoots(mods), {}));
+        QVERIFY(started.started());
+        const auto& result = started.handle()->wait();
+        QCOMPARE(result.outcome(), RunOutcome::Succeeded);
+        QVERIFY(result.preparation() != nullptr);
+        QVERIFY(result.preparation()->modRoots().empty());
+        QCOMPARE(started.handle()->diagnostics().size(),
+                 excluded ? std::size_t{1} : std::size_t{0});
+    }
+    auto missing = service.start(RunRequest::create(
+        "profile", ExecutionMode::Apply, ModSelection::childModRoots(mods / "missing"), {}));
+    QVERIFY(missing.started());
+    const auto& failure = missing.handle()->wait();
+    QCOMPARE(failure.outcome(), RunOutcome::Failed);
+    QCOMPARE(failure.failures().front().code(),
+             cao::run::RunFailureCode::ModSelectionResolutionFailed);
+    QVERIFY(failure.preparation() == nullptr);
+    QVERIFY(failure.phase(RunPhase::SafetyCleanup) != nullptr);
+}
+
+void OptimizationRunServiceTests::cancellationFromAnExclusionStopsPreparing() {
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const auto mods = std::filesystem::path(temporary.path().toStdWString());
+    QVERIFY(std::filesystem::create_directory(mods / "a_ignored"));
+    QVERIFY(std::filesystem::create_directory(mods / "b_ignored"));
+    auto provider =
+        std::make_shared<CallbackRunConfigurationProvider>([](std::string_view identity) {
+            return cao::run::RunConfiguration(testRunConfiguration()->load(identity).profile(),
+                                              {"a_ignored", "b_ignored"});
+        });
+    GatedRunScheduler scheduler;
+    OptimizationRunService service{scheduler, provider};
+    RunHandle* handle = nullptr;
+    std::vector<cao::run::RunSnapshot> snapshots;
+    auto started = service.start(
+        RunRequest::create("profile", ExecutionMode::Apply, ModSelection::childModRoots(mods), {}),
+        [&](const cao::run::RunEvent& event) {
+            if (std::holds_alternative<cao::run::RunDiagnostic>(event.payload())) {
+                snapshots.push_back(handle->snapshot());
+                handle->requestCancellation();
+            }
+        });
+    handle = started.handle();
+    // Publish the handle before releasing the worker, including on an unexpected start failure.
+    scheduler.release();
+    QVERIFY(started.started());
+    const auto& result = handle->wait();
+    QCOMPARE(result.outcome(), RunOutcome::Cancelled);
+    QVERIFY(result.preparation() == nullptr);
+    QVERIFY(result.phase(RunPhase::DiscoveringArchives) == nullptr);
+    QVERIFY(result.phase(RunPhase::SafetyCleanup) != nullptr);
+    QCOMPARE(snapshots.size(), std::size_t{1});
+    QCOMPARE(snapshots.front().diagnosticCount(), std::size_t{1});
+    QCOMPARE(handle->diagnostics().size(), std::size_t{1});
+    QVERIFY(handle->diagnostics().front().path() == std::filesystem::canonical(mods) / "a_ignored");
+}
 
 void OptimizationRunServiceTests::configurationLoadsInsidePreparingOnTheWorker() {
     GatedRunScheduler scheduler;

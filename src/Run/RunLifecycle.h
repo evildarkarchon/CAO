@@ -55,27 +55,37 @@ enum class PhaseSkipReason { NoRequestedWork };
 /// The terminal classification of one Optimization Run.
 enum class RunOutcome { Succeeded, CompletedWithFailures, Cancelled, Failed };
 
-/// Presentation failures are observations and never affect Run Outcome.
-enum class RunDiagnosticCode { ObserverFailed, DispatcherFailed };
+/// Informational categories, including selection exclusions, that never affect Run Outcome.
+enum class RunDiagnosticCode {
+    ObserverFailed,
+    DispatcherFailed,
+    IgnoredModExcluded,
+    SeparatorModExcluded
+};
 
 /// An owning informational observation, including presentation failures after terminal commit.
 class RunDiagnostic final {
    public:
     /// Retains a stable category, the observed phase, and the boundary's human-readable detail.
-    RunDiagnostic(RunDiagnosticCode code, RunPhase phase, std::string detail)
-        : _code(code), _phase(phase), _detail(std::move(detail)) {}
+    RunDiagnostic(RunDiagnosticCode code, RunPhase phase, std::string detail,
+                  std::filesystem::path path = {})
+        : _code(code), _phase(phase), _detail(std::move(detail)), _path(std::move(path)) {}
 
-    /// Returns the presentation boundary that failed.
+    /// Returns the stable reason for this observation.
     [[nodiscard]] RunDiagnosticCode code() const noexcept { return _code; }
     /// Returns the run's phase when the diagnostic was recorded, including late queued failures.
     [[nodiscard]] RunPhase phase() const noexcept { return _phase; }
     /// Borrows explanatory text for this value's lifetime.
     [[nodiscard]] const std::string& detail() const noexcept { return _detail; }
 
+    /// Borrows the affected entry path, or an empty path for observations unrelated to a path.
+    [[nodiscard]] const std::filesystem::path& path() const noexcept { return _path; }
+
    private:
     RunDiagnosticCode _code;
     RunPhase _phase;
     std::string _detail;
+    std::filesystem::path _path;
 };
 
 /// Stable failures reachable at scheduling, preparation, and execution boundaries.

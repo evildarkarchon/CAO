@@ -42,18 +42,30 @@ class ArchivePrecedence final {
 /// Owned configuration and profile facts loaded for one run, without application state.
 class RunConfiguration final {
    public:
-    /// Snapshots profile capabilities and ignore rules; Single Mod selections ignore no roots.
-    RunConfiguration(SelectedProfileFacts profile, std::vector<std::string> ignoredMods = {})
-        : _profile(std::move(profile)), _ignoredMods(std::move(ignoredMods)) {}
+    /// Snapshots profile capabilities and child exclusions; Single Mod selections ignore no roots.
+    /// Separator markers are case-sensitive UTF-8 substrings supplied by the provider. The
+    /// application provider can preserve its legacy "separator" rule without baking that policy
+    /// into the executor.
+    RunConfiguration(SelectedProfileFacts profile, std::vector<std::string> ignoredMods = {},
+                     std::vector<std::string> separatorMarkers = {})
+        : _profile(std::move(profile)),
+          _ignoredMods(std::move(ignoredMods)),
+          _separatorMarkers(std::move(separatorMarkers)) {}
 
     /// Borrows the selected profile's facts for this snapshot's lifetime.
     [[nodiscard]] const SelectedProfileFacts& profile() const noexcept { return _profile; }
-    /// Borrows ignore names for later Child Mod resolution, preserving provider order.
+    /// Borrows UTF-8 child names matched case-insensitively during Preparing, in provider order.
     [[nodiscard]] std::span<const std::string> ignoredMods() const noexcept { return _ignoredMods; }
+
+    /// Borrows separator markers matched against child names only; empty markers match nothing.
+    [[nodiscard]] std::span<const std::string> separatorMarkers() const noexcept {
+        return _separatorMarkers;
+    }
 
    private:
     SelectedProfileFacts _profile;
     std::vector<std::string> _ignoredMods;
+    std::vector<std::string> _separatorMarkers;
 };
 
 /// Loads independent values inside Preparing, without mutating Assets, Archives, or app settings.

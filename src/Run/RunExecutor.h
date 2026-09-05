@@ -15,6 +15,9 @@ class RunObservationSink {
 
     /// Records a run-level failure before cleanup and terminal commit.
     virtual void recordFailure(const RunFailure& failure) = 0;
+
+    /// Records an informational observation before execution continues; it cannot change outcome.
+    virtual void recordDiagnostic(const RunDiagnostic& diagnostic) = 0;
 };
 
 /// Removes the temporary artifacts one Optimization Run registered.
@@ -56,7 +59,7 @@ struct RunServices final {
 /// service. It owns phase sequencing, phase applicability, Safety Cleanup, and terminal
 /// classification. It performs no scheduling, dispatches no events, and never reconfigures logging.
 ///
-/// Preparing loads owned facts, resolves a Single Mod, and compiles policy. Requested work needs
+/// Preparing loads owned facts, resolves the Mod Selection, and compiles policy. Requested work needs
 /// the Archive discovery, Asset execution, and Archive Finalization service seams that later
 /// lifecycle slices introduce, so it terminates as Failed at Preparing rather than reporting a
 /// Succeeded run that performed nothing.

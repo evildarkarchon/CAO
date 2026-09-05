@@ -1,23 +1,98 @@
 #include "RunExecutor.h"
 
+#include <utf8proc.h>
+
+#include <algorithm>
+#include <cstdlib>
+#include <stdexcept>
+#include <unordered_set>
 #include <utility>
 #include <exception>
 #include <vector>
 
 namespace cao::run {
 namespace {
-/// Resolves one existing directory without enumerating or changing any Asset or Archive.
-std::variant<std::filesystem::path, RunFailure> resolveSingleModRoot(
-    const ModSelection& selection) {
-    if (selection.kind() != ModSelectionKind::SingleModRoot)
+/// Folds UTF-8 names independently of the process locale; invalid encoding throws to Preparing.
+std::string foldedName(std::string_view name) {
+    utf8proc_uint8_t* mapped = nullptr;
+    const auto size =
+        utf8proc_map(reinterpret_cast<const utf8proc_uint8_t*>(name.data()),
+                     static_cast<utf8proc_ssize_t>(name.size()), &mapped, UTF8PROC_CASEFOLD);
+    const std::unique_ptr<utf8proc_uint8_t, decltype(&std::free)> owned(mapped, &std::free);
+    if (size < 0) throw std::runtime_error(utf8proc_errmsg(size));
+    return std::string(reinterpret_cast<const char*>(owned.get()), static_cast<std::size_t>(size));
+}
+
+/// Returns normalized generic UTF-8 without depending on the Windows ANSI code page.
+std::string relativeName(const std::filesystem::path& path) {
+    const auto utf8 = path.lexically_normal().generic_u8string();
+    return std::string(utf8.begin(), utf8.end());
+}
+
+/// Resolves existing roots without recursion or mutation; traversal errors fail all preparation.
+std::variant<std::vector<std::filesystem::path>, RunFailure> resolveModRoots(
+    const ModSelection& selection, const RunConfiguration& configuration,
+    RunObservationSink* observations, std::stop_token stop) {
+    try {
+        std::error_code error;
+        auto root = std::filesystem::canonical(selection.directory(), error);
+        if (error || !std::filesystem::is_directory(root, error))
+            return RunFailure{
+                RunFailureCode::ModSelectionResolutionFailed, RunPhase::Preparing,
+                "The selected Mod Root could not be resolved to an existing directory"};
+        if (selection.kind() == ModSelectionKind::SingleModRoot)
+            return std::vector{std::move(root)};
+
+        std::unordered_set<std::string> ignoredNames;
+        for (const auto& ignored : configuration.ignoredMods())
+            ignoredNames.insert(foldedName(ignored));
+
+        struct Child {
+            std::filesystem::path path;
+            std::string name;
+            std::string folded;
+        };
+        std::vector<Child> children;
+        for (const auto& entry : std::filesystem::directory_iterator(root)) {
+            if (stop.stop_requested()) return std::vector<std::filesystem::path>{};
+            if (!entry.is_directory()) continue;
+            auto name = relativeName(entry.path().lexically_relative(root));
+            auto folded = foldedName(name);
+            children.push_back({entry.path(), std::move(name), std::move(folded)});
+        }
+        std::sort(children.begin(), children.end(), [](const Child& left, const Child& right) {
+            if (left.folded != right.folded) return left.folded < right.folded;
+            return left.name < right.name;
+        });
+        std::vector<std::filesystem::path> roots;
+        for (const auto& child : children) {
+            if (stop.stop_requested()) return std::vector<std::filesystem::path>{};
+            const auto markers = configuration.separatorMarkers();
+            const bool separator =
+                std::any_of(markers.begin(), markers.end(), [&](const auto& marker) {
+                    return !marker.empty() && child.name.find(marker) != std::string::npos;
+                });
+            // A child matching both policies owes one exclusion. Preserve separator precedence.
+            if (separator || ignoredNames.contains(child.folded)) {
+                if (observations != nullptr)
+                    observations->recordDiagnostic(RunDiagnostic{
+                        separator ? RunDiagnosticCode::SeparatorModExcluded
+                                  : RunDiagnosticCode::IgnoredModExcluded,
+                        RunPhase::Preparing,
+                        separator ? "The child Mod Root matches a configured separator marker"
+                                  : "The child Mod Root matches an ignored-mod name",
+                        child.path});
+                continue;
+            }
+            // Sort the selected entry names before resolving links: target names do not define run
+            // order.
+            roots.push_back(std::filesystem::canonical(child.path));
+        }
+        return roots;
+    } catch (const std::exception& error) {
         return RunFailure{RunFailureCode::ModSelectionResolutionFailed, RunPhase::Preparing,
-                          "Child Mod Root preparation is not yet available"};
-    std::error_code error;
-    auto root = std::filesystem::canonical(selection.directory(), error);
-    if (error || !std::filesystem::is_directory(root, error))
-        return RunFailure{RunFailureCode::ModSelectionResolutionFailed, RunPhase::Preparing,
-                          "The selected Mod Root could not be resolved to an existing directory"};
-    return root;
+                          error.what()};
+    }
 }
 
 /// Loads independent configuration values and converts provider exceptions into run failures.
@@ -38,8 +113,9 @@ std::variant<RunConfiguration, RunFailure> loadConfiguration(
 }
 
 /// Prepares immutable facts without mutation; a null success value means loading was cancelled.
-std::variant<std::shared_ptr<const RunPreparation>, RunFailure> prepareSingleModRun(
-    const RunRequest& request, const RunConfigurationProvider* provider, std::stop_token stop) {
+std::variant<std::shared_ptr<const RunPreparation>, RunFailure> prepareRun(
+    const RunRequest& request, const RunConfigurationProvider* provider,
+    RunObservationSink* observations, std::stop_token stop) {
     auto loaded = loadConfiguration(request, provider);
     if (auto* failure = std::get_if<RunFailure>(&loaded)) return std::move(*failure);
     // A provider may finish an atomic read after cancellation. Do not resolve roots or compile
@@ -59,10 +135,11 @@ std::variant<std::shared_ptr<const RunPreparation>, RunFailure> prepareSingleMod
             "The loaded profile conflicts with the requested Routing Policy",
             routing::PolicyValidationErrors(policy.errors().begin(), policy.errors().end())};
 
-    auto resolved = resolveSingleModRoot(request.modSelection());
+    auto resolved = resolveModRoots(request.modSelection(), configuration, observations, stop);
     if (auto* failure = std::get_if<RunFailure>(&resolved)) return std::move(*failure);
+    if (stop.stop_requested()) return std::shared_ptr<const RunPreparation>{};
     return std::make_shared<const RunPreparation>(
-        std::vector{std::move(std::get<std::filesystem::path>(resolved))}, std::move(configuration),
+        std::move(std::get<std::vector<std::filesystem::path>>(resolved)), std::move(configuration),
         *policy.policy(), request.archivePrecedence());
 }
 
@@ -104,7 +181,7 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
     auto outcome = RunOutcome::Succeeded;
     std::shared_ptr<const RunPreparation> preparation;
     if (!stop.stop_requested()) {
-        auto prepared = prepareSingleModRun(request, services.configuration, stop);
+        auto prepared = prepareRun(request, services.configuration, services.observations, stop);
         if (auto* failure = std::get_if<RunFailure>(&prepared)) {
             outcome = RunOutcome::Failed;
             failures.push_back(std::move(*failure));

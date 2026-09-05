@@ -42,6 +42,8 @@ add_library(cao_run_executor
 )
 
 target_link_libraries(cao_run_executor PUBLIC cao_run_lifecycle cao_run_setup)
+find_package(utf8proc CONFIG REQUIRED)
+target_link_libraries(cao_run_executor PRIVATE utf8proc::utf8proc)
 target_include_directories(cao_run_executor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_compile_features(cao_run_executor PUBLIC cxx_std_20)
 
