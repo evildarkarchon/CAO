@@ -2,6 +2,7 @@
 
 #include <QtTest>
 
+#include <bsa/bsa.hpp>
 #include <btu/bsa/archive_data.hpp>
 #include <btu/bsa/pack.hpp>
 #include <btu/bsa/settings.hpp>
@@ -95,6 +96,70 @@ void createTextureArchive(const std::filesystem::path &archivePath,
     QVERIFY(std::filesystem::is_regular_file(archivePath));
 }
 
+/// Builds a valid small Archive in private staging without adding files to the scanned tree.
+void createFixtureArchive(const std::filesystem::path& path) {
+    QTemporaryDir stagingDirectory;
+    QVERIFY(stagingDirectory.isValid());
+    const auto staging = std::filesystem::path(stagingDirectory.path().toStdWString());
+    const auto entry = staging / "textures" / "fixture.dds";
+    writeFile(entry, "fixture");
+    QVERIFY(QDir().mkpath(QString::fromStdWString(path.parent_path().wstring())));
+    createTextureArchive(path, staging, std::array{entry});
+}
+
+/// Writes a raw manifest with tiny payload, then restores case/separators normalized by key
+/// hashing. Replacement names retain their byte lengths, so every serialized offset remains
+/// unchanged.
+void createRawArchive(const std::filesystem::path& path, const int format,
+                      const std::string& name) {
+    QVERIFY(QDir().mkpath(QString::fromStdWString(path.parent_path().wstring())));
+    const std::array payload{std::byte{0x42}};
+    std::vector<std::pair<std::string, std::string>> names;
+    if (format == 0) {
+        bsa::tes3::archive archive;
+        bsa::tes3::file file;
+        file.read(payload);
+        bsa::tes3::file::key key(name);
+        names.emplace_back(key.name(), name);
+        archive.insert(std::move(key), std::move(file));
+        archive.write(path);
+    } else if (format == 1) {
+        bsa::tes4::archive archive;
+        archive.archive_flags(bsa::tes4::archive_flag::directory_strings |
+                              bsa::tes4::archive_flag::file_strings);
+        const auto slash = name.find_last_of("/\\");
+        const auto directoryName = name.substr(0, slash);
+        const auto fileName = name.substr(slash + 1);
+        bsa::tes4::directory::key directoryKey(directoryName);
+        bsa::tes4::file::key fileKey(fileName);
+        names.emplace_back(directoryKey.name(), directoryName);
+        names.emplace_back(fileKey.name(), fileName);
+        bsa::tes4::file file;
+        file.read(payload, bsa::tes4::version::sse);
+        bsa::tes4::directory directory;
+        directory.insert(std::move(fileKey), std::move(file));
+        archive.insert(std::move(directoryKey), std::move(directory));
+        archive.write(path, bsa::tes4::version::sse);
+    } else {
+        bsa::fo4::archive archive;
+        bsa::fo4::file file;
+        file.read(payload, bsa::fo4::format::general);
+        bsa::fo4::file::key key(name);
+        names.emplace_back(key.name(), name);
+        archive.insert(std::move(key), std::move(file));
+        archive.write(path, bsa::fo4::format::general);
+    }
+    auto bytes = readFile(path);
+    for (const auto& [stored, original] : names) {
+        QCOMPARE(stored.size(), original.size());
+        const auto needle = QByteArray::fromStdString(stored);
+        const auto position = bytes.indexOf(needle);
+        QVERIFY(position >= 0);
+        bytes.replace(position, needle.size(), QByteArray::fromStdString(original));
+    }
+    writeFile(path, bytes);
+}
+
 /// Counts exact path occurrences without relying on unspecified directory traversal order.
 std::size_t pathCount(const std::span<const std::filesystem::path> paths,
                       const std::filesystem::path &expected)
@@ -107,7 +172,35 @@ class ArchiveFirstAssetDiscoveryTests final : public QObject
 {
     Q_OBJECT
 
-private slots:
+   private slots:
+    /// Covers all supported raw Archive formats with and without unsafe path traversal.
+    void rawManifestPaths_data();
+    /// Verifies canonical collision paths and structured rejection before extraction.
+    void rawManifestPaths();
+    /// Verifies collisions remain scoped to independent Mod Roots.
+    void collisionsDoNotCrossModRoots();
+    /// Verifies a late unreadable Mod Root prevents extraction in all preceding roots.
+    void lateUnreadableRootBlocksEveryExtraction();
+
+    /// Verifies a corrupt required Archive prevents every extraction mutation.
+    void unreadableArchiveStopsExtraction();
+    /// Verifies Dry Run ignores invalid ordering intent and never inspects corrupt manifests.
+    void dryRunIgnoresPrecedenceAndManifests();
+    /// Verifies cancellation from collision reporting retains evidence without extraction.
+    void collisionObserverCanCancelBeforeExtraction();
+    /// Verifies direct Archive inputs through directory aliases use their resolved Mod Root.
+    void explicitArchiveAliasUsesResolvedScope();
+    /// Covers missing, extra, duplicate, and outside-root ordering intent.
+    void invalidExplicitOrder_data();
+    /// Verifies explicit precedence failures are structured and block the extraction batch.
+    void invalidExplicitOrder();
+    /// Exercises explicit and deterministic precedence with and without an authoritative Loose
+    /// Asset.
+    void collisionsAreReportedBeforeExtraction_data();
+    /// Verifies all shadowed Archives and canonical game paths are reported before real extraction.
+    void collisionsAreReportedBeforeExtraction();
+
+   private slots:
     /// Verifies an otherwise contained file alias cannot admit staging into either pass.
     void linksIntoStagingAreExcluded();
     /// Verifies normalized relative Archive ordering, Unicode folding, and caller root precedence.
@@ -161,6 +254,304 @@ private slots:
     void selectedDirectoryAliasKeepsItsOriginalTarget();
 };
 
+void ArchiveFirstAssetDiscoveryTests::rawManifestPaths_data() {
+    QTest::addColumn<int>("format");
+    QTest::addColumn<bool>("escaping");
+    for (int format = 0; format < 3; ++format) {
+        QTest::newRow(qPrintable(QStringLiteral("format-%1-contained").arg(format)))
+            << format << false;
+        QTest::newRow(qPrintable(QStringLiteral("format-%1-escaping").arg(format)))
+            << format << true;
+    }
+}
+
+void ArchiveFirstAssetDiscoveryTests::rawManifestPaths() {
+    QFETCH(int, format);
+    QFETCH(bool, escaping);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto first = root / "a.bsa";
+    const auto second = root / "b.bsa";
+    createRawArchive(first, format, "Textures/Shared.dds");
+    createRawArchive(second, format,
+                     escaping ? "..\\escaped.dds" : "TEXTURES\\folder\\..\\.\\SHARED.DDS");
+    const auto beforeFirst = readFile(first);
+    const auto beforeSecond = readFile(second);
+    std::size_t extractions = 0;
+    const auto result = ArchiveFirstAssetDiscovery(archiveEnabledPolicy())
+                            .discover(std::array{root}, [&](const auto& archives) {
+                                extractions += archives.size();
+                                return true;
+                            });
+    QVERIFY(!result.cancelled());
+    if (escaping) {
+        QCOMPARE(extractions, std::size_t{0});
+        QCOMPARE(result.failures().size(), std::size_t{1});
+        QCOMPARE(result.failures().front().code(), cao::run::RunFailureCode::ArchiveEntryInvalid);
+        QCOMPARE(result.failures().front().phase(), cao::run::RunPhase::DiscoveringArchives);
+        QCOMPARE(result.failures().front().path(), second);
+        QVERIFY(result.effectiveAssetTree().paths().empty());
+    } else {
+        QVERIFY(result.failures().empty());
+        QCOMPARE(extractions, std::size_t{2});
+        QCOMPARE(result.collisions().size(), std::size_t{1});
+        QCOMPARE(result.collisions().front().gamePath(),
+                 std::filesystem::path("textures/shared.dds"));
+        QCOMPARE(result.collisions().front().winningArchive(), first);
+        QCOMPARE(result.collisions().front().shadowedArchives().front(), second);
+    }
+    QCOMPARE(readFile(first), beforeFirst);
+    QCOMPARE(readFile(second), beforeSecond);
+    QVERIFY(!std::filesystem::exists(root.parent_path() / "escaped.dds"));
+}
+
+void ArchiveFirstAssetDiscoveryTests::collisionsDoNotCrossModRoots() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto base = std::filesystem::path(directory.path().toStdWString());
+    const std::array roots{base / "first", base / "second"};
+    for (const auto& root : roots) createRawArchive(root / "content.bsa", 1, "textures/shared.dds");
+    std::size_t extractions = 0;
+    const auto result = ArchiveFirstAssetDiscovery(archiveEnabledPolicy())
+                            .discover(roots, [&](const auto& archives) {
+                                extractions += archives.size();
+                                return true;
+                            });
+    QVERIFY(result.failures().empty());
+    QVERIFY(result.collisions().empty());
+    QCOMPARE(extractions, std::size_t{2});
+}
+
+void ArchiveFirstAssetDiscoveryTests::lateUnreadableRootBlocksEveryExtraction() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto base = std::filesystem::path(directory.path().toStdWString());
+    const std::array roots{base / "first", base / "second"};
+    createRawArchive(roots[0] / "content.bsa", 1, "textures/shared.dds");
+    writeFile(roots[1] / "broken.bsa", "unreadable");
+    std::size_t extractions = 0;
+    const auto result = ArchiveFirstAssetDiscovery(archiveEnabledPolicy())
+                            .discover(roots, [&](const auto& archives) {
+                                extractions += archives.size();
+                                return true;
+                            });
+    QCOMPARE(extractions, std::size_t{0});
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().code(), cao::run::RunFailureCode::ArchiveUnreadable);
+    QCOMPARE(result.failures().front().path(), roots[1] / "broken.bsa");
+}
+
+void ArchiveFirstAssetDiscoveryTests::unreadableArchiveStopsExtraction() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "broken.bsa", "not an archive");
+    bool extracted = false;
+    const auto result = ArchiveFirstAssetDiscovery(archiveEnabledPolicy())
+                            .discover(std::vector{root}, [&](const auto&) {
+                                extracted = true;
+                                return true;
+                            });
+    QVERIFY(!extracted);
+    QVERIFY(result.effectiveAssetTree().paths().empty());
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().code(), cao::run::RunFailureCode::ArchiveUnreadable);
+    QCOMPARE(result.failures().front().phase(), cao::run::RunPhase::DiscoveringArchives);
+    QCOMPARE(result.failures().front().path(), root / "broken.bsa");
+}
+
+void ArchiveFirstAssetDiscoveryTests::explicitArchiveAliasUsesResolvedScope() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto base = std::filesystem::path(directory.path().toStdWString());
+    const auto root = base / "mod";
+    createRawArchive(root / "a.bsa", 1, "textures/shared.dds");
+    const auto alias = base / "alias";
+    std::error_code error;
+    std::filesystem::create_directory_symlink(root, alias, error);
+    if (error) QSKIP("Directory symlink creation is unavailable on this host");
+    std::vector<std::filesystem::path> extracted;
+    const auto result = ArchiveFirstAssetDiscovery(archiveEnabledPolicy()).discover(
+        std::vector{alias / "a.bsa"}, [&](const auto& archives) {
+            for (const auto& archive : archives) extracted.push_back(archive.executionPath());
+            return true;
+        }, {}, cao::run::ArchivePrecedence::explicitOrder({"a.bsa"}));
+    QVERIFY(result.failures().empty());
+    QCOMPARE(extracted, std::vector{root / "a.bsa"});
+    QVERIFY(std::filesystem::remove(alias));
+}
+
+void ArchiveFirstAssetDiscoveryTests::dryRunIgnoresPrecedenceAndManifests() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "broken.bsa", "invalid manifest");
+    const auto compiled = RoutingPolicy::compile(
+        RoutingPolicyRequest::forWork(ExecutionMode::DryRun, {RequestedWork::ArchiveExtraction}),
+        ProfileCapabilities::define(".bsa", {ProfileCapability::ArchiveExtraction}));
+    QVERIFY(compiled.hasPolicy());
+    bool extracted = false;
+    bool reported = false;
+    const auto result =
+        ArchiveFirstAssetDiscovery(*compiled.policy())
+            .discover(
+                std::vector{root},
+                [&](const auto&) {
+                    extracted = true;
+                    return true;
+                },
+                {},
+                cao::run::ArchivePrecedence::explicitOrder({"../missing.bsa", "../missing.bsa"}),
+                [&](auto) { reported = true; });
+    QVERIFY(result.failures().empty());
+    QVERIFY(result.collisions().empty());
+    QVERIFY(!extracted);
+    QVERIFY(!reported);
+    QCOMPARE(result.skippedArchiveCount(cao::routing::SkipReason::DisabledPhase), std::size_t{1});
+    QCOMPARE(readFile(root / "broken.bsa"), QByteArray("invalid manifest"));
+    QVERIFY(!std::filesystem::exists(root / ".cao-staging"));
+}
+
+void ArchiveFirstAssetDiscoveryTests::collisionObserverCanCancelBeforeExtraction() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    createRawArchive(root / "a.bsa", 1, "textures/shared.dds");
+    createRawArchive(root / "b.bsa", 1, "textures/shared.dds");
+    bool cancelled = false;
+    bool extracted = false;
+    const auto result =
+        ArchiveFirstAssetDiscovery(archiveEnabledPolicy())
+            .discover(
+                std::vector{root},
+                [&](const auto&) {
+                    extracted = true;
+                    return true;
+                },
+                [&] { return cancelled; }, cao::run::ArchivePrecedence::deterministicDiscovery(),
+                [&](auto collisions) {
+                    QCOMPARE(collisions.size(), std::size_t{1});
+                    cancelled = true;
+                });
+    QVERIFY(result.cancelled());
+    QVERIFY(result.failures().empty());
+    QCOMPARE(result.collisions().size(), std::size_t{1});
+    QVERIFY(!extracted);
+    QVERIFY(result.effectiveAssetTree().paths().empty());
+}
+
+void ArchiveFirstAssetDiscoveryTests::invalidExplicitOrder_data() {
+    QTest::addColumn<QStringList>("order");
+    QTest::addColumn<int>("code");
+    using Code = cao::run::RunFailureCode;
+    QTest::newRow("missing") << QStringList{} << int(Code::ArchiveOrderMissing);
+    QTest::newRow("extra") << QStringList{"content.bsa", "other.bsa"}
+                           << int(Code::ArchiveOrderExtra);
+    QTest::newRow("duplicate") << QStringList{"content.bsa", "./content.bsa"}
+                               << int(Code::ArchiveOrderDuplicate);
+    QTest::newRow("outside") << QStringList{"../content.bsa"} << int(Code::ArchiveOrderOutsideRoot);
+}
+
+void ArchiveFirstAssetDiscoveryTests::invalidExplicitOrder() {
+    QFETCH(QStringList, order);
+    QFETCH(int, code);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto base = std::filesystem::path(directory.path().toStdWString());
+    const auto root = base / "mod";
+    std::filesystem::create_directories(root);
+    const auto staged = base / "source" / "textures" / "shared.dds";
+    writeFile(staged, "archived");
+    createTextureArchive(root / "content.bsa", base / "source", std::vector{staged});
+    std::vector<std::filesystem::path> paths;
+    for (const auto& name : order) paths.emplace_back(name.toStdWString());
+    bool extracted = false;
+    const auto result = ArchiveFirstAssetDiscovery(archiveEnabledPolicy())
+                            .discover(
+                                std::vector{root},
+                                [&](const auto&) {
+                                    extracted = true;
+                                    return true;
+                                },
+                                {}, cao::run::ArchivePrecedence::explicitOrder(std::move(paths)));
+    QVERIFY(!extracted);
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(int(result.failures().front().code()), code);
+    QVERIFY(result.effectiveAssetTree().paths().empty());
+}
+
+void ArchiveFirstAssetDiscoveryTests::collisionsAreReportedBeforeExtraction_data() {
+    QTest::addColumn<bool>("explicitOrder");
+    QTest::addColumn<bool>("loose");
+    QTest::addColumn<bool>("fileRoots");
+    QTest::newRow("deterministic") << false << false << false;
+    QTest::newRow("explicit") << true << false << false;
+    QTest::newRow("loose-over-deterministic") << false << true << false;
+    QTest::newRow("loose-over-explicit") << true << true << false;
+    QTest::newRow("file-roots") << false << true << true;
+    QTest::newRow("explicit-file-roots") << true << true << true;
+}
+
+void ArchiveFirstAssetDiscoveryTests::collisionsAreReportedBeforeExtraction() {
+    QFETCH(bool, explicitOrder);
+    QFETCH(bool, loose);
+    QFETCH(bool, fileRoots);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto base = std::filesystem::path(directory.path().toStdWString());
+    const auto root = base / "mod";
+    std::filesystem::create_directories(root);
+    for (const auto* name : {"a", "b", "c"}) {
+        const auto source = base / name;
+        const auto staged = source / "Textures" / "Shared.DDS";
+        writeFile(staged, name);
+        createTextureArchive(root / (std::string(name) + ".bsa"), source, std::vector{staged});
+    }
+    const auto shared = root / "textures" / "shared.dds";
+    if (loose) writeFile(shared, "loose");
+    auto precedence = explicitOrder
+                          ? cao::run::ArchivePrecedence::explicitOrder({"c.bsa", "a.bsa", "b.bsa"})
+                          : cao::run::ArchivePrecedence::deterministicDiscovery();
+    bool reported = false;
+    bool reportedBeforeExtraction = false;
+    std::vector<std::filesystem::path> extracted;
+    std::vector<cao::run::ArchiveCollision> observed;
+    const auto result =
+        ArchiveFirstAssetDiscovery(archiveEnabledPolicy())
+            .discover(
+                fileRoots ? std::vector{root / "a.bsa", root / "b.bsa", root / "c.bsa"}
+                          : std::vector{root},
+                [&](const auto& archives) {
+                    reportedBeforeExtraction = reported;
+                    for (const auto& archive : archives) {
+                        extracted.push_back(archive.executionPath());
+                        extractArchiveNoOverwrite(archive.executionPath(), false);
+                    }
+                    return true;
+                },
+                {}, precedence,
+                [&](auto collisions) {
+                    reported = true;
+                    QCOMPARE(std::filesystem::exists(shared), loose);
+                    observed.assign(collisions.begin(), collisions.end());
+                });
+    QVERIFY(result.failures().empty());
+    QVERIFY(reportedBeforeExtraction);
+    QCOMPARE(observed.size(), std::size_t{1});
+    QCOMPARE(result.collisions().size(), std::size_t{1});
+    const auto& collision = result.collisions().front();
+    QCOMPARE(collision.modRoot(), std::filesystem::canonical(root));
+    QCOMPARE(collision.gamePath(), std::filesystem::path("textures/shared.dds"));
+    QCOMPARE(collision.winningArchive(), root / (explicitOrder ? "c.bsa" : "a.bsa"));
+    QCOMPARE(collision.shadowedArchives().size(), std::size_t{2});
+    QCOMPARE(collision.shadowedArchives()[0], root / (explicitOrder ? "a.bsa" : "b.bsa"));
+    QCOMPARE(collision.shadowedArchives()[1], root / (explicitOrder ? "b.bsa" : "c.bsa"));
+    QCOMPARE(collision.looseAssetWins(), loose);
+    QCOMPARE(extracted.front(), collision.winningArchive());
+    QCOMPARE(readFile(shared), QByteArray(loose ? "loose" : explicitOrder ? "c" : "a"));
+}
+
 void ArchiveFirstAssetDiscoveryTests::linksIntoStagingAreExcluded() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -196,7 +587,7 @@ void ArchiveFirstAssetDiscoveryTests::archivesAreOrderedWithinEachModRoot() {
         std::filesystem::path(u8"Straße.bsa"), "z.bsa"};
     for (const auto& root : roots)
         for (auto name = names.rbegin(); name != names.rend(); ++name)
-            writeFile(root / *name, "archive placeholder");
+            createFixtureArchive(root / *name);
 
     std::vector<std::filesystem::path> observed;
     const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy());
@@ -207,6 +598,7 @@ void ArchiveFirstAssetDiscoveryTests::archivesAreOrderedWithinEachModRoot() {
     std::vector<std::filesystem::path> expected;
     for (const auto& root : roots)
         for (const auto& name : names) expected.push_back(root / name);
+    QVERIFY(result.failures().empty());
     QVERIFY(!result.cancelled());
     QCOMPARE(observed, expected);
 }
@@ -375,7 +767,7 @@ void ArchiveFirstAssetDiscoveryTests::extractionProducedLinksAreExcluded()
     const auto root = base / "mod";
     const auto outside = base / "outside.dds";
     const auto link = root / "extracted.dds";
-    writeFile(root / "content.bsa", "archive");
+    createFixtureArchive(root / "content.bsa");
     writeFile(outside, "outside");
     std::error_code error;
     std::filesystem::create_symlink(outside, link, error);
@@ -404,7 +796,7 @@ void ArchiveFirstAssetDiscoveryTests::selectedDirectoryAliasKeepsItsOriginalTarg
     const auto original = base / "original";
     const auto replacement = base / "replacement";
     const auto alias = base / "selected";
-    writeFile(original / "content.bsa", "archive");
+    createFixtureArchive(original / "content.bsa");
     writeFile(original / "original.dds", "original");
     writeFile(replacement / "replacement.dds", "replacement");
     std::error_code error;
@@ -420,6 +812,7 @@ void ArchiveFirstAssetDiscoveryTests::selectedDirectoryAliasKeepsItsOriginalTarg
     });
     QVERIFY2(!error, error.message().c_str());
     QVERIFY(std::filesystem::remove(alias, error));
+    QVERIFY(result.failures().empty());
     QVERIFY(!result.cancelled());
     QCOMPARE(result.effectiveAssetTree().paths().size(), std::size_t{1});
     QCOMPARE(result.effectiveAssetTree().paths().front(), original / "original.dds");
@@ -434,7 +827,7 @@ void ArchiveFirstAssetDiscoveryTests::extractsEnabledArchivesBeforeDefinitiveDis
     const auto archive = root / "content.bsa";
     const auto looseAsset = root / "textures" / "loose.dds";
     const auto extractedAsset = root / "textures" / "extracted.dds";
-    writeFile(archive, "archive placeholder");
+    createFixtureArchive(archive);
     writeFile(looseAsset, "loose");
 
     std::vector<std::filesystem::path> extractedArchives;
@@ -459,6 +852,7 @@ void ArchiveFirstAssetDiscoveryTests::extractsEnabledArchivesBeforeDefinitiveDis
             return true;
         });
 
+    QVERIFY(effectiveTree.failures().empty());
     QCOMPARE(selectedArchiveCount, std::size_t{1});
     QVERIFY(selectedArchiveWasRoutedForExtraction);
     QCOMPARE(extractedArchives, std::vector<std::filesystem::path>{archive});
@@ -498,6 +892,7 @@ void ArchiveFirstAssetDiscoveryTests::realExtractionPreservesLooseAssetPrecedenc
             return true;
         });
 
+    QVERIFY(effectiveTree.failures().empty());
     QCOMPARE(readFile(collision), QByteArray("loose collision"));
     QCOMPARE(readFile(archivedOnly), QByteArray("archived only"));
     QCOMPARE(pathCount(effectiveTree.effectiveAssetTree().paths(), collision), std::size_t{1});
@@ -526,6 +921,7 @@ void ArchiveFirstAssetDiscoveryTests::excludedArchivesAreNotExtracted()
             return true;
         });
 
+    QVERIFY(effectiveTree.failures().empty());
     QVERIFY(!extractionAttempted);
     QCOMPARE(pathCount(effectiveTree.effectiveAssetTree().paths(), looseAsset), std::size_t{1});
     QCOMPARE(pathCount(effectiveTree.effectiveAssetTree().paths(), archive), std::size_t{0});
@@ -544,7 +940,7 @@ void ArchiveFirstAssetDiscoveryTests::cancelledExtractionSkipsDefinitiveTraversa
     const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString());
     const auto archive = root / "content.bsa";
     const auto looseAsset = root / "textures" / "loose.dds";
-    writeFile(archive, "archive placeholder");
+    createFixtureArchive(archive);
     writeFile(looseAsset, "loose");
 
     const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy());
@@ -563,7 +959,7 @@ void ArchiveFirstAssetDiscoveryTests::removedExplicitArchiveRootDoesNotThrow()
 
     const auto archive = std::filesystem::path(temporaryDirectory.path().toStdWString())
                          / "content.bsa";
-    writeFile(archive, "archive placeholder");
+    createFixtureArchive(archive);
 
     std::optional<cao::run::ArchiveFirstAssetDiscoveryResult> result;
     const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy());
@@ -579,6 +975,7 @@ void ArchiveFirstAssetDiscoveryTests::removedExplicitArchiveRootDoesNotThrow()
     }
 
     QVERIFY(result.has_value());
+    QVERIFY(result->failures().empty());
     QVERIFY(result->effectiveAssetTree().paths().empty());
 }
 
@@ -589,7 +986,7 @@ void ArchiveFirstAssetDiscoveryTests::removedDirectoryRootDoesNotThrow()
 
     const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString()) / "mod";
     const auto archive = root / "content.bsa";
-    writeFile(archive, "archive placeholder");
+    createFixtureArchive(archive);
 
     std::optional<cao::run::ArchiveFirstAssetDiscoveryResult> result;
     const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy());
@@ -605,6 +1002,7 @@ void ArchiveFirstAssetDiscoveryTests::removedDirectoryRootDoesNotThrow()
     }
 
     QVERIFY(result.has_value());
+    QVERIFY(result->failures().empty());
     QVERIFY(result->effectiveAssetTree().paths().empty());
 }
 
@@ -656,7 +1054,7 @@ void ArchiveFirstAssetDiscoveryTests::archivesProducedByExtractionStayOutOfTheTr
     const auto archive = root / "content.bsa";
     const auto nestedArchive = root / "textures" / "nested.bsa";
     const auto extractedAsset = root / "textures" / "extracted.dds";
-    writeFile(archive, "archive placeholder");
+    createFixtureArchive(archive);
 
     std::size_t selectedArchiveCount = 0;
     const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy());

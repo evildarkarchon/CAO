@@ -184,9 +184,25 @@ bool Manager::runOptimization() {
                                         "the game does not read")
                                         .arg(nested);
                 }
+            },
+            [&](const std::span<const cao::run::ArchiveCollision> collisions) {
+                for (const auto& collision : collisions) {
+                    PLOG_WARNING << QStringLiteral("Archive collision: %1; winning Archive: %2; Loose Asset wins: %3")
+                                        .arg(QString::fromStdWString(collision.gamePath().wstring()))
+                                        .arg(QString::fromStdWString(collision.winningArchive().wstring()))
+                                        .arg(collision.looseAssetWins() ? QStringLiteral("yes") : QStringLiteral("no"));
+                    for (const auto& archive : collision.shadowedArchives())
+                        PLOG_WARNING << QStringLiteral("Shadowed Archive: %1")
+                                            .arg(QString::fromStdWString(archive.wstring()));
+                }
+            },
+            [&](const cao::run::RunFailure& failure) {
+                PLOG_ERROR << QStringLiteral("Archive discovery failed: %1: %2")
+                                  .arg(QString::fromStdString(failure.detail()))
+                                  .arg(QString::fromStdWString(failure.path().wstring()));
             }});
 
-    if (result.cancelled()) return false;
+    if (result.cancelled() || !result.failures().empty()) return false;
 
     if (failedAssets != 0) {
         PLOG_ERROR << QStringLiteral("Process completed with %1 failed Assets<br><br><br>")

@@ -3,9 +3,11 @@
 #include "StagingPaths.h"
 
 #include <btu/bsa/unpack.hpp>
+#include <bsa/bsa.hpp>
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <system_error>
 #include <unordered_set>
 #include <utility>
@@ -23,6 +25,54 @@ void extractArchiveNoOverwrite(const std::filesystem::path& archivePath, const b
 }
 
 namespace {
+/// Reads raw Archive names without extracting, decompressing, or sanitizing away invalid paths.
+std::vector<std::string> inspectArchive(const std::filesystem::path& path) {
+    std::vector<std::string> names;
+    const auto format = bsa::guess_file_format(path);
+    if (!format) throw std::runtime_error("Unrecognized Archive format.");
+    switch (*format) {
+        case bsa::file_format::tes3: {
+            bsa::tes3::archive archive;
+            archive.read(path);
+            for (const auto& [key, file] : archive) names.emplace_back(key.name());
+            break;
+        }
+        case bsa::file_format::tes4: {
+            bsa::tes4::archive archive;
+            archive.read(path);
+            for (const auto& [directory, files] : archive)
+                for (const auto& [key, file] : files)
+                    names.push_back(directory.name().empty() ? std::string(key.name())
+                                                             : std::string(directory.name()) + "/" +
+                                                                   std::string(key.name()));
+            break;
+        }
+        case bsa::file_format::fo4: {
+            bsa::fo4::archive archive;
+            archive.read(path);
+            for (const auto& [key, file] : archive) names.emplace_back(key.name());
+            break;
+        }
+    }
+    return names;
+}
+
+/// Canonicalizes a contained game path; rejects names whose extraction could escape or alias.
+std::string canonicalGamePath(std::string name) {
+    std::replace(name.begin(), name.end(), '\\', '/');
+    if (name.empty() || name.front() == '/' || name.find('\0') != std::string::npos ||
+        name.find_first_of(":*?\"<>|") != std::string::npos)
+        throw std::invalid_argument("Archive entry has an invalid game path.");
+    const auto path = std::filesystem::u8path(name).lexically_normal();
+    if (path.empty() || path == "." || path.filename().empty() || *path.begin() == "..")
+        throw std::invalid_argument("Archive entry escapes its extraction directory.");
+    for (const auto& part : path) {
+        const auto text = relativeName(part);
+        if (text.back() == '.' || text.back() == ' ' || isStagingName(part))
+            throw std::invalid_argument("Archive entry aliases an unsafe or reserved path.");
+    }
+    return foldedName(relativeName(path));
+}
 /// Checks the resolved path's ancestry using native filesystem identity, including Windows casing.
 bool isWithinRoot(const std::filesystem::path& resolvedPath,
                   const std::filesystem::path& canonicalRoot) {
@@ -34,6 +84,57 @@ bool isWithinRoot(const std::filesystem::path& resolvedPath,
         ancestor = parent;
     }
     return false;
+}
+
+/// Validates and applies complete high-to-low intent within one already resolved Mod Root.
+/// Returns a fatal discovery failure without changing the discovered batch on invalid intent.
+std::variant<std::vector<routing::RoutedAsset>, RunFailure> validateArchiveOrder(
+    const std::filesystem::path& root, std::span<const routing::RoutedAsset> archives,
+    const ArchivePrecedence& precedence) {
+    const auto failure = [](RunFailureCode code, const std::filesystem::path& path,
+                            const char* detail) {
+        return RunFailure(code, RunPhase::DiscoveringArchives, detail,
+                          routing::PolicyValidationErrors{}, path);
+    };
+    std::vector<routing::RoutedAsset> ordered;
+    std::unordered_set<std::filesystem::path> used;
+    for (const auto& requested : precedence.highToLow()) {
+        const auto normalized = requested.lexically_normal();
+        if (requested.empty() || requested.has_root_path() || normalized.empty() ||
+            *normalized.begin() == "..")
+            return failure(
+                RunFailureCode::ArchiveOrderOutsideRoot, requested,
+                "Archive Precedence paths must be relative and contained in the Mod Root.");
+        const auto candidate = root / normalized;
+        std::error_code error;
+        const auto resolved = std::filesystem::canonical(candidate, error);
+        if (!error && !isWithinRoot(resolved, root))
+            return failure(RunFailureCode::ArchiveOrderOutsideRoot, candidate,
+                           "Required Archive resolves outside the Mod Root.");
+        const auto found = std::find_if(archives.begin(), archives.end(), [&](const auto& archive) {
+            // Match discovered names, not target identity: two contained hard links
+            // remain two enabled Archive entries in this precedence scope.
+            const auto left = relativeName(std::filesystem::absolute(archive.executionPath()));
+            const auto right = relativeName(candidate);
+#ifdef _WIN32
+            return foldedName(left) == foldedName(right);
+#else
+            return left == right;
+#endif
+        });
+        if (found == archives.end())
+            return failure(
+                RunFailureCode::ArchiveOrderExtra, candidate,
+                "Archive Precedence names an Archive that is not enabled in this Mod Root.");
+        if (!used.insert(found->executionPath()).second)
+            return failure(RunFailureCode::ArchiveOrderDuplicate, candidate,
+                           "Archive Precedence names the same enabled Archive more than once.");
+        ordered.push_back(*found);
+    }
+    if (ordered.size() != archives.size())
+        return failure(RunFailureCode::ArchiveOrderMissing, root,
+                       "Archive Precedence must include every enabled Archive in this Mod Root.");
+    return ordered;
 }
 
 /// Rejects directory links and linked files whose target cannot be proven inside this Mod Root.
@@ -180,7 +281,8 @@ ArchiveFirstAssetDiscovery::ArchiveFirstAssetDiscovery(routing::RoutingPolicy po
 ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     const std::span<const std::filesystem::path> roots,
     const ArchiveExtractionOperation& extractArchive,
-    const AssetDiscoveryCancellationPredicate& isCancelled) const {
+    const AssetDiscoveryCancellationPredicate& isCancelled, const ArchivePrecedence& precedence,
+    const std::function<void(std::span<const ArchiveCollision>)>& reportCollisions) const {
     routing::AssetRouter router(_policy);
     // Routing is filename-only, so recognizing an Archive is cheap enough to repeat during the
     // definitive traversal. That traversal cannot ask the Archive pass instead: extraction can
@@ -199,12 +301,25 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     };
     std::unordered_set<std::filesystem::path> recognizedArchivePaths;
     std::vector<routing::RoutedAsset> selectedArchives;
+    std::vector<std::filesystem::path> precedenceScopes;
+    std::map<std::filesystem::path, std::filesystem::path> archiveRoots;
+    std::map<std::filesystem::path, std::set<std::string>> loosePaths;
+    std::vector<ArchiveCollision> collisions;
     std::vector<std::filesystem::path> extractionDestinations;
     std::map<routing::SkipReason, std::size_t> skippedArchiveCounts;
     std::vector<std::filesystem::path> unsupportedExplicitPaths;
     std::vector<RunDiagnostic> diagnostics;
     std::unordered_set<std::filesystem::path> diagnosedPaths;
     auto discoveryPhase = RunPhase::DiscoveringArchives;
+    const auto failedResult = [&](RunFailureCode code, const std::filesystem::path& path,
+                                  const std::string& detail) {
+        auto result = ArchiveFirstAssetDiscoveryResult(
+            EffectiveAssetTree({}), std::move(skippedArchiveCounts),
+            std::move(unsupportedExplicitPaths), 0, std::move(diagnostics));
+        result._failures.emplace_back(code, RunPhase::DiscoveringArchives, detail,
+                                      routing::PolicyValidationErrors{}, path);
+        return result;
+    };
     const auto excludeLinkedEntry = [&](const std::filesystem::path& path, const char* detail) {
         // Both discovery passes see unchanged links. Retain their first observation so one skipped
         // entry yields one actionable diagnostic rather than reporting the same exclusion twice.
@@ -214,10 +329,11 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     };
     // A partial scan is not a definitive tree and must never become executable work.
     const auto cancelledResult = [&] {
-        return ArchiveFirstAssetDiscoveryResult(EffectiveAssetTree({}),
-                                                std::move(skippedArchiveCounts),
-                                                std::move(unsupportedExplicitPaths), 0,
-                                                std::move(diagnostics), true);
+        auto result = ArchiveFirstAssetDiscoveryResult(
+            EffectiveAssetTree({}), std::move(skippedArchiveCounts),
+            std::move(unsupportedExplicitPaths), 0, std::move(diagnostics), true);
+        result._collisions = std::move(collisions);
+        return result;
     };
     std::vector<std::filesystem::path> resolvedRoots;
     resolvedRoots.reserve(roots.size());
@@ -230,15 +346,31 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
             auto resolved = std::filesystem::canonical(root, error);
             if (!error) resolvedRoots.push_back(std::move(resolved));
         } else {
-            resolvedRoots.push_back(root);
+            // Freeze a direct file's containing-directory alias as well, but retain the file
+            // name so contained file links remain distinct enabled Archive entries.
+            auto parent = root.parent_path();
+            if (parent.empty()) parent = ".";
+            error.clear();
+            const auto resolvedParent = std::filesystem::canonical(parent, error);
+            resolvedRoots.push_back(error ? root : resolvedParent / root.filename());
         }
     }
     for (const auto& root : resolvedRoots) {
+        std::error_code rootError;
+        auto boundary = std::filesystem::is_directory(root, rootError) ? root : root.parent_path();
+        if (boundary.empty()) boundary = ".";
+        const auto canonicalRoot = std::filesystem::weakly_canonical(boundary);
+        if (std::find(precedenceScopes.begin(), precedenceScopes.end(), canonicalRoot) ==
+            precedenceScopes.end())
+            precedenceScopes.push_back(canonicalRoot);
         const auto firstArchive = selectedArchives.size();
         std::map<std::filesystem::path, std::pair<std::string, std::string>> archiveOrder;
         const auto archivePassComplete = visitRegularFiles(
             std::span(&root, 1), isCancelled, excludeLinkedEntry,
             [&](const std::filesystem::path& path, const bool explicitRoot) {
+                if (!namesAnArchive(path))
+                    loosePaths[canonicalRoot].insert(
+                        foldedName(relativeName(path.lexically_relative(canonicalRoot))));
                 auto decision = router.route(path);
                 if (auto* routedAsset = std::get_if<routing::RoutedAsset>(&decision)) {
                     if (routedAsset->kind() == routing::AssetKind::Archive &&
@@ -261,6 +393,7 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
                         archiveOrder.emplace(routedAsset->executionPath(),
                                              std::pair{foldedName(name), name});
                         selectedArchives.push_back(std::move(*routedAsset));
+                        archiveRoots.emplace(path, canonicalRoot);
                     }
                     return;
                 }
@@ -283,6 +416,22 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
                   });
     }
 
+    if (_policy.executionMode() == routing::ExecutionMode::Apply &&
+        precedence.mode() == ArchivePrecedenceMode::ExplicitOrder) {
+        std::vector<routing::RoutedAsset> ordered;
+        for (const auto& scope : precedenceScopes) {
+            std::vector<routing::RoutedAsset> batch;
+            for (const auto& archive : selectedArchives)
+                if (archiveRoots.at(archive.executionPath()) == scope) batch.push_back(archive);
+            auto validated = validateArchiveOrder(scope, batch, precedence);
+            if (const auto* failure = std::get_if<RunFailure>(&validated))
+                return failedResult(failure->code(), failure->path(), failure->detail());
+            const auto& archives = std::get<std::vector<routing::RoutedAsset>>(validated);
+            ordered.insert(ordered.end(), archives.begin(), archives.end());
+        }
+        selectedArchives = std::move(ordered);
+    }
+
     // A destination directory is only ever reached through the Archive a caller named explicitly,
     // so the Assets it already holds were never requested. Censusing them before extraction is
     // what keeps the definitive pass below limited to what extraction actually produced.
@@ -291,9 +440,66 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
         extractionDestinations, isCancelled, excludeLinkedEntry,
         [&](const std::filesystem::path& path, const bool) {
             preExistingDestinationPaths.insert(path.lexically_normal());
+            if (!namesAnArchive(path)) {
+                const auto absolute = std::filesystem::absolute(path);
+                for (const auto& scope : precedenceScopes)
+                    if (isWithinRoot(absolute, scope))
+                        loosePaths[scope].insert(
+                            foldedName(relativeName(absolute.lexically_relative(scope))));
+            }
         });
     if (!censusComplete) return cancelledResult();
 
+    std::map<std::filesystem::path, std::map<std::string, std::vector<std::filesystem::path>>>
+        entries;
+    for (const auto& archive : selectedArchives) {
+        if (isCancelled && isCancelled()) return cancelledResult();
+        std::vector<std::string> names;
+        try {
+            names = inspectArchive(archive.executionPath());
+        } catch (const std::exception& error) {
+            return failedResult(RunFailureCode::ArchiveUnreadable, archive.executionPath(),
+                                error.what());
+        }
+        const auto& root = archiveRoots.at(archive.executionPath());
+        for (const auto& name : names) {
+            if (isCancelled && isCancelled()) return cancelledResult();
+            try {
+                // The existing extractor writes beside its Archive, including nested Archives.
+                // Compare the actual destination relative to the Mod Root, not just the raw name.
+                const auto local = std::filesystem::u8path(canonicalGamePath(name));
+                const auto destination =
+                    std::filesystem::absolute(archive.executionPath()).parent_path() / local;
+                std::error_code error;
+                const auto resolved = std::filesystem::weakly_canonical(destination, error);
+                if (error || !isWithinRoot(resolved, root))
+                    throw std::invalid_argument(
+                        "Archive entry resolves outside the Mod Root or cannot be resolved.");
+                const auto gamePath =
+                    foldedName(relativeName(destination.lexically_relative(root)));
+                auto& participants = entries[root][gamePath];
+                if (participants.empty() || participants.back() != archive.executionPath())
+                    participants.push_back(archive.executionPath());
+            } catch (const std::exception& error) {
+                return failedResult(RunFailureCode::ArchiveEntryInvalid, archive.executionPath(),
+                                    error.what());
+            }
+        }
+    }
+    for (const auto& root : precedenceScopes) {
+        const auto found = entries.find(root);
+        if (found == entries.end()) continue;
+        for (const auto& [gamePath, participants] : found->second) {
+            if (participants.size() < 2) continue;
+            collisions.emplace_back(root, std::filesystem::u8path(gamePath), participants.front(),
+                                    std::vector(participants.begin() + 1, participants.end()),
+                                    loosePaths[root].contains(gamePath));
+        }
+    }
+    // Publish only the complete plan: a later unreadable Archive must prevent earlier mutations.
+    if (reportCollisions && _policy.executionMode() == routing::ExecutionMode::Apply)
+        reportCollisions(collisions);
+    if (isCancelled && isCancelled()) return cancelledResult();
     if (!selectedArchives.empty() && !extractArchive(selectedArchives)) {
         return cancelledResult();
     }
@@ -341,8 +547,10 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
             effectivePaths.push_back(path);
         });
     if (!destinationPassComplete) return cancelledResult();
-    return ArchiveFirstAssetDiscoveryResult(
+    auto result = ArchiveFirstAssetDiscoveryResult(
         EffectiveAssetTree(std::move(effectivePaths)), std::move(skippedArchiveCounts),
         std::move(unsupportedExplicitPaths), nestedArchivePaths.size(), std::move(diagnostics));
+    result._collisions = std::move(collisions);
+    return result;
 }
 }  // namespace cao::run

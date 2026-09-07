@@ -171,6 +171,17 @@ void createTextureArchive(const std::filesystem::path &archivePath,
     QVERIFY(errors.empty());
     QVERIFY(std::filesystem::is_regular_file(archivePath));
 }
+
+/// Creates a valid Archive using private staging so orchestration fixtures stay outside the Mod
+/// Root.
+void createFixtureArchive(const std::filesystem::path& path) {
+    QTemporaryDir stagingDirectory;
+    QVERIFY(stagingDirectory.isValid());
+    const auto staging = std::filesystem::path(stagingDirectory.path().toStdWString());
+    const auto entry = staging / "textures" / "fixture.dds";
+    writeFile(entry);
+    createTextureArchive(path, staging, std::array{entry});
+}
 }
 
 class AssetRunTests final : public QObject
@@ -178,54 +189,144 @@ class AssetRunTests final : public QObject
     Q_OBJECT
 
 private slots:
-    /// Covers cancellation in Archive selection, destination census, and definitive traversal.
-    void filesystemTraversalPollsCancellation_data();
+ /// Verifies malformed manifests stop every mutation and finalization adapter.
+ void unreadableArchiveStopsRunBeforeMutation();
 
-    /// Verifies filesystem polling stops the run before execution, diagnostics, or finalization.
-    void filesystemTraversalPollsCancellation();
+ /// Verifies explicit precedence and owned collision evidence reach callers before extraction.
+ void reportsCollisionsBeforeOrderedExtraction();
 
-    /// Verifies Archive extraction precedes the one definitive Routed Asset work set.
-    void archiveExtractionPrecedesDefinitiveRoutedExecution();
+ /// Covers cancellation in Archive selection, destination census, and definitive traversal.
+ void filesystemTraversalPollsCancellation_data();
 
-    /// Verifies real Archive extraction preserves Loose Asset precedence through execution.
-    void realExtractionPreservesLooseAssetPrecedence();
+ /// Verifies filesystem polling stops the run before execution, diagnostics, or finalization.
+ void filesystemTraversalPollsCancellation();
 
-    /// Verifies target ordering while retaining original ledger order and object identity per target.
-    void executesOriginalLedgerAssetsInTargetOrder();
+ /// Verifies Archive extraction precedes the one definitive Routed Asset work set.
+ void archiveExtractionPrecedesDefinitiveRoutedExecution();
 
-    /// Verifies only Routed Asset attempts contribute to work totals and completed progress.
-    void progressAndSkipSummaryExcludeNonWork();
+ /// Verifies real Archive extraction preserves Loose Asset precedence through execution.
+ void realExtractionPreservesLooseAssetPrecedence();
 
-    /// Verifies applying runs retain post-execution Archive finalization ordering.
-    void applyFinalizesArchivesAfterRoutedExecution();
+ /// Verifies target ordering while retaining original ledger order and object identity per target.
+ void executesOriginalLedgerAssetsInTargetOrder();
 
-    /// Verifies excluded links retain structured diagnostics before finalization and on return.
-    void linkedAssetsAreReportedBeforeFinalizationWithoutExecution();
+ /// Verifies only Routed Asset attempts contribute to work totals and completed progress.
+ void progressAndSkipSummaryExcludeNonWork();
 
-    /// Verifies a cancelled Archive finalizer becomes the run's terminal state.
-    void cancelledArchiveFinalizationIsReported();
+ /// Verifies applying runs retain post-execution Archive finalization ordering.
+ void applyFinalizesArchivesAfterRoutedExecution();
 
-    /// Verifies Archive skips aggregate while only explicit unsupported roots remain reportable.
-    void dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPathsSilent();
+ /// Verifies excluded links retain structured diagnostics before finalization and on return.
+ void linkedAssetsAreReportedBeforeFinalizationWithoutExecution();
 
-    /// Verifies Dry Run evaluates carried Loose Asset work without changing the complete mod tree.
-    void dryRunLeavesCompleteModTreeUnchangedWhileEvaluatingLooseAssets();
+ /// Verifies a cancelled Archive finalizer becomes the run's terminal state.
+ void cancelledArchiveFinalizationIsReported();
 
-    /// Verifies cancellation stops before the next Routed Asset without changing the work total.
-    void cancellationStopsBetweenRoutedAssets();
+ /// Verifies Archive skips aggregate while only explicit unsupported roots remain reportable.
+ void dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPathsSilent();
 
-    /// Verifies Archive cancellation returns before definitive Loose Asset discovery.
-    void archiveCancellationSkipsDefinitiveDiscovery();
+ /// Verifies Dry Run evaluates carried Loose Asset work without changing the complete mod tree.
+ void dryRunLeavesCompleteModTreeUnchangedWhileEvaluatingLooseAssets();
 
-    /// Verifies cancellation during the final Archive also skips definitive discovery.
-    void finalArchiveCancellationSkipsDefinitiveDiscovery();
+ /// Verifies cancellation stops before the next Routed Asset without changing the work total.
+ void cancellationStopsBetweenRoutedAssets();
 
-    /// Verifies cancellation raised during the final Asset skips diagnostics and finalization.
-    void cancellationDuringFinalAssetSkipsFinalization();
+ /// Verifies Archive cancellation returns before definitive Loose Asset discovery.
+ void archiveCancellationSkipsDefinitiveDiscovery();
 
-    /// Verifies an Archive produced by extraction is reported but never counted as run work.
-    void nestedArchivesAreReportedWithoutInflatingTheWorkTotal();
+ /// Verifies cancellation during the final Archive also skips definitive discovery.
+ void finalArchiveCancellationSkipsDefinitiveDiscovery();
+
+ /// Verifies cancellation raised during the final Asset skips diagnostics and finalization.
+ void cancellationDuringFinalAssetSkipsFinalization();
+
+ /// Verifies an Archive produced by extraction is reported but never counted as run work.
+ void nestedArchivesAreReportedWithoutInflatingTheWorkTotal();
 };
+
+void AssetRunTests::unreadableArchiveStopsRunBeforeMutation() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString());
+    writeFile(root / "broken.bsa", "invalid manifest");
+    writeFile(root / "textures" / "loose.dds");
+    const auto before = snapshotTree(root);
+    bool extracted = false;
+    bool executed = false;
+    bool finalized = false;
+    std::vector<cao::run::RunFailure> failures;
+    const auto result =
+        AssetRun(archiveAndTexturePolicy())
+            .execute(std::array{root}, AssetRunAdapters{[&](const auto&) { extracted = true; },
+                                                        [&](const auto&) { executed = true; },
+                                                        {},
+                                                        {},
+                                                        [&] {
+                                                            finalized = true;
+                                                            return true;
+                                                        },
+                                                        {},
+                                                        {},
+                                                        [&](const cao::run::RunFailure& failure) {
+                                                            failures.push_back(failure);
+                                                        }});
+    QCOMPARE(failures.size(), std::size_t{1});
+    QCOMPARE(result.failures().size(), failures.size());
+    QCOMPARE(failures.front().code(), cao::run::RunFailureCode::ArchiveUnreadable);
+    QVERIFY(result.collisions().empty());
+    QVERIFY(result.ledger().routedAssets().empty());
+    QVERIFY(!extracted);
+    QVERIFY(!executed);
+    QVERIFY(!finalized);
+    QVERIFY(!result.cancelled());
+    QCOMPARE(snapshotTree(root), before);
+}
+
+void AssetRunTests::reportsCollisionsBeforeOrderedExtraction() {
+    QTemporaryDir temporaryDirectory;
+    QTemporaryDir stagingDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    QVERIFY(stagingDirectory.isValid());
+    const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString());
+    const auto staging = std::filesystem::path(stagingDirectory.path().toStdWString());
+    const auto entry = staging / "textures" / "shared.dds";
+    writeFile(entry);
+    const auto first = root / "a.bsa";
+    const auto second = root / "z.bsa";
+    createTextureArchive(first, staging, std::array{entry});
+    createTextureArchive(second, staging, std::array{entry});
+    writeFile(root / "textures" / "shared.dds", "loose wins");
+    bool reported = false;
+    std::vector<std::filesystem::path> extractions;
+    const auto result =
+        AssetRun(archiveAndTexturePolicy())
+            .execute(
+                std::array{root},
+                AssetRunAdapters{[&](const auto& archive) {
+                                     QVERIFY(reported);
+                                     extractions.push_back(archive.executionPath());
+                                 },
+                                 [](const auto&) {},
+                                 {},
+                                 {},
+                                 {},
+                                 {},
+                                 [&](const std::span<const cao::run::ArchiveCollision> collisions) {
+                                     QVERIFY(extractions.empty());
+                                     QCOMPARE(collisions.size(), std::size_t{1});
+                                     QCOMPARE(collisions.front().winningArchive(), second);
+                                     QVERIFY(collisions.front().looseAssetWins());
+                                     reported = true;
+                                 }},
+                cao::run::ArchivePrecedence::explicitOrder({"z.bsa", "a.bsa"}));
+    QVERIFY(result.failures().empty());
+    QVERIFY(reported);
+    QCOMPARE(extractions, (std::vector{second, first}));
+    QCOMPARE(result.collisions().size(), std::size_t{1});
+    QCOMPARE(result.collisions().front().winningArchive(), second);
+    QCOMPARE(result.collisions().front().shadowedArchives().size(), std::size_t{1});
+    QCOMPARE(result.collisions().front().shadowedArchives().front(), first);
+}
 
 void AssetRunTests::filesystemTraversalPollsCancellation_data()
 {
@@ -244,7 +345,7 @@ void AssetRunTests::filesystemTraversalPollsCancellation()
     QVERIFY(temporaryDirectory.isValid());
     const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString());
     const auto archive = root / "content.bsa";
-    if (scenario >= 2) writeFile(archive);
+    if (scenario >= 2) createFixtureArchive(archive);
     // Unsupported files still require directory traversal, but never provide an execution
     // callback where the old implementation could happen to notice cancellation instead.
     for (int index = 0; index < 100; ++index)
@@ -286,7 +387,7 @@ void AssetRunTests::archiveExtractionPrecedesDefinitiveRoutedExecution()
     const auto archive = root / "content.bsa";
     const auto looseTexture = root / "textures" / "loose.dds";
     const auto extractedTexture = root / "textures" / "extracted.dds";
-    writeFile(archive);
+    createFixtureArchive(archive);
     writeFile(looseTexture);
 
     std::vector<std::filesystem::path> executedPaths;
@@ -750,8 +851,12 @@ void AssetRunTests::archiveCancellationSkipsDefinitiveDiscovery()
     const std::array paths{root / "first.bsa",
                            root / "second.bsa",
                            root / "textures" / "loose.dds"};
-    for (const auto &path : paths)
-        writeFile(path);
+    for (const auto& path : paths) {
+        if (path.extension() == ".bsa")
+            createFixtureArchive(path);
+        else
+            writeFile(path);
+    }
 
     std::size_t extractionAttempts = 0;
     const AssetRun run(archiveAndTexturePolicy());
@@ -778,8 +883,12 @@ void AssetRunTests::finalArchiveCancellationSkipsDefinitiveDiscovery()
 
     const auto root = std::filesystem::path(temporaryDirectory.path().toStdWString());
     const std::array paths{root / "only.bsa", root / "textures" / "loose.dds"};
-    for (const auto &path : paths)
-        writeFile(path);
+    for (const auto& path : paths) {
+        if (path.extension() == ".bsa")
+            createFixtureArchive(path);
+        else
+            writeFile(path);
+    }
 
     std::size_t extractionAttempts = 0;
     const AssetRun run(archiveAndTexturePolicy());
@@ -846,7 +955,7 @@ void AssetRunTests::nestedArchivesAreReportedWithoutInflatingTheWorkTotal()
     const auto archive = root / "content.bsa";
     const auto nestedArchive = root / "textures" / "nested.bsa";
     const auto extractedTexture = root / "textures" / "extracted.dds";
-    writeFile(archive);
+    createFixtureArchive(archive);
 
     std::vector<std::filesystem::path> executedPaths;
     std::size_t reportedNestedArchives = 0;

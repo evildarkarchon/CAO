@@ -101,7 +101,49 @@ enum class RunFailureCode {
     SafetyCleanupServiceFailed,
     StagingOwnershipUnverified,
     StagingActive,
-    StagingRecoveryFailed
+    StagingRecoveryFailed,
+    ArchiveOrderMissing,
+    ArchiveOrderExtra,
+    ArchiveOrderDuplicate,
+    ArchiveOrderOutsideRoot,
+    ArchiveUnreadable,
+    ArchiveEntryInvalid
+};
+
+/// Owns one canonical game-path collision within a Mod Root, in high-to-low Archive order.
+class ArchiveCollision final {
+   public:
+    /// Retains the Archive winner even when an existing Loose Asset shadows all Archives.
+    ArchiveCollision(std::filesystem::path modRoot, std::filesystem::path gamePath,
+                     std::filesystem::path winningArchive,
+                     std::vector<std::filesystem::path> shadowedArchives, bool looseAssetWins)
+        : _modRoot(std::move(modRoot)),
+          _gamePath(std::move(gamePath)),
+          _winningArchive(std::move(winningArchive)),
+          _shadowedArchives(std::move(shadowedArchives)),
+          _looseAssetWins(looseAssetWins) {}
+
+    /// Borrows the canonical Mod Root that defines this collision's scope.
+    [[nodiscard]] const std::filesystem::path& modRoot() const noexcept { return _modRoot; }
+    /// Borrows the normalized, case-folded path relative to the Mod Root.
+    [[nodiscard]] const std::filesystem::path& gamePath() const noexcept { return _gamePath; }
+    /// Borrows the highest-precedence Archive's discovered path.
+    [[nodiscard]] const std::filesystem::path& winningArchive() const noexcept {
+        return _winningArchive;
+    }
+    /// Borrows every lower-precedence Archive once, in precedence order.
+    [[nodiscard]] std::span<const std::filesystem::path> shadowedArchives() const noexcept {
+        return _shadowedArchives;
+    }
+    /// Reports whether an existing Loose Asset is authoritative over all participating Archives.
+    [[nodiscard]] bool looseAssetWins() const noexcept { return _looseAssetWins; }
+
+   private:
+    std::filesystem::path _modRoot;
+    std::filesystem::path _gamePath;
+    std::filesystem::path _winningArchive;
+    std::vector<std::filesystem::path> _shadowedArchives;
+    bool _looseAssetWins;
 };
 
 /// An owning run-level failure; Asset/Archive mutation failures belong to their service slices.

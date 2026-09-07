@@ -42,6 +42,13 @@ class ArchiveFirstAssetDiscoveryResult final {
     /// Reports interruption during traversal or extraction; partial trees are never returned.
     [[nodiscard]] bool cancelled() const noexcept;
 
+    /// Borrows fatal discovery failures; any failure prevents extraction and leaves an empty tree.
+    [[nodiscard]] std::span<const RunFailure> failures() const noexcept { return _failures; }
+    /// Borrows collisions calculated before the first extraction, in root and game-path order.
+    [[nodiscard]] std::span<const ArchiveCollision> collisions() const noexcept {
+        return _collisions;
+    }
+
     /// Borrows structured exclusions in first-observation order; each linked entry appears once.
     [[nodiscard]] std::span<const RunDiagnostic> diagnostics() const noexcept { return _diagnostics; }
 
@@ -75,6 +82,8 @@ class ArchiveFirstAssetDiscoveryResult final {
     std::size_t _nestedArchiveCount;
     bool _cancelled;
     std::vector<RunDiagnostic> _diagnostics;
+    std::vector<RunFailure> _failures;
+    std::vector<ArchiveCollision> _collisions;
 };
 
 /// Orchestrates Archive selection and extraction before one definitive Effective Asset Tree
@@ -95,16 +104,23 @@ class ArchiveFirstAssetDiscovery final {
     /// cancellation predicate returning true between filesystem entries, stops discovery and
     /// returns a cancelled result with an empty tree. In-flight extraction is never interrupted.
     /// Filesystem races and permission failures are skipped during traversal; extraction
-    /// exceptions propagate to the caller.
+    /// exceptions propagate to the caller. Required Archive manifest failures instead return
+    /// structured fatal failures with an empty tree, before any extraction is offered.
     /// Selected directory aliases resolve once before discovery. Directory links within a tree
     /// are never followed; unresolved and escaping file links are skipped with Run Diagnostics.
-    /// Roots must not overlap. Archives retain root order and sort within each root by normalized
-    /// relative UTF-8 path, case-folded first with an ordinal spelling tie-breaker. Dry Run only
-    /// counts disabled Archives: no manifest inspection or extraction is performed.
+    /// Roots must not overlap. Archives retain root order and default to normalized relative UTF-8
+    /// ordering, case-folded first with an ordinal spelling tie-breaker. Explicit precedence must
+    /// name every enabled Archive exactly once with paths relative to its Mod Root. Apply inspects
+    /// all required manifests before calling reportCollisions synchronously with a complete plan;
+    /// that callback's span is borrowed only until it returns, and exceptions propagate. The plan
+    /// is also owned by the returned result, including after extraction cancellation. Dry Run
+    /// ignores precedence and never inspects manifests, calculates collisions, or extracts.
     [[nodiscard]] ArchiveFirstAssetDiscoveryResult discover(
         std::span<const std::filesystem::path> roots,
         const ArchiveExtractionOperation& extractArchive,
-        const AssetDiscoveryCancellationPredicate& isCancelled = {}) const;
+        const AssetDiscoveryCancellationPredicate& isCancelled = {},
+        const ArchivePrecedence& precedence = ArchivePrecedence::deterministicDiscovery(),
+        const std::function<void(std::span<const ArchiveCollision>)>& reportCollisions = {}) const;
 
    private:
     routing::RoutingPolicy _policy;

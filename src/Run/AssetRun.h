@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AssetRouting/AssetRouter.h"
+#include "ArchiveFirstAssetDiscovery.h"
 #include "RunLifecycle.h"
 
 #include <cstddef>
@@ -64,6 +65,10 @@ struct AssetRunAdapters final {
     AssetRunCancellationAdapter isCancelled;
     ArchiveLifecycleFinalizationAdapter finalizeArchiveLifecycle;
     AssetRunDiagnosticsAdapter reportDiagnostics;
+    /// Observes complete preflight collisions before any Archive extraction.
+    std::function<void(std::span<const ArchiveCollision>)> reportArchiveCollisions;
+    /// Observes fatal discovery failures before returning without mutation.
+    std::function<void(const RunFailure&)> reportDiscoveryFailure;
 };
 
 /// Owns the definitive Routing Ledger and the terminal state of one Asset Run.
@@ -88,6 +93,14 @@ class AssetRunResult final {
     /// Borrows owned discovery observations, including excluded linked entries and their paths.
     [[nodiscard]] std::span<const RunDiagnostic> diagnostics() const noexcept;
 
+    /// Borrows fatal preflight failures; a nonempty list means no execution was attempted.
+    [[nodiscard]] std::span<const RunFailure> failures() const noexcept { return _failures; }
+
+    /// Borrows the complete collision evidence retained from preflight.
+    [[nodiscard]] std::span<const ArchiveCollision> collisions() const noexcept {
+        return _collisions;
+    }
+
    private:
     friend class AssetRun;
 
@@ -96,7 +109,8 @@ class AssetRunResult final {
                    std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
                    std::vector<std::filesystem::path> unsupportedExplicitPaths,
                    std::size_t nestedArchiveCount, bool cancelled,
-                   std::vector<RunDiagnostic> diagnostics) noexcept;
+                   std::vector<RunDiagnostic> diagnostics, std::vector<RunFailure> failures,
+                   std::vector<ArchiveCollision> collisions) noexcept;
 
     routing::RoutingLedger _ledger;
     std::map<routing::SkipReason, std::size_t> _skippedArchiveCounts;
@@ -104,6 +118,8 @@ class AssetRunResult final {
     std::size_t _nestedArchiveCount;
     bool _cancelled;
     std::vector<RunDiagnostic> _diagnostics;
+    std::vector<RunFailure> _failures;
+    std::vector<ArchiveCollision> _collisions;
 };
 
 /// Orchestrates Archive-first discovery, definitive routing, and carried Asset execution.
@@ -118,9 +134,11 @@ class AssetRun final {
     /// and attempts, and once more after the final attempt, so an adapter is never abandoned
     /// mid-operation and a cancelled run never reaches diagnostics or finalization. A finalizer
     /// reports cancellation by returning false. Filesystem races are skipped during discovery;
-    /// adapter exceptions propagate.
-    [[nodiscard]] AssetRunResult execute(std::span<const std::filesystem::path> roots,
-                                         const AssetRunAdapters& adapters) const;
+    /// adapter exceptions propagate. Manifest/order failures retain evidence and stop all mutation.
+    /// Archive precedence is validated before the first extraction callback.
+    [[nodiscard]] AssetRunResult execute(
+        std::span<const std::filesystem::path> roots, const AssetRunAdapters& adapters,
+        const ArchivePrecedence& precedence = ArchivePrecedence::deterministicDiscovery()) const;
 
    private:
     routing::RoutingPolicy _policy;

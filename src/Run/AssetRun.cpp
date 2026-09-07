@@ -10,13 +10,17 @@ AssetRunResult::AssetRunResult(routing::RoutingLedger ledger,
                                std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
                                std::vector<std::filesystem::path> unsupportedExplicitPaths,
                                const std::size_t nestedArchiveCount, const bool cancelled,
-                               std::vector<RunDiagnostic> diagnostics) noexcept
+                               std::vector<RunDiagnostic> diagnostics,
+                               std::vector<RunFailure> failures,
+                               std::vector<ArchiveCollision> collisions) noexcept
     : _ledger(std::move(ledger)),
       _skippedArchiveCounts(std::move(skippedArchiveCounts)),
       _unsupportedExplicitPaths(std::move(unsupportedExplicitPaths)),
       _nestedArchiveCount(nestedArchiveCount),
       _cancelled(cancelled),
-      _diagnostics(std::move(diagnostics)) {}
+      _diagnostics(std::move(diagnostics)),
+      _failures(std::move(failures)),
+      _collisions(std::move(collisions)) {}
 
 const routing::RoutingLedger& AssetRunResult::ledger() const noexcept { return _ledger; }
 
@@ -59,11 +63,13 @@ std::span<const RunDiagnostic> AssetRunDiagnostics::diagnostics() const noexcept
 AssetRun::AssetRun(routing::RoutingPolicy policy) noexcept : _policy(std::move(policy)) {}
 
 AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> roots,
-                                 const AssetRunAdapters& adapters) const {
+                                 const AssetRunAdapters& adapters,
+                                 const ArchivePrecedence& precedence) const {
     const ArchiveFirstAssetDiscovery discovery(_policy);
     bool cancelled = false;
-    const auto discoveryResult =
-        discovery.discover(roots, [&](const std::span<const routing::RoutedAsset> archives) {
+    const auto discoveryResult = discovery.discover(
+        roots,
+        [&](const std::span<const routing::RoutedAsset> archives) {
             std::size_t completed = 0;
             for (const auto& archive : archives) {
                 // An in-flight extraction must finish so cancellation cannot leave a partial
@@ -88,7 +94,7 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
             }
             return !cancelled;
         },
-        adapters.isCancelled);
+        adapters.isCancelled, precedence, adapters.reportArchiveCollisions);
     const routing::AssetRouter router(_policy);
     std::map<routing::SkipReason, std::size_t> skippedArchiveCounts;
     for (const auto reason :
@@ -103,7 +109,17 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
                                            discoveryResult.unsupportedExplicitPaths().end()),
         discoveryResult.nestedArchiveCount(), discoveryResult.cancelled(),
         std::vector<RunDiagnostic>(discoveryResult.diagnostics().begin(),
-                                   discoveryResult.diagnostics().end()));
+                                   discoveryResult.diagnostics().end()),
+        std::vector<RunFailure>(discoveryResult.failures().begin(),
+                                discoveryResult.failures().end()),
+        std::vector<ArchiveCollision>(discoveryResult.collisions().begin(),
+                                      discoveryResult.collisions().end()));
+    if (!result.failures().empty()) {
+        // A failed preflight has no trustworthy tree and must never reach mutation or finalization.
+        if (adapters.reportDiscoveryFailure)
+            for (const auto& failure : result.failures()) adapters.reportDiscoveryFailure(failure);
+        return result;
+    }
     constexpr std::array targetOrder{routing::OptimizerTarget::Texture,
                                      routing::OptimizerTarget::Mesh,
                                      routing::OptimizerTarget::Animation};
