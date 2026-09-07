@@ -4,6 +4,10 @@ configure_file (
     "${CMAKE_CURRENT_SOURCE_DIR}/Version.h"
     )
 
+add_subdirectory(AssetRouting)
+add_subdirectory(AssetExecution)
+add_subdirectory(Run)
+
 # Find includes in corresponding build directories
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
@@ -12,10 +16,9 @@ find_package(Qt5 COMPONENTS Core Widgets REQUIRED)
 #Qt Linguist
 find_package(Qt5LinguistTools REQUIRED)
 
-#Setting GUI
-#Comment out the next lines to create a CLI version instead (untested)
-add_compile_definitions(GUI)
-set(GUI true)
+# Build either the desktop GUI or the command-line application from the same run-setup path.
+option(CAO_BUILD_GUI "Build the Qt desktop GUI instead of the command-line application" ON)
+set(GUI ${CAO_BUILD_GUI})
 
 #SOURCES
 
@@ -39,6 +42,8 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/PluginsOperations.h
     ${CMAKE_CURRENT_SOURCE_DIR}/Profiles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Profiles.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/Run/ApplicationRunSetup.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Run/ApplicationRunSetup.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesFormats.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesOptimizer.h
@@ -77,17 +82,38 @@ set(TS_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/translations/AssetsOpt_zh_CN.ts
     )
 
-message("Updating translations files")
-qt5_create_translation(QM_FILES ${TS_FILES} ${SOURCES})
+if(GUI)
+    message("Updating translations files")
+    qt5_create_translation(QM_FILES ${TS_FILES} ${SOURCES})
+endif()
 
 #plog
 message("Adding Plog library")
-find_path(PLOG_INCLUDE_DIRS "plog/Appenders/AndroidAppender.h")
 add_compile_definitions(PLOG_OMIT_PLOG_DEFINES)
+
+add_library(cao_application_logging
+    ${CMAKE_CURRENT_SOURCE_DIR}/ApplicationLogging.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ApplicationLogging.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/Logger.h
+)
+target_link_libraries(cao_application_logging PRIVATE Qt5::Core plog::plog)
+target_include_directories(cao_application_logging
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_features(cao_application_logging PUBLIC cxx_std_20)
+
 #bsa
 find_package(bethutil CONFIG REQUIRED)
 #Nif Library
 find_package(nifly CONFIG REQUIRED)
+
+add_library(cao_mesh_reference_maintenance
+    ${CMAKE_CURRENT_SOURCE_DIR}/MeshReferenceMaintenance.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/MeshReferenceMaintenance.h
+)
+target_link_libraries(cao_mesh_reference_maintenance PUBLIC nifly)
+target_include_directories(cao_mesh_reference_maintenance PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(cao_mesh_reference_maintenance PUBLIC cxx_std_20)
 # DirectXTex
 find_package(directxtex CONFIG REQUIRED)
 
@@ -101,12 +127,23 @@ set(CMAKE_AUTORCC ON)
 
 #Build
 message("Adding CAO.exe")
-add_executable(Cathedral_Assets_Optimizer WIN32 ${SOURCES} ${RESOURCES} ${QM_FILES})
+if(GUI)
+    add_executable(Cathedral_Assets_Optimizer WIN32 ${SOURCES} ${RESOURCES} ${QM_FILES})
+    target_compile_definitions(Cathedral_Assets_Optimizer PRIVATE GUI)
+else()
+    add_executable(Cathedral_Assets_Optimizer ${SOURCES} ${RESOURCES} ${QM_FILES})
+endif()
 #Windows 7 compatibility
 target_link_libraries(Cathedral_Assets_Optimizer PRIVATE
+    cao_application_logging
+    cao_asset_execution
+    cao_asset_routing
+    cao_asset_run
+    cao_run_discovery
+    cao_run_setup
+    cao_mesh_reference_maintenance
     Qt5::Core Qt5::Widgets
-    nifly Microsoft::DirectXTex btu::bethutil)
-target_include_directories(Cathedral_Assets_Optimizer PRIVATE ${PLOG_INCLUDE_DIRS})
+    nifly Microsoft::DirectXTex btu::bethutil plog::plog)
 
 # PCH
 target_precompile_headers(Cathedral_Assets_Optimizer PRIVATE "pch.h")

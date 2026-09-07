@@ -4,13 +4,14 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "Version.h"
+#include "ApplicationLogging.h"
 #ifdef GUI
 #include "MainWindow.h"
 #endif
 #include "Manager.h"
+#include "Run/ApplicationRunSetup.h"
 
-void displayError(const std::string &err)
-{
+void displayError(const std::string& err) {
 #ifdef GUI
     QMessageBox box(QMessageBox::Critical, "Unknown error", QString::fromStdString(err));
     box.exec();
@@ -21,8 +22,7 @@ void displayError(const std::string &err)
     PLOG_FATAL << err;
 }
 
-int main(int argc, char *argv[])
-{
+int main(int argc, char* argv[]) {
 #ifdef GUI
     QApplication app(argc, argv);
 #else
@@ -40,19 +40,30 @@ int main(int argc, char *argv[])
     qtTranslator.load(QLocale(), "AssetsOpt", "_", "translations");
     QCoreApplication::installTranslator(&AssetsOptTranslator);
 
-#ifdef GUI
-    MainWindow *window = new MainWindow;
-#else
-    Manager *manager = new Manager(QCoreApplication::arguments());
-#endif
-
     try {
+        OptionsCAO options;
 #ifdef GUI
+        options.readFromIni(Profiles::optionsSettings());
+#else
+        options.parseArguments(QCoreApplication::arguments());
+#endif
+        cao::application::configureLogging(Profiles::logPath(), options.bDebugLog);
+
+#ifdef GUI
+        MainWindow* window = new MainWindow;
         window->show();
 #else
-        manager->runOptimization();
+        const auto setup = cao::run::prepareApplicationRun(options);
+        if (!setup.hasPolicy()) {
+            for (const auto& message : cao::run::policyValidationErrorMessages(setup.errors()))
+                std::cerr << message.toStdString() << std::endl;
+            return 1;
+        }
+
+        Manager manager(options, *setup.policy());
+        return manager.runOptimization() ? 0 : 1;
 #endif
-    } catch (const std::exception &e) {
+    } catch (const std::exception& e) {
         displayError(e.what());
         return 1;
     }

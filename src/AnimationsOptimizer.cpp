@@ -1,22 +1,20 @@
 /*!
-  * Stripped down version of this file https://github.com/aerisarn/ck-cmd/blob/master/src/commands/hkx/Convert.cpp
-  */
+ * Stripped down version of this file
+ * https://github.com/aerisarn/ck-cmd/blob/master/src/commands/hkx/Convert.cpp
+ */
 
 #include "AnimationsOptimizer.h"
 
-void AnimationsOptimizer::convert(const QString &filePath)
-{
+bool AnimationsOptimizer::convert(const QString& filePath) {
     std::call_once(onceFlag, [this] {
         hkxcmdFound = QFile::exists(hkxcmdPath);
-        if (!hkxcmdFound)
-        {
+        if (!hkxcmdFound) {
             PLOG_ERROR << "HKXCMD not found. Animations won't be processed";
             return;
         }
     });
 
-    if (!hkxcmdFound)
-        return;
+    if (!hkxcmdFound) return false;
 
     const QString tempHkx = "___tempAnimFile.hkx";
     const QString outHkx = "___tempAnimFile-out.hkx";
@@ -27,7 +25,7 @@ void AnimationsOptimizer::convert(const QString &filePath)
     QFile file(filePath);
     if (!file.copy(tempHkx)) {
         PLOG_ERROR << QString("Cannot copy %1 in order to convert it").arg(filePath);
-        return;
+        return false;
     }
 
     QProcess hkxcmd(this);
@@ -41,15 +39,18 @@ void AnimationsOptimizer::convert(const QString &filePath)
     const bool success = !output.contains("not loadable");
 
     if (!success) {
-        PLOG_WARNING << QString("Cannot convert %1, it is probably already converted.").arg(filePath);
-        return;
+        PLOG_WARNING
+            << QString("Cannot convert %1, it is probably already converted.").arg(filePath);
+        return false;
     }
 
     QFile::remove(filePath);
     if (!QFile::rename(outHkx, filePath)) {
-        PLOG_ERROR << QString("Failed to convert %1: Cannot copy it back to its path").arg(filePath);
-        return;
+        PLOG_ERROR
+            << QString("Failed to convert %1: Cannot copy it back to its path").arg(filePath);
+        return false;
     }
 
     PLOG_INFO << QString("Successfully converted %1").arg(filePath);
+    return true;
 }

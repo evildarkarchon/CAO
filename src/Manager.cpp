@@ -4,22 +4,40 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #include "Manager.h"
 
-Manager::Manager(const OptionsCAO& opt)
-  : _options(opt)
+#include "BsaOptimizer.h"
+#include "MainOptimizer.h"
+#include "Run/AssetRun.h"
+
+#include <filesystem>
+#include <vector>
+
+namespace {
+/// Returns the stable domain label used in one aggregate skip log message.
+QString skipReasonName(const cao::routing::SkipReason reason) {
+    switch (reason) {
+        case cao::routing::SkipReason::DisabledPhase:
+            return QStringLiteral("DisabledPhase");
+        case cao::routing::SkipReason::DisabledAssetKind:
+            return QStringLiteral("DisabledAssetKind");
+        case cao::routing::SkipReason::ExcludedAssetVariant:
+            return QStringLiteral("ExcludedAssetVariant");
+    }
+    return QStringLiteral("UnknownSkipReason");
+}
+}  // namespace
+
+Manager::Manager(const OptionsCAO& opt, cao::routing::RoutingPolicy routingPolicy)
+    : _options(opt),
+      _routingPolicy(std::move(routingPolicy))
 
 {
     init();
 }
 
-void Manager::init()
-{
-    //Preparing logging
-    initCustomLogger(Profiles::logPath(), _options.bDebugLog);
-
+void Manager::init() {
     PLOG_VERBOSE << "Checking settings...";
     const QString error = _options.isValid();
-    if (!error.isEmpty())
-    {
+    if (!error.isEmpty()) {
         PLOG_FATAL << error;
         throw std::runtime_error("Options are not valid." + error.toStdString());
     }
@@ -28,152 +46,154 @@ void Manager::init()
 
     PLOG_INFO << "Listing files and directories...";
     listDirectories();
-    listFiles();
 }
 
-void Manager::listDirectories()
-{
+void Manager::listDirectories() {
     _modsToProcess.clear();
 
     if (_options.mode == OptionsCAO::SingleMod)
         _modsToProcess << _options.userPath;
 
-    else if (_options.mode == OptionsCAO::SeveralMods)
-    {
+    else if (_options.mode == OptionsCAO::SeveralMods) {
         const QDir dir(_options.userPath);
         for (auto subDir : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
-            if (!subDir.contains("separator")
-                && !_ignoredMods.contains(subDir, Qt::CaseInsensitive)) //Separators are empty directories used by MO2
+            if (!subDir.contains("separator") &&
+                !_ignoredMods.contains(
+                    subDir, Qt::CaseInsensitive))  // Separators are empty directories used by MO2
                 _modsToProcess << dir.filePath(subDir);
     }
 }
 
-void Manager::printProgress(const int &total, const QString &text = "Processing files")
-{
+void Manager::printProgress(const int& total, const QString& text = "Processing files") {
 #ifndef GUI
-    QTextStream(stdout) << "PROGRESS:|" << text << " - %v/%m - %p%|" << _numberCompletedFiles << '|' << total << endl;
+    QTextStream(stdout) << "PROGRESS:|" << text << " - %v/%m - %p%|" << _numberCompletedFiles << '|'
+                        << total << endl;
 #endif
 #ifdef GUI
     emit progressBarTextChanged(text + "- %v/%m - %p%", total, _numberCompletedFiles);
 #endif
 }
 
-void Manager::cancelProcess()
-{
-    _isCancelled = true;
-}
+void Manager::cancelProcess() { _isCancelled = true; }
 
-void Manager::listFiles()
-{
-    _numberFiles = 0;
-    _files.clear();
-    BSAs.clear();
-
-    for (auto &subDir : _modsToProcess)
-    {
-        QDirIterator it(subDir, QDirIterator::Subdirectories);
-        while (it.hasNext())
-        {
-            it.next();
-
-            const bool mesh = it.fileName().endsWith(".nif", Qt::CaseInsensitive)
-                              || it.fileName().endsWith(".btr", Qt::CaseInsensitive)
-                              || it.fileName().endsWith(".bto", Qt::CaseInsensitive);
-            const bool textureDDS = it.fileName().endsWith(".dds", Qt::CaseInsensitive);
-            const bool textureTGA = it.fileName().endsWith(".tga", Qt::CaseInsensitive);
-            const bool animation = _options.bAnimationsOptimization
-                                   && it.fileName().endsWith(".hkx", Qt::CaseInsensitive);
-
-            const auto u8BsaExt = btu::bsa::Settings::get(Profiles::bsaGame()).extension;
-            const auto asciiBsaExt = btu::common::as_ascii(u8BsaExt);
-            const auto bsaExt = QString::fromUtf8(asciiBsaExt.data(),
-                                                  static_cast<int>(asciiBsaExt.size()));
-
-            const bool bsa = _options.bBsaExtract
-                             && it.fileName().endsWith(bsaExt, Qt::CaseInsensitive);
-
-            auto addToList = [&](QStringList &list) {
-                ++_numberFiles;
-                list << it.filePath();
-            };
-
-            if (mesh || textureDDS || textureTGA || animation)
-                addToList(_files);
-            else if (bsa)
-                addToList(BSAs);
-        }
-    }
-}
-
-void Manager::readIgnoredMods()
-{
-    QFile &&ignoredModsFile = Profiles::getFile("ignoredMods.txt");
+void Manager::readIgnoredMods() {
+    QFile&& ignoredModsFile = Profiles::getFile("ignoredMods.txt");
     _ignoredMods = FilesystemOperations::readFile(ignoredModsFile);
 
-    if (_ignoredMods.isEmpty())
-    {
-        PLOG_WARNING << "ignoredMods.txt not found. All mods will be processed, including tools such as Nemesis or "
+    if (_ignoredMods.isEmpty()) {
+        PLOG_WARNING << "ignoredMods.txt not found. All mods will be processed, including tools "
+                        "such as Nemesis or "
                         "Bodyslide studio.";
     }
 }
 
-void Manager::runOptimization()
-{
+bool Manager::runOptimization() {
     PLOG_DEBUG << "Game: " << Profiles::currentProfile();
     PLOG_INFO << "Processing: " + _options.userPath;
     PLOG_INFO << "Beginning...";
 
     MainOptimizer optimizer(_options);
+    BSAOptimizer bsaOptimizer;
+    std::vector<std::filesystem::path> roots;
+    roots.reserve(static_cast<std::size_t>(_modsToProcess.size()));
+    for (const auto& mod : _modsToProcess) roots.emplace_back(mod.toStdWString());
 
-    //Extracting BSAs
-    for (const auto &file : BSAs) {
-        if (_isCancelled)
-            return;
+    const cao::run::AssetRun assetRun(_routingPolicy);
+    std::size_t failedAssets = 0;
+    auto lastLooseProgress = QDateTime::currentDateTime();
+    const auto result = assetRun.execute(
+        roots,
+        cao::run::AssetRunAdapters{
+            [&](const cao::routing::RoutedAsset& archive) {
+                bsaOptimizer.extract(QString::fromStdWString(archive.executionPath().wstring()),
+                                     _options.bBsaDeleteBackup);
+            },
+            [&](const cao::routing::RoutedAsset& asset) {
+                // MainOptimizer owns the outcome: it quarantines unreadable inputs and records
+                // failed Texture conversions so the later Mesh phase withholds the dependent
+                // reference rewrite. The run itself continues past a single failed Asset.
+                // Preserve failures for the terminal status even when quarantine or dependent
+                // reference handling lets the remaining work finish safely.
+                if (!optimizer.process(asset).succeeded()) ++failedAssets;
+            },
+            [&](const cao::run::AssetRunProgress& progress) {
+                _numberCompletedFiles = static_cast<int>(progress.completed);
+                const auto text =
+                    progress.phase == cao::routing::RoutedAssetPhase::ArchiveExtraction
+                        ? QStringLiteral("Extracting BSAs")
+                        : QStringLiteral("Processing files");
+                const auto now = QDateTime::currentDateTime();
+                const bool shouldReport =
+                    progress.phase == cao::routing::RoutedAssetPhase::ArchiveExtraction ||
+                    progress.completed == progress.total || now > lastLooseProgress.addMSecs(2000);
+                if (shouldReport) {
+                    // Loose Asset progress is throttled because GUI signal delivery and CLI
+                    // output are comparatively expensive.
+                    printProgress(static_cast<int>(progress.total), text);
+                    lastLooseProgress = now;
+                }
+            },
+            [&] { return _isCancelled.load(); },
+            [&] {
+                _numberCompletedFiles = 0;
+                printProgress(_modsToProcess.size(), "Packing BSAs");
 
-        optimizer.process(file);
-        ++_numberCompletedFiles;
-        printProgress(BSAs.size(), "Extracting BSAs");
+                // Packing BSAs. The compiled policy, not the raw option, is the run authority:
+                // it already rejected Archive creation the selected profile does not support.
+                if (_routingPolicy.requests(cao::routing::RequestedWork::ArchiveCreation))
+                    for (const auto& folder : _modsToProcess) {
+                        if (_isCancelled) return false;
+
+                        if (QDir(folder).exists()) {
+                            PLOG_INFO << "Creating BSA...";
+                            bsaOptimizer.packAll(folder, _options);
+                        }
+                        ++_numberCompletedFiles;
+                        printProgress(_modsToProcess.size(),
+                                      "Packing BSAs - Folder:  " + QFileInfo(folder).fileName());
+                    }
+
+                FilesystemOperations::deleteEmptyDirectories(_options.userPath);
+                return true;
+            },
+            [&](const cao::run::AssetRunDiagnostics& diagnostics) {
+                for (const auto& diagnostic : diagnostics.diagnostics()) {
+                    PLOG_WARNING << QStringLiteral("%1: %2")
+                                        .arg(QString::fromStdString(diagnostic.detail()))
+                                        .arg(QString::fromStdWString(diagnostic.path().wstring()));
+                }
+                for (const auto reason : {cao::routing::SkipReason::DisabledPhase,
+                                          cao::routing::SkipReason::DisabledAssetKind,
+                                          cao::routing::SkipReason::ExcludedAssetVariant}) {
+                    const auto count = diagnostics.skippedAssetCount(reason);
+                    if (count != 0) {
+                        PLOG_INFO << QStringLiteral("Skipped %1 recognized Assets: %2")
+                                         .arg(count)
+                                         .arg(skipReasonName(reason));
+                    }
+                }
+                for (const auto& path : diagnostics.unsupportedExplicitPaths()) {
+                    PLOG_ERROR << "Cannot process: " + QString::fromStdWString(path.wstring());
+                }
+                // A warning rather than an error: the run is intact and every other Asset was
+                // processed. The author still needs telling, because the game will not read these
+                // Archives either, so their contents are silently absent in-game.
+                if (const auto nested = diagnostics.nestedArchiveCount(); nested != 0) {
+                    PLOG_WARNING << QStringLiteral(
+                                        "Ignored %1 Archives found inside another Archive, which "
+                                        "the game does not read")
+                                        .arg(nested);
+                }
+            }});
+
+    if (result.cancelled()) return false;
+
+    if (failedAssets != 0) {
+        PLOG_ERROR << QStringLiteral("Process completed with %1 failed Assets<br><br><br>")
+                          .arg(failedAssets);
+    } else {
+        PLOG_INFO << "Process completed<br><br><br>";
     }
-
-    //Listing newly extracted files
-    listFiles();
-
-    printProgress(_numberFiles);
-
-    //Using time in order to prevent printing progress too often
-    QDateTime time1 = QDateTime::currentDateTime();
-    QDateTime time2;
-    for (const auto &file : _files)
-    {
-        optimizer.process(file);
-        ++_numberCompletedFiles;
-        if (_isCancelled)
-            return;
-
-        time2 = QDateTime::currentDateTime();
-        if (time2 > time1.addMSecs(2000)) {
-            printProgress(_numberFiles);
-            time1 = time2;
-        }
-    }
-
-    _numberCompletedFiles = 0;
-    printProgress(_modsToProcess.size(), "Packing BSAs");
-
-    //Packing BSAs
-    if (_options.bBsaCreate)
-        for (const auto &folder : _modsToProcess)
-        {
-            if (_isCancelled)
-                return;
-
-            optimizer.packBsa(folder);
-            ++_numberCompletedFiles;
-            printProgress(_modsToProcess.size(),
-                          "Packing BSAs - Folder:  " + QFileInfo(folder).fileName());
-        }
-
-    FilesystemOperations::deleteEmptyDirectories(_options.userPath);
-    PLOG_INFO << "Process completed<br><br><br>";
     emit end();
+    return failedAssets == 0;
 }

@@ -1,0 +1,292 @@
+#include "Run/OptimizationRunService.h"
+#include "RunTestConfiguration.h"
+
+#include <QtTest>
+
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <mutex>
+#include <optional>
+#include <semaphore>
+#include <stdexcept>
+#include <thread>
+#include <vector>
+
+using namespace cao::run;
+using namespace std::chrono_literals;
+
+namespace {
+/// Creates a no-work request backed by an existing empty Mod Root.
+RunRequest noWorkRequest() {
+    return RunRequest::create("profile", cao::routing::ExecutionMode::Apply,
+                              ModSelection::singleModRoot(testModRoot()), {});
+}
+}  // namespace
+
+class RunEventDeliveryTests final : public QObject {
+    Q_OBJECT
+
+   private slots:
+    /// Verifies late presentation failures remain observable without rewriting a committed result.
+    void queuedFailureAfterWaitPreservesTheResult();
+    /// Verifies a dispatcher cannot revive its disabled observer through a retained closure.
+    void dispatcherThatQueuesThenThrowsDisablesDelivery();
+    /// Verifies a dispatcher failure after successful inline delivery is recorded exactly once.
+    void dispatcherThatDeliversThenThrowsIsDiagnosedOnce();
+    /// Runs queued callbacks against an active producer and detects concurrent observer entry.
+    void concurrentDispatcherPreservesSerializedSequences();
+    /// Verifies terminal delivery observes a released process-wide run slot.
+    void terminalObserverStartsTheNextRun();
+    /// Verifies structural and active-run rejections never invoke presentation callbacks.
+    void rejectedStartsEmitNoEvents();
+    /// Catches wait returning while terminal delivery has not reached the caller's queue yet.
+    void waitIncludesTerminalDispatcherAdmission();
+    /// Catches callback completion blocking wait or cancellation of an old run leaking into its successor.
+    void blockedTerminalObserverCanRestartWhileAnotherThreadWaits();
+};
+
+void RunEventDeliveryTests::queuedFailureAfterWaitPreservesTheResult() {
+    InlineRunScheduler scheduler;
+    OptimizationRunService service{scheduler, testRunConfiguration()};
+    std::vector<std::function<void()>> queued;
+    std::vector<RunEvent> healthy;
+    std::size_t failingCalls{};
+    auto started = service.start(noWorkRequest(), std::vector<RunObservation>{
+        {[&](const RunEvent&) {
+             ++failingCalls;
+             throw std::runtime_error("late presentation failure");
+         },
+         [&](std::function<void()> delivery) { queued.push_back(std::move(delivery)); }},
+        {[&](const RunEvent& event) { healthy.push_back(event); }, {}}});
+    const auto* terminal = &started.handle()->wait();
+    const auto beforeDelivery = started.handle()->snapshot();
+    const auto id = terminal->runId();
+    const auto phaseCount = terminal->phases().size();
+    QVERIFY(started.handle()->diagnostics().empty());
+    QVERIFY(!healthy.empty());
+    QVERIFY(std::holds_alternative<std::shared_ptr<const OptimizationRunResult>>(
+        healthy.back().payload()));
+    QVERIFY(!queued.empty());
+    for (auto& delivery : queued) delivery();
+
+    QCOMPARE(failingCalls, std::size_t{1});
+    QVERIFY(started.handle()->terminalResult() == terminal);
+    QCOMPARE(terminal->outcome(), RunOutcome::Succeeded);
+    QCOMPARE(terminal->runId(), id);
+    QCOMPARE(terminal->phases().size(), phaseCount);
+    const auto diagnostics = started.handle()->diagnostics();
+    QCOMPARE(diagnostics.size(), std::size_t{1});
+    QCOMPARE(diagnostics.front().code(), RunDiagnosticCode::ObserverFailed);
+    QCOMPARE(diagnostics.front().detail(), std::string{"late presentation failure"});
+    QCOMPARE(beforeDelivery.diagnosticCount(), std::size_t{0});
+    QCOMPARE(started.handle()->snapshot().diagnosticCount(), std::size_t{1});
+    QCOMPARE(started.handle()->snapshot().outcome(), std::optional{RunOutcome::Succeeded});
+    QVERIFY(std::holds_alternative<RunDiagnostic>(healthy.back().payload()));
+    for (std::size_t i = 0; i < healthy.size(); ++i) {
+        QCOMPARE(healthy[i].runId(), id);
+        QCOMPARE(healthy[i].sequence(), i + 1);
+    }
+}
+
+void RunEventDeliveryTests::dispatcherThatQueuesThenThrowsDisablesDelivery() {
+    InlineRunScheduler scheduler;
+    OptimizationRunService service{scheduler, testRunConfiguration()};
+    std::function<void()> retained;
+    std::size_t observerCalls{};
+    std::size_t dispatchCalls{};
+    auto started = service.start(noWorkRequest(),
+        [&](const RunEvent&) { ++observerCalls; },
+        [&](std::function<void()> delivery) {
+            ++dispatchCalls;
+            retained = std::move(delivery);
+            throw std::runtime_error("queue rejected");
+        });
+    QCOMPARE(started.handle()->wait().outcome(), RunOutcome::Succeeded);
+    QVERIFY(static_cast<bool>(retained));
+    retained();
+    QCOMPARE(observerCalls, std::size_t{0});
+    QCOMPARE(dispatchCalls, std::size_t{1});
+    const auto diagnostics = started.handle()->diagnostics();
+    QCOMPARE(diagnostics.size(), std::size_t{1});
+    QCOMPARE(diagnostics.front().code(), RunDiagnosticCode::DispatcherFailed);
+}
+
+void RunEventDeliveryTests::dispatcherThatDeliversThenThrowsIsDiagnosedOnce() {
+    InlineRunScheduler scheduler;
+    OptimizationRunService service{scheduler, testRunConfiguration()};
+    std::size_t observerCalls{};
+    std::size_t dispatchCalls{};
+    auto started = service.start(noWorkRequest(),
+        [&](const RunEvent&) { ++observerCalls; },
+        [&](std::function<void()> delivery) {
+            ++dispatchCalls;
+            delivery();
+            throw std::runtime_error("dispatcher failed after delivery");
+        });
+    QCOMPARE(started.handle()->wait().outcome(), RunOutcome::Succeeded);
+    QCOMPARE(observerCalls, std::size_t{1});
+    QCOMPARE(dispatchCalls, std::size_t{1});
+    const auto diagnostics = started.handle()->diagnostics();
+    QCOMPARE(diagnostics.size(), std::size_t{1});
+    QCOMPARE(diagnostics.front().code(), RunDiagnosticCode::DispatcherFailed);
+}
+
+void RunEventDeliveryTests::concurrentDispatcherPreservesSerializedSequences() {
+    InlineRunScheduler scheduler;
+    OptimizationRunService service{scheduler, testRunConfiguration()};
+    std::binary_semaphore firstEntered{0};
+    std::binary_semaphore releaseFirst{0};
+    std::atomic<unsigned> active{};
+    std::atomic<bool> concurrent{}, timedOut{};
+    std::mutex observationsMutex;
+    std::vector<RunEvent> events;
+    std::vector<std::jthread> deliveries;
+    auto started = service.start(noWorkRequest(),
+        [&](const RunEvent& event) {
+            if (active.fetch_add(1) != 0) concurrent.store(true);
+            if (event.sequence() == 1) {
+                firstEntered.release();
+                // Hold the first callback while the worker produces every remaining event.
+                if (!releaseFirst.try_acquire_for(5s)) timedOut.store(true);
+            }
+            {
+                const std::lock_guard lock(observationsMutex);
+                events.push_back(event);
+            }
+            active.fetch_sub(1);
+        },
+        [&](std::function<void()> delivery) {
+            deliveries.emplace_back(std::move(delivery));
+            if (deliveries.size() == 1 && !firstEntered.try_acquire_for(5s))
+                timedOut.store(true);
+        });
+    // The first queued callback is still blocked, but its admitted drain owns the terminal event.
+    const auto* terminal = &started.handle()->wait();
+    releaseFirst.release();
+    for (auto& delivery : deliveries) delivery.join();
+
+    QVERIFY(!timedOut.load());
+    QVERIFY(!concurrent.load());
+    QVERIFY(terminal != nullptr);
+    QCOMPARE(events.size(), runPhaseSequence().size() + 1);
+    for (std::size_t i = 0; i < events.size(); ++i) {
+        QCOMPARE(events[i].sequence(), i + 1);
+        QCOMPARE(events[i].runId(), terminal->runId());
+    }
+    QVERIFY(std::holds_alternative<std::shared_ptr<const OptimizationRunResult>>(
+        events.back().payload()));
+}
+
+void RunEventDeliveryTests::terminalObserverStartsTheNextRun() {
+    InlineRunScheduler scheduler;
+    OptimizationRunService service{scheduler, testRunConfiguration()};
+    OptimizationRunService nextService{scheduler, testRunConfiguration()};
+    std::optional<RunStartResult> next;
+    auto started = service.start(noWorkRequest(), [&](const RunEvent& event) {
+        if (std::holds_alternative<std::shared_ptr<const OptimizationRunResult>>(event.payload()))
+            next.emplace(nextService.start(noWorkRequest()));
+    });
+    QVERIFY(next.has_value());
+    QVERIFY(next->started());
+    QCOMPARE(next->handle()->wait().outcome(), RunOutcome::Succeeded);
+    QCOMPARE(started.handle()->wait().outcome(), RunOutcome::Succeeded);
+    QVERIFY(next->handle()->terminalResult()->runId() != started.handle()->terminalResult()->runId());
+}
+
+void RunEventDeliveryTests::rejectedStartsEmitNoEvents() {
+    InlineRunScheduler scheduler;
+    OptimizationRunService service{scheduler, testRunConfiguration()};
+    std::size_t rejectedEvents{}, rejectedDispatches{};
+    auto observer = [&](const RunEvent&) { ++rejectedEvents; };
+    auto dispatcher = [&](std::function<void()> delivery) {
+        ++rejectedDispatches;
+        delivery();
+    };
+    auto malformed =
+        service.start(RunRequest::create("", cao::routing::ExecutionMode::Apply,
+                                         ModSelection::singleModRoot(testModRoot()), {}),
+                      observer, dispatcher);
+    QCOMPARE(malformed.startError(), std::optional{StartError::MissingProfileIdentity});
+    std::optional<StartError> conflict;
+    auto started = service.start(noWorkRequest(), [&](const RunEvent& event) {
+        if (event.sequence() == 1)
+            conflict = service.start(noWorkRequest(), observer, dispatcher).startError();
+    });
+    QCOMPARE(started.handle()->wait().outcome(), RunOutcome::Succeeded);
+    QCOMPARE(conflict, std::optional{StartError::ActiveRun});
+    QCOMPARE(rejectedEvents, std::size_t{0});
+    QCOMPARE(rejectedDispatches, std::size_t{0});
+}
+
+void RunEventDeliveryTests::waitIncludesTerminalDispatcherAdmission() {
+    std::binary_semaphore atTerminalDispatcher{0}, allowEnqueue{0}, waiterEntered{0}, returned{0};
+    std::function<void()> terminalDelivery;
+    std::size_t dispatched{};
+    std::atomic<std::size_t> delivered{};
+    OptimizationRunService service{testRunConfiguration()};
+    auto started = service.start(noWorkRequest(),
+        [&](const RunEvent&) { ++delivered; },
+        [&](std::function<void()> delivery) {
+            if (++dispatched == 8) {
+                atTerminalDispatcher.release();
+                allowEnqueue.acquire();
+                terminalDelivery = std::move(delivery);
+            } else delivery();
+        });
+    atTerminalDispatcher.acquire();
+    std::jthread waiter([&] {
+        waiterEntered.release();
+        static_cast<void>(started.handle()->wait());
+        returned.release();
+    });
+    waiterEntered.acquire();
+    const bool returnedBeforeEnqueue = returned.try_acquire_for(100ms);
+    allowEnqueue.release();
+    waiter.join();
+    QVERIFY(!returnedBeforeEnqueue);
+    QCOMPARE(delivered.load(), std::size_t{7});
+    QVERIFY(static_cast<bool>(terminalDelivery));
+    terminalDelivery();
+    QCOMPARE(delivered.load(), std::size_t{8});
+}
+
+void RunEventDeliveryTests::blockedTerminalObserverCanRestartWhileAnotherThreadWaits() {
+    std::binary_semaphore terminalEntered{0}, releaseTerminal{0}, waitReturned{0};
+    OptimizationRunService service{testRunConfiguration()};
+    std::optional<RunStartResult> next;
+    auto started = service.start(noWorkRequest(), [&](const RunEvent& event) {
+        if (!std::holds_alternative<std::shared_ptr<const OptimizationRunResult>>(event.payload())) return;
+        next.emplace(service.start(noWorkRequest()));
+        terminalEntered.release();
+        releaseTerminal.acquire();
+    });
+    terminalEntered.acquire();
+    const auto beforeCancellation = started.handle()->snapshot();
+    // This request races the old callback's lifetime after the slot has already been reused.
+    started.handle()->requestCancellation();
+    const auto afterCancellation = started.handle()->snapshot();
+    std::jthread waiter([&] {
+        static_cast<void>(started.handle()->wait());
+        waitReturned.release();
+    });
+    const bool returnedWhileCallbackBlocked = waitReturned.try_acquire_for(5s);
+    // Release before assertions so a failed wait contract cannot strand owner destruction.
+    releaseTerminal.release();
+    waiter.join();
+
+    QVERIFY(returnedWhileCallbackBlocked);
+    QVERIFY(next.has_value());
+    QVERIFY(next->started());
+    QCOMPARE(beforeCancellation.outcome(), std::optional{RunOutcome::Succeeded});
+    QVERIFY(!beforeCancellation.cancellationRequested());
+    QVERIFY(afterCancellation.cancellationRequested());
+    QCOMPARE(afterCancellation.outcome(), std::optional{RunOutcome::Succeeded});
+    QCOMPARE(started.handle()->wait().outcome(), RunOutcome::Succeeded);
+    QCOMPARE(next->handle()->wait().outcome(), RunOutcome::Succeeded);
+    QVERIFY(!next->handle()->snapshot().cancellationRequested());
+    QVERIFY(next->handle()->snapshot().runId() != beforeCancellation.runId());
+}
+
+QTEST_GUILESS_MAIN(RunEventDeliveryTests)
+#include "RunEventDeliveryTests.moc"

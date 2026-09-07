@@ -10,17 +10,13 @@
  * \brief The AnimationsOptimizer class will handle all operations related to animations (hkx files)
  */
 
-class AnimationsOptimizer final : public QObject
-{
-public:
-    /*!
-   * \brief Port an Oldrim animation to Skyrim Special Edition using Bethesda Havok Post Processing Tool
-   * \param filePath The path of the file to optimize
-   * \param pkFormat The format to use
-   */
-    void convert(const QString &filePath);
+class AnimationsOptimizer final : public QObject {
+   public:
+    /// Ports an Oldrim Animation with the Havok post-processor and reports every execution failure.
+    /// Returns true only after the converted output replaces the original execution path.
+    [[nodiscard]] bool convert(const QString& filePath);
 
-private:
+   private:
     bool hkxcmdFound = false;
     std::once_flag onceFlag;
 
