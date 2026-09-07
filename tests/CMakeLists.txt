@@ -82,6 +82,11 @@ set_target_properties(cao_run_executor_tests PROPERTIES AUTOMOC ON)
 
 add_test(NAME cao_run_executor_tests COMMAND cao_run_executor_tests)
 
+add_executable(cao_durable_staging_tests DurableStagingTests.cpp)
+target_link_libraries(cao_durable_staging_tests PRIVATE Qt5::Test cao_run_executor)
+set_target_properties(cao_durable_staging_tests PROPERTIES AUTOMOC ON)
+add_test(NAME cao_durable_staging_tests COMMAND cao_durable_staging_tests)
+
 add_executable(cao_run_setup_tests
     RunSetupTests.cpp
 )
@@ -111,6 +116,7 @@ add_test(NAME cao_application_logging_tests COMMAND cao_application_logging_test
 
 add_executable(cao_main_optimizer_tests
     MainOptimizerTests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/BsaOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/AnimationsOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/FilesystemOperations.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/MainOptimizer.cpp
@@ -127,6 +133,7 @@ target_link_libraries(cao_main_optimizer_tests PRIVATE
     cao_asset_execution
     cao_asset_routing
     cao_mesh_reference_maintenance
+    cao_run_discovery
     nifly
     Microsoft::DirectXTex
     btu::bethutil

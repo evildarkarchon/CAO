@@ -73,7 +73,30 @@ MainOptimizer::MainOptimizer(const OptionsCAO& optOptions)
 
 cao::execution::AssetExecutionResult MainOptimizer::process(
     const cao::routing::RoutedAsset& asset) {
-    auto result = _assetExecutor.execute(asset);
+    auto modRoot = asset.executionPath().parent_path();
+    if (!_optOptions.userPath.isEmpty()) {
+        modRoot =
+            std::filesystem::absolute(std::filesystem::path(_optOptions.userPath.toStdWString()))
+                .lexically_normal();
+        if (_optOptions.mode == OptionsCAO::SeveralMods) {
+            // Several Mods selects each immediate child, never a nested Texture directory.
+            const auto relative = std::filesystem::absolute(asset.executionPath())
+                                      .lexically_normal()
+                                      .lexically_relative(modRoot);
+            if (!relative.empty() && *relative.begin() != "..") modRoot /= *relative.begin();
+        }
+    }
+    return finishAttempt(asset, _assetExecutor.execute(asset, modRoot));
+}
+
+cao::execution::AssetExecutionResult MainOptimizer::process(
+    const cao::routing::RoutedAsset& asset, cao::run::TemporaryArtifactRegistry& artifacts,
+    const std::filesystem::path& modRoot) {
+    return finishAttempt(asset, _assetExecutor.execute(asset, artifacts, modRoot));
+}
+
+cao::execution::AssetExecutionResult MainOptimizer::finishAttempt(
+    const cao::routing::RoutedAsset& asset, cao::execution::AssetExecutionResult result) {
     if (!result.succeeded()) {
         PLOG_ERROR << "Cannot process Routed Asset: "
                    << QString::fromStdWString(asset.executionPath().wstring()) << "\n"

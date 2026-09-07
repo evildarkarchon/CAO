@@ -175,18 +175,23 @@ class AssetExecutor final {
     explicit AssetExecutor(AssetExecutionBackend& backend) noexcept;
 
     /// Executes one attempt and cleans its temporary artifacts before returning to legacy callers.
-    [[nodiscard]] AssetExecutionResult execute(const routing::RoutedAsset& asset) const;
+    /// Supply the selected Mod Root; an omitted root treats the Asset's parent as a standalone mod.
+    [[nodiscard]] AssetExecutionResult execute(const routing::RoutedAsset& asset,
+                                               const std::filesystem::path& modRoot = {}) const;
 
     /// Executes using the run's registry, which must outlive the attempt and receive Safety Cleanup.
-    /// Texture saves register same-directory staging before creation and commit before removal.
+    /// Texture saves durably register same-volume staging before creation and commit before removal.
+    /// Supply the selected Mod Root, or omit it for a standalone Asset in its parent directory.
     [[nodiscard]] AssetExecutionResult execute(const routing::RoutedAsset& asset,
-                                               run::TemporaryArtifactRegistry& artifacts) const;
+                                               run::TemporaryArtifactRegistry& artifacts,
+                                               const std::filesystem::path& modRoot = {}) const;
 
    private:
     /// Executes one carried Texture transaction, including conversion output replacement in Apply
     /// mode.
-    [[nodiscard]] AssetExecutionResult executeTexture(
-        const routing::RoutedAsset& asset, run::TemporaryArtifactRegistry& artifacts) const;
+    [[nodiscard]] AssetExecutionResult executeTexture(const routing::RoutedAsset& asset,
+                                                      run::TemporaryArtifactRegistry& artifacts,
+                                                      const std::filesystem::path& modRoot) const;
 
     /// Executes independent Mesh operations through one load and at most one Apply-mode save.
     [[nodiscard]] AssetExecutionResult executeMesh(const routing::RoutedAsset& asset) const;

@@ -1,4 +1,5 @@
 #include "TemporaryArtifactRegistry.h"
+#include "StagingRecovery.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -18,6 +19,25 @@ bool sameArtifactPath(const std::filesystem::path& left, const std::filesystem::
 #endif
 }
 }  // namespace
+
+TemporaryArtifactRegistry::TemporaryArtifactRegistry(StagingRecovery* recovery)
+    : _ownedRecovery(recovery ? nullptr : std::make_unique<StagingRecovery>()),
+      _recovery(recovery ? recovery : _ownedRecovery.get()) {}
+TemporaryArtifactRegistry::~TemporaryArtifactRegistry() = default;
+
+std::optional<RunFailure> TemporaryArtifactRegistry::prepareRoot(
+    const std::filesystem::path& root) {
+    if (_cleaned) throw std::logic_error("Temporary artifact registration is closed");
+    return _recovery->recover(root);
+}
+
+TemporaryArtifactRegistry::StagedFile TemporaryArtifactRegistry::stageFile(
+    const std::filesystem::path& root, const std::filesystem::path& destination) {
+    if (_cleaned) throw std::logic_error("Temporary artifact registration is closed");
+    const auto path = _recovery->stageFile(root, destination);
+    _artifacts.push_back({path, false, true});
+    return {path, Registration(this, _artifacts.size() - 1)};
+}
 
 TemporaryArtifactRegistry::Registration TemporaryArtifactRegistry::registerArtifact(
     const std::filesystem::path& path) {
@@ -54,7 +74,9 @@ TemporaryArtifactRegistry::Registration TemporaryArtifactRegistry::registerArtif
 void TemporaryArtifactRegistry::commit(Registration registration) {
     if (_cleaned || registration._owner != this || _artifacts.at(registration._index).committed)
         throw std::logic_error("The temporary artifact registration is no longer owned");
-    _artifacts[registration._index].committed = true;
+    auto& artifact = _artifacts[registration._index];
+    if (artifact.durable) _recovery->releaseFile(artifact.path);
+    artifact.committed = true;
 }
 
 std::vector<RunFailure> TemporaryArtifactRegistry::performSafetyCleanup() {
@@ -63,7 +85,8 @@ std::vector<RunFailure> TemporaryArtifactRegistry::performSafetyCleanup() {
     _cleaned = true;
     std::vector<RunFailure> failures;
     for (auto artifact = _artifacts.rbegin(); artifact != _artifacts.rend(); ++artifact) {
-        if (artifact->committed) continue;
+        // The durable owner also knows paths whose creation failed before a receipt was returned.
+        if (artifact->committed || artifact->durable) continue;
         // Never recurse: unregistered contents may be committed output or retained evidence.
         std::error_code error;
         const auto parent = std::filesystem::weakly_canonical(artifact->path.parent_path(), error);
@@ -82,6 +105,9 @@ std::vector<RunFailure> TemporaryArtifactRegistry::performSafetyCleanup() {
                                   RunPhase::SafetyCleanup, error.message(),
                                   routing::PolicyValidationErrors{}, artifact->path);
     }
+    auto durableFailures = _recovery->cleanupArtifacts();
+    failures.insert(failures.end(), std::make_move_iterator(durableFailures.begin()),
+                    std::make_move_iterator(durableFailures.end()));
     return failures;
 }
 }  // namespace cao::run

@@ -8,12 +8,42 @@ class CliExecutionTests final : public QObject {
     Q_OBJECT
 
    private slots:
+    /// Stops before any Asset mutation when the selected Mod Root has unowned staging.
+    void refusesUnknownStagingBeforeAssetTraversal();
+
     /// Supplies backend-operation failures, quarantined load failures, and a successful run.
     void reportsAssetExecutionStatus_data();
 
     /// Executes the actual CLI and verifies exit status after every selected Asset is attempted.
     void reportsAssetExecutionStatus();
 };
+
+void CliExecutionTests::refusesUnknownStagingBeforeAssetTraversal() {
+    const QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QDir root(directory.path());
+    QVERIFY(root.mkpath("profiles/SSE"));
+    QVERIFY(root.mkpath("mod/.cao-staging"));
+    QVERIFY(root.mkpath("mod/textures/armor"));
+    QVERIFY(QFile::copy(QStringLiteral(CAO_SOURCE_DIR "/profiles/SSE/profile.ini"),
+                        root.filePath("profiles/SSE/profile.ini")));
+    for (const auto& path : {"mod/.cao-staging/unknown", "mod/textures/armor/input.dds"}) {
+        QFile file(root.filePath(path));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("preserve"), qint64{8});
+    }
+
+    QProcess process;
+    process.setWorkingDirectory(directory.path());
+    process.start(QStringLiteral(CAO_CLI_PATH), {root.filePath("mod"), "om", "SSE", "--t0"});
+    QVERIFY2(process.waitForStarted(), qPrintable(process.errorString()));
+    QVERIFY2(process.waitForFinished(30000), qPrintable(process.errorString()));
+    QCOMPARE(process.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(process.exitCode(), 1);
+    QVERIFY(QFile::exists(root.filePath("mod/.cao-staging/unknown")));
+    QVERIFY(QFile::exists(root.filePath("mod/textures/armor/input.dds")));
+    QVERIFY(!QFile::exists(root.filePath("mod/textures/armor/input.dds.caobad")));
+}
 
 void CliExecutionTests::reportsAssetExecutionStatus_data() {
     QTest::addColumn<QString>("extension");

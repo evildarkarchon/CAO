@@ -7,6 +7,7 @@
 #include "OptionsCAO.h"
 #include "PluginsOperations.h"
 #include "Run/ArchiveFirstAssetDiscovery.h"
+#include "Run/StagingPaths.h"
 
 BSAOptimizer::BSAOptimizer() {
     // Reading filesToNotPack to add them to the list.
@@ -143,8 +144,10 @@ QString BSAOptimizer::backup(const QString& bsaPath) const {
     return bsaBackupFile.fileName();
 }
 
-bool BSAOptimizer::isAllowedFile([[maybe_unused]] btu::Path const& dir,
+bool BSAOptimizer::isAllowedFile(btu::Path const& dir,
                                  btu::fs::directory_entry const& fileinfo) const {
+    // Packing and its source-deletion pass must never consume another lifecycle's temporary data.
+    if (cao::run::hasStagingComponent(fileinfo.path().lexically_relative(dir))) return false;
     const auto& path = fileinfo.path().u8string();
     for (const auto& fileToNotPack : filesToNotPack) {
         if (btu::common::str_contain(path, fileToNotPack, false)) {

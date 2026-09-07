@@ -5,6 +5,8 @@
 #include <fstream>
 #include <iomanip>
 #include <map>
+#include <random>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
 
@@ -22,6 +24,14 @@ namespace {
 namespace fs = std::filesystem;
 
 struct RecoveryCancelled {};
+
+/// Separates an exclusively rejected name from failures after the writer acquired its file.
+class CreationCollision final : public std::runtime_error {
+   public:
+    explicit CreationCollision(const fs::path& path)
+        : std::runtime_error("An unowned entry already occupies a new staging path: " +
+                             path.string()) {}
+};
 
 /// Stops between read-only steps or atomic removals; cancellation is not a preparation failure.
 void observeCancellation(std::stop_token stop) {
@@ -69,13 +79,14 @@ fs::file_status inspect(const fs::path& path) {
 
 enum class OpenMode { DirectoryPin, OwnershipLock, ManifestPin, TemporaryFile };
 
-/// Holds existing entries; files and directories are pinned against Windows replacement.
-/// No open here creates or truncates anything. OS process teardown releases abandoned locks.
+/// Pins entries against Windows replacement and can exclusively create a new ownership lock.
+/// Existing entries are never truncated. OS process teardown releases abandoned locks.
 class NativeLock final {
    public:
-    /// Opens an existing entry with mode-specific sharing and ownership checks. Acquisition
-    /// failures throw RecoveryError (or system_error on POSIX); the handle lives until destruction.
-    explicit NativeLock(const fs::path& path, OpenMode mode) : _path(path), _mode(mode) {
+    /// Opens an entry with mode-specific sharing and identity checks; create exclusively claims a
+    /// new owner lock. Acquisition failures throw; the handle lives until destruction.
+    explicit NativeLock(const fs::path& path, OpenMode mode, bool create = false)
+        : _path(path), _mode(mode) {
         const bool directory = mode == OpenMode::DirectoryPin;
 #ifdef _WIN32
         const auto access = mode == OpenMode::TemporaryFile
@@ -85,7 +96,7 @@ class NativeLock final {
             path.c_str(), access,
             directory ? FILE_SHARE_READ | FILE_SHARE_WRITE
                       : (mode == OpenMode::OwnershipLock ? 0 : FILE_SHARE_READ),
-            nullptr, OPEN_EXISTING,
+            nullptr, create ? CREATE_NEW : OPEN_EXISTING,
             FILE_FLAG_OPEN_REPARSE_POINT | (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0), nullptr);
         if (_handle == INVALID_HANDLE_VALUE) {
             const auto error = GetLastError();
@@ -107,8 +118,10 @@ class NativeLock final {
             unverified(path, "The opened staging entry does not match its expected identity type");
         }
 #else
-        _handle =
-            open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | (directory ? O_DIRECTORY : 0));
+        _handle = open(path.c_str(),
+                       O_RDONLY | O_NOFOLLOW | O_CLOEXEC | (directory ? O_DIRECTORY : 0) |
+                           (create ? O_CREAT | O_EXCL : 0),
+                       0600);
         if (_handle < 0) throw std::system_error(errno, std::generic_category());
         struct stat info{};
         const bool valid =
@@ -194,16 +207,15 @@ bool safeRelativeName(const std::string& name) {
     return pathText(path) == name && name.find("//") == std::string::npos;
 }
 
-/// Parses the bounded v1 protocol, proving root/run identity and parent-before-child ownership.
+/// Parses bounded v1/v2 records, proving root/run identity and parent-before-child ownership.
 std::vector<Artifact> readManifest(const fs::path& staging, const fs::path& root,
-                                   std::stop_token stop) {
+                                   std::stop_token stop, unsigned& version) {
     const auto manifest = staging / "ownership.manifest";
     if (!fs::is_regular_file(inspect(manifest)) || fs::file_size(manifest) > 8 * 1024 * 1024)
         unverified(manifest, "The ownership manifest is missing or exceeds the format limit");
     std::ifstream input(manifest, std::ios::binary);
     std::string magic;
-    unsigned version{};
-    if (!(input >> magic >> version) || magic != "CAO-STAGING" || version != 1)
+    if (!(input >> magic >> version) || magic != "CAO-STAGING" || (version != 1 && version != 2))
         unverified(manifest, "The CAO ownership manifest signature or version is invalid");
     if (quotedString(input, manifest) != pathText(root))
         unverified(manifest, "The ownership manifest belongs to a different Mod Root");
@@ -250,7 +262,8 @@ std::vector<Artifact> readManifest(const fs::path& staging, const fs::path& root
 /// Missing registrations are legal: a crash may occur after registration but before creation.
 std::map<fs::path, std::unique_ptr<NativeLock>> validateTree(const fs::path& staging,
                                                              const std::vector<Artifact>& artifacts,
-                                                             std::stop_token stop) {
+                                                             std::stop_token stop,
+                                                             unsigned version) {
     std::map<fs::path, bool> expected;
     for (const auto& artifact : artifacts) {
         observeCancellation(stop);
@@ -261,6 +274,14 @@ std::map<fs::path, std::unique_ptr<NativeLock>> validateTree(const fs::path& sta
         observeCancellation(stop);
         const auto relative = entry.path().lexically_relative(staging);
         if (relative == "owner.lock" || relative == "ownership.manifest") continue;
+        // A valid v2 manifest owns this fixed scratch control even if a crash truncated it.
+        if (version == 2 && relative == "ownership.manifest.next") {
+            if (!fs::is_regular_file(inspect(entry.path())))
+                unverified(entry.path(), "The manifest scratch control is not a regular file");
+            pins.emplace(relative,
+                         std::make_unique<NativeLock>(entry.path(), OpenMode::TemporaryFile));
+            continue;
+        }
         const auto found = expected.find(relative);
         if (found == expected.end())
             unverified(entry.path(), "Staging contains an unregistered entry");
@@ -273,14 +294,222 @@ std::map<fs::path, std::unique_ptr<NativeLock>> validateTree(const fs::path& sta
     }
     return pins;
 }
+
+/// Generates an unpredictable portable component; exclusive creation still arbitrates collisions.
+std::string nonce() {
+    std::random_device random;
+    std::ostringstream result;
+    result << std::hex << std::setfill('0');
+    for (unsigned i = 0; i < 4; ++i) result << std::setw(8) << random();
+    return result.str();
+}
+
+/// Creates without truncation and flushes all bytes before returning; failure preserves the file.
+void writeNewFile(const fs::path& path, const std::string& bytes) {
+#ifdef _WIN32
+    const auto handle = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        const auto error = GetLastError();
+        if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS)
+            throw CreationCollision(path);
+        throw std::system_error(static_cast<int>(error), std::system_category());
+    }
+    DWORD written{};
+    const bool success =
+        WriteFile(handle, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) &&
+        written == bytes.size() && FlushFileBuffers(handle);
+    const auto error = GetLastError();
+    CloseHandle(handle);
+    if (!success) throw std::system_error(static_cast<int>(error), std::system_category());
+#else
+    const auto handle =
+        open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (handle < 0) {
+        if (errno == EEXIST) throw CreationCollision(path);
+        throw std::system_error(errno, std::generic_category());
+    }
+    const auto written = write(handle, bytes.data(), bytes.size());
+    const bool success =
+        written >= 0 && static_cast<std::size_t>(written) == bytes.size() && fsync(handle) == 0;
+    const auto error = errno;
+    close(handle);
+    if (!success) throw std::system_error(error, std::generic_category());
+#endif
+}
+
+/// Publishes a complete v2 snapshot before producers may create any newly owned entries.
+void publishManifest(const fs::path& root, const std::string& runId, const fs::path& child,
+                     const std::vector<Artifact>& artifacts) {
+    const auto staging = root / ".cao-staging";
+    const auto scratch = staging / "ownership.manifest.next";
+    const auto manifest = staging / "ownership.manifest";
+    std::ostringstream output;
+    output << "CAO-STAGING 2\n"
+           << std::quoted(pathText(root)) << '\n'
+           << std::quoted(runId) << ' ' << std::quoted(pathText(child)) << '\n'
+           << artifacts.size() << '\n';
+    for (const auto& artifact : artifacts)
+        output << (artifact.directory ? 'D' : 'F') << ' '
+               << std::quoted(pathText(artifact.relative)) << '\n';
+    if (output.str().size() > 8 * 1024 * 1024 || artifacts.size() > 100000)
+        throw std::runtime_error("The staging ownership manifest exceeds its format limit");
+    writeNewFile(scratch, output.str());
+#ifdef _WIN32
+    if (!MoveFileExW(scratch.c_str(), manifest.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
+#else
+    fs::rename(scratch, manifest);
+#endif
+}
 }  // namespace
 
 struct StagingRecovery::State {
+    struct Area {
+        std::string runId;
+        fs::path child;
+        std::vector<Artifact> artifacts;
+        std::unique_ptr<NativeLock> childPin;
+        bool ready{};
+    };
     std::vector<std::unique_ptr<NativeLock>> locks;
+    std::map<fs::path, Area> areas;
 };
 
 StagingRecovery::StagingRecovery() : _state(std::make_unique<State>()) {}
 StagingRecovery::~StagingRecovery() = default;
+
+fs::path StagingRecovery::stageFile(const fs::path& modRoot, const fs::path& destination) {
+    const auto root = fs::canonical(modRoot);
+    const auto parent = fs::canonical(destination.parent_path());
+    const auto relative = parent.lexically_relative(root);
+    if (!modRoot.is_absolute() || !destination.is_absolute() || relative.empty() ||
+        *relative.begin() == ".." || destination.filename().empty())
+        throw std::invalid_argument("A staged output must belong to its canonical Mod Root");
+#ifdef _WIN32
+    wchar_t rootMount[MAX_PATH]{}, destinationMount[MAX_PATH]{};
+    wchar_t rootVolume[MAX_PATH]{}, destinationVolume[MAX_PATH]{};
+    if (!GetVolumePathNameW(root.c_str(), rootMount, MAX_PATH) ||
+        !GetVolumePathNameW(parent.c_str(), destinationMount, MAX_PATH) ||
+        !GetVolumeNameForVolumeMountPointW(rootMount, rootVolume, MAX_PATH) ||
+        !GetVolumeNameForVolumeMountPointW(destinationMount, destinationVolume, MAX_PATH))
+        throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
+    if (CompareStringOrdinal(rootVolume, -1, destinationVolume, -1, TRUE) != CSTR_EQUAL)
+        throw std::invalid_argument("The staged output and Mod Root must be on the same volume");
+#endif
+    const auto extension = pathText(destination.extension());
+    if (!safeRelativeName("temporary" + extension))
+        throw std::invalid_argument("The staging output extension is unsafe");
+    if (const auto failure = recover(root)) throw std::runtime_error(failure->detail());
+    const auto staging = root / ".cao-staging";
+    if (!_state->areas.contains(root)) {
+        auto rootPin = std::make_unique<NativeLock>(root, OpenMode::DirectoryPin);
+        // Claim only a newly created area. A pre-existing unproven directory is never adopted.
+        if (!fs::create_directory(staging))
+            throw std::runtime_error("The reserved staging area appeared during initialization");
+        auto stagingPin = std::make_unique<NativeLock>(staging, OpenMode::DirectoryPin);
+        auto lock =
+            std::make_unique<NativeLock>(staging / "owner.lock", OpenMode::OwnershipLock, true);
+        _state->locks.push_back(std::move(rootPin));
+        _state->locks.push_back(std::move(stagingPin));
+        _state->locks.push_back(std::move(lock));
+        _state->areas.emplace(root, State::Area{});
+    }
+    auto& area = _state->areas.at(root);
+    if (!area.child.empty() && !area.ready)
+        throw std::runtime_error("The staging area initialization did not complete");
+    if (area.child.empty()) {
+        area.runId = nonce();
+        area.child = "run-" + area.runId + "-" + nonce();
+        area.artifacts = {{area.child, true}};
+        // Bootstrap may leave only controls if interrupted here; no Texture bytes exist yet.
+        publishManifest(root, area.runId, area.child, area.artifacts);
+        if (!fs::create_directory(staging / area.child))
+            throw std::runtime_error("The staging run child already exists");
+        area.childPin = std::make_unique<NativeLock>(staging / area.child, OpenMode::DirectoryPin);
+        area.ready = true;
+    }
+    const auto relativeFile = area.child / (nonce() + extension);
+    auto registered = area.artifacts;
+    registered.push_back({relativeFile, false});
+    publishManifest(root, area.runId, area.child, registered);
+    area.artifacts = std::move(registered);
+    const auto path = staging / relativeFile;
+    try {
+        writeNewFile(path, {});
+    } catch (const CreationCollision&) {
+        // A rejected CREATE_NEW never acquired this entry. Release its name even for current-run
+        // cleanup; cooperating writers hold owner.lock, but unrelated writers must be preserved.
+        area.artifacts.pop_back();
+        try {
+            publishManifest(root, area.runId, area.child, area.artifacts);
+        } catch (...) {
+            // An unregistered conflict control makes future recovery preserve the whole tree if
+            // the ownership release could not be published. Never delete the colliding entry.
+            writeNewFile(staging / "ownership.conflict",
+                         "A staged name collided before creation.\n");
+            throw;
+        }
+        throw;
+    }
+    return path;
+}
+
+void StagingRecovery::releaseFile(const fs::path& temporary) {
+    for (auto& [root, area] : _state->areas) {
+        auto retained = area.artifacts;
+        const auto found =
+            std::find_if(retained.begin(), retained.end(), [&](const Artifact& artifact) {
+                return !artifact.directory &&
+                       root / ".cao-staging" / artifact.relative == temporary;
+            });
+        if (found == retained.end()) continue;
+        if (fs::exists(inspect(temporary)))
+            throw std::logic_error(
+                "A durable temporary file must be moved before releasing ownership");
+        retained.erase(found);
+        publishManifest(root, area.runId, area.child, retained);
+        area.artifacts = std::move(retained);
+        return;
+    }
+    throw std::logic_error("The durable temporary file is not registered");
+}
+
+std::vector<RunFailure> StagingRecovery::cleanupArtifacts() {
+    std::vector<RunFailure> failures;
+    for (auto& [root, area] : _state->areas) {
+        if (area.child.empty()) continue;
+        const auto staging = root / ".cao-staging";
+        area.childPin.reset();
+        // Durable registrations predate creation, so they also cover native write failures
+        // or a registry allocation failure before its in-memory receipt could be returned.
+        // Unlike stale recovery, current-run cleanup attempts every individually owned artifact.
+        for (auto artifact = area.artifacts.rbegin(); artifact != area.artifacts.rend();
+             ++artifact) {
+            const auto affected = staging / artifact->relative;
+            try {
+                if (fs::weakly_canonical(affected.parent_path()) != affected.parent_path())
+                    unverified(affected, "A staging artifact parent changed during cleanup");
+                const auto status = inspect(affected);
+                if (!fs::exists(status)) continue;
+                if (fs::is_directory(status) != artifact->directory)
+                    unverified(affected, "A staging artifact changed its recorded type");
+                if (artifact->directory) {
+                    // Non-recursive removal preserves any unregistered contents.
+                    fs::remove(affected);
+                } else {
+                    NativeLock(affected, OpenMode::TemporaryFile).removeFile();
+                }
+            } catch (const std::exception& error) {
+                failures.emplace_back(RunFailureCode::TemporaryArtifactCleanupFailed,
+                                      RunPhase::SafetyCleanup, error.what(),
+                                      routing::PolicyValidationErrors{}, affected);
+            }
+        }
+    }
+    return failures;
+}
 
 std::optional<RunFailure> StagingRecovery::recover(const std::filesystem::path& modRoot,
                                                    std::stop_token stop) {
@@ -289,6 +518,7 @@ std::optional<RunFailure> StagingRecovery::recover(const std::filesystem::path& 
     auto affected = staging;
     try {
         observeCancellation(stop);
+        if (_state->areas.contains(modRoot)) return {};
         for (const auto& entry : fs::directory_iterator(modRoot)) {
             observeCancellation(stop);
             if (isStagingName(entry.path()) && entry.path().filename() != ".cao-staging")
@@ -308,15 +538,20 @@ std::optional<RunFailure> StagingRecovery::recover(const std::filesystem::path& 
         // Deny manifest writes/renames while the parser and deletion pass rely on its ownership.
         auto manifestPin =
             std::make_unique<NativeLock>(staging / "ownership.manifest", OpenMode::ManifestPin);
-        const auto artifacts = readManifest(staging, modRoot, stop);
-        auto pins = validateTree(staging, artifacts, stop);
+        unsigned version{};
+        const auto artifacts = readManifest(staging, modRoot, stop, version);
+        auto pins = validateTree(staging, artifacts, stop, version);
         // Retain the same lock through work and Safety Cleanup. Never delete/recreate its path:
         // otherwise another process could own a new lock while this run still uses the old one.
         _state->locks.push_back(std::move(rootPin));
         _state->locks.push_back(std::move(stagingPin));
         _state->locks.push_back(std::move(lock));
-        _state->locks.push_back(std::move(manifestPin));
         deleting = true;
+        const auto scratch = pins.find("ownership.manifest.next");
+        if (scratch != pins.end()) {
+            scratch->second->removeFile();
+            pins.erase(scratch);
+        }
         for (auto artifact = artifacts.rbegin(); artifact != artifacts.rend(); ++artifact) {
             observeCancellation(stop);
             affected = staging / artifact->relative;
@@ -333,6 +568,9 @@ std::optional<RunFailure> StagingRecovery::recover(const std::filesystem::path& 
             // Non-recursive removal preserves unregistered children, including newly added ones.
             fs::remove(affected);
         }
+        // Parsing/deletion needed a stable manifest, but the producer must now replace it.
+        manifestPin.reset();
+        _state->areas.emplace(modRoot, State::Area{});
         return {};
     } catch (const RecoveryCancelled&) {
         // The executor observes the same token and still completes mandatory Safety Cleanup.

@@ -26,6 +26,8 @@ class Manager final : public QObject {
      * carried Asset attempts, and Archive-finalization folders.
      * Returns true only after the run finishes without cancellation or Asset execution failures;
      * individual failures are accumulated while remaining Assets continue processing.
+     * Apply retains per-Mod-Root staging ownership through Safety Cleanup, which also runs when
+     * an exception escapes; cleanup failures make the return value false.
      */
     bool runOptimization();
     /*!

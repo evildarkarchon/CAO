@@ -13,4 +13,10 @@ inline bool isStagingName(const std::filesystem::path& path) {
     });
     return name.starts_with(u8".cao-staging");
 }
+
+/// Reports whether any component belongs to the reserved temporary-ownership namespace.
+inline bool hasStagingComponent(const std::filesystem::path& path) {
+    return std::any_of(path.begin(), path.end(),
+                       [](const auto& part) { return isStagingName(part); });
+}
 }  // namespace cao::run

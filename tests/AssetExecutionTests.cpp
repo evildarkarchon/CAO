@@ -1,8 +1,12 @@
 #include "AssetExecution/AssetExecutor.h"
 #include "AssetRouting/AssetRouter.h"
+#include "Run/StagingRecovery.h"
 
 #include <QTest>
 #include <QTemporaryDir>
+#include <QCoreApplication>
+#include <QProcess>
+#include <QThread>
 
 #include <filesystem>
 #include <fstream>
@@ -188,6 +192,32 @@ public:
     std::filesystem::path animationPath;
     std::optional<ExecutionMode> animationMode;
 };
+
+/// Runs an isolated writer until the parent forcibly terminates it at a filesystem boundary.
+int textureCrashWorker(const std::filesystem::path& root, const std::filesystem::path& checkpoint,
+                       const QString& boundary) {
+    const auto source = root / "textures" / "source.tga";
+    const auto pauseForTermination = [&] {
+        std::ofstream(checkpoint) << "ready";
+        for (;;) QThread::msleep(10);
+    };
+    RecordingBackend backend;
+    backend.textureSave = [&](const std::filesystem::path& path) {
+        std::ofstream(path) << (boundary == "during-save" ? "partial" : "converted");
+        if (boundary == "during-save") pauseForTermination();
+        return true;
+    };
+    backend.textureRemove = [&](const std::filesystem::path& path) {
+        if (boundary == "before-source-removal") pauseForTermination();
+        const auto removed = std::filesystem::remove(path);
+        if (boundary == "after-source-removal") pauseForTermination();
+        return removed;
+    };
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::ConvertibleTextureConversion}, source),
+        root);
+    return result.succeeded() ? 0 : 2;
+}
 }
 
 class AssetExecutionTests final : public QObject
@@ -195,6 +225,10 @@ class AssetExecutionTests final : public QObject
     Q_OBJECT
 
 private slots:
+ /// Defines process-death windows before and after durable Texture destination commit.
+ void interruptedTextureRecovery_data();
+ /// Recovers a killed writer's staging while preserving originals and committed destinations.
+ void interruptedTextureRecovery();
  /// A partially written failed save must preserve the original Texture bytes.
  void failedTextureSavePreservesOriginal();
  /// Covers retained and missing files after a backend reports source-removal failure.
@@ -255,6 +289,49 @@ private slots:
  void archiveIsNotOwnedByAssetExecutor();
 };
 
+void AssetExecutionTests::interruptedTextureRecovery_data() {
+    QTest::addColumn<QString>("boundary");
+    QTest::newRow("partial staged save") << QStringLiteral("during-save");
+    QTest::newRow("committed output retained source") << QStringLiteral("before-source-removal");
+    QTest::newRow("committed conversion") << QStringLiteral("after-source-removal");
+}
+
+void AssetExecutionTests::interruptedTextureRecovery() {
+    QFETCH(QString, boundary);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString()) / "Mod";
+    const auto checkpoint = root.parent_path() / "checkpoint";
+    const auto source = root / "textures" / "source.tga";
+    const auto destination = root / "textures" / "source.dds";
+    std::filesystem::create_directories(source.parent_path());
+    std::ofstream(source) << "original";
+    std::ofstream(destination) << "old destination";
+    QProcess child;
+    child.start(QCoreApplication::applicationFilePath(),
+                {QStringLiteral("--texture-crash-worker"), QString::fromStdWString(root.wstring()),
+                 QString::fromStdWString(checkpoint.wstring()), boundary});
+    QVERIFY(child.waitForStarted());
+    QTRY_VERIFY_WITH_TIMEOUT(std::filesystem::exists(checkpoint), 15000);
+    child.kill();
+    QVERIFY(child.waitForFinished());
+    QCOMPARE(child.exitStatus(), QProcess::CrashExit);
+
+    cao::run::StagingRecovery recovery;
+    const auto failure = recovery.recover(root);
+    QVERIFY2(!failure, failure ? failure->detail().c_str() : "");
+    QCOMPARE(readBytes(destination),
+             boundary == "during-save" ? std::string("old destination") : std::string("converted"));
+    if (boundary == "after-source-removal")
+        QVERIFY(!std::filesystem::exists(source));
+    else
+        QCOMPARE(readBytes(source), std::string("original"));
+    for (const auto& entry : std::filesystem::directory_iterator(root / ".cao-staging"))
+        QVERIFY(entry.path().filename() == "owner.lock" ||
+                entry.path().filename() == "ownership.manifest");
+    QVERIFY(!std::filesystem::exists(source.parent_path() / ".cao-staging"));
+}
+
 void AssetExecutionTests::failedTextureSavePreservesOriginal() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -274,9 +351,7 @@ void AssetExecutionTests::failedTextureSavePreservesOriginal() {
     QCOMPARE(result.mutationState(), MutationState::None);
     QVERIFY(result.safeToContinue());
     QVERIFY(result.affectedPath() == source);
-    QCOMPARE(std::distance(std::filesystem::directory_iterator(source.parent_path()),
-                           std::filesystem::directory_iterator()),
-             1);
+    QVERIFY(!std::filesystem::exists(backend.savedTexturePath));
 }
 
 void AssetExecutionTests::textureSourceRemovalFailure_data() {
@@ -426,7 +501,8 @@ void AssetExecutionTests::textureCleanupFailurePreservesPrimaryFailure() {
     const auto result = AssetExecutor(backend).execute(
         routeAsset(ExecutionMode::Apply, {RequestedWork::NativeTextureOptimization}, source));
     QCOMPARE(result.failure().value(), AssetExecutionFailure::SaveFailed);
-    QCOMPARE(result.cleanupFailures().size(), std::size_t{1});
+    // The unregistered contents prevent removal of both the staged entry and its run directory.
+    QCOMPARE(result.cleanupFailures().size(), std::size_t{2});
     QCOMPARE(result.cleanupFailures().front().code(),
              cao::run::RunFailureCode::TemporaryArtifactCleanupFailed);
     QCOMPARE(readBytes(backend.savedTexturePath / "unregistered"), std::string("keep"));
@@ -508,8 +584,8 @@ void AssetExecutionTests::conversionOnlyTextureExecution()
         routeAsset(executionMode, {RequestedWork::ConvertibleTextureConversion}, source);
     RecordingBackend backend;
     backend.textureSave = [&](const std::filesystem::path& path) {
-        if (path.parent_path() != source.parent_path() || path == destination ||
-            readBytes(destination) != "old destination")
+        if (path.parent_path().parent_path() != source.parent_path() / ".cao-staging" ||
+            path == destination || readBytes(destination) != "old destination")
             throw std::runtime_error("Destination changed before staging completed");
         std::ofstream(path) << "converted";
         return true;
@@ -726,6 +802,16 @@ void AssetExecutionTests::archiveIsNotOwnedByAssetExecutor()
     QCOMPARE(backend.animationOptimizations, 0);
 }
 
-QTEST_APPLESS_MAIN(AssetExecutionTests)
+/// Dispatches isolated crash workers before normal Qt test argument parsing.
+int main(int argc, char** argv) {
+    QCoreApplication application(argc, argv);
+    const auto arguments = application.arguments();
+    if (arguments.size() == 5 && arguments.at(1) == "--texture-crash-worker")
+        return textureCrashWorker(std::filesystem::path(arguments.at(2).toStdWString()),
+                                  std::filesystem::path(arguments.at(3).toStdWString()),
+                                  arguments.at(4));
+    AssetExecutionTests tests;
+    return QTest::qExec(&tests, argc, argv);
+}
 
 #include "AssetExecutionTests.moc"

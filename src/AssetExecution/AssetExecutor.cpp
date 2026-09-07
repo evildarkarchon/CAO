@@ -7,10 +7,6 @@
 
 #ifdef _WIN32
 #include <Windows.h>
-#else
-#include <cerrno>
-#include <fcntl.h>
-#include <unistd.h>
 #endif
 
 namespace cao::execution {
@@ -38,27 +34,21 @@ std::optional<std::pair<std::uint64_t, std::uint64_t>> textureFingerprint(
     return std::pair{size, hash};
 }
 
-/// Reserves only an absent registered path; collisions are never opened or truncated.
-std::error_code reserveTexture(const std::filesystem::path& staged) {
-#ifdef _WIN32
-    const auto file = CreateFileW(staged.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
-                                  FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE)
-        return {static_cast<int>(GetLastError()), std::system_category()};
-    CloseHandle(file);
-#else
-    const auto file = ::open(staged.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
-    if (file < 0) return {errno, std::generic_category()};
-    ::close(file);
-#endif
-    return {};
-}
-
-/// Replaces a same-directory destination without a delete-first or cross-volume copy fallback.
+/// Flushes staged bytes and replaces a same-volume destination without a cross-volume copy fallback.
 std::error_code commitTexture(const std::filesystem::path& staged,
                               const std::filesystem::path& destination) {
 #ifdef _WIN32
-    if (!MoveFileExW(staged.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING))
+    const auto file = CreateFileW(staged.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                                  OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return {static_cast<int>(GetLastError()), std::system_category()};
+    // Durable ownership must never get ahead of a destination whose bytes are still buffered.
+    const bool flushed = FlushFileBuffers(file) != 0;
+    const auto error = GetLastError();
+    CloseHandle(file);
+    if (!flushed) return {static_cast<int>(error), std::system_category()};
+    if (!MoveFileExW(staged.c_str(), destination.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         return {static_cast<int>(GetLastError()), std::system_category()};
     return {};
 #else
@@ -144,9 +134,10 @@ const std::string& AssetExecutionResult::message() const noexcept { return _mess
 
 AssetExecutor::AssetExecutor(AssetExecutionBackend& backend) noexcept : _backend(backend) {}
 
-AssetExecutionResult AssetExecutor::execute(const routing::RoutedAsset& asset) const {
+AssetExecutionResult AssetExecutor::execute(const routing::RoutedAsset& asset,
+                                            const std::filesystem::path& modRoot) const {
     run::TemporaryArtifactRegistry artifacts;
-    auto result = execute(asset, artifacts);
+    auto result = execute(asset, artifacts, modRoot);
     result._cleanupFailures = run::collectSafetyCleanupFailures(artifacts);
     for (const auto& failure : result._cleanupFailures) {
         // A cleanup service exception cannot establish that every owned artifact was attempted.
@@ -163,11 +154,12 @@ AssetExecutionResult AssetExecutor::execute(const routing::RoutedAsset& asset) c
 }
 
 AssetExecutionResult AssetExecutor::execute(const routing::RoutedAsset& asset,
-                                            run::TemporaryArtifactRegistry& artifacts) const {
+                                            run::TemporaryArtifactRegistry& artifacts,
+                                            const std::filesystem::path& modRoot) const {
     try {
         switch (asset.target()) {
             case routing::OptimizerTarget::Texture:
-                return executeTexture(asset, artifacts);
+                return executeTexture(asset, artifacts, modRoot);
             case routing::OptimizerTarget::Mesh:
                 return executeMesh(asset);
             case routing::OptimizerTarget::Animation:
@@ -200,8 +192,9 @@ AssetExecutionResult AssetExecutor::execute(const routing::RoutedAsset& asset,
                                         "Unknown optimizer target.");
 }
 
-AssetExecutionResult AssetExecutor::executeTexture(
-    const routing::RoutedAsset& asset, run::TemporaryArtifactRegistry& artifacts) const {
+AssetExecutionResult AssetExecutor::executeTexture(const routing::RoutedAsset& asset,
+                                                   run::TemporaryArtifactRegistry& artifacts,
+                                                   const std::filesystem::path& modRoot) const {
     const auto* texture = std::get_if<routing::TextureAsset>(&asset.identity());
     if (texture == nullptr) {
         return AssetExecutionResult::failed(AssetExecutionFailure::IdentityMismatch,
@@ -241,17 +234,12 @@ AssetExecutionResult AssetExecutor::executeTexture(
 
         boundary = "stage_texture";
         affectedPath = outputPath;
-        const auto staged = std::filesystem::absolute(outputPath).parent_path() /
-                            (".cao-staging-texture-" + run::createRunId() + ".dds");
-        const auto registration = artifacts.registerArtifact(staged);
-        if (const auto error = reserveTexture(staged)) {
-            // Registration precedes exclusive creation. If another entry wins that race, it is
-            // not ours: release the receipt so Safety Cleanup cannot delete a colliding file.
-            artifacts.commit(registration);
-            return AssetExecutionResult::failed(AssetExecutionFailure::StagingFailed,
-                                                "Failed to reserve Texture staging.", mutation,
-                                                true, staged, boundary, error.message());
-        }
+        const auto staging = artifacts.stageFile(
+            modRoot.empty() ? std::filesystem::absolute(outputPath).parent_path()
+                            : std::filesystem::absolute(modRoot),
+            std::filesystem::absolute(outputPath));
+        const auto& staged = staging.path;
+        const auto registration = staging.registration;
         boundary = "save_texture";
         if (!_backend.saveTexture(staged)) {
             return AssetExecutionResult::failed(

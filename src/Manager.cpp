@@ -7,11 +7,44 @@
 #include "BsaOptimizer.h"
 #include "MainOptimizer.h"
 #include "Run/AssetRun.h"
+#include "Run/TemporaryArtifactRegistry.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <vector>
 
 namespace {
+/// Keeps ownership locks alive through terminal cleanup, including exception unwinding.
+class RunArtifacts final {
+   public:
+    cao::run::TemporaryArtifactRegistry registry;
+
+    /// Performs and reports cleanup on exceptional exits without masking the original exception.
+    ~RunArtifacts() noexcept {
+        if (_finished) return;
+        try {
+            static_cast<void>(finish());
+        } catch (...) {
+            // Cleanup must not replace the exception that already stopped optimization.
+            PLOG_ERROR
+                << "Temporary staging cleanup could not finish; recovery will retry next run.";
+        }
+    }
+
+    /// Collects cleanup failures before publishing the terminal result; returns true on success.
+    bool finish() {
+        const auto failures = registry.performSafetyCleanup();
+        _finished = true;
+        for (const auto& failure : failures)
+            PLOG_ERROR << QString::fromStdString(failure.detail()) << ": "
+                       << QString::fromStdWString(failure.path().wstring());
+        return failures.empty();
+    }
+
+   private:
+    bool _finished{};
+};
+
 /// Returns the stable domain label used in one aggregate skip log message.
 QString skipReasonName(const cao::routing::SkipReason reason) {
     switch (reason) {
@@ -96,7 +129,21 @@ bool Manager::runOptimization() {
     BSAOptimizer bsaOptimizer;
     std::vector<std::filesystem::path> roots;
     roots.reserve(static_cast<std::size_t>(_modsToProcess.size()));
-    for (const auto& mod : _modsToProcess) roots.emplace_back(mod.toStdWString());
+    for (const auto& mod : _modsToProcess)
+        roots.push_back(std::filesystem::canonical(std::filesystem::path(mod.toStdWString())));
+
+    RunArtifacts artifacts;
+    if (_routingPolicy.executionMode() == cao::routing::ExecutionMode::Apply) {
+        for (const auto& root : roots) {
+            if (const auto failure = artifacts.registry.prepareRoot(root)) {
+                PLOG_ERROR << QString::fromStdString(failure->detail()) << ": "
+                           << QString::fromStdWString(failure->path().wstring());
+                static_cast<void>(artifacts.finish());
+                emit end();
+                return false;
+            }
+        }
+    }
 
     const cao::run::AssetRun assetRun(_routingPolicy);
     std::size_t failedAssets = 0;
@@ -180,10 +227,13 @@ bool Manager::runOptimization() {
             },
             [&](const std::span<const cao::run::ArchiveCollision> collisions) {
                 for (const auto& collision : collisions) {
-                    PLOG_WARNING << QStringLiteral("Archive collision: %1; winning Archive: %2; Loose Asset wins: %3")
-                                        .arg(QString::fromStdWString(collision.gamePath().wstring()))
-                                        .arg(QString::fromStdWString(collision.winningArchive().wstring()))
-                                        .arg(collision.looseAssetWins() ? QStringLiteral("yes") : QStringLiteral("no"));
+                    PLOG_WARNING
+                        << QStringLiteral(
+                               "Archive collision: %1; winning Archive: %2; Loose Asset wins: %3")
+                               .arg(QString::fromStdWString(collision.gamePath().wstring()))
+                               .arg(QString::fromStdWString(collision.winningArchive().wstring()))
+                               .arg(collision.looseAssetWins() ? QStringLiteral("yes")
+                                                               : QStringLiteral("no"));
                     for (const auto& archive : collision.shadowedArchives())
                         PLOG_WARNING << QStringLiteral("Shadowed Archive: %1")
                                             .arg(QString::fromStdWString(archive.wstring()));
@@ -197,11 +247,20 @@ bool Manager::runOptimization() {
             [&](const cao::routing::RoutedAsset& asset) {
                 // Preserve failures for terminal status while letting Asset Run use mutation
                 // evidence to stop before another attempt or packing when continuation is unsafe.
-                auto attempt = optimizer.process(asset);
+                const auto root =
+                    std::find_if(roots.begin(), roots.end(), [&](const auto& candidate) {
+                        const auto relative = asset.executionPath().lexically_relative(candidate);
+                        return !relative.empty() && *relative.begin() != ".." &&
+                               !relative.is_absolute();
+                    });
+                if (root == roots.end())
+                    throw std::runtime_error("Routed Asset has no selected Mod Root.");
+                auto attempt = optimizer.process(asset, artifacts.registry, *root);
                 if (!attempt.succeeded()) ++failedAssets;
                 return attempt;
             }});
 
+    const bool cleaned = artifacts.finish();
     if (result.cancelled() || !result.failures().empty()) return false;
 
     for (const auto& failure : result.executionFailures()) {
@@ -216,9 +275,11 @@ bool Manager::runOptimization() {
     if (failedAssets != 0) {
         PLOG_ERROR << QStringLiteral("Process completed with %1 failed Assets<br><br><br>")
                           .arg(failedAssets);
+    } else if (!cleaned) {
+        PLOG_ERROR << "Process completed with temporary staging cleanup failures<br><br><br>";
     } else {
         PLOG_INFO << "Process completed<br><br><br>";
     }
     emit end();
-    return failedAssets == 0;
+    return failedAssets == 0 && cleaned;
 }

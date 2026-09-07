@@ -15,6 +15,7 @@ class FilesystemOperations final : public QObject {
    public:
     /*!
      * \brief Delete empty directories in the given directory
+     * Reserved staging paths remain owned by the run's Safety Cleanup and are never removed here.
      * \param folderPath The path of the folder where empty dirs will be deleted
      */
     static void deleteEmptyDirectories(const QString& folderPath);

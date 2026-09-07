@@ -1,4 +1,6 @@
 #include "MainOptimizer.h"
+#include "BsaOptimizer.h"
+#include "FilesystemOperations.h"
 #include "AssetRouting/AssetRouter.h"
 
 #include <nifly/BasicTypes.hpp>
@@ -142,33 +144,108 @@ class MainOptimizerTests final : public QObject
     Q_OBJECT
 
 private slots:
-    /// Verifies malformed DDS, TGA, and NIF inputs cannot remain eligible for later Archive packing.
-    void loadFailuresQuarantineMalformedAssets();
+ /// Keeps temporary Texture bytes out of archives and their packed-source deletion pass.
+ void packingPreservesStagingFiles();
 
-    /// Verifies a stale quarantine file cannot leave a newly extracted malformed Asset packable.
-    void loadFailureUsesCollisionSafeQuarantineName();
+ /// Leaves staging ownership directories to their owner while pruning ordinary empty paths.
+ void emptyDirectoryCleanupPreservesStaging();
 
-    /// Verifies reporting a malformed input never mutates a Dry Run tree.
-    void dryRunLoadFailureDoesNotQuarantine();
+ /// Rejects ambiguous staging at the selected Mod Root even for deeply nested Textures.
+ void nestedTextureUsesSelectedModRoot();
 
-    /// Verifies a failed Texture conversion withholds the rewrite of references to that Texture.
-    void failedConversionSuppressesMeshReferenceMaintenance();
+ /// Verifies malformed DDS, TGA, and NIF inputs cannot remain eligible for later Archive packing.
+ void loadFailuresQuarantineMalformedAssets();
 
-    /// Verifies a committed DDS still enables dependent rewrites when the TGA cannot be removed.
-    void committedConversionWithRetainedSourceMaintainsMeshReferences();
+ /// Verifies a stale quarantine file cannot leave a newly extracted malformed Asset packable.
+ void loadFailureUsesCollisionSafeQuarantineName();
 
-    /// Verifies one failed conversion does not withhold references to Textures that converted.
-    void failedConversionKeepsUnrelatedMeshReferences();
+ /// Verifies reporting a malformed input never mutates a Dry Run tree.
+ void dryRunLoadFailureDoesNotQuarantine();
 
-    /// Verifies a failure in one Mod Root cannot withhold the same reference in a sibling root.
-    void failedConversionInAnotherModRootKeepsMeshReferences();
+ /// Verifies a failed Texture conversion withholds the rewrite of references to that Texture.
+ void failedConversionSuppressesMeshReferenceMaintenance();
 
-    /// Verifies the referenced-TGA rewrite still applies when no conversion failed.
-    void successfulRunStillMaintainsMeshReferences();
+ /// Verifies a committed DDS still enables dependent rewrites when the TGA cannot be removed.
+ void committedConversionWithRetainedSourceMaintainsMeshReferences();
+
+ /// Verifies one failed conversion does not withhold references to Textures that converted.
+ void failedConversionKeepsUnrelatedMeshReferences();
+
+ /// Verifies a failure in one Mod Root cannot withhold the same reference in a sibling root.
+ void failedConversionInAnotherModRootKeepsMeshReferences();
+
+ /// Verifies the referenced-TGA rewrite still applies when no conversion failed.
+ void successfulRunStillMaintainsMeshReferences();
 
 private:
     QTemporaryDir _temporaryDirectory;
 };
+
+void MainOptimizerTests::packingPreservesStagingFiles() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = root / "mod";
+    const auto staged = mod / ".CAO-STAGING" / "run-1" / "pending.dds";
+    const auto nestedStaged = mod / "textures" / ".cao-staging-old" / "pending.dds";
+    writeFile(staged, QByteArrayLiteral("temporary bytes"));
+    writeFile(nestedStaged, QByteArrayLiteral("unverified temporary bytes"));
+    writeFile(mod / "textures" / "complete.dds", QByteArrayLiteral("committed bytes"));
+    OptionsCAO options;
+    options.bBsaCreateDummies = false;
+    options.bBsaCompress = false;
+    options.bBsaDeleteSource = true;
+
+    BSAOptimizer().packAll(QString::fromStdWString(mod.wstring()), options);
+
+    QVERIFY(std::filesystem::exists(staged));
+    QVERIFY(std::filesystem::exists(nestedStaged));
+    QVERIFY(!std::filesystem::exists(mod / "textures" / "complete.dds"));
+    QVERIFY(
+        !QDir(QString::fromStdWString(mod.wstring())).entryList({"*.bsa"}, QDir::Files).isEmpty());
+}
+
+void MainOptimizerTests::emptyDirectoryCleanupPreservesStaging() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QDir root(directory.path());
+    QVERIFY(root.mkpath(".CAO-STAGING/run-1"));
+    QVERIFY(root.mkpath("ordinary/empty"));
+
+    FilesystemOperations::deleteEmptyDirectories(directory.path());
+
+    QVERIFY(root.exists(".CAO-STAGING/run-1"));
+    QVERIFY(!root.exists("ordinary"));
+}
+
+void MainOptimizerTests::nestedTextureUsesSelectedModRoot() {
+    for (const auto mode : {OptionsCAO::SingleMod, OptionsCAO::SeveralMods}) {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+        const auto selection = std::filesystem::path(directory.path().toStdWString());
+        const auto modRoot = mode == OptionsCAO::SingleMod ? selection : selection / "mod-a";
+        const auto texture = modRoot / "textures" / "armor" / "nested.tga";
+        writeFile(texture, QByteArray::fromHex("0000020000000000000000000100010018000000ff"));
+        writeFile(modRoot / ".cao-staging" / "unknown", QByteArrayLiteral("preserve"));
+        OptionsCAO options;
+        options.mode = mode;
+        options.userPath = directory.path();
+        MainOptimizer optimizer(options);
+
+        const auto result = optimizer.process(routeMaintenanceOnly(texture));
+
+        QVERIFY(!result.succeeded());
+        QVERIFY(std::filesystem::exists(texture));
+        QVERIFY(!std::filesystem::exists(modRoot / "textures" / "armor" / "nested.dds"));
+        QVERIFY(std::filesystem::exists(modRoot / ".cao-staging" / "unknown"));
+        QVERIFY(!std::filesystem::exists(modRoot / "textures" / "armor" / ".cao-staging"));
+    }
+}
 
 void MainOptimizerTests::loadFailuresQuarantineMalformedAssets()
 {

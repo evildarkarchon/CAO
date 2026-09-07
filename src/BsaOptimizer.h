@@ -49,7 +49,7 @@ class BSAOptimizer final : public QObject {
      */
     QString backup(const QString& bsaPath) const;
     /*!
-     * \brief Checks if the file is present in the list filesToNotPack
+     * \brief Rejects reserved staging paths and entries matched by filesToNotPack.
      * \return a bool indicating the state of the file. True if is allowed, false otherwise
      */
     bool isAllowedFile(const btu::Path& dir,

@@ -5,6 +5,7 @@
 
 #include "FilesystemOperations.h"
 #include "PluginsOperations.h"
+#include "Run/StagingPaths.h"
 
 void FilesystemOperations::deleteEmptyDirectories(const QString& folderPath) {
     QDirIterator dirIt(folderPath, QDirIterator::Subdirectories);
@@ -12,6 +13,8 @@ void FilesystemOperations::deleteEmptyDirectories(const QString& folderPath) {
 
     while (dirIt.hasNext()) {
         QString path = QDir::cleanPath(dirIt.next());
+        // Only the staging owner can remove its empty run directories while ownership is held.
+        if (cao::run::hasStagingComponent(std::filesystem::path(path.toStdWString()))) continue;
         int size = path.size();
 
         const bool alreadyExist = dirs[size].contains(path);

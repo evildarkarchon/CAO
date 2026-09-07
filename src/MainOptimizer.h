@@ -20,11 +20,22 @@ class MainOptimizer final : public QObject, private cao::execution::AssetExecuti
     explicit MainOptimizer(const OptionsCAO& optOptions);
 
     /// Executes one Routed Asset strictly from its carried path, identity, target, operations, and
-    /// mode.
+    /// mode. Temporary ownership uses the configured Mod Root and is cleaned before returning;
+    /// callers without a configured selection use the input's parent as an isolated root.
     [[nodiscard]] cao::execution::AssetExecutionResult process(
         const cao::routing::RoutedAsset& asset);
 
+    /// Executes an Asset with the run's shared temporary ownership and its selected Mod Root.
+    /// The caller retains the registry until all attempts and Safety Cleanup finish.
+    [[nodiscard]] cao::execution::AssetExecutionResult process(
+        const cao::routing::RoutedAsset& asset, cao::run::TemporaryArtifactRegistry& artifacts,
+        const std::filesystem::path& modRoot);
+
    private:
+    /// Records conversion failures and applies load-failure quarantine to one execution result.
+    [[nodiscard]] cao::execution::AssetExecutionResult finishAttempt(
+        const cao::routing::RoutedAsset& asset, cao::execution::AssetExecutionResult result);
+
     void addLandscapeTextures();
     void addHeadparts();
 
