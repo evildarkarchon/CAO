@@ -638,6 +638,8 @@ void AssetRunTests::dryRunLeavesCompleteModTreeUnchangedWhileEvaluatingLooseAsse
     const auto unsupported = root / "docs" / "readme.txt";
     const auto emptyDirectory = root / "empty" / "nested";
     writeFile(archive, "archive bytes");
+    writeFile(root / "nested" / "second.bsa", "invalid manifest bytes");
+    writeFile(root / ".CAO-Staging-unknown" / "hidden.bsa", "uncommitted archive bytes");
     writeFile(convertibleTexture, "texture bytes");
     writeFile(mesh, "mesh bytes");
     writeFile(disabledAnimation, "animation bytes");
@@ -698,7 +700,7 @@ void AssetRunTests::dryRunLeavesCompleteModTreeUnchangedWhileEvaluatingLooseAsse
     QVERIFY(!executed[1].conversion);
     QVERIFY(executed[1].meshReferenceMaintenance);
     QCOMPARE(result.ledger().routedAssets().size(), std::size_t{2});
-    QCOMPARE(result.skippedAssetCount(SkipReason::DisabledPhase), std::size_t{1});
+    QCOMPARE(result.skippedAssetCount(SkipReason::DisabledPhase), std::size_t{2});
     QCOMPARE(result.skippedAssetCount(SkipReason::DisabledAssetKind), std::size_t{1});
     QCOMPARE(progress.size(), std::size_t{2});
     QCOMPARE(progress[0].completed, std::size_t{1});

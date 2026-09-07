@@ -1,4 +1,5 @@
 #include "ArchiveFirstAssetDiscovery.h"
+#include "PathOrdering.h"
 #include "StagingPaths.h"
 
 #include <btu/bsa/unpack.hpp>
@@ -69,6 +70,14 @@ bool entryIsWithinScope(const std::filesystem::path& path,
     if (!isWithinRoot(resolved, canonicalRoot)) {
         excluded(path, "Linked entry resolves outside the Mod Root.");
         return false;
+    }
+    // A contained alias can still point into excluded staging; checking only its visible name
+    // would let temporary Archives and Assets re-enter discovery through an ordinary filename.
+    for (const auto& component : resolved.lexically_relative(canonicalRoot)) {
+        if (isStagingName(component)) {
+            excluded(path, "Linked entry resolves into excluded CAO staging.");
+            return false;
+        }
     }
     return true;
 }
@@ -224,39 +233,55 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
             resolvedRoots.push_back(root);
         }
     }
-    const auto archivePassComplete = visitRegularFiles(
-        resolvedRoots, isCancelled, excludeLinkedEntry,
-        [&](const std::filesystem::path& path, const bool explicitRoot) {
-            auto decision = router.route(path);
-            if (auto* routedAsset = std::get_if<routing::RoutedAsset>(&decision)) {
-                if (routedAsset->kind() == routing::AssetKind::Archive &&
-                    recognizedArchivePaths.insert(path.lexically_normal()).second) {
-                    // Extraction writes beside the Archive, so an Archive named directly as a root
-                    // needs its containing directory traversed later; re-traversing the Archive file
-                    // itself would only rediscover the excluded Archive, or nothing at all once
-                    // extraction removed it.
-                    if (explicitRoot) {
-                        auto destination = path.parent_path();
-                        if (destination.empty()) destination = ".";
-                        if (std::find(extractionDestinations.begin(), extractionDestinations.end(),
-                                      destination) == extractionDestinations.end()) {
-                            extractionDestinations.push_back(std::move(destination));
+    for (const auto& root : resolvedRoots) {
+        const auto firstArchive = selectedArchives.size();
+        std::map<std::filesystem::path, std::pair<std::string, std::string>> archiveOrder;
+        const auto archivePassComplete = visitRegularFiles(
+            std::span(&root, 1), isCancelled, excludeLinkedEntry,
+            [&](const std::filesystem::path& path, const bool explicitRoot) {
+                auto decision = router.route(path);
+                if (auto* routedAsset = std::get_if<routing::RoutedAsset>(&decision)) {
+                    if (routedAsset->kind() == routing::AssetKind::Archive &&
+                        recognizedArchivePaths.insert(path.lexically_normal()).second) {
+                        // Extraction writes beside the Archive, so an Archive named directly as a
+                        // root needs its containing directory traversed later; re-traversing the
+                        // Archive file itself would only rediscover the excluded Archive, or
+                        // nothing at all once extraction removed it.
+                        if (explicitRoot) {
+                            auto destination = path.parent_path();
+                            if (destination.empty()) destination = ".";
+                            if (std::find(extractionDestinations.begin(),
+                                          extractionDestinations.end(),
+                                          destination) == extractionDestinations.end()) {
+                                extractionDestinations.push_back(std::move(destination));
+                            }
                         }
+                        auto name = relativeName(explicitRoot ? path.filename()
+                                                              : path.lexically_relative(root));
+                        archiveOrder.emplace(routedAsset->executionPath(),
+                                             std::pair{foldedName(name), name});
+                        selectedArchives.push_back(std::move(*routedAsset));
                     }
-                    selectedArchives.push_back(std::move(*routedAsset));
+                    return;
                 }
-                return;
-            }
-            if (const auto* skippedAsset = std::get_if<routing::SkippedAsset>(&decision)) {
-                if (skippedAsset->kind() == routing::AssetKind::Archive &&
-                    recognizedArchivePaths.insert(path.lexically_normal()).second) {
-                    ++skippedArchiveCounts[skippedAsset->reason()];
+                if (const auto* skippedAsset = std::get_if<routing::SkippedAsset>(&decision)) {
+                    if (skippedAsset->kind() == routing::AssetKind::Archive &&
+                        recognizedArchivePaths.insert(path.lexically_normal()).second) {
+                        ++skippedArchiveCounts[skippedAsset->reason()];
+                    }
+                    return;
                 }
-                return;
-            }
-            if (explicitRoot) unsupportedExplicitPaths.push_back(path);
-        });
-    if (!archivePassComplete) return cancelledResult();
+                if (explicitRoot) unsupportedExplicitPaths.push_back(path);
+            });
+        if (!archivePassComplete) return cancelledResult();
+        // Root precedence belongs to the caller. Sort only this root's batch, using the original
+        // normalized spelling to break case-fold ties without consulting filesystem enumeration.
+        std::sort(selectedArchives.begin() + static_cast<std::ptrdiff_t>(firstArchive),
+                  selectedArchives.end(), [&](const auto& left, const auto& right) {
+                      return archiveOrder.at(left.executionPath()) <
+                             archiveOrder.at(right.executionPath());
+                  });
+    }
 
     // A destination directory is only ever reached through the Archive a caller named explicitly,
     // so the Assets it already holds were never requested. Censusing them before extraction is

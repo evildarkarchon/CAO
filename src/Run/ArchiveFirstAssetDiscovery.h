@@ -98,7 +98,9 @@ class ArchiveFirstAssetDiscovery final {
     /// exceptions propagate to the caller.
     /// Selected directory aliases resolve once before discovery. Directory links within a tree
     /// are never followed; unresolved and escaping file links are skipped with Run Diagnostics.
-    /// Roots must not overlap; each filesystem occurrence is preserved in traversal order.
+    /// Roots must not overlap. Archives retain root order and sort within each root by normalized
+    /// relative UTF-8 path, case-folded first with an ordinal spelling tie-breaker. Dry Run only
+    /// counts disabled Archives: no manifest inspection or extraction is performed.
     [[nodiscard]] ArchiveFirstAssetDiscoveryResult discover(
         std::span<const std::filesystem::path> roots,
         const ArchiveExtractionOperation& extractArchive,

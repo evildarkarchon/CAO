@@ -108,6 +108,10 @@ class ArchiveFirstAssetDiscoveryTests final : public QObject
     Q_OBJECT
 
 private slots:
+    /// Verifies an otherwise contained file alias cannot admit staging into either pass.
+    void linksIntoStagingAreExcluded();
+    /// Verifies normalized relative Archive ordering, Unicode folding, and caller root precedence.
+    void archivesAreOrderedWithinEachModRoot();
     /// Verifies staging and unknown staging-like trees never enter either discovery pass.
     void stagingIsExcludedFromDiscovery();
     /// Verifies enabled Archives extract before one definitive non-Archive tree is returned.
@@ -156,6 +160,56 @@ private slots:
     /// Verifies a selected directory alias is resolved once, even if extraction retargets it.
     void selectedDirectoryAliasKeepsItsOriginalTarget();
 };
+
+void ArchiveFirstAssetDiscoveryTests::linksIntoStagingAreExcluded() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto staging = root / ".cao-staging" / "owned";
+    writeFile(staging / "content.bsa", "uncommitted archive");
+    writeFile(staging / "texture.dds", "uncommitted asset");
+    std::error_code error;
+    std::filesystem::create_symlink(staging / "content.bsa", root / "linked.bsa", error);
+    if (error) QSKIP("File symlink creation is unavailable on this host");
+    std::filesystem::create_symlink(staging / "texture.dds", root / "linked.dds", error);
+    QVERIFY2(!error, error.message().c_str());
+    std::size_t extractions{};
+    const auto result = ArchiveFirstAssetDiscovery(archiveEnabledPolicy()).discover(
+        std::vector{root}, [&](const auto& archives) {
+            extractions += archives.size();
+            return true;
+        });
+    QVERIFY(std::filesystem::remove(root / "linked.bsa", error));
+    QVERIFY(std::filesystem::remove(root / "linked.dds", error));
+    QCOMPARE(extractions, std::size_t{0});
+    QVERIFY(result.effectiveAssetTree().paths().empty());
+    QCOMPARE(result.diagnostics().size(), std::size_t{2});
+}
+
+void ArchiveFirstAssetDiscoveryTests::archivesAreOrderedWithinEachModRoot() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto base = std::filesystem::path(directory.path().toStdWString());
+    const std::array roots{base / "z-mod", base / "a-mod"};
+    const std::vector<std::filesystem::path> names{
+        "alpha.bsa", "alpha/z.bsa", "Beta.bsa", "STRASSE.bsa",
+        std::filesystem::path(u8"Straße.bsa"), "z.bsa"};
+    for (const auto& root : roots)
+        for (auto name = names.rbegin(); name != names.rend(); ++name)
+            writeFile(root / *name, "archive placeholder");
+
+    std::vector<std::filesystem::path> observed;
+    const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy());
+    const auto result = discovery.discover(roots, [&](std::span<const RoutedAsset> archives) {
+        for (const auto& archive : archives) observed.push_back(archive.executionPath());
+        return true;
+    });
+    std::vector<std::filesystem::path> expected;
+    for (const auto& root : roots)
+        for (const auto& name : names) expected.push_back(root / name);
+    QVERIFY(!result.cancelled());
+    QCOMPARE(observed, expected);
+}
 
 void ArchiveFirstAssetDiscoveryTests::stagingIsExcludedFromDiscovery() {
     QTemporaryDir directory;

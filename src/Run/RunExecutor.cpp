@@ -1,7 +1,6 @@
 #include "RunExecutor.h"
+#include "PathOrdering.h"
 #include "StagingRecovery.h"
-
-#include <utf8proc.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -13,23 +12,6 @@
 
 namespace cao::run {
 namespace {
-/// Folds UTF-8 names independently of the process locale; invalid encoding throws to Preparing.
-std::string foldedName(std::string_view name) {
-    utf8proc_uint8_t* mapped = nullptr;
-    const auto size =
-        utf8proc_map(reinterpret_cast<const utf8proc_uint8_t*>(name.data()),
-                     static_cast<utf8proc_ssize_t>(name.size()), &mapped, UTF8PROC_CASEFOLD);
-    const std::unique_ptr<utf8proc_uint8_t, decltype(&std::free)> owned(mapped, &std::free);
-    if (size < 0) throw std::runtime_error(utf8proc_errmsg(size));
-    return std::string(reinterpret_cast<const char*>(owned.get()), static_cast<std::size_t>(size));
-}
-
-/// Returns normalized generic UTF-8 without depending on the Windows ANSI code page.
-std::string relativeName(const std::filesystem::path& path) {
-    const auto utf8 = path.lexically_normal().generic_u8string();
-    return std::string(utf8.begin(), utf8.end());
-}
-
 /// Tests existing directory identities, including platform-specific case and path aliases.
 /// Filesystem lookup failures propagate to Preparing instead of accepting uncertain containment.
 bool containsDirectory(const std::filesystem::path& boundary, std::filesystem::path directory) {
