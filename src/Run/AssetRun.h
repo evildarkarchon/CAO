@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AssetRouting/AssetRouter.h"
+#include "AssetExecution/AssetExecutor.h"
 #include "ArchiveFirstAssetDiscovery.h"
 #include "RunLifecycle.h"
 
@@ -56,8 +57,8 @@ class AssetRunDiagnostics final {
 using AssetRunDiagnosticsAdapter = std::function<void(const AssetRunDiagnostics&)>;
 
 /// Supplies the production or test adapters used at the run's filesystem and execution seams.
-/// Extraction and execution are required; progress, cancellation, finalization, and result
-/// reporting are optional.
+/// Extraction and either execution adapter are required; progress, cancellation, finalization,
+/// and result reporting are optional.
 struct AssetRunAdapters final {
     ArchiveAssetAdapter extractArchive;
     RoutedAssetExecutionAdapter executeAsset;
@@ -69,6 +70,10 @@ struct AssetRunAdapters final {
     std::function<void(std::span<const ArchiveCollision>)> reportArchiveCollisions;
     /// Observes fatal discovery failures before returning without mutation.
     std::function<void(const RunFailure&)> reportDiscoveryFailure;
+    /// Executes with mutation evidence; when present, replaces the legacy void execution adapter.
+    /// An unsafe result stops subsequent Assets and Archive finalization after attempt progress.
+    std::function<execution::AssetExecutionResult(const routing::RoutedAsset&)>
+        executeAssetWithResult;
 };
 
 /// Owns the definitive Routing Ledger and the terminal state of one Asset Run.
@@ -96,6 +101,12 @@ class AssetRunResult final {
     /// Borrows fatal preflight failures; a nonempty list means no execution was attempted.
     [[nodiscard]] std::span<const RunFailure> failures() const noexcept { return _failures; }
 
+    /// Borrows failed Asset attempts, including whether their mutation permits continuation.
+    [[nodiscard]] std::span<const execution::AssetExecutionResult> executionFailures()
+        const noexcept {
+        return _executionFailures;
+    }
+
     /// Borrows the complete collision evidence retained from preflight.
     [[nodiscard]] std::span<const ArchiveCollision> collisions() const noexcept {
         return _collisions;
@@ -120,6 +131,7 @@ class AssetRunResult final {
     std::vector<RunDiagnostic> _diagnostics;
     std::vector<RunFailure> _failures;
     std::vector<ArchiveCollision> _collisions;
+    std::vector<execution::AssetExecutionResult> _executionFailures;
 };
 
 /// Orchestrates Archive-first discovery, definitive routing, and carried Asset execution.
@@ -136,6 +148,8 @@ class AssetRun final {
     /// reports cancellation by returning false. Filesystem races are skipped during discovery;
     /// adapter exceptions propagate. Manifest/order failures retain evidence and stop all mutation.
     /// Archive precedence is validated before the first extraction callback.
+    /// Result-bearing execution retains failed attempts and stops before further work when the
+    /// adapter cannot establish safe continuation; this stop is distinct from cancellation.
     [[nodiscard]] AssetRunResult execute(
         std::span<const std::filesystem::path> roots, const AssetRunAdapters& adapters,
         const ArchivePrecedence& precedence = ArchivePrecedence::deterministicDiscovery()) const;

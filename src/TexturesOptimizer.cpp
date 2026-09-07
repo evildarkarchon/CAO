@@ -559,17 +559,24 @@ bool TexturesOptimizer::convertWithCompression(const DXGI_FORMAT& format) {
     return true;
 }
 
-bool TexturesOptimizer::saveToFile(const QString& filePath) const {
+bool TexturesOptimizer::saveToFile(const QString& filePath, QString* failureDetail) const {
+    if (failureDetail) failureDetail->clear();
     const auto img = _image->GetImage(0, 0, 0);
-    if (!img) return false;
+    if (!img) {
+        if (failureDetail)
+            *failureDetail = QStringLiteral("No loaded image is available for DDS saving.");
+        return false;
+    }
     const size_t nimg = _image->GetImageCount();
 
     // Write texture
-    wchar_t wFilePath[1024];
-    QDir::toNativeSeparators(filePath).toWCharArray(wFilePath);
-    wFilePath[filePath.length()] = '\0';
+    // Staging adds a generated filename, so the native path must not depend on a fixed buffer.
+    const auto wFilePath = QDir::toNativeSeparators(filePath).toStdWString();
 
-    const HRESULT hr = SaveToDDSFile(img, nimg, _info, DirectX::DDS_FLAGS_NONE, wFilePath);
+    const HRESULT hr = SaveToDDSFile(img, nimg, _info, DirectX::DDS_FLAGS_NONE, wFilePath.c_str());
+    if (FAILED(hr) && failureDetail)
+        *failureDetail = QStringLiteral("SaveToDDSFile failed with HRESULT 0x%1")
+                             .arg(static_cast<quint32>(hr), 8, 16, QLatin1Char('0'));
     return SUCCEEDED(hr);
 }
 

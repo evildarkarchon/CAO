@@ -13,6 +13,9 @@
 #include <string>
 #include <utility>
 #include <vector>
+#ifdef _WIN32
+#include <Windows.h>
+#endif
 
 namespace
 {
@@ -151,6 +154,9 @@ private slots:
     /// Verifies a failed Texture conversion withholds the rewrite of references to that Texture.
     void failedConversionSuppressesMeshReferenceMaintenance();
 
+    /// Verifies a committed DDS still enables dependent rewrites when the TGA cannot be removed.
+    void committedConversionWithRetainedSourceMaintainsMeshReferences();
+
     /// Verifies one failed conversion does not withhold references to Textures that converted.
     void failedConversionKeepsUnrelatedMeshReferences();
 
@@ -190,6 +196,10 @@ void MainOptimizerTests::loadFailuresQuarantineMalformedAssets()
 
         QVERIFY(!result.succeeded());
         QCOMPARE(result.failure().value(), AssetExecutionFailure::LoadFailed);
+        if (path.extension() != ".nif") {
+            QCOMPARE(result.mutationState(), cao::execution::MutationState::Committed);
+            QVERIFY(result.safeToContinue());
+        }
         QVERIFY(!std::filesystem::exists(path));
         QVERIFY(std::filesystem::is_regular_file(path.wstring() + L".caobad"));
     }
@@ -272,6 +282,40 @@ void MainOptimizerTests::failedConversionSuppressesMeshReferenceMaintenance()
     // DDS this very conversion failed to produce is withheld.
     QVERIFY(maintenance.succeeded());
     QCOMPARE(savedTextureSlot(mesh), std::string("textures\\armor\\suppressed.tga"));
+}
+
+void MainOptimizerTests::committedConversionWithRetainedSourceMaintainsMeshReferences() {
+#ifndef _WIN32
+    QSKIP("The retained-source fixture uses Windows delete-sharing semantics.");
+#else
+    QVERIFY(_temporaryDirectory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(_temporaryDirectory.path());
+    const auto root = std::filesystem::path(_temporaryDirectory.path().toStdWString());
+    const auto texture = root / "textures" / "retained.tga";
+    const auto mesh = root / "retained-reference.nif";
+    // A one-pixel uncompressed true-color TGA exercises the real conversion and save adapter.
+    writeFile(texture, QByteArray::fromHex("0000020000000000000000000100010018000000ff"));
+    writeMeshWithTexture(mesh, "textures\\retained.tga");
+    const auto nativeHandle =
+        CreateFileW(texture.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    QVERIFY(nativeHandle != INVALID_HANDLE_VALUE);
+    const std::unique_ptr<void, decltype(&CloseHandle)> handle(nativeHandle, &CloseHandle);
+    OptionsCAO options;
+    options.mode = OptionsCAO::SingleMod;
+    options.userPath = _temporaryDirectory.path();
+    MainOptimizer optimizer(options);
+    const auto conversion = optimizer.process(routeMaintenanceOnly(texture));
+    QVERIFY(!conversion.succeeded());
+    QCOMPARE(conversion.failure().value(), AssetExecutionFailure::SourceRemovalFailed);
+    QVERIFY(!conversion.serviceDetail().empty());
+    QCOMPARE(conversion.mutationState(), cao::execution::MutationState::Committed);
+    QVERIFY(conversion.safeToContinue());
+    QVERIFY(std::filesystem::is_regular_file(root / "textures" / "retained.dds"));
+    QVERIFY(std::filesystem::is_regular_file(texture));
+    QVERIFY(optimizer.process(routeMaintenanceOnly(mesh)).succeeded());
+    QCOMPARE(savedTextureSlot(mesh), std::string("textures\\retained.dds"));
+#endif
 }
 
 void MainOptimizerTests::failedConversionKeepsUnrelatedMeshReferences()

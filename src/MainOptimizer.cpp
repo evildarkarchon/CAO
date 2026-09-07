@@ -12,16 +12,18 @@
 
 namespace {
 /// Renames an unreadable optimizer input to a collision-safe path outside packable Asset
-/// extensions.
-void handleBadFile(const QString& path) {
+/// extensions. Returns whether the rename committed a filesystem mutation.
+bool handleBadFile(const QString& path) {
     auto quarantinePath = path + ".caobad";
     for (quint64 suffix = 1; QFileInfo::exists(quarantinePath); ++suffix)
         quarantinePath = path + ".caobad." + QString::number(suffix);
 
     if (QFile::rename(path, quarantinePath)) {
         PLOG_ERROR << QString("%1 was renamed to %2").arg(path, quarantinePath);
+        return true;
     } else {
         PLOG_ERROR << QString("Please remove %1").arg(path);
+        return false;
     }
 }
 
@@ -71,21 +73,27 @@ MainOptimizer::MainOptimizer(const OptionsCAO& optOptions)
 
 cao::execution::AssetExecutionResult MainOptimizer::process(
     const cao::routing::RoutedAsset& asset) {
-    const auto result = _assetExecutor.execute(asset);
+    auto result = _assetExecutor.execute(asset);
     if (!result.succeeded()) {
         PLOG_ERROR << "Cannot process Routed Asset: "
                    << QString::fromStdWString(asset.executionPath().wstring()) << "\n"
                    << result.message();
+        if (!result.serviceDetail().empty()) PLOG_ERROR << result.serviceDetail();
 
         // Mesh Reference Maintenance rewrites a referenced .tga name to .dds, so a failed
-        // conversion would leave that reference pointing at a DDS that was never produced. The
+        // conversion that did not commit a usable DDS would leave that reference pointing at an
+        // absent output. A source-removal failure after safe commit still supplies the DDS, so its
+        // references must be rewritten even though the original TGA remains. The
         // failing Texture is recorded by identity rather than as a run-wide bit, because every
         // other TGA source in the same run was deleted once its DDS replacement was saved and its
         // references therefore still have to be rewritten. Asset Run always completes the Texture
         // target before the Mesh target, so the recorded set is definitive by the time any Mesh is
         // executed.
         if (asset.target() == cao::routing::OptimizerTarget::Texture &&
-            asset.operations().contains(cao::routing::AssetOperation::Conversion)) {
+            asset.operations().contains(cao::routing::AssetOperation::Conversion) &&
+            !(result.failure() == cao::execution::AssetExecutionFailure::SourceRemovalFailed &&
+              result.mutationState() == cao::execution::MutationState::Committed &&
+              result.safeToContinue())) {
             _failedTextureConversions.append(
                 normalizeAssetPath(QString::fromStdWString(asset.executionPath().wstring())));
         }
@@ -93,7 +101,16 @@ cao::execution::AssetExecutionResult MainOptimizer::process(
         // Quarantine mutates the effective tree, so Dry Run only reports the load failure.
         if (asset.executionMode() == cao::routing::ExecutionMode::Apply &&
             result.failure() == cao::execution::AssetExecutionFailure::LoadFailed) {
-            handleBadFile(QString::fromStdWString(asset.executionPath().wstring()));
+            const bool quarantined =
+                handleBadFile(QString::fromStdWString(asset.executionPath().wstring()));
+            if (quarantined && asset.target() == cao::routing::OptimizerTarget::Texture) {
+                // Loading failed before staging existed, but this adapter's successful quarantine
+                // is itself a committed mutation and must be retained in the attempt evidence.
+                result = cao::execution::AssetExecutionResult::failed(
+                    *result.failure(), result.message(), cao::execution::MutationState::Committed,
+                    result.safeToContinue(), result.affectedPath(), result.operation(),
+                    result.serviceDetail());
+            }
         }
     }
     return result;
@@ -119,6 +136,7 @@ void MainOptimizer::addLandscapeTextures() {
 
 bool MainOptimizer::loadTexture(const std::filesystem::path& path,
                                 const cao::routing::TextureVariant variant) {
+    _textureFailureDetail.clear();
     const auto type = variant == cao::routing::TextureVariant::Native ? TexturesOptimizer::DDS
                                                                       : TexturesOptimizer::TGA;
     return _texturesOpt.open(QString::fromStdWString(path.wstring()), type);
@@ -154,11 +172,19 @@ cao::execution::OperationResult MainOptimizer::optimizeTexture(
 }
 
 bool MainOptimizer::saveTexture(const std::filesystem::path& path) {
-    return _texturesOpt.saveToFile(QString::fromStdWString(path.wstring()));
+    return _texturesOpt.saveToFile(QString::fromStdWString(path.wstring()), &_textureFailureDetail);
 }
 
 bool MainOptimizer::removeTexture(const std::filesystem::path& path) {
-    return QFile(QString::fromStdWString(path.wstring())).remove();
+    _textureFailureDetail.clear();
+    QFile source(QString::fromStdWString(path.wstring()));
+    if (source.remove()) return true;
+    _textureFailureDetail = source.errorString();
+    return false;
+}
+
+std::string MainOptimizer::textureFailureDetail() const {
+    return _textureFailureDetail.toStdString();
 }
 
 bool MainOptimizer::loadMesh(const std::filesystem::path& path,

@@ -22,6 +22,7 @@ add_library(cao_asset_run
 )
 
 target_link_libraries(cao_asset_run PUBLIC
+    cao_asset_execution
     cao_asset_routing
     cao_run_discovery
 )

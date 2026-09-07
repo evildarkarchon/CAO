@@ -23,7 +23,9 @@ class TexturesOptimizer final : public QObject {
               const QString& fileName);
     bool open(const QString& filePath, const TextureType& type);
 
-    bool saveToFile(const QString& filePath) const;
+    /// Saves the loaded Texture as DDS; returns false if no image is loaded or persistence fails.
+    /// When supplied, failureDetail receives the service error and is cleared before each attempt.
+    bool saveToFile(const QString& filePath, QString* failureDetail = nullptr) const;
     /*!
      * \brief Decompress the current texture. It is required to use several functions.
      * \return False if an error happens

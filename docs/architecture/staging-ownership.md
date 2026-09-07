@@ -6,6 +6,20 @@ does not inspect or mutate staging. The recovery reader does not create staging;
 operation services will be its producers. The current Run Executor still rejects requested work
 until those services are available.
 
+Issue #410 requires Texture output staging beside its destination. This is an explicit exception
+to the dedicated-area producer protocol below: the v1 manifest cannot represent sibling paths.
+Texture attempts register those paths in `TemporaryArtifactRegistry` before exclusive creation,
+commit the destination before releasing temporary ownership, and leave failed staging registered
+for normal Safety Cleanup. The legacy execution entry point performs this cleanup before returning;
+the registry-taking entry point leaves cleanup with its owning run.
+
+These sibling files use `.cao-staging-texture-<unique identity>.dds`. They are excluded from
+discovery, but their in-memory registrations are not recoverable after a crash. A leftover file
+has no durable ownership proof and must be preserved for manual inspection, never automatically
+deleted from its name alone. Supporting automatic recovery of sibling staging would require a
+separate manifest protocol change; this exception does not relax the v1 rules for the dedicated
+area or claim that Texture attempts publish v1 manifests.
+
 Each Mod Root reserves `.cao-staging`. Other names beginning with `.cao-staging`, compared using
 ASCII case-insensitive matching, are unknown staging-like entries: Apply fails with their path
 and recovery instructions. Discovery excludes this namespace from both Archive and Asset passes.

@@ -108,14 +108,7 @@ bool Manager::runOptimization() {
                 bsaOptimizer.extract(QString::fromStdWString(archive.executionPath().wstring()),
                                      _options.bBsaDeleteBackup);
             },
-            [&](const cao::routing::RoutedAsset& asset) {
-                // MainOptimizer owns the outcome: it quarantines unreadable inputs and records
-                // failed Texture conversions so the later Mesh phase withholds the dependent
-                // reference rewrite. The run itself continues past a single failed Asset.
-                // Preserve failures for the terminal status even when quarantine or dependent
-                // reference handling lets the remaining work finish safely.
-                if (!optimizer.process(asset).succeeded()) ++failedAssets;
-            },
+            {},
             [&](const cao::run::AssetRunProgress& progress) {
                 _numberCompletedFiles = static_cast<int>(progress.completed);
                 const auto text =
@@ -200,9 +193,25 @@ bool Manager::runOptimization() {
                 PLOG_ERROR << QStringLiteral("Archive discovery failed: %1: %2")
                                   .arg(QString::fromStdString(failure.detail()))
                                   .arg(QString::fromStdWString(failure.path().wstring()));
+            },
+            [&](const cao::routing::RoutedAsset& asset) {
+                // Preserve failures for terminal status while letting Asset Run use mutation
+                // evidence to stop before another attempt or packing when continuation is unsafe.
+                auto attempt = optimizer.process(asset);
+                if (!attempt.succeeded()) ++failedAssets;
+                return attempt;
             }});
 
     if (result.cancelled() || !result.failures().empty()) return false;
+
+    for (const auto& failure : result.executionFailures()) {
+        if (!failure.safeToContinue()) {
+            PLOG_ERROR
+                << "Process stopped because an Asset mutation could not be completed safely.";
+            emit end();
+            return false;
+        }
+    }
 
     if (failedAssets != 0) {
         PLOG_ERROR << QStringLiteral("Process completed with %1 failed Assets<br><br><br>")

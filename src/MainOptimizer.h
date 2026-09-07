@@ -42,6 +42,9 @@ class MainOptimizer final : public QObject, private cao::execution::AssetExecuti
     /// Removes a converted source Texture only after its DDS replacement is saved.
     bool removeTexture(const std::filesystem::path& path) override;
 
+    /// Returns the last Texture adapter's service diagnostic, empty when none is available.
+    std::string textureFailureDetail() const override;
+
     /// Loads a Mesh using the carried Standard or Terrain Variant.
     bool loadMesh(const std::filesystem::path& path, cao::routing::MeshVariant variant) override;
 
@@ -65,13 +68,14 @@ class MainOptimizer final : public QObject, private cao::execution::AssetExecuti
     MeshesOptimizer _meshesOpt;
     AnimationsOptimizer _animOpt;
     TexturesOptimizer _texturesOpt;
+    QString _textureFailureDetail;
     std::unique_ptr<nifly::NifFile> _loadedMesh;
     /// Normalized execution path of the currently loaded Mesh, so Mesh Reference Maintenance can
     /// tell a conversion failure in this Mesh's own Mod Root from an identically named one in a
     /// sibling Mod Root scanned by the same Several Mods run.
     QString _loadedMeshPath;
-    /// Normalized execution paths of the convertible Textures whose conversion failed, so
-    /// dependent Mesh Reference Maintenance withholds only the references those failures broke.
+    /// Normalized execution paths of the convertible Textures whose conversion did not commit a
+    /// usable DDS, so Mesh Reference Maintenance withholds only references those failures broke.
     QStringList _failedTextureConversions;
     cao::execution::AssetExecutor _assetExecutor;
 };

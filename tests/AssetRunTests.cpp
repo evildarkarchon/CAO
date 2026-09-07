@@ -189,6 +189,11 @@ class AssetRunTests final : public QObject
     Q_OBJECT
 
 private slots:
+ /// Verifies safe failures continue and unsafe failures stop before another attempt or packing.
+ void mutationAwareFailuresControlContinuation_data();
+ /// Verifies mutation evidence controls ordering, terminal failure retention, and attempt totals.
+ void mutationAwareFailuresControlContinuation();
+
  /// Verifies malformed manifests stop every mutation and finalization adapter.
  void unreadableArchiveStopsRunBeforeMutation();
 
@@ -243,6 +248,55 @@ private slots:
  /// Verifies an Archive produced by extraction is reported but never counted as run work.
  void nestedArchivesAreReportedWithoutInflatingTheWorkTotal();
 };
+
+void AssetRunTests::mutationAwareFailuresControlContinuation_data() {
+    QTest::addColumn<bool>("safe");
+    QTest::addColumn<int>("failedAttempt");
+    QTest::newRow("safe-failure") << true << 1;
+    QTest::newRow("unsafe-failure") << false << 1;
+    QTest::newRow("unsafe-final-attempt") << false << 2;
+}
+
+void AssetRunTests::mutationAwareFailuresControlContinuation() {
+    QFETCH(bool, safe);
+    QFETCH(int, failedAttempt);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "first.dds");
+    writeFile(root / "second.dds");
+    std::size_t attempts = 0;
+    bool finalized = false;
+    bool legacyCalled = false;
+    std::vector<AssetRunProgress> progress;
+    AssetRunAdapters adapters;
+    adapters.executeAsset = [&](const auto&) { legacyCalled = true; };
+    adapters.reportProgress = [&](const auto& update) { progress.push_back(update); };
+    adapters.finalizeArchiveLifecycle = [&] {
+        finalized = true;
+        return true;
+    };
+    adapters.executeAssetWithResult = [&](const auto& asset) {
+        ++attempts;
+        return attempts == static_cast<std::size_t>(failedAttempt)
+                   ? cao::execution::AssetExecutionResult::failed(
+                         cao::execution::AssetExecutionFailure::SaveFailed, "Injected failure",
+                         safe ? cao::execution::MutationState::None
+                              : cao::execution::MutationState::PartialOrUnknown,
+                         safe, asset.executionPath(), "save")
+                   : cao::execution::AssetExecutionResult::success();
+    };
+    const auto result = AssetRun(allLooseTargetsPolicy()).execute(std::array{root}, adapters);
+    QCOMPARE(attempts, safe ? std::size_t(2) : static_cast<std::size_t>(failedAttempt));
+    QCOMPARE(finalized, safe);
+    QVERIFY(!legacyCalled);
+    QVERIFY(!result.cancelled());
+    QCOMPARE(result.executionFailures().size(), std::size_t(1));
+    QCOMPARE(result.executionFailures().front().safeToContinue(), safe);
+    QCOMPARE(progress.size(), attempts);
+    QCOMPARE(progress.back().completed, attempts);
+    QCOMPARE(progress.back().total, std::size_t(2));
+}
 
 void AssetRunTests::unreadableArchiveStopsRunBeforeMutation() {
     QTemporaryDir temporaryDirectory;

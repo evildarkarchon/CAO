@@ -134,12 +134,22 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
                 result._cancelled = true;
                 return result;
             }
-            adapters.executeAsset(asset.get());
+            bool safeToContinue = true;
+            if (adapters.executeAssetWithResult) {
+                auto attempt = adapters.executeAssetWithResult(asset.get());
+                safeToContinue = attempt.safeToContinue();
+                if (!attempt.succeeded()) result._executionFailures.push_back(std::move(attempt));
+            } else {
+                adapters.executeAsset(asset.get());
+            }
             ++completed;
             if (adapters.reportProgress) {
                 adapters.reportProgress(AssetRunProgress{
                     routing::RoutedAssetPhase::LooseAssetProcessing, completed, total});
             }
+            // A failed attempt still completes progress, but an uncertain mutation makes later
+            // optimization and packing unsafe even when cancellation has not been requested.
+            if (!safeToContinue) return result;
         }
     }
     // Cancellation raised while the final attempt was in flight has no later loop head to observe

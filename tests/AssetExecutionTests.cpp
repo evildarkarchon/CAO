@@ -2,17 +2,27 @@
 #include "AssetRouting/AssetRouter.h"
 
 #include <QTest>
+#include <QTemporaryDir>
 
 #include <filesystem>
+#include <fstream>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <utility>
 
 namespace
 {
+/// Reads fixture bytes independently of the optimizer backend.
+std::string readBytes(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
 using cao::execution::AssetExecutionBackend;
 using cao::execution::AssetExecutionFailure;
 using cao::execution::AssetExecutor;
+using cao::execution::MutationState;
 using cao::execution::OperationResult;
 using cao::routing::AnimationAsset;
 using cao::routing::AssetOperation;
@@ -64,6 +74,7 @@ class RecordingBackend final : public AssetExecutionBackend
 public:
     bool loadTexture(const std::filesystem::path &path, const TextureVariant variant) override
     {
+        if (throwAt == "load_texture") throw std::runtime_error("load backend threw");
         texturePath = path;
         textureVariant = variant;
         ++textureLoads;
@@ -73,6 +84,7 @@ public:
     OperationResult optimizeTexture(const cao::routing::AssetOperations &operations,
                                     const ExecutionMode mode) override
     {
+        if (throwAt == "optimize_texture") throw 42;
         textureOptimization = operations.contains(AssetOperation::Optimization);
         textureConversion = operations.contains(AssetOperation::Conversion);
         textureMode = mode;
@@ -84,6 +96,7 @@ public:
     {
         savedTexturePath = path;
         ++textureSaves;
+        if (textureSave) return textureSave(path);
         return saveSucceeds;
     }
 
@@ -91,6 +104,7 @@ public:
     {
         removedTexturePath = path;
         ++textureRemovals;
+        if (textureRemove) return textureRemove(path);
         return removeSucceeds;
     }
 
@@ -141,6 +155,9 @@ public:
     bool loadSucceeds{true};
     bool saveSucceeds{true};
     bool removeSucceeds{true};
+    std::function<bool(const std::filesystem::path&)> textureSave;
+    std::function<bool(const std::filesystem::path&)> textureRemove;
+    std::string throwAt;
     OperationResult operationResult{OperationResult::changed()};
 
     int textureLoads{};
@@ -178,42 +195,291 @@ class AssetExecutionTests final : public QObject
     Q_OBJECT
 
 private slots:
-    /// Defines Apply and Dry Run expectations for conversion-only Texture work.
-    void conversionOnlyTextureExecution_data();
+ /// A partially written failed save must preserve the original Texture bytes.
+ void failedTextureSavePreservesOriginal();
+ /// Covers retained and missing files after a backend reports source-removal failure.
+ void textureSourceRemovalFailure_data();
+ /// Reports committed output and permits continuation only while both conversion files survive.
+ void textureSourceRemovalFailure();
+ /// Exceptions during staged save are fatal but leave durable inputs untouched.
+ void textureSaveException();
 
-    /// Verifies conversion alone executes a convertible Texture without ordinary Texture optimization.
-    void conversionOnlyTextureExecution();
+ /// Keeps a Texture optimizer's service failure separate from its human-readable explanation.
+ void textureOperationFailureDetails();
+ /// A writer receives an already reserved same-directory file owned by the supplied registry.
+ void textureStagingIsRegisteredBeforeSave();
+ /// Commit failure retains both original files and cleanup removes only the staged output.
+ void textureCommitFailure();
+ /// Cleanup evidence remains secondary to the original backend save failure.
+ void textureCleanupFailurePreservesPrimaryFailure();
+ /// Read-only backend exceptions are fatal and cannot create staged or durable output.
+ void textureReadOnlyException_data();
+ /// Retains exception boundary and safety evidence without mutating the original Texture.
+ void textureReadOnlyException();
+ /// Native replacement uses the same staged commit path and reports the durable mutation.
+ void nativeTextureCommit();
+ /// Defines Apply and Dry Run expectations for conversion-only Texture work.
+ void conversionOnlyTextureExecution_data();
 
-    /// Defines standard and terrain Mesh paths whose carried Variant must select loading behavior.
-    void meshVariantSelectsLoadMode_data();
+ /// Verifies conversion alone executes a convertible Texture without ordinary Texture optimization.
+ void conversionOnlyTextureExecution();
 
-    /// Verifies Mesh loading receives the carried Variant and original execution path exactly once.
-    void meshVariantSelectsLoadMode();
+ /// Defines standard and terrain Mesh paths whose carried Variant must select loading behavior.
+ void meshVariantSelectsLoadMode_data();
 
-    /// Defines independent ordinary optimization and Mesh Reference Maintenance combinations.
-    void meshOperationsShareOneTransaction_data();
+ /// Verifies Mesh loading receives the carried Variant and original execution path exactly once.
+ void meshVariantSelectsLoadMode();
 
-    /// Verifies independent Mesh operations share one load and at most one save transaction.
-    void meshOperationsShareOneTransaction();
+ /// Defines independent ordinary optimization and Mesh Reference Maintenance combinations.
+ void meshOperationsShareOneTransaction_data();
 
-    /// Verifies Dry Run evaluates Mesh Reference Maintenance without mutation or saving.
-    void dryRunMeshMaintenanceDoesNotMutate();
+ /// Verifies independent Mesh operations share one load and at most one save transaction.
+ void meshOperationsShareOneTransaction();
 
-    /// Defines Apply and Dry Run expectations for Animation execution.
-    void animationExecution_data();
+ /// Verifies Dry Run evaluates Mesh Reference Maintenance without mutation or saving.
+ void dryRunMeshMaintenanceDoesNotMutate();
 
-    /// Verifies Animation execution consumes the carried operation and execution mode.
-    void animationExecution();
+ /// Defines Apply and Dry Run expectations for Animation execution.
+ void animationExecution_data();
 
-    /// Verifies an Animation backend failure is returned to the caller.
-    void animationFailureIsReported();
+ /// Verifies Animation execution consumes the carried operation and execution mode.
+ void animationExecution();
 
-    /// Verifies a reported backend failure cannot alter the earlier Routing Decision.
-    void executionFailurePreservesRoutedDecision();
+ /// Verifies an Animation backend failure is returned to the caller.
+ void animationFailureIsReported();
 
-    /// Verifies Archive extraction is rejected by the loose-Asset execution seam.
-    void archiveIsNotOwnedByAssetExecutor();
+ /// Verifies a reported backend failure cannot alter the earlier Routing Decision.
+ void executionFailurePreservesRoutedDecision();
+
+ /// Verifies Archive extraction is rejected by the loose-Asset execution seam.
+ void archiveIsNotOwnedByAssetExecutor();
 };
+
+void AssetExecutionTests::failedTextureSavePreservesOriginal() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto source = std::filesystem::path(directory.path().toStdWString()) / "native.dds";
+    std::ofstream(source) << "original";
+    RecordingBackend backend;
+    backend.textureSave = [](const std::filesystem::path& path) {
+        std::ofstream(path) << "partial output";
+        return false;
+    };
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::NativeTextureOptimization}, source));
+    QVERIFY(!result.succeeded());
+    QCOMPARE(result.failure().value(), AssetExecutionFailure::SaveFailed);
+    QCOMPARE(readBytes(source), std::string("original"));
+    QCOMPARE(backend.textureRemovals, 0);
+    QCOMPARE(result.mutationState(), MutationState::None);
+    QVERIFY(result.safeToContinue());
+    QVERIFY(result.affectedPath() == source);
+    QCOMPARE(std::distance(std::filesystem::directory_iterator(source.parent_path()),
+                           std::filesystem::directory_iterator()),
+             1);
+}
+
+void AssetExecutionTests::textureSourceRemovalFailure_data() {
+    QTest::addColumn<int>("damage");
+    QTest::addColumn<bool>("throws");
+    QTest::newRow("both usable") << 0 << false;
+    QTest::newRow("source missing") << 1 << false;
+    QTest::newRow("output missing") << 2 << false;
+    QTest::newRow("source empty") << 3 << false;
+    QTest::newRow("source corrupted") << 4 << false;
+    QTest::newRow("exception after commit") << 0 << true;
+    QTest::newRow("exception after source loss") << 1 << true;
+}
+
+void AssetExecutionTests::textureSourceRemovalFailure() {
+    QFETCH(int, damage);
+    QFETCH(bool, throws);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto source = std::filesystem::path(directory.path().toStdWString()) / "source.tga";
+    const auto output = source.parent_path() / "source.dds";
+    std::ofstream(source) << "original";
+    RecordingBackend backend;
+    backend.textureSave = [](const std::filesystem::path& path) {
+        std::ofstream(path) << "converted";
+        return true;
+    };
+    backend.textureRemove = [&](const std::filesystem::path& path) {
+        if (readBytes(output) != "converted") throw std::logic_error("Output not committed");
+        if (damage == 1) std::filesystem::remove(path);
+        if (damage == 2) std::filesystem::remove(output);
+        if (damage == 3) std::ofstream(path).close();
+        if (damage == 4) std::ofstream(path) << "damaged!";
+        if (throws) throw std::runtime_error("removal backend threw");
+        return false;
+    };
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::ConvertibleTextureConversion}, source),
+        artifacts);
+    QVERIFY(!result.succeeded());
+    QCOMPARE(result.failure().value(), throws ? AssetExecutionFailure::BackendException
+                                              : AssetExecutionFailure::SourceRemovalFailed);
+    QCOMPARE(result.mutationState(),
+             damage == 0 ? MutationState::Committed : MutationState::PartialOrUnknown);
+    QCOMPARE(result.safeToContinue(), damage == 0 && !throws);
+    QVERIFY(result.affectedPath() == source);
+    QCOMPARE(result.operation(), std::string("remove_texture_source"));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+    if (damage != 2) QCOMPARE(readBytes(output), std::string("converted"));
+    if (damage == 0) QCOMPARE(readBytes(source), std::string("original"));
+}
+
+void AssetExecutionTests::textureOperationFailureDetails() {
+    RecordingBackend backend;
+    backend.operationResult = OperationResult::failed("synthetic Texture service error");
+    const auto result = AssetExecutor(backend).execute(routeAsset(
+        ExecutionMode::DryRun, {RequestedWork::NativeTextureOptimization}, "fixture.dds"));
+    QCOMPARE(result.message(), std::string("Failed to optimize Texture."));
+    QCOMPARE(result.serviceDetail(), std::string("synthetic Texture service error"));
+}
+
+void AssetExecutionTests::textureSaveException() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto source = std::filesystem::path(directory.path().toStdWString()) / "native.dds";
+    std::ofstream(source) << "original";
+    RecordingBackend backend;
+    backend.textureSave = [](const std::filesystem::path& path) -> bool {
+        std::ofstream(path) << "partial output";
+        throw std::runtime_error("save backend threw");
+    };
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::NativeTextureOptimization}, source));
+    QCOMPARE(result.failure().value(), AssetExecutionFailure::BackendException);
+    QCOMPARE(result.mutationState(), MutationState::None);
+    QVERIFY(!result.safeToContinue());
+    QVERIFY(result.affectedPath() == source);
+    QCOMPARE(result.operation(), std::string("save_texture"));
+    QCOMPARE(result.message(), std::string("Texture backend raised an exception."));
+    QCOMPARE(result.serviceDetail(), std::string("save backend threw"));
+    QCOMPARE(readBytes(source), std::string("original"));
+    QVERIFY(!std::filesystem::exists(backend.savedTexturePath));
+}
+
+void AssetExecutionTests::textureStagingIsRegisteredBeforeSave() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto source = std::filesystem::path(directory.path().toStdWString()) / "native.dds";
+    std::ofstream(source) << "original";
+    cao::run::TemporaryArtifactRegistry artifacts;
+    RecordingBackend backend;
+    bool reservedBeforeSave = false;
+    backend.textureSave = [&](const std::filesystem::path& path) {
+        reservedBeforeSave = std::filesystem::is_regular_file(path);
+        std::ofstream(path) << "partial output";
+        return false;
+    };
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::NativeTextureOptimization}, source),
+        artifacts);
+    QVERIFY(reservedBeforeSave);
+    QCOMPARE(result.failure().value(), AssetExecutionFailure::SaveFailed);
+    QVERIFY(std::filesystem::exists(backend.savedTexturePath));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+    QVERIFY(!std::filesystem::exists(backend.savedTexturePath));
+    QCOMPARE(readBytes(source), std::string("original"));
+}
+
+void AssetExecutionTests::textureCommitFailure() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto source = std::filesystem::path(directory.path().toStdWString()) / "source.tga";
+    const auto destination = source.parent_path() / "source.dds";
+    std::ofstream(source) << "original";
+    std::filesystem::create_directory(destination);
+    std::ofstream(destination / "unowned") << "keep";
+    RecordingBackend backend;
+    backend.textureSave = [](const std::filesystem::path& path) {
+        std::ofstream(path) << "converted";
+        return true;
+    };
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::ConvertibleTextureConversion}, source));
+    QCOMPARE(result.failure().value(), AssetExecutionFailure::CommitFailed);
+    QCOMPARE(result.mutationState(), MutationState::None);
+    QVERIFY(result.safeToContinue());
+    QVERIFY(result.affectedPath() == destination);
+    QCOMPARE(backend.textureRemovals, 0);
+    QCOMPARE(readBytes(source), std::string("original"));
+    QCOMPARE(readBytes(destination / "unowned"), std::string("keep"));
+    QVERIFY(!std::filesystem::exists(backend.savedTexturePath));
+}
+
+void AssetExecutionTests::textureCleanupFailurePreservesPrimaryFailure() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto source = std::filesystem::path(directory.path().toStdWString()) / "native.dds";
+    std::ofstream(source) << "original";
+    RecordingBackend backend;
+    backend.textureSave = [](const std::filesystem::path& path) {
+        std::filesystem::remove(path);
+        std::filesystem::create_directory(path);
+        std::ofstream(path / "unregistered") << "keep";
+        return false;
+    };
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::NativeTextureOptimization}, source));
+    QCOMPARE(result.failure().value(), AssetExecutionFailure::SaveFailed);
+    QCOMPARE(result.cleanupFailures().size(), std::size_t{1});
+    QCOMPARE(result.cleanupFailures().front().code(),
+             cao::run::RunFailureCode::TemporaryArtifactCleanupFailed);
+    QCOMPARE(readBytes(backend.savedTexturePath / "unregistered"), std::string("keep"));
+    QCOMPARE(readBytes(source), std::string("original"));
+}
+
+void AssetExecutionTests::textureReadOnlyException_data() {
+    QTest::addColumn<QString>("boundary");
+    QTest::newRow("load standard exception") << QStringLiteral("load_texture");
+    QTest::newRow("optimize unknown exception") << QStringLiteral("optimize_texture");
+}
+
+void AssetExecutionTests::textureReadOnlyException() {
+    QFETCH(QString, boundary);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto source = std::filesystem::path(directory.path().toStdWString()) / "native.dds";
+    std::ofstream(source) << "original";
+    RecordingBackend backend;
+    backend.throwAt = boundary.toStdString();
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::NativeTextureOptimization}, source));
+    QCOMPARE(result.failure().value(), AssetExecutionFailure::BackendException);
+    QCOMPARE(result.mutationState(), MutationState::None);
+    QCOMPARE(result.failureCategory().value(), cao::execution::ExecutionFailureCategory::Contract);
+    QCOMPARE(result.phase(), cao::run::RunPhase::ProcessingAssets);
+    QCOMPARE(result.operation(), boundary.toStdString());
+    QVERIFY(result.affectedPath() == source);
+    QVERIFY(!result.safeToContinue());
+    QCOMPARE(backend.textureSaves, 0);
+    QCOMPARE(readBytes(source), std::string("original"));
+}
+
+void AssetExecutionTests::nativeTextureCommit() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto source = std::filesystem::path(directory.path().toStdWString()) / "native.dds";
+    std::ofstream(source) << "original";
+    RecordingBackend backend;
+    backend.textureSave = [&](const std::filesystem::path& path) {
+        if (readBytes(source) != "original" || path == source)
+            throw std::runtime_error("Native save overwrote the original");
+        std::ofstream(path) << "optimized";
+        return true;
+    };
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::NativeTextureOptimization}, source));
+    QVERIFY(result.succeeded());
+    QCOMPARE(result.mutationState(), MutationState::Committed);
+    QCOMPARE(readBytes(source), std::string("optimized"));
+    QCOMPARE(backend.textureRemovals, 0);
+    QVERIFY(!std::filesystem::exists(backend.savedTexturePath));
+}
 
 void AssetExecutionTests::conversionOnlyTextureExecution_data()
 {
@@ -232,10 +498,27 @@ void AssetExecutionTests::conversionOnlyTextureExecution()
     QFETCH(int, expectedRemoveCount);
 
     const auto executionMode = static_cast<ExecutionMode>(mode);
-    const auto asset = routeAsset(executionMode,
-                                  {RequestedWork::ConvertibleTextureConversion},
-                                  std::filesystem::path(L"Textures/Source.Name.TgA"));
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto source = std::filesystem::path(directory.path().toStdWString()) / "Source.Name.TgA";
+    const auto destination = source.parent_path() / "Source.Name.dds";
+    std::ofstream(source) << "original";
+    std::ofstream(destination) << "old destination";
+    const auto asset =
+        routeAsset(executionMode, {RequestedWork::ConvertibleTextureConversion}, source);
     RecordingBackend backend;
+    backend.textureSave = [&](const std::filesystem::path& path) {
+        if (path.parent_path() != source.parent_path() || path == destination ||
+            readBytes(destination) != "old destination")
+            throw std::runtime_error("Destination changed before staging completed");
+        std::ofstream(path) << "converted";
+        return true;
+    };
+    backend.textureRemove = [&](const std::filesystem::path& path) {
+        if (readBytes(destination) != "converted")
+            throw std::runtime_error("Source removal preceded destination commit");
+        return std::filesystem::remove(path);
+    };
     const AssetExecutor executor(backend);
 
     const auto result = executor.execute(asset);
@@ -250,8 +533,15 @@ void AssetExecutionTests::conversionOnlyTextureExecution()
     QCOMPARE(backend.textureSaves, expectedSaveCount);
     QCOMPARE(backend.textureRemovals, expectedRemoveCount);
     if (executionMode == ExecutionMode::Apply) {
-        QVERIFY(backend.savedTexturePath == std::filesystem::path(L"Textures/Source.Name.dds"));
+        QCOMPARE(readBytes(destination), std::string("converted"));
+        QVERIFY(!std::filesystem::exists(source));
+        QVERIFY(!std::filesystem::exists(backend.savedTexturePath));
         QVERIFY(backend.removedTexturePath == asset.executionPath());
+        QCOMPARE(result.mutationState(), MutationState::Committed);
+    } else {
+        QCOMPARE(readBytes(source), std::string("original"));
+        QCOMPARE(readBytes(destination), std::string("old destination"));
+        QCOMPARE(result.mutationState(), MutationState::None);
     }
 }
 
