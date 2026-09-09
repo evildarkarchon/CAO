@@ -378,11 +378,19 @@ class OptimizationRunResult final {
     /// named public factory rather than a friendship because the Run Executor, and later the
     /// asynchronous Optimization Run service, both commit terminal results from libraries that
     /// link this one.
+    /// The supplied outcome classifies work: Failed is fatal, CompletedWithFailures is safely
+    /// contained. Fatal work wins over observed cancellation, which wins over contained work and
+    /// cleanup errors. A cleanup service exception makes an otherwise uncancelled, nonfatal run
+    /// Failed. All supplied failure evidence is retained without replacing the primary cause.
     [[nodiscard]] static OptimizationRunResult terminal(
         RunOutcome outcome, RunPhase finalPhase, std::vector<RunPhaseRecord> phases,
         RunId runId = createRunId(), std::vector<RunFailure> failures = {},
         std::shared_ptr<const RunPreparation> preparation = {},
-        std::vector<RunFailure> cleanupFailures = {});
+        std::vector<RunFailure> cleanupFailures = {}, bool cancellationObserved = false);
+
+    /// Reports cancellation observed before terminal classification, even when Failed wins.
+    /// Later cancellation requests cannot rewrite this immutable observation.
+    [[nodiscard]] bool cancellationObserved() const noexcept { return _cancellationObserved; }
 
     /// Borrows owned preparation facts, or nullptr if preparation did not complete successfully.
     [[nodiscard]] const RunPreparation* preparation() const noexcept { return _preparation.get(); }
@@ -421,7 +429,7 @@ class OptimizationRunResult final {
                           std::vector<RunPhaseRecord> phases, RunId runId,
                           std::vector<RunFailure> failures,
                           std::shared_ptr<const RunPreparation> preparation,
-                          std::vector<RunFailure> cleanupFailures) noexcept;
+                          std::vector<RunFailure> cleanupFailures, bool cancellationObserved) noexcept;
 
     RunId _runId;
     RunOutcome _outcome;
@@ -430,6 +438,7 @@ class OptimizationRunResult final {
     std::vector<RunFailure> _failures;
     std::shared_ptr<const RunPreparation> _preparation;
     std::vector<RunFailure> _cleanupFailures;
+    bool _cancellationObserved;
 };
 
 /// An owning immutable observation; copies keep terminal payloads alive independently of handles.

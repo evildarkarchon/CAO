@@ -246,20 +246,8 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
     auto cleanupFailures = collectSafetyCleanupFailures(services.safetyCleanup);
     for (const auto& failure : cleanupFailures)
         if (services.observations != nullptr) services.observations->recordFailure(failure);
-    // A service-contract exception cannot establish that all owned artifacts were attempted.
-    if (std::any_of(cleanupFailures.begin(), cleanupFailures.end(), [](const RunFailure& failure) {
-            return failure.code() == RunFailureCode::SafetyCleanupServiceFailed;
-        }))
-        outcome = RunOutcome::Failed;
-
-    // A fatal failure keeps precedence; cancellation observed during cleanup still records a
-    // cancelled run, without ever interrupting the cleanup pass.
-    if (outcome != RunOutcome::Failed && stop.stop_requested()) outcome = RunOutcome::Cancelled;
-    if (outcome == RunOutcome::Succeeded && !cleanupFailures.empty())
-        outcome = RunOutcome::CompletedWithFailures;
-
     return OptimizationRunResult::terminal(outcome, finalPhase, std::move(phases), std::move(runId),
                                            std::move(failures), std::move(preparation),
-                                           std::move(cleanupFailures));
+                                           std::move(cleanupFailures), stop.stop_requested());
 }
 }  // namespace cao::run

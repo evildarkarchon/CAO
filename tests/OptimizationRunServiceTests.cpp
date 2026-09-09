@@ -235,6 +235,12 @@ private slots:
  /// Catches failures disappearing between phase observations and terminal classification.
  void failureEventsPrecedeCleanupAndTerminal();
 
+ /// Verifies fatal failure wins while retaining cancellation observed before terminal commit.
+ void failureRetainsObservedCancellationAndOneTerminalEvent();
+
+ /// Verifies a late cancellation request cannot change the committed success evidence.
+ void lateCancellationDoesNotChangeCommittedEvidence();
+
  /// Catches stale state at enqueue, callbacks under locks, and worker-side callback self-wait.
  void inlineCallbacksObservePublishedStateAndCanCancel();
 
@@ -902,6 +908,62 @@ void OptimizationRunServiceTests::failureEventsPrecedeCleanupAndTerminal()
                  RunPhase::SafetyCleanup);
         QVERIFY(std::holds_alternative<std::shared_ptr<const OptimizationRunResult>>(events.back().payload()));
     }
+}
+
+void OptimizationRunServiceTests::failureRetainsObservedCancellationAndOneTerminalEvent()
+{
+    GatedRunScheduler scheduler;
+    std::binary_semaphore finished{0};
+    scheduler.afterWork = [&] { finished.release(); };
+    auto provider = std::make_shared<CallbackRunConfigurationProvider>(
+        [](std::string_view) -> cao::run::RunConfiguration {
+            throw std::runtime_error("Configuration could not be loaded");
+        });
+    OptimizationRunService service{scheduler, provider};
+    RunHandle* handle = nullptr;
+    std::vector<cao::run::RunEvent> events;
+    auto started = service.start(noWorkRequest(), [&](const cao::run::RunEvent& event) {
+        events.push_back(event);
+        if (std::holds_alternative<cao::run::RunFailure>(event.payload()))
+            handle->requestCancellation();
+    });
+    handle = started.handle();
+    scheduler.release();
+    const auto& result = handle->wait();
+    // wait() guarantees terminal admission, not callback completion; synchronize event reads.
+    finished.acquire();
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QVERIFY(result.cancellationObserved());
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().code(),
+             cao::run::RunFailureCode::ConfigurationLoadingFailed);
+    std::size_t terminalCount = 0;
+    for (const auto& event : events) {
+        if (const auto* terminal =
+                std::get_if<std::shared_ptr<const OptimizationRunResult>>(&event.payload())) {
+            ++terminalCount;
+            QCOMPARE(terminal->get(), &result);
+            QVERIFY((*terminal)->cancellationObserved());
+        }
+    }
+    QCOMPARE(terminalCount, std::size_t{1});
+    QVERIFY(&handle->wait() == &result);
+}
+
+void OptimizationRunServiceTests::lateCancellationDoesNotChangeCommittedEvidence()
+{
+    CountingInlineScheduler scheduler;
+    OptimizationRunService service{scheduler, testRunConfiguration()};
+    auto started = service.start(noWorkRequest());
+    auto& handle = *started.handle();
+    const auto& result = handle.wait();
+    QCOMPARE(result.outcome(), RunOutcome::Succeeded);
+    QVERIFY(!result.cancellationObserved());
+    handle.requestCancellation();
+    QVERIFY(handle.snapshot().cancellationRequested());
+    QVERIFY(&handle.wait() == &result);
+    QCOMPARE(result.outcome(), RunOutcome::Succeeded);
+    QVERIFY(!result.cancellationObserved());
 }
 
 void OptimizationRunServiceTests::inlineCallbacksObservePublishedStateAndCanCancel()

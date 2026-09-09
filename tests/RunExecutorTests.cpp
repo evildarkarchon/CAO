@@ -110,6 +110,12 @@ class RunExecutorTests final : public QObject
     Q_OBJECT
 
 private slots:
+ /// Verifies a fatal primary failure retains cancellation observed during mandatory cleanup.
+ void fatalFailureRetainsConcurrentCancellation();
+ /// Verifies cleanup exceptions cannot replace cancellation, including cancellation during cleanup.
+ void cleanupExceptionsPreserveCancellation();
+ /// Exercises the shared terminal boundary with independent work, cancellation, and cleanup facts.
+ void terminalPrecedenceRetainsAllEvidence();
  /// Verifies the filesystem recovery seam observes cancellation before attempting a deletion.
  void cancelledRecoveryPreservesUnattemptedArtifacts();
  /// Verifies linked staging and hard-linked control files never authorize external deletion.
@@ -627,6 +633,103 @@ void RunExecutorTests::cleanupFailuresPreserveThePrimaryOutcome() {
         QCOMPARE(result.failures().size(), fatal ? std::size_t{1} : std::size_t{0});
         QCOMPARE(observations.failurePhases.back(), RunPhase::SafetyCleanup);
         QVERIFY(std::filesystem::exists(retained / "unregistered"));
+    }
+}
+
+void RunExecutorTests::fatalFailureRetainsConcurrentCancellation() {
+    class CancellingCleanup final : public SafetyCleanupService {
+       public:
+        /// Borrows the request source until the synchronous cleanup pass returns.
+        explicit CancellingCleanup(std::stop_source& stop) : _stop(stop) {}
+        /// Observes concurrent cancellation and reports a safely contained removal failure.
+        std::vector<cao::run::RunFailure> performSafetyCleanup() override {
+            _stop.request_stop();
+            return {{cao::run::RunFailureCode::TemporaryArtifactCleanupFailed,
+                     RunPhase::SafetyCleanup, "retained temporary artifact"}};
+        }
+       private:
+        std::stop_source& _stop;
+    };
+    std::stop_source stop;
+    CancellingCleanup cleanup(stop);
+    const auto result = RunExecutor{}.execute(noWorkRequest(ExecutionMode::Apply),
+                                              RunServices{cleanup}, stop.get_token());
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QVERIFY(result.cancellationObserved());
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().code(),
+             cao::run::RunFailureCode::ConfigurationLoadingFailed);
+    QCOMPARE(result.cleanupFailures().size(), std::size_t{1});
+    QCOMPARE(result.cleanupFailures().front().detail(), std::string("retained temporary artifact"));
+}
+
+void RunExecutorTests::terminalPrecedenceRetainsAllEvidence() {
+    struct Case {
+        RunOutcome work;
+        bool cancelled;
+        bool cleanup;
+        RunOutcome expected;
+    };
+    const Case cases[] = {
+        {RunOutcome::Succeeded, false, false, RunOutcome::Succeeded},
+        {RunOutcome::Succeeded, false, true, RunOutcome::CompletedWithFailures},
+        {RunOutcome::Succeeded, true, false, RunOutcome::Cancelled},
+        {RunOutcome::Succeeded, true, true, RunOutcome::Cancelled},
+        {RunOutcome::CompletedWithFailures, false, false, RunOutcome::CompletedWithFailures},
+        {RunOutcome::CompletedWithFailures, false, true, RunOutcome::CompletedWithFailures},
+        {RunOutcome::CompletedWithFailures, true, false, RunOutcome::Cancelled},
+        {RunOutcome::CompletedWithFailures, true, true, RunOutcome::Cancelled},
+        {RunOutcome::Failed, false, false, RunOutcome::Failed},
+        {RunOutcome::Failed, false, true, RunOutcome::Failed},
+        {RunOutcome::Failed, true, false, RunOutcome::Failed},
+        {RunOutcome::Failed, true, true, RunOutcome::Failed},
+    };
+    for (const auto& test : cases) {
+        std::vector<cao::run::RunFailure> cleanup;
+        if (test.cleanup)
+            cleanup.emplace_back(cao::run::RunFailureCode::TemporaryArtifactCleanupFailed,
+                                 RunPhase::SafetyCleanup, "retained artifact");
+        const auto result = OptimizationRunResult::terminal(
+            test.work, RunPhase::ArchiveFinalization,
+            {RunPhaseRecord::executed(RunPhase::SafetyCleanup)}, cao::run::createRunId(),
+            {}, {}, std::move(cleanup), test.cancelled);
+        QCOMPARE(result.outcome(), test.expected);
+        QCOMPARE(result.cancellationObserved(), test.cancelled);
+        QCOMPARE(result.cleanupFailures().size(), test.cleanup ? std::size_t{1} : std::size_t{0});
+        if (test.cleanup)
+            QCOMPARE(result.cleanupFailures().front().detail(), std::string("retained artifact"));
+    }
+}
+
+void RunExecutorTests::cleanupExceptionsPreserveCancellation() {
+    for (const bool cancelBeforeCleanup : {false, true}) {
+        class ThrowingCleanup final : public SafetyCleanupService {
+           public:
+            /// Borrows cancellation state for the synchronous cleanup attempt.
+            explicit ThrowingCleanup(std::stop_source& stop) : _stop(stop) {}
+            /// Simulates cancellation racing with a cleanup service exception.
+            std::vector<cao::run::RunFailure> performSafetyCleanup() override {
+                ++invocations;
+                _stop.request_stop();
+                throw std::runtime_error("cleanup service failure");
+            }
+            int invocations{};
+           private:
+            std::stop_source& _stop;
+        };
+        std::stop_source stop;
+        ThrowingCleanup cleanup(stop);
+        if (cancelBeforeCleanup) stop.request_stop();
+        const auto result = RunExecutor{}.execute(
+            noWorkRequest(ExecutionMode::Apply),
+            RunServices{cleanup, nullptr, testRunConfiguration().get()}, stop.get_token());
+        QCOMPARE(result.outcome(), RunOutcome::Cancelled);
+        QVERIFY(result.cancellationObserved());
+        QCOMPARE(cleanup.invocations, 1);
+        QVERIFY(result.failures().empty());
+        QCOMPARE(result.cleanupFailures().size(), std::size_t{1});
+        QCOMPARE(result.cleanupFailures().front().code(),
+                 cao::run::RunFailureCode::SafetyCleanupServiceFailed);
     }
 }
 

@@ -132,21 +132,40 @@ bool RunRequest::hasRequestedWork() const noexcept { return !_requestedWork.empt
 OptimizationRunResult::OptimizationRunResult(
     const RunOutcome outcome, const RunPhase finalPhase, std::vector<RunPhaseRecord> phases,
     RunId runId, std::vector<RunFailure> failures,
-    std::shared_ptr<const RunPreparation> preparation, std::vector<RunFailure> cleanupFailures) noexcept
+    std::shared_ptr<const RunPreparation> preparation, std::vector<RunFailure> cleanupFailures,
+    const bool cancellationObserved) noexcept
     : _runId(std::move(runId)),
       _outcome(outcome),
       _finalPhase(finalPhase),
       _phases(std::move(phases)),
       _failures(std::move(failures)),
       _preparation(std::move(preparation)),
-      _cleanupFailures(std::move(cleanupFailures)) {}
+      _cleanupFailures(std::move(cleanupFailures)),
+      _cancellationObserved(cancellationObserved || outcome == RunOutcome::Cancelled) {}
 
 OptimizationRunResult OptimizationRunResult::terminal(
-    const RunOutcome outcome, const RunPhase finalPhase, std::vector<RunPhaseRecord> phases,
+    RunOutcome outcome, const RunPhase finalPhase, std::vector<RunPhaseRecord> phases,
     RunId runId, std::vector<RunFailure> failures,
-    std::shared_ptr<const RunPreparation> preparation, std::vector<RunFailure> cleanupFailures) {
+    std::shared_ptr<const RunPreparation> preparation, std::vector<RunFailure> cleanupFailures,
+    const bool cancellationObserved) {
+    // Work safety is authoritative. Cleanup cannot replace a Failed or Cancelled primary cause,
+    // and cancellation observed during cleanup still wins over cleanup errors.
+    if (outcome != RunOutcome::Failed) {
+        if (cancellationObserved || outcome == RunOutcome::Cancelled) {
+            outcome = RunOutcome::Cancelled;
+        } else if (std::any_of(cleanupFailures.begin(), cleanupFailures.end(),
+                               [](const RunFailure& failure) {
+                                   return failure.code() == RunFailureCode::SafetyCleanupServiceFailed;
+                               })) {
+            // An unexpected service exception cannot establish that all artifacts were attempted.
+            outcome = RunOutcome::Failed;
+        } else if (outcome == RunOutcome::Succeeded && !cleanupFailures.empty()) {
+            outcome = RunOutcome::CompletedWithFailures;
+        }
+    }
     return OptimizationRunResult(outcome, finalPhase, std::move(phases), std::move(runId),
-                                 std::move(failures), std::move(preparation), std::move(cleanupFailures));
+                                 std::move(failures), std::move(preparation), std::move(cleanupFailures),
+                                 cancellationObserved);
 }
 
 RunOutcome OptimizationRunResult::outcome() const noexcept { return _outcome; }

@@ -154,7 +154,7 @@ class RunSharedState final : public RunObservationSink,
         for (const auto& failure : cleanupFailures) recordFailure(failure);
         commit(OptimizationRunResult::terminal(RunOutcome::Failed, RunPhase::Preparing,
                                                std::move(phases), _runId, std::move(failures), {},
-                                               std::move(cleanupFailures)));
+                                               std::move(cleanupFailures), _stop.stop_requested()));
     }
 
     /// Commits the one terminal result of this run and releases every waiter.
