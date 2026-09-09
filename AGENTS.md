@@ -1,3 +1,9 @@
+## Build workflow
+
+- Use the project's profile triplets as the primary workflow for building the program and validating changes.
+- Use alternate generators or direct CMake builds outside the profile-triplet workflow only for specific testing that requires them. State the testing purpose when choosing an alternate workflow.
+- If a profile-triplet build is blocked, diagnose and report the blocker rather than silently switching to an alternate generator. An alternate-generator test does not replace validation through the profile triplets.
+
 ## graphify
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
