@@ -8,7 +8,8 @@
 #include "Run/StagingPaths.h"
 
 void FilesystemOperations::deleteEmptyDirectories(const QString& folderPath) {
-    QDirIterator dirIt(folderPath, QDirIterator::Subdirectories);
+    QDirIterator dirIt(folderPath, QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
+                       QDirIterator::Subdirectories);
     QMap<int, QStringList> dirs;
 
     while (dirIt.hasNext()) {
@@ -29,7 +30,8 @@ void FilesystemOperations::deleteEmptyDirectories(const QString& folderPath) {
     i.toBack();
     while (i.hasPrevious()) {
         i.previous();
-        for (int j = 0; j < i.value().size(); ++j) dir.rmpath(i.value().at(j));
+        // Remove only the enumerated child, never empty ancestors outside this Mod Root.
+        for (int j = 0; j < i.value().size(); ++j) dir.rmdir(i.value().at(j));
     }
 }
 

@@ -200,7 +200,9 @@ bool Manager::runOptimization() {
                     }
                 }
                 if (_stop.stop_requested()) return false;
-                if (!finalizationFailed)
+                // Archive Finalization owns pruning when it has a plan, including failure gates.
+                if (!finalizationFailed &&
+                    !_routingPolicy.requests(cao::routing::RequestedWork::ArchiveCreation))
                     for (const auto& root : roots)
                         FilesystemOperations::deleteEmptyDirectories(
                             QString::fromStdWString(root.wstring()));

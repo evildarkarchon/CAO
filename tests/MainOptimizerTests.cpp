@@ -163,7 +163,9 @@ private slots:
  /// Reserves distinct names without filesystem placeholders and rejects a later occupied output.
  void plannedNamesAreDistinctAndCommitPreservesNewDestination();
 
- /// Reports recoverable cleanup failure only after publishing a readable Archive.
+ /// Exercises retained source recovery with readable and byte-locked files.
+ void committedArchiveRetainsLockedSource_data();
+ /// Continues later outputs only when committed Archive and retained source bytes are usable.
  void committedArchiveRetainsLockedSource();
 
  /// Keeps a committed output loadable when cancellation leaves later outputs unattempted.
@@ -407,6 +409,9 @@ void MainOptimizerTests::finalizationFreezesTotalAndCancelsBetweenOutputs() {
             progress.push_back(value);
             if (static_cast<int>(value.completed) == cancelAfter) stop.request_stop();
         });
+    // Directory pruning belongs to finalization and must wait for the entire output plan.
+    for (const auto& mod : roots)
+        QCOMPARE(std::filesystem::exists(mod / "textures"), cancelAfter >= 0);
     const auto attempted = cancelAfter < 0 ? std::size_t{2} : static_cast<std::size_t>(cancelAfter);
     QCOMPARE(result.attempts.size(), attempted);
     QCOMPARE(result.cancelled, cancelAfter >= 0);
@@ -530,8 +535,15 @@ void MainOptimizerTests::cancellationPreservesCommittedArchiveLoadingPlugin() {
     QVERIFY(artifacts.performSafetyCleanup().empty());
 }
 
+void MainOptimizerTests::committedArchiveRetainsLockedSource_data() {
+    QTest::addColumn<bool>("denyReads");
+    QTest::newRow("readable-source-continues") << false;
+    QTest::newRow("unreadable-source-stops") << true;
+}
+
 void MainOptimizerTests::committedArchiveRetainsLockedSource() {
 #ifdef _WIN32
+    QFETCH(bool, denyReads);
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
@@ -539,29 +551,52 @@ void MainOptimizerTests::committedArchiveRetainsLockedSource() {
     writeFile(root / "profiles" / "SSE" / "profile.ini",
               QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
     Profiles::setCurrentProfile("SSE");
-    const auto mod = root / "mod";
+    const auto mod = root / "mod-a";
     const auto source = mod / "textures" / "asset.dds";
     writeFile(source, QByteArrayLiteral("retained source bytes"));
+    const auto laterSource = root / "mod-b" / "textures" / "later.dds";
+    writeFile(laterSource, QByteArrayLiteral("later source bytes"));
+    const auto emptyDirectory = mod / "empty" / "nested";
+    std::filesystem::create_directories(emptyDirectory);
     OptionsCAO options;
     options.bBsaCreateDummies = false;
     options.bBsaCompress = false;
     options.bBsaDeleteSource = true;
     const BSAOptimizer optimizer;
-    const std::array roots{mod};
+    const std::array roots{mod, root / "mod-b"};
     const auto plan = optimizer.planFinalization(roots, options);
-    QCOMPARE(plan.outputs().size(), std::size_t{1});
+    QCOMPARE(plan.outputs().size(), std::size_t{2});
     // Permit packing and recovery verification reads but deny source deletion after commit.
     const auto locked = CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     QVERIFY(locked != INVALID_HANDLE_VALUE);
+    // Windows byte locks permit the Archive writer's memory mapping, but reject ordinary
+    // retained-source reads. This distinguishes existence from actual recovery evidence.
+    OVERLAPPED range{};
+    const bool rangeLocked = !denyReads ||
+        LockFileEx(locked, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                   0, MAXDWORD, MAXDWORD, &range) != 0;
+    if (!rangeLocked) CloseHandle(locked);
+    QVERIFY(rangeLocked);
     cao::run::TemporaryArtifactRegistry artifacts;
     const auto result = optimizer.finalize(plan, artifacts);
     QVERIFY(CloseHandle(locked));
-    QCOMPARE(result.attempts.size(), std::size_t{1});
+    QCOMPARE(result.attempts.size(), denyReads ? std::size_t{1} : std::size_t{2});
     QVERIFY(!result.attempts.front().succeeded());
-    QCOMPARE(result.attempts.front().mutation, cao::execution::MutationState::Committed);
-    QVERIFY(result.safeToContinue);
+    QCOMPARE(result.attempts.front().failure,
+             cao::run::ArchiveFinalizationFailure::SourceCleanupFailed);
+    QCOMPARE(result.attempts.front().mutation, denyReads
+        ? cao::execution::MutationState::PartialOrUnknown
+        : cao::execution::MutationState::Committed);
+    QCOMPARE(result.safeToContinue, !denyReads);
     QVERIFY(btu::bsa::read_archive(plan.outputs().front().archivePath).has_value());
+    QCOMPARE(std::filesystem::exists(laterSource), denyReads);
+    QCOMPARE(std::filesystem::exists(plan.outputs()[1].archivePath), !denyReads);
+    QCOMPARE(std::filesystem::exists(emptyDirectory), denyReads);
+    if (!denyReads) {
+        QVERIFY(result.attempts.back().succeeded());
+        QVERIFY(btu::bsa::read_archive(plan.outputs()[1].archivePath).has_value());
+    }
     QFile retained(QString::fromStdWString(source.wstring()));
     QVERIFY(retained.open(QIODevice::ReadOnly));
     QCOMPARE(retained.readAll(), QByteArrayLiteral("retained source bytes"));
@@ -577,6 +612,10 @@ void MainOptimizerTests::emptyDirectoryCleanupPreservesStaging() {
     const QDir root(directory.path());
     QVERIFY(root.mkpath(".CAO-STAGING/run-1"));
     QVERIFY(root.mkpath("ordinary/empty"));
+    QVERIFY(root.mkpath("empty-mod/nested"));
+    FilesystemOperations::deleteEmptyDirectories(root.filePath("empty-mod"));
+    QVERIFY(root.exists("empty-mod"));
+    QVERIFY(!root.exists("empty-mod/nested"));
 
     FilesystemOperations::deleteEmptyDirectories(directory.path());
 

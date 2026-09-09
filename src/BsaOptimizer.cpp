@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "BsaOptimizer.h"
+#include "FilesystemOperations.h"
 #include "OptionsCAO.h"
 #include "PluginsOperations.h"
 #include "Run/ArchiveFirstAssetDiscovery.h"
@@ -48,12 +49,18 @@ void publishArchiveFile(const std::filesystem::path& staged,
 /// all into memory. A directory or substituted link is not usable retained source material.
 bool readablePackedSource(const std::filesystem::path& source) {
     if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(source))) return false;
+    const auto expectedSize = std::filesystem::file_size(source);
     std::ifstream input(source, std::ios::binary);
     if (!input) return false;
     std::array<char, 8192> buffer{};
-    while (input.read(buffer.data(), buffer.size())) {
-    }
-    return input.eof() && !input.bad();
+    std::uintmax_t bytesRead = 0;
+    do {
+        input.read(buffer.data(), buffer.size());
+        bytesRead += static_cast<std::uintmax_t>(input.gcount());
+    } while (input);
+    // Some file buffers report OS read failures as EOF (for example Windows byte locks).
+    // Require every expected byte before treating the retained file as usable recovery data.
+    return input.eof() && !input.bad() && bytesRead == expectedSize;
 }
 
 /// Publishes a source backup without replacing any directory entry, including dangling links.
@@ -418,6 +425,15 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
                         btu::bsa::list_archive(fs::directory_iterator(root), {}, plan._settings);
                     btu::bsa::make_dummy_plugins(archives, plan._settings);
                 }
+            }
+            // All planned outputs and plugin work must finish before pruning any Mod Root.
+            // Recoverable attempts retain their source evidence; cancellation retains all paths.
+            for (const auto& root : plan._roots) {
+                if (stop.stop_requested()) {
+                    result.cancelled = true;
+                    break;
+                }
+                FilesystemOperations::deleteEmptyDirectories(QString::fromStdWString(root.wstring()));
             }
         } catch (const std::exception& error) {
             result.safeToContinue = false;

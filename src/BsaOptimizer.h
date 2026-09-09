@@ -56,6 +56,8 @@ class BSAOptimizer final : public QObject {
     /// Stages, commits, and cleans each planned output without mid-attempt cancellation.
     /// Reports zero-based progress synchronously, isolating observer exceptions. The caller owns
     /// artifacts through Safety Cleanup; a failed or cancelled run retains committed outputs.
+    /// Prunes empty children per Mod Root only after all outputs finish without cancellation or
+    /// unsafe failure. Recoverable source-cleanup failures retain readable evidence and continue.
     [[nodiscard]] cao::run::ArchiveFinalizationResult finalize(
         const cao::run::ArchiveFinalizationPlan& plan,
         cao::run::TemporaryArtifactRegistry& artifacts, std::stop_token stop = {},
