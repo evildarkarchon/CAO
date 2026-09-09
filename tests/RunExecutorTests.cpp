@@ -110,6 +110,10 @@ class RunExecutorTests final : public QObject
     Q_OBJECT
 
 private slots:
+ /// Work configuration loading fails Preparing before stale artifacts are recovered.
+ void workPreparationFailurePreservesStaleArtifacts();
+ /// Verifies work shares Preparing locks and executor cleanup runs even after a backend exception.
+ void workArtifactsShareRecoveryAndAreCleanedAfterFailure();
  /// Verifies a fatal primary failure retains cancellation observed during mandatory cleanup.
  void fatalFailureRetainsConcurrentCancellation();
  /// Verifies cleanup exceptions cannot replace cancellation, including cancellation during cleanup.
@@ -388,6 +392,39 @@ void RunExecutorTests::activeStagingBlocksUntilItsOwnerExits() {
 #else
     QSKIP("The separate-process fixture uses the supported Windows host's FileShare lock");
 #endif
+}
+
+void RunExecutorTests::workArtifactsShareRecoveryAndAreCleanedAfterFailure() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    seedStaleStaging(root);
+    class StagingWork final : public cao::run::RunWorkService {
+       public:
+        std::filesystem::path staged;
+        /// Stages under the already-held Preparing lock, then simulates a failing backend.
+        void execute(const cao::run::RunPreparation& preparation,
+                                  cao::run::RunWorkRecord&,
+                                  cao::run::TemporaryArtifactRegistry& artifacts,
+                                  cao::run::RunObservationSink&, std::stop_token) override {
+            staged = artifacts.stageFile(preparation.modRoots().front(),
+                                         preparation.modRoots().front() / "texture.dds").path;
+            std::ofstream(staged) << "temporary";
+            throw std::runtime_error("backend failed after staging");
+        }
+    } work;
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+        ModSelection::singleModRoot(root), {RequestedWork::NativeTextureOptimization});
+    const auto result = RunExecutor{}.execute(request,
+        RunServices{cleanup, nullptr, configuration.get(), &work});
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QVERIFY(!work.staged.empty());
+    QVERIFY(!std::filesystem::exists(work.staged));
+    QVERIFY(!std::filesystem::exists(root / "texture.dds"));
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+    QVERIFY(result.cleanupFailures().empty());
 }
 
 void RunExecutorTests::recoveryLockSurvivesThroughSafetyCleanup() {
@@ -1168,6 +1205,33 @@ void RunExecutorTests::preparingDoesNotMutateAssetsOrArchives() {
             file->close();
         }
     }
+}
+
+void RunExecutorTests::workPreparationFailurePreservesStaleArtifacts() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const std::filesystem::path root(directory.path().toStdWString());
+    const auto stale = seedStaleStaging(root);
+    class FailingPreparation final : public cao::run::RunWorkService {
+       public:
+        /// Simulates an auxiliary configuration failure before any mutation is authorized.
+        void prepare() override { throw std::runtime_error("auxiliary configuration failure"); }
+        /// Records any incorrect traversal beyond failed preparation.
+        void execute(const cao::run::RunPreparation&, cao::run::RunWorkRecord&,
+                     cao::run::TemporaryArtifactRegistry&, cao::run::RunObservationSink&,
+                     std::stop_token) override { executed = true; }
+        bool executed{};
+    } work;
+    CountingSafetyCleanup cleanup;
+    const auto request = RunRequest::create("profile", ExecutionMode::Apply,
+        ModSelection::singleModRoot(root), {RequestedWork::NativeTextureOptimization});
+    const auto result = RunExecutor{}.execute(request,
+        RunServices{cleanup, nullptr, testRunConfiguration().get(), &work});
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(result.finalPhase(), RunPhase::Preparing);
+    QVERIFY(!work.executed);
+    QVERIFY(std::filesystem::exists(stale / "temporary.dds"));
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
 }
 
 QTEST_MAIN(RunExecutorTests)

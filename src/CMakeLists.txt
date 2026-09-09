@@ -8,6 +8,11 @@ add_subdirectory(AssetRouting)
 add_subdirectory(AssetExecution)
 add_subdirectory(Run)
 
+add_library(cao_cli_run CliRun.cpp CliRun.h)
+target_link_libraries(cao_cli_run PUBLIC cao_optimization_run PRIVATE cao_asset_execution)
+target_include_directories(cao_cli_run PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(cao_cli_run PUBLIC cxx_std_20)
+
 # Find includes in corresponding build directories
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
@@ -44,6 +49,8 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Profiles.h
     ${CMAKE_CURRENT_SOURCE_DIR}/Run/ApplicationRunSetup.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Run/ApplicationRunSetup.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/Run/ApplicationRunWork.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Run/ApplicationRunWork.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesFormats.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesOptimizer.h
@@ -136,6 +143,7 @@ endif()
 #Windows 7 compatibility
 target_link_libraries(Cathedral_Assets_Optimizer PRIVATE
     cao_application_logging
+    cao_cli_run
     cao_asset_execution
     cao_asset_routing
     cao_asset_run

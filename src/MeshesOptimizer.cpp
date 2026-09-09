@@ -23,7 +23,12 @@ std::string to_string(const std::vector<std::string>& source) {
 std::string to_string(bool source) { return source ? "true" : "false"; }
 
 MeshesOptimizer::MeshesOptimizer(bool processHeadparts, int optimizationLevel, bool resaveMeshes)
-    : bMeshesHeadparts(processHeadparts),
+    : MeshesOptimizer(processHeadparts, optimizationLevel, resaveMeshes,
+                      OptimizerProfileSnapshot::capture()) {}
+
+MeshesOptimizer::MeshesOptimizer(bool processHeadparts, int optimizationLevel, bool resaveMeshes,
+                                 OptimizerProfileSnapshot profile)
+    : _profile(std::move(profile)), bMeshesHeadparts(processHeadparts),
       bMeshesResave(resaveMeshes),
       iMeshesOptimizationLevel(optimizationLevel) {}
 
@@ -31,9 +36,9 @@ ScanResult MeshesOptimizer::scan(NifFile& nif) const {
     if (!nif.IsValid()) return doNotProcess;
 
     NiVersion version;
-    version.SetFile(Profiles::meshesFileVersion());
-    version.SetStream(Profiles::meshesStream());
-    version.SetUser(Profiles::meshesUser());
+    version.SetFile(_profile.meshesFileVersion);
+    version.SetStream(_profile.meshesStream);
+    version.SetUser(_profile.meshesUser);
 
     if (!nif.IsSSECompatible() || version.IsSK())
         return criticalIssue;
@@ -42,9 +47,8 @@ ScanResult MeshesOptimizer::scan(NifFile& nif) const {
 }
 
 void MeshesOptimizer::listHeadparts(const QString& directory) {
-    QFile&& customHeadpartsFile = Profiles::getFile("customHeadparts.txt");
-    headparts = FilesystemOperations::readFile(
-        customHeadpartsFile, [](QString& string) { return QDir::cleanPath(string); });
+    headparts = _profile.customHeadparts;
+    for (auto& path : headparts) path = QDir::cleanPath(path);
 
     if (headparts.isEmpty()) {
         PLOG_ERROR << "customHeadparts.txt not found. This can cause issue when optimizing meshes, "
@@ -107,9 +111,9 @@ cao::execution::OperationResult MeshesOptimizer::optimize(
     }
 
     OptOptions options;
-    options.targetVersion.SetFile(Profiles::meshesFileVersion());
-    options.targetVersion.SetStream(Profiles::meshesStream());
-    options.targetVersion.SetUser(Profiles::meshesUser());
+    options.targetVersion.SetFile(_profile.meshesFileVersion);
+    options.targetVersion.SetStream(_profile.meshesStream);
+    options.targetVersion.SetUser(_profile.meshesUser);
     options.removeParallax = false;
 
     auto print_res = [](nifly::OptResult res) {

@@ -62,7 +62,7 @@ enum class RunPhaseStatus { Executed, Skipped };
 ///
 /// This is distinct from `routing::SkipReason`, which explains why Routing Policy excludes one
 /// recognized Asset. See "Phase Skip Reason" and "Skip Reason" in the project glossary.
-enum class PhaseSkipReason { NoRequestedWork };
+enum class PhaseSkipReason { NoRequestedWork, DryRun };
 
 /// The terminal classification of one Optimization Run.
 enum class RunOutcome { Succeeded, CompletedWithFailures, Cancelled, Failed };

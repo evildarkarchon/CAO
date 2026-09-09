@@ -89,6 +89,8 @@ struct AssetRunAdapters final {
     std::function<ArchiveExtractionResult(const ArchiveExtractionPlan&)> extractArchiveWithResult;
     /// Retains finalization outcomes; replaces the legacy boolean adapter when present.
     std::function<ArchiveFinalizationResult()> finalizeArchiveLifecycleWithResult;
+    /// Observes actual lifecycle boundaries, including empty work phases, before work begins.
+    std::function<void(const RunPhaseRecord&)> reportPhase;
 };
 
 /// Owns the definitive Routing Ledger and the terminal state of one Asset Run.

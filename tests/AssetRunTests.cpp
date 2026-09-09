@@ -190,6 +190,8 @@ class AssetRunTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void lifecyclePhasesPrecedeAttempts();
+    void emptyDryRunReportsOrderedPhases();
  /// Retains owned successful and failed attempt identities plus finalization evidence.
  void completeAttemptEvidenceSurvivesAdapters();
  /// Exceptions preserve uncertain mutation and concurrent cancellation after the attempt.
@@ -1356,6 +1358,57 @@ void AssetRunTests::throwingDiagnosticsCancellationSkipsFinalization() {
     QCOMPARE(record.assetAttempts.front().result.mutationState(), cao::execution::MutationState::Committed);
     QCOMPARE(record.diagnostics.size(), std::size_t{1});
     QCOMPARE(record.diagnostics.front().code(), cao::run::RunDiagnosticCode::ObserverFailed);
+}
+
+/// Verifies lifecycle observations happen before backend mutation and preserve canonical order.
+void AssetRunTests::lifecyclePhasesPrecedeAttempts() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "texture.dds");
+    std::vector<cao::run::RunPhase> phases;
+    AssetRunAdapters adapters;
+    adapters.reportPhase = [&](const auto& record) {
+        if (phases.empty() || phases.back() != record.phase()) phases.push_back(record.phase());
+    };
+    adapters.executeAssetWithResult = [&](const auto&) {
+        if (phases.empty() || phases.back() != cao::run::RunPhase::ProcessingAssets)
+            throw std::runtime_error("Asset attempt preceded its phase observation");
+        return cao::execution::AssetExecutionResult::success();
+    };
+    adapters.finalizeArchiveLifecycleWithResult = [&] {
+        if (phases.back() != cao::run::RunPhase::ArchiveFinalization)
+            throw std::runtime_error("Finalization preceded its phase observation");
+        return cao::run::ArchiveFinalizationResult{};
+    };
+    const auto record = AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, adapters).workRecord();
+    QVERIFY(record.failures.empty());
+    QCOMPARE(record.assetAttempts.size(), std::size_t{1});
+    QVERIFY(record.assetAttempts.front().result.succeeded());
+    QVERIFY(record.finalizations.front().safeToContinue);
+    const std::vector expected{cao::run::RunPhase::DiscoveringArchives,
+        cao::run::RunPhase::ExtractingArchives, cao::run::RunPhase::BuildingEffectiveAssetTree,
+        cao::run::RunPhase::ProcessingAssets, cao::run::RunPhase::ArchiveFinalization};
+    QVERIFY(phases == expected);
+}
+
+/// Empty and Dry Run phases remain visible without fabricating attempts or invoking finalization.
+void AssetRunTests::emptyDryRunReportsOrderedPhases() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    std::vector<cao::run::RunPhaseRecord> phases;
+    AssetRunAdapters adapters;
+    adapters.reportPhase = [&](const auto& record) { phases.push_back(record); };
+    const auto result = AssetRun(dryRunArchivePolicy()).execute(std::array{root}, adapters);
+    QCOMPARE(phases.size(), std::size_t{5});
+    QCOMPARE(phases[1].status(), cao::run::RunPhaseStatus::Skipped);
+    QCOMPARE(*phases[1].skipReason(), cao::run::PhaseSkipReason::DryRun);
+    QVERIFY(!phases[1].progress());
+    QCOMPARE(phases[3].progress()->total(), std::size_t{0});
+    QCOMPARE(phases.back().status(), cao::run::RunPhaseStatus::Skipped);
+    QCOMPARE(*phases.back().skipReason(), cao::run::PhaseSkipReason::DryRun);
+    QVERIFY(result.workRecord().assetAttempts.empty());
 }
 
 QTEST_MAIN(AssetRunTests)

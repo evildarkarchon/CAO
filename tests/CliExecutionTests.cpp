@@ -8,6 +8,17 @@ class CliExecutionTests final : public QObject {
     Q_OBJECT
 
    private slots:
+    /// Malformed options are start failures, while help remains a successful non-run command.
+    void reportsArgumentExitCodes() {
+        for (const auto& argument : {"--unknown", "--trrw", "--help"}) {
+            QProcess process;
+            process.start(QStringLiteral(CAO_CLI_PATH), {argument});
+            QVERIFY(process.waitForStarted());
+            QVERIFY(process.waitForFinished(30000));
+            QCOMPARE(process.exitStatus(), QProcess::NormalExit);
+            QCOMPARE(process.exitCode(), QByteArray(argument) == "--help" ? 0 : 2);
+        }
+    }
     /// Stops before any Asset mutation when the selected Mod Root has unowned staging.
     void refusesUnknownStagingBeforeAssetTraversal();
 
@@ -39,7 +50,7 @@ void CliExecutionTests::refusesUnknownStagingBeforeAssetTraversal() {
     QVERIFY2(process.waitForStarted(), qPrintable(process.errorString()));
     QVERIFY2(process.waitForFinished(30000), qPrintable(process.errorString()));
     QCOMPARE(process.exitStatus(), QProcess::NormalExit);
-    QCOMPARE(process.exitCode(), 1);
+    QCOMPARE(process.exitCode(), 2);
     QVERIFY(QFile::exists(root.filePath("mod/.cao-staging/unknown")));
     QVERIFY(QFile::exists(root.filePath("mod/textures/armor/input.dds")));
     QVERIFY(!QFile::exists(root.filePath("mod/textures/armor/input.dds.caobad")));
@@ -89,6 +100,12 @@ void CliExecutionTests::reportsAssetExecutionStatus() {
     QVERIFY2(process.waitForFinished(30000), qPrintable(process.errorString()));
     QCOMPARE(process.exitStatus(), QProcess::NormalExit);
     const auto standardOutput = process.readAllStandardOutput();
+    const auto cleanup = standardOutput.indexOf("Safety Cleanup");
+    const auto outcome = standardOutput.indexOf("Outcome|");
+    QVERIFY(cleanup >= 0);
+    QVERIFY(outcome > cleanup);
+    QVERIFY(standardOutput.contains(expectedExitCode == 0 ? "Outcome|Succeeded"
+                                                        : "Outcome|Completed With Failures"));
 
     // A failed Asset must not prevent later Assets from receiving their existing processing
     // and quarantine behavior; the terminal status must retain those failures afterward.

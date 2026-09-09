@@ -1,9 +1,11 @@
 #include "FilesystemOperations.h"
 #include "Profiles.h"
 #include "Run/ApplicationRunSetup.h"
+#include "OptimizerProfileSnapshot.h"
 
 #include <QTemporaryDir>
 #include <QTest>
+#include <future>
 
 using cao::routing::RequestedWork;
 
@@ -45,6 +47,16 @@ private slots:
     void meshWorkRoutesStandardAndTerrainMeshes();
     /// Verifies requesting Archive creation under an Archive-disabled profile fails setup.
     void archiveCreationRequiresProfileArchiveSupport();
+    /// Keeps request intent stable when later caller options and profile selection change.
+    void requestOwnsCallerIntent();
+    /// Loads the named profile and fallback exclusions independently of subsequent UI selection.
+    void providerLoadsOwnedConfiguration();
+    /// Covers numeric choices that parsing accepts but optimization cannot safely execute.
+    void requestRejectsInvalidOptionValues_data();
+    /// Rejects invalid option values without attempting filesystem preparation.
+    void requestRejectsInvalidOptionValues();
+    /// Defers auxiliary file reads until preparation, retaining the caller's selected profile.
+    void optimizerProfileLoadsAuxiliaryFilesAfterCapture();
 
 private:
     QString _originalCurrentPath;
@@ -170,6 +182,97 @@ void ApplicationRunSetupTests::archiveCreationRequiresProfileArchiveSupport()
 
     QVERIFY(!result.hasPolicy());
     QVERIFY(!cao::run::policyValidationErrorMessages(result.errors()).isEmpty());
+}
+
+void ApplicationRunSetupTests::requestOwnsCallerIntent()
+{
+    Profiles::setCurrentProfile(QStringLiteral("FO4"));
+    OptionsCAO options;
+    options.mode = OptionsCAO::SeveralMods;
+    options.userPath = QStringLiteral("mods");
+    options.bDryRun = true;
+    options.bMeshesResave = true;
+    const auto request = cao::run::makeApplicationRunRequest(options);
+    options.userPath = QStringLiteral("changed");
+    Profiles::setCurrentProfile(QStringLiteral("SSE"));
+    QCOMPARE(request.profileIdentity(), std::string("FO4"));
+    QCOMPARE(request.executionMode(), cao::routing::ExecutionMode::DryRun);
+    QCOMPARE(request.modSelection().kind(), cao::run::ModSelectionKind::ChildModRoots);
+    QCOMPARE(request.modSelection().directory(), std::filesystem::path("mods"));
+    QVERIFY(request.requests(RequestedWork::ConvertibleTextureConversion));
+    QVERIFY(request.requests(RequestedWork::StandardMeshOptimization));
+    QVERIFY(request.requests(RequestedWork::TerrainMeshOptimization));
+}
+
+void ApplicationRunSetupTests::providerLoadsOwnedConfiguration()
+{
+    QFile ignored(QStringLiteral("profiles/SSE/ignoredMods.txt"));
+    QVERIFY(ignored.open(QIODevice::WriteOnly));
+    ignored.write("# comment\n  Tool Mod  \n\n");
+    ignored.close();
+    const auto provider = cao::run::makeApplicationRunConfigurationProvider();
+    Profiles::setCurrentProfile(QStringLiteral("SSE"));
+    auto loading = std::async(std::launch::async, [provider] { return provider->load("FO4"); });
+    const auto configuration = loading.get();
+    QCOMPARE(configuration.profile().archiveExtension, std::optional<std::string>(".ba2"));
+    QCOMPARE(configuration.ignoredMods().size(), std::size_t(1));
+    QCOMPARE(configuration.ignoredMods()[0], std::string("Tool Mod"));
+    QCOMPARE(configuration.separatorMarkers()[0], std::string("separator"));
+    QVERIFY_EXCEPTION_THROWN(static_cast<void>(provider->load("MissingProfile")), std::runtime_error);
+}
+
+void ApplicationRunSetupTests::requestRejectsInvalidOptionValues_data()
+{
+    QTest::addColumn<int>("invalidChoice");
+    QTest::newRow("negative mesh level") << 0;
+    QTest::newRow("excessive mesh level") << 1;
+    QTest::newRow("zero width ratio") << 2;
+    QTest::newRow("zero height ratio") << 3;
+    QTest::newRow("zero target width") << 4;
+    QTest::newRow("zero target height") << 5;
+    QTest::newRow("odd target width") << 6;
+    QTest::newRow("invalid mode") << 7;
+}
+
+void ApplicationRunSetupTests::requestRejectsInvalidOptionValues()
+{
+    QFETCH(int, invalidChoice);
+    OptionsCAO options;
+    options.mode = OptionsCAO::SingleMod;
+    options.userPath = QStringLiteral("not-yet-resolved");
+    switch (invalidChoice) {
+        case 0: options.iMeshesOptimizationLevel = -1; break;
+        case 1: options.iMeshesOptimizationLevel = 4; break;
+        case 2: options.bTexturesResizeRatio = true; options.iTexturesTargetWidthRatio = 0; break;
+        case 3: options.bTexturesResizeRatio = true; options.iTexturesTargetHeightRatio = 0; break;
+        case 4: options.bTexturesResizeSize = true; options.iTexturesTargetWidth = 0; break;
+        case 5: options.bTexturesResizeSize = true; options.iTexturesTargetHeight = 0; break;
+        case 6: options.bTexturesResizeSize = true; options.iTexturesTargetWidth = 513; break;
+        case 7: options.mode = static_cast<OptionsCAO::OptimizationMode>(2); break;
+    }
+    QVERIFY_EXCEPTION_THROWN(static_cast<void>(cao::run::makeApplicationRunRequest(options)),
+                             std::invalid_argument);
+}
+
+void ApplicationRunSetupTests::optimizerProfileLoadsAuxiliaryFilesAfterCapture()
+{
+    Profiles::setCurrentProfile(QStringLiteral("FO4"));
+    auto snapshot = OptimizerProfileSnapshot::captureIntent();
+    QVERIFY(snapshot.customHeadparts.isEmpty());
+    QVERIFY(snapshot.filesToNotPack.isEmpty());
+    QFile headparts(QStringLiteral("profiles/FO4/customHeadparts.txt"));
+    QVERIFY(headparts.open(QIODevice::WriteOnly));
+    headparts.write("# comment\nNew Headpart\n");
+    headparts.close();
+    QFile exclusions(QStringLiteral("profiles/SSE/FilesToNotPack.txt"));
+    QVERIFY(exclusions.open(QIODevice::WriteOnly));
+    exclusions.write("New Exclusion\n");
+    exclusions.close();
+    Profiles::setCurrentProfile(QStringLiteral("SSE"));
+    auto loading = std::async(std::launch::async, [&snapshot] { snapshot.loadAuxiliaryFiles(); });
+    loading.get();
+    QCOMPARE(snapshot.customHeadparts, QStringList{QStringLiteral("New Headpart")});
+    QCOMPARE(snapshot.filesToNotPack, QStringList{QStringLiteral("New Exclusion")});
 }
 
 QTEST_APPLESS_MAIN(ApplicationRunSetupTests)

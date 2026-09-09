@@ -18,6 +18,8 @@ class MainOptimizer final : public QObject, private cao::execution::AssetExecuti
 
    public:
     explicit MainOptimizer(const OptionsCAO& optOptions);
+    /// Borrows worker-owned options and gives each backend its own immutable profile facts.
+    MainOptimizer(const OptionsCAO& optOptions, const OptimizerProfileSnapshot& profile);
 
     /// Executes one Routed Asset strictly from its carried path, identity, target, operations, and
     /// mode. Temporary ownership uses the configured Mod Root and is cleaned before returning;

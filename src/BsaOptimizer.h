@@ -6,6 +6,7 @@
 
 #include "FilesystemOperations.h"
 #include "Profiles.h"
+#include "OptimizerProfileSnapshot.h"
 #include "TexturesOptimizer.h"
 #include "Run/ArchiveExtraction.h"
 #include "Run/ArchiveFinalization.h"
@@ -24,6 +25,8 @@ class BSAOptimizer final : public QObject {
      * \brief Default constructor
      */
     BSAOptimizer();
+    /// Uses independently owned profile settings on the execution thread.
+    explicit BSAOptimizer(OptimizerProfileSnapshot profile);
     /*!
      * \brief Extracts a BSA
      * \param bsaPath The path of the BSA to extract
@@ -66,6 +69,7 @@ class BSAOptimizer final : public QObject {
         cao::run::CapacityProbe capacity = cao::run::availableArchiveCapacity) const;
 
    private:
+    OptimizerProfileSnapshot _profile;
     /*!
      * \brief Adds .bak to the bsa name. If a bak file already exist, their sizes are compared. If
      * the size is the same, the current bsa is removed. Otherwise, the bak file is also renamed.

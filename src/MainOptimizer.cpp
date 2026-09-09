@@ -63,9 +63,13 @@ bool namesSameTexture(const QString& executionPath, const QString& reference,
 }  // namespace
 
 MainOptimizer::MainOptimizer(const OptionsCAO& optOptions)
+    : MainOptimizer(optOptions, OptimizerProfileSnapshot::capture()) {}
+
+MainOptimizer::MainOptimizer(const OptionsCAO& optOptions, const OptimizerProfileSnapshot& profile)
     : _optOptions(optOptions),
       _meshesOpt(MeshesOptimizer(_optOptions.bMeshesHeadparts, optOptions.iMeshesOptimizationLevel,
-                                 optOptions.bMeshesResave)),
+                                 optOptions.bMeshesResave, profile)),
+      _texturesOpt(profile),
       _assetExecutor(*this) {
     addHeadparts();
     addLandscapeTextures();

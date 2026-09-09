@@ -8,9 +8,13 @@
 #ifdef GUI
 #include "MainWindow.h"
 #endif
-#include "Manager.h"
 #include "Run/ApplicationRunSetup.h"
+#ifndef GUI
+#include "CliRun.h"
+#include "Run/ApplicationRunWork.h"
+#endif
 
+/// Presents bootstrap failures through the active application surface and existing logger.
 void displayError(const std::string& err) {
 #ifdef GUI
     QMessageBox box(QMessageBox::Critical, "Unknown error", QString::fromStdString(err));
@@ -22,6 +26,7 @@ void displayError(const std::string& err) {
     PLOG_FATAL << err;
 }
 
+/// Collects application intent and keeps the CLI run alive through cooperative cancellation.
 int main(int argc, char* argv[]) {
 #ifdef GUI
     QApplication app(argc, argv);
@@ -53,19 +58,24 @@ int main(int argc, char* argv[]) {
         MainWindow* window = new MainWindow;
         window->show();
 #else
-        const auto setup = cao::run::prepareApplicationRun(options);
-        if (!setup.hasPolicy()) {
-            for (const auto& message : cao::run::policyValidationErrorMessages(setup.errors()))
-                std::cerr << message.toStdString() << std::endl;
-            return 1;
-        }
-
-        Manager manager(options, *setup.policy());
-        return manager.runOptimization() ? 0 : 1;
+        const cao::cli::ConsoleInterrupt interruption;
+        cao::run::OptimizationRunService service(
+            cao::run::makeApplicationRunConfigurationProvider(),
+            cao::run::makeApplicationRunWork(options));
+        // Standard output has process lifetime; the observer owns its stream reference until join.
+        auto output = std::shared_ptr<std::ostream>(&std::cout, [](std::ostream*) {
+            // The C++ runtime owns standard output; the run must not delete it.
+        });
+        return cao::cli::run(service, cao::run::makeApplicationRunRequest(options),
+                             std::move(output), [&] { return interruption.requested(); });
 #endif
     } catch (const std::exception& e) {
         displayError(e.what());
+#ifdef GUI
         return 1;
+#else
+        return 2;
+#endif
     }
 #ifdef GUI
     return QApplication::exec();

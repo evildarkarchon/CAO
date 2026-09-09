@@ -300,7 +300,8 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     const ArchiveExtractionOperation& extractArchive,
     const AssetDiscoveryCancellationPredicate& isCancelled, const ArchivePrecedence& precedence,
     const std::function<void(std::span<const ArchiveCollision>)>& reportCollisions,
-    const std::function<void(std::span<const ArchiveExtractionPlan>)>& reportExtractionPlan) const {
+    const std::function<void(std::span<const ArchiveExtractionPlan>)>& reportExtractionPlan,
+    const std::function<void(RunPhase)>& reportPhase) const {
     routing::AssetRouter router(_policy);
     // Routing is filename-only, so recognizing an Archive is cheap enough to repeat during the
     // definitive traversal. That traversal cannot ask the Archive pass instead: extraction can
@@ -547,9 +548,14 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     if (reportExtractionPlan && _policy.executionMode() == routing::ExecutionMode::Apply)
         reportExtractionPlan(extractionPlans);
     if (isCancelled && isCancelled()) return cancelledResult();
+    if (reportPhase) reportPhase(RunPhase::ExtractingArchives);
+    if (isCancelled && isCancelled()) return cancelledResult();
     if (!selectedArchives.empty() && !extractArchive(selectedArchives)) {
         return cancelledResult();
     }
+
+    if (reportPhase) reportPhase(RunPhase::BuildingEffectiveAssetTree);
+    if (isCancelled && isCancelled()) return cancelledResult();
 
     // Extraction is synchronous so this is the single definitive view of all non-Archive paths.
     // Every Archive is excluded by recognition rather than by the paths the Archive pass recorded,

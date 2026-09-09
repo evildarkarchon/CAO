@@ -5,7 +5,9 @@
 
 #include "TexturesOptimizer.h"
 
-TexturesOptimizer::TexturesOptimizer() {
+TexturesOptimizer::TexturesOptimizer() : TexturesOptimizer(OptimizerProfileSnapshot::capture()) {}
+
+TexturesOptimizer::TexturesOptimizer(OptimizerProfileSnapshot profile) : _profile(std::move(profile)) {
     PLOG_WARNING_IF(!createDevice(0, _pDevice.GetAddressOf()))
         << "DirectCompute is not available, using BC6H / BC7 CPU codec."
            " Textures compression will be slower";
@@ -18,8 +20,7 @@ TexturesOptimizer::TexturesOptimizer() {
 }
 
 void TexturesOptimizer::listLandscapeTextures(QDirIterator& it) {
-    QFile&& customHeadpartsFile = Profiles::getFile("customHeadparts.txt");
-    _landscapeTextures = FilesystemOperations::readFile(customHeadpartsFile);
+    _landscapeTextures = _profile.customHeadparts;
 
     if (_landscapeTextures.isEmpty()) {
         PLOG_ERROR << "customHeadparts.txt not found. This can cause issue when optimizing meshes, "
@@ -142,7 +143,7 @@ TexturesOptimizer::TexOptOptionsResult TexturesOptimizer::processArguments(
 
     result.bNeedsCompress =
         (bNecessary && (isIncompatible() || _type == TGA)) ||
-        (bCompress && canBeCompressed() && _info.format != Profiles::texturesFormat());
+        (bCompress && canBeCompressed() && _info.format != _profile.texturesFormat);
 
     result.bNeedsMipmaps =
         bMipmaps && _info.mipLevels != calculateOptimalMipMapsNumber() && canHaveMipMaps();
@@ -188,7 +189,7 @@ bool TexturesOptimizer::optimize(const bool& bNecessary, const bool& bCompress,
 
     // Converting to the new format, or the compressing back into the original format
     if (options.bNeedsCompress) {
-        targetFormat = Profiles::texturesFormat();
+        targetFormat = _profile.texturesFormat;
         PLOG_VERBOSE << "Converting this texture to format: " << dxgiFormatToString(targetFormat);
     }
 
@@ -211,7 +212,7 @@ void TexturesOptimizer::dryOptimize(const bool& bNecessary, const bool& bCompres
 
     const bool needsConversion =
         (bNecessary && (isIncompatible() || _type == TGA)) ||
-        (bCompress && canBeCompressed() && _info.format != Profiles::texturesFormat());
+        (bCompress && canBeCompressed() && _info.format != _profile.texturesFormat);
 
     const bool needsMipMaps =
         bMipmaps && _info.mipLevels != calculateOptimalMipMapsNumber() && canHaveMipMaps();
@@ -234,7 +235,7 @@ void TexturesOptimizer::dryOptimize(const bool& bNecessary, const bool& bCompres
     // Converting or compressing to the new format
     if (needsConversion) {
         PLOG_VERBOSE << "This texture would be converted to format: "
-                     << dxgiFormatToString(Profiles::texturesFormat());
+                     << dxgiFormatToString(_profile.texturesFormat);
     }
 }
 
@@ -244,7 +245,7 @@ bool TexturesOptimizer::canBeCompressed() const {
     const bool badSize = _info.width < 4 || _info.height < 4;
     const bool isPow2 = isPowerOfTwo();
 
-    const bool interfaceOkay = Profiles::texturesCompressInterface() || !isInterface;
+    const bool interfaceOkay = _profile.texturesCompressInterface || !isInterface;
 
     return interfaceOkay && !already && !badSize && isPow2;
 }
@@ -390,7 +391,7 @@ bool TexturesOptimizer::resize(size_t targetWidth, size_t targetHeight) {
 
 bool TexturesOptimizer::canHaveMipMaps() {
     const bool isInterface = _name.contains("interface", Qt::CaseInsensitive);
-    const bool interfaceOkay = !isInterface || Profiles::texturesCompressInterface();
+    const bool interfaceOkay = !isInterface || _profile.texturesCompressInterface;
     const bool sizeOkay = _info.width >= 4 && _info.height >= 4;
 
     return interfaceOkay && sizeOkay;
@@ -583,7 +584,7 @@ bool TexturesOptimizer::saveToFile(const QString& filePath, QString* failureDeta
 bool TexturesOptimizer::isIncompatible() const {
     // Checking incompatibility with file format
     const DXGI_FORMAT fileFormat = _info.format;
-    for (const auto& f : Profiles::texturesUnwantedFormats())
+    for (const auto& f : _profile.texturesUnwantedFormats)
         if (f == fileFormat) return true;
 
     const bool isCubemap = _info.IsCubemap();

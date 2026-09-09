@@ -7,6 +7,7 @@
 #include "FilesystemOperations.h"
 #include "PluginsOperations.h"
 #include "Profiles.h"
+#include "OptimizerProfileSnapshot.h"
 #include "pch.h"
 
 class TexturesOptimizer final : public QObject {
@@ -14,6 +15,8 @@ class TexturesOptimizer final : public QObject {
 
    public:
     TexturesOptimizer();
+    /// Uses independently owned profile settings on the execution thread.
+    explicit TexturesOptimizer(OptimizerProfileSnapshot profile);
 
     enum TextureType { DDS, TGA };
 
@@ -92,6 +95,7 @@ class TexturesOptimizer final : public QObject {
     bool modifiedCurrentTexture = false;
 
    private:
+    OptimizerProfileSnapshot _profile;
     std::unique_ptr<DirectX::ScratchImage> _image{};
     DirectX::TexMetadata _info{};
     QString _name;

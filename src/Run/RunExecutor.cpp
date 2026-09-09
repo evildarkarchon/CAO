@@ -2,6 +2,7 @@
 #include "PathOrdering.h"
 #include "StagingRecovery.h"
 #include "RunWorkRecord.h"
+#include "TemporaryArtifactRegistry.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -234,6 +235,7 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
     auto outcome = RunOutcome::Succeeded;
     std::shared_ptr<const RunPreparation> preparation;
     StagingRecovery staging;
+    TemporaryArtifactRegistry artifacts(&staging);
     if (!stop.stop_requested()) {
         WorkObservations preparationObservations(phases, work, finalPhase, services.observations);
         auto prepared = prepareRun(request, services.configuration, &preparationObservations, stop);
@@ -247,7 +249,24 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
         }
     }
 
-    if (preparation && request.executionMode() == routing::ExecutionMode::Apply) {
+    if (preparation && request.hasRequestedWork() && services.work && !stop.stop_requested()) {
+        try {
+            services.work->prepare();
+        } catch (const std::exception& error) {
+            outcome = RunOutcome::Failed;
+            failures.emplace_back(RunFailureCode::ConfigurationLoadingFailed, RunPhase::Preparing,
+                                  error.what());
+        } catch (...) {
+            outcome = RunOutcome::Failed;
+            failures.emplace_back(RunFailureCode::ConfigurationLoadingFailed, RunPhase::Preparing,
+                                  "Work configuration threw a non-standard exception");
+        }
+        if (outcome == RunOutcome::Failed && services.observations)
+            services.observations->recordFailure(failures.back());
+    }
+
+    if (preparation && outcome != RunOutcome::Failed &&
+        request.executionMode() == routing::ExecutionMode::Apply) {
         for (const auto& root : preparation->modRoots()) {
             if (stop.stop_requested()) break;
             if (auto failure = staging.recover(root, stop)) {
@@ -267,7 +286,7 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
     } else if (request.hasRequestedWork() && services.work) {
         WorkObservations observations(phases, work, finalPhase, services.observations);
         try {
-            services.work->execute(*preparation, work, observations, stop);
+            services.work->execute(*preparation, work, artifacts, observations, stop);
         } catch (const std::exception& error) {
             observations.recordFailure(RunFailure{RunFailureCode::WorkServiceFailed, finalPhase,
                                                    error.what()});
@@ -290,7 +309,10 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
     // committed, so cancellation and failure cannot litter Mod Roots with run-owned artifacts.
     phases.push_back(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
     if (services.observations != nullptr) services.observations->recordPhase(phases.back());
-    auto cleanupFailures = collectSafetyCleanupFailures(services.safetyCleanup);
+    auto cleanupFailures = collectSafetyCleanupFailures(artifacts);
+    auto injectedCleanupFailures = collectSafetyCleanupFailures(services.safetyCleanup);
+    cleanupFailures.insert(cleanupFailures.end(), injectedCleanupFailures.begin(),
+                           injectedCleanupFailures.end());
     for (const auto& failure : cleanupFailures)
         if (services.observations != nullptr) services.observations->recordFailure(failure);
     return OptimizationRunResult::terminal(outcome, finalPhase, std::move(phases), std::move(runId),

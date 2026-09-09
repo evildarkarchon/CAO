@@ -108,14 +108,14 @@ void backupExtractedArchive(const std::filesystem::path& source) {
 }
 }  // namespace
 
-BSAOptimizer::BSAOptimizer() {
+BSAOptimizer::BSAOptimizer() : BSAOptimizer(OptimizerProfileSnapshot::capture()) {}
+
+BSAOptimizer::BSAOptimizer(OptimizerProfileSnapshot profile) : _profile(std::move(profile)) {
     // Reading filesToNotPack to add them to the list.
     // Done in the constructor since the file won't change at runtime.
 
-    QFile&& filesToNotPackFile = Profiles::getFile("FilesToNotPack.txt");
-
-    auto lines = FilesystemOperations::readFile(
-        filesToNotPackFile, [](QString& line) { line = QDir::toNativeSeparators(line); });
+    auto lines = _profile.filesToNotPack;
+    for (auto& line : lines) line = QDir::toNativeSeparators(line);
 
     for (auto&& line : lines)
         filesToNotPack.emplace_back(btu::common::as_utf8_string(std::move(line).toStdString()));
@@ -128,10 +128,11 @@ BSAOptimizer::BSAOptimizer() {
     }
 }
 
-btu::bsa::Settings getSettings() {
-    auto sets = btu::bsa::Settings::get(Profiles::bsaGame());
-    if (Profiles::maxBsaUncompressedSize() > sets.max_size)
-        sets.max_size = Profiles::maxBsaUncompressedSize();
+/// Builds archive settings from the run-owned profile snapshot.
+btu::bsa::Settings getSettings(const OptimizerProfileSnapshot& profile) {
+    auto sets = btu::bsa::Settings::get(profile.bsaGame);
+    if (profile.maxBsaUncompressedSize > sets.max_size)
+        sets.max_size = profile.maxBsaUncompressedSize;
     return sets;
 }
 
@@ -194,7 +195,7 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
     namespace fs = std::filesystem;
     using namespace btu::bsa;
     cao::run::ArchiveFinalizationPlan plan;
-    plan._settings = getSettings();
+    plan._settings = getSettings(_profile);
     plan._compress = options.bBsaCompress;
     plan._deleteSources = options.bBsaDeleteSource;
     plan._createDummies = options.bBsaCreateDummies;

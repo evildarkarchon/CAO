@@ -20,17 +20,25 @@ class RunObservationSink {
     virtual void recordDiagnostic(const RunDiagnostic& diagnostic) = 0;
 };
 
+class TemporaryArtifactRegistry;
+
 /// Performs requested work while recording owned evidence before proceeding to another attempt.
 /// The executor retains the record if a later boundary throws; it always owns terminal cleanup.
 class RunWorkService {
    public:
     virtual ~RunWorkService() = default;
 
+    /// Loads work-specific owned configuration during Preparing, before recovery or asset mutation.
+    /// Stateless services need no preparation. Exceptions fail Preparing and still trigger cleanup.
+    virtual void prepare() {}
+
     /// Uses prepared inputs until return and appends completed evidence without retaining references.
     /// Reports phase counts through observations and checks stop between atomic attempts.
     /// Exceptions become fatal WorkServiceFailed evidence without discarding earlier records.
+    /// The executor owns artifacts through mandatory Safety Cleanup; work never cleans the registry.
     virtual void execute(const RunPreparation& preparation, RunWorkRecord& record,
-                         RunObservationSink& observations, std::stop_token stop) = 0;
+                         TemporaryArtifactRegistry& artifacts, RunObservationSink& observations,
+                         std::stop_token stop) = 0;
 };
 
 /// Removes the temporary artifacts one Optimization Run registered.

@@ -235,7 +235,7 @@ uint readDimension(const QCommandLineParser& parser, const QString& name) {
 }
 
 /// Reads one signed command line integer and rejects values Qt would silently coerce to zero.
-/// Range validation stays in isValid(), so this only rejects input that never parsed at all.
+/// GUI validation and CLI request construction check ranges; this rejects input that never parsed.
 int readInteger(const QCommandLineParser& parser, const QString& name) {
     bool ok = false;
     const auto value = parser.value(name).toInt(&ok);
@@ -292,10 +292,10 @@ void OptionsCAO::parseArguments(const QStringList& args) {
          settings "},*/
     });
 
-    // process() owns --help, --version, and malformed-option reporting, so positional validation
-    // has to run after it. Checking args.count() first would reject "--help" before Qt could print
-    // usage, and would accept three flag-only arguments that carry no positional value at all.
-    parser.process(args);
+    // Keep parse failures in the CLI's exit-code policy: process() would terminate with status 1,
+    // which is reserved for a completed run with failures. Help still precedes positional checks.
+    if (!parser.parse(args)) throw std::runtime_error(parser.errorText().toStdString());
+    if (parser.isSet("help")) parser.showHelp(0);
 
     const QStringList positionalArguments = parser.positionalArguments();
     if (positionalArguments.count() != 3) {

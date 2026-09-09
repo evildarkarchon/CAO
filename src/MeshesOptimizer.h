@@ -7,6 +7,7 @@
 #include "AssetExecution/AssetExecutor.h"
 #include "PluginsOperations.h"
 #include "Profiles.h"
+#include "OptimizerProfileSnapshot.h"
 #include "pch.h"
 
 enum ScanResult { doNotProcess = -1, good = 0, lightIssue = 1, criticalIssue = 2 };
@@ -19,6 +20,9 @@ class MeshesOptimizer final : public QObject {
      * \brief Constructor that will read CustomHeadparts.txt and read settings from file
      */
     MeshesOptimizer(bool processHeadparts, int optimizationLevel, bool resaveMeshes);
+    /// Uses owned profile facts throughout this optimizer lifetime.
+    MeshesOptimizer(bool processHeadparts, int optimizationLevel, bool resaveMeshes,
+                    OptimizerProfileSnapshot profile);
     /*!
      * \brief Scans the selected meshes for issues
      * \param nif The mesh to scan
@@ -38,6 +42,7 @@ class MeshesOptimizer final : public QObject {
     bool saveMesh(nifly::NifFile& nif, const QString& filepath) const;
 
    private:
+    OptimizerProfileSnapshot _profile;
     QStringList headparts;
 
     bool bMeshesHeadparts;

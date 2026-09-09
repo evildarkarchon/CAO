@@ -120,13 +120,16 @@ class ArchiveFirstAssetDiscovery final {
     /// ignores precedence and never inspects manifests, calculates collisions, or extracts.
     /// reportExtractionPlan synchronously borrows the complete per-Archive entry and merge plan
     /// before extraction; callers retaining plans must copy them before the callback returns.
+    /// reportPhase observes extraction and effective-tree boundaries, including empty phases;
+    /// callers must isolate observer exceptions before forwarding presentation callbacks.
     [[nodiscard]] ArchiveFirstAssetDiscoveryResult discover(
         std::span<const std::filesystem::path> roots,
         const ArchiveExtractionOperation& extractArchive,
         const AssetDiscoveryCancellationPredicate& isCancelled = {},
         const ArchivePrecedence& precedence = ArchivePrecedence::deterministicDiscovery(),
         const std::function<void(std::span<const ArchiveCollision>)>& reportCollisions = {},
-        const std::function<void(std::span<const ArchiveExtractionPlan>)>& reportExtractionPlan = {}) const;
+        const std::function<void(std::span<const ArchiveExtractionPlan>)>& reportExtractionPlan = {},
+        const std::function<void(RunPhase)>& reportPhase = {}) const;
 
    private:
     routing::RoutingPolicy _policy;

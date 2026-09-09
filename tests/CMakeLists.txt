@@ -168,6 +168,7 @@ target_compile_definitions(cao_application_run_setup_tests PRIVATE
 target_include_directories(cao_application_run_setup_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
+target_link_libraries(cao_application_run_setup_tests PRIVATE cao_run_lifecycle)
 
 set_target_properties(cao_application_run_setup_tests PROPERTIES AUTOMOC ON)
 
@@ -218,6 +219,11 @@ add_executable(cao_run_event_delivery_tests RunEventDeliveryTests.cpp)
 target_link_libraries(cao_run_event_delivery_tests PRIVATE Qt5::Test cao_optimization_run)
 set_target_properties(cao_run_event_delivery_tests PROPERTIES AUTOMOC ON)
 add_test(NAME cao_run_event_delivery_tests COMMAND cao_run_event_delivery_tests)
+
+add_executable(cao_cli_run_tests CliRunTests.cpp)
+target_link_libraries(cao_cli_run_tests PRIVATE Qt5::Test cao_cli_run)
+set_target_properties(cao_cli_run_tests PROPERTIES AUTOMOC ON)
+add_test(NAME cao_cli_run_tests COMMAND cao_cli_run_tests)
 
 if(NOT CAO_BUILD_GUI)
     add_executable(cao_cli_execution_tests CliExecutionTests.cpp)

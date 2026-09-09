@@ -112,6 +112,12 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
     std::vector<ArchiveExtractionPlan> extractionPlans;
     std::vector<ArchiveExtractionResult> archiveAttempts;
     std::vector<RunDiagnostic> observerDiagnostics;
+    auto* phaseDiagnostics = &observerDiagnostics;
+    const auto reportPhase = [&](const RunPhaseRecord& phase) {
+        if (adapters.reportPhase)
+            reportSafely(*phaseDiagnostics, phase.phase(), [&] { adapters.reportPhase(phase); });
+    };
+    reportPhase(RunPhaseRecord::executed(RunPhase::DiscoveringArchives));
     const auto discoveryResult = discovery.discover(
         roots,
         [&](const std::span<const routing::RoutedAsset> archives) {
@@ -177,6 +183,16 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
         },
         [&](const std::span<const ArchiveExtractionPlan> plans) {
             extractionPlans.assign(plans.begin(), plans.end());
+        }, [&](RunPhase phase) {
+            if (phase == RunPhase::ExtractingArchives &&
+                _policy.executionMode() == routing::ExecutionMode::DryRun) {
+                reportPhase(RunPhaseRecord::skipped(phase, PhaseSkipReason::DryRun));
+                return;
+            }
+            reportPhase(RunPhaseRecord::executed(phase,
+                phase == RunPhase::ExtractingArchives
+                    ? std::optional{RunProgress::determinate(extractionPlans.size())}
+                    : std::nullopt));
         });
     const routing::AssetRouter router(_policy);
     std::map<routing::SkipReason, std::size_t> skippedArchiveCounts;
@@ -200,6 +216,7 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
     result._archiveAttempts = std::move(archiveAttempts);
     result._diagnostics.insert(result._diagnostics.end(), observerDiagnostics.begin(),
                                observerDiagnostics.end());
+    phaseDiagnostics = &result._diagnostics;
     // Interrupted discovery can expose a partial tree but cannot promise a definitive ledger.
     result._routingCompleted = !unsafeArchive && !discoveryResult.cancelled() &&
                                discoveryResult.failures().empty();
@@ -223,6 +240,8 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
                                      routing::OptimizerTarget::Animation};
     if (result.cancelled()) return result;
     const auto total = result.ledger().routedAssets().size();
+    reportPhase(RunPhaseRecord::executed(RunPhase::ProcessingAssets,
+                                       RunProgress::determinate(total)));
     std::size_t completed = 0;
     for (const auto target : targetOrder) {
         // Target queries preserve ledger-relative order, so only cross-target order changes.
@@ -296,6 +315,16 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
     }
     // Reporting may request cancellation even when its exception was isolated; packing is a
     // separate mutation boundary and must observe that request before starting any finalizer.
+    if (adapters.isCancelled && adapters.isCancelled()) {
+        result._cancelled = true;
+        return result;
+    }
+
+    reportPhase(_policy.executionMode() == routing::ExecutionMode::DryRun
+        ? RunPhaseRecord::skipped(RunPhase::ArchiveFinalization, PhaseSkipReason::DryRun)
+        : (!adapters.finalizeArchiveLifecycleWithResult && !adapters.finalizeArchiveLifecycle
+            ? RunPhaseRecord::skipped(RunPhase::ArchiveFinalization, PhaseSkipReason::NoRequestedWork)
+            : RunPhaseRecord::executed(RunPhase::ArchiveFinalization)));
     if (adapters.isCancelled && adapters.isCancelled()) {
         result._cancelled = true;
         return result;
