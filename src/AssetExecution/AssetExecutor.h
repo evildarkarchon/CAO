@@ -62,12 +62,14 @@ class OperationResult final {
 /// Observable outcome of executing one Routed Asset.
 class AssetExecutionResult final {
    public:
-    /// Reports a completed execution.
+    /// Reports a completed execution with the exact durable `mutation` committed by the attempt.
+    /// The returned result is safe to continue unless the supplied state is partial or unknown.
     [[nodiscard]] static AssetExecutionResult success(
         MutationState mutation = MutationState::None) noexcept;
 
     /// Reports a failed execution without altering the Routed Asset supplied by the caller.
-    /// message is human-readable; serviceDetail retains optional raw backend or native error text.
+    /// `message` is human-readable, `mutation` and `safeToContinue` describe the durable boundary,
+    /// and `path` plus `operation` identify it. `serviceDetail` retains optional raw diagnostics.
     [[nodiscard]] static AssetExecutionResult failed(AssetExecutionFailure failure,
                                                      std::string message,
                                                      MutationState mutation = MutationState::None,
@@ -179,9 +181,10 @@ class AssetExecutor final {
     [[nodiscard]] AssetExecutionResult execute(const routing::RoutedAsset& asset,
                                                const std::filesystem::path& modRoot = {}) const;
 
-    /// Executes using the run's registry, which must outlive the attempt and receive Safety Cleanup.
-    /// Texture saves durably register same-volume staging before creation and commit before removal.
-    /// Supply the selected Mod Root, or omit it for a standalone Asset in its parent directory.
+    /// Executes using the run's registry, which must outlive the attempt and receive Safety
+    /// Cleanup. Texture saves durably register same-directory staging before creation and commit
+    /// before removal. Supply the selected Mod Root, or omit it for a standalone Asset in its
+    /// parent directory.
     [[nodiscard]] AssetExecutionResult execute(const routing::RoutedAsset& asset,
                                                run::TemporaryArtifactRegistry& artifacts,
                                                const std::filesystem::path& modRoot = {}) const;

@@ -6,10 +6,10 @@ does not inspect or mutate staging. The recovery entry point does not create sta
 ownership module now also produces durable Texture registrations. The current Run Executor still rejects requested work until its
 remaining execution services are available; the legacy run adapter uses this ownership module.
 
-Texture output uses the dedicated area on the same volume as its destination. This supersedes
-issue #410's same-directory requirement and its former exception for sibling temporary files.
-The destination is committed before conversion-source removal. Windows is the supported target;
-Wine runs the same Windows executable and ownership protocol.
+Texture output uses a generated sibling file in the destination directory, while the dedicated
+Mod Root area durably records its ownership. The destination is committed before
+conversion-source removal. Windows is the supported target; Wine runs the same Windows executable
+and ownership protocol.
 
 `TemporaryArtifactRegistry` owns a recovery/production scope, or borrows the run's existing scope.
 Apply preparation recovers selected Mod Roots before traversal, and the scope retains ownership
@@ -23,8 +23,9 @@ and recovery instructions. Discovery excludes this namespace from both Archive a
 It never attempts to extract, optimize, or infer ownership of these contents.
 
 The dedicated area contains a stable `owner.lock`, `ownership.manifest`, and one unpredictable
-Run-ID-derived child. Producers must hold the OS lock before publishing ownership or creating
-temporary entries and through Safety Cleanup. On Windows this is an existing-file open with
+Run-ID-derived child for control-area artifacts. A manifest may also own generated Texture staging
+files elsewhere beneath the same Mod Root. Producers must hold the OS lock before publishing
+ownership or creating temporary entries and through Safety Cleanup. On Windows this is an existing-file open with
 `GENERIC_READ` and no sharing, including no delete sharing. The existing POSIX implementation
 uses an exclusive, nonblocking `flock`; it does not represent a supported native Linux or macOS
 release. Lock files, PIDs, and timestamps alone do not prove an
@@ -32,37 +33,40 @@ active owner.
 Recovery never unlinks or replaces either control file or the reserved directory, so a competing
 run cannot acquire a new lock identity while an earlier run still owns the old one.
 
-The writer emits v2 manifests; recovery also accepts existing v1 manifests. Both are UTF-8,
+The writer emits v3 manifests; recovery also accepts existing v1 and v2 manifests. All are UTF-8,
 bounded to 8 MiB and 100,000 registrations. Whitespace separates fields;
 strings use C++ `std::quoted` double-quote/backslash escaping. All string fields must be quoted.
 The grammar is:
 
 ```text
-CAO-STAGING 2
+CAO-STAGING 3
 "<canonical generic UTF-8 Mod Root path>"
 "<Run ID>" "run-<Run ID>-<32 lowercase hexadecimal nonce characters>"
 <registration count>
 D "run-<Run ID>-<nonce>"
-F "run-<Run ID>-<nonce>/temporary.dds"
+S "textures/example/.cao-staging-texture-<Run ID>-<nonce>.dds"
 ```
 
 The nonce must be generated unpredictably by the producer. Run IDs contain 1–128 ASCII letters,
 digits, or hyphens. The first registration is the run child directory. Subsequent registrations
 are unique relative paths beneath that child, with `D` for a directory or `F` for a regular file.
-Parents must be registered before children. Absolute paths, traversal components, Windows stream
-or ambiguous names, backslash separators, extra records, and unsupported versions are invalid.
+Version 3 also uses `S` for a generated Texture staging file relative to the Mod Root; it must be
+beside its destination, outside the reserved control area, and named
+`.cao-staging-texture-<Run ID>-<nonce>.dds`. Parents must be registered before control-area
+children. Absolute paths, traversal components, Windows stream or ambiguous names, backslash
+separators, extra records, and unsupported versions are invalid.
 The format records explicit temporary ownership; it is not authentication against someone who
 can forge the manifest and edit the Mod Root.
 
 Producers flush a complete registration snapshot before exclusively creating each temporary file.
-A v2 manifest additionally authorizes the fixed `ownership.manifest.next` scratch file used to
+A v2 or v3 manifest additionally authorizes the fixed `ownership.manifest.next` scratch file used to
 publish its next snapshot. The writer exclusively creates and flushes that scratch file, then
 replaces `ownership.manifest` on the same volume. Recovery can discard a partial scratch file
-only after validating the authoritative v2 manifest and the owned tree. A v1 manifest does not
-authorize this extra control file.
+only after validating the authoritative v2 or v3 manifest and the owned tree. A v1 manifest does
+not authorize this extra control file.
 
-Texture saving closes its handles and the commit step flushes staged bytes before replacing the
-destination without any cross-volume copy fallback. After the rename, the producer publishes a
+Texture saving closes its handles and the commit step flushes sibling staged bytes before replacing
+the destination without any cross-volume copy fallback. After the rename, the producer publishes a
 snapshot releasing the temporary path's registration. Registrations identify deletion candidates
 by their temporary paths: original Assets, destination paths, and backups are never registered.
 Retained evidence must likewise be moved out of staging before its registration is released.
@@ -85,8 +89,9 @@ for inspection. Existing empty directories, incomplete initial manifests, and ot
 collisions are never silently adopted. No Asset mutation has begun in that bootstrap window.
 
 Recovery acquires the OS lock, pins the manifest against Windows writes/replacement while
-reading it, validates root and run-child identity, and checks the entire present tree against the recorded entries
-before deleting anything. Links, junctions, reparse points, hard links, unknown children, type
+reading it, validates root and run-child identity, checks the entire control tree, and pins every
+present sibling staging file against the recorded entries before deleting anything. Links,
+junctions, reparse points, hard links, unknown children, type
 mismatches, and inaccessible contents fail closed. Windows handles pin temporary files against
 replacement and delete those file identities; directory removal is nonrecursive. POSIX producers
 must cooperate with `owner.lock`; file identity is checked again immediately before unlinking.

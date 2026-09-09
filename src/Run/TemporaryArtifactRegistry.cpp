@@ -25,10 +25,10 @@ TemporaryArtifactRegistry::TemporaryArtifactRegistry(StagingRecovery* recovery)
       _recovery(recovery ? recovery : _ownedRecovery.get()) {}
 TemporaryArtifactRegistry::~TemporaryArtifactRegistry() = default;
 
-std::optional<RunFailure> TemporaryArtifactRegistry::prepareRoot(
-    const std::filesystem::path& root) {
+std::optional<RunFailure> TemporaryArtifactRegistry::prepareRoot(const std::filesystem::path& root,
+                                                                 std::stop_token stop) {
     if (_cleaned) throw std::logic_error("Temporary artifact registration is closed");
-    return _recovery->recover(root);
+    return _recovery->recover(root, stop);
 }
 
 TemporaryArtifactRegistry::StagedFile TemporaryArtifactRegistry::stageFile(

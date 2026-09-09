@@ -107,7 +107,7 @@ void Manager::printProgress(const int& total, const QString& text = "Processing 
 #endif
 }
 
-void Manager::cancelProcess() { _isCancelled = true; }
+void Manager::cancelProcess() { _stop.request_stop(); }
 
 void Manager::readIgnoredMods() {
     QFile&& ignoredModsFile = Profiles::getFile("ignoredMods.txt");
@@ -135,7 +135,7 @@ bool Manager::runOptimization() {
     RunArtifacts artifacts;
     if (_routingPolicy.executionMode() == cao::routing::ExecutionMode::Apply) {
         for (const auto& root : roots) {
-            if (const auto failure = artifacts.registry.prepareRoot(root)) {
+            if (const auto failure = artifacts.registry.prepareRoot(root, _stop.get_token())) {
                 PLOG_ERROR << QString::fromStdString(failure->detail()) << ": "
                            << QString::fromStdWString(failure->path().wstring());
                 static_cast<void>(artifacts.finish());
@@ -173,7 +173,7 @@ bool Manager::runOptimization() {
                     lastLooseProgress = now;
                 }
             },
-            [&] { return _isCancelled.load(); },
+            [&] { return _stop.stop_requested(); },
             [&] {
                 _numberCompletedFiles = 0;
                 printProgress(_modsToProcess.size(), "Packing BSAs");
@@ -182,7 +182,7 @@ bool Manager::runOptimization() {
                 // it already rejected Archive creation the selected profile does not support.
                 if (_routingPolicy.requests(cao::routing::RequestedWork::ArchiveCreation))
                     for (const auto& folder : _modsToProcess) {
-                        if (_isCancelled) return false;
+                        if (_stop.stop_requested()) return false;
 
                         if (QDir(folder).exists()) {
                             PLOG_INFO << "Creating BSA...";
@@ -245,7 +245,7 @@ bool Manager::runOptimization() {
                                   .arg(QString::fromStdWString(failure.path().wstring()));
             },
             [&](const cao::routing::RoutedAsset& asset) {
-                // Preserve failures for terminal status while letting Asset Run use mutation
+                // Preserve failures for the Run Outcome while routed execution uses mutation
                 // evidence to stop before another attempt or packing when continuation is unsafe.
                 const auto root =
                     std::find_if(roots.begin(), roots.end(), [&](const auto& candidate) {
@@ -265,8 +265,8 @@ bool Manager::runOptimization() {
 
     for (const auto& failure : result.executionFailures()) {
         if (!failure.safeToContinue()) {
-            PLOG_ERROR
-                << "Process stopped because an Asset mutation could not be completed safely.";
+            PLOG_ERROR << "Optimization Run stopped because an Asset mutation could not be "
+                          "completed safely.";
             emit end();
             return false;
         }

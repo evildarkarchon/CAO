@@ -9,7 +9,7 @@
 #include "OptionsCAO.h"
 #include "pch.h"
 
-#include <atomic>
+#include <stop_token>
 
 class Manager final : public QObject {
     Q_OBJECT
@@ -77,8 +77,8 @@ class Manager final : public QObject {
      * \brief Used to read the INI
      */
     QSettings* _settings;
-    // The GUI requests cancellation while discovery and execution poll on the run worker.
-    std::atomic_bool _isCancelled{false};
+    // The GUI requests cancellation while preparation, discovery, and execution poll the token.
+    std::stop_source _stop;
 
    signals:
     void progressBarTextChanged(QString, int, int);

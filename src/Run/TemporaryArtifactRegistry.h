@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <vector>
 
 namespace cao::run {
@@ -34,9 +35,12 @@ class TemporaryArtifactRegistry final : public SafetyCleanupService {
         Registration registration;
     };
 
-    /// Recovers existing staging and retains its lock. An absent area is not created.
-    [[nodiscard]] std::optional<RunFailure> prepareRoot(const std::filesystem::path& modRoot);
-    /// Flushes ownership before exclusively creating an empty same-volume staging file.
+    /// Recovers existing staging and retains its lock. An absent area is not created. Cancellation
+    /// stops between recovery operations without returning a failure. Throws `logic_error` after
+    /// Safety Cleanup has closed registration.
+    [[nodiscard]] std::optional<RunFailure> prepareRoot(const std::filesystem::path& modRoot,
+                                                        std::stop_token stop = {});
+    /// Flushes ownership before exclusively creating an empty staging file beside its destination.
     /// Throws on invalid ownership, unavailable locks, or filesystem failures.
     [[nodiscard]] StagedFile stageFile(const std::filesystem::path& modRoot,
                                        const std::filesystem::path& destination);

@@ -7,9 +7,9 @@
 #include <stop_token>
 
 namespace cao::run {
-/// Produces and recovers manifest-owned temporary entries, retaining OS locks through Safety Cleanup.
-/// The executor owns one instance on its execution thread; destruction releases locks without
-/// deleting control files. Absent staging is not created by recovery.
+/// Produces and recovers manifest-owned temporary entries, retaining OS locks through Safety
+/// Cleanup. The executor owns one instance on its execution thread; destruction releases locks
+/// without deleting control files. Absent staging is not created by recovery.
 class StagingRecovery final {
    public:
     /// Starts an empty recovery scope without filesystem access.
@@ -25,14 +25,17 @@ class StagingRecovery final {
     [[nodiscard]] std::optional<RunFailure> recover(const std::filesystem::path& modRoot,
                                                     std::stop_token stop = {});
 
-    /// Registers a unique temporary name durably, then exclusively creates its empty file.
+    /// Registers a unique sibling temporary name durably, then exclusively creates its empty file.
     /// Reuses recovered ownership locks; throws if ownership or same-root containment fails.
     [[nodiscard]] std::filesystem::path stageFile(const std::filesystem::path& modRoot,
                                                   const std::filesystem::path& destination);
     /// Flushes removal of a temporary registration after its file was committed elsewhere.
-    /// The destination is deliberately never part of this protocol or its deletion records.
+    /// The destination is deliberately never part of this protocol or its deletion records. Throws
+    /// `logic_error` if the file still exists or the supplied path is not registered.
     void releaseFile(const std::filesystem::path& temporary);
-    /// Removes verified durable artifacts and empty run children, retaining locks until destruction.
+    /// Removes verified durable artifacts and empty run children, retaining locks until
+    /// destruction. Returns every cleanup failure after attempting all independently owned
+    /// artifacts.
     [[nodiscard]] std::vector<RunFailure> cleanupArtifacts();
 
    private:

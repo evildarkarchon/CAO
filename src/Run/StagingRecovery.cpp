@@ -181,7 +181,13 @@ class NativeLock final {
 struct Artifact {
     fs::path relative;
     bool directory;
+    bool rootRelative{};
 };
+
+/// Resolves a manifest record against the namespace selected by its record kind.
+fs::path artifactPath(const fs::path& root, const Artifact& artifact) {
+    return (artifact.rootRelative ? root : root / ".cao-staging") / artifact.relative;
+}
 
 /// Reads a mandatory quoted string; bare tokens and truncated escapes are invalid ownership.
 std::string quotedString(std::istream& input, const fs::path& manifest) {
@@ -207,7 +213,7 @@ bool safeRelativeName(const std::string& name) {
     return pathText(path) == name && name.find("//") == std::string::npos;
 }
 
-/// Parses bounded v1/v2 records, proving root/run identity and parent-before-child ownership.
+/// Parses bounded ownership records, proving root/run identity and namespace containment.
 std::vector<Artifact> readManifest(const fs::path& staging, const fs::path& root,
                                    std::stop_token stop, unsigned& version) {
     const auto manifest = staging / "ownership.manifest";
@@ -215,7 +221,8 @@ std::vector<Artifact> readManifest(const fs::path& staging, const fs::path& root
         unverified(manifest, "The ownership manifest is missing or exceeds the format limit");
     std::ifstream input(manifest, std::ios::binary);
     std::string magic;
-    if (!(input >> magic >> version) || magic != "CAO-STAGING" || (version != 1 && version != 2))
+    if (!(input >> magic >> version) || magic != "CAO-STAGING" ||
+        (version != 1 && version != 2 && version != 3))
         unverified(manifest, "The CAO ownership manifest signature or version is invalid");
     if (quotedString(input, manifest) != pathText(root))
         unverified(manifest, "The ownership manifest belongs to a different Mod Root");
@@ -234,23 +241,34 @@ std::vector<Artifact> readManifest(const fs::path& staging, const fs::path& root
         unverified(manifest, "The ownership manifest has an invalid artifact count");
     std::vector<Artifact> artifacts;
     std::map<std::string, bool> owned;
+    std::map<std::string, bool> rootOwned;
     for (std::size_t i = 0; i < count; ++i) {
         observeCancellation(stop);
         char kind{};
         input >> kind;
         const auto name = quotedString(input, manifest);
-        if ((kind != 'D' && kind != 'F') || !safeRelativeName(name))
+        const bool rootRelative = kind == 'S';
+        if ((kind != 'D' && kind != 'F' && !(version == 3 && rootRelative)) ||
+            !safeRelativeName(name))
             unverified(manifest, "The ownership manifest contains an unsafe artifact record");
         const auto path = fs::path(std::u8string(name.begin(), name.end()));
-        if (i == 0
-                ? name != child || kind != 'D'
-                : !name.starts_with(child + "/") || !owned.contains(pathText(path.parent_path())) ||
-                      !owned.at(pathText(path.parent_path())))
-            unverified(manifest,
-                       "Artifact ownership is not contained beneath the recorded run child");
-        if (!owned.emplace(name, kind == 'D').second)
-            unverified(manifest, "The ownership manifest contains duplicate artifact paths");
-        artifacts.push_back({path, kind == 'D'});
+        if (rootRelative) {
+            const auto filename = pathText(path.filename());
+            if (i == 0 || !filename.starts_with(".cao-staging-texture-") ||
+                hasStagingComponent(path.parent_path()) || !rootOwned.emplace(name, false).second)
+                unverified(manifest,
+                           "A sibling Texture record is unsafe or duplicates owned output");
+        } else {
+            if (i == 0 ? name != child || kind != 'D'
+                       : !name.starts_with(child + "/") ||
+                             !owned.contains(pathText(path.parent_path())) ||
+                             !owned.at(pathText(path.parent_path())))
+                unverified(manifest,
+                           "Artifact ownership is not contained beneath the recorded run child");
+            if (!owned.emplace(name, kind == 'D').second)
+                unverified(manifest, "The ownership manifest contains duplicate artifact paths");
+        }
+        artifacts.push_back({path, kind == 'D', rootRelative});
     }
     input >> std::ws;
     if (!input.eof())
@@ -261,13 +279,14 @@ std::vector<Artifact> readManifest(const fs::path& staging, const fs::path& root
 /// Validates every present entry before the first deletion, pinning files and directories.
 /// Missing registrations are legal: a crash may occur after registration but before creation.
 std::map<fs::path, std::unique_ptr<NativeLock>> validateTree(const fs::path& staging,
+                                                             const fs::path& root,
                                                              const std::vector<Artifact>& artifacts,
                                                              std::stop_token stop,
                                                              unsigned version) {
     std::map<fs::path, bool> expected;
     for (const auto& artifact : artifacts) {
         observeCancellation(stop);
-        expected.emplace(artifact.relative, artifact.directory);
+        if (!artifact.rootRelative) expected.emplace(artifact.relative, artifact.directory);
     }
     std::map<fs::path, std::unique_ptr<NativeLock>> pins;
     for (const auto& entry : fs::recursive_directory_iterator(staging)) {
@@ -275,7 +294,7 @@ std::map<fs::path, std::unique_ptr<NativeLock>> validateTree(const fs::path& sta
         const auto relative = entry.path().lexically_relative(staging);
         if (relative == "owner.lock" || relative == "ownership.manifest") continue;
         // A valid v2 manifest owns this fixed scratch control even if a crash truncated it.
-        if (version == 2 && relative == "ownership.manifest.next") {
+        if (version >= 2 && relative == "ownership.manifest.next") {
             if (!fs::is_regular_file(inspect(entry.path())))
                 unverified(entry.path(), "The manifest scratch control is not a regular file");
             pins.emplace(relative,
@@ -291,6 +310,19 @@ std::map<fs::path, std::unique_ptr<NativeLock>> validateTree(const fs::path& sta
         pins.emplace(relative, std::make_unique<NativeLock>(
                                    entry.path(), found->second ? OpenMode::DirectoryPin
                                                                : OpenMode::TemporaryFile));
+    }
+    for (const auto& artifact : artifacts) {
+        observeCancellation(stop);
+        if (!artifact.rootRelative) continue;
+        const auto path = artifactPath(root, artifact);
+        if (fs::weakly_canonical(path.parent_path()) != path.parent_path())
+            unverified(path, "A sibling Texture staging parent changed during recovery");
+        const auto status = inspect(path);
+        if (!fs::exists(status)) continue;
+        if (!fs::is_regular_file(status))
+            unverified(path, "A sibling Texture staging artifact is not a regular file");
+        pins.emplace(artifact.relative,
+                     std::make_unique<NativeLock>(path, OpenMode::TemporaryFile));
     }
     return pins;
 }
@@ -338,20 +370,22 @@ void writeNewFile(const fs::path& path, const std::string& bytes) {
 #endif
 }
 
-/// Publishes a complete v2 snapshot before producers may create any newly owned entries.
+/// Publishes a complete v3 snapshot before producers may create any newly owned entries.
 void publishManifest(const fs::path& root, const std::string& runId, const fs::path& child,
                      const std::vector<Artifact>& artifacts) {
     const auto staging = root / ".cao-staging";
     const auto scratch = staging / "ownership.manifest.next";
     const auto manifest = staging / "ownership.manifest";
     std::ostringstream output;
-    output << "CAO-STAGING 2\n"
+    output << "CAO-STAGING 3\n"
            << std::quoted(pathText(root)) << '\n'
            << std::quoted(runId) << ' ' << std::quoted(pathText(child)) << '\n'
            << artifacts.size() << '\n';
     for (const auto& artifact : artifacts)
-        output << (artifact.directory ? 'D' : 'F') << ' '
-               << std::quoted(pathText(artifact.relative)) << '\n';
+        output << (artifact.rootRelative ? 'S'
+                   : artifact.directory  ? 'D'
+                                         : 'F')
+               << ' ' << std::quoted(pathText(artifact.relative)) << '\n';
     if (output.str().size() > 8 * 1024 * 1024 || artifacts.size() > 100000)
         throw std::runtime_error("The staging ownership manifest exceeds its format limit");
     writeNewFile(scratch, output.str());
@@ -383,9 +417,10 @@ StagingRecovery::~StagingRecovery() = default;
 fs::path StagingRecovery::stageFile(const fs::path& modRoot, const fs::path& destination) {
     const auto root = fs::canonical(modRoot);
     const auto parent = fs::canonical(destination.parent_path());
-    const auto relative = parent.lexically_relative(root);
-    if (!modRoot.is_absolute() || !destination.is_absolute() || relative.empty() ||
-        *relative.begin() == ".." || destination.filename().empty())
+    const auto destinationParent = parent.lexically_relative(root);
+    if (!modRoot.is_absolute() || !destination.is_absolute() || destinationParent.empty() ||
+        *destinationParent.begin() == ".." || hasStagingComponent(destinationParent) ||
+        destination.filename().empty())
         throw std::invalid_argument("A staged output must belong to its canonical Mod Root");
 #ifdef _WIN32
     wchar_t rootMount[MAX_PATH]{}, destinationMount[MAX_PATH]{};
@@ -430,12 +465,14 @@ fs::path StagingRecovery::stageFile(const fs::path& modRoot, const fs::path& des
         area.childPin = std::make_unique<NativeLock>(staging / area.child, OpenMode::DirectoryPin);
         area.ready = true;
     }
-    const auto relativeFile = area.child / (nonce() + extension);
+    const auto filename = ".cao-staging-texture-" + area.runId + "-" + nonce() + extension;
+    const auto relativeFile =
+        destinationParent == "." ? fs::path(filename) : destinationParent / filename;
     auto registered = area.artifacts;
-    registered.push_back({relativeFile, false});
+    registered.push_back({relativeFile, false, true});
     publishManifest(root, area.runId, area.child, registered);
     area.artifacts = std::move(registered);
-    const auto path = staging / relativeFile;
+    const auto path = root / relativeFile;
     try {
         writeNewFile(path, {});
     } catch (const CreationCollision&) {
@@ -461,8 +498,7 @@ void StagingRecovery::releaseFile(const fs::path& temporary) {
         auto retained = area.artifacts;
         const auto found =
             std::find_if(retained.begin(), retained.end(), [&](const Artifact& artifact) {
-                return !artifact.directory &&
-                       root / ".cao-staging" / artifact.relative == temporary;
+                return !artifact.directory && artifactPath(root, artifact) == temporary;
             });
         if (found == retained.end()) continue;
         if (fs::exists(inspect(temporary)))
@@ -487,7 +523,7 @@ std::vector<RunFailure> StagingRecovery::cleanupArtifacts() {
         // Unlike stale recovery, current-run cleanup attempts every individually owned artifact.
         for (auto artifact = area.artifacts.rbegin(); artifact != area.artifacts.rend();
              ++artifact) {
-            const auto affected = staging / artifact->relative;
+            const auto affected = artifactPath(root, *artifact);
             try {
                 if (fs::weakly_canonical(affected.parent_path()) != affected.parent_path())
                     unverified(affected, "A staging artifact parent changed during cleanup");
@@ -519,14 +555,19 @@ std::optional<RunFailure> StagingRecovery::recover(const std::filesystem::path& 
     try {
         observeCancellation(stop);
         if (_state->areas.contains(modRoot)) return {};
+        std::vector<fs::path> unknownStagingNames;
         for (const auto& entry : fs::directory_iterator(modRoot)) {
             observeCancellation(stop);
             if (isStagingName(entry.path()) && entry.path().filename() != ".cao-staging")
-                unverified(entry.path(),
-                           "An unknown staging-like name collides with the reserved namespace");
+                unknownStagingNames.push_back(entry.path());
         }
         const auto status = inspect(staging);
-        if (!fs::exists(status)) return {};
+        if (!fs::exists(status)) {
+            if (!unknownStagingNames.empty())
+                unverified(unknownStagingNames.front(),
+                           "An unknown staging-like name collides with the reserved namespace");
+            return {};
+        }
         if (!fs::is_directory(status))
             unverified(staging, "The reserved staging name is not a directory");
         auto rootPin = std::make_unique<NativeLock>(modRoot, OpenMode::DirectoryPin);
@@ -540,7 +581,16 @@ std::optional<RunFailure> StagingRecovery::recover(const std::filesystem::path& 
             std::make_unique<NativeLock>(staging / "ownership.manifest", OpenMode::ManifestPin);
         unsigned version{};
         const auto artifacts = readManifest(staging, modRoot, stop, version);
-        auto pins = validateTree(staging, artifacts, stop, version);
+        for (const auto& path : unknownStagingNames) {
+            const auto owned =
+                std::any_of(artifacts.begin(), artifacts.end(), [&](const auto& item) {
+                    return item.rootRelative && artifactPath(modRoot, item) == path;
+                });
+            if (!owned)
+                unverified(path,
+                           "An unknown staging-like name collides with the reserved namespace");
+        }
+        auto pins = validateTree(staging, modRoot, artifacts, stop, version);
         // Retain the same lock through work and Safety Cleanup. Never delete/recreate its path:
         // otherwise another process could own a new lock while this run still uses the old one.
         _state->locks.push_back(std::move(rootPin));
@@ -554,7 +604,7 @@ std::optional<RunFailure> StagingRecovery::recover(const std::filesystem::path& 
         }
         for (auto artifact = artifacts.rbegin(); artifact != artifacts.rend(); ++artifact) {
             observeCancellation(stop);
-            affected = staging / artifact->relative;
+            affected = artifactPath(modRoot, *artifact);
             const auto pinned = pins.find(artifact->relative);
             if (pinned == pins.end()) continue;
             if (fs::canonical(affected.parent_path()) != affected.parent_path())

@@ -16,7 +16,9 @@ class DurableStagingTests final : public QObject {
     void killedAfterRenameKeepsDestination();
     /// A stale record for a missing temporary file must not block a later producer.
     void recoveryAndProductionShareTheOwnershipLock();
-    /// Interrupted snapshot scratch is disposable only under valid v2 ownership.
+    /// A cancelled preparation leaves its durable sibling registration for a later recovery.
+    void cancelledPreparationPreservesDurableSibling();
+    /// Interrupted snapshot scratch is disposable only under valid manifest ownership.
     void partialScratchIsRecoveredButCorruptOwnershipIsPreserved();
     /// Cleanup removes only registered temporary entries and releases no committed destination.
     void cleanupRemovesTheRunChildAndKeepsCommittedOutput();
@@ -40,7 +42,7 @@ void DurableStagingTests::abandonedOutputIsRecovered() {
         auto staged = registry.stageFile(root, destination);
         temporary = staged.path;
         QVERIFY(fs::is_regular_file(temporary));
-        QVERIFY(temporary.parent_path().parent_path() == root / ".cao-staging");
+        QVERIFY(temporary.parent_path() == destination.parent_path());
         std::ofstream(temporary) << "partial";
     } catch (const std::exception& error) {
         QFAIL(error.what());
@@ -91,7 +93,26 @@ void DurableStagingTests::recoveryAndProductionShareTheOwnershipLock() {
     auto next = second.stageFile(root, root / "texture.dds");
     QVERIFY(fs::exists(next.path));
     QVERIFY(second.performSafetyCleanup().empty());
-    QVERIFY(!fs::exists(next.path.parent_path()));
+    QVERIFY(!fs::exists(next.path));
+    QVERIFY(fs::exists(root));
+}
+
+void DurableStagingTests::cancelledPreparationPreservesDurableSibling() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    fs::path temporary;
+    {
+        cao::run::TemporaryArtifactRegistry producer;
+        temporary = producer.stageFile(root, root / "texture.dds").path;
+        std::ofstream(temporary) << "partial";
+    }
+    std::stop_source cancellation;
+    cancellation.request_stop();
+    cao::run::TemporaryArtifactRegistry cancelled;
+
+    QVERIFY(!cancelled.prepareRoot(root, cancellation.get_token()).has_value());
+    QVERIFY(fs::exists(temporary));
 }
 
 void DurableStagingTests::partialScratchIsRecoveredButCorruptOwnershipIsPreserved() {
@@ -135,8 +156,9 @@ void DurableStagingTests::cleanupRemovesTheRunChildAndKeepsCommittedOutput() {
     registry.commit(staged.registration);
     const auto uncommitted = registry.stageFile(root, root / "other.dds");
     QVERIFY(registry.performSafetyCleanup().empty());
-    QVERIFY(!fs::exists(staged.path.parent_path()));
+    QVERIFY(!fs::exists(staged.path));
     QVERIFY(!fs::exists(uncommitted.path));
+    QVERIFY(fs::exists(root));
     QVERIFY(fs::exists(destination));
     QVERIFY(registry.performSafetyCleanup().empty());
 }
@@ -163,7 +185,7 @@ void DurableStagingTests::cleanupContinuesAfterADamagedTemporary() {
     QVERIFY(fs::create_directory(damaged.path));
     std::ofstream(damaged.path / "unregistered") << "keep";
     const auto failures = registry.performSafetyCleanup();
-    QCOMPARE(failures.size(), std::size_t{2});
+    QCOMPARE(failures.size(), std::size_t{1});
     QVERIFY(!fs::exists(intact.path));
     QVERIFY(fs::exists(damaged.path / "unregistered"));
 }

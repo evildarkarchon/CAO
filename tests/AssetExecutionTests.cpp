@@ -1,5 +1,6 @@
 #include "AssetExecution/AssetExecutor.h"
 #include "AssetRouting/AssetRouter.h"
+#include "Run/StagingPaths.h"
 #include "Run/StagingRecovery.h"
 
 #include <QTest>
@@ -15,8 +16,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace
-{
+namespace {
 /// Reads fixture bytes independently of the optimizer backend.
 std::string readBytes(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
@@ -43,26 +43,21 @@ using cao::routing::RoutingPolicyRequest;
 using cao::routing::TextureVariant;
 
 /// Defines complete test Profile Capabilities for every routed execution scenario.
-ProfileCapabilities completeCapabilities()
-{
+ProfileCapabilities completeCapabilities() {
     return ProfileCapabilities::define(
         ".bsa",
         {ProfileCapability::NativeTextureOptimization,
          ProfileCapability::ConvertibleTextureConversion,
-         ProfileCapability::StandardMeshOptimization,
-         ProfileCapability::TerrainMeshOptimization,
-         ProfileCapability::AnimationOptimization,
-         ProfileCapability::ArchiveExtraction,
+         ProfileCapability::StandardMeshOptimization, ProfileCapability::TerrainMeshOptimization,
+         ProfileCapability::AnimationOptimization, ProfileCapability::ArchiveExtraction,
          ProfileCapability::MeshReferenceMaintenance});
 }
 
 /// Routes one valid test Asset through the public Routing interface or fails test setup loudly.
-RoutedAsset routeAsset(const ExecutionMode mode,
-                       const std::initializer_list<RequestedWork> work,
-                       const std::filesystem::path &path)
-{
-    const auto result = RoutingPolicy::compile(RoutingPolicyRequest::forWork(mode, work),
-                                               completeCapabilities());
+RoutedAsset routeAsset(const ExecutionMode mode, const std::initializer_list<RequestedWork> work,
+                       const std::filesystem::path& path) {
+    const auto result =
+        RoutingPolicy::compile(RoutingPolicyRequest::forWork(mode, work), completeCapabilities());
     if (!result.hasPolicy())
         throw std::runtime_error("Test Routing Policy unexpectedly failed to compile.");
 
@@ -73,11 +68,9 @@ RoutedAsset routeAsset(const ExecutionMode mode,
     return std::get<RoutedAsset>(std::move(decision));
 }
 
-class RecordingBackend final : public AssetExecutionBackend
-{
-public:
-    bool loadTexture(const std::filesystem::path &path, const TextureVariant variant) override
-    {
+class RecordingBackend final : public AssetExecutionBackend {
+   public:
+    bool loadTexture(const std::filesystem::path& path, const TextureVariant variant) override {
         if (throwAt == "load_texture") throw std::runtime_error("load backend threw");
         texturePath = path;
         textureVariant = variant;
@@ -85,9 +78,8 @@ public:
         return loadSucceeds;
     }
 
-    OperationResult optimizeTexture(const cao::routing::AssetOperations &operations,
-                                    const ExecutionMode mode) override
-    {
+    OperationResult optimizeTexture(const cao::routing::AssetOperations& operations,
+                                    const ExecutionMode mode) override {
         if (throwAt == "optimize_texture") throw 42;
         textureOptimization = operations.contains(AssetOperation::Optimization);
         textureConversion = operations.contains(AssetOperation::Conversion);
@@ -96,60 +88,51 @@ public:
         return operationResult;
     }
 
-    bool saveTexture(const std::filesystem::path &path) override
-    {
+    bool saveTexture(const std::filesystem::path& path) override {
         savedTexturePath = path;
         ++textureSaves;
         if (textureSave) return textureSave(path);
         return saveSucceeds;
     }
 
-    bool removeTexture(const std::filesystem::path &path) override
-    {
+    bool removeTexture(const std::filesystem::path& path) override {
         removedTexturePath = path;
         ++textureRemovals;
         if (textureRemove) return textureRemove(path);
         return removeSucceeds;
     }
 
-    bool loadMesh(const std::filesystem::path &path, const MeshVariant variant) override
-    {
+    bool loadMesh(const std::filesystem::path& path, const MeshVariant variant) override {
         meshPath = path;
         meshVariant = variant;
         ++meshLoads;
         return loadSucceeds;
     }
 
-    OperationResult optimizeMesh(const std::filesystem::path &path,
-                                 const ExecutionMode mode) override
-    {
+    OperationResult optimizeMesh(const std::filesystem::path& path,
+                                 const ExecutionMode mode) override {
         optimizedMeshPath = path;
         meshOptimizationMode = mode;
         ++meshOptimizations;
-        if (mode == ExecutionMode::Apply)
-            meshContents += " optimized";
+        if (mode == ExecutionMode::Apply) meshContents += " optimized";
         return operationResult;
     }
 
-    OperationResult maintainMeshReferences(const ExecutionMode mode) override
-    {
+    OperationResult maintainMeshReferences(const ExecutionMode mode) override {
         meshMaintenanceMode = mode;
         ++meshMaintenances;
-        if (mode == ExecutionMode::Apply)
-            meshContents = "textures/armor.dds";
+        if (mode == ExecutionMode::Apply) meshContents = "textures/armor.dds";
         return operationResult;
     }
 
-    bool saveMesh(const std::filesystem::path &path) override
-    {
+    bool saveMesh(const std::filesystem::path& path) override {
         savedMeshPath = path;
         ++meshSaves;
         return saveSucceeds;
     }
 
-    OperationResult optimizeAnimation(const std::filesystem::path &path,
-                                      const ExecutionMode mode) override
-    {
+    OperationResult optimizeAnimation(const std::filesystem::path& path,
+                                      const ExecutionMode mode) override {
         animationPath = path;
         animationMode = mode;
         ++animationOptimizations;
@@ -218,75 +201,75 @@ int textureCrashWorker(const std::filesystem::path& root, const std::filesystem:
         root);
     return result.succeeded() ? 0 : 2;
 }
-}
+}  // namespace
 
-class AssetExecutionTests final : public QObject
-{
+class AssetExecutionTests final : public QObject {
     Q_OBJECT
 
-private slots:
- /// Defines process-death windows before and after durable Texture destination commit.
- void interruptedTextureRecovery_data();
- /// Recovers a killed writer's staging while preserving originals and committed destinations.
- void interruptedTextureRecovery();
- /// A partially written failed save must preserve the original Texture bytes.
- void failedTextureSavePreservesOriginal();
- /// Covers retained and missing files after a backend reports source-removal failure.
- void textureSourceRemovalFailure_data();
- /// Reports committed output and permits continuation only while both conversion files survive.
- void textureSourceRemovalFailure();
- /// Exceptions during staged save are fatal but leave durable inputs untouched.
- void textureSaveException();
+   private slots:
+    /// Defines process-death windows before and after durable Texture destination commit.
+    void interruptedTextureRecovery_data();
+    /// Recovers a killed writer's staging while preserving originals and committed destinations.
+    void interruptedTextureRecovery();
+    /// A partially written failed save must preserve the original Texture bytes.
+    void failedTextureSavePreservesOriginal();
+    /// Covers retained and missing files after a backend reports source-removal failure.
+    void textureSourceRemovalFailure_data();
+    /// Reports committed output and permits continuation only while both conversion files survive.
+    void textureSourceRemovalFailure();
+    /// Exceptions during staged save are fatal but leave durable inputs untouched.
+    void textureSaveException();
 
- /// Keeps a Texture optimizer's service failure separate from its human-readable explanation.
- void textureOperationFailureDetails();
- /// A writer receives an already reserved same-directory file owned by the supplied registry.
- void textureStagingIsRegisteredBeforeSave();
- /// Commit failure retains both original files and cleanup removes only the staged output.
- void textureCommitFailure();
- /// Cleanup evidence remains secondary to the original backend save failure.
- void textureCleanupFailurePreservesPrimaryFailure();
- /// Read-only backend exceptions are fatal and cannot create staged or durable output.
- void textureReadOnlyException_data();
- /// Retains exception boundary and safety evidence without mutating the original Texture.
- void textureReadOnlyException();
- /// Native replacement uses the same staged commit path and reports the durable mutation.
- void nativeTextureCommit();
- /// Defines Apply and Dry Run expectations for conversion-only Texture work.
- void conversionOnlyTextureExecution_data();
+    /// Keeps a Texture optimizer's service failure separate from its human-readable explanation.
+    void textureOperationFailureDetails();
+    /// A writer receives an already reserved same-directory file owned by the supplied registry.
+    void textureStagingIsRegisteredBeforeSave();
+    /// Commit failure retains both original files and cleanup removes only the staged output.
+    void textureCommitFailure();
+    /// Cleanup evidence remains secondary to the original backend save failure.
+    void textureCleanupFailurePreservesPrimaryFailure();
+    /// Read-only backend exceptions are fatal and cannot create staged or durable output.
+    void textureReadOnlyException_data();
+    /// Retains exception boundary and safety evidence without mutating the original Texture.
+    void textureReadOnlyException();
+    /// Native replacement uses the same staged commit path and reports the durable mutation.
+    void nativeTextureCommit();
+    /// Defines Apply and Dry Run expectations for conversion-only Texture work.
+    void conversionOnlyTextureExecution_data();
 
- /// Verifies conversion alone executes a convertible Texture without ordinary Texture optimization.
- void conversionOnlyTextureExecution();
+    /// Verifies conversion alone executes a convertible Texture without ordinary Texture
+    /// optimization.
+    void conversionOnlyTextureExecution();
 
- /// Defines standard and terrain Mesh paths whose carried Variant must select loading behavior.
- void meshVariantSelectsLoadMode_data();
+    /// Defines standard and terrain Mesh paths whose carried Variant must select loading behavior.
+    void meshVariantSelectsLoadMode_data();
 
- /// Verifies Mesh loading receives the carried Variant and original execution path exactly once.
- void meshVariantSelectsLoadMode();
+    /// Verifies Mesh loading receives the carried Variant and original execution path exactly once.
+    void meshVariantSelectsLoadMode();
 
- /// Defines independent ordinary optimization and Mesh Reference Maintenance combinations.
- void meshOperationsShareOneTransaction_data();
+    /// Defines independent ordinary optimization and Mesh Reference Maintenance combinations.
+    void meshOperationsShareOneTransaction_data();
 
- /// Verifies independent Mesh operations share one load and at most one save transaction.
- void meshOperationsShareOneTransaction();
+    /// Verifies independent Mesh operations share one load and at most one save transaction.
+    void meshOperationsShareOneTransaction();
 
- /// Verifies Dry Run evaluates Mesh Reference Maintenance without mutation or saving.
- void dryRunMeshMaintenanceDoesNotMutate();
+    /// Verifies Dry Run evaluates Mesh Reference Maintenance without mutation or saving.
+    void dryRunMeshMaintenanceDoesNotMutate();
 
- /// Defines Apply and Dry Run expectations for Animation execution.
- void animationExecution_data();
+    /// Defines Apply and Dry Run expectations for Animation execution.
+    void animationExecution_data();
 
- /// Verifies Animation execution consumes the carried operation and execution mode.
- void animationExecution();
+    /// Verifies Animation execution consumes the carried operation and execution mode.
+    void animationExecution();
 
- /// Verifies an Animation backend failure is returned to the caller.
- void animationFailureIsReported();
+    /// Verifies an Animation backend failure is returned to the caller.
+    void animationFailureIsReported();
 
- /// Verifies a reported backend failure cannot alter the earlier Routing Decision.
- void executionFailurePreservesRoutedDecision();
+    /// Verifies a reported backend failure cannot alter the earlier Routing Decision.
+    void executionFailurePreservesRoutedDecision();
 
- /// Verifies Archive extraction is rejected by the loose-Asset execution seam.
- void archiveIsNotOwnedByAssetExecutor();
+    /// Verifies Archive extraction is rejected by the loose-Asset execution seam.
+    void archiveIsNotOwnedByAssetExecutor();
 };
 
 void AssetExecutionTests::interruptedTextureRecovery_data() {
@@ -501,8 +484,8 @@ void AssetExecutionTests::textureCleanupFailurePreservesPrimaryFailure() {
     const auto result = AssetExecutor(backend).execute(
         routeAsset(ExecutionMode::Apply, {RequestedWork::NativeTextureOptimization}, source));
     QCOMPARE(result.failure().value(), AssetExecutionFailure::SaveFailed);
-    // The unregistered contents prevent removal of both the staged entry and its run directory.
-    QCOMPARE(result.cleanupFailures().size(), std::size_t{2});
+    // The unregistered contents replace the staged file, so cleanup preserves that evidence.
+    QCOMPARE(result.cleanupFailures().size(), std::size_t{1});
     QCOMPARE(result.cleanupFailures().front().code(),
              cao::run::RunFailureCode::TemporaryArtifactCleanupFailed);
     QCOMPARE(readBytes(backend.savedTexturePath / "unregistered"), std::string("keep"));
@@ -557,8 +540,7 @@ void AssetExecutionTests::nativeTextureCommit() {
     QVERIFY(!std::filesystem::exists(backend.savedTexturePath));
 }
 
-void AssetExecutionTests::conversionOnlyTextureExecution_data()
-{
+void AssetExecutionTests::conversionOnlyTextureExecution_data() {
     QTest::addColumn<int>("mode");
     QTest::addColumn<int>("expectedSaveCount");
     QTest::addColumn<int>("expectedRemoveCount");
@@ -567,8 +549,7 @@ void AssetExecutionTests::conversionOnlyTextureExecution_data()
     QTest::newRow("Dry Run") << static_cast<int>(ExecutionMode::DryRun) << 0 << 0;
 }
 
-void AssetExecutionTests::conversionOnlyTextureExecution()
-{
+void AssetExecutionTests::conversionOnlyTextureExecution() {
     QFETCH(int, mode);
     QFETCH(int, expectedSaveCount);
     QFETCH(int, expectedRemoveCount);
@@ -584,7 +565,7 @@ void AssetExecutionTests::conversionOnlyTextureExecution()
         routeAsset(executionMode, {RequestedWork::ConvertibleTextureConversion}, source);
     RecordingBackend backend;
     backend.textureSave = [&](const std::filesystem::path& path) {
-        if (path.parent_path().parent_path() != source.parent_path() / ".cao-staging" ||
+        if (path.parent_path() != destination.parent_path() || !cao::run::isStagingName(path) ||
             path == destination || readBytes(destination) != "old destination")
             throw std::runtime_error("Destination changed before staging completed");
         std::ofstream(path) << "converted";
@@ -621,8 +602,7 @@ void AssetExecutionTests::conversionOnlyTextureExecution()
     }
 }
 
-void AssetExecutionTests::meshVariantSelectsLoadMode_data()
-{
+void AssetExecutionTests::meshVariantSelectsLoadMode_data() {
     QTest::addColumn<QString>("path");
     QTest::addColumn<int>("variant");
     QTest::addColumn<int>("request");
@@ -638,14 +618,12 @@ void AssetExecutionTests::meshVariantSelectsLoadMode_data()
                                  << static_cast<int>(RequestedWork::TerrainMeshOptimization);
 }
 
-void AssetExecutionTests::meshVariantSelectsLoadMode()
-{
+void AssetExecutionTests::meshVariantSelectsLoadMode() {
     QFETCH(QString, path);
     QFETCH(int, variant);
     QFETCH(int, request);
 
-    const auto asset = routeAsset(ExecutionMode::Apply,
-                                  {static_cast<RequestedWork>(request)},
+    const auto asset = routeAsset(ExecutionMode::Apply, {static_cast<RequestedWork>(request)},
                                   std::filesystem::path(path.toStdWString()));
     RecordingBackend backend;
     const AssetExecutor executor(backend);
@@ -658,36 +636,32 @@ void AssetExecutionTests::meshVariantSelectsLoadMode()
     QCOMPARE(backend.meshVariant.value(), static_cast<MeshVariant>(variant));
 }
 
-void AssetExecutionTests::meshOperationsShareOneTransaction_data()
-{
+void AssetExecutionTests::meshOperationsShareOneTransaction_data() {
     QTest::addColumn<bool>("optimize");
     QTest::addColumn<bool>("maintain");
     QTest::addColumn<QString>("path");
 
     QTest::newRow("optimization only") << true << false << QStringLiteral("Meshes/Actor.nif");
     QTest::newRow("maintenance only") << false << true << QStringLiteral("Meshes/Actor.nif");
-    QTest::newRow("optimization and maintenance") << true << true << QStringLiteral("Meshes/Actor.nif");
+    QTest::newRow("optimization and maintenance")
+        << true << true << QStringLiteral("Meshes/Actor.nif");
 }
 
-void AssetExecutionTests::meshOperationsShareOneTransaction()
-{
+void AssetExecutionTests::meshOperationsShareOneTransaction() {
     QFETCH(bool, optimize);
     QFETCH(bool, maintain);
     QFETCH(QString, path);
 
     const auto executionPath = std::filesystem::path(path.toStdWString());
-    const auto asset = !optimize
-                           ? routeAsset(ExecutionMode::Apply,
-                                        {RequestedWork::ConvertibleTextureConversion},
-                                        executionPath)
-                       : maintain
-                           ? routeAsset(ExecutionMode::Apply,
-                                        {RequestedWork::StandardMeshOptimization,
-                                         RequestedWork::ConvertibleTextureConversion},
-                                        executionPath)
-                           : routeAsset(ExecutionMode::Apply,
-                                        {RequestedWork::StandardMeshOptimization},
-                                        executionPath);
+    const auto asset =
+        !optimize  ? routeAsset(ExecutionMode::Apply, {RequestedWork::ConvertibleTextureConversion},
+                                executionPath)
+        : maintain ? routeAsset(ExecutionMode::Apply,
+                                {RequestedWork::StandardMeshOptimization,
+                                 RequestedWork::ConvertibleTextureConversion},
+                                executionPath)
+                   : routeAsset(ExecutionMode::Apply, {RequestedWork::StandardMeshOptimization},
+                                executionPath);
     RecordingBackend backend;
     const AssetExecutor executor(backend);
 
@@ -700,11 +674,10 @@ void AssetExecutionTests::meshOperationsShareOneTransaction()
     QCOMPARE(backend.meshSaves, 1);
 }
 
-void AssetExecutionTests::dryRunMeshMaintenanceDoesNotMutate()
-{
-    const auto asset = routeAsset(ExecutionMode::DryRun,
-                                  {RequestedWork::ConvertibleTextureConversion},
-                                  std::filesystem::path(L"Meshes/Actor.nif"));
+void AssetExecutionTests::dryRunMeshMaintenanceDoesNotMutate() {
+    const auto asset =
+        routeAsset(ExecutionMode::DryRun, {RequestedWork::ConvertibleTextureConversion},
+                   std::filesystem::path(L"Meshes/Actor.nif"));
     RecordingBackend backend;
     const auto originalContents = backend.meshContents;
     const AssetExecutor executor(backend);
@@ -719,21 +692,18 @@ void AssetExecutionTests::dryRunMeshMaintenanceDoesNotMutate()
     QCOMPARE(backend.meshContents, originalContents);
 }
 
-void AssetExecutionTests::animationExecution_data()
-{
+void AssetExecutionTests::animationExecution_data() {
     QTest::addColumn<int>("mode");
 
     QTest::newRow("Apply") << static_cast<int>(ExecutionMode::Apply);
     QTest::newRow("Dry Run") << static_cast<int>(ExecutionMode::DryRun);
 }
 
-void AssetExecutionTests::animationExecution()
-{
+void AssetExecutionTests::animationExecution() {
     QFETCH(int, mode);
 
     const auto executionMode = static_cast<ExecutionMode>(mode);
-    const auto asset = routeAsset(executionMode,
-                                  {RequestedWork::AnimationOptimization},
+    const auto asset = routeAsset(executionMode, {RequestedWork::AnimationOptimization},
                                   std::filesystem::path(L"Animations/Walk.HKX"));
     RecordingBackend backend;
     const AssetExecutor executor(backend);
@@ -746,10 +716,8 @@ void AssetExecutionTests::animationExecution()
     QCOMPARE(backend.animationMode.value(), executionMode);
 }
 
-void AssetExecutionTests::animationFailureIsReported()
-{
-    const auto asset = routeAsset(ExecutionMode::Apply,
-                                  {RequestedWork::AnimationOptimization},
+void AssetExecutionTests::animationFailureIsReported() {
+    const auto asset = routeAsset(ExecutionMode::Apply, {RequestedWork::AnimationOptimization},
                                   std::filesystem::path(L"Animations/Walk.hkx"));
     RecordingBackend backend;
     backend.operationResult = OperationResult::failed("synthetic animation failure");
@@ -762,10 +730,8 @@ void AssetExecutionTests::animationFailureIsReported()
     QCOMPARE(result.message(), std::string("synthetic animation failure"));
 }
 
-void AssetExecutionTests::executionFailurePreservesRoutedDecision()
-{
-    const auto asset = routeAsset(ExecutionMode::Apply,
-                                  {RequestedWork::StandardMeshOptimization},
+void AssetExecutionTests::executionFailurePreservesRoutedDecision() {
+    const auto asset = routeAsset(ExecutionMode::Apply, {RequestedWork::StandardMeshOptimization},
                                   std::filesystem::path(L"Meshes/Actor.nif"));
     const auto originalPath = asset.executionPath();
     const auto originalTarget = asset.target();
@@ -785,10 +751,8 @@ void AssetExecutionTests::executionFailurePreservesRoutedDecision()
     QCOMPARE(asset.operations().contains(AssetOperation::Optimization), originalOptimization);
 }
 
-void AssetExecutionTests::archiveIsNotOwnedByAssetExecutor()
-{
-    const auto asset = routeAsset(ExecutionMode::Apply,
-                                  {RequestedWork::ArchiveExtraction},
+void AssetExecutionTests::archiveIsNotOwnedByAssetExecutor() {
+    const auto asset = routeAsset(ExecutionMode::Apply, {RequestedWork::ArchiveExtraction},
                                   std::filesystem::path(L"Archives/Assets.bsa"));
     RecordingBackend backend;
     const AssetExecutor executor(backend);

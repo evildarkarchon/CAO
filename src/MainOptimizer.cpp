@@ -109,9 +109,9 @@ cao::execution::AssetExecutionResult MainOptimizer::finishAttempt(
         // references must be rewritten even though the original TGA remains. The
         // failing Texture is recorded by identity rather than as a run-wide bit, because every
         // other TGA source in the same run was deleted once its DDS replacement was saved and its
-        // references therefore still have to be rewritten. Asset Run always completes the Texture
-        // target before the Mesh target, so the recorded set is definitive by the time any Mesh is
-        // executed.
+        // references therefore still have to be rewritten. Routed Asset execution always completes
+        // the Texture target before the Mesh target, so the recorded set is definitive by the time
+        // any Mesh is executed.
         if (asset.target() == cao::routing::OptimizerTarget::Texture &&
             asset.operations().contains(cao::routing::AssetOperation::Conversion) &&
             !(result.failure() == cao::execution::AssetExecutionFailure::SourceRemovalFailed &&
