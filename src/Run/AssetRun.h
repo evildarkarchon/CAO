@@ -4,6 +4,7 @@
 #include "AssetExecution/AssetExecutor.h"
 #include "ArchiveFirstAssetDiscovery.h"
 #include "ArchiveExtraction.h"
+#include "ArchiveFinalizationResult.h"
 #include "RunLifecycle.h"
 
 #include <cstddef>
@@ -30,6 +31,14 @@ using AssetRunCancellationAdapter = std::function<bool()>;
 using ArchiveLifecycleFinalizationAdapter = std::function<bool()>;
 
 class AssetRunResult;
+struct RunWorkRecord;
+
+/// Owns a completed attempt's routed identity, resolved scope, and durable outcome.
+struct RoutedAssetAttempt final {
+    std::filesystem::path modRoot;
+    routing::RoutedAsset asset;
+    execution::AssetExecutionResult result;
+};
 
 /// Read-only diagnostics that are definitive before Apply-mode Archive finalization begins.
 class AssetRunDiagnostics final {
@@ -76,13 +85,27 @@ struct AssetRunAdapters final {
     std::function<execution::AssetExecutionResult(const routing::RoutedAsset&)>
         executeAssetWithResult;
     /// Extracts the completed manifest plan and reports mutation evidence; replaces the void
-    /// adapter when present. Unsafe continuation stops all later work without cancellation.
+    /// adapter when present. Unsafe continuation stops work independently of cancellation.
     std::function<ArchiveExtractionResult(const ArchiveExtractionPlan&)> extractArchiveWithResult;
+    /// Retains finalization outcomes; replaces the legacy boolean adapter when present.
+    std::function<ArchiveFinalizationResult()> finalizeArchiveLifecycleWithResult;
 };
 
 /// Owns the definitive Routing Ledger and the terminal state of one Asset Run.
 class AssetRunResult final {
    public:
+    /// Copies the completed run evidence into the lifecycle collector without borrowing adapters.
+    [[nodiscard]] RunWorkRecord workRecord() const;
+
+    /// Borrows every completed result-bearing Asset attempt, including successful mutations.
+    [[nodiscard]] std::span<const RoutedAssetAttempt> assetAttempts() const noexcept {
+        return _assetAttempts;
+    }
+
+    /// Borrows finalization evidence, absent when the result-bearing finalizer was not reached.
+    [[nodiscard]] const std::optional<ArchiveFinalizationResult>& finalizationResult() const noexcept {
+        return _finalizationResult;
+    }
     /// Returns the definitive owned Routing Ledger; cancellation may leave some Assets unexecuted.
     [[nodiscard]] const routing::RoutingLedger& ledger() const noexcept;
 
@@ -142,6 +165,9 @@ class AssetRunResult final {
     std::vector<ArchiveCollision> _collisions;
     std::vector<execution::AssetExecutionResult> _executionFailures;
     std::vector<ArchiveExtractionResult> _archiveAttempts;
+    std::vector<RoutedAssetAttempt> _assetAttempts;
+    std::optional<ArchiveFinalizationResult> _finalizationResult;
+    bool _routingCompleted{};
 };
 
 /// Orchestrates Archive-first discovery, definitive routing, and carried Asset execution.
@@ -156,11 +182,12 @@ class AssetRun final {
     /// and attempts, and once more after the final attempt, so an adapter is never abandoned
     /// mid-operation and a cancelled run never reaches diagnostics or finalization. A finalizer
     /// reports cancellation by returning false. Filesystem races are skipped during discovery;
-    /// legacy adapter exceptions propagate. Result-bearing extraction exceptions retain unknown
+    /// legacy execution adapter exceptions propagate. Presentation exceptions become informational
+    /// ObserverFailed diagnostics without discarding attempts. Result-bearing extraction exceptions retain unknown
     /// mutation evidence and stop the run. Manifest/order failures stop all mutation.
     /// Archive precedence is validated before the first extraction callback.
-    /// Result-bearing execution retains failed attempts and stops before further work when the
-    /// adapter cannot establish safe continuation; this stop is distinct from cancellation.
+    /// Result-bearing execution retains all attempts and converts adapter exceptions to unsafe
+    /// outcomes. Unsafe continuation stops further work while retaining concurrent cancellation.
     [[nodiscard]] AssetRunResult execute(
         std::span<const std::filesystem::path> roots, const AssetRunAdapters& adapters,
         const ArchivePrecedence& precedence = ArchivePrecedence::deterministicDiscovery()) const;

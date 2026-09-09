@@ -69,6 +69,7 @@ MergeTarget prepareMergeTarget(const std::filesystem::path& root,
 
 ArchiveExtractionResult ArchiveExtractor::extract(const ArchiveExtractionPlan& plan) const {
     ArchiveExtractionResult result{plan.archivePath};
+    result.modRoot = plan.modRoot;
     bool merging = false;
     try {
         const auto root = std::filesystem::canonical(plan.modRoot);

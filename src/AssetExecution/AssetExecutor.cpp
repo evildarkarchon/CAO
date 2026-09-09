@@ -120,8 +120,6 @@ std::optional<ExecutionFailureCategory> AssetExecutionResult::failureCategory() 
     }
 }
 
-bool AssetExecutionResult::succeeded() const noexcept { return !_failure.has_value(); }
-
 std::optional<AssetExecutionFailure> AssetExecutionResult::failure() const noexcept {
     return _failure;
 }

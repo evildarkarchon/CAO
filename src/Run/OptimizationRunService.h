@@ -129,6 +129,8 @@ class RunStartResult final {
     std::variant<RunHandle, StartError> _outcome;
 };
 
+class RunWorkService;
+
 /// Starts Optimization Runs and hands each one back as an owning Run Handle.
 ///
 /// This is the public asynchronous seam adapters use. It validates Run Request structure, owns
@@ -142,13 +144,17 @@ class OptimizationRunService final {
    public:
     /// Owns the production scheduler and retains the provider for each run. A missing provider
     /// becomes a configuration-loading failure during Preparing, never a synchronous Start Error.
+    /// The optional work service is retained through worker completion, including cleanup.
     explicit OptimizationRunService(
-        std::shared_ptr<const RunConfigurationProvider> configuration = {}) noexcept;
+        std::shared_ptr<const RunConfigurationProvider> configuration = {},
+        std::shared_ptr<RunWorkService> work = {}) noexcept;
 
     /// Starts runs on the caller-owned scheduler and shares ownership of the read-only provider.
+    /// Retains the optional work service for every started run until its worker completes.
     explicit OptimizationRunService(
         RunScheduler& scheduler,
-        std::shared_ptr<const RunConfigurationProvider> configuration = {}) noexcept;
+        std::shared_ptr<const RunConfigurationProvider> configuration = {},
+        std::shared_ptr<RunWorkService> work = {}) noexcept;
 
     OptimizationRunService(const OptimizationRunService&) = delete;
     OptimizationRunService& operator=(const OptimizationRunService&) = delete;
@@ -175,6 +181,7 @@ class OptimizationRunService final {
     StandardRunScheduler _productionScheduler;
     RunScheduler& _scheduler;
     std::shared_ptr<const RunConfigurationProvider> _configuration;
+    std::shared_ptr<RunWorkService> _work;
     std::mutex _runsMutex;
     std::vector<std::weak_ptr<RunWorkerLifetime>> _runs;
 };

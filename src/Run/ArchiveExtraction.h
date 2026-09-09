@@ -37,6 +37,8 @@ struct ArchiveExtractionResult final {
     std::optional<ArchiveExtractionFailure> failure{};
     bool safeToContinue{true};
     std::string detail{};
+    /// The frozen preflight scope, independent of the Archive's containing directory.
+    std::filesystem::path modRoot{};
 
     /// Reports whether extraction, merge, and any requested source cleanup completed.
     [[nodiscard]] bool succeeded() const noexcept { return !failure; }

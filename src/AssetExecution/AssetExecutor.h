@@ -79,7 +79,7 @@ class AssetExecutionResult final {
                                                      std::string serviceDetail = {});
 
     /// Reports whether every carried operation completed successfully.
-    [[nodiscard]] bool succeeded() const noexcept;
+    [[nodiscard]] bool succeeded() const noexcept { return !_failure.has_value(); }
 
     /// Returns the stable failure category, or no value after success.
     [[nodiscard]] std::optional<AssetExecutionFailure> failure() const noexcept;

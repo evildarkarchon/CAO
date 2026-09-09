@@ -1,5 +1,6 @@
 #include "Run/AssetRun.h"
 #include "Run/ArchiveFirstAssetDiscovery.h"
+#include "Run/RunWorkRecord.h"
 
 #include <QtTest>
 
@@ -189,6 +190,18 @@ class AssetRunTests final : public QObject
     Q_OBJECT
 
 private slots:
+ /// Retains owned successful and failed attempt identities plus finalization evidence.
+ void completeAttemptEvidenceSurvivesAdapters();
+ /// Exceptions preserve uncertain mutation and concurrent cancellation after the attempt.
+ void throwingAttemptRetainsCancellation();
+ /// A finalizer exception becomes an owned phase failure, independent of cancellation.
+ void throwingFinalizerRetainsFailure();
+ /// Presentation errors cannot discard committed attempt evidence or prevent finalization.
+ void throwingObserversPreserveCommittedWork();
+ /// Relative selection retains the canonical Mod Root even when execution removes the source.
+ void relativeSelectionRetainsMutationScope();
+ /// Cancellation from a throwing diagnostics observer retains work and skips finalization.
+ void throwingDiagnosticsCancellationSkipsFinalization();
  /// Supplies recoverable and uncertain Archive failures at both extraction boundaries.
  void archiveFailuresControlContinuation_data();
  /// Verifies planned attempts retain evidence and stop unsafe work without cancellation.
@@ -308,10 +321,12 @@ void AssetRunTests::archiveFailuresControlContinuation() {
     QCOMPARE(attempts, canContinue ? std::size_t{2} : static_cast<std::size_t>(failedAttempt));
     QCOMPARE(assets, canContinue ? std::size_t{1} : std::size_t{0});
     QCOMPARE(finalized, canContinue);
+    QCOMPARE(result.workRecord().ledger.has_value(), canContinue);
     QVERIFY(!legacyCalled);
     QVERIFY(!result.cancelled());
     QCOMPARE(result.archiveAttempts().size(), attempts);
     const auto& failure = result.archiveAttempts()[failedAttempt - 1];
+    QCOMPARE(failure.modRoot, root);
     QVERIFY(!failure.succeeded());
     QCOMPARE(failure.safeToContinue, safe);
     QCOMPARE(failure.detail, std::string("Injected merge failure"));
@@ -465,10 +480,12 @@ void AssetRunTests::unreadableArchiveStopsRunBeforeMutation() {
                                                         {},
                                                         [&](const cao::run::RunFailure& failure) {
                                                             failures.push_back(failure);
+                                                            throw std::runtime_error("failure observer");
                                                         }});
     QCOMPARE(failures.size(), std::size_t{1});
     QCOMPARE(result.failures().size(), failures.size());
     QCOMPARE(failures.front().code(), cao::run::RunFailureCode::ArchiveUnreadable);
+    QCOMPARE(result.diagnostics().back().code(), cao::run::RunDiagnosticCode::ObserverFailed);
     QVERIFY(result.collisions().empty());
     QVERIFY(result.ledger().routedAssets().empty());
     QVERIFY(!extracted);
@@ -513,6 +530,7 @@ void AssetRunTests::reportsCollisionsBeforeOrderedExtraction() {
                                      QCOMPARE(collisions.front().winningArchive(), second);
                                      QVERIFY(collisions.front().looseAssetWins());
                                      reported = true;
+                                     throw std::runtime_error("collision observer");
                                  }},
                 cao::run::ArchivePrecedence::explicitOrder({"z.bsa", "a.bsa"}));
     QVERIFY(result.failures().empty());
@@ -522,6 +540,7 @@ void AssetRunTests::reportsCollisionsBeforeOrderedExtraction() {
     QCOMPARE(result.collisions().front().winningArchive(), second);
     QCOMPARE(result.collisions().front().shadowedArchives().size(), std::size_t{1});
     QCOMPARE(result.collisions().front().shadowedArchives().front(), first);
+    QCOMPARE(result.diagnostics().back().code(), cao::run::RunDiagnosticCode::ObserverFailed);
 }
 
 void AssetRunTests::filesystemTraversalPollsCancellation_data()
@@ -1189,6 +1208,154 @@ void AssetRunTests::nestedArchivesAreReportedWithoutInflatingTheWorkTotal()
     // the game will not read them either.
     QCOMPARE(reportedNestedArchives, std::size_t{1});
     QCOMPARE(result.nestedArchiveCount(), std::size_t{1});
+}
+
+void AssetRunTests::completeAttemptEvidenceSurvivesAdapters() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "a.dds");
+    writeFile(root / "b.dds");
+    AssetRunAdapters adapters;
+    int calls = 0;
+    adapters.executeAssetWithResult = [&](const auto&) {
+        using namespace cao::execution;
+        return ++calls == 1 ? AssetExecutionResult::success(MutationState::Committed)
+            : AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed, "retained");
+    };
+    adapters.finalizeArchiveLifecycleWithResult = [&] {
+        cao::run::ArchiveFinalizationResult finalization;
+        finalization.attempts.push_back({root / "output.bsa",
+            cao::execution::MutationState::Committed, {}, true, "", root});
+        return finalization;
+    };
+    const auto result = AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, adapters);
+    adapters = {};
+    QCOMPARE(result.assetAttempts().size(), std::size_t{2});
+    QCOMPARE(result.assetAttempts()[0].modRoot, std::filesystem::canonical(root));
+    QVERIFY(result.assetAttempts()[0].result.succeeded());
+    QCOMPARE(result.assetAttempts()[0].result.mutationState(), cao::execution::MutationState::Committed);
+    QCOMPARE(result.assetAttempts()[0].asset.executionPath(), root / "a.dds");
+    QVERIFY(!result.assetAttempts()[1].result.succeeded());
+    QCOMPARE(result.executionFailures().size(), std::size_t{1});
+    QVERIFY(result.finalizationResult().has_value());
+    QCOMPARE(result.finalizationResult()->attempts.front().modRoot, root);
+    const auto record = result.workRecord();
+    QVERIFY(record.ledger.has_value());
+    QCOMPARE(record.assetAttempts.size(), std::size_t{2});
+    QCOMPARE(record.finalizations.size(), std::size_t{1});
+}
+
+void AssetRunTests::throwingAttemptRetainsCancellation() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "a.dds");
+    writeFile(root / "b.dds");
+    AssetRunAdapters adapters;
+    bool cancelled = false;
+    adapters.isCancelled = [&] { return cancelled; };
+    adapters.executeAssetWithResult = [&](const auto&) -> cao::execution::AssetExecutionResult {
+        cancelled = true;
+        throw std::runtime_error("adapter failed");
+    };
+    const auto result = AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, adapters);
+    QVERIFY(result.cancelled());
+    QCOMPARE(result.assetAttempts().size(), std::size_t{1});
+    QCOMPARE(result.assetAttempts()[0].result.mutationState(), cao::execution::MutationState::PartialOrUnknown);
+    QVERIFY(!result.assetAttempts()[0].result.safeToContinue());
+    QCOMPARE(result.assetAttempts()[0].result.message(), std::string("adapter failed"));
+}
+
+void AssetRunTests::throwingFinalizerRetainsFailure() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    AssetRunAdapters adapters;
+    adapters.finalizeArchiveLifecycleWithResult = []() -> cao::run::ArchiveFinalizationResult {
+        throw std::runtime_error("finalizer failed");
+    };
+    const auto result = AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, adapters);
+    QVERIFY(!result.cancelled());
+    QVERIFY(result.finalizationResult().has_value());
+    QCOMPARE(result.finalizationResult()->failure,
+             std::optional{cao::run::ArchiveFinalizationFailure::UnexpectedException});
+    QVERIFY(!result.finalizationResult()->safeToContinue);
+    QCOMPARE(result.finalizationResult()->detail, std::string("finalizer failed"));
+}
+
+void AssetRunTests::throwingObserversPreserveCommittedWork() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "a.dds");
+    AssetRunAdapters adapters;
+    adapters.executeAssetWithResult = [](const auto&) {
+        return cao::execution::AssetExecutionResult::success(cao::execution::MutationState::Committed);
+    };
+    adapters.reportProgress = [](const auto&) { throw std::runtime_error("progress observer"); };
+    adapters.reportDiagnostics = [](const auto&) { throw std::runtime_error("diagnostics observer"); };
+    bool finalized = false;
+    adapters.finalizeArchiveLifecycleWithResult = [&] {
+        finalized = true;
+        return cao::run::ArchiveFinalizationResult{};
+    };
+    const auto record = AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, adapters).workRecord();
+    QCOMPARE(record.assetAttempts.size(), std::size_t{1});
+    QCOMPARE(record.assetAttempts.front().result.mutationState(), cao::execution::MutationState::Committed);
+    QCOMPARE(record.diagnostics.size(), std::size_t{2});
+    for (const auto& diagnostic : record.diagnostics)
+        QCOMPARE(diagnostic.code(), cao::run::RunDiagnosticCode::ObserverFailed);
+    QVERIFY(record.failures.empty());
+    QVERIFY(finalized);
+}
+
+void AssetRunTests::relativeSelectionRetainsMutationScope() {
+    QTemporaryDir directory(QDir::currentPath() + "/asset-scope-XXXXXX");
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(
+        std::filesystem::path(directory.path().toStdWString()));
+    writeFile(root / "a.dds");
+    AssetRunAdapters adapters;
+    adapters.executeAssetWithResult = [](const auto& asset) {
+        std::filesystem::remove(asset.executionPath());
+        return cao::execution::AssetExecutionResult::success(cao::execution::MutationState::Committed);
+    };
+    const auto relative = std::filesystem::relative(root, std::filesystem::current_path());
+    const auto record = AssetRun(archiveAndTexturePolicy()).execute(std::array{relative}, adapters).workRecord();
+    QCOMPARE(record.assetAttempts.size(), std::size_t{1});
+    QCOMPARE(record.assetAttempts.front().modRoot, root);
+    QVERIFY(!std::filesystem::exists(root / "a.dds"));
+}
+
+void AssetRunTests::throwingDiagnosticsCancellationSkipsFinalization() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "a.dds");
+    AssetRunAdapters adapters;
+    bool cancelled = false;
+    bool finalized = false;
+    adapters.isCancelled = [&] { return cancelled; };
+    adapters.executeAssetWithResult = [](const auto&) {
+        return cao::execution::AssetExecutionResult::success(cao::execution::MutationState::Committed);
+    };
+    adapters.reportDiagnostics = [&](const auto&) {
+        cancelled = true;
+        throw std::runtime_error("diagnostics requested cancellation");
+    };
+    adapters.finalizeArchiveLifecycleWithResult = [&] {
+        finalized = true;
+        return cao::run::ArchiveFinalizationResult{};
+    };
+    const auto record = AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, adapters).workRecord();
+    QVERIFY(record.cancellationObserved);
+    QVERIFY(!finalized);
+    QVERIFY(record.finalizations.empty());
+    QCOMPARE(record.assetAttempts.size(), std::size_t{1});
+    QCOMPARE(record.assetAttempts.front().result.mutationState(), cao::execution::MutationState::Committed);
+    QCOMPARE(record.diagnostics.size(), std::size_t{1});
+    QCOMPARE(record.diagnostics.front().code(), cao::run::RunDiagnosticCode::ObserverFailed);
 }
 
 QTEST_MAIN(AssetRunTests)

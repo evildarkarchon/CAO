@@ -20,6 +20,19 @@ class RunObservationSink {
     virtual void recordDiagnostic(const RunDiagnostic& diagnostic) = 0;
 };
 
+/// Performs requested work while recording owned evidence before proceeding to another attempt.
+/// The executor retains the record if a later boundary throws; it always owns terminal cleanup.
+class RunWorkService {
+   public:
+    virtual ~RunWorkService() = default;
+
+    /// Uses prepared inputs until return and appends completed evidence without retaining references.
+    /// Reports phase counts through observations and checks stop between atomic attempts.
+    /// Exceptions become fatal WorkServiceFailed evidence without discarding earlier records.
+    virtual void execute(const RunPreparation& preparation, RunWorkRecord& record,
+                         RunObservationSink& observations, std::stop_token stop) = 0;
+};
+
 /// Removes the temporary artifacts one Optimization Run registered.
 ///
 /// Safety Cleanup never rolls back Committed Mutations and never removes backups or failed-output
@@ -56,6 +69,8 @@ struct RunServices final {
     RunObservationSink* observations{};
     /// Missing providers produce a structured Preparing failure, including for no-work requests.
     const RunConfigurationProvider* configuration{};
+    /// Optional until application cutover; requested work fails explicitly when no service exists.
+    RunWorkService* work{};
 };
 
 /// Executes one Optimization Run synchronously through the stable Run Phase sequence.
@@ -66,9 +81,8 @@ struct RunServices final {
 ///
 /// Preparing loads owned facts, resolves the Mod Selection, and compiles policy. Apply Preparing
 /// also recovers verified stale staging under OS locks retained through cleanup. Requested work
-/// needs the Archive discovery, Asset execution, and Archive Finalization service seams that later
-/// lifecycle slices introduce, so it terminates as Failed at Preparing rather than reporting a
-/// Succeeded run that performed nothing.
+/// uses the injected work service and retains its observations and completed attempt evidence.
+/// Without that service, requested work terminates as Failed at Preparing.
 class RunExecutor final {
    public:
     /// Traverses every Run Phase in canonical order, reporting inapplicable phases as skipped with

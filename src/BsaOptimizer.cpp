@@ -370,6 +370,7 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
             return false;
         }
         ArchiveFinalizationAttempt attempt{archive};
+        attempt.modRoot = root;
         attempt.failure = ArchiveFinalizationFailure::InsufficientCapacity;
         attempt.detail = archiveCapacityDetail(required, *available);
         result.attempts.push_back(std::move(attempt));
@@ -400,6 +401,7 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
         }
         const auto& output = plan.outputs()[index];
         ArchiveFinalizationAttempt attempt{output.archivePath};
+        attempt.modRoot = output.modRoot;
         auto boundary = ArchiveFinalizationFailure::WriteFailed;
         std::size_t removedSources = 0;
         try {

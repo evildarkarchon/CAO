@@ -1,4 +1,5 @@
 #include "RunLifecycle.h"
+#include "RunWorkRecord.h"
 
 #include <algorithm>
 #include <array>
@@ -133,7 +134,8 @@ OptimizationRunResult::OptimizationRunResult(
     const RunOutcome outcome, const RunPhase finalPhase, std::vector<RunPhaseRecord> phases,
     RunId runId, std::vector<RunFailure> failures,
     std::shared_ptr<const RunPreparation> preparation, std::vector<RunFailure> cleanupFailures,
-    const bool cancellationObserved) noexcept
+    const bool cancellationObserved, std::shared_ptr<const RunWorkRecord> work,
+    std::vector<MutationSummary> mutationSummaries) noexcept
     : _runId(std::move(runId)),
       _outcome(outcome),
       _finalPhase(finalPhase),
@@ -141,13 +143,58 @@ OptimizationRunResult::OptimizationRunResult(
       _failures(std::move(failures)),
       _preparation(std::move(preparation)),
       _cleanupFailures(std::move(cleanupFailures)),
-      _cancellationObserved(cancellationObserved || outcome == RunOutcome::Cancelled) {}
+      _cancellationObserved(cancellationObserved || outcome == RunOutcome::Cancelled),
+      _work(std::move(work)),
+      _mutationSummaries(std::move(mutationSummaries)) {}
 
 OptimizationRunResult OptimizationRunResult::terminal(
     RunOutcome outcome, const RunPhase finalPhase, std::vector<RunPhaseRecord> phases,
     RunId runId, std::vector<RunFailure> failures,
     std::shared_ptr<const RunPreparation> preparation, std::vector<RunFailure> cleanupFailures,
-    const bool cancellationObserved) {
+    bool cancellationObserved, const RunWorkRecord* work) {
+    // Copy instead of sharing caller storage: even a retained mutable service record cannot
+    // rewrite evidence already published in a terminal event.
+    auto ownedWork = std::make_shared<const RunWorkRecord>(work ? *work : RunWorkRecord{});
+    cancellationObserved = cancellationObserved || ownedWork->cancellationObserved;
+    failures.insert(failures.end(), ownedWork->failures.begin(), ownedWork->failures.end());
+    bool unsafe = !failures.empty();
+    bool containedFailure = false;
+    std::vector<RunFailure> attemptCleanupFailures;
+    std::map<std::pair<std::filesystem::path, MutationKind>, MutationSummary> grouped;
+    const auto account = [&](const std::filesystem::path& root, MutationKind kind,
+                             execution::MutationState mutation, bool succeeded, bool safe) {
+        unsafe = unsafe || !safe || mutation == execution::MutationState::PartialOrUnknown;
+        containedFailure = containedFailure || !succeeded;
+        if (mutation == execution::MutationState::None) return;
+        auto entry = grouped.try_emplace(std::pair{root, kind}, MutationSummary{root, kind}).first;
+        if (mutation == execution::MutationState::Committed) ++entry->second.committed;
+        else ++entry->second.partialOrUnknown;
+    };
+    for (const auto& attempt : ownedWork->assetAttempts) {
+        account(attempt.modRoot, MutationKind::AssetProcessing, attempt.result.mutationState(),
+                attempt.result.succeeded(), attempt.result.safeToContinue());
+        const auto errors = attempt.result.cleanupFailures();
+        attemptCleanupFailures.insert(attemptCleanupFailures.end(), errors.begin(), errors.end());
+    }
+    for (const auto& attempt : ownedWork->archiveAttempts)
+        account(attempt.modRoot, MutationKind::ArchiveExtraction, attempt.mutation,
+                attempt.succeeded(), attempt.safeToContinue);
+    for (const auto& finalization : ownedWork->finalizations) {
+        cancellationObserved = cancellationObserved || finalization.cancelled;
+        unsafe = unsafe || !finalization.safeToContinue;
+        containedFailure = containedFailure || finalization.failure.has_value();
+        for (const auto& attempt : finalization.attempts)
+            account(attempt.modRoot, MutationKind::ArchiveFinalization, attempt.mutation,
+                    attempt.succeeded(), attempt.safeToContinue);
+    }
+    if (unsafe) outcome = RunOutcome::Failed;
+    else if (containedFailure && outcome == RunOutcome::Succeeded)
+        outcome = RunOutcome::CompletedWithFailures;
+    std::vector<MutationSummary> summaries;
+    for (auto& [key, summary] : grouped) summaries.push_back(std::move(summary));
+    // Attempt-local cleanup precedes the run's final Safety Cleanup pass.
+    cleanupFailures.insert(cleanupFailures.begin(), attemptCleanupFailures.begin(),
+                           attemptCleanupFailures.end());
     // Work safety is authoritative. Cleanup cannot replace a Failed or Cancelled primary cause,
     // and cancellation observed during cleanup still wins over cleanup errors.
     if (outcome != RunOutcome::Failed) {
@@ -164,8 +211,17 @@ OptimizationRunResult OptimizationRunResult::terminal(
         }
     }
     return OptimizationRunResult(outcome, finalPhase, std::move(phases), std::move(runId),
-                                 std::move(failures), std::move(preparation), std::move(cleanupFailures),
-                                 cancellationObserved);
+                                 std::move(failures),
+                                 preparation ? std::make_shared<const RunPreparation>(*preparation)
+                                             : nullptr,
+                                 std::move(cleanupFailures),
+                                 cancellationObserved, std::move(ownedWork), std::move(summaries));
+}
+
+std::size_t OptimizationRunResult::skippedAssetCount(routing::SkipReason reason) const noexcept {
+    const auto count = _work->skippedArchiveCounts.find(reason);
+    return (_work->ledger ? _work->ledger->skippedAssetCount(reason) : 0) +
+           (count == _work->skippedArchiveCounts.end() ? 0 : count->second);
 }
 
 RunOutcome OptimizationRunResult::outcome() const noexcept { return _outcome; }

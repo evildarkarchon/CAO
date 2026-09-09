@@ -1,6 +1,7 @@
 #include "RunExecutor.h"
 #include "PathOrdering.h"
 #include "StagingRecovery.h"
+#include "RunWorkRecord.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -12,6 +13,41 @@
 
 namespace cao::run {
 namespace {
+/// Retains work observations before forwarding, independently of worker and presentation lifetime.
+class WorkObservations final : public RunObservationSink {
+   public:
+    /// Borrows executor storage and the optional presentation sink for one work call.
+    WorkObservations(std::vector<RunPhaseRecord>& phases, RunWorkRecord& work,
+                     RunPhase& finalPhase, RunObservationSink* downstream)
+        : _phases(phases), _work(work), _finalPhase(finalPhase), _downstream(downstream) {}
+
+    /// Replaces a phase's latest counts without losing its traversal position.
+    void recordPhase(const RunPhaseRecord& phase) override {
+        const auto found = std::find_if(_phases.begin(), _phases.end(), [&](const auto& existing) {
+            return existing.phase() == phase.phase();
+        });
+        if (found == _phases.end()) _phases.push_back(phase);
+        else *found = phase;
+        _finalPhase = phase.phase();
+        if (_downstream) _downstream->recordPhase(phase);
+    }
+    /// Owns failure detail even when a subsequent operation throws.
+    void recordFailure(const RunFailure& failure) override {
+        _work.failures.push_back(failure);
+        if (_downstream) _downstream->recordFailure(failure);
+    }
+    /// Owns informational observations without changing Run Outcome.
+    void recordDiagnostic(const RunDiagnostic& diagnostic) override {
+        _work.diagnostics.push_back(diagnostic);
+        if (_downstream) _downstream->recordDiagnostic(diagnostic);
+    }
+   private:
+    std::vector<RunPhaseRecord>& _phases;
+    RunWorkRecord& _work;
+    RunPhase& _finalPhase;
+    RunObservationSink* _downstream;
+};
+
 /// Tests existing directory identities, including platform-specific case and path aliases.
 /// Filesystem lookup failures propagate to Preparing instead of accepting uncertain containment.
 bool containsDirectory(const std::filesystem::path& boundary, std::filesystem::path directory) {
@@ -187,6 +223,7 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
                                            std::stop_token stop, RunId runId) const {
     std::vector<RunPhaseRecord> phases;
     std::vector<RunFailure> failures;
+    RunWorkRecord work;
     phases.reserve(runPhaseSequence().size());
 
     // Preparing always executes: it is where the request becomes run-scoped state. It is
@@ -198,7 +235,8 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
     std::shared_ptr<const RunPreparation> preparation;
     StagingRecovery staging;
     if (!stop.stop_requested()) {
-        auto prepared = prepareRun(request, services.configuration, services.observations, stop);
+        WorkObservations preparationObservations(phases, work, finalPhase, services.observations);
+        auto prepared = prepareRun(request, services.configuration, &preparationObservations, stop);
         if (auto* failure = std::get_if<RunFailure>(&prepared)) {
             outcome = RunOutcome::Failed;
             failures.push_back(std::move(*failure));
@@ -226,11 +264,20 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
         // Preparation failure stops traversal, but never bypasses the mandatory cleanup pass.
     } else if (stop.stop_requested()) {
         outcome = RunOutcome::Cancelled;
+    } else if (request.hasRequestedWork() && services.work) {
+        WorkObservations observations(phases, work, finalPhase, services.observations);
+        try {
+            services.work->execute(*preparation, work, observations, stop);
+        } catch (const std::exception& error) {
+            observations.recordFailure(RunFailure{RunFailureCode::WorkServiceFailed, finalPhase,
+                                                   error.what()});
+        } catch (...) {
+            observations.recordFailure(RunFailure{RunFailureCode::WorkServiceFailed, finalPhase,
+                "The work service threw a non-standard exception"});
+        }
     } else if (request.hasRequestedWork()) {
-        // Requested work needs service seams this slice does not yet own. Traversing the work
-        // phases here would report a Succeeded run that touched nothing, so Preparing fails and
-        // the run still reaches Safety Cleanup. Later lifecycle slices replace this branch with
-        // real discovery, Asset processing, and Archive Finalization.
+        // Without a work service, traversing work phases would report success without performing
+        // the request. Preserve an explicit failure until the application supplies that service.
         outcome = RunOutcome::Failed;
         failures.emplace_back(RunFailureCode::RequestedWorkUnavailable, RunPhase::Preparing,
                               "Requested work requires run services that are not yet available");
@@ -248,6 +295,6 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
         if (services.observations != nullptr) services.observations->recordFailure(failure);
     return OptimizationRunResult::terminal(outcome, finalPhase, std::move(phases), std::move(runId),
                                            std::move(failures), std::move(preparation),
-                                           std::move(cleanupFailures), stop.stop_requested());
+                                           std::move(cleanupFailures), stop.stop_requested(), &work);
 }
 }  // namespace cao::run

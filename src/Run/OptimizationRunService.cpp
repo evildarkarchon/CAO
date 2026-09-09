@@ -85,8 +85,10 @@ class RunSharedState final : public RunObservationSink,
     /// Owns request, provider, and presentation state before scheduling can invoke the worker
     /// inline.
     RunSharedState(RunRequest request, std::vector<RunObservation> observations,
-                   std::shared_ptr<const RunConfigurationProvider> configuration)
-        : _request(std::move(request)), _configuration(std::move(configuration)) {
+                   std::shared_ptr<const RunConfigurationProvider> configuration,
+                   std::shared_ptr<RunWorkService> work)
+        : _request(std::move(request)), _configuration(std::move(configuration)),
+          _work(std::move(work)) {
         for (auto& observation : observations)
             if (observation.observer) _observers.push_back(ObserverState{std::move(observation)});
     }
@@ -129,7 +131,7 @@ class RunSharedState final : public RunObservationSink,
     void execute() {
         const RunExecutionScope scope(this);
         const RunExecutor executor;
-        commit(executor.execute(_request, RunServices{_safetyCleanup, this, _configuration.get()},
+        commit(executor.execute(_request, RunServices{_safetyCleanup, this, _configuration.get(), _work.get()},
                                 _stop.get_token(), _runId));
     }
 
@@ -318,6 +320,7 @@ class RunSharedState final : public RunObservationSink,
     mutable std::condition_variable _committed;
     RunRequest _request;
     std::shared_ptr<const RunConfigurationProvider> _configuration;
+    std::shared_ptr<RunWorkService> _work;
     RunId _runId{createRunId()};
     std::vector<ObserverState> _observers;
     std::vector<RunDiagnostic> _diagnostics;
@@ -453,12 +456,14 @@ std::optional<StartError> RunStartResult::startError() const noexcept {
 }
 
 OptimizationRunService::OptimizationRunService(
-    RunScheduler& scheduler, std::shared_ptr<const RunConfigurationProvider> configuration) noexcept
-    : _scheduler(scheduler), _configuration(std::move(configuration)) {}
+    RunScheduler& scheduler, std::shared_ptr<const RunConfigurationProvider> configuration,
+    std::shared_ptr<RunWorkService> work) noexcept
+    : _scheduler(scheduler), _configuration(std::move(configuration)), _work(std::move(work)) {}
 
 OptimizationRunService::OptimizationRunService(
-    std::shared_ptr<const RunConfigurationProvider> configuration) noexcept
-    : _scheduler(_productionScheduler), _configuration(std::move(configuration)) {}
+    std::shared_ptr<const RunConfigurationProvider> configuration,
+    std::shared_ptr<RunWorkService> work) noexcept
+    : _scheduler(_productionScheduler), _configuration(std::move(configuration)), _work(std::move(work)) {}
 
 OptimizationRunService::~OptimizationRunService() {
     // No start() may overlap destruction; joining outside the registry lock also lets worker
@@ -484,7 +489,7 @@ RunStartResult OptimizationRunService::start(RunRequest request,
         const std::lock_guard lock(activeRunMutex);
         if (!activeRun.expired()) return RunStartResult{StartError::ActiveRun};
         state = std::make_shared<RunSharedState>(std::move(request), std::move(observations),
-                                                 _configuration);
+                                                 _configuration, _work);
         activeRun = state;
     }
     auto lifetime = std::make_shared<RunWorkerLifetime>(state);
