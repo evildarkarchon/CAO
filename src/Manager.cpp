@@ -276,7 +276,8 @@ bool Manager::runOptimization() {
         PLOG_ERROR << QStringLiteral("Process completed with %1 failed Assets<br><br><br>")
                           .arg(failedAssets);
     } else if (!cleaned) {
-        PLOG_ERROR << "Process completed with temporary staging cleanup failures<br><br><br>";
+        PLOG_ERROR
+            << "Optimization Run completed with temporary staging cleanup failures<br><br><br>";
     } else {
         PLOG_INFO << "Process completed<br><br><br>";
     }

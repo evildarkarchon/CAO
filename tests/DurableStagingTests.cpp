@@ -20,6 +20,8 @@ class DurableStagingTests final : public QObject {
     void cancelledPreparationPreservesDurableSibling();
     /// A malformed sibling record cannot authorize deletion of a similarly named Texture file.
     void malformedSiblingOwnershipIsPreserved();
+    /// An uppercase native Texture destination still produces a canonical recoverable sibling.
+    void uppercaseDdsDestinationUsesRecoverableSibling();
     /// Interrupted snapshot scratch is disposable only under valid manifest ownership.
     void partialScratchIsRecoveredButCorruptOwnershipIsPreserved();
     /// Cleanup removes only registered temporary entries and releases no committed destination.
@@ -144,6 +146,25 @@ void DurableStagingTests::malformedSiblingOwnershipIsPreserved() {
     QVERIFY(failure.has_value());
     QCOMPARE(failure->code(), cao::run::RunFailureCode::StagingOwnershipUnverified);
     QVERIFY(fs::exists(temporary));
+}
+
+void DurableStagingTests::uppercaseDdsDestinationUsesRecoverableSibling() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    fs::path temporary;
+    {
+        cao::run::TemporaryArtifactRegistry producer;
+        temporary = producer.stageFile(root, root / "Texture.DDS").path;
+        QCOMPARE(temporary.extension(), fs::path(".dds"));
+        std::ofstream(temporary) << "partial";
+    }
+
+    cao::run::StagingRecovery recovery;
+    const auto failure = recovery.recover(root);
+
+    QVERIFY(!failure.has_value());
+    QVERIFY(!fs::exists(temporary));
 }
 
 void DurableStagingTests::partialScratchIsRecoveredButCorruptOwnershipIsPreserved() {

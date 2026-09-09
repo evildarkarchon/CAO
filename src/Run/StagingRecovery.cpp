@@ -446,9 +446,14 @@ fs::path StagingRecovery::stageFile(const fs::path& modRoot, const fs::path& des
     if (CompareStringOrdinal(rootVolume, -1, destinationVolume, -1, TRUE) != CSTR_EQUAL)
         throw std::invalid_argument("The staged output and Mod Root must be on the same volume");
 #endif
-    const auto extension = pathText(destination.extension());
-    if (!safeRelativeName("temporary" + extension))
-        throw std::invalid_argument("The staging output extension is unsafe");
+    auto extension = pathText(destination.extension());
+    // The manifest grammar is canonical even though routed Texture extensions are case-insensitive.
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](const char character) {
+        return static_cast<char>(character >= 'A' && character <= 'Z' ? character + ('a' - 'A')
+                                                                      : character);
+    });
+    if (extension != ".dds")
+        throw std::invalid_argument("Texture staging requires a DDS destination");
     if (const auto failure = recover(root)) throw std::runtime_error(failure->detail());
     const auto staging = root / ".cao-staging";
     if (!_state->areas.contains(root)) {
