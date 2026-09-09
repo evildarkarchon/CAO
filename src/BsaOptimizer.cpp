@@ -9,6 +9,40 @@
 #include "Run/ArchiveFirstAssetDiscovery.h"
 #include "Run/StagingPaths.h"
 
+#ifdef _WIN32
+#include <Windows.h>
+#endif
+
+namespace {
+/// Publishes a source backup without replacing any directory entry, including dangling links.
+/// Retries occupied names; other filesystem failures leave the source or published backup intact.
+void backupExtractedArchive(const std::filesystem::path& source) {
+    auto destination = source;
+    for (;;) {
+        destination += ".bak";
+        std::error_code error;
+#ifdef _WIN32
+        // No REPLACE_EXISTING flag: a competing creator must never lose its backup.
+        if (MoveFileExW(source.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH)) return;
+        error = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+#else
+        // Same-directory hard-link publication is atomic and rejects occupied names.
+        std::filesystem::create_hard_link(source, destination, error);
+        if (!error) {
+            if (!std::filesystem::remove(source))
+                throw std::runtime_error("The backed-up source Archive could not be removed.");
+            return;
+        }
+#endif
+        std::error_code statusError;
+        const auto status = std::filesystem::symlink_status(destination, statusError);
+        if (!statusError && std::filesystem::exists(status)) continue;
+        throw std::filesystem::filesystem_error("Could not back up extracted Archive", source,
+                                                destination, error);
+    }
+}
+}  // namespace
+
 BSAOptimizer::BSAOptimizer() {
     // Reading filesToNotPack to add them to the list.
     // Done in the constructor since the file won't change at runtime.
@@ -66,16 +100,23 @@ cao::run::ArchiveExtractionResult BSAOptimizer::extract(
             if (!std::filesystem::remove(plan.archivePath))
                 throw std::runtime_error("The extracted source Archive could not be removed.");
         } else {
-            auto backupPath = plan.archivePath;
-            backupPath += ".bak";
-            while (std::filesystem::exists(backupPath)) backupPath += ".bak";
-            std::filesystem::rename(plan.archivePath, backupPath);
+            backupExtractedArchive(plan.archivePath);
         }
         result.mutation = cao::execution::MutationState::Committed;
     } catch (const std::exception& error) {
         result.failure = cao::run::ArchiveExtractionFailure::SourceCleanupFailed;
         result.safeToContinue = false;
         result.detail = error.what();
+        try {
+            // Existence alone cannot prove that the retained source is still usable. Reopen
+            // its manifest after the failed mutation before allowing later phases to proceed.
+            result.safeToContinue = result.mutation == cao::execution::MutationState::Committed &&
+                                    btu::bsa::read_archive(plan.archivePath).has_value();
+        } catch (...) {
+            // A failed verification leaves continuation unsafe and preserves the cleanup error.
+        }
+        if (!result.safeToContinue)
+            result.mutation = cao::execution::MutationState::PartialOrUnknown;
         return result;
     }
     PLOG_INFO << "BSA successfully extracted: "

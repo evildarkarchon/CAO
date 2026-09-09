@@ -190,13 +190,15 @@ void MainOptimizerTests::archiveSourceCleanupRequiresSuccessfulMerge_data() {
     QTest::addColumn<bool>("validArchive");
     QTest::addColumn<bool>("deleteBackup");
     QTest::addColumn<bool>("blockSourceCleanup");
-    QTest::newRow("failed-backup") << false << false << false;
-    QTest::newRow("failed-delete") << false << true << false;
-    QTest::newRow("successful-backup") << true << false << false;
-    QTest::newRow("successful-delete") << true << true << false;
+    QTest::addColumn<bool>("linkedBackup");
+    QTest::newRow("failed-backup") << false << false << false << false;
+    QTest::newRow("failed-delete") << false << true << false << false;
+    QTest::newRow("successful-backup") << true << false << false << false;
+    QTest::newRow("successful-delete") << true << true << false << false;
+    QTest::newRow("dangling-backup") << true << false << false << true;
 #ifdef _WIN32
-    QTest::newRow("blocked-backup") << true << false << true;
-    QTest::newRow("blocked-delete") << true << true << true;
+    QTest::newRow("blocked-backup") << true << false << true << false;
+    QTest::newRow("blocked-delete") << true << true << true << false;
 #endif
 }
 
@@ -204,6 +206,7 @@ void MainOptimizerTests::archiveSourceCleanupRequiresSuccessfulMerge() {
     QFETCH(bool, validArchive);
     QFETCH(bool, deleteBackup);
     QFETCH(bool, blockSourceCleanup);
+    QFETCH(bool, linkedBackup);
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
@@ -212,6 +215,12 @@ void MainOptimizerTests::archiveSourceCleanupRequiresSuccessfulMerge() {
     const auto source = mod / "assets.bsa";
     const auto backup = mod / "assets.bsa.bak";
     writeFile(backup, QByteArrayLiteral("existing backup bytes"));
+    const auto occupiedBackup = mod / "assets.bsa.bak.bak";
+    if (linkedBackup) {
+        std::error_code error;
+        std::filesystem::create_symlink(mod / "absent", occupiedBackup, error);
+        QVERIFY2(!error, error.message().c_str());
+    }
     if (validArchive) {
         const auto fixture = root / "input" / "fixture.dds";
         writeFile(fixture, QByteArrayLiteral("archived bytes"));
@@ -247,17 +256,21 @@ void MainOptimizerTests::archiveSourceCleanupRequiresSuccessfulMerge() {
     if (blockSourceCleanup) {
         QVERIFY(result.failure == cao::run::ArchiveExtractionFailure::SourceCleanupFailed);
         QCOMPARE(result.mutation, cao::execution::MutationState::Committed);
-        QVERIFY(!result.safeToContinue);
+        QVERIFY(result.safeToContinue);
     }
     QFile existingBackup(QString::fromStdWString(backup.wstring()));
     QVERIFY(existingBackup.open(QIODevice::ReadOnly));
     QCOMPARE(existingBackup.readAll(), QByteArrayLiteral("existing backup bytes"));
     if (!validArchive || !deleteBackup || blockSourceCleanup) {
-        const auto retained = validArchive && !blockSourceCleanup ? mod / "assets.bsa.bak.bak" : source;
+        const auto retained = validArchive && !blockSourceCleanup
+                                  ? mod / (linkedBackup ? "assets.bsa.bak.bak.bak" : "assets.bsa.bak.bak")
+                                  : source;
         QFile retainedArchive(QString::fromStdWString(retained.wstring()));
         QVERIFY(retainedArchive.open(QIODevice::ReadOnly));
         QCOMPARE(retainedArchive.readAll(), originalBytes);
     }
+    if (linkedBackup)
+        QCOMPARE(std::filesystem::read_symlink(occupiedBackup), mod / "absent");
     QVERIFY(artifacts.performSafetyCleanup().empty());
 }
 

@@ -30,7 +30,8 @@ class BSAOptimizer final : public QObject {
      */
     void extract(QString bsaPath, const bool deleteBackup) const;
     /// Stages a planned Archive with run-owned artifacts, then backs up or removes its source
-    /// only after merge succeeds. Failed source cleanup retains unsafe continuation evidence.
+    /// only after merge succeeds. Cleanup failure permits continuation only with committed
+    /// Assets and a source Archive that can still be opened; otherwise mutation is uncertain.
     [[nodiscard]] cao::run::ArchiveExtractionResult extract(
         const cao::run::ArchiveExtractionPlan& plan, bool deleteBackup,
         cao::run::TemporaryArtifactRegistry& artifacts) const;
