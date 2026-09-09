@@ -273,10 +273,8 @@ void MainOptimizerTests::loadFailuresQuarantineMalformedAssets()
 
         QVERIFY(!result.succeeded());
         QCOMPARE(result.failure().value(), AssetExecutionFailure::LoadFailed);
-        if (path.extension() != ".nif") {
-            QCOMPARE(result.mutationState(), cao::execution::MutationState::Committed);
-            QVERIFY(result.safeToContinue());
-        }
+        QCOMPARE(result.mutationState(), cao::execution::MutationState::Committed);
+        QVERIFY(result.safeToContinue());
         QVERIFY(!std::filesystem::exists(path));
         QVERIFY(std::filesystem::is_regular_file(path.wstring() + L".caobad"));
     }
@@ -472,6 +470,8 @@ void MainOptimizerTests::successfulRunStillMaintainsMeshReferences()
     const auto maintenance = optimizer.process(routeMaintenanceOnly(mesh));
 
     QVERIFY(maintenance.succeeded());
+    QCOMPARE(maintenance.mutationState(), cao::execution::MutationState::Committed);
+    QVERIFY(maintenance.safeToContinue());
     QCOMPARE(savedTextureSlot(mesh), std::string("textures\\armor\\body.dds"));
 }
 

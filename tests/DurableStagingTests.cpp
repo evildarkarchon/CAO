@@ -22,6 +22,12 @@ class DurableStagingTests final : public QObject {
     void malformedSiblingOwnershipIsPreserved();
     /// An uppercase native Texture destination still produces a canonical recoverable sibling.
     void uppercaseDdsDestinationUsesRecoverableSibling();
+    /// Covers every supported Mesh extension in the canonical durable sibling namespace.
+    void meshSiblingRecoveryPreservesOriginal_data();
+    /// Recovers abandoned Mesh bytes while preserving the untouched original Mesh.
+    void meshSiblingRecoveryPreservesOriginal();
+    /// A mismatched Mesh suffix cannot authorize deletion under a valid ownership prefix.
+    void malformedMeshSiblingOwnershipIsPreserved();
     /// Interrupted snapshot scratch is disposable only under valid manifest ownership.
     void partialScratchIsRecoveredButCorruptOwnershipIsPreserved();
     /// Cleanup removes only registered temporary entries and releases no committed destination.
@@ -165,6 +171,69 @@ void DurableStagingTests::uppercaseDdsDestinationUsesRecoverableSibling() {
 
     QVERIFY(!failure.has_value());
     QVERIFY(!fs::exists(temporary));
+}
+
+void DurableStagingTests::meshSiblingRecoveryPreservesOriginal_data() {
+    QTest::addColumn<QString>("extension");
+    QTest::newRow("standard-nif") << QStringLiteral("NIF");
+    QTest::newRow("terrain-btr") << QStringLiteral("BTR");
+    QTest::newRow("terrain-bto") << QStringLiteral("BTO");
+}
+
+void DurableStagingTests::meshSiblingRecoveryPreservesOriginal() {
+    QFETCH(QString, extension);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    fs::create_directory(root / "meshes");
+    const auto destination = root / "meshes" / ("Mesh." + extension.toStdString());
+    std::ofstream(destination) << "original Mesh";
+    fs::path temporary;
+    {
+        cao::run::TemporaryArtifactRegistry producer;
+        temporary = producer.stageFile(root, destination).path;
+        QCOMPARE(temporary.parent_path(), destination.parent_path());
+        QCOMPARE(temporary.extension(), fs::path("." + extension.toLower().toStdString()));
+        QVERIFY(temporary.filename().string().starts_with(".cao-staging-mesh-"));
+        std::ofstream(temporary) << "partial Mesh";
+    }
+    cao::run::StagingRecovery recovery;
+    QVERIFY(!recovery.recover(root).has_value());
+    QVERIFY(!fs::exists(temporary));
+    QFile original(QString::fromStdWString(destination.wstring()));
+    QVERIFY(original.open(QIODevice::ReadOnly));
+    QCOMPARE(original.readAll(), QByteArray("original Mesh"));
+}
+
+void DurableStagingTests::malformedMeshSiblingOwnershipIsPreserved() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    fs::path temporary;
+    {
+        cao::run::TemporaryArtifactRegistry producer;
+        temporary = producer.stageFile(root, root / "mesh.nif").path;
+        std::ofstream(temporary) << "partial Mesh";
+    }
+    const auto manifest = root / ".cao-staging" / "ownership.manifest";
+    std::ifstream input(manifest, std::ios::binary);
+    std::string bytes(std::istreambuf_iterator<char>(input), {});
+    input.close();
+    const auto relative = temporary.lexically_relative(root).generic_string();
+    const auto position = bytes.find(relative);
+    QVERIFY(position != std::string::npos);
+    auto invalid = temporary;
+    invalid.replace_extension(".dds");
+    // A real similarly named file proves recovery refuses the invalid namespace before deletion.
+    std::ofstream(invalid) << "unowned evidence";
+    bytes.replace(position, relative.size(), invalid.lexically_relative(root).generic_string());
+    std::ofstream(manifest, std::ios::binary | std::ios::trunc) << bytes;
+    cao::run::StagingRecovery recovery;
+    const auto failure = recovery.recover(root);
+    QVERIFY(failure.has_value());
+    QCOMPARE(failure->code(), cao::run::RunFailureCode::StagingOwnershipUnverified);
+    QVERIFY(fs::exists(temporary));
+    QVERIFY(fs::exists(invalid));
 }
 
 void DurableStagingTests::partialScratchIsRecoveredButCorruptOwnershipIsPreserved() {

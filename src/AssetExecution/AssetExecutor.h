@@ -152,16 +152,20 @@ class AssetExecutionBackend {
     virtual std::string textureFailureDetail() const { return {}; }
 
     /// Loads one Mesh according to its carried Variant, without classifying its path.
+    /// May read the source and change loaded state, but must not mutate durable files.
     virtual bool loadMesh(const std::filesystem::path& path, routing::MeshVariant variant) = 0;
 
     /// Applies or evaluates ordinary optimization against the currently loaded Mesh.
+    /// May change only loaded state; the path supplies context, never a write destination.
     virtual OperationResult optimizeMesh(const std::filesystem::path& path,
                                          routing::ExecutionMode mode) = 0;
 
     /// Applies or evaluates Mesh Reference Maintenance against the currently loaded Mesh.
+    /// May change only loaded state; persistence is exclusively performed through saveMesh.
     virtual OperationResult maintainMeshReferences(routing::ExecutionMode mode) = 0;
 
-    /// Persists the currently loaded Mesh once after all carried operations complete.
+    /// Writes the loaded Mesh only to the supplied registered staging path after all operations.
+    /// Closes every output handle before returning so the executor can commit the staged file.
     virtual bool saveMesh(const std::filesystem::path& path) = 0;
 
     /// Applies or evaluates the carried Animation optimization operation.
@@ -182,9 +186,9 @@ class AssetExecutor final {
                                                const std::filesystem::path& modRoot = {}) const;
 
     /// Executes using the run's registry, which must outlive the attempt and receive Safety
-    /// Cleanup. Texture saves durably register same-directory staging before creation and commit
-    /// before removal. Supply the selected Mod Root, or omit it for a standalone Asset in its
-    /// parent directory.
+    /// Cleanup. Texture and Mesh saves durably register same-directory staging before creation;
+    /// Texture conversion commits before source removal. Supply the selected Mod Root, or omit it
+    /// for a standalone Asset in its parent directory.
     [[nodiscard]] AssetExecutionResult execute(const routing::RoutedAsset& asset,
                                                run::TemporaryArtifactRegistry& artifacts,
                                                const std::filesystem::path& modRoot = {}) const;
@@ -196,8 +200,11 @@ class AssetExecutor final {
                                                       run::TemporaryArtifactRegistry& artifacts,
                                                       const std::filesystem::path& modRoot) const;
 
-    /// Executes independent Mesh operations through one load and at most one Apply-mode save.
-    [[nodiscard]] AssetExecutionResult executeMesh(const routing::RoutedAsset& asset) const;
+    /// Executes independent Mesh operations through one load and at most one staged Apply commit.
+    /// Reports the exact durable mutation and contains backend exceptions at their failed boundary.
+    [[nodiscard]] AssetExecutionResult executeMesh(const routing::RoutedAsset& asset,
+                                                   run::TemporaryArtifactRegistry& artifacts,
+                                                   const std::filesystem::path& modRoot) const;
 
     /// Executes the carried Animation operation or reports a backend failure.
     [[nodiscard]] AssetExecutionResult executeAnimation(const routing::RoutedAsset& asset) const;

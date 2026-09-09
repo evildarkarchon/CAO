@@ -102,15 +102,19 @@ class RecordingBackend final : public AssetExecutionBackend {
         return removeSucceeds;
     }
 
+    /// Records Mesh loading and injects a standard exception before any output is written.
     bool loadMesh(const std::filesystem::path& path, const MeshVariant variant) override {
+        if (throwAt == "load_mesh") throw std::runtime_error("load backend threw");
         meshPath = path;
         meshVariant = variant;
         ++meshLoads;
         return loadSucceeds;
     }
 
+    /// Evaluates optimization with an injectable unknown backend exception.
     OperationResult optimizeMesh(const std::filesystem::path& path,
                                  const ExecutionMode mode) override {
+        if (throwAt == "optimize_mesh") throw 42;
         optimizedMeshPath = path;
         meshOptimizationMode = mode;
         ++meshOptimizations;
@@ -118,16 +122,22 @@ class RecordingBackend final : public AssetExecutionBackend {
         return operationResult;
     }
 
+    /// Evaluates reference maintenance with an injectable standard backend exception.
     OperationResult maintainMeshReferences(const ExecutionMode mode) override {
+        if (throwAt == "maintain_mesh_references")
+            throw std::runtime_error("maintenance backend threw");
         meshMaintenanceMode = mode;
         ++meshMaintenances;
         if (mode == ExecutionMode::Apply) meshContents = "textures/armor.dds";
         return operationResult;
     }
 
+    /// Writes fixture output to the executor-selected path, with injectable partial-save failure.
     bool saveMesh(const std::filesystem::path& path) override {
         savedMeshPath = path;
         ++meshSaves;
+        if (meshSave) return meshSave(path);
+        if (saveSucceeds) std::ofstream(path) << meshContents;
         return saveSucceeds;
     }
 
@@ -144,6 +154,7 @@ class RecordingBackend final : public AssetExecutionBackend {
     bool removeSucceeds{true};
     std::function<bool(const std::filesystem::path&)> textureSave;
     std::function<bool(const std::filesystem::path&)> textureRemove;
+    std::function<bool(const std::filesystem::path&)> meshSave;
     std::string throwAt;
     OperationResult operationResult{OperationResult::changed()};
 
@@ -240,6 +251,27 @@ class AssetExecutionTests final : public QObject {
     /// Verifies conversion alone executes a convertible Texture without ordinary Texture
     /// optimization.
     void conversionOnlyTextureExecution();
+
+    /// A partial Mesh save preserves the original and reports no durable mutation.
+    void failedMeshSavePreservesOriginal();
+    /// Exercises every Mesh backend exception boundary before durable commit.
+    void meshBackendException_data();
+    /// Reports fatal structured exceptions while preserving original bytes.
+    void meshBackendException();
+    /// Defines the ordinary Mesh backend failure boundaries.
+    void meshOperationFailure_data();
+    /// Ordinary failures preserve source bytes and identify the failing Mesh operation.
+    void meshOperationFailure();
+    /// Unchanged Apply and Dry Run work never creates staged output.
+    void meshWithoutChanges_data();
+    /// Keeps unchanged and preview operations read-only on disk.
+    void meshWithoutChanges();
+    /// A closed registry after save cannot erase already committed Mesh mutation evidence.
+    void meshRegistrationFailureAfterCommit();
+    /// A directory obstructing the staging area leaves the original Mesh intact.
+    void meshStagingFailure();
+    /// Failed destination replacement retains unowned contents and cleans only staging.
+    void meshCommitFailure();
 
     /// Defines standard and terrain Mesh paths whose carried Variant must select loading behavior.
     void meshVariantSelectsLoadMode_data();
@@ -602,6 +634,194 @@ void AssetExecutionTests::conversionOnlyTextureExecution() {
     }
 }
 
+void AssetExecutionTests::failedMeshSavePreservesOriginal() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto source = std::filesystem::path(directory.path().toStdWString()) / "actor.nif";
+    std::ofstream(source) << "original";
+    RecordingBackend backend;
+    backend.meshSave = [](const std::filesystem::path& path) {
+        std::ofstream(path) << "partial output";
+        return false;
+    };
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::StandardMeshOptimization}, source));
+    QCOMPARE(readBytes(source), std::string("original"));
+    QCOMPARE(result.failure().value(), AssetExecutionFailure::SaveFailed);
+    QCOMPARE(result.mutationState(), MutationState::None);
+    QVERIFY(result.safeToContinue());
+    QVERIFY(result.affectedPath() == source);
+    QCOMPARE(result.operation(), std::string("save_mesh"));
+    QVERIFY(!std::filesystem::exists(backend.savedMeshPath));
+}
+
+void AssetExecutionTests::meshBackendException_data() {
+    QTest::addColumn<QString>("boundary");
+    QTest::newRow("load") << QStringLiteral("load_mesh");
+    QTest::newRow("optimization") << QStringLiteral("optimize_mesh");
+    QTest::newRow("maintenance") << QStringLiteral("maintain_mesh_references");
+    QTest::newRow("partial save") << QStringLiteral("save_mesh");
+}
+
+void AssetExecutionTests::meshBackendException() {
+    QFETCH(QString, boundary);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto source = std::filesystem::path(directory.path().toStdWString()) / "actor.nif";
+    std::ofstream(source) << "original";
+    RecordingBackend backend;
+    backend.throwAt = boundary.toStdString();
+    backend.meshSave = [](const std::filesystem::path& staged) -> bool {
+        std::ofstream(staged) << "partial output";
+        throw std::runtime_error("save backend threw");
+    };
+    const auto result = AssetExecutor(backend).execute(routeAsset(
+        ExecutionMode::Apply,
+        {RequestedWork::StandardMeshOptimization, RequestedWork::ConvertibleTextureConversion},
+        source));
+    QCOMPARE(result.failure().value(), AssetExecutionFailure::BackendException);
+    QCOMPARE(result.failureCategory().value(), cao::execution::ExecutionFailureCategory::Contract);
+    QCOMPARE(result.mutationState(), MutationState::None);
+    QCOMPARE(result.phase(), cao::run::RunPhase::ProcessingAssets);
+    QCOMPARE(result.operation(), boundary.toStdString());
+    QVERIFY(result.affectedPath() == source);
+    QVERIFY(!result.safeToContinue());
+    QCOMPARE(readBytes(source), std::string("original"));
+    if (boundary == "save_mesh") {
+        QCOMPARE(result.serviceDetail(), std::string("save backend threw"));
+        QVERIFY(!std::filesystem::exists(backend.savedMeshPath));
+    } else {
+        QCOMPARE(backend.meshSaves, 0);
+    }
+}
+
+void AssetExecutionTests::meshWithoutChanges_data() {
+    QTest::addColumn<int>("mode");
+    QTest::addColumn<bool>("changed");
+    QTest::newRow("unchanged Apply") << static_cast<int>(ExecutionMode::Apply) << false;
+    QTest::newRow("changed Dry Run") << static_cast<int>(ExecutionMode::DryRun) << true;
+}
+
+void AssetExecutionTests::meshOperationFailure_data() {
+    QTest::addColumn<QString>("boundary");
+    QTest::newRow("load") << QStringLiteral("load_mesh");
+    QTest::newRow("optimization") << QStringLiteral("optimize_mesh");
+    QTest::newRow("maintenance") << QStringLiteral("maintain_mesh_references");
+}
+
+void AssetExecutionTests::meshOperationFailure() {
+    QFETCH(QString, boundary);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto source = std::filesystem::path(directory.path().toStdWString()) / "actor.nif";
+    std::ofstream(source) << "original";
+    RecordingBackend backend;
+    backend.loadSucceeds = boundary != "load_mesh";
+    backend.operationResult = OperationResult::failed("synthetic Mesh service error");
+    const auto request = boundary == "maintain_mesh_references"
+                             ? RequestedWork::ConvertibleTextureConversion
+                             : RequestedWork::StandardMeshOptimization;
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {request}, source));
+    QCOMPARE(result.failure().value(), boundary == "load_mesh" ? AssetExecutionFailure::LoadFailed
+                                                               : AssetExecutionFailure::OperationFailed);
+    QCOMPARE(result.operation(), boundary.toStdString());
+    QCOMPARE(result.mutationState(), MutationState::None);
+    QVERIFY(result.safeToContinue());
+    QVERIFY(result.affectedPath() == source);
+    if (boundary != "load_mesh")
+        QCOMPARE(result.serviceDetail(), std::string("synthetic Mesh service error"));
+    QCOMPARE(backend.meshSaves, 0);
+    QCOMPARE(readBytes(source), std::string("original"));
+}
+
+void AssetExecutionTests::meshWithoutChanges() {
+    QFETCH(int, mode);
+    QFETCH(bool, changed);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto source = root / "actor.nif";
+    std::ofstream(source) << "original";
+    RecordingBackend backend;
+    backend.operationResult = changed ? OperationResult::changed() : OperationResult::unchanged();
+    const auto result = AssetExecutor(backend).execute(routeAsset(
+        static_cast<ExecutionMode>(mode),
+        {RequestedWork::StandardMeshOptimization, RequestedWork::ConvertibleTextureConversion},
+        source));
+    QVERIFY(result.succeeded());
+    QCOMPARE(result.mutationState(), MutationState::None);
+    QCOMPARE(backend.meshOptimizations, 1);
+    QCOMPARE(backend.meshMaintenances, 1);
+    QCOMPARE(backend.meshSaves, 0);
+    QCOMPARE(readBytes(source), std::string("original"));
+    QCOMPARE(std::distance(std::filesystem::directory_iterator(root),
+                           std::filesystem::directory_iterator()), std::ptrdiff_t{1});
+}
+
+void AssetExecutionTests::meshRegistrationFailureAfterCommit() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto source = std::filesystem::path(directory.path().toStdWString()) / "actor.nif";
+    std::ofstream(source) << "original";
+    cao::run::TemporaryArtifactRegistry artifacts;
+    RecordingBackend backend;
+    backend.meshSave = [&](const std::filesystem::path& staged) {
+        // Close the registry to inject its documented terminal-registration contract failure.
+        artifacts.performSafetyCleanup();
+        std::ofstream(staged) << "saved mesh";
+        return true;
+    };
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::StandardMeshOptimization}, source),
+        artifacts);
+    QCOMPARE(result.failure().value(), AssetExecutionFailure::BackendException);
+    QCOMPARE(result.mutationState(), MutationState::Committed);
+    QVERIFY(!result.safeToContinue());
+    QCOMPARE(result.operation(), std::string("commit_mesh"));
+    QCOMPARE(readBytes(source), std::string("saved mesh"));
+    QVERIFY(!std::filesystem::exists(backend.savedMeshPath));
+}
+
+void AssetExecutionTests::meshStagingFailure() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto source = root / "actor.nif";
+    std::ofstream(source) << "original";
+    std::ofstream(root / ".cao-staging") << "unowned";
+    RecordingBackend backend;
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::StandardMeshOptimization}, source));
+    QCOMPARE(result.failure().value(), AssetExecutionFailure::StagingFailed);
+    QCOMPARE(result.mutationState(), MutationState::None);
+    // Recovery cannot prove ownership of the obstructing path, so the run must stop.
+    QVERIFY(!result.safeToContinue());
+    QCOMPARE(result.operation(), std::string("stage_mesh"));
+    QCOMPARE(backend.meshSaves, 0);
+    QCOMPARE(readBytes(source), std::string("original"));
+    QCOMPARE(readBytes(root / ".cao-staging"), std::string("unowned"));
+}
+
+void AssetExecutionTests::meshCommitFailure() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto destination = std::filesystem::path(directory.path().toStdWString()) / "actor.nif";
+    // The backend accepts the fixture, but the real filesystem must reject replacing a directory.
+    std::filesystem::create_directory(destination);
+    std::ofstream(destination / "unowned") << "keep";
+    RecordingBackend backend;
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::StandardMeshOptimization}, destination));
+    QCOMPARE(result.failure().value(), AssetExecutionFailure::CommitFailed);
+    QCOMPARE(result.mutationState(), MutationState::None);
+    QVERIFY(result.safeToContinue());
+    QVERIFY(result.affectedPath() == destination);
+    QCOMPARE(result.operation(), std::string("commit_mesh"));
+    QCOMPARE(readBytes(destination / "unowned"), std::string("keep"));
+    QVERIFY(!std::filesystem::exists(backend.savedMeshPath));
+}
+
 void AssetExecutionTests::meshVariantSelectsLoadMode_data() {
     QTest::addColumn<QString>("path");
     QTest::addColumn<int>("variant");
@@ -623,8 +843,13 @@ void AssetExecutionTests::meshVariantSelectsLoadMode() {
     QFETCH(int, variant);
     QFETCH(int, request);
 
-    const auto asset = routeAsset(ExecutionMode::Apply, {static_cast<RequestedWork>(request)},
-                                  std::filesystem::path(path.toStdWString()));
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto source = std::filesystem::path(directory.path().toStdWString()) /
+                        std::filesystem::path(path.toStdWString());
+    std::filesystem::create_directories(source.parent_path());
+    std::ofstream(source) << "original";
+    const auto asset = routeAsset(ExecutionMode::Apply, {static_cast<RequestedWork>(request)}, source);
     RecordingBackend backend;
     const AssetExecutor executor(backend);
 
@@ -652,7 +877,12 @@ void AssetExecutionTests::meshOperationsShareOneTransaction() {
     QFETCH(bool, maintain);
     QFETCH(QString, path);
 
-    const auto executionPath = std::filesystem::path(path.toStdWString());
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto executionPath = std::filesystem::path(directory.path().toStdWString()) /
+                               std::filesystem::path(path.toStdWString());
+    std::filesystem::create_directories(executionPath.parent_path());
+    std::ofstream(executionPath) << "original";
     const auto asset =
         !optimize  ? routeAsset(ExecutionMode::Apply, {RequestedWork::ConvertibleTextureConversion},
                                 executionPath)
@@ -663,6 +893,15 @@ void AssetExecutionTests::meshOperationsShareOneTransaction() {
                    : routeAsset(ExecutionMode::Apply, {RequestedWork::StandardMeshOptimization},
                                 executionPath);
     RecordingBackend backend;
+    bool reservedBeforeSave = false;
+    backend.meshSave = [&](const std::filesystem::path& staged) {
+        reservedBeforeSave = std::filesystem::is_regular_file(staged);
+        if (staged == executionPath || staged.parent_path() != executionPath.parent_path() ||
+            !cao::run::isStagingName(staged) || readBytes(executionPath) != "original")
+            throw std::runtime_error("Mesh changed before staged save completed");
+        std::ofstream(staged) << "saved mesh";
+        return true;
+    };
     const AssetExecutor executor(backend);
 
     const auto result = executor.execute(asset);
@@ -672,6 +911,10 @@ void AssetExecutionTests::meshOperationsShareOneTransaction() {
     QCOMPARE(backend.meshOptimizations, optimize ? 1 : 0);
     QCOMPARE(backend.meshMaintenances, maintain ? 1 : 0);
     QCOMPARE(backend.meshSaves, 1);
+    QVERIFY(reservedBeforeSave);
+    QCOMPARE(result.mutationState(), MutationState::Committed);
+    QCOMPARE(readBytes(executionPath), std::string("saved mesh"));
+    QVERIFY(!std::filesystem::exists(backend.savedMeshPath));
 }
 
 void AssetExecutionTests::dryRunMeshMaintenanceDoesNotMutate() {

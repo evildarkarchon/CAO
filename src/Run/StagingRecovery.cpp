@@ -213,13 +213,23 @@ bool safeRelativeName(const std::string& name) {
     return pathText(path) == name && name.find("//") == std::string::npos;
 }
 
-/// Proves a v3 sibling filename carries the manifest's Run ID and one lowercase-hex nonce.
-bool safeSiblingTextureName(const fs::path& path, const std::string& runId) {
+/// Selects the closed staging namespace for canonical Texture and Mesh output extensions.
+std::string stagingPrefix(const std::string& extension) {
+    if (extension == ".dds") return ".cao-staging-texture-";
+    if (extension == ".nif" || extension == ".btr" || extension == ".bto")
+        return ".cao-staging-mesh-";
+    return {};
+}
+
+/// Proves a v3 sibling filename carries its Asset namespace, Run ID, and lowercase-hex nonce.
+bool safeSiblingAssetName(const fs::path& path, const std::string& runId) {
     const auto filename = pathText(path.filename());
-    const auto prefix = ".cao-staging-texture-" + runId + "-";
-    constexpr auto suffix = ".dds";
-    if (!filename.starts_with(prefix) || !filename.ends_with(suffix) ||
-        filename.size() != prefix.size() + 32 + std::char_traits<char>::length(suffix))
+    const auto suffix = pathText(path.extension());
+    const auto assetPrefix = stagingPrefix(suffix);
+    if (assetPrefix.empty()) return false;
+    const auto prefix = assetPrefix + runId + "-";
+    if (!filename.starts_with(prefix) ||
+        filename.size() != prefix.size() + 32 + suffix.size())
         return false;
     const auto nonce = filename.substr(prefix.size(), 32);
     return std::all_of(nonce.begin(), nonce.end(), [](const unsigned char character) {
@@ -267,10 +277,10 @@ std::vector<Artifact> readManifest(const fs::path& staging, const fs::path& root
             unverified(manifest, "The ownership manifest contains an unsafe artifact record");
         const auto path = fs::path(std::u8string(name.begin(), name.end()));
         if (rootRelative) {
-            if (i == 0 || !safeSiblingTextureName(path, runId) ||
+            if (i == 0 || !safeSiblingAssetName(path, runId) ||
                 hasStagingComponent(path.parent_path()) || !rootOwned.emplace(name, false).second)
                 unverified(manifest,
-                           "A sibling Texture record is unsafe or duplicates owned output");
+                           "A sibling Asset record is unsafe or duplicates owned output");
         } else {
             if (i == 0 ? name != child || kind != 'D'
                        : !name.starts_with(child + "/") ||
@@ -329,11 +339,11 @@ std::map<fs::path, std::unique_ptr<NativeLock>> validateTree(const fs::path& sta
         if (!artifact.rootRelative) continue;
         const auto path = artifactPath(root, artifact);
         if (fs::weakly_canonical(path.parent_path()) != path.parent_path())
-            unverified(path, "A sibling Texture staging parent changed during recovery");
+            unverified(path, "A sibling Asset staging parent changed during recovery");
         const auto status = inspect(path);
         if (!fs::exists(status)) continue;
         if (!fs::is_regular_file(status))
-            unverified(path, "A sibling Texture staging artifact is not a regular file");
+            unverified(path, "A sibling Asset staging artifact is not a regular file");
         pins.emplace(artifact.relative,
                      std::make_unique<NativeLock>(path, OpenMode::TemporaryFile));
     }
@@ -447,13 +457,14 @@ fs::path StagingRecovery::stageFile(const fs::path& modRoot, const fs::path& des
         throw std::invalid_argument("The staged output and Mod Root must be on the same volume");
 #endif
     auto extension = pathText(destination.extension());
-    // The manifest grammar is canonical even though routed Texture extensions are case-insensitive.
+    // The manifest grammar is canonical even though routed Asset extensions are case-insensitive.
     std::transform(extension.begin(), extension.end(), extension.begin(), [](const char character) {
         return static_cast<char>(character >= 'A' && character <= 'Z' ? character + ('a' - 'A')
                                                                       : character);
     });
-    if (extension != ".dds")
-        throw std::invalid_argument("Texture staging requires a DDS destination");
+    const auto prefix = stagingPrefix(extension);
+    if (prefix.empty())
+        throw std::invalid_argument("Asset staging requires a DDS, NIF, BTR, or BTO destination");
     if (const auto failure = recover(root)) throw std::runtime_error(failure->detail());
     const auto staging = root / ".cao-staging";
     if (!_state->areas.contains(root)) {
@@ -476,14 +487,14 @@ fs::path StagingRecovery::stageFile(const fs::path& modRoot, const fs::path& des
         area.runId = nonce();
         area.child = "run-" + area.runId + "-" + nonce();
         area.artifacts = {{area.child, true}};
-        // Bootstrap may leave only controls if interrupted here; no Texture bytes exist yet.
+        // Bootstrap may leave only controls if interrupted here; no Asset bytes exist yet.
         publishManifest(root, area.runId, area.child, area.artifacts);
         if (!fs::create_directory(staging / area.child))
             throw std::runtime_error("The staging run child already exists");
         area.childPin = std::make_unique<NativeLock>(staging / area.child, OpenMode::DirectoryPin);
         area.ready = true;
     }
-    const auto filename = ".cao-staging-texture-" + area.runId + "-" + nonce() + extension;
+    const auto filename = prefix + area.runId + "-" + nonce() + extension;
     const auto relativeFile =
         destinationParent == "." ? fs::path(filename) : destinationParent / filename;
     auto registered = area.artifacts;

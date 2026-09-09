@@ -11,9 +11,9 @@
 
 namespace cao::execution {
 namespace {
-/// Captures readable bytes without retaining a potentially large Texture in memory.
+/// Captures readable bytes without retaining a potentially large Asset in memory.
 /// Removal may continue after failure only when the loaded source and saved output still match.
-std::optional<std::pair<std::uint64_t, std::uint64_t>> textureFingerprint(
+std::optional<std::pair<std::uint64_t, std::uint64_t>> assetFingerprint(
     const std::filesystem::path& path) {
     std::error_code error;
     if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(path, error)) || error)
@@ -35,7 +35,7 @@ std::optional<std::pair<std::uint64_t, std::uint64_t>> textureFingerprint(
 }
 
 /// Flushes staged bytes and replaces a same-volume destination without a cross-volume copy fallback.
-std::error_code commitTexture(const std::filesystem::path& staged,
+std::error_code commitStagedAsset(const std::filesystem::path& staged,
                               const std::filesystem::path& destination) {
 #ifdef _WIN32
     const auto file = CreateFileW(staged.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
@@ -148,7 +148,8 @@ AssetExecutionResult AssetExecutor::execute(const routing::RoutedAsset& asset,
         result._failure = AssetExecutionFailure::CleanupFailed;
         result._message = result._cleanupFailures.front().detail();
         result._path = result._cleanupFailures.front().path();
-        result._operation = "cleanup_texture_staging";
+        result._operation = asset.target() == routing::OptimizerTarget::Mesh
+                                ? "cleanup_mesh_staging" : "cleanup_texture_staging";
     }
     return result;
 }
@@ -161,7 +162,7 @@ AssetExecutionResult AssetExecutor::execute(const routing::RoutedAsset& asset,
             case routing::OptimizerTarget::Texture:
                 return executeTexture(asset, artifacts, modRoot);
             case routing::OptimizerTarget::Mesh:
-                return executeMesh(asset);
+                return executeMesh(asset, artifacts, modRoot);
             case routing::OptimizerTarget::Animation:
                 return executeAnimation(asset);
             case routing::OptimizerTarget::Archive:
@@ -170,20 +171,24 @@ AssetExecutionResult AssetExecutor::execute(const routing::RoutedAsset& asset,
                     "Archive extraction and packing are owned by run orchestration.");
         }
     } catch (const std::exception& error) {
-        // If Texture recovery itself throws, no exact mutation boundary remains trustworthy.
-        if (asset.target() == routing::OptimizerTarget::Texture)
+        // If staged execution recovery itself throws, its mutation boundary is no longer trustworthy.
+        if (asset.target() == routing::OptimizerTarget::Texture ||
+            asset.target() == routing::OptimizerTarget::Mesh)
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::BackendException,
-                "Texture execution could not recover from an exception.",
-                MutationState::PartialOrUnknown, false, asset.executionPath(), "execute_texture",
+                "Asset execution could not recover from an exception.",
+                MutationState::PartialOrUnknown, false, asset.executionPath(),
+                asset.target() == routing::OptimizerTarget::Mesh ? "execute_mesh" : "execute_texture",
                 error.what());
         return AssetExecutionResult::failed(AssetExecutionFailure::OperationFailed, error.what());
     } catch (...) {
-        if (asset.target() == routing::OptimizerTarget::Texture)
+        if (asset.target() == routing::OptimizerTarget::Texture ||
+            asset.target() == routing::OptimizerTarget::Mesh)
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::BackendException,
-                "Texture execution could not recover from an unknown exception.",
-                MutationState::PartialOrUnknown, false, asset.executionPath(), "execute_texture");
+                "Asset execution could not recover from an unknown exception.",
+                MutationState::PartialOrUnknown, false, asset.executionPath(),
+                asset.target() == routing::OptimizerTarget::Mesh ? "execute_mesh" : "execute_texture");
         return AssetExecutionResult::failed(AssetExecutionFailure::OperationFailed,
                                             "Unknown optimizer execution failure.");
     }
@@ -209,13 +214,13 @@ AssetExecutionResult AssetExecutor::executeTexture(const routing::RoutedAsset& a
     std::string boundary = "load_texture";
     auto mutation = MutationState::None;
     bool removingSource = false;
-    decltype(textureFingerprint(outputPath)) sourceBefore, outputBefore;
+    decltype(assetFingerprint(outputPath)) sourceBefore, outputBefore;
     // A removal backend may fail after changing either path. Retain byte fingerprints so a
     // readable but truncated/replaced file cannot be mistaken for a safely retained original.
     const auto retainedFilesUsable = [&] {
         return sourceBefore && outputBefore &&
-               sourceBefore == textureFingerprint(asset.executionPath()) &&
-               outputBefore == textureFingerprint(outputPath);
+               sourceBefore == assetFingerprint(asset.executionPath()) &&
+               outputBefore == assetFingerprint(outputPath);
     };
     try {
         if (!_backend.loadTexture(asset.executionPath(), texture->variant())) {
@@ -246,13 +251,13 @@ AssetExecutionResult AssetExecutor::executeTexture(const routing::RoutedAsset& a
                 AssetExecutionFailure::SaveFailed, "Failed to save Texture.", mutation, true,
                 affectedPath, boundary, _backend.textureFailureDetail());
         }
-        outputBefore = textureFingerprint(staged);
+        outputBefore = assetFingerprint(staged);
         if (!outputBefore)
             return AssetExecutionResult::failed(AssetExecutionFailure::SaveFailed,
                                                 "Saved Texture is not a usable regular file.",
                                                 mutation, true, affectedPath, boundary);
         boundary = "commit_texture";
-        if (const auto error = commitTexture(staged, outputPath)) {
+        if (const auto error = commitStagedAsset(staged, outputPath)) {
             return AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed,
                                                 "Failed to commit Texture output.", mutation, true,
                                                 affectedPath, boundary, error.message());
@@ -263,7 +268,7 @@ AssetExecutionResult AssetExecutor::executeTexture(const routing::RoutedAsset& a
             texture->variant() == routing::TextureVariant::Convertible) {
             boundary = "remove_texture_source";
             affectedPath = asset.executionPath();
-            sourceBefore = textureFingerprint(affectedPath);
+            sourceBefore = assetFingerprint(affectedPath);
             if (!retainedFilesUsable())
                 return AssetExecutionResult::failed(
                     AssetExecutionFailure::SourceRemovalFailed,
@@ -305,40 +310,86 @@ AssetExecutionResult AssetExecutor::executeTexture(const routing::RoutedAsset& a
     }
 }
 
-AssetExecutionResult AssetExecutor::executeMesh(const routing::RoutedAsset& asset) const {
+AssetExecutionResult AssetExecutor::executeMesh(const routing::RoutedAsset& asset,
+                                                run::TemporaryArtifactRegistry& artifacts,
+                                                const std::filesystem::path& modRoot) const {
     const auto* mesh = std::get_if<routing::MeshAsset>(&asset.identity());
     if (mesh == nullptr) {
         return AssetExecutionResult::failed(AssetExecutionFailure::IdentityMismatch,
-                                            "Mesh target does not carry a Mesh identity.");
+                                            "Mesh target does not carry a Mesh identity.",
+                                            MutationState::None, false, asset.executionPath());
     }
 
-    if (!_backend.loadMesh(asset.executionPath(), mesh->variant())) {
-        return AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed,
-                                            "Failed to load Mesh.");
-    }
+    const auto& path = asset.executionPath();
+    std::string boundary = "load_mesh";
+    auto mutation = MutationState::None;
+    try {
+        if (!_backend.loadMesh(path, mesh->variant()))
+            return AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed,
+                                                "Failed to load Mesh.", mutation, true, path,
+                                                boundary);
 
-    bool wouldChange = false;
-    if (asset.operations().contains(routing::AssetOperation::Optimization)) {
-        const auto optimization =
-            _backend.optimizeMesh(asset.executionPath(), asset.executionMode());
-        if (!optimization.succeeded()) return operationFailure(optimization);
-        wouldChange = wouldChange || optimization.wouldChange();
-    }
-    if (asset.operations().contains(routing::AssetOperation::MeshReferenceMaintenance)) {
-        const auto maintenance = _backend.maintainMeshReferences(asset.executionMode());
-        if (!maintenance.succeeded()) return operationFailure(maintenance);
-        wouldChange = wouldChange || maintenance.wouldChange();
-    }
+        bool wouldChange = false;
+        if (asset.operations().contains(routing::AssetOperation::Optimization)) {
+            boundary = "optimize_mesh";
+            const auto optimization = _backend.optimizeMesh(path, asset.executionMode());
+            if (!optimization.succeeded())
+                return AssetExecutionResult::failed(AssetExecutionFailure::OperationFailed,
+                                                    "Failed to optimize Mesh.", mutation, true,
+                                                    path, boundary, optimization.message());
+            wouldChange = optimization.wouldChange();
+        }
+        if (asset.operations().contains(routing::AssetOperation::MeshReferenceMaintenance)) {
+            boundary = "maintain_mesh_references";
+            const auto maintenance = _backend.maintainMeshReferences(asset.executionMode());
+            if (!maintenance.succeeded())
+                return AssetExecutionResult::failed(AssetExecutionFailure::OperationFailed,
+                                                    "Failed to maintain Mesh references.", mutation,
+                                                    true, path, boundary, maintenance.message());
+            wouldChange = wouldChange || maintenance.wouldChange();
+        }
 
-    // Dry Run evaluates both operations against the loaded Mesh but never persists their results.
-    if (asset.executionMode() == routing::ExecutionMode::DryRun || !wouldChange)
-        return AssetExecutionResult::success();
+        // Dry Run evaluates both operations against the loaded Mesh but never persists their results.
+        if (asset.executionMode() == routing::ExecutionMode::DryRun || !wouldChange)
+            return AssetExecutionResult::success();
 
-    if (!_backend.saveMesh(asset.executionPath())) {
-        return AssetExecutionResult::failed(AssetExecutionFailure::SaveFailed,
-                                            "Failed to save Mesh.");
+        boundary = "stage_mesh";
+        const auto staging = artifacts.stageFile(
+            modRoot.empty() ? std::filesystem::absolute(path).parent_path()
+                            : std::filesystem::absolute(modRoot),
+            std::filesystem::absolute(path));
+        boundary = "save_mesh";
+        if (!_backend.saveMesh(staging.path) || !assetFingerprint(staging.path))
+            return AssetExecutionResult::failed(AssetExecutionFailure::SaveFailed,
+                                                "Failed to save a usable Mesh staging file.",
+                                                mutation, true, path, boundary);
+        boundary = "commit_mesh";
+        if (const auto error = commitStagedAsset(staging.path, path))
+            return AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed,
+                                                "Failed to commit Mesh output.", mutation, true,
+                                                path, boundary, error.message());
+        // Release may fail after replacement; the committed Mesh must still be reported and retained.
+        mutation = MutationState::Committed;
+        artifacts.commit(staging.registration);
+        return AssetExecutionResult::success(mutation);
+    } catch (const std::filesystem::filesystem_error& error) {
+        const bool stagingFailure = boundary == "stage_mesh";
+        return AssetExecutionResult::failed(
+            stagingFailure ? AssetExecutionFailure::StagingFailed
+                           : AssetExecutionFailure::BackendException,
+            stagingFailure ? "Failed to prepare Mesh staging."
+                           : "Mesh backend raised a filesystem exception.",
+            mutation, stagingFailure, path, boundary, error.what());
+    } catch (const std::exception& error) {
+        return AssetExecutionResult::failed(
+            boundary == "stage_mesh" ? AssetExecutionFailure::StagingFailed
+                                     : AssetExecutionFailure::BackendException,
+            "Mesh execution raised an exception.", mutation, false, path, boundary, error.what());
+    } catch (...) {
+        return AssetExecutionResult::failed(AssetExecutionFailure::BackendException,
+                                            "Unknown Mesh backend exception.", mutation, false,
+                                            path, boundary);
     }
-    return AssetExecutionResult::success();
 }
 
 AssetExecutionResult AssetExecutor::executeAnimation(const routing::RoutedAsset& asset) const {

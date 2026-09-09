@@ -126,7 +126,8 @@ cao::execution::AssetExecutionResult MainOptimizer::finishAttempt(
             result.failure() == cao::execution::AssetExecutionFailure::LoadFailed) {
             const bool quarantined =
                 handleBadFile(QString::fromStdWString(asset.executionPath().wstring()));
-            if (quarantined && asset.target() == cao::routing::OptimizerTarget::Texture) {
+            if (quarantined && (asset.target() == cao::routing::OptimizerTarget::Texture ||
+                                asset.target() == cao::routing::OptimizerTarget::Mesh)) {
                 // Loading failed before staging existed, but this adapter's successful quarantine
                 // is itself a committed mutation and must be retained in the attempt evidence.
                 result = cao::execution::AssetExecutionResult::failed(
