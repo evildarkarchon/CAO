@@ -1,6 +1,8 @@
 add_library(cao_run_discovery
     ArchiveFirstAssetDiscovery.cpp
     ArchiveFirstAssetDiscovery.h
+    ArchiveExtraction.cpp
+    ArchiveExtraction.h
 )
 
 find_package(bethutil CONFIG REQUIRED)
@@ -10,6 +12,7 @@ target_link_libraries(cao_run_discovery PRIVATE utf8proc::utf8proc)
 # Bethutil's exported target omits its public header root; bsa exports the shared include root.
 target_link_libraries(cao_run_discovery PUBLIC
     cao_asset_routing
+    cao_asset_execution
     btu::bethutil
     bsa::bsa
 )

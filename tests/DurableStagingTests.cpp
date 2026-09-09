@@ -10,6 +10,10 @@ namespace fs = std::filesystem;
 class DurableStagingTests final : public QObject {
     Q_OBJECT
    private slots:
+    /// Arbitrary extracted Archive bytes remain recoverable after the producer exits.
+    void abandonedArchiveEntryIsRecovered();
+    /// Safety Cleanup removes partial Archive entries while preserving moved, committed entries.
+    void archiveCleanupKeepsCommittedEntry();
     /// Missing durable ownership would leave the interrupted output unrecoverable.
     void abandonedOutputIsRecovered();
     /// Recovery must not delete a destination whose rename preceded a killed process.
@@ -43,6 +47,49 @@ class DurableStagingTests final : public QObject {
     /// Releasing a file before its destination move must preserve source and cleanup ownership.
     void prematureReleaseKeepsOwnership();
 };
+
+void DurableStagingTests::abandonedArchiveEntryIsRecovered() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    fs::path temporary;
+    {
+        cao::run::TemporaryArtifactRegistry registry;
+        temporary = registry.stageArchiveFile(root).path;
+        QVERIFY(fs::is_regular_file(temporary));
+        QCOMPARE(fs::file_size(temporary), std::uintmax_t{0});
+        QCOMPARE(temporary.parent_path().parent_path(), root / ".cao-staging");
+        QVERIFY(temporary.parent_path().filename().string().starts_with("run-"));
+        std::ofstream(temporary, std::ios::binary) << "arbitrary Archive script bytes";
+    }
+    cao::run::StagingRecovery recovery;
+    QVERIFY(!recovery.recover(root).has_value());
+    QVERIFY(!fs::exists(temporary));
+    QVERIFY(!fs::exists(temporary.parent_path()));
+}
+
+void DurableStagingTests::archiveCleanupKeepsCommittedEntry() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto destination = root / "entry.pex";
+    cao::run::TemporaryArtifactRegistry registry;
+    const auto committed = registry.stageArchiveFile(root);
+    const auto abandoned = registry.stageArchiveFile(root);
+    QVERIFY(committed.path != abandoned.path);
+    std::ofstream(committed.path, std::ios::binary) << "complete script";
+    std::ofstream(abandoned.path, std::ios::binary) << "partial script";
+    QVERIFY_EXCEPTION_THROWN(registry.commit(committed.registration), std::logic_error);
+    fs::rename(committed.path, destination);
+    registry.commit(committed.registration);
+    QVERIFY(registry.performSafetyCleanup().empty());
+    QVERIFY(!fs::exists(abandoned.path));
+    QVERIFY(!fs::exists(committed.path.parent_path()));
+    QVERIFY_EXCEPTION_THROWN((void)registry.stageArchiveFile(root), std::logic_error);
+    QFile output(QString::fromStdWString(destination.wstring()));
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    QCOMPARE(output.readAll(), QByteArray("complete script"));
+}
 
 void DurableStagingTests::abandonedOutputIsRecovered() {
     QTemporaryDir directory;

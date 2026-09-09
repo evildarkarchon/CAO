@@ -39,6 +39,14 @@ TemporaryArtifactRegistry::StagedFile TemporaryArtifactRegistry::stageFile(
     return {path, Registration(this, _artifacts.size() - 1)};
 }
 
+TemporaryArtifactRegistry::StagedFile TemporaryArtifactRegistry::stageArchiveFile(
+    const std::filesystem::path& root) {
+    if (_cleaned) throw std::logic_error("Temporary artifact registration is closed");
+    const auto path = _recovery->stageArchiveFile(root);
+    _artifacts.push_back({path, false, true});
+    return {path, Registration(this, _artifacts.size() - 1)};
+}
+
 TemporaryArtifactRegistry::Registration TemporaryArtifactRegistry::registerArtifact(
     const std::filesystem::path& path) {
     if (_cleaned) throw std::logic_error("Temporary artifact registration is closed");

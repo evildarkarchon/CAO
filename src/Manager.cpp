@@ -151,10 +151,7 @@ bool Manager::runOptimization() {
     const auto result = assetRun.execute(
         roots,
         cao::run::AssetRunAdapters{
-            [&](const cao::routing::RoutedAsset& archive) {
-                bsaOptimizer.extract(QString::fromStdWString(archive.executionPath().wstring()),
-                                     _options.bBsaDeleteBackup);
-            },
+            {},
             {},
             [&](const cao::run::AssetRunProgress& progress) {
                 _numberCompletedFiles = static_cast<int>(progress.completed);
@@ -258,10 +255,31 @@ bool Manager::runOptimization() {
                 auto attempt = optimizer.process(asset, artifacts.registry, *root);
                 if (!attempt.succeeded()) ++failedAssets;
                 return attempt;
+            },
+            [&](const cao::run::ArchiveExtractionPlan& plan) {
+                auto attempt = bsaOptimizer.extract(plan, _options.bBsaDeleteBackup,
+                                                    artifacts.registry);
+                if (!attempt.succeeded()) {
+                    ++failedAssets;
+                    PLOG_ERROR << QStringLiteral("Archive extraction failed: %1: %2")
+                                      .arg(QString::fromStdWString(attempt.archivePath.wstring()))
+                                      .arg(QString::fromStdString(attempt.detail));
+                }
+                return attempt;
             }});
 
     const bool cleaned = artifacts.finish();
     if (result.cancelled() || !result.failures().empty()) return false;
+
+    for (const auto& attempt : result.archiveAttempts()) {
+        if (!attempt.safeToContinue ||
+            attempt.mutation == cao::execution::MutationState::PartialOrUnknown) {
+            PLOG_ERROR << "Optimization Run stopped because an Archive mutation could not be "
+                          "completed safely.";
+            emit end();
+            return false;
+        }
+    }
 
     for (const auto& failure : result.executionFailures()) {
         if (!failure.safeToContinue()) {

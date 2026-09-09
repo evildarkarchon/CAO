@@ -57,8 +57,10 @@ std::vector<std::string> inspectArchive(const std::filesystem::path& path) {
     return names;
 }
 
+}  // namespace
+
 /// Canonicalizes a contained game path; rejects names whose extraction could escape or alias.
-std::string canonicalGamePath(std::string name) {
+std::string canonicalArchiveEntryPath(std::string name) {
     std::replace(name.begin(), name.end(), '\\', '/');
     if (name.empty() || name.front() == '/' || name.find('\0') != std::string::npos ||
         name.find_first_of(":*?\"<>|") != std::string::npos)
@@ -73,6 +75,7 @@ std::string canonicalGamePath(std::string name) {
     }
     return foldedName(relativeName(path));
 }
+namespace {
 /// Checks the resolved path's ancestry using native filesystem identity, including Windows casing.
 bool isWithinRoot(const std::filesystem::path& resolvedPath,
                   const std::filesystem::path& canonicalRoot) {
@@ -282,7 +285,8 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     const std::span<const std::filesystem::path> roots,
     const ArchiveExtractionOperation& extractArchive,
     const AssetDiscoveryCancellationPredicate& isCancelled, const ArchivePrecedence& precedence,
-    const std::function<void(std::span<const ArchiveCollision>)>& reportCollisions) const {
+    const std::function<void(std::span<const ArchiveCollision>)>& reportCollisions,
+    const std::function<void(std::span<const ArchiveExtractionPlan>)>& reportExtractionPlan) const {
     routing::AssetRouter router(_policy);
     // Routing is filename-only, so recognizing an Archive is cheap enough to repeat during the
     // definitive traversal. That traversal cannot ask the Archive pass instead: extraction can
@@ -452,6 +456,7 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
 
     std::map<std::filesystem::path, std::map<std::string, std::vector<std::filesystem::path>>>
         entries;
+    std::vector<ArchiveExtractionPlan> extractionPlans;
     for (const auto& archive : selectedArchives) {
         if (isCancelled && isCancelled()) return cancelledResult();
         std::vector<std::string> names;
@@ -462,12 +467,14 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
                                 error.what());
         }
         const auto& root = archiveRoots.at(archive.executionPath());
+        auto& plan = extractionPlans.emplace_back(ArchiveExtractionPlan{archive.executionPath(), root});
         for (const auto& name : names) {
             if (isCancelled && isCancelled()) return cancelledResult();
             try {
                 // The existing extractor writes beside its Archive, including nested Archives.
                 // Compare the actual destination relative to the Mod Root, not just the raw name.
-                const auto local = std::filesystem::u8path(canonicalGamePath(name));
+                const auto local = std::filesystem::u8path(canonicalArchiveEntryPath(name));
+                plan.entries.push_back(relativeName(local));
                 const auto destination =
                     std::filesystem::absolute(archive.executionPath()).parent_path() / local;
                 std::error_code error;
@@ -486,6 +493,18 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
             }
         }
     }
+    for (auto& plan : extractionPlans) {
+        for (const auto& entry : plan.entries) {
+            const auto destination = std::filesystem::absolute(plan.archivePath).parent_path() /
+                                     std::filesystem::u8path(entry);
+            const auto gamePath = foldedName(relativeName(destination.lexically_relative(plan.modRoot)));
+            // Ownership is frozen before mutation: a failed winner must not promote a shadowed
+            // Archive, and a Loose Asset removed later still retains its preflight precedence.
+            if (entries.at(plan.modRoot).at(gamePath).front() == plan.archivePath &&
+                !loosePaths[plan.modRoot].contains(gamePath))
+                plan.mergeEntries.push_back(entry);
+        }
+    }
     for (const auto& root : precedenceScopes) {
         const auto found = entries.find(root);
         if (found == entries.end()) continue;
@@ -499,6 +518,8 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     // Publish only the complete plan: a later unreadable Archive must prevent earlier mutations.
     if (reportCollisions && _policy.executionMode() == routing::ExecutionMode::Apply)
         reportCollisions(collisions);
+    if (reportExtractionPlan && _policy.executionMode() == routing::ExecutionMode::Apply)
+        reportExtractionPlan(extractionPlans);
     if (isCancelled && isCancelled()) return cancelledResult();
     if (!selectedArchives.empty() && !extractArchive(selectedArchives)) {
         return cancelledResult();

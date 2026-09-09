@@ -44,6 +44,9 @@ class TemporaryArtifactRegistry final : public SafetyCleanupService {
     /// Throws on invalid ownership, unavailable locks, or filesystem failures.
     [[nodiscard]] StagedFile stageFile(const std::filesystem::path& modRoot,
                                        const std::filesystem::path& destination);
+    /// Flushes ownership before creating a unique empty file in the durable Archive run child.
+    /// Throws on invalid ownership, unavailable locks, filesystem failures, or closed registration.
+    [[nodiscard]] StagedFile stageArchiveFile(const std::filesystem::path& modRoot);
 
     /// Records an absent absolute path before the operation creates it; performs no mutation.
     /// Throws on existing/duplicate paths, ambiguous Windows names, lookup errors, or registration

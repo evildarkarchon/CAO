@@ -144,6 +144,11 @@ class MainOptimizerTests final : public QObject
     Q_OBJECT
 
 private slots:
+ /// Exercises backup and delete source choices after successful and failed extraction.
+ void archiveSourceCleanupRequiresSuccessfulMerge_data();
+ /// Preserves original Archive bytes on failure and never replaces an existing backup.
+ void archiveSourceCleanupRequiresSuccessfulMerge();
+
  /// Keeps temporary Texture bytes out of archives and their packed-source deletion pass.
  void packingPreservesStagingFiles();
 
@@ -180,6 +185,81 @@ private slots:
 private:
     QTemporaryDir _temporaryDirectory;
 };
+
+void MainOptimizerTests::archiveSourceCleanupRequiresSuccessfulMerge_data() {
+    QTest::addColumn<bool>("validArchive");
+    QTest::addColumn<bool>("deleteBackup");
+    QTest::addColumn<bool>("blockSourceCleanup");
+    QTest::newRow("failed-backup") << false << false << false;
+    QTest::newRow("failed-delete") << false << true << false;
+    QTest::newRow("successful-backup") << true << false << false;
+    QTest::newRow("successful-delete") << true << true << false;
+#ifdef _WIN32
+    QTest::newRow("blocked-backup") << true << false << true;
+    QTest::newRow("blocked-delete") << true << true << true;
+#endif
+}
+
+void MainOptimizerTests::archiveSourceCleanupRequiresSuccessfulMerge() {
+    QFETCH(bool, validArchive);
+    QFETCH(bool, deleteBackup);
+    QFETCH(bool, blockSourceCleanup);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto mod = root / "mod";
+    const auto source = mod / "assets.bsa";
+    const auto backup = mod / "assets.bsa.bak";
+    writeFile(backup, QByteArrayLiteral("existing backup bytes"));
+    if (validArchive) {
+        const auto fixture = root / "input" / "fixture.dds";
+        writeFile(fixture, QByteArrayLiteral("archived bytes"));
+        auto archive = btu::bsa::ArchiveData(btu::bsa::Settings::get(btu::Game::SSE),
+                                            btu::bsa::ArchiveType::Textures);
+        QVERIFY(archive.add_file(fixture));
+        archive.set_out_path(source);
+        QVERIFY(btu::bsa::write(false, std::move(archive), root / "input").empty());
+    } else {
+        writeFile(source, QByteArrayLiteral("corrupt archive bytes"));
+    }
+    QFile original(QString::fromStdWString(source.wstring()));
+    QVERIFY(original.open(QIODevice::ReadOnly));
+    const auto originalBytes = original.readAll();
+    original.close();
+#ifdef _WIN32
+    // Permit extraction reads while denying rename/delete so the failure occurs after merge.
+    const auto lock = blockSourceCleanup
+                          ? CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)
+                          : INVALID_HANDLE_VALUE;
+    QVERIFY(!blockSourceCleanup || lock != INVALID_HANDLE_VALUE);
+#endif
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = BSAOptimizer().extract(
+        {source, mod, {"fixture.dds"}, {"fixture.dds"}}, deleteBackup, artifacts);
+#ifdef _WIN32
+    if (lock != INVALID_HANDLE_VALUE) CloseHandle(lock);
+#endif
+    QCOMPARE(result.succeeded(), validArchive && !blockSourceCleanup);
+    QCOMPARE(std::filesystem::exists(source), !validArchive || blockSourceCleanup);
+    QCOMPARE(std::filesystem::exists(mod / "fixture.dds"), validArchive);
+    if (blockSourceCleanup) {
+        QVERIFY(result.failure == cao::run::ArchiveExtractionFailure::SourceCleanupFailed);
+        QCOMPARE(result.mutation, cao::execution::MutationState::Committed);
+        QVERIFY(!result.safeToContinue);
+    }
+    QFile existingBackup(QString::fromStdWString(backup.wstring()));
+    QVERIFY(existingBackup.open(QIODevice::ReadOnly));
+    QCOMPARE(existingBackup.readAll(), QByteArrayLiteral("existing backup bytes"));
+    if (!validArchive || !deleteBackup || blockSourceCleanup) {
+        const auto retained = validArchive && !blockSourceCleanup ? mod / "assets.bsa.bak.bak" : source;
+        QFile retainedArchive(QString::fromStdWString(retained.wstring()));
+        QVERIFY(retainedArchive.open(QIODevice::ReadOnly));
+        QCOMPARE(retainedArchive.readAll(), originalBytes);
+    }
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
 
 void MainOptimizerTests::packingPreservesStagingFiles() {
     QTemporaryDir directory;

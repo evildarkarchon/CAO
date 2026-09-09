@@ -53,6 +53,36 @@ void BSAOptimizer::extract(QString bsaPath, const bool deleteBackup) const {
     PLOG_INFO << "BSA successfully extracted: " + bsaPath;
 }
 
+cao::run::ArchiveExtractionResult BSAOptimizer::extract(
+    const cao::run::ArchiveExtractionPlan& plan, const bool deleteBackup,
+    cao::run::TemporaryArtifactRegistry& artifacts) const {
+    auto result = cao::run::ArchiveExtractor(artifacts).extract(plan);
+    if (!result.succeeded()) return result;
+
+    try {
+        // Keep the original name and bytes throughout extraction and merge so a failed attempt
+        // remains recoverable. Never replace a pre-existing backup based only on matching size.
+        if (deleteBackup) {
+            if (!std::filesystem::remove(plan.archivePath))
+                throw std::runtime_error("The extracted source Archive could not be removed.");
+        } else {
+            auto backupPath = plan.archivePath;
+            backupPath += ".bak";
+            while (std::filesystem::exists(backupPath)) backupPath += ".bak";
+            std::filesystem::rename(plan.archivePath, backupPath);
+        }
+        result.mutation = cao::execution::MutationState::Committed;
+    } catch (const std::exception& error) {
+        result.failure = cao::run::ArchiveExtractionFailure::SourceCleanupFailed;
+        result.safeToContinue = false;
+        result.detail = error.what();
+        return result;
+    }
+    PLOG_INFO << "BSA successfully extracted: "
+              << QString::fromStdWString(plan.archivePath.wstring());
+    return result;
+}
+
 void handle_errors(std::vector<std::pair<btu::Path, std::string>> errs) {
     if (errs.empty()) return;
 

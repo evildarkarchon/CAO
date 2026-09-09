@@ -466,6 +466,24 @@ fs::path StagingRecovery::stageFile(const fs::path& modRoot, const fs::path& des
     const auto prefix = stagingPrefix(extension);
     if (prefix.empty())
         throw std::invalid_argument("Asset staging requires a DDS, NIF, BTR, BTO, or HKX destination");
+    prepareArea(root);
+    const auto& area = _state->areas.at(root);
+    const auto filename = prefix + area.runId + "-" + nonce() + extension;
+    const auto relativeFile =
+        destinationParent == "." ? fs::path(filename) : destinationParent / filename;
+    return createRegisteredFile(root, relativeFile, true);
+}
+
+fs::path StagingRecovery::stageArchiveFile(const fs::path& modRoot) {
+    if (!modRoot.is_absolute())
+        throw std::invalid_argument("Archive staging requires an absolute Mod Root");
+    const auto root = fs::canonical(modRoot);
+    prepareArea(root);
+    const auto relativeFile = _state->areas.at(root).child / ("archive-entry-" + nonce());
+    return createRegisteredFile(root, relativeFile, false);
+}
+
+void StagingRecovery::prepareArea(const fs::path& root) {
     if (const auto failure = recover(root)) throw std::runtime_error(failure->detail());
     const auto staging = root / ".cao-staging";
     if (!_state->areas.contains(root)) {
@@ -495,14 +513,17 @@ fs::path StagingRecovery::stageFile(const fs::path& modRoot, const fs::path& des
         area.childPin = std::make_unique<NativeLock>(staging / area.child, OpenMode::DirectoryPin);
         area.ready = true;
     }
-    const auto filename = prefix + area.runId + "-" + nonce() + extension;
-    const auto relativeFile =
-        destinationParent == "." ? fs::path(filename) : destinationParent / filename;
+}
+
+fs::path StagingRecovery::createRegisteredFile(const fs::path& root, const fs::path& relativeFile,
+                                                bool rootRelative) {
+    auto& area = _state->areas.at(root);
+    const auto staging = root / ".cao-staging";
     auto registered = area.artifacts;
-    registered.push_back({relativeFile, false, true});
+    registered.push_back({relativeFile, false, rootRelative});
     publishManifest(root, area.runId, area.child, registered);
     area.artifacts = std::move(registered);
-    const auto path = root / relativeFile;
+    const auto path = artifactPath(root, area.artifacts.back());
     try {
         writeNewFile(path, {});
     } catch (const CreationCollision&) {

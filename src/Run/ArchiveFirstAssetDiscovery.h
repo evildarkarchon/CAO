@@ -2,6 +2,7 @@
 
 #include "AssetRouting/AssetRouter.h"
 #include "RunLifecycle.h"
+#include "ArchiveExtraction.h"
 
 #include <filesystem>
 #include <functional>
@@ -112,15 +113,18 @@ class ArchiveFirstAssetDiscovery final {
     /// ordering, case-folded first with an ordinal spelling tie-breaker. Explicit precedence must
     /// name every enabled Archive exactly once with paths relative to its Mod Root. Apply inspects
     /// all required manifests before calling reportCollisions synchronously with a complete plan;
-    /// that callback's span is borrowed only until it returns, and exceptions propagate. The plan
-    /// is also owned by the returned result, including after extraction cancellation. Dry Run
+    /// that callback's span is borrowed only until it returns, and exceptions propagate. Collision
+    /// evidence is also owned by the returned result, including after extraction cancellation. Dry Run
     /// ignores precedence and never inspects manifests, calculates collisions, or extracts.
+    /// reportExtractionPlan synchronously borrows the complete per-Archive entry and merge plan
+    /// before extraction; callers retaining plans must copy them before the callback returns.
     [[nodiscard]] ArchiveFirstAssetDiscoveryResult discover(
         std::span<const std::filesystem::path> roots,
         const ArchiveExtractionOperation& extractArchive,
         const AssetDiscoveryCancellationPredicate& isCancelled = {},
         const ArchivePrecedence& precedence = ArchivePrecedence::deterministicDiscovery(),
-        const std::function<void(std::span<const ArchiveCollision>)>& reportCollisions = {}) const;
+        const std::function<void(std::span<const ArchiveCollision>)>& reportCollisions = {},
+        const std::function<void(std::span<const ArchiveExtractionPlan>)>& reportExtractionPlan = {}) const;
 
    private:
     routing::RoutingPolicy _policy;

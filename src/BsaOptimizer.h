@@ -7,6 +7,7 @@
 #include "FilesystemOperations.h"
 #include "Profiles.h"
 #include "TexturesOptimizer.h"
+#include "Run/ArchiveExtraction.h"
 #include "pch.h"
 
 class OptionsCAO;
@@ -28,6 +29,11 @@ class BSAOptimizer final : public QObject {
      * \param deleteBackup Deletes the backup the existing bsa
      */
     void extract(QString bsaPath, const bool deleteBackup) const;
+    /// Stages a planned Archive with run-owned artifacts, then backs up or removes its source
+    /// only after merge succeeds. Failed source cleanup retains unsafe continuation evidence.
+    [[nodiscard]] cao::run::ArchiveExtractionResult extract(
+        const cao::run::ArchiveExtractionPlan& plan, bool deleteBackup,
+        cao::run::TemporaryArtifactRegistry& artifacts) const;
     /*!
      * \brief Creates a BSA containing all the files given as argument
      * \param bsa The BSA to create

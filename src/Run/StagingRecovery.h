@@ -29,6 +29,9 @@ class StagingRecovery final {
     /// Reuses recovered ownership locks; throws if ownership or same-root containment fails.
     [[nodiscard]] std::filesystem::path stageFile(const std::filesystem::path& modRoot,
                                                   const std::filesystem::path& destination);
+    /// Durably registers and exclusively creates a unique empty file beneath the owned run child.
+    /// Accepts arbitrary Archive entry bytes; throws on invalid roots, ownership, or I/O failures.
+    [[nodiscard]] std::filesystem::path stageArchiveFile(const std::filesystem::path& modRoot);
     /// Flushes removal of a temporary registration after its file was committed elsewhere.
     /// The destination is deliberately never part of this protocol or its deletion records. Throws
     /// `logic_error` if the file still exists or the supplied path is not registered.
@@ -39,6 +42,12 @@ class StagingRecovery final {
     [[nodiscard]] std::vector<RunFailure> cleanupArtifacts();
 
    private:
+    /// Acquires or reuses root ownership and publishes the run child before any staged bytes.
+    void prepareArea(const std::filesystem::path& root);
+    /// Publishes one file registration before creation, rolling back names rejected by CREATE_NEW.
+    [[nodiscard]] std::filesystem::path createRegisteredFile(const std::filesystem::path& root,
+                                                              const std::filesystem::path& relative,
+                                                              bool rootRelative);
     struct State;
     std::unique_ptr<State> _state;
 };

@@ -189,6 +189,10 @@ class AssetRunTests final : public QObject
     Q_OBJECT
 
 private slots:
+ /// Supplies recoverable and uncertain Archive failures at both extraction boundaries.
+ void archiveFailuresControlContinuation_data();
+ /// Verifies planned attempts retain evidence and stop unsafe work without cancellation.
+ void archiveFailuresControlContinuation();
  /// Verifies safe failures continue and unsafe failures stop before another attempt or packing.
  void mutationAwareFailuresControlContinuation_data();
  /// Verifies mutation evidence controls ordering, terminal failure retention, and attempt totals.
@@ -253,6 +257,68 @@ private slots:
  /// Verifies an Archive produced by extraction is reported but never counted as run work.
  void nestedArchivesAreReportedWithoutInflatingTheWorkTotal();
 };
+
+void AssetRunTests::archiveFailuresControlContinuation_data() {
+    QTest::addColumn<bool>("safe");
+    QTest::addColumn<int>("failedAttempt");
+    QTest::addColumn<bool>("partial");
+    QTest::newRow("safe-failure") << true << 1 << false;
+    QTest::newRow("unsafe-first") << false << 1 << true;
+    QTest::newRow("unsafe-last") << false << 2 << true;
+    QTest::newRow("partial-overrides-safe-flag") << true << 1 << true;
+}
+
+void AssetRunTests::archiveFailuresControlContinuation() {
+    QFETCH(bool, safe);
+    QFETCH(int, failedAttempt);
+    QFETCH(bool, partial);
+    const bool canContinue = safe && !partial;
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    createFixtureArchive(root / "a.bsa");
+    createFixtureArchive(root / "b.bsa");
+    writeFile(root / "loose.dds");
+    std::size_t attempts = 0;
+    std::size_t assets = 0;
+    bool finalized = false;
+    bool legacyCalled = false;
+    std::vector<AssetRunProgress> progress;
+    AssetRunAdapters adapters;
+    adapters.extractArchive = [&](const auto&) { legacyCalled = true; };
+    adapters.executeAsset = [&](const auto&) { ++assets; };
+    adapters.reportProgress = [&](const auto& update) { progress.push_back(update); };
+    adapters.finalizeArchiveLifecycle = [&] { finalized = true; return true; };
+    adapters.extractArchiveWithResult = [&](const cao::run::ArchiveExtractionPlan& plan) {
+        ++attempts;
+        cao::run::ArchiveExtractionResult attempt;
+        attempt.archivePath = plan.archivePath;
+        if (plan.modRoot != root || plan.entries.size() != 1)
+            qFatal("Extraction did not receive the completed manifest plan");
+        if (attempts == static_cast<std::size_t>(failedAttempt)) {
+            attempt.failure = cao::run::ArchiveExtractionFailure::MergeFailed;
+            attempt.mutation = partial ? cao::execution::MutationState::PartialOrUnknown
+                                       : cao::execution::MutationState::None;
+            attempt.safeToContinue = safe;
+            attempt.detail = "Injected merge failure";
+        }
+        return attempt;
+    };
+    const auto result = AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, adapters);
+    QCOMPARE(attempts, canContinue ? std::size_t{2} : static_cast<std::size_t>(failedAttempt));
+    QCOMPARE(assets, canContinue ? std::size_t{1} : std::size_t{0});
+    QCOMPARE(finalized, canContinue);
+    QVERIFY(!legacyCalled);
+    QVERIFY(!result.cancelled());
+    QCOMPARE(result.archiveAttempts().size(), attempts);
+    const auto& failure = result.archiveAttempts()[failedAttempt - 1];
+    QVERIFY(!failure.succeeded());
+    QCOMPARE(failure.safeToContinue, safe);
+    QCOMPARE(failure.detail, std::string("Injected merge failure"));
+    QVERIFY(failure.archivePath == root / (failedAttempt == 1 ? "a.bsa" : "b.bsa"));
+    QCOMPARE(progress[attempts - 1].completed, attempts);
+    QCOMPARE(progress[attempts - 1].total, std::size_t{2});
+}
 
 void AssetRunTests::mutationAwareFailuresControlContinuation_data() {
     QTest::addColumn<bool>("safe");

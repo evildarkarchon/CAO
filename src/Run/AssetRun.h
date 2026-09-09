@@ -3,6 +3,7 @@
 #include "AssetRouting/AssetRouter.h"
 #include "AssetExecution/AssetExecutor.h"
 #include "ArchiveFirstAssetDiscovery.h"
+#include "ArchiveExtraction.h"
 #include "RunLifecycle.h"
 
 #include <cstddef>
@@ -57,8 +58,8 @@ class AssetRunDiagnostics final {
 using AssetRunDiagnosticsAdapter = std::function<void(const AssetRunDiagnostics&)>;
 
 /// Supplies the production or test adapters used at the run's filesystem and execution seams.
-/// Extraction and either execution adapter are required; progress, cancellation, finalization,
-/// and result reporting are optional.
+/// Either extraction adapter and either execution adapter are required; progress, cancellation,
+/// finalization, and result reporting are optional.
 struct AssetRunAdapters final {
     ArchiveAssetAdapter extractArchive;
     RoutedAssetExecutionAdapter executeAsset;
@@ -74,6 +75,9 @@ struct AssetRunAdapters final {
     /// An unsafe result stops subsequent Assets and Archive finalization after attempt progress.
     std::function<execution::AssetExecutionResult(const routing::RoutedAsset&)>
         executeAssetWithResult;
+    /// Extracts the completed manifest plan and reports mutation evidence; replaces the void
+    /// adapter when present. Unsafe continuation stops all later work without cancellation.
+    std::function<ArchiveExtractionResult(const ArchiveExtractionPlan&)> extractArchiveWithResult;
 };
 
 /// Owns the definitive Routing Ledger and the terminal state of one Asset Run.
@@ -112,6 +116,11 @@ class AssetRunResult final {
         return _collisions;
     }
 
+    /// Borrows every result-bearing Archive attempt, including successful mutation evidence.
+    [[nodiscard]] std::span<const ArchiveExtractionResult> archiveAttempts() const noexcept {
+        return _archiveAttempts;
+    }
+
    private:
     friend class AssetRun;
 
@@ -132,6 +141,7 @@ class AssetRunResult final {
     std::vector<RunFailure> _failures;
     std::vector<ArchiveCollision> _collisions;
     std::vector<execution::AssetExecutionResult> _executionFailures;
+    std::vector<ArchiveExtractionResult> _archiveAttempts;
 };
 
 /// Orchestrates Archive-first discovery, definitive routing, and carried Asset execution.
@@ -146,7 +156,8 @@ class AssetRun final {
     /// and attempts, and once more after the final attempt, so an adapter is never abandoned
     /// mid-operation and a cancelled run never reaches diagnostics or finalization. A finalizer
     /// reports cancellation by returning false. Filesystem races are skipped during discovery;
-    /// adapter exceptions propagate. Manifest/order failures retain evidence and stop all mutation.
+    /// legacy adapter exceptions propagate. Result-bearing extraction exceptions retain unknown
+    /// mutation evidence and stop the run. Manifest/order failures stop all mutation.
     /// Archive precedence is validated before the first extraction callback.
     /// Result-bearing execution retains failed attempts and stops before further work when the
     /// adapter cannot establish safe continuation; this stop is distinct from cancellation.

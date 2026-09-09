@@ -1,4 +1,5 @@
 #include "Run/ArchiveFirstAssetDiscovery.h"
+#include "Run/ArchiveExtraction.h"
 
 #include <QtTest>
 
@@ -123,7 +124,7 @@ void createRawArchive(const std::filesystem::path& path, const int format,
         names.emplace_back(key.name(), name);
         archive.insert(std::move(key), std::move(file));
         archive.write(path);
-    } else if (format == 1) {
+    } else if (format == 1 || format == 3) {
         bsa::tes4::archive archive;
         archive.archive_flags(bsa::tes4::archive_flag::directory_strings |
                               bsa::tes4::archive_flag::file_strings);
@@ -136,6 +137,7 @@ void createRawArchive(const std::filesystem::path& path, const int format,
         names.emplace_back(fileKey.name(), fileName);
         bsa::tes4::file file;
         file.read(payload, bsa::tes4::version::sse);
+        if (format == 3) file.compress(bsa::tes4::version::sse);
         bsa::tes4::directory directory;
         directory.insert(std::move(fileKey), std::move(file));
         archive.insert(std::move(directoryKey), std::move(directory));
@@ -173,6 +175,22 @@ class ArchiveFirstAssetDiscoveryTests final : public QObject
     Q_OBJECT
 
    private slots:
+    /// A lost source after preflight commits no output and preserves safe continuation.
+    void extractionFailureBeforeMergeCommitsNothing();
+    /// Real payloads commit from registered staging and retain their original Archive.
+    void stagedExtractionCommitsPayload_data();
+    /// Exercises the staged writer for every supported Archive container.
+    void stagedExtractionCommitsPayload();
+    /// A source whose manifest changes after preflight must fail before any live merge.
+    void changedManifestFailsBeforeMerge();
+    /// A link inserted after preflight cannot redirect a staged commit outside the Mod Root.
+    void mergeRejectsLinkedParent();
+    /// A failure after the first merge retains that output and exposes unsafe mutation.
+    void partialMergeRetainsCommittedOutput();
+    /// Frozen winner decisions survive a failed Archive or a Loose Asset disappearing.
+    void frozenPrecedenceSurvivesFailures_data();
+    /// Executes real staging against a preflight plan after external tree changes.
+    void frozenPrecedenceSurvivesFailures();
     /// Covers all supported raw Archive formats with and without unsafe path traversal.
     void rawManifestPaths_data();
     /// Verifies canonical collision paths and structured rejection before extraction.
@@ -253,6 +271,156 @@ class ArchiveFirstAssetDiscoveryTests final : public QObject
     /// Verifies a selected directory alias is resolved once, even if extraction retargets it.
     void selectedDirectoryAliasKeepsItsOriginalTarget();
 };
+
+void ArchiveFirstAssetDiscoveryTests::extractionFailureBeforeMergeCommitsNothing() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto archive = root / "missing.bsa";
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const cao::run::ArchiveExtractor extractor(artifacts);
+    const auto result = extractor.extract({archive, root, {"textures/a.dds"}, {"textures/a.dds"}});
+    QVERIFY(!result.succeeded());
+    QCOMPARE(result.failure, cao::run::ArchiveExtractionFailure::ExtractionFailed);
+    QCOMPARE(result.mutation, cao::execution::MutationState::None);
+    QVERIFY(result.safeToContinue);
+    QVERIFY(!std::filesystem::exists(root / "textures"));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void ArchiveFirstAssetDiscoveryTests::stagedExtractionCommitsPayload_data() {
+    QTest::addColumn<int>("format");
+    QTest::newRow("tes3") << 0;
+    QTest::newRow("tes4") << 1;
+    QTest::newRow("fo4") << 2;
+    QTest::newRow("compressed tes4") << 3;
+}
+
+void ArchiveFirstAssetDiscoveryTests::stagedExtractionCommitsPayload() {
+    QFETCH(int, format);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto archive = root / "source.bsa";
+    createRawArchive(archive, format, "textures/a.dds");
+    const auto original = readFile(archive);
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = cao::run::ArchiveExtractor(artifacts).extract(
+        {archive, root, {"textures/a.dds"}, {"textures/a.dds"}});
+    QVERIFY(result.succeeded());
+    QCOMPARE(result.mutation, cao::execution::MutationState::Committed);
+    QCOMPARE(readFile(root / "textures/a.dds"), QByteArray("B"));
+    QCOMPARE(readFile(archive), original);
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+    QCOMPARE(readFile(root / "textures/a.dds"), QByteArray("B"));
+}
+
+void ArchiveFirstAssetDiscoveryTests::partialMergeRetainsCommittedOutput() {
+    QTemporaryDir directory;
+    QTemporaryDir stagingDirectory;
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto staging = std::filesystem::path(stagingDirectory.path().toStdWString());
+    writeFile(staging / "a.dds", "committed");
+    writeFile(staging / "z/b.dds", "blocked");
+    createTextureArchive(root / "source.bsa", staging,
+                         std::array{staging / "a.dds", staging / "z/b.dds"});
+    writeFile(root / "z", "obstruction");
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = cao::run::ArchiveExtractor(artifacts).extract(
+        {root / "source.bsa", root, {"a.dds", "z/b.dds"}, {"a.dds", "z/b.dds"}});
+    QCOMPARE(result.failure, cao::run::ArchiveExtractionFailure::MergeFailed);
+    QCOMPARE(result.mutation, cao::execution::MutationState::PartialOrUnknown);
+    QVERIFY(!result.safeToContinue);
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+    QCOMPARE(readFile(root / "a.dds"), QByteArray("committed"));
+    QCOMPARE(readFile(root / "z"), QByteArray("obstruction"));
+    QVERIFY(std::filesystem::exists(root / "source.bsa"));
+}
+
+void ArchiveFirstAssetDiscoveryTests::frozenPrecedenceSurvivesFailures_data() {
+    QTest::addColumn<bool>("loose");
+    QTest::newRow("failed winning Archive") << false;
+    QTest::newRow("disappeared Loose Asset") << true;
+}
+
+void ArchiveFirstAssetDiscoveryTests::frozenPrecedenceSurvivesFailures() {
+    QFETCH(bool, loose);
+    QTemporaryDir directory;
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    createRawArchive(root / "a.bsa", 0, "textures/a.dds");
+    createRawArchive(root / "b.bsa", 0, "textures/a.dds");
+    if (loose) writeFile(root / "textures/a.dds", "loose");
+    std::vector<cao::run::ArchiveExtractionPlan> plans;
+    std::vector<cao::run::ArchiveExtractionResult> attempts;
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = ArchiveFirstAssetDiscovery(archiveEnabledPolicy()).discover(
+        std::array{root}, [&](auto) {
+            for (const auto& plan : plans)
+                attempts.push_back(cao::run::ArchiveExtractor(artifacts).extract(plan));
+            return true;
+        }, {}, cao::run::ArchivePrecedence::deterministicDiscovery(), {},
+        [&](std::span<const cao::run::ArchiveExtractionPlan> preflight) {
+            plans.assign(preflight.begin(), preflight.end());
+            if (loose) QVERIFY(std::filesystem::remove(root / "textures/a.dds"));
+            else writeFile(root / "a.bsa", "corrupted after preflight");
+        });
+    QVERIFY(result.failures().empty());
+    QCOMPARE(attempts.size(), std::size_t{2});
+    QCOMPARE(attempts.front().succeeded(), loose);
+    QVERIFY(attempts.front().safeToContinue);
+    QVERIFY(attempts.back().succeeded());
+    QCOMPARE(attempts.back().mutation, cao::execution::MutationState::None);
+    QVERIFY(!std::filesystem::exists(root / "textures/a.dds"));
+    QVERIFY(std::filesystem::exists(root / "a.bsa"));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void ArchiveFirstAssetDiscoveryTests::changedManifestFailsBeforeMerge() {
+    QTemporaryDir directory;
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto archive = root / "source.bsa";
+    createRawArchive(archive, 0, "textures/a.dds");
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = cao::run::ArchiveExtractor(artifacts).extract(
+        {archive, root, {"textures/expected.dds"}, {"textures/expected.dds"}});
+    QCOMPARE(result.failure, cao::run::ArchiveExtractionFailure::ExtractionFailed);
+    QCOMPARE(result.mutation, cao::execution::MutationState::None);
+    QVERIFY(result.safeToContinue);
+    QVERIFY(std::filesystem::exists(archive));
+    QVERIFY(!std::filesystem::exists(root / "textures"));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void ArchiveFirstAssetDiscoveryTests::mergeRejectsLinkedParent() {
+    QTemporaryDir directory;
+    const auto base = std::filesystem::path(directory.path().toStdWString());
+    const auto root = base / "mod";
+    const auto outside = base / "outside";
+    std::filesystem::create_directories(outside);
+    createRawArchive(root / "source.bsa", 0, "textures/a.dds");
+    const auto link = root / "textures";
+#ifdef _WIN32
+    QProcess process;
+    process.start("powershell.exe", {"-NoProfile", "-NonInteractive", "-Command",
+        "New-Item -ItemType Junction -Path '" + QString::fromStdWString(link.wstring()) +
+        "' -Value '" + QString::fromStdWString(outside.wstring()) + "' -ErrorAction Stop | Out-Null"});
+    QVERIFY(process.waitForFinished());
+    QCOMPARE(process.exitCode(), 0);
+#else
+    std::filesystem::create_directory_symlink(outside, link);
+#endif
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = cao::run::ArchiveExtractor(artifacts).extract(
+        {root / "source.bsa", root, {"textures/a.dds"}, {"textures/a.dds"}});
+    // Remove only the link so fixture cleanup cannot touch its independent target.
+    QVERIFY(std::filesystem::remove(link));
+    QCOMPARE(result.failure, cao::run::ArchiveExtractionFailure::MergeFailed);
+    QCOMPARE(result.mutation, cao::execution::MutationState::PartialOrUnknown);
+    QVERIFY(!result.safeToContinue);
+    QVERIFY(!std::filesystem::exists(outside / "a.dds"));
+    QVERIFY(std::filesystem::exists(root / "source.bsa"));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
 
 void ArchiveFirstAssetDiscoveryTests::rawManifestPaths_data() {
     QTest::addColumn<int>("format");

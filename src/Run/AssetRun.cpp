@@ -67,6 +67,9 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
                                  const ArchivePrecedence& precedence) const {
     const ArchiveFirstAssetDiscovery discovery(_policy);
     bool cancelled = false;
+    bool unsafeArchive = false;
+    std::vector<ArchiveExtractionPlan> extractionPlans;
+    std::vector<ArchiveExtractionResult> archiveAttempts;
     const auto discoveryResult = discovery.discover(
         roots,
         [&](const std::span<const routing::RoutedAsset> archives) {
@@ -78,12 +81,35 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
                     cancelled = true;
                     break;
                 }
-                adapters.extractArchive(archive);
+                if (adapters.extractArchiveWithResult) {
+                    const auto& plan = extractionPlans.at(completed);
+                    ArchiveExtractionResult attempt;
+                    try {
+                        attempt = adapters.extractArchiveWithResult(plan);
+                    } catch (const std::exception& error) {
+                        // An adapter exception carries no trustworthy durable mutation evidence.
+                        attempt = {archive.executionPath(), execution::MutationState::PartialOrUnknown,
+                                   ArchiveExtractionFailure::ExtractionFailed, false, error.what()};
+                    } catch (...) {
+                        // Unknown exceptions must obey the same stop rule as typed backend errors.
+                        attempt = {archive.executionPath(), execution::MutationState::PartialOrUnknown,
+                                   ArchiveExtractionFailure::ExtractionFailed, false,
+                                   "Unknown Archive extraction exception."};
+                    }
+                    // Partial mutation is independently unsafe even if an adapter mistakenly
+                    // claims continuation; retain its original evidence for terminal diagnosis.
+                    unsafeArchive = !attempt.safeToContinue ||
+                                    attempt.mutation == execution::MutationState::PartialOrUnknown;
+                    archiveAttempts.push_back(std::move(attempt));
+                } else {
+                    adapters.extractArchive(archive);
+                }
                 ++completed;
                 if (adapters.reportProgress) {
                     adapters.reportProgress(AssetRunProgress{
                         routing::RoutedAssetPhase::ArchiveExtraction, completed, archives.size()});
                 }
+                if (unsafeArchive) break;
                 // Re-sample after the in-flight extraction and its progress callback so
                 // cancellation during the final Archive can stop discovery before the definitive
                 // tree traversal.
@@ -92,9 +118,12 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
                     break;
                 }
             }
-            return !cancelled;
+            return !cancelled && !unsafeArchive;
         },
-        adapters.isCancelled, precedence, adapters.reportArchiveCollisions);
+        adapters.isCancelled, precedence, adapters.reportArchiveCollisions,
+        [&](const std::span<const ArchiveExtractionPlan> plans) {
+            extractionPlans.assign(plans.begin(), plans.end());
+        });
     const routing::AssetRouter router(_policy);
     std::map<routing::SkipReason, std::size_t> skippedArchiveCounts;
     for (const auto reason :
@@ -114,6 +143,13 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
                                 discoveryResult.failures().end()),
         std::vector<ArchiveCollision>(discoveryResult.collisions().begin(),
                                       discoveryResult.collisions().end()));
+    result._archiveAttempts = std::move(archiveAttempts);
+    if (unsafeArchive) {
+        // Discovery's legacy false callback means cancellation. This stop instead comes from
+        // mutation evidence, and must neither appear cancelled nor reach assets or finalization.
+        result._cancelled = cancelled;
+        return result;
+    }
     if (!result.failures().empty()) {
         // A failed preflight has no trustworthy tree and must never reach mutation or finalization.
         if (adapters.reportDiscoveryFailure)
