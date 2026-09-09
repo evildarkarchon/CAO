@@ -79,7 +79,7 @@ The crash states are intentional:
   skips it and never follows the renamed file to the destination.
 - After deregistration but before conversion-source removal, both usable files remain. Cleanup
   preserves both; a later optimization attempt may complete the conversion.
-- During manifest publication, the previous complete snapshot remains authoritative. Its v2
+- During manifest publication, the previous complete snapshot remains authoritative. Its v2 or v3
   ownership permits removal of an interrupted scratch snapshot.
 
 Bootstrap claims only a newly created reserved directory. The initial complete manifest is
@@ -99,9 +99,10 @@ This protects staging from competing CAO processes, without claiming a sandbox a
 filesystem changes by the same operating-system user.
 
 Only recorded, present entries are removed, in reverse registration order. The authoritative
-manifest and stable ownership lock remain byte-for-byte unchanged; v2 scratch is disposable. A cleanup error stops Preparing and leaves the remaining entries for
-inspection or a later retry. Every terminal path still performs the normal Safety Cleanup pass;
-the recovery lock remains held until that pass finishes. Normal cleanup attempts every owned
+manifest and stable ownership lock remain byte-for-byte unchanged; v2 or v3 scratch is disposable.
+A cleanup error stops Preparing and leaves the remaining entries for inspection or a later retry.
+Every terminal path still performs the normal Safety Cleanup pass; the recovery lock remains held
+until that pass finishes. Normal cleanup attempts every owned
 entry despite individual failures, then removes the empty run child nonrecursively. It also
 covers durable records whose file creation failed before returning to the caller.
 Cancellation is observed during read-only traversal and between atomic removals. Unattempted

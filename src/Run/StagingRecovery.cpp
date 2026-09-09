@@ -213,6 +213,20 @@ bool safeRelativeName(const std::string& name) {
     return pathText(path) == name && name.find("//") == std::string::npos;
 }
 
+/// Proves a v3 sibling filename carries the manifest's Run ID and one lowercase-hex nonce.
+bool safeSiblingTextureName(const fs::path& path, const std::string& runId) {
+    const auto filename = pathText(path.filename());
+    const auto prefix = ".cao-staging-texture-" + runId + "-";
+    constexpr auto suffix = ".dds";
+    if (!filename.starts_with(prefix) || !filename.ends_with(suffix) ||
+        filename.size() != prefix.size() + 32 + std::char_traits<char>::length(suffix))
+        return false;
+    const auto nonce = filename.substr(prefix.size(), 32);
+    return std::all_of(nonce.begin(), nonce.end(), [](const unsigned char character) {
+        return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f');
+    });
+}
+
 /// Parses bounded ownership records, proving root/run identity and namespace containment.
 std::vector<Artifact> readManifest(const fs::path& staging, const fs::path& root,
                                    std::stop_token stop, unsigned& version) {
@@ -253,8 +267,7 @@ std::vector<Artifact> readManifest(const fs::path& staging, const fs::path& root
             unverified(manifest, "The ownership manifest contains an unsafe artifact record");
         const auto path = fs::path(std::u8string(name.begin(), name.end()));
         if (rootRelative) {
-            const auto filename = pathText(path.filename());
-            if (i == 0 || !filename.starts_with(".cao-staging-texture-") ||
+            if (i == 0 || !safeSiblingTextureName(path, runId) ||
                 hasStagingComponent(path.parent_path()) || !rootOwned.emplace(name, false).second)
                 unverified(manifest,
                            "A sibling Texture record is unsafe or duplicates owned output");
@@ -293,7 +306,7 @@ std::map<fs::path, std::unique_ptr<NativeLock>> validateTree(const fs::path& sta
         observeCancellation(stop);
         const auto relative = entry.path().lexically_relative(staging);
         if (relative == "owner.lock" || relative == "ownership.manifest") continue;
-        // A valid v2 manifest owns this fixed scratch control even if a crash truncated it.
+        // A valid v2 or v3 manifest owns this fixed scratch control even if a crash truncated it.
         if (version >= 2 && relative == "ownership.manifest.next") {
             if (!fs::is_regular_file(inspect(entry.path())))
                 unverified(entry.path(), "The manifest scratch control is not a regular file");

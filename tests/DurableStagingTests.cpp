@@ -18,6 +18,8 @@ class DurableStagingTests final : public QObject {
     void recoveryAndProductionShareTheOwnershipLock();
     /// A cancelled preparation leaves its durable sibling registration for a later recovery.
     void cancelledPreparationPreservesDurableSibling();
+    /// A malformed sibling record cannot authorize deletion of a similarly named Texture file.
+    void malformedSiblingOwnershipIsPreserved();
     /// Interrupted snapshot scratch is disposable only under valid manifest ownership.
     void partialScratchIsRecoveredButCorruptOwnershipIsPreserved();
     /// Cleanup removes only registered temporary entries and releases no committed destination.
@@ -112,6 +114,35 @@ void DurableStagingTests::cancelledPreparationPreservesDurableSibling() {
     cao::run::TemporaryArtifactRegistry cancelled;
 
     QVERIFY(!cancelled.prepareRoot(root, cancellation.get_token()).has_value());
+    QVERIFY(fs::exists(temporary));
+}
+
+void DurableStagingTests::malformedSiblingOwnershipIsPreserved() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    fs::create_directory(root / "textures");
+    fs::path temporary;
+    {
+        cao::run::TemporaryArtifactRegistry producer;
+        temporary = producer.stageFile(root, root / "textures" / "texture.dds").path;
+        std::ofstream(temporary) << "partial";
+    }
+    const auto manifest = root / ".cao-staging" / "ownership.manifest";
+    std::ifstream input(manifest, std::ios::binary);
+    std::string bytes(std::istreambuf_iterator<char>(input), {});
+    input.close();
+    const auto relative = temporary.lexically_relative(root).generic_string();
+    const auto position = bytes.find(relative);
+    QVERIFY(position != std::string::npos);
+    bytes.replace(position, relative.size(), "textures/.cao-staging-texture-wrong-short.dds");
+    std::ofstream(manifest, std::ios::binary | std::ios::trunc) << bytes;
+
+    cao::run::StagingRecovery recovery;
+    const auto failure = recovery.recover(root);
+
+    QVERIFY(failure.has_value());
+    QCOMPARE(failure->code(), cao::run::RunFailureCode::StagingOwnershipUnverified);
     QVERIFY(fs::exists(temporary));
 }
 
