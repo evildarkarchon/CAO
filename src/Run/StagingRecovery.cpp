@@ -213,9 +213,10 @@ bool safeRelativeName(const std::string& name) {
     return pathText(path) == name && name.find("//") == std::string::npos;
 }
 
-/// Selects the closed staging namespace for canonical Texture and Mesh output extensions.
+/// Selects the closed staging namespace for canonical Asset output extensions.
 std::string stagingPrefix(const std::string& extension) {
     if (extension == ".dds") return ".cao-staging-texture-";
+    if (extension == ".hkx") return ".cao-staging-animation-";
     if (extension == ".nif" || extension == ".btr" || extension == ".bto")
         return ".cao-staging-mesh-";
     return {};
@@ -464,7 +465,7 @@ fs::path StagingRecovery::stageFile(const fs::path& modRoot, const fs::path& des
     });
     const auto prefix = stagingPrefix(extension);
     if (prefix.empty())
-        throw std::invalid_argument("Asset staging requires a DDS, NIF, BTR, or BTO destination");
+        throw std::invalid_argument("Asset staging requires a DDS, NIF, BTR, BTO, or HKX destination");
     if (const auto failure = recover(root)) throw std::runtime_error(failure->detail());
     const auto staging = root / ".cao-staging";
     if (!_state->areas.contains(root)) {

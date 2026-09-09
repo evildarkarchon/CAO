@@ -70,8 +70,10 @@ class MainOptimizer final : public QObject, private cao::execution::AssetExecuti
     /// Saves the loaded Mesh once after all carried operations complete.
     bool saveMesh(const std::filesystem::path& path) override;
 
-    /// Applies or evaluates Animation optimization according to the carried execution mode.
-    cao::execution::OperationResult optimizeAnimation(const std::filesystem::path& path,
+    /// Evaluates an Animation in Dry Run, or writes its conversion to registered staging in Apply.
+    /// outputPath is empty for Dry Run; the Asset Executor owns commitment and cleanup in Apply.
+    cao::execution::OperationResult optimizeAnimation(const std::filesystem::path& sourcePath,
+                                                      const std::filesystem::path& outputPath,
                                                       cao::routing::ExecutionMode mode) override;
 
     const OptionsCAO& _optOptions;

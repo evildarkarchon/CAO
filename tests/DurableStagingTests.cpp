@@ -28,6 +28,10 @@ class DurableStagingTests final : public QObject {
     void meshSiblingRecoveryPreservesOriginal();
     /// A mismatched Mesh suffix cannot authorize deletion under a valid ownership prefix.
     void malformedMeshSiblingOwnershipIsPreserved();
+    /// Recovers abandoned uppercase HKX staging while preserving the original Animation bytes.
+    void animationSiblingRecoveryPreservesOriginal();
+    /// An Animation prefix with a mismatched suffix cannot authorize evidence deletion.
+    void malformedAnimationSiblingOwnershipIsPreserved();
     /// Interrupted snapshot scratch is disposable only under valid manifest ownership.
     void partialScratchIsRecoveredButCorruptOwnershipIsPreserved();
     /// Cleanup removes only registered temporary entries and releases no committed destination.
@@ -234,6 +238,67 @@ void DurableStagingTests::malformedMeshSiblingOwnershipIsPreserved() {
     QCOMPARE(failure->code(), cao::run::RunFailureCode::StagingOwnershipUnverified);
     QVERIFY(fs::exists(temporary));
     QVERIFY(fs::exists(invalid));
+}
+
+void DurableStagingTests::animationSiblingRecoveryPreservesOriginal() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    fs::create_directory(root / "animations");
+    const auto destination = root / "animations" / "Walk.HKX";
+    std::ofstream(destination) << "original Animation";
+    fs::path temporary;
+    {
+        cao::run::TemporaryArtifactRegistry producer;
+        temporary = producer.stageFile(root, destination).path;
+        QCOMPARE(temporary.parent_path(), destination.parent_path());
+        QCOMPARE(temporary.extension(), fs::path(".hkx"));
+        QVERIFY(temporary.filename().string().starts_with(".cao-staging-animation-"));
+        std::ofstream(temporary) << "partial Animation";
+    }
+
+    cao::run::StagingRecovery recovery;
+    QVERIFY(!recovery.recover(root).has_value());
+    QVERIFY(!fs::exists(temporary));
+    QFile original(QString::fromStdWString(destination.wstring()));
+    QVERIFY(original.open(QIODevice::ReadOnly));
+    QCOMPARE(original.readAll(), QByteArray("original Animation"));
+}
+
+void DurableStagingTests::malformedAnimationSiblingOwnershipIsPreserved() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    fs::path temporary;
+    {
+        cao::run::TemporaryArtifactRegistry producer;
+        temporary = producer.stageFile(root, root / "walk.hkx").path;
+        std::ofstream(temporary) << "partial Animation";
+    }
+    const auto manifest = root / ".cao-staging" / "ownership.manifest";
+    std::ifstream input(manifest, std::ios::binary);
+    std::string bytes(std::istreambuf_iterator<char>(input), {});
+    input.close();
+    const auto relative = temporary.lexically_relative(root).generic_string();
+    const auto position = bytes.find(relative);
+    QVERIFY(position != std::string::npos);
+    auto invalid = temporary;
+    invalid.replace_extension(".nif");
+    // A valid Mesh extension still cannot prove ownership under an Animation staging prefix.
+    std::ofstream(invalid) << "unowned evidence";
+    bytes.replace(position, relative.size(), invalid.lexically_relative(root).generic_string());
+    std::ofstream(manifest, std::ios::binary | std::ios::trunc) << bytes;
+
+    cao::run::StagingRecovery recovery;
+    const auto failure = recovery.recover(root);
+    QVERIFY(failure.has_value());
+    QCOMPARE(failure->code(), cao::run::RunFailureCode::StagingOwnershipUnverified);
+    QFile partial(QString::fromStdWString(temporary.wstring()));
+    QVERIFY(partial.open(QIODevice::ReadOnly));
+    QCOMPARE(partial.readAll(), QByteArray("partial Animation"));
+    QFile evidence(QString::fromStdWString(invalid.wstring()));
+    QVERIFY(evidence.open(QIODevice::ReadOnly));
+    QCOMPARE(evidence.readAll(), QByteArray("unowned evidence"));
 }
 
 void DurableStagingTests::partialScratchIsRecoveredButCorruptOwnershipIsPreserved() {

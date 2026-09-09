@@ -279,13 +279,14 @@ bool MainOptimizer::saveMesh(const std::filesystem::path& path) {
 }
 
 cao::execution::OperationResult MainOptimizer::optimizeAnimation(
-    const std::filesystem::path& path, const cao::routing::ExecutionMode mode) {
-    const auto executionPath = QString::fromStdWString(path.wstring());
+    const std::filesystem::path& sourcePath, const std::filesystem::path& outputPath,
+    const cao::routing::ExecutionMode mode) {
+    const auto executionPath = QString::fromStdWString(sourcePath.wstring());
     if (mode == cao::routing::ExecutionMode::DryRun) {
         PLOG_INFO << executionPath + " would be converted to the appropriate format.";
         return cao::execution::OperationResult::changed();
     }
-    return _animOpt.convert(executionPath)
+    return _animOpt.convert(executionPath, QString::fromStdWString(outputPath.wstring()))
                ? cao::execution::OperationResult::changed()
                : cao::execution::OperationResult::failed("Failed to optimize Animation.");
 }

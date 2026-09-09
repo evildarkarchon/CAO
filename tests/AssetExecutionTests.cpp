@@ -141,11 +141,17 @@ class RecordingBackend final : public AssetExecutionBackend {
         return saveSucceeds;
     }
 
+    /// Writes converted fixture bytes only to the supplied output path in Apply mode.
     OperationResult optimizeAnimation(const std::filesystem::path& path,
+                                      const std::filesystem::path& outputPath,
                                       const ExecutionMode mode) override {
         animationPath = path;
         animationMode = mode;
         ++animationOptimizations;
+        savedAnimationPath = outputPath;
+        if (animationSave) return animationSave(outputPath);
+        if (mode == ExecutionMode::Apply && operationResult.succeeded())
+            std::ofstream(outputPath) << "converted";
         return operationResult;
     }
 
@@ -182,6 +188,8 @@ class RecordingBackend final : public AssetExecutionBackend {
     std::filesystem::path savedMeshPath;
     std::string meshContents{"textures/armor.tga"};
 
+    std::function<OperationResult(const std::filesystem::path&)> animationSave;
+    std::filesystem::path savedAnimationPath;
     int animationOptimizations{};
     std::filesystem::path animationPath;
     std::optional<ExecutionMode> animationMode;
@@ -296,6 +304,10 @@ class AssetExecutionTests final : public QObject {
 
     /// Verifies an Animation backend failure is returned to the caller.
     void animationFailureIsReported();
+    /// Covers failed, invalid, unchanged, and throwing converter output before commit.
+    void animationStagedOutcomes_data();
+    /// Preserves original bytes and reports the stable failed boundary while cleaning staging.
+    void animationStagedOutcomes();
 
     /// Verifies a reported backend failure cannot alter the earlier Routing Decision.
     void executionFailurePreservesRoutedDecision();
@@ -946,22 +958,32 @@ void AssetExecutionTests::animationExecution() {
     QFETCH(int, mode);
 
     const auto executionMode = static_cast<ExecutionMode>(mode);
-    const auto asset = routeAsset(executionMode, {RequestedWork::AnimationOptimization},
-                                  std::filesystem::path(L"Animations/Walk.HKX"));
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto source = std::filesystem::path(directory.path().toStdWString()) / "Walk.hkx";
+    std::ofstream(source) << "original";
+    const auto asset = routeAsset(executionMode, {RequestedWork::AnimationOptimization}, source);
     RecordingBackend backend;
     const AssetExecutor executor(backend);
 
     const auto result = executor.execute(asset);
 
     QVERIFY(result.succeeded());
+    QCOMPARE(result.mutationState(), executionMode == ExecutionMode::Apply
+                                         ? MutationState::Committed : MutationState::None);
+    QCOMPARE(readBytes(source), executionMode == ExecutionMode::Apply
+                                    ? std::string("converted") : std::string("original"));
     QCOMPARE(backend.animationOptimizations, 1);
     QVERIFY(backend.animationPath == asset.executionPath());
     QCOMPARE(backend.animationMode.value(), executionMode);
 }
 
 void AssetExecutionTests::animationFailureIsReported() {
-    const auto asset = routeAsset(ExecutionMode::Apply, {RequestedWork::AnimationOptimization},
-                                  std::filesystem::path(L"Animations/Walk.hkx"));
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto source = std::filesystem::path(directory.path().toStdWString()) / "Walk.hkx";
+    std::ofstream(source) << "original";
+    const auto asset = routeAsset(ExecutionMode::Apply, {RequestedWork::AnimationOptimization}, source);
     RecordingBackend backend;
     backend.operationResult = OperationResult::failed("synthetic animation failure");
     const AssetExecutor executor(backend);
@@ -970,7 +992,61 @@ void AssetExecutionTests::animationFailureIsReported() {
 
     QVERIFY(!result.succeeded());
     QCOMPARE(result.failure().value(), AssetExecutionFailure::OperationFailed);
-    QCOMPARE(result.message(), std::string("synthetic animation failure"));
+    QCOMPARE(result.serviceDetail(), std::string("synthetic animation failure"));
+    QCOMPARE(result.mutationState(), MutationState::None);
+    QVERIFY(result.safeToContinue());
+    QCOMPARE(readBytes(source), std::string("original"));
+}
+
+void AssetExecutionTests::animationStagedOutcomes_data() {
+    QTest::addColumn<int>("scenario");
+    QTest::newRow("partial output failure") << 0;
+    QTest::newRow("empty output success") << 1;
+    QTest::newRow("standard exception") << 2;
+    QTest::newRow("unknown exception") << 3;
+    QTest::newRow("unchanged output") << 4;
+}
+
+void AssetExecutionTests::animationStagedOutcomes() {
+    QFETCH(int, scenario);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto source = root / "Walk.HKX";
+    std::ofstream(source) << "original";
+    RecordingBackend backend;
+    backend.animationSave = [&](const std::filesystem::path& staged) -> OperationResult {
+        if (scenario == 1) return OperationResult::changed();
+        std::ofstream(staged) << "partial";
+        if (scenario == 2) throw std::runtime_error("converter exception");
+        if (scenario == 3) throw 42;
+        if (scenario == 4) return OperationResult::unchanged();
+        return OperationResult::failed("converter failed");
+    };
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::AnimationOptimization}, source));
+    QCOMPARE(readBytes(source), std::string("original"));
+    QCOMPARE(result.mutationState(), MutationState::None);
+    QCOMPARE(result.safeToContinue(), scenario != 2 && scenario != 3);
+    QVERIFY(result.cleanupFailures().empty());
+    QVERIFY(backend.savedAnimationPath.parent_path() == source.parent_path());
+    QVERIFY(cao::run::isStagingName(backend.savedAnimationPath));
+    QVERIFY(!std::filesystem::exists(backend.savedAnimationPath));
+    if (scenario == 4) {
+        QVERIFY(result.succeeded());
+        return;
+    }
+    QCOMPARE(result.failure().value(), scenario == 0 ? AssetExecutionFailure::OperationFailed
+                                        : scenario == 1 ? AssetExecutionFailure::SaveFailed
+                                                        : AssetExecutionFailure::BackendException);
+    QCOMPARE(result.failureCategory().value(),
+             scenario == 0 ? cao::execution::ExecutionFailureCategory::Backend
+             : scenario == 1 ? cao::execution::ExecutionFailureCategory::Filesystem
+                             : cao::execution::ExecutionFailureCategory::Contract);
+    QCOMPARE(result.operation(), std::string(scenario == 1 ? "save_animation" : "optimize_animation"));
+    QVERIFY(result.affectedPath() == source);
+    QCOMPARE(result.phase(), cao::run::RunPhase::ProcessingAssets);
+    if (scenario == 2) QCOMPARE(result.serviceDetail(), std::string("converter exception"));
 }
 
 void AssetExecutionTests::executionFailurePreservesRoutedDecision() {

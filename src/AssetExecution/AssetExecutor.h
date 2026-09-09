@@ -168,8 +168,11 @@ class AssetExecutionBackend {
     /// Closes every output handle before returning so the executor can commit the staged file.
     virtual bool saveMesh(const std::filesystem::path& path) = 0;
 
-    /// Applies or evaluates the carried Animation optimization operation.
+    /// Reads the source Animation and writes changed Apply output only to registered outputPath.
+    /// Dry Run receives an empty outputPath and must not write. Close output handles before return;
+    /// unchanged or failed operations never authorize a destination commit.
     virtual OperationResult optimizeAnimation(const std::filesystem::path& path,
+                                              const std::filesystem::path& outputPath,
                                               routing::ExecutionMode mode) = 0;
 };
 
@@ -186,7 +189,7 @@ class AssetExecutor final {
                                                const std::filesystem::path& modRoot = {}) const;
 
     /// Executes using the run's registry, which must outlive the attempt and receive Safety
-    /// Cleanup. Texture and Mesh saves durably register same-directory staging before creation;
+    /// Cleanup. Texture, Mesh, and Animation saves durably register same-directory staging before creation;
     /// Texture conversion commits before source removal. Supply the selected Mod Root, or omit it
     /// for a standalone Asset in its parent directory.
     [[nodiscard]] AssetExecutionResult execute(const routing::RoutedAsset& asset,
@@ -206,8 +209,10 @@ class AssetExecutor final {
                                                    run::TemporaryArtifactRegistry& artifacts,
                                                    const std::filesystem::path& modRoot) const;
 
-    /// Executes the carried Animation operation or reports a backend failure.
-    [[nodiscard]] AssetExecutionResult executeAnimation(const routing::RoutedAsset& asset) const;
+    /// Stages changed Animation output and reports durable mutation at each failure boundary.
+    [[nodiscard]] AssetExecutionResult executeAnimation(
+        const routing::RoutedAsset& asset, run::TemporaryArtifactRegistry& artifacts,
+        const std::filesystem::path& modRoot) const;
 
     AssetExecutionBackend& _backend;
 };

@@ -194,6 +194,11 @@ private slots:
  /// Verifies mutation evidence controls ordering, terminal failure retention, and attempt totals.
  void mutationAwareFailuresControlContinuation();
 
+ /// Supplies safe Animation failures and unsafe exceptions at both attempt boundaries.
+ void animationFailuresPreserveProgressAndEvidence_data();
+ /// Verifies Animation outcomes advance progress and retain the evidence controlling continuation.
+ void animationFailuresPreserveProgressAndEvidence();
+
  /// Verifies malformed manifests stop every mutation and finalization adapter.
  void unreadableArchiveStopsRunBeforeMutation();
 
@@ -296,6 +301,77 @@ void AssetRunTests::mutationAwareFailuresControlContinuation() {
     QCOMPARE(progress.size(), attempts);
     QCOMPARE(progress.back().completed, attempts);
     QCOMPARE(progress.back().total, std::size_t(2));
+}
+
+void AssetRunTests::animationFailuresPreserveProgressAndEvidence_data() {
+    QTest::addColumn<bool>("safe");
+    QTest::addColumn<int>("failedAttempt");
+    QTest::newRow("safe-failure-before-success") << true << 1;
+    QTest::newRow("success-before-safe-failure") << true << 2;
+    QTest::newRow("unsafe-exception-stops-next-animation") << false << 1;
+    QTest::newRow("unsafe-final-exception-stops-finalization") << false << 2;
+}
+
+void AssetRunTests::animationFailuresPreserveProgressAndEvidence() {
+    QFETCH(bool, safe);
+    QFETCH(int, failedAttempt);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "first.hkx");
+    writeFile(root / "second.hkx");
+    std::size_t attempts = 0;
+    bool finalized = false;
+    std::filesystem::path failedPath;
+    std::vector<AssetRunProgress> progress;
+    AssetRunAdapters adapters;
+    adapters.reportProgress = [&](const auto& update) { progress.push_back(update); };
+    adapters.finalizeArchiveLifecycle = [&] {
+        finalized = true;
+        return true;
+    };
+    adapters.executeAssetWithResult = [&](const auto& asset) {
+        ++attempts;
+        if (attempts != static_cast<std::size_t>(failedAttempt))
+            return cao::execution::AssetExecutionResult::success(
+                cao::execution::MutationState::Committed);
+        failedPath = asset.executionPath();
+        // Asset Executor owns exception containment; this seam receives its structured outcome.
+        return cao::execution::AssetExecutionResult::failed(
+            safe ? cao::execution::AssetExecutionFailure::OperationFailed
+                 : cao::execution::AssetExecutionFailure::BackendException,
+            "Animation failed", safe ? cao::execution::MutationState::None
+                                     : cao::execution::MutationState::PartialOrUnknown,
+            safe, failedPath, "optimize_animation", "animation backend diagnostic");
+    };
+
+    const auto result = AssetRun(allLooseTargetsPolicy()).execute(std::array{root}, adapters);
+
+    QCOMPARE(attempts, safe ? std::size_t{2} : static_cast<std::size_t>(failedAttempt));
+    QCOMPARE(finalized, safe);
+    QVERIFY(!result.cancelled());
+    QCOMPARE(result.executionFailures().size(), std::size_t{1});
+    const auto& failure = result.executionFailures().front();
+    QCOMPARE(failure.failure().value(), safe ? cao::execution::AssetExecutionFailure::OperationFailed
+                                           : cao::execution::AssetExecutionFailure::BackendException);
+    QCOMPARE(failure.failureCategory().value(),
+             safe ? cao::execution::ExecutionFailureCategory::Backend
+                  : cao::execution::ExecutionFailureCategory::Contract);
+    QCOMPARE(failure.mutationState(), safe ? cao::execution::MutationState::None
+                                         : cao::execution::MutationState::PartialOrUnknown);
+    QCOMPARE(failure.safeToContinue(), safe);
+    QCOMPARE(failure.phase(), cao::run::RunPhase::ProcessingAssets);
+    QCOMPARE(failure.affectedPath(), failedPath);
+    QCOMPARE(failure.operation(), std::string("optimize_animation"));
+    QCOMPARE(failure.message(), std::string("Animation failed"));
+    QCOMPARE(failure.serviceDetail(), std::string("animation backend diagnostic"));
+    QCOMPARE(progress.size(), attempts);
+    QCOMPARE(progress.front().completed, std::size_t{1});
+    QCOMPARE(progress.front().total, std::size_t{2});
+    if (attempts == 2) {
+        QCOMPARE(progress.back().completed, std::size_t{2});
+        QCOMPARE(progress.back().total, std::size_t{2});
+    }
 }
 
 void AssetRunTests::unreadableArchiveStopsRunBeforeMutation() {
