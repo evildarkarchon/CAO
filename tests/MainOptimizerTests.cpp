@@ -152,6 +152,23 @@ private slots:
  /// Keeps temporary Texture bytes out of archives and their packed-source deletion pass.
  void packingPreservesStagingFiles();
 
+ /// Retains every Loose Asset when an output cannot include all of its planned sources.
+ void failedPackingRetainsSourcesAndExistingArchives();
+
+ /// Covers cancellation before work, between outputs, and after the final output.
+ void finalizationFreezesTotalAndCancelsBetweenOutputs_data();
+ /// Observes a complete multi-root plan before mutation and commits only attempted outputs.
+ void finalizationFreezesTotalAndCancelsBetweenOutputs();
+
+ /// Reserves distinct names without filesystem placeholders and rejects a later occupied output.
+ void plannedNamesAreDistinctAndCommitPreservesNewDestination();
+
+ /// Reports recoverable cleanup failure only after publishing a readable Archive.
+ void committedArchiveRetainsLockedSource();
+
+ /// Keeps a committed output loadable when cancellation leaves later outputs unattempted.
+ void cancellationPreservesCommittedArchiveLoadingPlugin();
+
  /// Leaves staging ownership directories to their owner while pruning ordinary empty paths.
  void emptyDirectoryCleanupPreservesStaging();
 
@@ -283,7 +300,9 @@ void MainOptimizerTests::packingPreservesStagingFiles() {
               QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
     Profiles::setCurrentProfile("SSE");
     const auto mod = root / "mod";
-    const auto staged = mod / ".CAO-STAGING" / "run-1" / "pending.dds";
+    QVERIFY(std::filesystem::create_directories(mod));
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto staged = artifacts.stageArchiveFile(mod).path;
     const auto nestedStaged = mod / "textures" / ".cao-staging-old" / "pending.dds";
     writeFile(staged, QByteArrayLiteral("temporary bytes"));
     writeFile(nestedStaged, QByteArrayLiteral("unverified temporary bytes"));
@@ -293,13 +312,263 @@ void MainOptimizerTests::packingPreservesStagingFiles() {
     options.bBsaCompress = false;
     options.bBsaDeleteSource = true;
 
-    BSAOptimizer().packAll(QString::fromStdWString(mod.wstring()), options);
+    const BSAOptimizer optimizer;
+    const std::array roots{mod};
+    const auto plan = optimizer.planFinalization(roots, options);
+    const auto result = optimizer.finalize(plan, artifacts);
+    QCOMPARE(result.attempts.size(), std::size_t{1});
+    QVERIFY(result.attempts.front().succeeded());
 
     QVERIFY(std::filesystem::exists(staged));
     QVERIFY(std::filesystem::exists(nestedStaged));
     QVERIFY(!std::filesystem::exists(mod / "textures" / "complete.dds"));
     QVERIFY(
         !QDir(QString::fromStdWString(mod.wstring())).entryList({"*.bsa"}, QDir::Files).isEmpty());
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void MainOptimizerTests::failedPackingRetainsSourcesAndExistingArchives() {
+#ifdef _WIN32
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = root / "mod";
+    const auto available = mod / "textures" / "available.dds";
+    const auto unavailable = mod / "textures" / "unavailable.dds";
+    const auto existingArchive = mod / "mod.bsa";
+    writeFile(available, QByteArrayLiteral("available source bytes"));
+    writeFile(unavailable, QByteArrayLiteral("unavailable source bytes"));
+    writeFile(existingArchive, QByteArrayLiteral("previous archive bytes"));
+    // Deny reads while allowing rename/delete, so a partial writer result cannot be mistaken
+    // for a successful output or hidden by an unrelated quarantine sharing violation.
+    const auto locked = CreateFileW(unavailable.c_str(), GENERIC_WRITE,
+                                   FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    QVERIFY(locked != INVALID_HANDLE_VALUE);
+    OptionsCAO options;
+    options.bBsaCreateDummies = false;
+    options.bBsaCompress = false;
+    options.bBsaDeleteSource = true;
+    BSAOptimizer().packAll(QString::fromStdWString(mod.wstring()), options);
+    QVERIFY(CloseHandle(locked));
+
+    QVERIFY(std::filesystem::exists(available));
+    QVERIFY(std::filesystem::exists(unavailable));
+    QFile archive(QString::fromStdWString(existingArchive.wstring()));
+    QVERIFY(archive.open(QIODevice::ReadOnly));
+    QCOMPARE(archive.readAll(), QByteArrayLiteral("previous archive bytes"));
+#else
+    QSKIP("Windows sharing modes provide a deterministic source read failure.");
+#endif
+}
+
+void MainOptimizerTests::finalizationFreezesTotalAndCancelsBetweenOutputs_data() {
+    QTest::addColumn<int>("cancelAfter");
+    QTest::newRow("before-first-output") << 0;
+    QTest::newRow("between-outputs") << 1;
+    QTest::newRow("after-final-output") << 2;
+    QTest::newRow("complete-run") << -1;
+}
+
+void MainOptimizerTests::finalizationFreezesTotalAndCancelsBetweenOutputs() {
+    QFETCH(int, cancelAfter);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const std::array roots{root / "mod-a", root / "mod-b"};
+    for (const auto& mod : roots)
+        writeFile(mod / "textures" / "asset.dds", QByteArrayLiteral("source bytes"));
+    OptionsCAO options;
+    options.bBsaCreateDummies = false;
+    options.bBsaCompress = false;
+    options.bBsaDeleteSource = true;
+    const BSAOptimizer optimizer;
+    const auto plan = optimizer.planFinalization(roots, options);
+    QCOMPARE(plan.outputs().size(), std::size_t{2});
+    for (const auto& output : plan.outputs()) {
+        QVERIFY(!std::filesystem::exists(output.archivePath));
+        QVERIFY(!std::filesystem::exists(output.modRoot / ".cao-staging"));
+        QCOMPARE(output.sources.size(), std::size_t{1});
+        QVERIFY(std::filesystem::exists(output.sources.front()));
+    }
+    cao::run::TemporaryArtifactRegistry artifacts;
+    std::stop_source stop;
+    std::vector<cao::run::ArchiveFinalizationProgress> progress;
+    const auto result = optimizer.finalize(plan, artifacts, stop.get_token(),
+        [&](const cao::run::ArchiveFinalizationProgress& value) {
+            progress.push_back(value);
+            if (static_cast<int>(value.completed) == cancelAfter) stop.request_stop();
+        });
+    const auto attempted = cancelAfter < 0 ? std::size_t{2} : static_cast<std::size_t>(cancelAfter);
+    QCOMPARE(result.attempts.size(), attempted);
+    QCOMPARE(result.cancelled, cancelAfter >= 0);
+    QVERIFY(result.safeToContinue);
+    QCOMPARE(progress.size(), attempted + 1);
+    for (std::size_t index = 0; index < progress.size(); ++index) {
+        QCOMPARE(progress[index].total, std::size_t{2});
+        QCOMPARE(progress[index].completed, index);
+        QCOMPARE(progress[index].succeeded, index);
+        QCOMPARE(progress[index].failed, std::size_t{0});
+    }
+    for (std::size_t index = 0; index < plan.outputs().size(); ++index) {
+        const auto& output = plan.outputs()[index];
+        QCOMPARE(std::filesystem::exists(output.archivePath), index < attempted);
+        QCOMPARE(std::filesystem::exists(output.sources.front()), index >= attempted);
+        if (index < attempted) {
+            QVERIFY(result.attempts[index].succeeded());
+            QVERIFY(btu::bsa::read_archive(output.archivePath).has_value());
+        }
+    }
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void MainOptimizerTests::plannedNamesAreDistinctAndCommitPreservesNewDestination() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = root / "mod";
+    writeFile(mod / "meshes" / "asset.nif", QByteArrayLiteral("mesh bytes"));
+    writeFile(mod / "sound" / "asset.wav", QByteArrayLiteral("sound bytes"));
+    OptionsCAO options;
+    options.bBsaCreateDummies = false;
+    options.bBsaCompress = false;
+    options.bBsaDeleteSource = true;
+    options.bBsaMergeIncomp = false;
+    options.bBsaMergeTexture = false;
+    const BSAOptimizer optimizer;
+    const std::array roots{mod};
+    const auto plan = optimizer.planFinalization(roots, options);
+    QCOMPARE(plan.outputs().size(), std::size_t{2});
+    QVERIFY(plan.outputs()[0].archivePath != plan.outputs()[1].archivePath);
+    for (const auto& output : plan.outputs()) {
+        QVERIFY(!std::filesystem::exists(output.archivePath));
+    }
+    cao::run::TemporaryArtifactRegistry artifacts;
+    std::vector<cao::run::ArchiveFinalizationProgress> progress;
+    const auto result = optimizer.finalize(plan, artifacts, {},
+        [&](const cao::run::ArchiveFinalizationProgress& value) {
+            progress.push_back(value);
+            // Simulate a competing creator after planning and before the first attempt.
+            if (value.completed == 0)
+                writeFile(plan.outputs()[0].archivePath, QByteArrayLiteral("competing creator bytes"));
+        });
+    QCOMPARE(result.attempts.size(), std::size_t{2});
+    QVERIFY(result.safeToContinue);
+    QVERIFY(!result.cancelled);
+    QCOMPARE(progress.back().completed, std::size_t{2});
+    QCOMPARE(progress.back().failed, std::size_t{1});
+    QCOMPARE(progress.back().succeeded, std::size_t{1});
+    QCOMPARE(progress.size(), std::size_t{3});
+    QCOMPARE(progress[1].total, std::size_t{2});
+    QCOMPARE(progress[1].completed, std::size_t{1});
+    QCOMPARE(progress[1].failed, std::size_t{1});
+    QCOMPARE(progress[1].succeeded, std::size_t{0});
+    for (std::size_t index = 0; index < plan.outputs().size(); ++index) {
+        QCOMPARE(result.attempts[index].succeeded(), index == 1);
+        QCOMPARE(result.attempts[index].mutation, index == 0 ? cao::execution::MutationState::None
+                                                           : cao::execution::MutationState::Committed);
+        const auto& output = plan.outputs()[index];
+        for (const auto& source : output.sources)
+            QCOMPARE(std::filesystem::exists(source), index == 0);
+        QFile destination(QString::fromStdWString(output.archivePath.wstring()));
+        QVERIFY(destination.open(QIODevice::ReadOnly));
+        if (index == 0)
+            QCOMPARE(destination.readAll(), QByteArrayLiteral("competing creator bytes"));
+        else
+            QVERIFY(btu::bsa::read_archive(output.archivePath).has_value());
+    }
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void MainOptimizerTests::cancellationPreservesCommittedArchiveLoadingPlugin() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const std::array roots{root / "mod-a", root / "mod-b"};
+    for (const auto& mod : roots)
+        writeFile(mod / "textures" / "asset.dds", QByteArrayLiteral("source bytes"));
+    OptionsCAO options;
+    options.bBsaCreateDummies = true;
+    options.bBsaCompress = false;
+    options.bBsaDeleteSource = true;
+    const BSAOptimizer optimizer;
+    const auto plan = optimizer.planFinalization(roots, options);
+    QCOMPARE(plan.outputs().size(), std::size_t{2});
+    QVERIFY(!std::filesystem::exists(roots[0] / "mod-a.esp"));
+    QVERIFY(!std::filesystem::exists(roots[1] / "mod-b.esp"));
+    cao::run::TemporaryArtifactRegistry artifacts;
+    std::stop_source stop;
+    const auto result = optimizer.finalize(plan, artifacts, stop.get_token(),
+        [&](const cao::run::ArchiveFinalizationProgress& progress) {
+            if (progress.completed == 1) stop.request_stop();
+        });
+    QCOMPARE(result.attempts.size(), std::size_t{1});
+    QVERIFY(result.cancelled);
+    QVERIFY(result.attempts.front().succeeded());
+    QVERIFY(btu::bsa::read_archive(plan.outputs()[0].archivePath).has_value());
+    QVERIFY(!std::filesystem::exists(roots[0] / "textures" / "asset.dds"));
+    QVERIFY(std::filesystem::exists(roots[0] / "mod-a.esp"));
+    QVERIFY(std::filesystem::exists(roots[1] / "textures" / "asset.dds"));
+    QVERIFY(!std::filesystem::exists(plan.outputs()[1].archivePath));
+    QVERIFY(!std::filesystem::exists(roots[1] / "mod-b.esp"));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void MainOptimizerTests::committedArchiveRetainsLockedSource() {
+#ifdef _WIN32
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = root / "mod";
+    const auto source = mod / "textures" / "asset.dds";
+    writeFile(source, QByteArrayLiteral("retained source bytes"));
+    OptionsCAO options;
+    options.bBsaCreateDummies = false;
+    options.bBsaCompress = false;
+    options.bBsaDeleteSource = true;
+    const BSAOptimizer optimizer;
+    const std::array roots{mod};
+    const auto plan = optimizer.planFinalization(roots, options);
+    QCOMPARE(plan.outputs().size(), std::size_t{1});
+    // Permit packing and recovery verification reads but deny source deletion after commit.
+    const auto locked = CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    QVERIFY(locked != INVALID_HANDLE_VALUE);
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts);
+    QVERIFY(CloseHandle(locked));
+    QCOMPARE(result.attempts.size(), std::size_t{1});
+    QVERIFY(!result.attempts.front().succeeded());
+    QCOMPARE(result.attempts.front().mutation, cao::execution::MutationState::Committed);
+    QVERIFY(result.safeToContinue);
+    QVERIFY(btu::bsa::read_archive(plan.outputs().front().archivePath).has_value());
+    QFile retained(QString::fromStdWString(source.wstring()));
+    QVERIFY(retained.open(QIODevice::ReadOnly));
+    QCOMPARE(retained.readAll(), QByteArrayLiteral("retained source bytes"));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+#else
+    QSKIP("Windows sharing modes provide a deterministic source cleanup failure.");
+#endif
 }
 
 void MainOptimizerTests::emptyDirectoryCleanupPreservesStaging() {

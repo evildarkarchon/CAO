@@ -147,6 +147,7 @@ bool Manager::runOptimization() {
 
     const cao::run::AssetRun assetRun(_routingPolicy);
     std::size_t failedAssets = 0;
+    bool finalizationFailed = false;
     auto lastLooseProgress = QDateTime::currentDateTime();
     const auto result = assetRun.execute(
         roots,
@@ -172,25 +173,37 @@ bool Manager::runOptimization() {
             },
             [&] { return _stop.stop_requested(); },
             [&] {
-                _numberCompletedFiles = 0;
-                printProgress(_modsToProcess.size(), "Packing BSAs");
-
-                // Packing BSAs. The compiled policy, not the raw option, is the run authority:
-                // it already rejected Archive creation the selected profile does not support.
-                if (_routingPolicy.requests(cao::routing::RequestedWork::ArchiveCreation))
-                    for (const auto& folder : _modsToProcess) {
-                        if (_stop.stop_requested()) return false;
-
-                        if (QDir(folder).exists()) {
-                            PLOG_INFO << "Creating BSA...";
-                            bsaOptimizer.packAll(folder, _options);
+                // Freeze every Mod Root before starting any output, so later roots cannot grow
+                // the progress total after the first Archive has already committed.
+                // The compiled policy, not the raw option, remains the authority for creation.
+                if (_routingPolicy.requests(cao::routing::RequestedWork::ArchiveCreation)) {
+                    try {
+                        const auto plan = bsaOptimizer.planFinalization(roots, _options);
+                        const auto finalized = bsaOptimizer.finalize(
+                            plan, artifacts.registry, _stop.get_token(),
+                            [&](const cao::run::ArchiveFinalizationProgress& progress) {
+                                _numberCompletedFiles = static_cast<int>(progress.completed);
+                                printProgress(static_cast<int>(progress.total), "Packing BSAs");
+                            });
+                        for (const auto& attempt : finalized.attempts) {
+                            if (!attempt.succeeded()) {
+                                ++failedAssets;
+                                PLOG_ERROR << attempt.detail;
+                            }
                         }
-                        ++_numberCompletedFiles;
-                        printProgress(_modsToProcess.size(),
-                                      "Packing BSAs - Folder:  " + QFileInfo(folder).fileName());
+                        finalizationFailed = !finalized.safeToContinue;
+                        if (!finalized.detail.empty()) PLOG_ERROR << finalized.detail;
+                        if (finalized.cancelled) return false;
+                    } catch (const std::exception& error) {
+                        finalizationFailed = true;
+                        PLOG_ERROR << error.what();
                     }
-
-                FilesystemOperations::deleteEmptyDirectories(_options.userPath);
+                }
+                if (_stop.stop_requested()) return false;
+                if (!finalizationFailed)
+                    for (const auto& root : roots)
+                        FilesystemOperations::deleteEmptyDirectories(
+                            QString::fromStdWString(root.wstring()));
                 return true;
             },
             [&](const cao::run::AssetRunDiagnostics& diagnostics) {
@@ -290,7 +303,9 @@ bool Manager::runOptimization() {
         }
     }
 
-    if (failedAssets != 0) {
+    if (finalizationFailed) {
+        PLOG_ERROR << "Optimization Run stopped because Archive finalization failed.";
+    } else if (failedAssets != 0) {
         PLOG_ERROR << QStringLiteral("Process completed with %1 failed Assets<br><br><br>")
                           .arg(failedAssets);
     } else if (!cleaned) {
@@ -300,5 +315,5 @@ bool Manager::runOptimization() {
         PLOG_INFO << "Process completed<br><br><br>";
     }
     emit end();
-    return failedAssets == 0 && cleaned;
+    return !finalizationFailed && failedAssets == 0 && cleaned;
 }

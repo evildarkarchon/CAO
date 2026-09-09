@@ -8,6 +8,7 @@
 #include "Profiles.h"
 #include "TexturesOptimizer.h"
 #include "Run/ArchiveExtraction.h"
+#include "Run/ArchiveFinalization.h"
 #include "pch.h"
 
 class OptionsCAO;
@@ -46,6 +47,19 @@ class BSAOptimizer final : public QObject {
      * \param folderPath The folder to process
      */
     void packAll(const QString& folderPath, const OptionsCAO& options) const;
+
+    /// Freezes output names and source partitions for all ordered Mod Roots without mutation.
+    /// Throws on unreadable trees or unplannable inputs before any output is attempted.
+    [[nodiscard]] cao::run::ArchiveFinalizationPlan planFinalization(
+        std::span<const std::filesystem::path> roots, const OptionsCAO& options) const;
+
+    /// Stages, commits, and cleans each planned output without mid-attempt cancellation.
+    /// Reports zero-based progress synchronously, isolating observer exceptions. The caller owns
+    /// artifacts through Safety Cleanup; a failed or cancelled run retains committed outputs.
+    [[nodiscard]] cao::run::ArchiveFinalizationResult finalize(
+        const cao::run::ArchiveFinalizationPlan& plan,
+        cao::run::TemporaryArtifactRegistry& artifacts, std::stop_token stop = {},
+        std::function<void(const cao::run::ArchiveFinalizationProgress&)> progress = {}) const;
 
    private:
     /*!
