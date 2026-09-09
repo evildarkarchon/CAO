@@ -24,17 +24,24 @@ void extractArchiveNoOverwrite(const std::filesystem::path& archivePath, const b
     btu::bsa::unpack(btu::bsa::UnpackSettings{archivePath, removeArchive, false});
 }
 
-namespace {
 /// Reads raw Archive names without extracting, decompressing, or sanitizing away invalid paths.
-std::vector<std::string> inspectArchive(const std::filesystem::path& path) {
-    std::vector<std::string> names;
+ArchiveInventory inspectArchiveInventory(const std::filesystem::path& path) {
+    ArchiveInventory inventory;
+    const auto add = [&](std::string name, std::uintmax_t bytes) {
+        // Each staged payload and its ownership record consume space even when shadowed.
+        // Allow metadata/path overhead without pretending to predict allocation-unit sizes.
+        inventory.estimatedCapacityBytes = saturatedCapacityAdd(inventory.estimatedCapacityBytes,
+            saturatedCapacityAdd(bytes, saturatedCapacityAdd(65536,
+                saturatedCapacityMultiply(name.size(), 8))));
+        inventory.names.push_back(std::move(name));
+    };
     const auto format = bsa::guess_file_format(path);
     if (!format) throw std::runtime_error("Unrecognized Archive format.");
     switch (*format) {
         case bsa::file_format::tes3: {
             bsa::tes3::archive archive;
             archive.read(path);
-            for (const auto& [key, file] : archive) names.emplace_back(key.name());
+            for (const auto& [key, file] : archive) add(std::string(key.name()), file.size());
             break;
         }
         case bsa::file_format::tes4: {
@@ -42,22 +49,28 @@ std::vector<std::string> inspectArchive(const std::filesystem::path& path) {
             archive.read(path);
             for (const auto& [directory, files] : archive)
                 for (const auto& [key, file] : files)
-                    names.push_back(directory.name().empty() ? std::string(key.name())
+                    add(directory.name().empty() ? std::string(key.name())
                                                              : std::string(directory.name()) + "/" +
-                                                                   std::string(key.name()));
+                                                                   std::string(key.name()),
+                        file.compressed() ? file.decompressed_size() : file.size());
             break;
         }
         case bsa::file_format::fo4: {
             bsa::fo4::archive archive;
-            archive.read(path);
-            for (const auto& [key, file] : archive) names.emplace_back(key.name());
+            const auto archiveFormat = archive.read(path);
+            for (const auto& [key, file] : archive) {
+                // DX10 payloads reconstruct a DDS header in addition to their manifest chunks.
+                std::uintmax_t bytes = archiveFormat == bsa::fo4::format::directx ? 148 : 0;
+                for (const auto& chunk : file)
+                    bytes = saturatedCapacityAdd(bytes, chunk.compressed()
+                        ? chunk.decompressed_size() : chunk.size());
+                add(std::string(key.name()), bytes);
+            }
             break;
         }
     }
-    return names;
+    return inventory;
 }
-
-}  // namespace
 
 /// Canonicalizes a contained game path; rejects names whose extraction could escape or alias.
 std::string canonicalArchiveEntryPath(std::string name) {
@@ -278,8 +291,9 @@ std::size_t ArchiveFirstAssetDiscoveryResult::nestedArchiveCount() const noexcep
     return _nestedArchiveCount;
 }
 
-ArchiveFirstAssetDiscovery::ArchiveFirstAssetDiscovery(routing::RoutingPolicy policy) noexcept
-    : _policy(std::move(policy)) {}
+ArchiveFirstAssetDiscovery::ArchiveFirstAssetDiscovery(routing::RoutingPolicy policy,
+                                                       CapacityProbe capacity) noexcept
+    : _policy(std::move(policy)), _capacity(std::move(capacity)) {}
 
 ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     const std::span<const std::filesystem::path> roots,
@@ -459,16 +473,17 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     std::vector<ArchiveExtractionPlan> extractionPlans;
     for (const auto& archive : selectedArchives) {
         if (isCancelled && isCancelled()) return cancelledResult();
-        std::vector<std::string> names;
+        ArchiveInventory inventory;
         try {
-            names = inspectArchive(archive.executionPath());
+            inventory = inspectArchiveInventory(archive.executionPath());
         } catch (const std::exception& error) {
             return failedResult(RunFailureCode::ArchiveUnreadable, archive.executionPath(),
                                 error.what());
         }
         const auto& root = archiveRoots.at(archive.executionPath());
         auto& plan = extractionPlans.emplace_back(ArchiveExtractionPlan{archive.executionPath(), root});
-        for (const auto& name : names) {
+        plan.estimatedCapacityBytes = inventory.estimatedCapacityBytes;
+        for (const auto& name : inventory.names) {
             if (isCancelled && isCancelled()) return cancelledResult();
             try {
                 // The existing extractor writes beside its Archive, including nested Archives.
@@ -514,6 +529,17 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
                                     std::vector(participants.begin() + 1, participants.end()),
                                     loosePaths[root].contains(gamePath));
         }
+    }
+    // Count the whole batch at every root, conservatively covering roots sharing a volume.
+    // No credit is taken for source deletion or cleanup of shadowed staging after the phase.
+    std::uintmax_t required = 0;
+    for (const auto& plan : extractionPlans)
+        required = saturatedCapacityAdd(required, plan.estimatedCapacityBytes);
+    for (const auto& plan : extractionPlans) {
+        const auto available = _capacity ? _capacity(plan.modRoot) : std::nullopt;
+        if (available && *available < required)
+            return failedResult(RunFailureCode::ArchiveInsufficientCapacity, plan.modRoot,
+                                archiveCapacityDetail(required, *available));
     }
     // Publish only the complete plan: a later unreadable Archive must prevent earlier mutations.
     if (reportCollisions && _policy.executionMode() == routing::ExecutionMode::Apply)

@@ -58,10 +58,12 @@ class BSAOptimizer final : public QObject {
     /// artifacts through Safety Cleanup; a failed or cancelled run retains committed outputs.
     /// Prunes empty children per Mod Root only after all outputs finish without cancellation or
     /// unsafe failure. Recoverable source-cleanup failures retain readable evidence and continue.
+    /// Known capacity shortages stop before mutation; unknown capacity proceeds with atomic attempts.
     [[nodiscard]] cao::run::ArchiveFinalizationResult finalize(
         const cao::run::ArchiveFinalizationPlan& plan,
         cao::run::TemporaryArtifactRegistry& artifacts, std::stop_token stop = {},
-        std::function<void(const cao::run::ArchiveFinalizationProgress&)> progress = {}) const;
+        std::function<void(const cao::run::ArchiveFinalizationProgress&)> progress = {},
+        cao::run::CapacityProbe capacity = cao::run::availableArchiveCapacity) const;
 
    private:
     /*!

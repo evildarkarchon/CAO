@@ -144,6 +144,12 @@ class MainOptimizerTests final : public QObject
     Q_OBJECT
 
 private slots:
+ /// Exercises phase-wide shortage, unknown capacity, and a race between output attempts.
+ void finalizationCapacityChecks_data();
+ /// Ensures capacity failures preserve unattempted sources and prevent directory pruning.
+ void finalizationCapacityChecks();
+ /// Reports plugin-only capacity failure without inventing output progress or pruning folders.
+ void finalizationCapacityWithoutOutputs();
  /// Exercises backup and delete source choices after successful and failed extraction.
  void archiveSourceCleanupRequiresSuccessfulMerge_data();
  /// Preserves original Archive bytes on failure and never replaces an existing backup.
@@ -431,6 +437,108 @@ void MainOptimizerTests::finalizationFreezesTotalAndCancelsBetweenOutputs() {
             QVERIFY(result.attempts[index].succeeded());
             QVERIFY(btu::bsa::read_archive(output.archivePath).has_value());
         }
+    }
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void MainOptimizerTests::finalizationCapacityChecks_data() {
+    QTest::addColumn<int>("scenario");
+    QTest::newRow("late-root-shortage") << 0;
+    QTest::newRow("unknown-capacity") << 1;
+    QTest::newRow("capacity-disappears") << 2;
+    QTest::newRow("source-grows-after-planning") << 3;
+}
+
+void MainOptimizerTests::finalizationCapacityWithoutOutputs() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = root / "mod";
+    writeFile(mod / "existing.bsa", QByteArrayLiteral("retained archive"));
+    std::filesystem::create_directory(mod / "empty");
+    OptionsCAO options;
+    options.bBsaCreateDummies = true;
+    const BSAOptimizer optimizer;
+    const std::array roots{mod};
+    const auto plan = optimizer.planFinalization(roots, options);
+    QVERIFY(plan.outputs().empty());
+    cao::run::TemporaryArtifactRegistry artifacts;
+    std::vector<cao::run::ArchiveFinalizationProgress> progress;
+    const auto result = optimizer.finalize(plan, artifacts, {},
+        [&](const auto& value) { progress.push_back(value); },
+        [](const auto&) -> std::optional<std::uintmax_t> { return 0; });
+    QVERIFY(result.failure == cao::run::ArchiveFinalizationFailure::InsufficientCapacity);
+    QVERIFY(result.attempts.empty());
+    QVERIFY(result.safeToContinue);
+    QVERIFY(!result.detail.empty());
+    QCOMPARE(progress.back().completed, std::size_t{0});
+    QCOMPARE(progress.back().total, std::size_t{0});
+    QVERIFY(std::filesystem::exists(mod / "empty"));
+    QVERIFY(!std::filesystem::exists(mod / "existing.esp"));
+    QVERIFY(!std::filesystem::exists(mod / ".cao-staging"));
+}
+
+void MainOptimizerTests::finalizationCapacityChecks() {
+    QFETCH(int, scenario);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const std::array roots{root / "mod-a", root / "mod-b"};
+    for (const auto& mod : roots) {
+        writeFile(mod / "meshes" / "asset.nif", QByteArray(8192, 'x'));
+        std::filesystem::create_directory(mod / "empty");
+    }
+    OptionsCAO options;
+    options.bBsaCreateDummies = true;
+    options.bBsaCompress = true;
+    options.bBsaDeleteSource = true;
+    const BSAOptimizer optimizer;
+    const auto plan = optimizer.planFinalization(roots, options);
+    QCOMPARE(plan.outputs().size(), std::size_t{2});
+    bool firstCommitted = false;
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts, {},
+        [&](const cao::run::ArchiveFinalizationProgress& value) {
+            firstCommitted = value.succeeded > 0;
+            if (scenario == 3 && value.completed == 1)
+                writeFile(plan.outputs()[1].sources.front(), QByteArray(1024 * 1024, 'y'));
+        }, [&](const std::filesystem::path& path) -> std::optional<std::uintmax_t> {
+            if (scenario == 1) return std::nullopt;
+            // Each output fits individually, but the shared phase cannot fit at the later root.
+            if (scenario == 0 && path == roots[1]) return plan.outputs()[1].estimatedCapacityBytes;
+            if (scenario == 3 && firstCommitted) return plan.outputs()[1].estimatedCapacityBytes;
+            if (firstCommitted) return 0;
+            return std::numeric_limits<std::uintmax_t>::max();
+        });
+    QVERIFY(result.safeToContinue);
+    QVERIFY(!result.cancelled);
+    const auto committed = scenario == 0 ? 0u : scenario == 1 ? 2u : 1u;
+    for (std::size_t index = 0; index < plan.outputs().size(); ++index) {
+        const auto& output = plan.outputs()[index];
+        QCOMPARE(std::filesystem::exists(output.archivePath), index < committed);
+        QCOMPARE(std::filesystem::exists(output.sources.front()), index >= committed);
+        QCOMPARE(std::filesystem::exists(output.modRoot / "empty"), scenario != 1);
+        if (index < committed) {
+            auto actual = std::filesystem::file_size(output.archivePath);
+            if (output.pluginPath) actual += std::filesystem::file_size(*output.pluginPath);
+            QVERIFY(output.estimatedCapacityBytes >= actual);
+        } else {
+            QVERIFY(!std::filesystem::exists(output.modRoot / ".cao-staging"));
+            if (output.pluginPath) QVERIFY(!std::filesystem::exists(*output.pluginPath));
+        }
+    }
+    if (scenario != 1) {
+        QVERIFY(result.attempts.back().failure == cao::run::ArchiveFinalizationFailure::InsufficientCapacity);
+        QCOMPARE(result.attempts.back().mutation, cao::execution::MutationState::None);
+        QVERIFY(!result.attempts.back().detail.empty());
     }
     QVERIFY(artifacts.performSafetyCleanup().empty());
 }

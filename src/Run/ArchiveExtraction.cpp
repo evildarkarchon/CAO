@@ -77,6 +77,16 @@ ArchiveExtractionResult ArchiveExtractor::extract(const ArchiveExtractionPlan& p
         if (relativeSource.empty() || relativeSource.is_absolute() ||
             *relativeSource.begin() == ".." || hasStagingComponent(relativeSource))
             throw std::runtime_error("Archive source is outside its Mod Root.");
+        // Inventory and free space may have changed since discovery. Check before creating
+        // staging; successful preflight reserves nothing and later I/O still uses mutation rules.
+        const auto inventory = inspectArchiveInventory(plan.archivePath);
+        const auto available = _capacity ? _capacity(root) : std::nullopt;
+        const auto required = (std::max)(plan.estimatedCapacityBytes, inventory.estimatedCapacityBytes);
+        if (available && *available < required) {
+            result.failure = ArchiveExtractionFailure::InsufficientCapacity;
+            result.detail = archiveCapacityDetail(required, *available);
+            return result;
+        }
         auto archive = btu::bsa::read_archive(plan.archivePath);
         if (!archive) throw std::runtime_error("Unrecognized Archive format.");
         const std::set<std::string> expected(plan.entries.begin(), plan.entries.end());

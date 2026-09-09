@@ -191,7 +191,8 @@ bool Manager::runOptimization() {
                                 PLOG_ERROR << attempt.detail;
                             }
                         }
-                        finalizationFailed = !finalized.safeToContinue;
+                        if (finalized.failure) ++failedAssets;
+                        finalizationFailed = !finalized.safeToContinue || finalized.failure.has_value();
                         if (!finalized.detail.empty()) PLOG_ERROR << finalized.detail;
                         if (finalized.cancelled) return false;
                     } catch (const std::exception& error) {

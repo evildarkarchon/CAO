@@ -175,6 +175,14 @@ class ArchiveFirstAssetDiscoveryTests final : public QObject
     Q_OBJECT
 
    private slots:
+    /// A shortage in a later root prevents every extraction and preserves original Archives.
+    void insufficientCapacityBlocksEntireBatch();
+    /// Compressed and shadowed bytes still need full decompressed staging capacity.
+    void compressedShadowedEntryRequiresCapacity();
+    /// Rechecks fresh payload sizes before staging and treats unavailable capacity as unknown.
+    void extractionCapacityRecheck_data();
+    /// A late shortage leaves source bytes intact without creating run-owned staging.
+    void extractionCapacityRecheck();
     /// A lost source after preflight commits no output and preserves safe continuation.
     void extractionFailureBeforeMergeCommitsNothing();
     /// Real payloads commit from registered staging and retain their original Archive.
@@ -271,6 +279,92 @@ class ArchiveFirstAssetDiscoveryTests final : public QObject
     /// Verifies a selected directory alias is resolved once, even if extraction retargets it.
     void selectedDirectoryAliasKeepsItsOriginalTarget();
 };
+
+void ArchiveFirstAssetDiscoveryTests::insufficientCapacityBlocksEntireBatch() {
+    QTemporaryDir directory;
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto first = root / "first";
+    const auto last = root / "last";
+    createFixtureArchive(first / "source.bsa");
+    createFixtureArchive(last / "source.bsa");
+    const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy(),
+        [&](const auto& path) -> std::optional<std::uintmax_t> {
+            return path == last ? 180000 : std::numeric_limits<std::uintmax_t>::max();
+        });
+    bool extracted = false;
+    const auto result = discovery.discover(std::array{first, last}, [&](auto) {
+        extracted = true;
+        return true;
+    });
+    QVERIFY(!extracted);
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().code(), cao::run::RunFailureCode::ArchiveInsufficientCapacity);
+    QVERIFY(std::filesystem::exists(first / "source.bsa"));
+    QVERIFY(std::filesystem::exists(last / "source.bsa"));
+    QVERIFY(!std::filesystem::exists(first / "textures"));
+}
+
+void ArchiveFirstAssetDiscoveryTests::compressedShadowedEntryRequiresCapacity() {
+    QTemporaryDir directory;
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    bsa::tes4::archive archive;
+    archive.archive_flags(bsa::tes4::archive_flag::directory_strings |
+                          bsa::tes4::archive_flag::file_strings);
+    const std::vector<std::byte> payload(512 * 1024, std::byte{0x42});
+    bsa::tes4::file file;
+    file.read(payload, bsa::tes4::version::sse);
+    file.compress(bsa::tes4::version::sse);
+    bsa::tes4::directory entries;
+    entries.insert(bsa::tes4::file::key("large.dds"), std::move(file));
+    archive.insert(bsa::tes4::directory::key("textures"), std::move(entries));
+    archive.write(root / "source.bsa", bsa::tes4::version::sse);
+    writeFile(root / "textures/large.dds", "loose winner");
+    QVERIFY(std::filesystem::file_size(root / "source.bsa") < 10000);
+    const ArchiveFirstAssetDiscovery discovery(archiveEnabledPolicy(),
+        [](const auto&) -> std::optional<std::uintmax_t> { return 400000; });
+    bool extracted = false;
+    const auto result = discovery.discover(std::array{root}, [&](auto) {
+        extracted = true;
+        return true;
+    });
+    QVERIFY(!extracted);
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().code(), cao::run::RunFailureCode::ArchiveInsufficientCapacity);
+    QCOMPARE(readFile(root / "textures/large.dds"), QByteArray("loose winner"));
+    QVERIFY(!std::filesystem::exists(root / ".cao-staging"));
+}
+
+void ArchiveFirstAssetDiscoveryTests::extractionCapacityRecheck_data() {
+    QTest::addColumn<bool>("unknown");
+    QTest::newRow("shortage") << false;
+    QTest::newRow("unknown") << true;
+}
+
+void ArchiveFirstAssetDiscoveryTests::extractionCapacityRecheck() {
+    QFETCH(bool, unknown);
+    QTemporaryDir directory;
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto archive = root / "source.bsa";
+    createFixtureArchive(archive);
+    const auto original = readFile(archive);
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const cao::run::ArchiveExtractor extractor(artifacts,
+        [&](const auto&) -> std::optional<std::uintmax_t> {
+            return unknown ? std::nullopt : std::optional<std::uintmax_t>{0};
+        });
+    const auto result = extractor.extract(
+        {archive, root, {"textures/fixture.dds"}, {"textures/fixture.dds"}});
+    QCOMPARE(result.succeeded(), unknown);
+    QCOMPARE(readFile(archive), original);
+    QVERIFY(result.safeToContinue);
+    if (!unknown) {
+        QCOMPARE(result.failure, cao::run::ArchiveExtractionFailure::InsufficientCapacity);
+        QCOMPARE(result.mutation, cao::execution::MutationState::None);
+        QVERIFY(!std::filesystem::exists(root / ".cao-staging"));
+        QVERIFY(!std::filesystem::exists(root / "textures"));
+    }
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
 
 void ArchiveFirstAssetDiscoveryTests::extractionFailureBeforeMergeCommitsNothing() {
     QTemporaryDir directory;

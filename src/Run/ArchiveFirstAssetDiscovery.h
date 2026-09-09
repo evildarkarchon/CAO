@@ -3,6 +3,7 @@
 #include "AssetRouting/AssetRouter.h"
 #include "RunLifecycle.h"
 #include "ArchiveExtraction.h"
+#include "ArchiveCapacity.h"
 
 #include <filesystem>
 #include <functional>
@@ -92,7 +93,8 @@ class ArchiveFirstAssetDiscoveryResult final {
 class ArchiveFirstAssetDiscovery final {
    public:
     /// Owns an immutable policy copy used to recognize and enable Archive extraction.
-    explicit ArchiveFirstAssetDiscovery(routing::RoutingPolicy policy) noexcept;
+    explicit ArchiveFirstAssetDiscovery(routing::RoutingPolicy policy,
+                                       CapacityProbe capacity = availableArchiveCapacity) noexcept;
 
     /// Selects enabled Archives, passes the complete batch for synchronous extraction, then
     /// traverses roots once for definitive paths. An Archive supplied directly as a root also
@@ -128,5 +130,6 @@ class ArchiveFirstAssetDiscovery final {
 
    private:
     routing::RoutingPolicy _policy;
+    CapacityProbe _capacity;
 };
 }  // namespace cao::run

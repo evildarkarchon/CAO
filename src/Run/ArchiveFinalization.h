@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Run/ArchiveExtraction.h"
+#include "Run/ArchiveCapacity.h"
 
 #include <btu/bsa/archive_data.hpp>
 
@@ -16,6 +17,8 @@ struct ArchiveFinalizationOutput final {
     std::vector<std::filesystem::path> sources;
     /// A missing loading plugin must commit within this output's attempt before source deletion.
     std::optional<std::filesystem::path> pluginPath;
+    /// Conservative content and framing allowance, not a reservation or filesystem quota guarantee.
+    std::uintmax_t estimatedCapacityBytes{};
 };
 
 /// Owns all output names, partitions, and settings before any finalization mutation.
@@ -36,9 +39,11 @@ class ArchiveFinalizationPlan final {
     bool _compress{};
     bool _deleteSources{};
     bool _createDummies{};
+    std::uintmax_t _dummyCapacityBytes{};
 };
 
 enum class ArchiveFinalizationFailure {
+    InsufficientCapacity,
     WriteFailed,
     CommitFailed,
     PluginCreationFailed,
@@ -69,6 +74,8 @@ struct ArchiveFinalizationProgress final {
 /// Owns finalization evidence independently of the plan and temporary-artifact lifetime.
 struct ArchiveFinalizationResult final {
     std::vector<ArchiveFinalizationAttempt> attempts;
+    /// A phase-level failure has no output attempt and does not advance completed progress.
+    std::optional<ArchiveFinalizationFailure> failure;
     bool cancelled{};
     bool safeToContinue{true};
     std::string detail;

@@ -19,6 +19,22 @@
 #endif
 
 namespace {
+/// Estimates current source content and format overhead; stat failures propagate before staging.
+std::uintmax_t estimatePackedCapacity(const cao::run::ArchiveFinalizationOutput& output) {
+    using namespace cao::run;
+    auto estimate = std::uintmax_t{65536};
+    for (const auto& source : output.sources) {
+        // Zlib/LZ4 framing, up to four BA2 texture chunks, and BSA directory/name tables
+        // need space beyond source bytes. Filesystem allocation and metadata remain estimates.
+        const auto payload = saturatedCapacityMultiply(std::filesystem::file_size(source), 2);
+        const auto names = saturatedCapacityMultiply(
+            source.lexically_relative(output.modRoot).generic_u8string().size(), 3);
+        estimate = saturatedCapacityAdd(estimate,
+            saturatedCapacityAdd(payload, saturatedCapacityAdd(65536, names)));
+    }
+    return estimate;
+}
+
 /// Publishes flushed same-volume bytes without replacing a competing entry. Records durable
 /// mutation immediately, even if releasing the old staging name subsequently fails.
 void publishArchiveFile(const std::filesystem::path& staged,
@@ -187,6 +203,14 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
     for (const auto& inputRoot : roots) {
         const auto root = fs::canonical(inputRoot);
         plan._roots.push_back(root);
+        if (plan._createDummies && settings.s_dummy_plugin) {
+            // Existing Archives can also need plugins in the final cleanup pass, even with no
+            // new outputs. Count every Archive conservatively without assuming plugin reuse.
+            const auto existing = list_archive(fs::directory_iterator(root), {}, settings);
+            plan._dummyCapacityBytes = cao::run::saturatedCapacityAdd(
+                plan._dummyCapacityBytes, cao::run::saturatedCapacityMultiply(
+                    existing.size(), settings.s_dummy_plugin->size()));
+        }
         auto plugins = list_plugins(fs::directory_iterator(root), {}, settings);
         // Dummy cleanup is a mutation. Ignore their names for planning, but retain them until
         // all output attempts finish so cancellation cannot strand an existing Archive.
@@ -302,6 +326,11 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
             }
             plan._outputs.push_back(
                 {root, destination, {archive.begin(), archive.end()}, pluginPath});
+            auto& output = plan._outputs.back();
+            output.estimatedCapacityBytes = estimatePackedCapacity(output);
+            if (pluginPath)
+                output.estimatedCapacityBytes = cao::run::saturatedCapacityAdd(
+                    output.estimatedCapacityBytes, settings.s_dummy_plugin->size());
             plan._archives.push_back(std::move(archive));
         }
     }
@@ -311,7 +340,8 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
 cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
     const cao::run::ArchiveFinalizationPlan& plan, cao::run::TemporaryArtifactRegistry& artifacts,
     const std::stop_token stop,
-    std::function<void(const cao::run::ArchiveFinalizationProgress&)> progress) const {
+    std::function<void(const cao::run::ArchiveFinalizationProgress&)> progress,
+    cao::run::CapacityProbe capacity) const {
     namespace fs = std::filesystem;
     using namespace cao::run;
     using cao::execution::MutationState;
@@ -325,6 +355,44 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
         }
     };
     report();
+    const auto hasCapacity = [&](const fs::path& root, const fs::path& archive,
+                                 std::uintmax_t required) {
+        std::optional<std::uintmax_t> available;
+        try {
+            if (capacity) available = capacity(root);
+        } catch (...) {
+            // A failed capacity query is unknown; the atomic writer still handles real I/O errors.
+        }
+        if (!available || required <= *available) return true;
+        if (archive.empty()) {
+            result.failure = ArchiveFinalizationFailure::InsufficientCapacity;
+            result.detail = archiveCapacityDetail(required, *available);
+            return false;
+        }
+        ArchiveFinalizationAttempt attempt{archive};
+        attempt.failure = ArchiveFinalizationFailure::InsufficientCapacity;
+        attempt.detail = archiveCapacityDetail(required, *available);
+        result.attempts.push_back(std::move(attempt));
+        ++counts.completed;
+        ++counts.failed;
+        report();
+        return false;
+    };
+    if (stop.stop_requested()) {
+        result.cancelled = true;
+        return result;
+    }
+    auto phaseCapacity = plan._dummyCapacityBytes;
+    for (const auto& output : plan.outputs())
+        phaseCapacity = saturatedCapacityAdd(phaseCapacity, output.estimatedCapacityBytes);
+    // Sum the entire phase for every root: separate roots may share a volume, and planned
+    // source deletion must not be treated as available space before it has actually happened.
+    for (const auto& root : plan._roots) {
+        const auto output = std::find_if(plan.outputs().begin(), plan.outputs().end(),
+            [&](const auto& value) { return value.modRoot == root; });
+        if (!hasCapacity(root, output == plan.outputs().end() ? fs::path{} : output->archivePath,
+                         phaseCapacity)) return result;
+    }
     for (std::size_t index = 0; index < plan.outputs().size(); ++index) {
         if (stop.stop_requested()) {
             result.cancelled = true;
@@ -335,6 +403,16 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
         auto boundary = ArchiveFinalizationFailure::WriteFailed;
         std::size_t removedSources = 0;
         try {
+            // Sources can grow after planning. Re-stat before mutation, retaining the frozen
+            // allowance if files shrink; capacity itself is still only a momentary sample.
+            auto currentCapacity = estimatePackedCapacity(output);
+            if (output.pluginPath)
+                currentCapacity = saturatedCapacityAdd(currentCapacity,
+                                                       plan._settings.s_dummy_plugin->size());
+            if (!hasCapacity(output.modRoot, output.archivePath,
+                             saturatedCapacityAdd(std::max(output.estimatedCapacityBytes,
+                                                           currentCapacity),
+                                                  plan._dummyCapacityBytes))) return result;
             const auto staged = artifacts.stageArchiveFile(output.modRoot);
             auto archive = plan._archives[index];
             archive.set_out_path(staged.path);
@@ -415,6 +493,7 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
     if (!result.cancelled && result.safeToContinue) {
         try {
             for (const auto& root : plan._roots) {
+                if (!hasCapacity(root, {}, plan._dummyCapacityBytes)) return result;
                 auto plugins =
                     btu::bsa::list_plugins(fs::directory_iterator(root), {}, plan._settings);
                 // Do not remove loading plugins already committed as part of output attempts.

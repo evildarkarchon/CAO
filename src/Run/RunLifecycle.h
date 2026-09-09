@@ -107,7 +107,8 @@ enum class RunFailureCode {
     ArchiveOrderDuplicate,
     ArchiveOrderOutsideRoot,
     ArchiveUnreadable,
-    ArchiveEntryInvalid
+    ArchiveEntryInvalid,
+    ArchiveInsufficientCapacity
 };
 
 /// Owns one canonical game-path collision within a Mod Root, in high-to-low Archive order.
