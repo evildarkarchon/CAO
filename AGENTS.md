@@ -21,7 +21,7 @@ Rules:
 
 ### Issue tracker
 
-Issues are tracked in this repository's GitHub Issues. See `docs/agents/issue-tracker.md`.
+Issues are tracked as local Markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
