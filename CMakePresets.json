@@ -64,7 +64,12 @@
         }
       },
       "hidden": true,
-      "name": "windows"
+      "name": "windows",
+      "vendor": {
+        "jetbrains.com/clion": {
+          "toolchain": "Visual Studio"
+        }
+      }
     },
     {
       "cacheVariables": {
