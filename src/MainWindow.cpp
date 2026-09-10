@@ -5,7 +5,12 @@
 
 #include "MainWindow.h"
 #include "ApplicationLogging.h"
+#include "GuiRunDispatch.h"
 #include "Run/ApplicationRunSetup.h"
+#include "Run/ApplicationRunWork.h"
+
+#include <QStatusBar>
+#include <limits>
 
 MainWindow::MainWindow() : _ui(new Ui::MainWindow) {
     _ui->setupUi(this);
@@ -98,6 +103,7 @@ MainWindow::MainWindow() : _ui(new Ui::MainWindow) {
     });
 
     connect(_ui->processButton, &QPushButton::pressed, this, &MainWindow::initProcess);
+    connect(&logTimer, &QTimer::timeout, this, &MainWindow::updateLog);
 
     texturesFormatDialog = new TexturesFormatSelectDialog(this);
 
@@ -199,12 +205,6 @@ void MainWindow::resetUi() const {
     _ui->meshesMediumOptimizationRadioButton->show();
 }
 
-void MainWindow::readProgress(const QString& text, const int& max, const int& value) const {
-    _ui->progressBar->setFormat(text);
-    _ui->progressBar->setMaximum(max);
-    _ui->progressBar->setValue(value);
-}
-
 void MainWindow::refreshProfiles() {
     _ui->presets->clear();
     _ui->presets->addItems(Profiles::list());
@@ -252,6 +252,10 @@ void MainWindow::setDarkTheme(const bool& enabled) {
 }
 
 void MainWindow::initProcess() {
+    if (_runView.state().active) {
+        cancelRun();
+        return;
+    }
     saveUi();
 
     // saveUi() has just settled the profile and the debug-log toggle, so the run's log destination
@@ -266,51 +270,97 @@ void MainWindow::initProcess() {
         return;
     }
 
-    const auto setup = cao::run::prepareApplicationRun(_options);
-    if (!setup.hasPolicy()) {
-        const auto messages = cao::run::policyValidationErrorMessages(setup.errors());
-        QMessageBox::critical(this, tr("Invalid run setup"),
-                              tr("The run cannot start until these conflicts are corrected:\n\n") +
-                                  messages.join('\n'));
-        return;
-    }
-
-    _ui->processButton->setDisabled(true);
-    _bLockVariables = true;
-
     try {
-        _caoProcess.reset();
-        _caoProcess = std::make_unique<Manager>(_options, *setup.policy());
-        connect(&*_caoProcess, &Manager::progressBarTextChanged, this, &MainWindow::readProgress);
-        connect(&logTimer, &QTimer::timeout, this, &MainWindow::updateLog);
+        auto request = cao::run::makeApplicationRunRequest(_options);
+        _runHandle.reset();
+        _runService = std::make_unique<cao::run::OptimizationRunService>(
+            cao::run::makeApplicationRunConfigurationProvider(),
+            cao::run::makeApplicationRunWork(_options));
+        auto observation =
+            cao::gui::queuedObservation(this, [this](const cao::run::RunEvent& event) {
+                const bool wasActive = _runView.state().active;
+                if (!_runView.consume(event)) return;
+                renderRun();
+                if (wasActive && _runView.state().outcome) endProcess();
+            });
+        auto started = _runService->start(
+            std::move(request), std::vector<cao::run::RunObservation>{std::move(observation)});
+        if (!started.started()) {
+            QMessageBox::critical(this, tr("Start Error"),
+                                  tr("The run could not start (error %1).")
+                                      .arg(static_cast<int>(*started.startError())));
+            return;
+        }
+        _runHandle.emplace(std::move(*started.handle()));
+        // Delivery is always queued, so the handle and run identity exist before any callback.
+        _runView.begin(_runHandle->snapshot().runId());
+        _renderedDetails = 0;
+        _bLockVariables = true;
+        _ui->processButton->setText(tr("Cancel"));
+        _ui->tabWidget->setEnabled(false);
+        _ui->presets->setEnabled(false);
+        _ui->newProfilePushButton->setEnabled(false);
         logTimer.start(5000);  // Refresh log every 5 seconds
-        connect(&*_caoProcess, &Manager::end, this, &MainWindow::endProcess);
-        QtConcurrent::run(&*_caoProcess, &Manager::runOptimization);
+        renderRun();
+        updateLog();
     } catch (const std::exception& e) {
-        QMessageBox box(
-            QMessageBox::Critical, tr("Error"),
-            tr("An exception has been encountered and the process was forced to stop: ") +
-                QString(e.what()));
-        box.exec();
-        endProcess();
+        QMessageBox::critical(this, tr("Start Error"), QString::fromUtf8(e.what()));
     }
 }
 
 void MainWindow::endProcess() {
+    logTimer.stop();
     _ui->processButton->setDisabled(false);
+    _ui->processButton->setText(tr("Run"));
+    _ui->tabWidget->setEnabled(true);
+    _ui->presets->setEnabled(true);
+    _ui->newProfilePushButton->setEnabled(true);
     _bLockVariables = false;
-
     saveUi();
-
-    if (_caoProcess) {
-        _caoProcess->cancelProcess();
-        _caoProcess->disconnect();
-    }
-
-    _ui->progressBar->setMaximum(100);
-    _ui->progressBar->setValue(100);
-    _ui->progressBar->setFormat(tr("Done"));
     updateLog();
+    // Unwind the observation before destruction joins the now-terminal worker.
+    if (_runView.state().closeRequested) QTimer::singleShot(0, this, [this] { close(); });
+}
+
+void MainWindow::cancelRun() {
+    if (!_runHandle || !_runView.state().active) return;
+    _runHandle->requestCancellation();
+    _runView.requestCancellation();
+    _ui->processButton->setDisabled(true);
+    renderRun();
+}
+
+void MainWindow::renderRun() {
+    const auto& state = _runView.state();
+    QString text = QString::fromStdString(state.label);
+    if (state.progress) {
+        const auto& progress = *state.progress;
+        text += tr(" - %1 / %2 attempts (%3 succeeded, %4 failed)")
+                    .arg(static_cast<qulonglong>(progress.completed()))
+                    .arg(static_cast<qulonglong>(progress.total()))
+                    .arg(static_cast<qulonglong>(progress.succeeded()))
+                    .arg(static_cast<qulonglong>(progress.failed()));
+        // Qt's bar uses int; large totals stay textual rather than appearing complete at INT_MAX.
+        const auto limit = static_cast<std::size_t>((std::numeric_limits<int>::max)());
+        if (progress.total() > limit) {
+            _ui->progressBar->setRange(0, state.active ? 0 : 1);
+            _ui->progressBar->setValue(0);
+        } else {
+            _ui->progressBar->setRange(
+                0, progress.total() == 0 ? 1 : static_cast<int>(progress.total()));
+            _ui->progressBar->setValue(static_cast<int>(progress.completed()));
+        }
+    } else {
+        _ui->progressBar->setRange(0, state.active ? 0 : 1);
+        _ui->progressBar->setValue(0);
+    }
+    _ui->progressBar->setFormat(text);
+    // Some Qt styles suppress progress-bar text during its indeterminate animation.
+    statusBar()->showMessage(text);
+    if (_renderedDetails != state.details.size()) {
+        _renderedDetails = state.details.size();
+        updateLog();
+    }
 }
 
 void MainWindow::updateLog() const {
@@ -320,7 +370,12 @@ void MainWindow::updateLog() const {
         QTextStream ts(&log);
         ts.setCodec(QTextCodec::codecForName("UTF-8"));
         while (!ts.atEnd()) _ui->logTextEdit->appendHtml(ts.readLine());
+    } else {
+        _ui->logTextEdit->clear();
     }
+    // Structured run evidence remains visible when the periodic legacy log refreshes.
+    for (const auto& detail : _runView.state().details)
+        _ui->logTextEdit->appendPlainText(QString::fromStdString(detail));
 }
 
 void MainWindow::setGameMode(const QString& mode) {
@@ -359,8 +414,12 @@ void MainWindow::setAdvancedSettingsEnabled(const bool& value) {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
+    if (!_runView.requestClose()) {
+        cancelRun();
+        event->ignore();
+        return;
+    }
     saveUi();
-    endProcess();
     event->accept();
 }
 
@@ -395,4 +454,9 @@ void MainWindow::firstStart() {
     }
 }
 
-MainWindow::~MainWindow() { delete _ui; }
+MainWindow::~MainWindow() {
+    // Unexpected owner destruction still joins before releasing widgets borrowed by observers.
+    _runHandle.reset();
+    _runService.reset();
+    delete _ui;
+}

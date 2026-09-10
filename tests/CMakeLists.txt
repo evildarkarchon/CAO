@@ -225,6 +225,16 @@ target_link_libraries(cao_cli_run_tests PRIVATE Qt5::Test cao_cli_run)
 set_target_properties(cao_cli_run_tests PROPERTIES AUTOMOC ON)
 add_test(NAME cao_cli_run_tests COMMAND cao_cli_run_tests)
 
+add_executable(cao_gui_run_tests GuiRunTests.cpp)
+target_link_libraries(cao_gui_run_tests PRIVATE Qt5::Test cao_gui_run)
+set_target_properties(cao_gui_run_tests PROPERTIES AUTOMOC ON)
+add_test(NAME cao_gui_run_tests COMMAND cao_gui_run_tests)
+
+add_executable(cao_gui_run_dispatch_tests GuiRunDispatchTests.cpp)
+target_link_libraries(cao_gui_run_dispatch_tests PRIVATE Qt5::Test cao_gui_run_dispatch)
+set_target_properties(cao_gui_run_dispatch_tests PROPERTIES AUTOMOC ON)
+add_test(NAME cao_gui_run_dispatch_tests COMMAND cao_gui_run_dispatch_tests)
+
 if(NOT CAO_BUILD_GUI)
     add_executable(cao_cli_execution_tests CliExecutionTests.cpp)
     target_link_libraries(cao_cli_execution_tests PRIVATE Qt5::Test)

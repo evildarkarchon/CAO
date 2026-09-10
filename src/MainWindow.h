@@ -4,7 +4,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
-#include "Manager.h"
+#include "GuiRun.h"
+#include "OptionsCAO.h"
+#include "Run/OptimizationRunService.h"
 #include "TexturesFormatSelectDialog.h"
 #include "pch.h"
 #include "ui_mainWindow.h"
@@ -18,6 +20,7 @@ class MainWindow final : public QMainWindow {
 
    public:
     MainWindow();
+    /// Joins any retained run before releasing presentation widgets.
     ~MainWindow();
 
    private:
@@ -38,24 +41,31 @@ class MainWindow final : public QMainWindow {
 
     void showTutorialWindow(const QString& title, const QString& text);
 
+    /// Refreshes the legacy log while retaining structured observations as plain text.
     void updateLog() const;
-    /// Compiles and validates one Routing Policy before constructing the discovery-owning Manager.
+    /// Captures user intent and retains a run whose observations are queued to this window.
     void initProcess();
+    /// Restores controls after terminal delivery, then completes any deferred close.
     void endProcess();
-    void readProgress(const QString& text, const int& max, const int& value) const;
+    /// Renders authoritative phase counts and terminal labels without calculating run progress.
+    void renderRun();
+    /// Requests cooperative cancellation and leaves the window alive for terminal delivery.
+    void cancelRun();
 
     void setAdvancedSettingsEnabled(const bool& value);
 
-    void closeEvent(QCloseEvent* event);
+    /// Defers destruction of an active run until its queued terminal observation is rendered.
+    void closeEvent(QCloseEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* e);
     void dropEvent(QDropEvent* e);
 
     void firstStart();
 
-    int _progressBarValue{};
-
     OptionsCAO _options;
-    std::unique_ptr<Manager> _caoProcess;
+    std::unique_ptr<cao::run::OptimizationRunService> _runService;
+    std::optional<cao::run::RunHandle> _runHandle;
+    cao::gui::RunViewModel _runView;
+    std::size_t _renderedDetails{};
     bool _showTutorials;
     TexturesFormatSelectDialog* texturesFormatDialog;
     QTimer logTimer;

@@ -13,11 +13,19 @@ target_link_libraries(cao_cli_run PUBLIC cao_optimization_run PRIVATE cao_asset_
 target_include_directories(cao_cli_run PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(cao_cli_run PUBLIC cxx_std_20)
 
+add_library(cao_gui_run GuiRun.cpp GuiRun.h)
+target_link_libraries(cao_gui_run PUBLIC cao_optimization_run PRIVATE cao_asset_execution)
+target_include_directories(cao_gui_run PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(cao_gui_run PUBLIC cxx_std_20)
+
 # Find includes in corresponding build directories
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 #Qt
 find_package(Qt5 COMPONENTS Core Widgets REQUIRED)
+add_library(cao_gui_run_dispatch GuiRunDispatch.cpp GuiRunDispatch.h)
+target_link_libraries(cao_gui_run_dispatch PUBLIC cao_optimization_run Qt5::Core)
+target_include_directories(cao_gui_run_dispatch PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 #Qt Linguist
 find_package(Qt5LinguistTools REQUIRED)
 
@@ -144,6 +152,8 @@ endif()
 target_link_libraries(Cathedral_Assets_Optimizer PRIVATE
     cao_application_logging
     cao_cli_run
+    cao_gui_run
+    cao_gui_run_dispatch
     cao_asset_execution
     cao_asset_routing
     cao_asset_run
