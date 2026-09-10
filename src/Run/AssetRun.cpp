@@ -129,30 +129,26 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
                     cancelled = true;
                     break;
                 }
-                if (adapters.extractArchiveWithResult) {
-                    const auto& plan = extractionPlans.at(completed);
-                    ArchiveExtractionResult attempt;
-                    try {
-                        attempt = adapters.extractArchiveWithResult(plan);
-                    } catch (const std::exception& error) {
-                        // An adapter exception carries no trustworthy durable mutation evidence.
-                        attempt = {archive.executionPath(), execution::MutationState::PartialOrUnknown,
-                                   ArchiveExtractionFailure::ExtractionFailed, false, error.what()};
-                    } catch (...) {
-                        // Unknown exceptions must obey the same stop rule as typed backend errors.
-                        attempt = {archive.executionPath(), execution::MutationState::PartialOrUnknown,
-                                   ArchiveExtractionFailure::ExtractionFailed, false,
-                                   "Unknown Archive extraction exception."};
-                    }
-                    // Partial mutation is independently unsafe even if an adapter mistakenly
-                    // claims continuation; retain its original evidence for terminal diagnosis.
-                    unsafeArchive = !attempt.safeToContinue ||
-                                    attempt.mutation == execution::MutationState::PartialOrUnknown;
-                    attempt.modRoot = plan.modRoot;
-                    archiveAttempts.push_back(std::move(attempt));
-                } else {
-                    adapters.extractArchive(archive);
+                const auto& plan = extractionPlans.at(completed);
+                ArchiveExtractionResult attempt;
+                try {
+                    attempt = adapters.extractArchiveWithResult(plan);
+                } catch (const std::exception& error) {
+                    // An adapter exception carries no trustworthy durable mutation evidence.
+                    attempt = {archive.executionPath(), execution::MutationState::PartialOrUnknown,
+                               ArchiveExtractionFailure::ExtractionFailed, false, error.what()};
+                } catch (...) {
+                    // Unknown exceptions must obey the same stop rule as typed backend errors.
+                    attempt = {archive.executionPath(), execution::MutationState::PartialOrUnknown,
+                               ArchiveExtractionFailure::ExtractionFailed, false,
+                               "Unknown Archive extraction exception."};
                 }
+                // Partial mutation is independently unsafe even if an adapter mistakenly
+                // claims continuation; retain its original evidence for terminal diagnosis.
+                unsafeArchive = !attempt.safeToContinue ||
+                                attempt.mutation == execution::MutationState::PartialOrUnknown;
+                attempt.modRoot = plan.modRoot;
+                archiveAttempts.push_back(std::move(attempt));
                 ++completed;
                 if (adapters.reportProgress) {
                     reportSafely(observerDiagnostics, RunPhase::ExtractingArchives, [&] {
@@ -252,39 +248,35 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
                 return result;
             }
             bool safeToContinue = true;
-            if (adapters.executeAssetWithResult) {
-                // Resolve before the attempt can remove a converted source or retarget its parent.
-                std::error_code pathError;
-                const auto resolvedPath = std::filesystem::weakly_canonical(
-                    asset.get().executionPath(), pathError);
-                const auto& attributionPath = pathError ? asset.get().executionPath() : resolvedPath;
-                std::filesystem::path modRoot;
-                for (const auto& root : modRoots) {
-                    const auto relative = attributionPath.lexically_relative(root);
-                    if (!relative.empty() && *relative.begin() != ".." &&
-                        root.native().size() > modRoot.native().size()) modRoot = root;
-                }
-                auto attempt = execution::AssetExecutionResult::success();
-                try {
-                    attempt = adapters.executeAssetWithResult(asset.get());
-                } catch (const std::exception& error) {
-                    // An exception cannot establish whether the adapter committed durable bytes.
-                    attempt = execution::AssetExecutionResult::failed(
-                        execution::AssetExecutionFailure::BackendException, error.what(),
-                        execution::MutationState::PartialOrUnknown, false, asset.get().executionPath());
-                } catch (...) {
-                    // Unknown exceptions carry the same uncertain mutation as standard exceptions.
-                    attempt = execution::AssetExecutionResult::failed(
-                        execution::AssetExecutionFailure::BackendException,
-                        "Unknown Asset execution exception.", execution::MutationState::PartialOrUnknown,
-                        false, asset.get().executionPath());
-                }
-                safeToContinue = attempt.safeToContinue();
-                if (!attempt.succeeded()) result._executionFailures.push_back(attempt);
-                result._assetAttempts.push_back({std::move(modRoot), asset.get(), std::move(attempt)});
-            } else {
-                adapters.executeAsset(asset.get());
+            // Resolve before the attempt can remove a converted source or retarget its parent.
+            std::error_code pathError;
+            const auto resolvedPath = std::filesystem::weakly_canonical(
+                asset.get().executionPath(), pathError);
+            const auto& attributionPath = pathError ? asset.get().executionPath() : resolvedPath;
+            std::filesystem::path modRoot;
+            for (const auto& root : modRoots) {
+                const auto relative = attributionPath.lexically_relative(root);
+                if (!relative.empty() && *relative.begin() != ".." &&
+                    root.native().size() > modRoot.native().size()) modRoot = root;
             }
+            auto attempt = execution::AssetExecutionResult::success();
+            try {
+                attempt = adapters.executeAssetWithResult(asset.get());
+            } catch (const std::exception& error) {
+                // An exception cannot establish whether the adapter committed durable bytes.
+                attempt = execution::AssetExecutionResult::failed(
+                    execution::AssetExecutionFailure::BackendException, error.what(),
+                    execution::MutationState::PartialOrUnknown, false, asset.get().executionPath());
+            } catch (...) {
+                // Unknown exceptions carry the same uncertain mutation as standard exceptions.
+                attempt = execution::AssetExecutionResult::failed(
+                    execution::AssetExecutionFailure::BackendException,
+                    "Unknown Asset execution exception.", execution::MutationState::PartialOrUnknown,
+                    false, asset.get().executionPath());
+            }
+            safeToContinue = attempt.safeToContinue();
+            if (!attempt.succeeded()) result._executionFailures.push_back(attempt);
+            result._assetAttempts.push_back({std::move(modRoot), asset.get(), std::move(attempt)});
             ++completed;
             if (adapters.reportProgress) {
                 reportSafely(result._diagnostics, RunPhase::ProcessingAssets, [&] {
@@ -322,7 +314,7 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
 
     reportPhase(_policy.executionMode() == routing::ExecutionMode::DryRun
         ? RunPhaseRecord::skipped(RunPhase::ArchiveFinalization, PhaseSkipReason::DryRun)
-        : (!adapters.finalizeArchiveLifecycleWithResult && !adapters.finalizeArchiveLifecycle
+        : (!adapters.finalizeArchiveLifecycleWithResult
             ? RunPhaseRecord::skipped(RunPhase::ArchiveFinalization, PhaseSkipReason::NoRequestedWork)
             : RunPhaseRecord::executed(RunPhase::ArchiveFinalization)));
     if (adapters.isCancelled && adapters.isCancelled()) {
@@ -348,9 +340,6 @@ AssetRunResult AssetRun::execute(const std::span<const std::filesystem::path> ro
         }
         result._cancelled = result._finalizationResult->cancelled ||
                             (adapters.isCancelled && adapters.isCancelled());
-    } else if (_policy.executionMode() == routing::ExecutionMode::Apply &&
-               adapters.finalizeArchiveLifecycle) {
-        result._cancelled = !adapters.finalizeArchiveLifecycle();
     }
     return result;
 }

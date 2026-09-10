@@ -25,7 +25,6 @@ using cao::routing::SkipReason;
 using cao::run::AssetRun;
 using cao::run::AssetRunAdapters;
 using cao::run::AssetRunProgress;
-using cao::run::extractArchiveNoOverwrite;
 
 namespace
 {
@@ -297,13 +296,17 @@ void AssetRunTests::archiveFailuresControlContinuation() {
     std::size_t attempts = 0;
     std::size_t assets = 0;
     bool finalized = false;
-    bool legacyCalled = false;
     std::vector<AssetRunProgress> progress;
     AssetRunAdapters adapters;
-    adapters.extractArchive = [&](const auto&) { legacyCalled = true; };
-    adapters.executeAsset = [&](const auto&) { ++assets; };
+    adapters.executeAssetWithResult = [&](const auto&) {
+        ++assets;
+        return cao::execution::AssetExecutionResult::success();
+    };
     adapters.reportProgress = [&](const auto& update) { progress.push_back(update); };
-    adapters.finalizeArchiveLifecycle = [&] { finalized = true; return true; };
+    adapters.finalizeArchiveLifecycleWithResult = [&] {
+        finalized = true;
+        return cao::run::ArchiveFinalizationResult{};
+    };
     adapters.extractArchiveWithResult = [&](const cao::run::ArchiveExtractionPlan& plan) {
         ++attempts;
         cao::run::ArchiveExtractionResult attempt;
@@ -324,7 +327,6 @@ void AssetRunTests::archiveFailuresControlContinuation() {
     QCOMPARE(assets, canContinue ? std::size_t{1} : std::size_t{0});
     QCOMPARE(finalized, canContinue);
     QCOMPARE(result.workRecord().ledger.has_value(), canContinue);
-    QVERIFY(!legacyCalled);
     QVERIFY(!result.cancelled());
     QCOMPARE(result.archiveAttempts().size(), attempts);
     const auto& failure = result.archiveAttempts()[failedAttempt - 1];
@@ -355,14 +357,12 @@ void AssetRunTests::mutationAwareFailuresControlContinuation() {
     writeFile(root / "second.dds");
     std::size_t attempts = 0;
     bool finalized = false;
-    bool legacyCalled = false;
     std::vector<AssetRunProgress> progress;
     AssetRunAdapters adapters;
-    adapters.executeAsset = [&](const auto&) { legacyCalled = true; };
     adapters.reportProgress = [&](const auto& update) { progress.push_back(update); };
-    adapters.finalizeArchiveLifecycle = [&] {
+    adapters.finalizeArchiveLifecycleWithResult = [&] {
         finalized = true;
-        return true;
+        return cao::run::ArchiveFinalizationResult{};
     };
     adapters.executeAssetWithResult = [&](const auto& asset) {
         ++attempts;
@@ -377,7 +377,7 @@ void AssetRunTests::mutationAwareFailuresControlContinuation() {
     const auto result = AssetRun(allLooseTargetsPolicy()).execute(std::array{root}, adapters);
     QCOMPARE(attempts, safe ? std::size_t(2) : static_cast<std::size_t>(failedAttempt));
     QCOMPARE(finalized, safe);
-    QVERIFY(!legacyCalled);
+    QCOMPARE(result.assetAttempts().size(), attempts);
     QVERIFY(!result.cancelled());
     QCOMPARE(result.executionFailures().size(), std::size_t(1));
     QCOMPARE(result.executionFailures().front().safeToContinue(), safe);
@@ -409,9 +409,9 @@ void AssetRunTests::animationFailuresPreserveProgressAndEvidence() {
     std::vector<AssetRunProgress> progress;
     AssetRunAdapters adapters;
     adapters.reportProgress = [&](const auto& update) { progress.push_back(update); };
-    adapters.finalizeArchiveLifecycle = [&] {
+    adapters.finalizeArchiveLifecycleWithResult = [&] {
         finalized = true;
-        return true;
+        return cao::run::ArchiveFinalizationResult{};
     };
     adapters.executeAssetWithResult = [&](const auto& asset) {
         ++attempts;
@@ -432,6 +432,7 @@ void AssetRunTests::animationFailuresPreserveProgressAndEvidence() {
 
     QCOMPARE(attempts, safe ? std::size_t{2} : static_cast<std::size_t>(failedAttempt));
     QCOMPARE(finalized, safe);
+    QCOMPARE(result.assetAttempts().size(), attempts);
     QVERIFY(!result.cancelled());
     QCOMPARE(result.executionFailures().size(), std::size_t{1});
     const auto& failure = result.executionFailures().front();
@@ -470,20 +471,28 @@ void AssetRunTests::unreadableArchiveStopsRunBeforeMutation() {
     std::vector<cao::run::RunFailure> failures;
     const auto result =
         AssetRun(archiveAndTexturePolicy())
-            .execute(std::array{root}, AssetRunAdapters{[&](const auto&) { extracted = true; },
-                                                        [&](const auto&) { executed = true; },
-                                                        {},
-                                                        {},
-                                                        [&] {
-                                                            finalized = true;
-                                                            return true;
-                                                        },
-                                                        {},
-                                                        {},
-                                                        [&](const cao::run::RunFailure& failure) {
-                                                            failures.push_back(failure);
-                                                            throw std::runtime_error("failure observer");
-                                                        }});
+            .execute(
+                std::array{root},
+                AssetRunAdapters{.reportDiscoveryFailure =
+                                     [&](const cao::run::RunFailure& failure) {
+                                         failures.push_back(failure);
+                                         throw std::runtime_error("failure observer");
+                                     },
+                                 .executeAssetWithResult =
+                                     [&](const auto&) {
+                                         executed = true;
+                                         return cao::execution::AssetExecutionResult::success();
+                                     },
+                                 .extractArchiveWithResult =
+                                     [&](const auto&) {
+                                         extracted = true;
+                                         return cao::run::ArchiveExtractionResult{};
+                                     },
+                                 .finalizeArchiveLifecycleWithResult =
+                                     [&] {
+                                         finalized = true;
+                                         return cao::run::ArchiveFinalizationResult{};
+                                     }});
     QCOMPARE(failures.size(), std::size_t{1});
     QCOMPARE(result.failures().size(), failures.size());
     QCOMPARE(failures.front().code(), cao::run::RunFailureCode::ArchiveUnreadable);
@@ -517,23 +526,24 @@ void AssetRunTests::reportsCollisionsBeforeOrderedExtraction() {
         AssetRun(archiveAndTexturePolicy())
             .execute(
                 std::array{root},
-                AssetRunAdapters{[&](const auto& archive) {
-                                     QVERIFY(reported);
-                                     extractions.push_back(archive.executionPath());
-                                 },
-                                 [](const auto&) {},
-                                 {},
-                                 {},
-                                 {},
-                                 {},
-                                 [&](const std::span<const cao::run::ArchiveCollision> collisions) {
-                                     QVERIFY(extractions.empty());
-                                     QCOMPARE(collisions.size(), std::size_t{1});
-                                     QCOMPARE(collisions.front().winningArchive(), second);
-                                     QVERIFY(collisions.front().looseAssetWins());
-                                     reported = true;
-                                     throw std::runtime_error("collision observer");
-                                 }},
+                AssetRunAdapters{
+                    .reportArchiveCollisions =
+                        [&](const std::span<const cao::run::ArchiveCollision> collisions) {
+                            QVERIFY(extractions.empty());
+                            QCOMPARE(collisions.size(), std::size_t{1});
+                            QCOMPARE(collisions.front().winningArchive(), second);
+                            QVERIFY(collisions.front().looseAssetWins());
+                            reported = true;
+                            throw std::runtime_error("collision observer");
+                        },
+                    .executeAssetWithResult =
+                        [](const auto&) { return cao::execution::AssetExecutionResult::success(); },
+                    .extractArchiveWithResult =
+                        [&](const auto& archive) {
+                            QTest::qVerify(reported, "reported", "", __FILE__, __LINE__);
+                            extractions.push_back(archive.archivePath);
+                            return cao::run::ArchiveExtractionResult{};
+                        }},
                 cao::run::ArchivePrecedence::explicitOrder({"z.bsa", "a.bsa"}));
     QVERIFY(result.failures().empty());
     QVERIFY(reported);
@@ -576,16 +586,26 @@ void AssetRunTests::filesystemTraversalPollsCancellation()
     bool executed = false;
     bool finalized = false;
     bool diagnosed = false;
-    const auto result = run.execute(roots, AssetRunAdapters{
-        [&](const cao::routing::RoutedAsset &) {
-            ++extractions;
-            armed = true;
-        },
-        [&](const cao::routing::RoutedAsset &) { executed = true; },
-        {},
-        [&] { return armed && ++polls >= 4; },
-        [&] { finalized = true; return true; },
-        [&](const cao::run::AssetRunDiagnostics &) { diagnosed = true; }});
+    const auto result = run.execute(
+        roots, AssetRunAdapters{.isCancelled = [&] { return armed && ++polls >= 4; },
+                                .reportDiagnostics =
+                                    [&](const cao::run::AssetRunDiagnostics&) { diagnosed = true; },
+                                .executeAssetWithResult =
+                                    [&](const cao::routing::RoutedAsset&) {
+                                        executed = true;
+                                        return cao::execution::AssetExecutionResult::success();
+                                    },
+                                .extractArchiveWithResult =
+                                    [&](const cao::run::ArchiveExtractionPlan&) {
+                                        ++extractions;
+                                        armed = true;
+                                        return cao::run::ArchiveExtractionResult{};
+                                    },
+                                .finalizeArchiveLifecycleWithResult =
+                                    [&] {
+                                        finalized = true;
+                                        return cao::run::ArchiveFinalizationResult{};
+                                    }});
 
     QVERIFY(result.cancelled());
     QVERIFY(result.ledger().routedAssets().empty());
@@ -615,17 +635,23 @@ void AssetRunTests::archiveExtractionPrecedesDefinitiveRoutedExecution()
     const auto result = run.execute(
         roots,
         AssetRunAdapters{
-            [&](const cao::routing::RoutedAsset &selectedArchive) {
-                QVERIFY(executedPaths.empty());
-                QVERIFY(selectedArchive.executionPath() == archive);
-                archiveExtracted = true;
-                writeFile(extractedTexture);
-            },
-            [&](const cao::routing::RoutedAsset &asset) {
-                QVERIFY(archiveExtracted);
-                executedPaths.push_back(asset.executionPath());
-            },
-            [&](const AssetRunProgress &update) { progress.push_back(update); }});
+            .reportProgress = [&](const AssetRunProgress& update) { progress.push_back(update); },
+            .executeAssetWithResult =
+                [&](const cao::routing::RoutedAsset& asset) {
+                    QTest::qVerify(archiveExtracted, "archiveExtracted", "", __FILE__, __LINE__);
+                    executedPaths.push_back(asset.executionPath());
+                    return cao::execution::AssetExecutionResult::success();
+                },
+            .extractArchiveWithResult =
+                [&](const cao::run::ArchiveExtractionPlan& selectedArchive) {
+                    QTest::qVerify(executedPaths.empty(), "executedPaths.empty()", "", __FILE__,
+                                   __LINE__);
+                    QTest::qVerify(selectedArchive.archivePath == archive,
+                                   "selectedArchive.archivePath == archive", "", __FILE__, __LINE__);
+                    archiveExtracted = true;
+                    writeFile(extractedTexture);
+                    return cao::run::ArchiveExtractionResult{};
+                }});
 
     QVERIFY(!result.cancelled());
     QCOMPARE(executedPaths.size(), std::size_t{2});
@@ -670,16 +696,22 @@ void AssetRunTests::realExtractionPreservesLooseAssetPrecedence()
     std::vector<std::filesystem::path> executedPaths;
     const AssetRun run(archiveAndTexturePolicy());
     const std::array roots{root};
+    cao::run::TemporaryArtifactRegistry artifacts;
     const auto result = run.execute(
-        roots,
-        AssetRunAdapters{
-            [](const cao::routing::RoutedAsset &selectedArchive) {
-                extractArchiveNoOverwrite(selectedArchive.executionPath(), false);
-            },
-            [&](const cao::routing::RoutedAsset &asset) {
-                executedPaths.push_back(asset.executionPath());
-            }});
+        roots, AssetRunAdapters{.executeAssetWithResult =
+                                    [&](const cao::routing::RoutedAsset& asset) {
+                                        executedPaths.push_back(asset.executionPath());
+                                        return cao::execution::AssetExecutionResult::success();
+                                    },
+                                .extractArchiveWithResult =
+                                    [&](const cao::run::ArchiveExtractionPlan& plan) {
+                                        return cao::run::ArchiveExtractor(artifacts).extract(plan);
+                                    }});
 
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+    QCOMPARE(result.archiveAttempts().size(), std::size_t{1});
+    QVERIFY(result.archiveAttempts().front().succeeded());
+    QCOMPARE(result.archiveAttempts().front().mutation, cao::execution::MutationState::Committed);
     QCOMPARE(readFile(collision), QByteArray("loose collision"));
     QCOMPARE(readFile(archivedOnly), QByteArray("archived only"));
     QCOMPARE(static_cast<std::size_t>(std::count(executedPaths.begin(), executedPaths.end(),
@@ -709,14 +741,17 @@ void AssetRunTests::executesOriginalLedgerAssetsInTargetOrder()
     std::vector<const cao::routing::RoutedAsset *> executedAssets;
     const AssetRun run(allLooseTargetsPolicy());
     const auto result = run.execute(
-        paths,
-        AssetRunAdapters{
-            [](const cao::routing::RoutedAsset &) {
-                qFatal("No Archive should be selected in the Loose Asset ordering test");
-            },
-            [&](const cao::routing::RoutedAsset &asset) {
-                executedAssets.push_back(&asset);
-            }});
+        paths, AssetRunAdapters{
+                   .executeAssetWithResult =
+                       [&](const cao::routing::RoutedAsset& asset) {
+                           executedAssets.push_back(&asset);
+                           return cao::execution::AssetExecutionResult::success();
+                       },
+                   .extractArchiveWithResult =
+                       [](const cao::run::ArchiveExtractionPlan&) {
+                           qFatal("No Archive should be selected in the Loose Asset ordering test");
+                           return cao::run::ArchiveExtractionResult{};
+                       }});
 
     const std::array expectedPaths{paths[1], paths[3], paths[0], paths[4], paths[2]};
     QCOMPARE(executedAssets.size(), expectedPaths.size());
@@ -753,11 +788,17 @@ void AssetRunTests::progressAndSkipSummaryExcludeNonWork()
     const auto result = run.execute(
         paths,
         AssetRunAdapters{
-            [](const cao::routing::RoutedAsset &) {
-                qFatal("No Archive should be selected in the progress test");
-            },
-            [&](const cao::routing::RoutedAsset &) { ++executionAttempts; },
-            [&](const AssetRunProgress &update) { progress.push_back(update); }});
+            .reportProgress = [&](const AssetRunProgress& update) { progress.push_back(update); },
+            .executeAssetWithResult =
+                [&](const cao::routing::RoutedAsset&) {
+                    ++executionAttempts;
+                    return cao::execution::AssetExecutionResult::success();
+                },
+            .extractArchiveWithResult =
+                [](const cao::run::ArchiveExtractionPlan&) {
+                    qFatal("No Archive should be selected in the progress test");
+                    return cao::run::ArchiveExtractionResult{};
+                }});
 
     QCOMPARE(result.ledger().routedAssets().size(), std::size_t{2});
     QCOMPARE(executionAttempts, std::size_t{2});
@@ -784,23 +825,26 @@ void AssetRunTests::applyFinalizesArchivesAfterRoutedExecution()
     const AssetRun run(archiveAndTexturePolicy());
     const std::array roots{texture};
     static_cast<void>(run.execute(
-        roots,
-        AssetRunAdapters{
-            [](const cao::routing::RoutedAsset &) {
-                qFatal("No Archive should be selected in the finalization-order test");
-            },
-            [&](const cao::routing::RoutedAsset &) {
-                events.push_back(QByteArrayLiteral("execute"));
-            },
-            {},
-            {},
-            [&] {
-                events.push_back(QByteArrayLiteral("finalize"));
-                return true;
-            },
-            [&](const cao::run::AssetRunDiagnostics &) {
-                events.push_back(QByteArrayLiteral("report"));
-            }}));
+        roots, AssetRunAdapters{
+                   .reportDiagnostics =
+                       [&](const cao::run::AssetRunDiagnostics&) {
+                           events.push_back(QByteArrayLiteral("report"));
+                       },
+                   .executeAssetWithResult =
+                       [&](const cao::routing::RoutedAsset&) {
+                           events.push_back(QByteArrayLiteral("execute"));
+                           return cao::execution::AssetExecutionResult::success();
+                       },
+                   .extractArchiveWithResult =
+                       [](const cao::run::ArchiveExtractionPlan&) {
+                           qFatal("No Archive should be selected in the finalization-order test");
+                           return cao::run::ArchiveExtractionResult{};
+                       },
+                   .finalizeArchiveLifecycleWithResult =
+                       [&] {
+                           events.push_back(QByteArrayLiteral("finalize"));
+                           return cao::run::ArchiveFinalizationResult{};
+                       }}));
 
     const std::vector<QByteArray> expectedEvents{QByteArrayLiteral("execute"),
                                                  QByteArrayLiteral("report"),
@@ -832,22 +876,26 @@ void AssetRunTests::linkedAssetsAreReportedBeforeFinalizationWithoutExecution()
     const auto result = run.execute(
         roots,
         AssetRunAdapters{
-            [](const cao::routing::RoutedAsset &) {
-                qFatal("No Archive should be selected in the linked-Asset reporting test");
-            },
-            [&](const cao::routing::RoutedAsset &asset) {
-                executedPaths.push_back(asset.executionPath());
-            },
-            {},
-            {},
-            [&] {
-                finalizedAfterReport = !reportedDiagnostics.empty();
-                return true;
-            },
-            [&](const cao::run::AssetRunDiagnostics &diagnostics) {
-                reportedDiagnostics.assign(diagnostics.diagnostics().begin(),
-                                           diagnostics.diagnostics().end());
-            }});
+            .reportDiagnostics =
+                [&](const cao::run::AssetRunDiagnostics& diagnostics) {
+                    reportedDiagnostics.assign(diagnostics.diagnostics().begin(),
+                                               diagnostics.diagnostics().end());
+                },
+            .executeAssetWithResult =
+                [&](const cao::routing::RoutedAsset& asset) {
+                    executedPaths.push_back(asset.executionPath());
+                    return cao::execution::AssetExecutionResult::success();
+                },
+            .extractArchiveWithResult =
+                [](const cao::run::ArchiveExtractionPlan&) {
+                    qFatal("No Archive should be selected in the linked-Asset reporting test");
+                    return cao::run::ArchiveExtractionResult{};
+                },
+            .finalizeArchiveLifecycleWithResult =
+                [&] {
+                    finalizedAfterReport = !reportedDiagnostics.empty();
+                    return cao::run::ArchiveFinalizationResult{};
+                }});
 
     // Remove the link itself before QTemporaryDir cleanup, which does not handle Windows links.
     QVERIFY(std::filesystem::remove(link));
@@ -886,19 +934,27 @@ void AssetRunTests::cancelledArchiveFinalizationIsReported()
     const auto result = run.execute(
         roots,
         AssetRunAdapters{
-            [](const cao::routing::RoutedAsset &) {
-                qFatal("No Archive should be selected in the finalization-cancellation test");
-            },
-            [](const cao::routing::RoutedAsset &) {},
-            {},
-            {},
-            [] { return false; },
-            [&](const cao::run::AssetRunDiagnostics &) {
-                resultReportedBeforeFinalization = true;
-            }});
+            .reportDiagnostics =
+                [&](const cao::run::AssetRunDiagnostics&) {
+                    resultReportedBeforeFinalization = true;
+                },
+            .executeAssetWithResult =
+                [](const cao::routing::RoutedAsset&) {
+                    return cao::execution::AssetExecutionResult::success();
+                },
+            .extractArchiveWithResult =
+                [](const cao::run::ArchiveExtractionPlan&) {
+                    qFatal("No Archive should be selected in the finalization-cancellation test");
+                    return cao::run::ArchiveExtractionResult{};
+                },
+            .finalizeArchiveLifecycleWithResult =
+                [] { return cao::run::ArchiveFinalizationResult{.cancelled = true}; }});
 
     QVERIFY(resultReportedBeforeFinalization);
     QVERIFY(result.cancelled());
+    QVERIFY(result.finalizationResult().has_value());
+    QVERIFY(result.finalizationResult()->cancelled);
+    QVERIFY(!result.finalizationResult()->failure);
 }
 
 void AssetRunTests::dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPathsSilent()
@@ -926,12 +982,16 @@ void AssetRunTests::dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPath
     const AssetRun run(dryRunArchivePolicy());
     const std::array roots{directoryRoot, explicitUnsupported};
     const auto result = run.execute(
-        roots,
-        AssetRunAdapters{
-            [&](const cao::routing::RoutedAsset &) { extractionAttempted = true; },
-            [&](const cao::routing::RoutedAsset &asset) {
-                executedPaths.push_back(asset.executionPath());
-            }});
+        roots, AssetRunAdapters{.executeAssetWithResult =
+                                    [&](const cao::routing::RoutedAsset& asset) {
+                                        executedPaths.push_back(asset.executionPath());
+                                        return cao::execution::AssetExecutionResult::success();
+                                    },
+                                .extractArchiveWithResult =
+                                    [&](const cao::run::ArchiveExtractionPlan&) {
+                                        extractionAttempted = true;
+                                        return cao::run::ArchiveExtractionResult{};
+                                    }});
 
     QVERIFY(!extractionAttempted);
     QCOMPARE(executedPaths, std::vector<std::filesystem::path>{texture});
@@ -982,26 +1042,30 @@ void AssetRunTests::dryRunLeavesCompleteModTreeUnchangedWhileEvaluatingLooseAsse
     const auto result = run.execute(
         roots,
         AssetRunAdapters{
-            [&](const cao::routing::RoutedAsset &) {
-                extractionAttempted = true;
-                writeFile(root / "textures" / "extracted.dds", "extracted bytes");
-            },
-            [&](const cao::routing::RoutedAsset &asset) {
-                executed.push_back(ExecutionObservation{
-                    asset.executionPath(),
-                    asset.executionMode(),
-                    asset.operations().contains(cao::routing::AssetOperation::Optimization),
-                    asset.operations().contains(cao::routing::AssetOperation::Conversion),
-                    asset.operations().contains(
-                        cao::routing::AssetOperation::MeshReferenceMaintenance)});
-            },
-            [&](const AssetRunProgress &update) { progress.push_back(update); },
-            {},
-            [&] {
-                finalizationAttempted = true;
-                writeFile(root / "packed.bsa", "packed bytes");
-                return std::filesystem::remove(emptyDirectory);
-            }});
+            .reportProgress = [&](const AssetRunProgress& update) { progress.push_back(update); },
+            .executeAssetWithResult =
+                [&](const cao::routing::RoutedAsset& asset) {
+                    executed.push_back(ExecutionObservation{
+                        asset.executionPath(), asset.executionMode(),
+                        asset.operations().contains(cao::routing::AssetOperation::Optimization),
+                        asset.operations().contains(cao::routing::AssetOperation::Conversion),
+                        asset.operations().contains(
+                            cao::routing::AssetOperation::MeshReferenceMaintenance)});
+                    return cao::execution::AssetExecutionResult::success();
+                },
+            .extractArchiveWithResult =
+                [&](const cao::run::ArchiveExtractionPlan&) {
+                    extractionAttempted = true;
+                    writeFile(root / "textures" / "extracted.dds", "extracted bytes");
+                    return cao::run::ArchiveExtractionResult{};
+                },
+            .finalizeArchiveLifecycleWithResult =
+                [&] {
+                    finalizationAttempted = true;
+                    writeFile(root / "packed.bsa", "packed bytes");
+                    std::filesystem::remove(emptyDirectory);
+                    return cao::run::ArchiveFinalizationResult{};
+                }});
 
     QVERIFY(!extractionAttempted);
     QVERIFY(!finalizationAttempted);
@@ -1044,12 +1108,18 @@ void AssetRunTests::cancellationStopsBetweenRoutedAssets()
     const auto result = run.execute(
         paths,
         AssetRunAdapters{
-            [](const cao::routing::RoutedAsset &) {
-                qFatal("No Archive should be selected in the cancellation test");
-            },
-            [&](const cao::routing::RoutedAsset &) { ++attempts; },
-            [&](const AssetRunProgress &update) { progress.push_back(update); },
-            [&] { return attempts == 1; }});
+            .reportProgress = [&](const AssetRunProgress& update) { progress.push_back(update); },
+            .isCancelled = [&] { return attempts == 1; },
+            .executeAssetWithResult =
+                [&](const cao::routing::RoutedAsset&) {
+                    ++attempts;
+                    return cao::execution::AssetExecutionResult::success();
+                },
+            .extractArchiveWithResult =
+                [](const cao::run::ArchiveExtractionPlan&) {
+                    qFatal("No Archive should be selected in the cancellation test");
+                    return cao::run::ArchiveExtractionResult{};
+                }});
 
     QVERIFY(result.cancelled());
     QCOMPARE(result.ledger().routedAssets().size(), std::size_t{2});
@@ -1080,13 +1150,17 @@ void AssetRunTests::archiveCancellationSkipsDefinitiveDiscovery()
     const std::array roots{root};
     const auto result = run.execute(
         roots,
-        AssetRunAdapters{
-            [&](const cao::routing::RoutedAsset &) { ++extractionAttempts; },
-            [](const cao::routing::RoutedAsset &) {
-                qFatal("No Loose Asset should execute after Archive cancellation");
-            },
-            {},
-            [&] { return extractionAttempts == 1; }});
+        AssetRunAdapters{.isCancelled = [&] { return extractionAttempts == 1; },
+                         .executeAssetWithResult =
+                             [](const cao::routing::RoutedAsset&) {
+                                 qFatal("No Loose Asset should execute after Archive cancellation");
+                                 return cao::execution::AssetExecutionResult::success();
+                             },
+                         .extractArchiveWithResult =
+                             [&](const cao::run::ArchiveExtractionPlan&) {
+                                 ++extractionAttempts;
+                                 return cao::run::ArchiveExtractionResult{};
+                             }});
 
     QVERIFY(result.cancelled());
     QCOMPARE(extractionAttempts, std::size_t{1});
@@ -1111,14 +1185,18 @@ void AssetRunTests::finalArchiveCancellationSkipsDefinitiveDiscovery()
     const AssetRun run(archiveAndTexturePolicy());
     const std::array roots{root};
     const auto result = run.execute(
-        roots,
-        AssetRunAdapters{
-            [&](const cao::routing::RoutedAsset &) { ++extractionAttempts; },
-            [](const cao::routing::RoutedAsset &) {
-                qFatal("No Loose Asset should execute after final Archive cancellation");
-            },
-            {},
-            [&] { return extractionAttempts == 1; }});
+        roots, AssetRunAdapters{
+                   .isCancelled = [&] { return extractionAttempts == 1; },
+                   .executeAssetWithResult =
+                       [](const cao::routing::RoutedAsset&) {
+                           qFatal("No Loose Asset should execute after final Archive cancellation");
+                           return cao::execution::AssetExecutionResult::success();
+                       },
+                   .extractArchiveWithResult =
+                       [&](const cao::run::ArchiveExtractionPlan&) {
+                           ++extractionAttempts;
+                           return cao::run::ArchiveExtractionResult{};
+                       }});
 
     QVERIFY(result.cancelled());
     QCOMPARE(extractionAttempts, std::size_t{1});
@@ -1143,19 +1221,26 @@ void AssetRunTests::cancellationDuringFinalAssetSkipsFinalization()
     const auto result = run.execute(
         paths,
         AssetRunAdapters{
-            [](const cao::routing::RoutedAsset &) {
-                qFatal("No Archive should be selected in the final-Asset cancellation test");
-            },
-            [&](const cao::routing::RoutedAsset &) { ++attempts; },
-            {},
             // Cancellation only becomes observable once the last attempt has completed, which is
             // the case no loop head can catch.
-            [&] { return attempts == paths.size(); },
-            [&] {
-                finalized = true;
-                return true;
-            },
-            [&](const cao::run::AssetRunDiagnostics &) { reportedDiagnostics = true; }});
+            .isCancelled = [&] { return attempts == paths.size(); },
+            .reportDiagnostics =
+                [&](const cao::run::AssetRunDiagnostics&) { reportedDiagnostics = true; },
+            .executeAssetWithResult =
+                [&](const cao::routing::RoutedAsset&) {
+                    ++attempts;
+                    return cao::execution::AssetExecutionResult::success();
+                },
+            .extractArchiveWithResult =
+                [](const cao::run::ArchiveExtractionPlan&) {
+                    qFatal("No Archive should be selected in the final-Asset cancellation test");
+                    return cao::run::ArchiveExtractionResult{};
+                },
+            .finalizeArchiveLifecycleWithResult =
+                [&] {
+                    finalized = true;
+                    return cao::run::ArchiveFinalizationResult{};
+                }});
 
     QVERIFY(result.cancelled());
     QCOMPARE(attempts, paths.size());
@@ -1180,26 +1265,30 @@ void AssetRunTests::nestedArchivesAreReportedWithoutInflatingTheWorkTotal()
     const AssetRun run(archiveAndTexturePolicy());
     const std::array roots{root};
     const auto result = run.execute(
-        roots,
-        AssetRunAdapters{
-            [&](const cao::routing::RoutedAsset &) {
-                // The game reads no Archive nested inside another, so an Archive that extraction
-                // itself produced is malformed mod content rather than work a later round owes.
-                writeFile(nestedArchive);
-                writeFile(extractedTexture);
-            },
-            [&](const cao::routing::RoutedAsset &asset) {
-                executedPaths.push_back(asset.executionPath());
-            },
-            [&](const AssetRunProgress &update) {
-                if (update.phase == cao::routing::RoutedAssetPhase::LooseAssetProcessing)
-                    looseWorkTotal = update.total;
-            },
-            {},
-            {},
-            [&](const cao::run::AssetRunDiagnostics &diagnostics) {
-                reportedNestedArchives = diagnostics.nestedArchiveCount();
-            }});
+        roots, AssetRunAdapters{.reportProgress =
+                                    [&](const AssetRunProgress& update) {
+                                        if (update.phase ==
+                                            cao::routing::RoutedAssetPhase::LooseAssetProcessing)
+                                            looseWorkTotal = update.total;
+                                    },
+                                .reportDiagnostics =
+                                    [&](const cao::run::AssetRunDiagnostics& diagnostics) {
+                                        reportedNestedArchives = diagnostics.nestedArchiveCount();
+                                    },
+                                .executeAssetWithResult =
+                                    [&](const cao::routing::RoutedAsset& asset) {
+                                        executedPaths.push_back(asset.executionPath());
+                                        return cao::execution::AssetExecutionResult::success();
+                                    },
+                                .extractArchiveWithResult =
+                                    [&](const cao::run::ArchiveExtractionPlan&) {
+                                        // The game reads no Archive nested inside another, so an
+                                        // Archive that extraction itself produced is malformed mod
+                                        // content rather than work a later round owes.
+                                        writeFile(nestedArchive);
+                                        writeFile(extractedTexture);
+                                        return cao::run::ArchiveExtractionResult{};
+                                    }});
 
     QVERIFY(!result.cancelled());
     // Routing it would have promised a Routed Asset that no post-extraction target executes, so

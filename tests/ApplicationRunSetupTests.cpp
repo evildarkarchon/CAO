@@ -175,7 +175,7 @@ void ApplicationRunSetupTests::archiveCreationRequiresProfileArchiveSupport()
     disableTextureWork(options);
     options.iMeshesOptimizationLevel = 0;
     // The CLI accepts --bc for any profile, so setup is the only place this can still be caught
-    // before Manager packs Archives and deletes the Loose sources.
+    // before the Optimization Run packs Archives and deletes the Loose sources.
     options.bBsaCreate = true;
 
     const auto result = cao::run::prepareApplicationRun(options);

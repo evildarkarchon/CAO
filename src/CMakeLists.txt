@@ -45,8 +45,6 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Logger.h
     ${CMAKE_CURRENT_SOURCE_DIR}/MainOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/MainOptimizer.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Manager.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Manager.h
     ${CMAKE_CURRENT_SOURCE_DIR}/MeshesOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/MeshesOptimizer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/OptionsCAO.cpp

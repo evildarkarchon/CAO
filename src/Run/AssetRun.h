@@ -15,9 +15,6 @@
 #include <vector>
 
 namespace cao::run {
-using ArchiveAssetAdapter = std::function<void(const routing::RoutedAsset&)>;
-using RoutedAssetExecutionAdapter = std::function<void(const routing::RoutedAsset&)>;
-
 /// Reports completed Routed Asset attempts against the routed-only work total for one phase.
 struct AssetRunProgress final {
     routing::RoutedAssetPhase phase;
@@ -27,8 +24,6 @@ struct AssetRunProgress final {
 
 using AssetRunProgressAdapter = std::function<void(const AssetRunProgress&)>;
 using AssetRunCancellationAdapter = std::function<bool()>;
-/// Completes post-execution Archive mutations and reports whether finalization finished.
-using ArchiveLifecycleFinalizationAdapter = std::function<bool()>;
 
 class AssetRunResult;
 struct RunWorkRecord;
@@ -67,27 +62,24 @@ class AssetRunDiagnostics final {
 using AssetRunDiagnosticsAdapter = std::function<void(const AssetRunDiagnostics&)>;
 
 /// Supplies the production or test adapters used at the run's filesystem and execution seams.
-/// Either extraction adapter and either execution adapter are required; progress, cancellation,
-/// finalization, and result reporting are optional.
+/// Result-bearing extraction and execution adapters are required when their phases have work;
+/// progress, cancellation, finalization, and result reporting are optional.
 struct AssetRunAdapters final {
-    ArchiveAssetAdapter extractArchive;
-    RoutedAssetExecutionAdapter executeAsset;
     AssetRunProgressAdapter reportProgress;
     AssetRunCancellationAdapter isCancelled;
-    ArchiveLifecycleFinalizationAdapter finalizeArchiveLifecycle;
     AssetRunDiagnosticsAdapter reportDiagnostics;
     /// Observes complete preflight collisions before any Archive extraction.
     std::function<void(std::span<const ArchiveCollision>)> reportArchiveCollisions;
     /// Observes fatal discovery failures before returning without mutation.
     std::function<void(const RunFailure&)> reportDiscoveryFailure;
-    /// Executes with mutation evidence; when present, replaces the legacy void execution adapter.
+    /// Executes with mutation evidence retained for every completed attempt.
     /// An unsafe result stops subsequent Assets and Archive finalization after attempt progress.
     std::function<execution::AssetExecutionResult(const routing::RoutedAsset&)>
         executeAssetWithResult;
-    /// Extracts the completed manifest plan and reports mutation evidence; replaces the void
-    /// adapter when present. Unsafe continuation stops work independently of cancellation.
+    /// Extracts the completed manifest plan and reports mutation evidence.
+    /// Unsafe continuation stops work independently of cancellation.
     std::function<ArchiveExtractionResult(const ArchiveExtractionPlan&)> extractArchiveWithResult;
-    /// Retains finalization outcomes; replaces the legacy boolean adapter when present.
+    /// Optionally finalizes Archives and retains mutation, failure, and cancellation evidence.
     std::function<ArchiveFinalizationResult()> finalizeArchiveLifecycleWithResult;
     /// Observes actual lifecycle boundaries, including empty work phases, before work begins.
     std::function<void(const RunPhaseRecord&)> reportPhase;
@@ -183,9 +175,9 @@ class AssetRun final {
     /// finalizes Archives in Apply mode only. Cancellation is observed between filesystem entries
     /// and attempts, and once more after the final attempt, so an adapter is never abandoned
     /// mid-operation and a cancelled run never reaches diagnostics or finalization. A finalizer
-    /// reports cancellation by returning false. Filesystem races are skipped during discovery;
-    /// legacy execution adapter exceptions propagate. Presentation exceptions become informational
-    /// ObserverFailed diagnostics without discarding attempts. Result-bearing extraction exceptions retain unknown
+    /// reports cancellation in its result. Filesystem races are skipped during discovery.
+    /// Presentation exceptions become informational ObserverFailed diagnostics without discarding
+    /// attempts. Extraction exceptions retain unknown
     /// mutation evidence and stop the run. Manifest/order failures stop all mutation.
     /// Archive precedence is validated before the first extraction callback.
     /// Result-bearing execution retains all attempts and converts adapter exceptions to unsafe
