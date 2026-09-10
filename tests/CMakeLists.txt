@@ -231,7 +231,7 @@ set_target_properties(cao_gui_run_tests PROPERTIES AUTOMOC ON)
 add_test(NAME cao_gui_run_tests COMMAND cao_gui_run_tests)
 
 add_executable(cao_gui_run_dispatch_tests GuiRunDispatchTests.cpp)
-target_link_libraries(cao_gui_run_dispatch_tests PRIVATE Qt5::Test cao_gui_run_dispatch)
+target_link_libraries(cao_gui_run_dispatch_tests PRIVATE Qt5::Test cao_gui_run_dispatch cao_gui_run)
 set_target_properties(cao_gui_run_dispatch_tests PROPERTIES AUTOMOC ON)
 add_test(NAME cao_gui_run_dispatch_tests COMMAND cao_gui_run_dispatch_tests)
 

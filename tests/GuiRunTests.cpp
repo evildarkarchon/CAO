@@ -79,7 +79,9 @@ class GuiRunTests final : public QObject {
         using namespace cao::run;
         cao::gui::RunViewModel view;
         QVERIFY(view.requestClose());
+        QVERIFY(view.canStart());
         view.begin("run");
+        QVERIFY(!view.canStart());
         QVERIFY(!view.requestClose());
         QVERIFY(view.state().closeRequested);
         QVERIFY(view.state().cancellationRequested);
@@ -92,6 +94,7 @@ class GuiRunTests final : public QObject {
         QVERIFY(view.consume(RunEvent("run", 2, result)));
         QVERIFY(view.requestClose());
         QVERIFY(view.state().closeRequested);
+        QVERIFY(!view.canStart());
     }
     /// Old runs and duplicate events cannot overwrite a new run, including delayed terminal events.
     void rejectsStaleObservations() {

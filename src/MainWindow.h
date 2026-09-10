@@ -45,7 +45,7 @@ class MainWindow final : public QMainWindow {
     void updateLog() const;
     /// Captures user intent and retains a run whose observations are queued to this window.
     void initProcess();
-    /// Restores controls after terminal delivery, then completes any deferred close.
+    /// After terminal delivery, queues a pending close with controls locked or restores controls.
     void endProcess();
     /// Renders authoritative phase counts and terminal labels without calculating run progress.
     void renderRun();

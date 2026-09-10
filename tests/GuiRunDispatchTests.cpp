@@ -1,9 +1,49 @@
 #include "GuiRunDispatch.h"
+#include "GuiRun.h"
+#include "Run/TemporaryArtifactRegistry.h"
+#include "RunTestConfiguration.h"
 
 #include <QtTest>
 
 #include <memory>
+#include <atomic>
+#include <fstream>
+#include <semaphore>
 #include <thread>
+
+namespace {
+/// Holds an atomic attempt open so the GUI can cancel without allowing Safety Cleanup yet.
+class GatedAttempt final : public cao::run::RunWorkService {
+   public:
+    /// Owns the temporary path; the caller retains its directory until the worker is joined.
+    explicit GatedAttempt(std::filesystem::path path) : artifact(std::move(path)) {}
+
+    /// Registers real cleanup work and delays return without interrupting the atomic attempt.
+    void execute(const cao::run::RunPreparation&, cao::run::RunWorkRecord&,
+                 cao::run::TemporaryArtifactRegistry& artifacts,
+                 cao::run::RunObservationSink& observations, std::stop_token) override {
+        static_cast<void>(artifacts.registerArtifact(artifact));
+        std::ofstream(artifact) << "temporary attempt output";
+        observations.recordPhase(cao::run::RunPhaseRecord::executed(
+            cao::run::RunPhase::ProcessingAssets, cao::run::RunProgress::determinate(2, 0, 0)));
+        entered.store(true);
+        release.acquire();
+    }
+
+    std::filesystem::path artifact;
+    std::atomic<bool> entered{};
+    std::binary_semaphore release{0};
+};
+
+/// Releases a gated worker before handle destruction even when a Qt assertion returns early.
+struct ReleaseAttempt final {
+    GatedAttempt& work;
+    bool released{};
+    ~ReleaseAttempt() {
+        if (!released) work.release.release();
+    }
+};
+}  // namespace
 
 class GuiRunDispatchTests final : public QObject {
     Q_OBJECT
@@ -17,6 +57,8 @@ class GuiRunDispatchTests final : public QObject {
     void workerDeliveryRunsOnTargetThread();
     /// Verifies destruction inside one observer also suppresses later events in the same drain.
     void observerDestructionStopsTheCurrentDrain();
+    /// Closing during an atomic attempt waits for real cleanup and queued terminal delivery.
+    void closeWaitsForCleanupAndTerminalDelivery();
 };
 
 void GuiRunDispatchTests::deliveryIsAlwaysQueued() {
@@ -74,6 +116,64 @@ void GuiRunDispatchTests::observerDestructionStopsTheCurrentDrain() {
     });
     QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
     QCOMPARE(delivered, 1U);
+}
+
+void GuiRunDispatchTests::closeWaitsForCleanupAndTerminalDelivery() {
+    using namespace cao::run;
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto artifact = root / "attempt.tmp";
+    auto work = std::make_shared<GatedAttempt>(artifact);
+    const std::weak_ptr<GatedAttempt> retainedWork = work;
+    auto service = std::make_unique<OptimizationRunService>(testRunConfiguration(), work);
+    auto target = std::make_unique<QObject>();
+    cao::gui::RunViewModel view;
+    bool terminalDelivered{};
+    bool cleanupFinishedAtDelivery{};
+    auto observation = cao::gui::queuedObservation(target.get(), [&](const RunEvent& event) {
+        if (!view.consume(event) || !view.state().outcome) return;
+        terminalDelivered = true;
+        cleanupFinishedAtDelivery = !std::filesystem::exists(artifact);
+    });
+    auto started = service->start(
+        RunRequest::create("SkyrimSE", cao::routing::ExecutionMode::Apply,
+                           ModSelection::singleModRoot(root),
+                           {cao::routing::RequestedWork::NativeTextureOptimization}),
+        std::vector<RunObservation>{std::move(observation)});
+    // This guard must unwind before the owning handle, which joins the blocked worker.
+    ReleaseAttempt release{*work};
+    QVERIFY(started.started());
+    view.begin(started.handle()->snapshot().runId());
+    QTRY_VERIFY(work->entered.load());
+    QTRY_COMPARE(view.state().label, std::string("Processing Assets"));
+    QVERIFY(!view.requestClose());
+    started.handle()->requestCancellation();
+    QVERIFY(!view.requestClose());
+    QCOMPARE(view.state().label, std::string("Cancelling - Processing Assets"));
+    QCOMPARE(view.state().progress->completed(), std::size_t{0});
+    QVERIFY(std::filesystem::exists(artifact));
+    QVERIFY(!terminalDelivered);
+    QVERIFY(target);
+    work.reset();
+    QVERIFY(!retainedWork.expired());
+
+    release.released = true;
+    release.work.release.release();
+    const auto result = started.handle()->wait();
+    QCOMPARE(result.outcome(), RunOutcome::Cancelled);
+    QVERIFY(!std::filesystem::exists(artifact));
+    QVERIFY(!terminalDelivered);
+    QVERIFY(!view.requestClose());
+    QVERIFY(view.state().active);
+
+    QTRY_VERIFY(terminalDelivered);
+    QVERIFY(cleanupFinishedAtDelivery);
+    QVERIFY(view.requestClose());
+    QVERIFY(!view.canStart());
+    target.reset();
+    // Delivery has unwound before the run owners and their dependencies are released.
+    service.reset();
 }
 
 QTEST_GUILESS_MAIN(GuiRunDispatchTests)

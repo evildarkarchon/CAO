@@ -256,6 +256,7 @@ void MainWindow::initProcess() {
         cancelRun();
         return;
     }
+    if (!_runView.canStart()) return;
     saveUi();
 
     // saveUi() has just settled the profile and the debug-log toggle, so the run's log destination
@@ -310,6 +311,12 @@ void MainWindow::initProcess() {
 
 void MainWindow::endProcess() {
     logTimer.stop();
+    if (_runView.state().closeRequested) {
+        // Unwind terminal delivery before closing; keep controls locked so queued input cannot
+        // start another run or mutate its dependencies in the meantime.
+        QTimer::singleShot(0, this, [this] { close(); });
+        return;
+    }
     _ui->processButton->setDisabled(false);
     _ui->processButton->setText(tr("Run"));
     _ui->tabWidget->setEnabled(true);
@@ -318,8 +325,6 @@ void MainWindow::endProcess() {
     _bLockVariables = false;
     saveUi();
     updateLog();
-    // Unwind the observation before destruction joins the now-terminal worker.
-    if (_runView.state().closeRequested) QTimer::singleShot(0, this, [this] { close(); });
 }
 
 void MainWindow::cancelRun() {
