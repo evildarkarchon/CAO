@@ -12,6 +12,7 @@
 #include <functional>
 #include <map>
 #include <span>
+#include <stop_token>
 #include <vector>
 
 namespace cao::run {
@@ -84,6 +85,18 @@ struct AssetRunAdapters final {
     /// Observes actual lifecycle boundaries, including empty work phases, before work begins.
     std::function<void(const RunPhaseRecord&)> reportPhase;
 };
+
+class RunObservationSink;
+
+/// Runs the production AssetRun composition beneath the synchronous Run Executor.
+/// Borrows preparation, executor-owned evidence, observations, and operation closures until return;
+/// completed outcomes survive later orchestration exceptions, which propagate to the executor.
+/// Operations return outcomes without recording them. The sink supplies phase, progress, diagnostic,
+/// and discovery-failure reporting; cancellation combines the stop token with the optional adapter.
+/// The executor retains terminal classification and mandatory Safety Cleanup after this call unwinds.
+void executeAssetRun(const RunPreparation& preparation, RunWorkRecord& record,
+                     RunObservationSink& observations, std::stop_token stop,
+                     const AssetRunAdapters& operations);
 
 /// Owns the definitive Routing Ledger and the terminal state of one Asset Run.
 class AssetRunResult final {

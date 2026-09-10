@@ -1,9 +1,11 @@
 #include "AssetRun.h"
 
 #include "ArchiveFirstAssetDiscovery.h"
+#include "RunExecutor.h"
 #include "RunWorkRecord.h"
 
 #include <array>
+#include <stdexcept>
 #include <utility>
 
 namespace cao::run {
@@ -23,6 +25,93 @@ void reportSafely(std::vector<RunDiagnostic>& diagnostics, RunPhase phase, Callb
     }
 }
 }  // namespace
+
+void executeAssetRun(const RunPreparation& preparation, RunWorkRecord& record,
+                     RunObservationSink& observations, std::stop_token stop,
+                     const AssetRunAdapters& operations) {
+    // Borrow operation closures only during this synchronous call. Keep the existing early
+    // evidence writes and normal-return reconciliation together so both application and tests
+    // retain completed mutations when later orchestration unwinds.
+    std::size_t assetSucceeded = 0;
+    std::size_t archiveSucceeded = 0;
+    std::size_t publishedDiagnostics = 0;
+    std::size_t publishedFailures = 0;
+    AssetRunAdapters adapters = operations;
+    adapters.isCancelled = [&] {
+        return stop.stop_requested() || (operations.isCancelled && operations.isCancelled());
+    };
+    adapters.reportPhase = [&](const RunPhaseRecord& phase) {
+        observations.recordPhase(phase);
+    };
+    adapters.reportDiagnostics = [&](const AssetRunDiagnostics& diagnostics) {
+        for (const auto& diagnostic : diagnostics.diagnostics()) {
+            observations.recordDiagnostic(diagnostic);
+            ++publishedDiagnostics;
+        }
+    };
+    adapters.reportDiscoveryFailure = [&](const RunFailure& failure) {
+        observations.recordFailure(failure);
+        ++publishedFailures;
+    };
+    if (operations.extractArchiveWithResult) {
+        adapters.extractArchiveWithResult = [&](const ArchiveExtractionPlan& plan) {
+            auto attempt = operations.extractArchiveWithResult(plan);
+            attempt.modRoot = plan.modRoot;
+            if (attempt.succeeded()) ++archiveSucceeded;
+            // Keep completed mutations even if discovery later throws before producing its result.
+            record.archiveAttempts.push_back(attempt);
+            return attempt;
+        };
+    }
+    if (operations.executeAssetWithResult) {
+        adapters.executeAssetWithResult = [&](const routing::RoutedAsset& asset) {
+            std::filesystem::path modRoot;
+            for (const auto& root : preparation.modRoots()) {
+                const auto relative = asset.executionPath().lexically_relative(root);
+                if (!relative.empty() && *relative.begin() != "..") {
+                    modRoot = root;
+                    break;
+                }
+            }
+            if (modRoot.empty())
+                throw std::logic_error("Routed Asset is outside prepared Mod Roots");
+            auto attempt = operations.executeAssetWithResult(asset);
+            if (attempt.succeeded()) ++assetSucceeded;
+            record.assetAttempts.push_back({modRoot, asset, attempt});
+            return attempt;
+        };
+    }
+    adapters.reportProgress = [&](const AssetRunProgress& progress) {
+        const bool extraction = progress.phase == routing::RoutedAssetPhase::ArchiveExtraction;
+        observations.recordPhase(RunPhaseRecord::executed(
+            extraction ? RunPhase::ExtractingArchives : RunPhase::ProcessingAssets,
+            RunProgress::determinate(
+                progress.total, extraction ? archiveSucceeded : assetSucceeded,
+                progress.completed - (extraction ? archiveSucceeded : assetSucceeded))));
+    };
+    if (operations.finalizeArchiveLifecycleWithResult) {
+        adapters.finalizeArchiveLifecycleWithResult = [&] {
+            auto result = operations.finalizeArchiveLifecycleWithResult();
+            record.finalizations.push_back(result);
+            return result;
+        };
+    }
+    auto completed =
+        AssetRun(preparation.policy())
+            .execute(preparation.modRoots(), adapters, preparation.archivePrecedence())
+            .workRecord();
+    // Preparing observations already belong to this record; publish newly returned observations
+    // through the executor sink exactly once, then transfer the complete work evidence.
+    auto diagnostics = std::move(completed.diagnostics);
+    auto failures = std::move(completed.failures);
+    completed.diagnostics = std::move(record.diagnostics);
+    completed.failures = std::move(record.failures);
+    record = std::move(completed);
+    for (auto index = publishedDiagnostics; index < diagnostics.size(); ++index)
+        observations.recordDiagnostic(diagnostics[index]);
+    for (auto index = publishedFailures; index < failures.size(); ++index)
+        observations.recordFailure(failures[index]);
+}
 
 RunWorkRecord AssetRunResult::workRecord() const {
     RunWorkRecord record;

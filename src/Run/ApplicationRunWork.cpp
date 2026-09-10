@@ -123,32 +123,9 @@ class ApplicationRunWork final : public RunWorkService {
             if (!archives) archives = std::make_unique<BSAOptimizer>(_profile);
             return *archives;
         };
-        std::size_t assetSucceeded = 0;
-        std::size_t archiveSucceeded = 0;
-        std::size_t publishedDiagnostics = 0;
-        std::size_t publishedFailures = 0;
         AssetRunAdapters adapters;
-        adapters.isCancelled = [&] { return stop.stop_requested(); };
-        adapters.reportPhase = [&](const RunPhaseRecord& phase) {
-            observations.recordPhase(phase);
-        };
-        adapters.reportDiagnostics = [&](const AssetRunDiagnostics& diagnostics) {
-            for (const auto& diagnostic : diagnostics.diagnostics()) {
-                observations.recordDiagnostic(diagnostic);
-                ++publishedDiagnostics;
-            }
-        };
-        adapters.reportDiscoveryFailure = [&](const RunFailure& failure) {
-            observations.recordFailure(failure);
-            ++publishedFailures;
-        };
         adapters.extractArchiveWithResult = [&](const ArchiveExtractionPlan& plan) {
-            auto attempt = archiveBackend().extract(plan, options.bBsaDeleteBackup, artifacts);
-            attempt.modRoot = plan.modRoot;
-            if (attempt.succeeded()) ++archiveSucceeded;
-            // Keep completed mutations even if discovery later throws before producing its result.
-            record.archiveAttempts.push_back(attempt);
-            return attempt;
+            return archiveBackend().extract(plan, options.bBsaDeleteBackup, artifacts);
         };
         adapters.executeAssetWithResult = [&](const routing::RoutedAsset& asset) {
             std::filesystem::path modRoot;
@@ -162,18 +139,7 @@ class ApplicationRunWork final : public RunWorkService {
             if (modRoot.empty())
                 throw std::logic_error("Routed Asset is outside prepared Mod Roots");
             if (!optimizer) optimizer = std::make_unique<MainOptimizer>(options, _profile);
-            auto attempt = optimizer->process(asset, artifacts, modRoot);
-            if (attempt.succeeded()) ++assetSucceeded;
-            record.assetAttempts.push_back({modRoot, asset, attempt});
-            return attempt;
-        };
-        adapters.reportProgress = [&](const AssetRunProgress& progress) {
-            const bool extraction = progress.phase == routing::RoutedAssetPhase::ArchiveExtraction;
-            observations.recordPhase(RunPhaseRecord::executed(
-                extraction ? RunPhase::ExtractingArchives : RunPhase::ProcessingAssets,
-                RunProgress::determinate(
-                    progress.total, extraction ? archiveSucceeded : assetSucceeded,
-                    progress.completed - (extraction ? archiveSucceeded : assetSucceeded))));
+            return optimizer->process(asset, artifacts, modRoot);
         };
         adapters.finalizeArchiveLifecycleWithResult = [&] {
             if (options.bBsaCreate) {
@@ -185,7 +151,6 @@ class ApplicationRunWork final : public RunWorkService {
                             RunProgress::determinate(progress.total, progress.succeeded,
                                                      progress.failed)));
                     });
-                record.finalizations.push_back(result);
                 return result;
             }
             ArchiveFinalizationResult result;
@@ -201,24 +166,9 @@ class ApplicationRunWork final : public RunWorkService {
                 FilesystemOperations::deleteEmptyDirectories(
                     QString::fromStdWString(root.wstring()));
             }
-            record.finalizations.push_back(result);
             return result;
         };
-        auto completed =
-            AssetRun(preparation.policy())
-                .execute(preparation.modRoots(), adapters, preparation.archivePrecedence())
-                .workRecord();
-        // Preparing observations already belong to this record; publish newly returned observations
-        // through the executor sink exactly once, then transfer the complete work evidence.
-        auto diagnostics = std::move(completed.diagnostics);
-        auto failures = std::move(completed.failures);
-        completed.diagnostics = std::move(record.diagnostics);
-        completed.failures = std::move(record.failures);
-        record = std::move(completed);
-        for (auto index = publishedDiagnostics; index < diagnostics.size(); ++index)
-            observations.recordDiagnostic(diagnostics[index]);
-        for (auto index = publishedFailures; index < failures.size(); ++index)
-            observations.recordFailure(failures[index]);
+        executeAssetRun(preparation, record, observations, stop, adapters);
     }
 
    private:
