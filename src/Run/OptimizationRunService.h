@@ -21,8 +21,9 @@ using RunObserver = std::function<void(const RunEvent&)>;
 using RunEventDispatcher = std::function<void(std::function<void()>)>;
 
 /// One independently isolated observer and its caller-selected delivery context, owned by the run.
-/// Callbacks are serialized per registration and run outside lifecycle locks. Work terminal delivery
-/// may be followed by diagnostics from delayed presentation failures; those never alter Run Outcome.
+/// Callbacks are serialized per registration and run outside lifecycle locks. Work terminal
+/// delivery may be followed by diagnostics from delayed presentation failures; those never alter
+/// Run Outcome.
 struct RunObservation final {
     RunObserver observer;
     RunEventDispatcher dispatcher;
@@ -72,8 +73,8 @@ class RunHandle final {
     /// a run commits exactly one terminal result and never replaces it.
     [[nodiscard]] const OptimizationRunResult* terminalResult() const;
 
-    /// Copies diagnostics under synchronization, including queued presentation failures after wait().
-    /// Late diagnostics never mutate the committed terminal result or its Run Outcome.
+    /// Copies diagnostics under synchronization, including queued presentation failures after
+    /// wait(). Late diagnostics never mutate the committed terminal result or its Run Outcome.
     [[nodiscard]] std::vector<RunDiagnostic> diagnostics() const;
 
     /// Copies the current state from any thread, including an inline observer or dispatcher.
@@ -152,8 +153,7 @@ class OptimizationRunService final {
     /// Starts runs on the caller-owned scheduler and shares ownership of the read-only provider.
     /// Retains the optional work service for every started run until its worker completes.
     explicit OptimizationRunService(
-        RunScheduler& scheduler,
-        std::shared_ptr<const RunConfigurationProvider> configuration = {},
+        RunScheduler& scheduler, std::shared_ptr<const RunConfigurationProvider> configuration = {},
         std::shared_ptr<RunWorkService> work = {}) noexcept;
 
     OptimizationRunService(const OptimizationRunService&) = delete;
@@ -174,8 +174,10 @@ class OptimizationRunService final {
                                        RunEventDispatcher dispatcher = {});
 
     /// Starts with independently isolated observers; failure disables only that registration.
-    /// Every enabled observer receives the same ordered history, including presentation diagnostics.
-    [[nodiscard]] RunStartResult start(RunRequest request, std::vector<RunObservation> observations);
+    /// Every enabled observer receives the same ordered history, including presentation
+    /// diagnostics.
+    [[nodiscard]] RunStartResult start(RunRequest request,
+                                       std::vector<RunObservation> observations);
 
    private:
     StandardRunScheduler _productionScheduler;

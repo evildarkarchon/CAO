@@ -34,7 +34,7 @@ using CapacityProbe = std::function<std::optional<std::uintmax_t>(const std::fil
 
 /// Explains a rejected estimate without promising a reservation or exact filesystem usage.
 [[nodiscard]] inline std::string archiveCapacityDetail(std::uintmax_t required,
-                                                      std::uintmax_t available) {
+                                                       std::uintmax_t available) {
     return "Insufficient Archive staging capacity: estimated " + std::to_string(required) +
            " bytes, available " + std::to_string(available) +
            " bytes. Estimates include staging overhead allowances but do not reserve space or "

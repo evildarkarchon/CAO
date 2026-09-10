@@ -7,7 +7,8 @@
 
 TexturesOptimizer::TexturesOptimizer() : TexturesOptimizer(OptimizerProfileSnapshot::capture()) {}
 
-TexturesOptimizer::TexturesOptimizer(OptimizerProfileSnapshot profile) : _profile(std::move(profile)) {
+TexturesOptimizer::TexturesOptimizer(OptimizerProfileSnapshot profile)
+    : _profile(std::move(profile)) {
     PLOG_WARNING_IF(!createDevice(0, _pDevice.GetAddressOf()))
         << "DirectCompute is not available, using BC6H / BC7 CPU codec."
            " Textures compression will be slower";

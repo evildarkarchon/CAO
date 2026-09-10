@@ -4,8 +4,9 @@
 #include "Run/ArchiveFinalizationResult.h"
 
 namespace cao::run {
-/// Executor-owned evidence accumulated at completed boundaries, then copied into the terminal result.
-/// A missing ledger means definitive routing was never reached, rather than an empty routed tree.
+/// Executor-owned evidence accumulated at completed boundaries, then copied into the terminal
+/// result. A missing ledger means definitive routing was never reached, rather than an empty routed
+/// tree.
 struct RunWorkRecord final {
     std::optional<routing::RoutingLedger> ledger;
     std::vector<RoutedAssetAttempt> assetAttempts;
@@ -18,7 +19,8 @@ struct RunWorkRecord final {
     std::vector<ArchiveCollision> collisions;
     std::vector<RunDiagnostic> diagnostics;
     std::vector<RunFailure> failures;
-    /// Internal publication position shared by Preparing and work; advance before calling observers.
+    /// Internal publication position shared by Preparing and work; advance before calling
+    /// observers.
     std::size_t publishedDiagnostics{};
     bool cancellationObserved{};
 };

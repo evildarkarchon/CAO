@@ -148,10 +148,9 @@ OptimizationRunResult::OptimizationRunResult(
       _mutationSummaries(std::move(mutationSummaries)) {}
 
 OptimizationRunResult OptimizationRunResult::terminal(
-    RunOutcome outcome, const RunPhase finalPhase, std::vector<RunPhaseRecord> phases,
-    RunId runId, std::vector<RunFailure> failures,
-    std::shared_ptr<const RunPreparation> preparation, std::vector<RunFailure> cleanupFailures,
-    bool cancellationObserved, const RunWorkRecord* work) {
+    RunOutcome outcome, const RunPhase finalPhase, std::vector<RunPhaseRecord> phases, RunId runId,
+    std::vector<RunFailure> failures, std::shared_ptr<const RunPreparation> preparation,
+    std::vector<RunFailure> cleanupFailures, bool cancellationObserved, const RunWorkRecord* work) {
     // Copy instead of sharing caller storage: even a retained mutable service record cannot
     // rewrite evidence already published in a terminal event.
     auto ownedWork = std::make_shared<const RunWorkRecord>(work ? *work : RunWorkRecord{});
@@ -167,8 +166,10 @@ OptimizationRunResult OptimizationRunResult::terminal(
         containedFailure = containedFailure || !succeeded;
         if (mutation == execution::MutationState::None) return;
         auto entry = grouped.try_emplace(std::pair{root, kind}, MutationSummary{root, kind}).first;
-        if (mutation == execution::MutationState::Committed) ++entry->second.committed;
-        else ++entry->second.partialOrUnknown;
+        if (mutation == execution::MutationState::Committed)
+            ++entry->second.committed;
+        else
+            ++entry->second.partialOrUnknown;
     };
     for (const auto& attempt : ownedWork->assetAttempts) {
         account(attempt.modRoot, MutationKind::AssetProcessing, attempt.result.mutationState(),
@@ -187,7 +188,8 @@ OptimizationRunResult OptimizationRunResult::terminal(
             account(attempt.modRoot, MutationKind::ArchiveFinalization, attempt.mutation,
                     attempt.succeeded(), attempt.safeToContinue);
     }
-    if (unsafe) outcome = RunOutcome::Failed;
+    if (unsafe)
+        outcome = RunOutcome::Failed;
     else if (containedFailure && outcome == RunOutcome::Succeeded)
         outcome = RunOutcome::CompletedWithFailures;
     std::vector<MutationSummary> summaries;
@@ -202,7 +204,8 @@ OptimizationRunResult OptimizationRunResult::terminal(
             outcome = RunOutcome::Cancelled;
         } else if (std::any_of(cleanupFailures.begin(), cleanupFailures.end(),
                                [](const RunFailure& failure) {
-                                   return failure.code() == RunFailureCode::SafetyCleanupServiceFailed;
+                                   return failure.code() ==
+                                          RunFailureCode::SafetyCleanupServiceFailed;
                                })) {
             // An unexpected service exception cannot establish that all artifacts were attempted.
             outcome = RunOutcome::Failed;
@@ -210,12 +213,11 @@ OptimizationRunResult OptimizationRunResult::terminal(
             outcome = RunOutcome::CompletedWithFailures;
         }
     }
-    return OptimizationRunResult(outcome, finalPhase, std::move(phases), std::move(runId),
-                                 std::move(failures),
-                                 preparation ? std::make_shared<const RunPreparation>(*preparation)
-                                             : nullptr,
-                                 std::move(cleanupFailures),
-                                 cancellationObserved, std::move(ownedWork), std::move(summaries));
+    return OptimizationRunResult(
+        outcome, finalPhase, std::move(phases), std::move(runId), std::move(failures),
+        preparation ? std::make_shared<const RunPreparation>(*preparation) : nullptr,
+        std::move(cleanupFailures), cancellationObserved, std::move(ownedWork),
+        std::move(summaries));
 }
 
 std::size_t OptimizationRunResult::skippedAssetCount(routing::SkipReason reason) const noexcept {

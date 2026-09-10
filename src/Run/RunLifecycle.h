@@ -241,9 +241,13 @@ class RunSnapshot final {
     RunSnapshot(RunId runId, RunPhase phase, std::optional<RunProgress> progress,
                 bool cancellationRequested, std::size_t diagnosticCount, std::size_t failureCount,
                 std::optional<RunOutcome> outcome)
-        : _runId(std::move(runId)), _phase(phase), _progress(progress),
-          _cancellationRequested(cancellationRequested), _diagnosticCount(diagnosticCount),
-          _failureCount(failureCount), _outcome(outcome) {}
+        : _runId(std::move(runId)),
+          _phase(phase),
+          _progress(progress),
+          _cancellationRequested(cancellationRequested),
+          _diagnosticCount(diagnosticCount),
+          _failureCount(failureCount),
+          _outcome(outcome) {}
 
     /// Borrows the captured run identity for this snapshot's lifetime.
     [[nodiscard]] const RunId& runId() const noexcept { return _runId; }

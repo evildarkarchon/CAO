@@ -39,8 +39,7 @@ MergeTarget prepareMergeTarget(const std::filesystem::path& root,
         }
         target.path = existing ? *existing : target.path / *part;
         if (leaf) {
-            if (existing)
-                throw std::runtime_error("Archive destination appeared after preflight.");
+            if (existing) throw std::runtime_error("Archive destination appeared after preflight.");
             break;
         }
         if (!existing) std::filesystem::create_directory(target.path);
@@ -48,10 +47,9 @@ MergeTarget prepareMergeTarget(const std::filesystem::path& root,
         if (!std::filesystem::is_directory(status) || std::filesystem::is_symlink(status))
             throw std::runtime_error("Archive destination parent is not an ordinary directory.");
 #ifdef _WIN32
-        const auto handle = CreateFileW(target.path.c_str(), FILE_READ_ATTRIBUTES,
-                                       FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                                       FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-                                       nullptr);
+        const auto handle = CreateFileW(
+            target.path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
         if (handle == INVALID_HANDLE_VALUE)
             throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
         auto pin = std::unique_ptr<void, decltype(&CloseHandle)>(handle, &CloseHandle);
@@ -82,7 +80,8 @@ ArchiveExtractionResult ArchiveExtractor::extract(const ArchiveExtractionPlan& p
         // staging; successful preflight reserves nothing and later I/O still uses mutation rules.
         const auto inventory = inspectArchiveInventory(plan.archivePath);
         const auto available = _capacity ? _capacity(root) : std::nullopt;
-        const auto required = (std::max)(plan.estimatedCapacityBytes, inventory.estimatedCapacityBytes);
+        const auto required =
+            (std::max)(plan.estimatedCapacityBytes, inventory.estimatedCapacityBytes);
         if (available && *available < required) {
             result.failure = ArchiveExtractionFailure::InsufficientCapacity;
             result.detail = archiveCapacityDetail(required, *available);
@@ -113,11 +112,12 @@ ArchiveExtractionResult ArchiveExtractor::extract(const ArchiveExtractionPlan& p
         merging = true;
         for (const auto& entry : plan.mergeEntries) {
             auto& temporary = staged.at(entry);
-            const auto destination = prepareMergeTarget(
-                root, source.parent_path() / std::filesystem::u8path(entry));
+            const auto destination =
+                prepareMergeTarget(root, source.parent_path() / std::filesystem::u8path(entry));
 #ifdef _WIN32
             // The native no-replace commit also protects Loose Assets created after preflight.
-            if (!MoveFileExW(temporary.path.c_str(), destination.path.c_str(), MOVEFILE_WRITE_THROUGH))
+            if (!MoveFileExW(temporary.path.c_str(), destination.path.c_str(),
+                             MOVEFILE_WRITE_THROUGH))
                 throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
 #else
             // Hard-link publication is atomic and refuses existing destinations. An unlink
@@ -137,8 +137,8 @@ ArchiveExtractionResult ArchiveExtractor::extract(const ArchiveExtractionPlan& p
     }
     result.failure = merging ? ArchiveExtractionFailure::MergeFailed
                              : ArchiveExtractionFailure::ExtractionFailed;
-    result.mutation = merging ? execution::MutationState::PartialOrUnknown
-                              : execution::MutationState::None;
+    result.mutation =
+        merging ? execution::MutationState::PartialOrUnknown : execution::MutationState::None;
     result.safeToContinue = !merging;
     return result;
 }

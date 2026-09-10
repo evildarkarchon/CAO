@@ -29,8 +29,8 @@ std::uintmax_t estimatePackedCapacity(const cao::run::ArchiveFinalizationOutput&
         const auto payload = saturatedCapacityMultiply(std::filesystem::file_size(source), 2);
         const auto names = saturatedCapacityMultiply(
             source.lexically_relative(output.modRoot).generic_u8string().size(), 3);
-        estimate = saturatedCapacityAdd(estimate,
-            saturatedCapacityAdd(payload, saturatedCapacityAdd(65536, names)));
+        estimate = saturatedCapacityAdd(
+            estimate, saturatedCapacityAdd(payload, saturatedCapacityAdd(65536, names)));
     }
     return estimate;
 }
@@ -210,7 +210,7 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
             const auto existing = list_archive(fs::directory_iterator(root), {}, settings);
             plan._dummyCapacityBytes = cao::run::saturatedCapacityAdd(
                 plan._dummyCapacityBytes, cao::run::saturatedCapacityMultiply(
-                    existing.size(), settings.s_dummy_plugin->size()));
+                                              existing.size(), settings.s_dummy_plugin->size()));
         }
         auto plugins = list_plugins(fs::directory_iterator(root), {}, settings);
         // Dummy cleanup is a mutation. Ignore their names for planning, but retain them until
@@ -222,10 +222,12 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
         }
         std::sort(plugins.begin(), plugins.end());
         if (plugins.empty())
-            plugins.emplace_back(root, root.filename().u8string(), u8"", u8".esp", FileTypes::Plugin);
+            plugins.emplace_back(root, root.filename().u8string(), u8"", u8".esp",
+                                 FileTypes::Plugin);
 
         std::vector<fs::path> sources;
-        for (auto it = fs::recursive_directory_iterator(root); it != fs::recursive_directory_iterator(); ++it) {
+        for (auto it = fs::recursive_directory_iterator(root);
+             it != fs::recursive_directory_iterator(); ++it) {
             const auto path = it->path();
             bool excluded = cao::run::hasStagingComponent(path.lexically_relative(root)) ||
                             fs::is_symlink(it->symlink_status());
@@ -391,9 +393,10 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
     // source deletion must not be treated as available space before it has actually happened.
     for (const auto& root : plan._roots) {
         const auto output = std::find_if(plan.outputs().begin(), plan.outputs().end(),
-            [&](const auto& value) { return value.modRoot == root; });
+                                         [&](const auto& value) { return value.modRoot == root; });
         if (!hasCapacity(root, output == plan.outputs().end() ? fs::path{} : output->archivePath,
-                         phaseCapacity)) return result;
+                         phaseCapacity))
+            return result;
     }
     for (std::size_t index = 0; index < plan.outputs().size(); ++index) {
         if (stop.stop_requested()) {
@@ -410,12 +413,13 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
             // allowance if files shrink; capacity itself is still only a momentary sample.
             auto currentCapacity = estimatePackedCapacity(output);
             if (output.pluginPath)
-                currentCapacity = saturatedCapacityAdd(currentCapacity,
-                                                       plan._settings.s_dummy_plugin->size());
-            if (!hasCapacity(output.modRoot, output.archivePath,
-                             saturatedCapacityAdd(std::max(output.estimatedCapacityBytes,
-                                                           currentCapacity),
-                                                  plan._dummyCapacityBytes))) return result;
+                currentCapacity =
+                    saturatedCapacityAdd(currentCapacity, plan._settings.s_dummy_plugin->size());
+            if (!hasCapacity(
+                    output.modRoot, output.archivePath,
+                    saturatedCapacityAdd(std::max(output.estimatedCapacityBytes, currentCapacity),
+                                         plan._dummyCapacityBytes)))
+                return result;
             const auto staged = artifacts.stageArchiveFile(output.modRoot);
             auto archive = plan._archives[index];
             archive.set_out_path(staged.path);
@@ -515,7 +519,8 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
                     result.cancelled = true;
                     break;
                 }
-                FilesystemOperations::deleteEmptyDirectories(QString::fromStdWString(root.wstring()));
+                FilesystemOperations::deleteEmptyDirectories(
+                    QString::fromStdWString(root.wstring()));
             }
         } catch (const std::exception& error) {
             result.safeToContinue = false;

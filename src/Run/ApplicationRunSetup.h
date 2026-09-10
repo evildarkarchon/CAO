@@ -8,8 +8,9 @@
 #include <memory>
 
 namespace cao::run {
-/// Captures owned user intent on the caller thread; filesystem preparation remains with the service.
-/// Throws std::invalid_argument for invalid mode, mesh level, or texture dimensions and ratios.
+/// Captures owned user intent on the caller thread; filesystem preparation remains with the
+/// service. Throws std::invalid_argument for invalid mode, mesh level, or texture dimensions and
+/// ratios.
 [[nodiscard]] RunRequest makeApplicationRunRequest(const OptionsCAO& options);
 
 /// Captures the absolute profiles directory; each load owns its QSettings on the execution thread.

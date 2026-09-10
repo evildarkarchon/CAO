@@ -28,7 +28,12 @@ struct ArchiveExtractionPlan final {
     std::uintmax_t estimatedCapacityBytes{};
 };
 
-enum class ArchiveExtractionFailure { ExtractionFailed, MergeFailed, SourceCleanupFailed, InsufficientCapacity };
+enum class ArchiveExtractionFailure {
+    ExtractionFailed,
+    MergeFailed,
+    SourceCleanupFailed,
+    InsufficientCapacity
+};
 
 /// Owns one Archive attempt's durable mutation evidence; staging bytes do not count as mutation.
 struct ArchiveExtractionResult final {
@@ -54,7 +59,8 @@ class ArchiveExtractor final {
         : _artifacts(artifacts), _capacity(std::move(capacity)) {}
 
     /// Returns contained extraction failures or unsafe merge failures without throwing library
-    /// exceptions. Merge never replaces existing entries; source backup/deletion belongs to callers.
+    /// exceptions. Merge never replaces existing entries; source backup/deletion belongs to
+    /// callers.
     [[nodiscard]] ArchiveExtractionResult extract(const ArchiveExtractionPlan& plan) const;
 
    private:

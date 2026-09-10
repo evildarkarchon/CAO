@@ -10,7 +10,8 @@ class RunObservationSink {
    public:
     virtual ~RunObservationSink() = default;
 
-    /// Records a traversed phase before the executor proceeds; implementations must isolate observers.
+    /// Records a traversed phase before the executor proceeds; implementations must isolate
+    /// observers.
     virtual void recordPhase(const RunPhaseRecord& phase) = 0;
 
     /// Records a run-level failure before cleanup and terminal commit.
@@ -25,9 +26,7 @@ class RunObservationSink {
     }
 
     /// Publishes a failure already owned by work without requiring the executor to retain it again.
-    virtual void publishRetainedFailure(const RunFailure& failure) {
-        recordFailure(failure);
-    }
+    virtual void publishRetainedFailure(const RunFailure& failure) { recordFailure(failure); }
 };
 
 class TemporaryArtifactRegistry;
@@ -42,10 +41,11 @@ class RunWorkService {
     /// Stateless services need no preparation. Exceptions fail Preparing and still trigger cleanup.
     virtual void prepare() {}
 
-    /// Uses prepared inputs until return and appends completed evidence without retaining references.
-    /// Reports phase counts through observations and checks stop between atomic attempts.
-    /// Exceptions become fatal WorkServiceFailed evidence without discarding earlier records.
-    /// The executor owns artifacts through mandatory Safety Cleanup; work never cleans the registry.
+    /// Uses prepared inputs until return and appends completed evidence without retaining
+    /// references. Reports phase counts through observations and checks stop between atomic
+    /// attempts. Exceptions become fatal WorkServiceFailed evidence without discarding earlier
+    /// records. The executor owns artifacts through mandatory Safety Cleanup; work never cleans the
+    /// registry.
     virtual void execute(const RunPreparation& preparation, RunWorkRecord& record,
                          TemporaryArtifactRegistry& artifacts, RunObservationSink& observations,
                          std::stop_token stop) = 0;

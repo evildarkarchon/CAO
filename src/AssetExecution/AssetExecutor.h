@@ -189,9 +189,9 @@ class AssetExecutor final {
                                                const std::filesystem::path& modRoot = {}) const;
 
     /// Executes using the run's registry, which must outlive the attempt and receive Safety
-    /// Cleanup. Texture, Mesh, and Animation saves durably register same-directory staging before creation;
-    /// Texture conversion commits before source removal. Supply the selected Mod Root, or omit it
-    /// for a standalone Asset in its parent directory.
+    /// Cleanup. Texture, Mesh, and Animation saves durably register same-directory staging before
+    /// creation; Texture conversion commits before source removal. Supply the selected Mod Root, or
+    /// omit it for a standalone Asset in its parent directory.
     [[nodiscard]] AssetExecutionResult execute(const routing::RoutedAsset& asset,
                                                run::TemporaryArtifactRegistry& artifacts,
                                                const std::filesystem::path& modRoot = {}) const;
@@ -210,9 +210,9 @@ class AssetExecutor final {
                                                    const std::filesystem::path& modRoot) const;
 
     /// Stages changed Animation output and reports durable mutation at each failure boundary.
-    [[nodiscard]] AssetExecutionResult executeAnimation(
-        const routing::RoutedAsset& asset, run::TemporaryArtifactRegistry& artifacts,
-        const std::filesystem::path& modRoot) const;
+    [[nodiscard]] AssetExecutionResult executeAnimation(const routing::RoutedAsset& asset,
+                                                        run::TemporaryArtifactRegistry& artifacts,
+                                                        const std::filesystem::path& modRoot) const;
 
     AssetExecutionBackend& _backend;
 };

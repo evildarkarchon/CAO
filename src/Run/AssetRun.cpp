@@ -18,8 +18,9 @@ void executeAssetRun(const RunPreparation& preparation, RunWorkRecord& record,
     adapters.isCancelled = [&] {
         return stop.stop_requested() || (operations.isCancelled && operations.isCancelled());
     };
-    AssetRun(preparation.policy()).execute(preparation.modRoots(), record, adapters,
-                                          preparation.archivePrecedence(), &observations);
+    AssetRun(preparation.policy())
+        .execute(preparation.modRoots(), record, adapters, preparation.archivePrecedence(),
+                 &observations);
 }
 
 AssetRunDiagnostics::AssetRunDiagnostics(const RunWorkRecord& record) noexcept : _record(record) {}
@@ -46,9 +47,8 @@ std::span<const RunDiagnostic> AssetRunDiagnostics::diagnostics() const noexcept
 
 AssetRun::AssetRun(routing::RoutingPolicy policy) noexcept : _policy(std::move(policy)) {}
 
-void AssetRun::execute(const std::span<const std::filesystem::path> roots,
-                       RunWorkRecord& record, const AssetRunAdapters& adapters,
-                       const ArchivePrecedence& precedence,
+void AssetRun::execute(const std::span<const std::filesystem::path> roots, RunWorkRecord& record,
+                       const AssetRunAdapters& adapters, const ArchivePrecedence& precedence,
                        RunObservationSink* observations) const {
     // Freeze scopes before adapters can remove files or retarget selected directory aliases.
     std::vector<std::filesystem::path> modRoots;
@@ -106,13 +106,15 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
                 if (attempt.succeeded()) ++archiveSucceeded;
                 record.archiveAttempts.push_back(std::move(attempt));
                 ++completed;
-                reportPhase(RunPhaseRecord::executed(RunPhase::ExtractingArchives,
+                reportPhase(RunPhaseRecord::executed(
+                    RunPhase::ExtractingArchives,
                     RunProgress::determinate(archives.size(), archiveSucceeded,
                                              completed - archiveSucceeded)));
                 if (adapters.reportProgress) {
                     recorder.reportSafely(RunPhase::ExtractingArchives, [&] {
-                        adapters.reportProgress(AssetRunProgress{
-                            routing::RoutedAssetPhase::ArchiveExtraction, completed, archives.size()});
+                        adapters.reportProgress(
+                            AssetRunProgress{routing::RoutedAssetPhase::ArchiveExtraction,
+                                             completed, archives.size()});
                     });
                 }
                 if (unsafeArchive) {
@@ -134,23 +136,24 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
             // Retain preflight evidence before presentation or later discovery can unwind.
             record.collisions.assign(collisions.begin(), collisions.end());
             if (adapters.reportArchiveCollisions)
-                recorder.reportSafely(RunPhase::DiscoveringArchives, [&] {
-                    adapters.reportArchiveCollisions(collisions);
-                });
+                recorder.reportSafely(RunPhase::DiscoveringArchives,
+                                      [&] { adapters.reportArchiveCollisions(collisions); });
         },
         [&](const std::span<const ArchiveExtractionPlan> plans) {
             extractionPlans.assign(plans.begin(), plans.end());
-        }, [&](RunPhase phase) {
+        },
+        [&](RunPhase phase) {
             if (phase == RunPhase::ExtractingArchives &&
                 _policy.executionMode() == routing::ExecutionMode::DryRun) {
                 reportPhase(RunPhaseRecord::skipped(phase, PhaseSkipReason::DryRun));
                 return;
             }
-            reportPhase(RunPhaseRecord::executed(phase,
-                phase == RunPhase::ExtractingArchives
-                    ? std::optional{RunProgress::determinate(extractionPlans.size())}
-                    : std::nullopt));
-        }, [&](const RunDiagnostic& diagnostic) {
+            reportPhase(RunPhaseRecord::executed(
+                phase, phase == RunPhase::ExtractingArchives
+                           ? std::optional{RunProgress::determinate(extractionPlans.size())}
+                           : std::nullopt));
+        },
+        [&](const RunDiagnostic& diagnostic) {
             // Retain discovery evidence before later traversal can throw; publish after Assets.
             recorder.retainDiagnostic(diagnostic);
         });
@@ -182,9 +185,8 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
         // A failed preflight has no trustworthy tree and must never reach mutation or finalization.
         if (adapters.reportDiscoveryFailure)
             for (const auto& failure : discoveryResult.failures())
-                recorder.reportSafely(failure.phase(), [&] {
-                    adapters.reportDiscoveryFailure(failure);
-                });
+                recorder.reportSafely(failure.phase(),
+                                      [&] { adapters.reportDiscoveryFailure(failure); });
         publishDiagnostics();
         return;
     }
@@ -196,8 +198,8 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
         return;
     }
     const auto total = (*record.ledger).routedAssets().size();
-    reportPhase(RunPhaseRecord::executed(RunPhase::ProcessingAssets,
-                                       RunProgress::determinate(total)));
+    reportPhase(
+        RunPhaseRecord::executed(RunPhase::ProcessingAssets, RunProgress::determinate(total)));
     std::size_t completed = 0;
     std::size_t assetSucceeded = 0;
     for (const auto target : targetOrder) {
@@ -212,14 +214,15 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
             bool safeToContinue = true;
             // Resolve before the attempt can remove a converted source or retarget its parent.
             std::error_code pathError;
-            const auto resolvedPath = std::filesystem::weakly_canonical(
-                asset.get().executionPath(), pathError);
+            const auto resolvedPath =
+                std::filesystem::weakly_canonical(asset.get().executionPath(), pathError);
             const auto& attributionPath = pathError ? asset.get().executionPath() : resolvedPath;
             std::filesystem::path modRoot;
             for (const auto& root : modRoots) {
                 const auto relative = attributionPath.lexically_relative(root);
                 if (!relative.empty() && *relative.begin() != ".." &&
-                    root.native().size() > modRoot.native().size()) modRoot = root;
+                    root.native().size() > modRoot.native().size())
+                    modRoot = root;
             }
             auto attempt = execution::AssetExecutionResult::success();
             try {
@@ -235,14 +238,15 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
                 // Unknown exceptions carry the same uncertain mutation as standard exceptions.
                 attempt = execution::AssetExecutionResult::failed(
                     execution::AssetExecutionFailure::BackendException,
-                    "Unknown Asset execution exception.", execution::MutationState::PartialOrUnknown,
-                    false, asset.get().executionPath());
+                    "Unknown Asset execution exception.",
+                    execution::MutationState::PartialOrUnknown, false, asset.get().executionPath());
             }
             safeToContinue = attempt.safeToContinue();
             if (attempt.succeeded()) ++assetSucceeded;
             record.assetAttempts.push_back({std::move(modRoot), asset.get(), std::move(attempt)});
             ++completed;
-            reportPhase(RunPhaseRecord::executed(RunPhase::ProcessingAssets,
+            reportPhase(RunPhaseRecord::executed(
+                RunPhase::ProcessingAssets,
                 RunProgress::determinate(total, assetSucceeded, completed - assetSucceeded)));
             if (adapters.reportProgress) {
                 recorder.reportSafely(RunPhase::ProcessingAssets, [&] {
@@ -270,9 +274,8 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
     publishDiagnostics();
     if (adapters.reportDiagnostics) {
         const AssetRunDiagnostics diagnostics(record);
-        recorder.reportSafely(RunPhase::ProcessingAssets, [&] {
-            adapters.reportDiagnostics(diagnostics);
-        });
+        recorder.reportSafely(RunPhase::ProcessingAssets,
+                              [&] { adapters.reportDiagnostics(diagnostics); });
     }
     // Reporting may request cancellation even when its exception was isolated; packing is a
     // separate mutation boundary and must observe that request before starting any finalizer.
@@ -282,11 +285,13 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
         return;
     }
 
-    reportPhase(_policy.executionMode() == routing::ExecutionMode::DryRun
-        ? RunPhaseRecord::skipped(RunPhase::ArchiveFinalization, PhaseSkipReason::DryRun)
-        : (!adapters.finalizeArchiveLifecycleWithResult
-            ? RunPhaseRecord::skipped(RunPhase::ArchiveFinalization, PhaseSkipReason::NoRequestedWork)
-            : RunPhaseRecord::executed(RunPhase::ArchiveFinalization)));
+    reportPhase(
+        _policy.executionMode() == routing::ExecutionMode::DryRun
+            ? RunPhaseRecord::skipped(RunPhase::ArchiveFinalization, PhaseSkipReason::DryRun)
+            : (!adapters.finalizeArchiveLifecycleWithResult
+                   ? RunPhaseRecord::skipped(RunPhase::ArchiveFinalization,
+                                             PhaseSkipReason::NoRequestedWork)
+                   : RunPhaseRecord::executed(RunPhase::ArchiveFinalization)));
     if (adapters.isCancelled && adapters.isCancelled()) {
         record.cancellationObserved = true;
         publishDiagnostics();
@@ -306,13 +311,16 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
                 {}, ArchiveFinalizationFailure::UnexpectedException, false, false, error.what()};
         } catch (...) {
             // Preserve a phase-level failure even when the adapter throws an untyped exception.
-            finalization = ArchiveFinalizationResult{
-                {}, ArchiveFinalizationFailure::UnexpectedException, false, false,
-                "Unknown Archive finalization exception."};
+            finalization =
+                ArchiveFinalizationResult{{},
+                                          ArchiveFinalizationFailure::UnexpectedException,
+                                          false,
+                                          false,
+                                          "Unknown Archive finalization exception."};
         }
         record.finalizations.push_back(std::move(finalization));
         record.cancellationObserved = record.finalizations.back().cancelled ||
-                            (adapters.isCancelled && adapters.isCancelled());
+                                      (adapters.isCancelled && adapters.isCancelled());
     }
     publishDiagnostics();
 }

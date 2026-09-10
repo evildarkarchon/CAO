@@ -25,7 +25,7 @@ class WorkObservationRecorder final {
         } catch (...) {
             // Unknown observer exceptions have the same informational status as standard ones.
             retainDiagnostic(RunDiagnostic{RunDiagnosticCode::ObserverFailed, phase,
-                                            "The observer threw a non-standard exception"});
+                                           "The observer threw a non-standard exception"});
         }
     }
 
@@ -44,7 +44,8 @@ class WorkObservationRecorder final {
         publishDiagnostics();
     }
 
-    /// Retains evidence immediately while deferring publication until its established work boundary.
+    /// Retains evidence immediately while deferring publication until its established work
+    /// boundary.
     void retainDiagnostic(const RunDiagnostic& diagnostic) {
         _record.diagnostics.push_back(diagnostic);
     }

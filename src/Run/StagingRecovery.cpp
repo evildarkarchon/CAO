@@ -229,8 +229,7 @@ bool safeSiblingAssetName(const fs::path& path, const std::string& runId) {
     const auto assetPrefix = stagingPrefix(suffix);
     if (assetPrefix.empty()) return false;
     const auto prefix = assetPrefix + runId + "-";
-    if (!filename.starts_with(prefix) ||
-        filename.size() != prefix.size() + 32 + suffix.size())
+    if (!filename.starts_with(prefix) || filename.size() != prefix.size() + 32 + suffix.size())
         return false;
     const auto nonce = filename.substr(prefix.size(), 32);
     return std::all_of(nonce.begin(), nonce.end(), [](const unsigned char character) {
@@ -280,8 +279,7 @@ std::vector<Artifact> readManifest(const fs::path& staging, const fs::path& root
         if (rootRelative) {
             if (i == 0 || !safeSiblingAssetName(path, runId) ||
                 hasStagingComponent(path.parent_path()) || !rootOwned.emplace(name, false).second)
-                unverified(manifest,
-                           "A sibling Asset record is unsafe or duplicates owned output");
+                unverified(manifest, "A sibling Asset record is unsafe or duplicates owned output");
         } else {
             if (i == 0 ? name != child || kind != 'D'
                        : !name.starts_with(child + "/") ||
@@ -465,7 +463,8 @@ fs::path StagingRecovery::stageFile(const fs::path& modRoot, const fs::path& des
     });
     const auto prefix = stagingPrefix(extension);
     if (prefix.empty())
-        throw std::invalid_argument("Asset staging requires a DDS, NIF, BTR, BTO, or HKX destination");
+        throw std::invalid_argument(
+            "Asset staging requires a DDS, NIF, BTR, BTO, or HKX destination");
     prepareArea(root);
     const auto& area = _state->areas.at(root);
     const auto filename = prefix + area.runId + "-" + nonce() + extension;
@@ -516,7 +515,7 @@ void StagingRecovery::prepareArea(const fs::path& root) {
 }
 
 fs::path StagingRecovery::createRegisteredFile(const fs::path& root, const fs::path& relativeFile,
-                                                bool rootRelative) {
+                                               bool rootRelative) {
     auto& area = _state->areas.at(root);
     const auto staging = root / ".cao-staging";
     auto registered = area.artifacts;

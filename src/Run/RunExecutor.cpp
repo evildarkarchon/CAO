@@ -19,26 +19,29 @@ namespace {
 class WorkObservations final : public RunObservationSink {
    public:
     /// Borrows executor storage and presentation through Preparing, work, and mandatory cleanup.
-    WorkObservations(std::vector<RunPhaseRecord>& phases, RunWorkRecord& work,
-                     RunPhase& finalPhase, RunObservationSink* downstream)
-        : _phases(phases), _recorder(work, downstream), _finalPhase(finalPhase), _downstream(downstream) {}
+    WorkObservations(std::vector<RunPhaseRecord>& phases, RunWorkRecord& work, RunPhase& finalPhase,
+                     RunObservationSink* downstream)
+        : _phases(phases),
+          _recorder(work, downstream),
+          _finalPhase(finalPhase),
+          _downstream(downstream) {}
 
     /// Replaces a phase's latest counts without losing its traversal position.
     void recordPhase(const RunPhaseRecord& phase) override {
         const auto found = std::find_if(_phases.begin(), _phases.end(), [&](const auto& existing) {
             return existing.phase() == phase.phase();
         });
-        if (found == _phases.end()) _phases.push_back(phase);
-        else *found = phase;
+        if (found == _phases.end())
+            _phases.push_back(phase);
+        else
+            *found = phase;
         _finalPhase = phase.phase();
         _recorder.reportSafely(phase.phase(), [&] {
             if (_downstream) _downstream->recordPhase(phase);
         });
     }
     /// Owns failure detail even when a subsequent operation throws.
-    void recordFailure(const RunFailure& failure) override {
-        _recorder.recordFailure(failure);
-    }
+    void recordFailure(const RunFailure& failure) override { _recorder.recordFailure(failure); }
     /// Owns informational observations without changing Run Outcome.
     void recordDiagnostic(const RunDiagnostic& diagnostic) override {
         _recorder.recordDiagnostic(diagnostic);
@@ -55,6 +58,7 @@ class WorkObservations final : public RunObservationSink {
             if (_downstream) _downstream->recordFailure(failure);
         });
     }
+
    private:
     std::vector<RunPhaseRecord>& _phases;
     WorkObservationRecorder _recorder;
@@ -299,11 +303,12 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
         try {
             services.work->execute(*preparation, work, artifacts, observations, stop);
         } catch (const std::exception& error) {
-            observations.recordFailure(RunFailure{RunFailureCode::WorkServiceFailed, finalPhase,
-                                                   error.what()});
+            observations.recordFailure(
+                RunFailure{RunFailureCode::WorkServiceFailed, finalPhase, error.what()});
         } catch (...) {
-            observations.recordFailure(RunFailure{RunFailureCode::WorkServiceFailed, finalPhase,
-                "The work service threw a non-standard exception"});
+            observations.recordFailure(
+                RunFailure{RunFailureCode::WorkServiceFailed, finalPhase,
+                           "The work service threw a non-standard exception"});
         }
     } else if (request.hasRequestedWork()) {
         // Without a work service, traversing work phases would report success without performing
@@ -329,8 +334,8 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
                            injectedCleanupFailures.end());
     for (const auto& failure : cleanupFailures)
         if (services.observations != nullptr) observations.publishRetainedFailure(failure);
-    return OptimizationRunResult::terminal(outcome, finalPhase, std::move(phases), std::move(runId),
-                                           std::move(failures), std::move(preparation),
-                                           std::move(cleanupFailures), stop.stop_requested(), &work);
+    return OptimizationRunResult::terminal(
+        outcome, finalPhase, std::move(phases), std::move(runId), std::move(failures),
+        std::move(preparation), std::move(cleanupFailures), stop.stop_requested(), &work);
 }
 }  // namespace cao::run

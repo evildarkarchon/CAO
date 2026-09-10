@@ -52,7 +52,9 @@ class ArchiveFirstAssetDiscoveryResult final {
     }
 
     /// Borrows structured exclusions in first-observation order; each linked entry appears once.
-    [[nodiscard]] std::span<const RunDiagnostic> diagnostics() const noexcept { return _diagnostics; }
+    [[nodiscard]] std::span<const RunDiagnostic> diagnostics() const noexcept {
+        return _diagnostics;
+    }
 
     /// Returns the number of recognized Archives excluded for one stable Skip Reason.
     [[nodiscard]] std::size_t skippedArchiveCount(routing::SkipReason reason) const noexcept;
@@ -74,9 +76,8 @@ class ArchiveFirstAssetDiscoveryResult final {
     ArchiveFirstAssetDiscoveryResult(
         EffectiveAssetTree effectiveAssetTree,
         std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
-        std::vector<std::filesystem::path> unsupportedExplicitPaths,
-        std::size_t nestedArchiveCount, std::vector<RunDiagnostic> diagnostics,
-        bool cancelled = false) noexcept;
+        std::vector<std::filesystem::path> unsupportedExplicitPaths, std::size_t nestedArchiveCount,
+        std::vector<RunDiagnostic> diagnostics, bool cancelled = false) noexcept;
 
     EffectiveAssetTree _effectiveAssetTree;
     std::map<routing::SkipReason, std::size_t> _skippedArchiveCounts;
@@ -94,7 +95,7 @@ class ArchiveFirstAssetDiscovery final {
    public:
     /// Owns an immutable policy copy used to recognize and enable Archive extraction.
     explicit ArchiveFirstAssetDiscovery(routing::RoutingPolicy policy,
-                                       CapacityProbe capacity = availableArchiveCapacity) noexcept;
+                                        CapacityProbe capacity = availableArchiveCapacity) noexcept;
 
     /// Selects enabled Archives, passes the complete batch for synchronous extraction, then
     /// traverses roots once for definitive paths. An Archive supplied directly as a root also
@@ -116,8 +117,8 @@ class ArchiveFirstAssetDiscovery final {
     /// name every enabled Archive exactly once with paths relative to its Mod Root. Apply inspects
     /// all required manifests before calling reportCollisions synchronously with a complete plan;
     /// that callback's span is borrowed only until it returns, and exceptions propagate. Collision
-    /// evidence is also owned by the returned result, including after extraction cancellation. Dry Run
-    /// ignores precedence and never inspects manifests, calculates collisions, or extracts.
+    /// evidence is also owned by the returned result, including after extraction cancellation. Dry
+    /// Run ignores precedence and never inspects manifests, calculates collisions, or extracts.
     /// reportExtractionPlan synchronously borrows the complete per-Archive entry and merge plan
     /// before extraction; callers retaining plans must copy them before the callback returns.
     /// reportPhase observes extraction and effective-tree boundaries, including empty phases;
@@ -131,7 +132,8 @@ class ArchiveFirstAssetDiscovery final {
         const AssetDiscoveryCancellationPredicate& isCancelled = {},
         const ArchivePrecedence& precedence = ArchivePrecedence::deterministicDiscovery(),
         const std::function<void(std::span<const ArchiveCollision>)>& reportCollisions = {},
-        const std::function<void(std::span<const ArchiveExtractionPlan>)>& reportExtractionPlan = {},
+        const std::function<void(std::span<const ArchiveExtractionPlan>)>& reportExtractionPlan =
+            {},
         const std::function<void(RunPhase)>& reportPhase = {},
         const std::function<void(const RunDiagnostic&)>& retainDiagnostic = {}) const;
 

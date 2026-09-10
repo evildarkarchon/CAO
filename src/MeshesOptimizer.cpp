@@ -28,7 +28,8 @@ MeshesOptimizer::MeshesOptimizer(bool processHeadparts, int optimizationLevel, b
 
 MeshesOptimizer::MeshesOptimizer(bool processHeadparts, int optimizationLevel, bool resaveMeshes,
                                  OptimizerProfileSnapshot profile)
-    : _profile(std::move(profile)), bMeshesHeadparts(processHeadparts),
+    : _profile(std::move(profile)),
+      bMeshesHeadparts(processHeadparts),
       bMeshesResave(resaveMeshes),
       iMeshesOptimizationLevel(optimizationLevel) {}
 

@@ -13,13 +13,15 @@ class ApplicationRunConfigurationProvider final : public RunConfigurationProvide
     explicit ApplicationRunConfigurationProvider(QString profilesDirectory)
         : _profilesDirectory(std::move(profilesDirectory)) {}
 
-    /// Reads owned profile capabilities and legacy child exclusions; missing profiles fail Preparing.
+    /// Reads owned profile capabilities and legacy child exclusions; missing profiles fail
+    /// Preparing.
     RunConfiguration load(std::string_view identity) const override {
         const auto name = QString::fromUtf8(identity.data(), static_cast<int>(identity.size()));
         const QDir profiles(_profilesDirectory);
         const QDir selected(profiles.filePath(name));
         const auto profilePath = selected.filePath(QStringLiteral("profile.ini"));
-        if (!QFile::exists(profilePath)) throw std::runtime_error("Selected profile is unavailable");
+        if (!QFile::exists(profilePath))
+            throw std::runtime_error("Selected profile is unavailable");
         QSettings settings(profilePath, QSettings::IniFormat);
         const auto game = static_cast<btu::Game>(settings.value("BSA/bsaGame").toInt());
         const auto extension = btu::common::as_ascii(btu::bsa::Settings::get(game).extension);
@@ -32,7 +34,8 @@ class ApplicationRunConfigurationProvider final : public RunConfigurationProvide
             .supportsTextureConversion = textures,
             .supportsStandardMeshOptimization = meshes,
             .supportsTerrainMeshOptimization = meshes,
-            .supportsAnimationOptimization = settings.value("Animations/animationsEnabled").toBool(),
+            .supportsAnimationOptimization =
+                settings.value("Animations/animationsEnabled").toBool(),
             .supportsArchiveExtraction = archives,
             .supportsMeshReferenceMaintenance = textures,
             .supportsArchiveCreation = archives,
@@ -136,9 +139,8 @@ RunRequest makeApplicationRunRequest(const OptionsCAO& options) {
     include(choices.extractArchives, routing::RequestedWork::ArchiveExtraction);
     include(choices.createArchives, routing::RequestedWork::ArchiveCreation);
     const auto path = std::filesystem::path(options.userPath.toStdWString());
-    auto selection = options.mode == OptionsCAO::SeveralMods
-                         ? ModSelection::childModRoots(path)
-                         : ModSelection::singleModRoot(path);
+    auto selection = options.mode == OptionsCAO::SeveralMods ? ModSelection::childModRoots(path)
+                                                             : ModSelection::singleModRoot(path);
     return RunRequest::create(Profiles::currentProfile().toStdString(), choices.executionMode,
                               std::move(selection), std::move(work));
 }

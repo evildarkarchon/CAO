@@ -30,9 +30,10 @@ ArchiveInventory inspectArchiveInventory(const std::filesystem::path& path) {
     const auto add = [&](std::string name, std::uintmax_t bytes) {
         // Each staged payload and its ownership record consume space even when shadowed.
         // Allow metadata/path overhead without pretending to predict allocation-unit sizes.
-        inventory.estimatedCapacityBytes = saturatedCapacityAdd(inventory.estimatedCapacityBytes,
-            saturatedCapacityAdd(bytes, saturatedCapacityAdd(65536,
-                saturatedCapacityMultiply(name.size(), 8))));
+        inventory.estimatedCapacityBytes = saturatedCapacityAdd(
+            inventory.estimatedCapacityBytes,
+            saturatedCapacityAdd(
+                bytes, saturatedCapacityAdd(65536, saturatedCapacityMultiply(name.size(), 8))));
         inventory.names.push_back(std::move(name));
     };
     const auto format = bsa::guess_file_format(path);
@@ -49,9 +50,9 @@ ArchiveInventory inspectArchiveInventory(const std::filesystem::path& path) {
             archive.read(path);
             for (const auto& [directory, files] : archive)
                 for (const auto& [key, file] : files)
-                    add(directory.name().empty() ? std::string(key.name())
-                                                             : std::string(directory.name()) + "/" +
-                                                                   std::string(key.name()),
+                    add(directory.name().empty()
+                            ? std::string(key.name())
+                            : std::string(directory.name()) + "/" + std::string(key.name()),
                         file.compressed() ? file.decompressed_size() : file.size());
             break;
         }
@@ -62,8 +63,8 @@ ArchiveInventory inspectArchiveInventory(const std::filesystem::path& path) {
                 // DX10 payloads reconstruct a DDS header in addition to their manifest chunks.
                 std::uintmax_t bytes = archiveFormat == bsa::fo4::format::directx ? 148 : 0;
                 for (const auto& chunk : file)
-                    bytes = saturatedCapacityAdd(bytes, chunk.compressed()
-                        ? chunk.decompressed_size() : chunk.size());
+                    bytes = saturatedCapacityAdd(
+                        bytes, chunk.compressed() ? chunk.decompressed_size() : chunk.size());
                 add(std::string(key.name()), bytes);
             }
             break;
@@ -157,8 +158,7 @@ std::variant<std::vector<routing::RoutedAsset>, RunFailure> validateArchiveOrder
 /// Filesystem races remain absent entries; identified but unresolved links receive an exclusion.
 template <typename ExcludedVisitor>
 bool entryIsWithinScope(const std::filesystem::path& path,
-                        const std::filesystem::path& canonicalRoot,
-                        ExcludedVisitor&& excluded) {
+                        const std::filesystem::path& canonicalRoot, ExcludedVisitor&& excluded) {
     std::error_code error;
     const auto status = std::filesystem::symlink_status(path, error);
     if (error) return false;
@@ -344,8 +344,8 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
         // Both discovery passes see unchanged links. Retain their first observation so one skipped
         // entry yields one actionable diagnostic rather than reporting the same exclusion twice.
         if (diagnosedPaths.insert(path.lexically_normal()).second) {
-            diagnostics.emplace_back(RunDiagnosticCode::LinkedEntryExcluded, discoveryPhase,
-                                     detail, path);
+            diagnostics.emplace_back(RunDiagnosticCode::LinkedEntryExcluded, discoveryPhase, detail,
+                                     path);
             if (retainDiagnostic) retainDiagnostic(diagnostics.back());
         }
     };
@@ -485,7 +485,8 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
                                 error.what());
         }
         const auto& root = archiveRoots.at(archive.executionPath());
-        auto& plan = extractionPlans.emplace_back(ArchiveExtractionPlan{archive.executionPath(), root});
+        auto& plan =
+            extractionPlans.emplace_back(ArchiveExtractionPlan{archive.executionPath(), root});
         plan.estimatedCapacityBytes = inventory.estimatedCapacityBytes;
         for (const auto& name : inventory.names) {
             if (isCancelled && isCancelled()) return cancelledResult();
@@ -516,7 +517,8 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
         for (const auto& entry : plan.entries) {
             const auto destination = std::filesystem::absolute(plan.archivePath).parent_path() /
                                      std::filesystem::u8path(entry);
-            const auto gamePath = foldedName(relativeName(destination.lexically_relative(plan.modRoot)));
+            const auto gamePath =
+                foldedName(relativeName(destination.lexically_relative(plan.modRoot)));
             // Ownership is frozen before mutation: a failed winner must not promote a shadowed
             // Archive, and a Loose Asset removed later still retains its preflight precedence.
             if (entries.at(plan.modRoot).at(gamePath).front() == plan.archivePath &&
@@ -579,29 +581,30 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
         nestedArchivePaths.insert(normalizedPath);
     };
     discoveryPhase = RunPhase::BuildingEffectiveAssetTree;
-    const auto rootPassComplete = visitRegularFiles(
-        resolvedRoots, isCancelled, excludeLinkedEntry,
-        [&](const std::filesystem::path& path, const bool) {
-            if (namesAnArchive(path)) {
-                excludeArchive(path.lexically_normal());
-                return;
-            }
-            effectivePaths.push_back(path);
-        });
+    const auto rootPassComplete =
+        visitRegularFiles(resolvedRoots, isCancelled, excludeLinkedEntry,
+                          [&](const std::filesystem::path& path, const bool) {
+                              if (namesAnArchive(path)) {
+                                  excludeArchive(path.lexically_normal());
+                                  return;
+                              }
+                              effectivePaths.push_back(path);
+                          });
     if (!rootPassComplete) return cancelledResult();
-    const auto destinationPassComplete = visitRegularFiles(
-        extractionDestinations, isCancelled, excludeLinkedEntry,
-        [&](const std::filesystem::path& path, const bool) {
-            const auto normalizedPath = path.lexically_normal();
-            // An Asset the destination already held was never named by the caller, so it is neither
-            // the run's work nor the run's business to report, whatever kind it is.
-            if (preExistingDestinationPaths.contains(normalizedPath)) return;
-            if (namesAnArchive(path)) {
-                excludeArchive(normalizedPath);
-                return;
-            }
-            effectivePaths.push_back(path);
-        });
+    const auto destinationPassComplete =
+        visitRegularFiles(extractionDestinations, isCancelled, excludeLinkedEntry,
+                          [&](const std::filesystem::path& path, const bool) {
+                              const auto normalizedPath = path.lexically_normal();
+                              // An Asset the destination already held was never named by the
+                              // caller, so it is neither the run's work nor the run's business to
+                              // report, whatever kind it is.
+                              if (preExistingDestinationPaths.contains(normalizedPath)) return;
+                              if (namesAnArchive(path)) {
+                                  excludeArchive(normalizedPath);
+                                  return;
+                              }
+                              effectivePaths.push_back(path);
+                          });
     if (!destinationPassComplete) return cancelledResult();
     auto result = ArchiveFirstAssetDiscoveryResult(
         EffectiveAssetTree(std::move(effectivePaths)), std::move(skippedArchiveCounts),

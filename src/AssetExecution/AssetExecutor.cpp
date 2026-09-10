@@ -34,9 +34,10 @@ std::optional<std::pair<std::uint64_t, std::uint64_t>> assetFingerprint(
     return std::pair{size, hash};
 }
 
-/// Flushes staged bytes and replaces a same-volume destination without a cross-volume copy fallback.
+/// Flushes staged bytes and replaces a same-volume destination without a cross-volume copy
+/// fallback.
 std::error_code commitStagedAsset(const std::filesystem::path& staged,
-                              const std::filesystem::path& destination) {
+                                  const std::filesystem::path& destination) {
 #ifdef _WIN32
     const auto file = CreateFileW(staged.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
                                   OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
@@ -142,10 +143,10 @@ AssetExecutionResult AssetExecutor::execute(const routing::RoutedAsset& asset,
         result._failure = AssetExecutionFailure::CleanupFailed;
         result._message = result._cleanupFailures.front().detail();
         result._path = result._cleanupFailures.front().path();
-        result._operation = asset.target() == routing::OptimizerTarget::Mesh
-                                ? "cleanup_mesh_staging"
-                                : asset.target() == routing::OptimizerTarget::Animation
-                                      ? "cleanup_animation_staging" : "cleanup_texture_staging";
+        result._operation =
+            asset.target() == routing::OptimizerTarget::Mesh        ? "cleanup_mesh_staging"
+            : asset.target() == routing::OptimizerTarget::Animation ? "cleanup_animation_staging"
+                                                                    : "cleanup_texture_staging";
     }
     return result;
 }
@@ -167,7 +168,8 @@ AssetExecutionResult AssetExecutor::execute(const routing::RoutedAsset& asset,
                     "Archive extraction and packing are owned by run orchestration.");
         }
     } catch (const std::exception& error) {
-        // If staged execution recovery itself throws, its mutation boundary is no longer trustworthy.
+        // If staged execution recovery itself throws, its mutation boundary is no longer
+        // trustworthy.
         if (asset.target() == routing::OptimizerTarget::Texture ||
             asset.target() == routing::OptimizerTarget::Mesh ||
             asset.target() == routing::OptimizerTarget::Animation)
@@ -175,9 +177,9 @@ AssetExecutionResult AssetExecutor::execute(const routing::RoutedAsset& asset,
                 AssetExecutionFailure::BackendException,
                 "Asset execution could not recover from an exception.",
                 MutationState::PartialOrUnknown, false, asset.executionPath(),
-                asset.target() == routing::OptimizerTarget::Mesh ? "execute_mesh"
-                    : asset.target() == routing::OptimizerTarget::Animation ? "execute_animation"
-                                                                          : "execute_texture",
+                asset.target() == routing::OptimizerTarget::Mesh        ? "execute_mesh"
+                : asset.target() == routing::OptimizerTarget::Animation ? "execute_animation"
+                                                                        : "execute_texture",
                 error.what());
         return AssetExecutionResult::failed(AssetExecutionFailure::OperationFailed, error.what());
     } catch (...) {
@@ -188,9 +190,9 @@ AssetExecutionResult AssetExecutor::execute(const routing::RoutedAsset& asset,
                 AssetExecutionFailure::BackendException,
                 "Asset execution could not recover from an unknown exception.",
                 MutationState::PartialOrUnknown, false, asset.executionPath(),
-                asset.target() == routing::OptimizerTarget::Mesh ? "execute_mesh"
-                    : asset.target() == routing::OptimizerTarget::Animation ? "execute_animation"
-                                                                          : "execute_texture");
+                asset.target() == routing::OptimizerTarget::Mesh        ? "execute_mesh"
+                : asset.target() == routing::OptimizerTarget::Animation ? "execute_animation"
+                                                                        : "execute_texture");
         return AssetExecutionResult::failed(AssetExecutionFailure::OperationFailed,
                                             "Unknown optimizer execution failure.");
     }
@@ -351,15 +353,16 @@ AssetExecutionResult AssetExecutor::executeMesh(const routing::RoutedAsset& asse
             wouldChange = wouldChange || maintenance.wouldChange();
         }
 
-        // Dry Run evaluates both operations against the loaded Mesh but never persists their results.
+        // Dry Run evaluates both operations against the loaded Mesh but never persists their
+        // results.
         if (asset.executionMode() == routing::ExecutionMode::DryRun || !wouldChange)
             return AssetExecutionResult::success();
 
         boundary = "stage_mesh";
-        const auto staging = artifacts.stageFile(
-            modRoot.empty() ? std::filesystem::absolute(path).parent_path()
-                            : std::filesystem::absolute(modRoot),
-            std::filesystem::absolute(path));
+        const auto staging =
+            artifacts.stageFile(modRoot.empty() ? std::filesystem::absolute(path).parent_path()
+                                                : std::filesystem::absolute(modRoot),
+                                std::filesystem::absolute(path));
         boundary = "save_mesh";
         if (!_backend.saveMesh(staging.path) || !assetFingerprint(staging.path))
             return AssetExecutionResult::failed(AssetExecutionFailure::SaveFailed,
@@ -370,7 +373,8 @@ AssetExecutionResult AssetExecutor::executeMesh(const routing::RoutedAsset& asse
             return AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed,
                                                 "Failed to commit Mesh output.", mutation, true,
                                                 path, boundary, error.message());
-        // Release may fail after replacement; the committed Mesh must still be reported and retained.
+        // Release may fail after replacement; the committed Mesh must still be reported and
+        // retained.
         mutation = MutationState::Committed;
         artifacts.commit(staging.registration);
         return AssetExecutionResult::success(mutation);
@@ -394,9 +398,9 @@ AssetExecutionResult AssetExecutor::executeMesh(const routing::RoutedAsset& asse
     }
 }
 
-AssetExecutionResult AssetExecutor::executeAnimation(
-    const routing::RoutedAsset& asset, run::TemporaryArtifactRegistry& artifacts,
-    const std::filesystem::path& modRoot) const {
+AssetExecutionResult AssetExecutor::executeAnimation(const routing::RoutedAsset& asset,
+                                                     run::TemporaryArtifactRegistry& artifacts,
+                                                     const std::filesystem::path& modRoot) const {
     const auto& path = asset.executionPath();
     if (!std::holds_alternative<routing::AnimationAsset>(asset.identity())) {
         return AssetExecutionResult::failed(
@@ -416,10 +420,10 @@ AssetExecutionResult AssetExecutor::executeAnimation(
         std::optional<run::TemporaryArtifactRegistry::StagedFile> staging;
         if (asset.executionMode() == routing::ExecutionMode::Apply) {
             boundary = "stage_animation";
-            staging = artifacts.stageFile(
-                modRoot.empty() ? std::filesystem::absolute(path).parent_path()
-                                : std::filesystem::absolute(modRoot),
-                std::filesystem::absolute(path));
+            staging =
+                artifacts.stageFile(modRoot.empty() ? std::filesystem::absolute(path).parent_path()
+                                                    : std::filesystem::absolute(modRoot),
+                                    std::filesystem::absolute(path));
         }
         boundary = "optimize_animation";
         const auto operation = _backend.optimizeAnimation(
@@ -437,24 +441,26 @@ AssetExecutionResult AssetExecutor::executeAnimation(
         boundary = "commit_animation";
         if (const auto error = commitStagedAsset(staging->path, path))
             return AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed,
-                                                "Failed to commit Animation output.", mutation, true,
-                                                path, boundary, error.message());
-        // Ownership release can throw after replacement; retain the committed mutation in that case.
+                                                "Failed to commit Animation output.", mutation,
+                                                true, path, boundary, error.message());
+        // Ownership release can throw after replacement; retain the committed mutation in that
+        // case.
         mutation = MutationState::Committed;
         artifacts.commit(staging->registration);
         return AssetExecutionResult::success(mutation);
     } catch (const std::filesystem::filesystem_error& error) {
         const bool stagingFailure = boundary == "stage_animation";
-        return AssetExecutionResult::failed(
-            stagingFailure ? AssetExecutionFailure::StagingFailed
-                           : AssetExecutionFailure::BackendException,
-            "Animation execution raised a filesystem exception.", mutation, stagingFailure,
-            path, boundary, error.what());
+        return AssetExecutionResult::failed(stagingFailure
+                                                ? AssetExecutionFailure::StagingFailed
+                                                : AssetExecutionFailure::BackendException,
+                                            "Animation execution raised a filesystem exception.",
+                                            mutation, stagingFailure, path, boundary, error.what());
     } catch (const std::exception& error) {
-        return AssetExecutionResult::failed(
-            boundary == "stage_animation" ? AssetExecutionFailure::StagingFailed
-                                          : AssetExecutionFailure::BackendException,
-            "Animation execution raised an exception.", mutation, false, path, boundary, error.what());
+        return AssetExecutionResult::failed(boundary == "stage_animation"
+                                                ? AssetExecutionFailure::StagingFailed
+                                                : AssetExecutionFailure::BackendException,
+                                            "Animation execution raised an exception.", mutation,
+                                            false, path, boundary, error.what());
     } catch (...) {
         return AssetExecutionResult::failed(AssetExecutionFailure::BackendException,
                                             "Unknown Animation backend exception.", mutation, false,

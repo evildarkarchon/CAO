@@ -128,7 +128,7 @@ class ApplicationRunWork final : public RunWorkService {
             return archiveBackend().extract(plan, options.bBsaDeleteBackup, artifacts);
         };
         adapters.executeAssetWithResult = [&](const routing::RoutedAsset& asset,
-                                               const std::filesystem::path& modRoot) {
+                                              const std::filesystem::path& modRoot) {
             if (!optimizer) optimizer = std::make_unique<MainOptimizer>(options, _profile);
             return optimizer->process(asset, artifacts, modRoot);
         };

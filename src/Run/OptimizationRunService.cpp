@@ -28,7 +28,9 @@ class RunExecutionScope final {
    public:
     /// Marks this thread until scope exit; nested terminal observers may start another inline run.
     explicit RunExecutionScope(const RunSharedState* state) noexcept
-        : _state(state), _previous(_current) { _current = this; }
+        : _state(state), _previous(_current) {
+        _current = this;
+    }
 
     /// Restores the outer run when nested inline execution returns or throws.
     ~RunExecutionScope() { _current = _previous; }
@@ -87,7 +89,8 @@ class RunSharedState final : public RunObservationSink,
     RunSharedState(RunRequest request, std::vector<RunObservation> observations,
                    std::shared_ptr<const RunConfigurationProvider> configuration,
                    std::shared_ptr<RunWorkService> work)
-        : _request(std::move(request)), _configuration(std::move(configuration)),
+        : _request(std::move(request)),
+          _configuration(std::move(configuration)),
           _work(std::move(work)) {
         for (auto& observation : observations)
             if (observation.observer) _observers.push_back(ObserverState{std::move(observation)});
@@ -131,8 +134,9 @@ class RunSharedState final : public RunObservationSink,
     void execute() {
         const RunExecutionScope scope(this);
         const RunExecutor executor;
-        commit(executor.execute(_request, RunServices{_safetyCleanup, this, _configuration.get(), _work.get()},
-                                _stop.get_token(), _runId));
+        commit(executor.execute(
+            _request, RunServices{_safetyCleanup, this, _configuration.get(), _work.get()},
+            _stop.get_token(), _runId));
     }
 
     /// Requests cooperative cancellation without interrupting an atomic operation or cleanup.
@@ -199,8 +203,13 @@ class RunSharedState final : public RunObservationSink,
     /// Captures state under the same lock used before enqueuing phase, failure, and terminal facts.
     [[nodiscard]] RunSnapshot snapshot() const {
         const std::lock_guard lock(_mutex);
-        return RunSnapshot{_runId, _phase, _progress, _stop.stop_requested(), _diagnostics.size(),
-                           _failureCount, _result ? std::optional{_result->outcome()} : std::nullopt};
+        return RunSnapshot{_runId,
+                           _phase,
+                           _progress,
+                           _stop.stop_requested(),
+                           _diagnostics.size(),
+                           _failureCount,
+                           _result ? std::optional{_result->outcome()} : std::nullopt};
     }
 
     /// Blocks until this run commits its terminal result, then returns it.
@@ -236,8 +245,10 @@ class RunSharedState final : public RunObservationSink,
                     if (state->admitDelivery(request.ticket, true)) state->drain(request.observer);
                 };
                 const auto& dispatcher = _observers[index].observation.dispatcher;
-                if (dispatcher) dispatcher(std::move(delivery));
-                else delivery();
+                if (dispatcher)
+                    dispatcher(std::move(delivery));
+                else
+                    delivery();
             } catch (const std::exception& error) {
                 disableObserver(index, RunDiagnosticCode::DispatcherFailed, error.what());
             } catch (...) {
@@ -463,7 +474,9 @@ OptimizationRunService::OptimizationRunService(
 OptimizationRunService::OptimizationRunService(
     std::shared_ptr<const RunConfigurationProvider> configuration,
     std::shared_ptr<RunWorkService> work) noexcept
-    : _scheduler(_productionScheduler), _configuration(std::move(configuration)), _work(std::move(work)) {}
+    : _scheduler(_productionScheduler),
+      _configuration(std::move(configuration)),
+      _work(std::move(work)) {}
 
 OptimizationRunService::~OptimizationRunService() {
     // No start() may overlap destruction; joining outside the registry lock also lets worker

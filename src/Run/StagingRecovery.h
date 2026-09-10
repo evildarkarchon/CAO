@@ -46,8 +46,8 @@ class StagingRecovery final {
     void prepareArea(const std::filesystem::path& root);
     /// Publishes one file registration before creation, rolling back names rejected by CREATE_NEW.
     [[nodiscard]] std::filesystem::path createRegisteredFile(const std::filesystem::path& root,
-                                                              const std::filesystem::path& relative,
-                                                              bool rootRelative);
+                                                             const std::filesystem::path& relative,
+                                                             bool rootRelative);
     struct State;
     std::unique_ptr<State> _state;
 };
