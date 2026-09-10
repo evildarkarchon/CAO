@@ -95,9 +95,11 @@ class ControlledAssetWork final : public cao::run::RunWorkService {
     void execute(const cao::run::RunPreparation& preparation, cao::run::RunWorkRecord& record,
                  cao::run::TemporaryArtifactRegistry& artifacts,
                  cao::run::RunObservationSink& observations, std::stop_token stop) override {
-        staged = artifacts.stageFile(preparation.modRoots().front(),
-                                     preparation.modRoots().front() / "temporary.dds").path;
-        std::ofstream(staged) << "temporary";
+        if (preparation.policy().executionMode() == ExecutionMode::Apply) {
+            staged = artifacts.stageFile(preparation.modRoots().front(),
+                                         preparation.modRoots().front() / "temporary.dds").path;
+            std::ofstream(staged) << "temporary";
+        }
         cao::run::executeAssetRun(preparation, record, observations, stop, adapters);
     }
 };
@@ -133,6 +135,24 @@ class RunExecutorTests final : public QObject
     Q_OBJECT
 
 private slots:
+ /// Covers applicable-but-empty work, Dry Run evaluation, and fatal Archive preflight.
+ void productionWorkApplicability_data();
+ /// Uses the real composition to preserve phase distinctions and prohibit excluded operations.
+ void productionWorkApplicability();
+ /// Retains Preparing exclusions across completed production work without a presentation sink.
+ void preparingDiagnosticsSurviveWork();
+ /// Owns complete Archive collision evidence after preparation and adapter lifetimes end.
+ void productionWorkRetainsArchiveCollisions();
+ /// Publishes discovery diagnostics after Asset processing and observes cancellation before packing.
+ void discoveryDiagnosticCancellationFollowsAssetAttempt();
+ /// Retains mixed Asset and aggregate finalization evidence after every borrowed dependency dies.
+ void mixedWorkEvidenceOutlivesServices();
+ /// Covers cancellation at the last protected attempt and concurrent unsafe mutation.
+ void cancellationAfterAtomicAssetAttempt_data();
+ /// Counts the completed attempt before stopping without reaching Archive finalization.
+ void cancellationAfterAtomicAssetAttempt();
+ /// Retains successes and recoverable failures in the Archive phase's independent progress.
+ void mixedExtractionAttemptsAdvanceProgress();
  /// Covers completed extraction evidence across completion, cancellation, and interruption.
  void committedExtractionSurvivesDiscoveryInterruption_data();
  /// A completed extraction remains exactly one durable attempt across later discovery boundaries.
@@ -232,6 +252,408 @@ private slots:
  /// Verifies completed attempts follow succeeded plus failed, so failures advance progress.
  void failedAttemptsAdvanceCompletedProgress();
 };
+
+void RunExecutorTests::discoveryDiagnosticCancellationFollowsAssetAttempt() {
+    class Configuration final : public cao::run::RunConfigurationProvider {
+       public:
+        /// Supplies a Preparing exclusion to verify it survives later discovery publication.
+        cao::run::RunConfiguration load(std::string_view) const override {
+            return cao::run::RunConfiguration(testRunConfiguration()->load("SkyrimSE").profile(),
+                                               {"ignored"});
+        }
+    } configuration;
+    class Observer final : public cao::run::RunObservationSink {
+       public:
+        std::stop_source cancellation;
+        bool assetCompleted{};
+        bool assetCompletedBeforeDiagnostic{};
+        std::size_t linkedDiagnostics{};
+        /// Phase reports are irrelevant to this diagnostic-order boundary.
+        void recordPhase(const RunPhaseRecord&) override {}
+        /// This fixture expects no run-level failures.
+        void recordFailure(const cao::run::RunFailure&) override {}
+        /// Cancels only on the discovered link, after recording whether the Asset already finished.
+        void recordDiagnostic(const cao::run::RunDiagnostic& diagnostic) override {
+            if (diagnostic.code() != cao::run::RunDiagnosticCode::LinkedEntryExcluded) return;
+            ++linkedDiagnostics;
+            assetCompletedBeforeDiagnostic = assetCompleted;
+            cancellation.request_stop();
+        }
+    } observer;
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    const auto selected = root / "selected";
+    std::filesystem::create_directory(selected);
+    std::filesystem::create_directory(root / "ignored");
+    std::ofstream(selected / "asset.dds") << "original";
+    std::ofstream(root / "ignored" / "external.dds") << "outside selected root";
+    std::error_code error;
+    // Contained file links are valid Assets; an ignored sibling target exercises exclusion.
+    std::filesystem::create_symlink(root / "ignored" / "external.dds", selected / "linked.dds", error);
+    if (error) QSKIP("File symlink creation is unavailable on this host");
+    ControlledAssetWork work;
+    work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset&) {
+        observer.assetCompleted = true;
+        return cao::execution::AssetExecutionResult::success();
+    };
+    std::size_t finalizations = 0;
+    work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+        ++finalizations;
+        return cao::run::ArchiveFinalizationResult{};
+    };
+    CountingSafetyCleanup cleanup;
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+        ModSelection::childModRoots(root), {RequestedWork::NativeTextureOptimization});
+    const auto result = RunExecutor{}.execute(request,
+        RunServices{cleanup, &observer, &configuration, &work}, observer.cancellation.get_token());
+    // Remove the link before QTemporaryDir cleanup, which does not handle Windows links.
+    QVERIFY(std::filesystem::remove(selected / "linked.dds"));
+    QCOMPARE(result.outcome(), RunOutcome::Cancelled);
+    QVERIFY(observer.assetCompletedBeforeDiagnostic);
+    QCOMPARE(observer.linkedDiagnostics, std::size_t{1});
+    QCOMPARE(result.work().assetAttempts.size(), std::size_t{1});
+    QCOMPARE(finalizations, std::size_t{0});
+    QVERIFY(result.phase(RunPhase::ArchiveFinalization) == nullptr);
+    QCOMPARE(result.work().diagnostics.size(), std::size_t{2});
+    QCOMPARE(result.work().diagnostics.front().code(), cao::run::RunDiagnosticCode::IgnoredModExcluded);
+    QCOMPARE(result.work().diagnostics.back().code(), cao::run::RunDiagnosticCode::LinkedEntryExcluded);
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+}
+
+void RunExecutorTests::productionWorkApplicability_data() {
+    QTest::addColumn<QString>("scenario");
+    QTest::newRow("empty-requested-work") << QString("empty");
+    QTest::newRow("dry-run-evaluation") << QString("dry");
+    QTest::newRow("fatal-archive-preflight") << QString("preflight");
+}
+
+void RunExecutorTests::productionWorkApplicability() {
+    QFETCH(QString, scenario);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    const bool dryRun = scenario == "dry";
+    const bool preflight = scenario == "preflight";
+    if (dryRun) std::ofstream(root / "asset.dds") << "untouched";
+    if (preflight) std::ofstream(root / "broken.bsa") << "invalid archive";
+    ControlledAssetWork work;
+    std::size_t assets = 0;
+    std::size_t extractions = 0;
+    std::size_t finalizations = 0;
+    work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset&) {
+        ++assets;
+        return cao::execution::AssetExecutionResult::success();
+    };
+    work.adapters.extractArchiveWithResult = [&](const cao::run::ArchiveExtractionPlan& plan) {
+        ++extractions;
+        return cao::run::ArchiveExtractionResult{plan.archivePath};
+    };
+    if (dryRun || preflight) {
+        work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+            ++finalizations;
+            return cao::run::ArchiveFinalizationResult{};
+        };
+    }
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", dryRun ? ExecutionMode::DryRun : ExecutionMode::Apply,
+        ModSelection::singleModRoot(root),
+        {RequestedWork::NativeTextureOptimization, RequestedWork::ArchiveExtraction});
+    const auto result = RunExecutor{}.execute(request, RunServices{cleanup, nullptr, configuration.get(), &work});
+    QCOMPARE(result.outcome(), preflight ? RunOutcome::Failed : RunOutcome::Succeeded);
+    QCOMPARE(assets, dryRun ? std::size_t{1} : std::size_t{0});
+    QCOMPARE(extractions, std::size_t{0});
+    QCOMPARE(finalizations, std::size_t{0});
+    QVERIFY(result.work().finalizations.empty());
+    QVERIFY(result.work().archiveAttempts.empty());
+    QVERIFY(result.mutationSummaries().empty());
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+    if (preflight) {
+        QCOMPARE(result.failures().size(), std::size_t{1});
+        QCOMPARE(result.failures().front().code(), cao::run::RunFailureCode::ArchiveUnreadable);
+        QVERIFY(!result.work().ledger.has_value());
+        QVERIFY(result.phase(RunPhase::ProcessingAssets) == nullptr);
+        QVERIFY(result.phase(RunPhase::ArchiveFinalization) == nullptr);
+        QCOMPARE(stagingBytes(root / "broken.bsa"), QByteArray("invalid archive"));
+    } else {
+        QVERIFY(result.work().ledger.has_value());
+        const auto& phase = requirePhase(result, RunPhase::ProcessingAssets);
+        QCOMPARE(phase.status(), RunPhaseStatus::Executed);
+        QVERIFY(phase.progress().has_value());
+        QCOMPARE(phase.progress()->total(), dryRun ? std::size_t{1} : std::size_t{0});
+        QCOMPARE(phase.progress()->completed(), phase.progress()->total());
+        QCOMPARE(requirePhase(result, RunPhase::ArchiveFinalization).skipReason(),
+                 std::optional{dryRun ? PhaseSkipReason::DryRun : PhaseSkipReason::NoRequestedWork});
+    }
+    if (dryRun) {
+        QVERIFY(work.staged.empty());
+        QVERIFY(!std::filesystem::exists(root / ".cao-staging"));
+        QCOMPARE(stagingBytes(root / "asset.dds"), QByteArray("untouched"));
+    } else {
+        QVERIFY(!work.staged.empty());
+        QVERIFY(!std::filesystem::exists(work.staged));
+    }
+}
+
+void RunExecutorTests::preparingDiagnosticsSurviveWork() {
+    class Configuration final : public cao::run::RunConfigurationProvider {
+       public:
+        /// Loads one child exclusion alongside capabilities for actual production work.
+        cao::run::RunConfiguration load(std::string_view) const override {
+            return cao::run::RunConfiguration(testRunConfiguration()->load("SkyrimSE").profile(),
+                                               {"ignored"});
+        }
+    };
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    std::filesystem::create_directory(root / "ignored");
+    std::filesystem::create_directory(root / "selected");
+    std::optional<OptimizationRunResult> result;
+    {
+        Configuration configuration;
+        CountingSafetyCleanup cleanup;
+        ControlledAssetWork work;
+        const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+            ModSelection::childModRoots(root), {RequestedWork::NativeTextureOptimization});
+        result = RunExecutor{}.execute(request, RunServices{cleanup, nullptr, &configuration, &work});
+        QCOMPARE(cleanup.invocations(), std::size_t{1});
+    }
+    QCOMPARE(result->outcome(), RunOutcome::Succeeded);
+    QVERIFY(result->work().ledger.has_value());
+    QCOMPARE(result->work().diagnostics.size(), std::size_t{1});
+    const auto& diagnostic = result->work().diagnostics.front();
+    QCOMPARE(diagnostic.code(), cao::run::RunDiagnosticCode::IgnoredModExcluded);
+    QCOMPARE(diagnostic.phase(), RunPhase::Preparing);
+    QCOMPARE(diagnostic.path(), root / "ignored");
+    QVERIFY(!diagnostic.detail().empty());
+}
+
+void RunExecutorTests::productionWorkRetainsArchiveCollisions() {
+    QTemporaryDir directory;
+    QTemporaryDir sources;
+    QVERIFY(directory.isValid());
+    QVERIFY(sources.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    const auto source = std::filesystem::path(sources.path().toStdWString());
+    std::ofstream(source / "shared.dds") << "archived";
+    for (const auto* name : {"winner.bsa", "shadowed.bsa"}) {
+        auto archive = btu::bsa::ArchiveData(btu::bsa::Settings::get(btu::Game::SSE),
+                                           btu::bsa::ArchiveType::Textures);
+        QVERIFY(archive.add_file(source / "shared.dds"));
+        archive.set_out_path(root / name);
+        QVERIFY(btu::bsa::write(false, std::move(archive), source).empty());
+    }
+    std::optional<OptimizationRunResult> result;
+    {
+        ControlledAssetWork work;
+        work.adapters.extractArchiveWithResult = [](const cao::run::ArchiveExtractionPlan& plan) {
+            return cao::run::ArchiveExtractionResult{plan.archivePath};
+        };
+        CountingSafetyCleanup cleanup;
+        const auto configuration = testRunConfiguration();
+        const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+            ModSelection::singleModRoot(root), {RequestedWork::ArchiveExtraction},
+            cao::run::ArchivePrecedence::explicitOrder({"winner.bsa", "shadowed.bsa"}));
+        result = RunExecutor{}.execute(request, RunServices{cleanup, nullptr, configuration.get(), &work});
+        QCOMPARE(cleanup.invocations(), std::size_t{1});
+    }
+    QCOMPARE(result->outcome(), RunOutcome::Succeeded);
+    QCOMPARE(result->work().archiveAttempts.size(), std::size_t{2});
+    QCOMPARE(result->work().collisions.size(), std::size_t{1});
+    const auto& collision = result->work().collisions.front();
+    QCOMPARE(collision.modRoot(), root);
+    QCOMPARE(collision.gamePath(), std::filesystem::path("shared.dds"));
+    QCOMPARE(collision.winningArchive(), root / "winner.bsa");
+    QCOMPARE(collision.shadowedArchives().size(), std::size_t{1});
+    QCOMPARE(collision.shadowedArchives().front(), root / "shadowed.bsa");
+    QVERIFY(!collision.looseAssetWins());
+}
+
+void RunExecutorTests::mixedWorkEvidenceOutlivesServices() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    const auto successfulAsset = root / "a.dds";
+    const auto failedAsset = root / "b.dds";
+    const auto output = root / "packed.bsa";
+    std::ofstream(successfulAsset) << "original";
+    std::ofstream(failedAsset) << "original";
+    std::optional<OptimizationRunResult> result;
+    std::filesystem::path staged;
+    {
+        ControlledAssetWork work;
+        std::size_t finalizerCalls = 0;
+        work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset& asset) {
+            if (asset.executionPath() == failedAsset)
+                return cao::execution::AssetExecutionResult::failed(
+                    cao::execution::AssetExecutionFailure::LoadFailed, "controlled load failure",
+                    cao::execution::MutationState::None, true, failedAsset, "load_texture", "raw detail");
+            std::ofstream(asset.executionPath()) << "committed";
+            return cao::execution::AssetExecutionResult::success(cao::execution::MutationState::Committed);
+        };
+        work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+            ++finalizerCalls;
+            std::ofstream(output) << "packed";
+            return cao::run::ArchiveFinalizationResult{{
+                {output, cao::execution::MutationState::Committed, {}, true, {}, root},
+                {root / "failed.bsa", cao::execution::MutationState::None,
+                 cao::run::ArchiveFinalizationFailure::WriteFailed, true, "write detail", root}}};
+        };
+        CountingSafetyCleanup cleanup;
+        const auto configuration = testRunConfiguration();
+        const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+            ModSelection::singleModRoot(root),
+            {RequestedWork::NativeTextureOptimization, RequestedWork::ArchiveCreation});
+        result = RunExecutor{}.execute(request, RunServices{cleanup, nullptr, configuration.get(), &work});
+        staged = work.staged;
+        QCOMPARE(finalizerCalls, std::size_t{1});
+        QCOMPARE(cleanup.invocations(), std::size_t{1});
+    }
+    QCOMPARE(result->outcome(), RunOutcome::CompletedWithFailures);
+    QVERIFY(result->work().ledger.has_value());
+    QCOMPARE(result->work().ledger->routedAssets().size(), std::size_t{2});
+    QCOMPARE(result->work().assetAttempts.size(), std::size_t{2});
+    const auto& failed = result->work().assetAttempts.back();
+    QCOMPARE(failed.modRoot, root);
+    QCOMPARE(failed.asset.executionPath(), failedAsset);
+    QCOMPARE(failed.result.affectedPath(), failedAsset);
+    QCOMPARE(failed.result.operation(), std::string("load_texture"));
+    QCOMPARE(failed.result.serviceDetail(), std::string("raw detail"));
+    const auto& progress = requirePhase(*result, RunPhase::ProcessingAssets).progress();
+    QVERIFY(progress.has_value());
+    QCOMPARE(progress->total(), std::size_t{2});
+    QCOMPARE(progress->completed(), std::size_t{2});
+    QCOMPARE(progress->succeeded(), std::size_t{1});
+    QCOMPARE(progress->failed(), std::size_t{1});
+    QCOMPARE(result->work().finalizations.size(), std::size_t{1});
+    const auto& finalization = result->work().finalizations.front();
+    QCOMPARE(finalization.attempts.size(), std::size_t{2});
+    QCOMPARE(finalization.attempts.front().archivePath, output);
+    QCOMPARE(finalization.attempts.front().modRoot, root);
+    QCOMPARE(finalization.attempts.back().detail, std::string("write detail"));
+    QCOMPARE(result->mutationSummaries().size(), std::size_t{2});
+    for (const auto& summary : result->mutationSummaries()) {
+        QCOMPARE(summary.modRoot, root);
+        QCOMPARE(summary.committed, std::size_t{1});
+        QCOMPARE(summary.partialOrUnknown, std::size_t{0});
+    }
+    QVERIFY(result->cleanupFailures().empty());
+    QVERIFY(!std::filesystem::exists(staged));
+    QCOMPARE(stagingBytes(successfulAsset), QByteArray("committed"));
+    QCOMPARE(stagingBytes(failedAsset), QByteArray("original"));
+    QCOMPARE(stagingBytes(output), QByteArray("packed"));
+    QCOMPARE(result->phases().back().phase(), RunPhase::SafetyCleanup);
+}
+
+void RunExecutorTests::cancellationAfterAtomicAssetAttempt_data() {
+    QTest::addColumn<bool>("unsafe");
+    QTest::newRow("last-successful-attempt") << false;
+    QTest::newRow("unsafe-with-pending-work") << true;
+}
+
+void RunExecutorTests::cancellationAfterAtomicAssetAttempt() {
+    QFETCH(bool, unsafe);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    std::ofstream(root / "a.dds") << "original";
+    if (unsafe) std::ofstream(root / "b.dds") << "unattempted";
+    ControlledAssetWork work;
+    std::stop_source cancellation;
+    std::size_t attempts = 0;
+    std::size_t finalizerCalls = 0;
+    work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset& asset) {
+        ++attempts;
+        cancellation.request_stop();
+        // The atomic callback finishes its mutation despite cancellation being requested inside it.
+        std::ofstream(asset.executionPath()) << "finished atomic attempt";
+        if (unsafe)
+            return cao::execution::AssetExecutionResult::failed(
+                cao::execution::AssetExecutionFailure::CommitFailed, "uncertain commit",
+                cao::execution::MutationState::PartialOrUnknown, false, asset.executionPath());
+        return cao::execution::AssetExecutionResult::success(cao::execution::MutationState::Committed);
+    };
+    work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+        ++finalizerCalls;
+        return cao::run::ArchiveFinalizationResult{};
+    };
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+        ModSelection::singleModRoot(root), {RequestedWork::NativeTextureOptimization});
+    const auto result = RunExecutor{}.execute(request,
+        RunServices{cleanup, nullptr, configuration.get(), &work}, cancellation.get_token());
+    QCOMPARE(result.outcome(), unsafe ? RunOutcome::Failed : RunOutcome::Cancelled);
+    QVERIFY(result.work().cancellationObserved);
+    QCOMPARE(attempts, std::size_t{1});
+    QCOMPARE(finalizerCalls, std::size_t{0});
+    QCOMPARE(result.work().assetAttempts.size(), std::size_t{1});
+    QVERIFY(result.work().ledger.has_value());
+    const auto& progress = requirePhase(result, RunPhase::ProcessingAssets).progress();
+    QVERIFY(progress.has_value());
+    QCOMPARE(progress->total(), unsafe ? std::size_t{2} : std::size_t{1});
+    QCOMPARE(progress->completed(), std::size_t{1});
+    QCOMPARE(progress->failed(), unsafe ? std::size_t{1} : std::size_t{0});
+    QCOMPARE(progress->succeeded(), unsafe ? std::size_t{0} : std::size_t{1});
+    QVERIFY(result.phase(RunPhase::ArchiveFinalization) == nullptr);
+    QVERIFY(result.work().finalizations.empty());
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+    QVERIFY(!std::filesystem::exists(work.staged));
+    QCOMPARE(stagingBytes(root / "a.dds"), QByteArray("finished atomic attempt"));
+    if (unsafe) QCOMPARE(stagingBytes(root / "b.dds"), QByteArray("unattempted"));
+}
+
+void RunExecutorTests::mixedExtractionAttemptsAdvanceProgress() {
+    QTemporaryDir directory;
+    QTemporaryDir sources;
+    QVERIFY(directory.isValid());
+    QVERIFY(sources.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    const auto source = std::filesystem::path(sources.path().toStdWString());
+    for (const auto* name : {"a", "b"}) {
+        const auto asset = source / (std::string(name) + ".dds");
+        std::ofstream(asset) << "archived";
+        auto archive = btu::bsa::ArchiveData(btu::bsa::Settings::get(btu::Game::SSE),
+                                           btu::bsa::ArchiveType::Textures);
+        QVERIFY(archive.add_file(asset));
+        archive.set_out_path(root / (std::string(name) + ".bsa"));
+        QVERIFY(btu::bsa::write(false, std::move(archive), source).empty());
+    }
+    ControlledAssetWork work;
+    std::size_t attempts = 0;
+    work.adapters.extractArchiveWithResult = [&](const cao::run::ArchiveExtractionPlan& plan) {
+        ++attempts;
+        if (plan.archivePath.filename() == "b.bsa")
+            return cao::run::ArchiveExtractionResult{plan.archivePath,
+                cao::execution::MutationState::None, cao::run::ArchiveExtractionFailure::ExtractionFailed,
+                true, "controlled extraction failure"};
+        std::ofstream(root / "a.dds") << "extracted";
+        return cao::run::ArchiveExtractionResult{plan.archivePath, cao::execution::MutationState::Committed};
+    };
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+        ModSelection::singleModRoot(root), {RequestedWork::ArchiveExtraction});
+    const auto result = RunExecutor{}.execute(request, RunServices{cleanup, nullptr, configuration.get(), &work});
+    QCOMPARE(result.outcome(), RunOutcome::CompletedWithFailures);
+    QCOMPARE(attempts, std::size_t{2});
+    QCOMPARE(result.work().archiveAttempts.size(), std::size_t{2});
+    const auto& progress = requirePhase(result, RunPhase::ExtractingArchives).progress();
+    QVERIFY(progress.has_value());
+    QCOMPARE(progress->total(), std::size_t{2});
+    QCOMPARE(progress->completed(), std::size_t{2});
+    QCOMPARE(progress->succeeded(), std::size_t{1});
+    QCOMPARE(progress->failed(), std::size_t{1});
+    QVERIFY(result.work().assetAttempts.empty());
+    for (const auto& attempt : result.work().archiveAttempts) QCOMPARE(attempt.modRoot, root);
+    QCOMPARE(result.mutationSummaries().size(), std::size_t{1});
+    QCOMPARE(result.mutationSummaries().front().committed, std::size_t{1});
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+    QVERIFY(!std::filesystem::exists(work.staged));
+    QCOMPARE(stagingBytes(root / "a.dds"), QByteArray("extracted"));
+}
 
 void RunExecutorTests::committedExtractionSurvivesDiscoveryInterruption_data() {
     QTest::addColumn<QString>("interruption");
@@ -555,6 +977,9 @@ void RunExecutorTests::workArtifactsShareRecoveryAndAreCleanedAfterFailure() {
         QVERIFY(result.work().ledger.has_value());
     }
     QCOMPARE(result.work().assetAttempts.size(), std::size_t{1});
+    // Routing completed before the adapter ran, so later orchestration cannot erase its ledger.
+    QVERIFY(result.work().ledger.has_value());
+    QCOMPARE(result.work().ledger->routedAssets().size(), std::size_t{1});
     const auto& progress = requirePhase(result, RunPhase::ProcessingAssets).progress();
     QVERIFY(progress.has_value());
     QCOMPARE(progress->total(), std::size_t{1});

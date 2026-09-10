@@ -42,6 +42,10 @@ class WorkObservations final : public RunObservationSink {
         _work.diagnostics.push_back(diagnostic);
         if (_downstream) _downstream->recordDiagnostic(diagnostic);
     }
+    /// Forwards work-owned diagnostics without appending a second copy to the same record.
+    void publishRetainedDiagnostic(const RunDiagnostic& diagnostic) override {
+        if (_downstream) _downstream->recordDiagnostic(diagnostic);
+    }
    private:
     std::vector<RunPhaseRecord>& _phases;
     RunWorkRecord& _work;

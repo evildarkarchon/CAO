@@ -322,14 +322,15 @@ void AssetRunTests::archiveFailuresControlContinuation() {
         }
         return attempt;
     };
-    const auto result = AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, adapters);
+    cao::run::RunWorkRecord record;
+    AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, record, adapters);
     QCOMPARE(attempts, canContinue ? std::size_t{2} : static_cast<std::size_t>(failedAttempt));
     QCOMPARE(assets, canContinue ? std::size_t{1} : std::size_t{0});
     QCOMPARE(finalized, canContinue);
-    QCOMPARE(result.workRecord().ledger.has_value(), canContinue);
-    QVERIFY(!result.cancelled());
-    QCOMPARE(result.archiveAttempts().size(), attempts);
-    const auto& failure = result.archiveAttempts()[failedAttempt - 1];
+    QCOMPARE(record.ledger.has_value(), canContinue);
+    QVERIFY(!record.cancellationObserved);
+    QCOMPARE(record.archiveAttempts.size(), attempts);
+    const auto& failure = record.archiveAttempts[failedAttempt - 1];
     QCOMPARE(failure.modRoot, root);
     QVERIFY(!failure.succeeded());
     QCOMPARE(failure.safeToContinue, safe);
@@ -374,13 +375,16 @@ void AssetRunTests::mutationAwareFailuresControlContinuation() {
                          safe, asset.executionPath(), "save")
                    : cao::execution::AssetExecutionResult::success();
     };
-    const auto result = AssetRun(allLooseTargetsPolicy()).execute(std::array{root}, adapters);
+    cao::run::RunWorkRecord record;
+    AssetRun(allLooseTargetsPolicy()).execute(std::array{root}, record, adapters);
     QCOMPARE(attempts, safe ? std::size_t(2) : static_cast<std::size_t>(failedAttempt));
     QCOMPARE(finalized, safe);
-    QCOMPARE(result.assetAttempts().size(), attempts);
-    QVERIFY(!result.cancelled());
-    QCOMPARE(result.executionFailures().size(), std::size_t(1));
-    QCOMPARE(result.executionFailures().front().safeToContinue(), safe);
+    QCOMPARE(record.assetAttempts.size(), attempts);
+    QVERIFY(!record.cancellationObserved);
+    QCOMPARE(std::ranges::count_if(record.assetAttempts, [](const auto& attempt) {
+        return !attempt.result.succeeded();
+    }), 1);
+    QCOMPARE(record.assetAttempts[failedAttempt - 1].result.safeToContinue(), safe);
     QCOMPARE(progress.size(), attempts);
     QCOMPARE(progress.back().completed, attempts);
     QCOMPARE(progress.back().total, std::size_t(2));
@@ -428,14 +432,17 @@ void AssetRunTests::animationFailuresPreserveProgressAndEvidence() {
             safe, failedPath, "optimize_animation", "animation backend diagnostic");
     };
 
-    const auto result = AssetRun(allLooseTargetsPolicy()).execute(std::array{root}, adapters);
+    cao::run::RunWorkRecord record;
+    AssetRun(allLooseTargetsPolicy()).execute(std::array{root}, record, adapters);
 
     QCOMPARE(attempts, safe ? std::size_t{2} : static_cast<std::size_t>(failedAttempt));
     QCOMPARE(finalized, safe);
-    QCOMPARE(result.assetAttempts().size(), attempts);
-    QVERIFY(!result.cancelled());
-    QCOMPARE(result.executionFailures().size(), std::size_t{1});
-    const auto& failure = result.executionFailures().front();
+    QCOMPARE(record.assetAttempts.size(), attempts);
+    QVERIFY(!record.cancellationObserved);
+    QCOMPARE(std::ranges::count_if(record.assetAttempts, [](const auto& attempt) {
+        return !attempt.result.succeeded();
+    }), 1);
+    const auto& failure = record.assetAttempts[failedAttempt - 1].result;
     QCOMPARE(failure.failure().value(), safe ? cao::execution::AssetExecutionFailure::OperationFailed
                                            : cao::execution::AssetExecutionFailure::BackendException);
     QCOMPARE(failure.failureCategory().value(),
@@ -469,10 +476,10 @@ void AssetRunTests::unreadableArchiveStopsRunBeforeMutation() {
     bool executed = false;
     bool finalized = false;
     std::vector<cao::run::RunFailure> failures;
-    const auto result =
-        AssetRun(archiveAndTexturePolicy())
+    cao::run::RunWorkRecord record;
+    AssetRun(archiveAndTexturePolicy())
             .execute(
-                std::array{root},
+                std::array{root}, record,
                 AssetRunAdapters{.reportDiscoveryFailure =
                                      [&](const cao::run::RunFailure& failure) {
                                          failures.push_back(failure);
@@ -494,15 +501,15 @@ void AssetRunTests::unreadableArchiveStopsRunBeforeMutation() {
                                          return cao::run::ArchiveFinalizationResult{};
                                      }});
     QCOMPARE(failures.size(), std::size_t{1});
-    QCOMPARE(result.failures().size(), failures.size());
+    QCOMPARE(record.failures.size(), failures.size());
     QCOMPARE(failures.front().code(), cao::run::RunFailureCode::ArchiveUnreadable);
-    QCOMPARE(result.diagnostics().back().code(), cao::run::RunDiagnosticCode::ObserverFailed);
-    QVERIFY(result.collisions().empty());
-    QVERIFY(result.ledger().routedAssets().empty());
+    QCOMPARE(record.diagnostics.back().code(), cao::run::RunDiagnosticCode::ObserverFailed);
+    QVERIFY(record.collisions.empty());
+    QVERIFY(!record.ledger.has_value());
     QVERIFY(!extracted);
     QVERIFY(!executed);
     QVERIFY(!finalized);
-    QVERIFY(!result.cancelled());
+    QVERIFY(!record.cancellationObserved);
     QCOMPARE(snapshotTree(root), before);
 }
 
@@ -522,10 +529,10 @@ void AssetRunTests::reportsCollisionsBeforeOrderedExtraction() {
     writeFile(root / "textures" / "shared.dds", "loose wins");
     bool reported = false;
     std::vector<std::filesystem::path> extractions;
-    const auto result =
-        AssetRun(archiveAndTexturePolicy())
+    cao::run::RunWorkRecord record;
+    AssetRun(archiveAndTexturePolicy())
             .execute(
-                std::array{root},
+                std::array{root}, record,
                 AssetRunAdapters{
                     .reportArchiveCollisions =
                         [&](const std::span<const cao::run::ArchiveCollision> collisions) {
@@ -545,14 +552,14 @@ void AssetRunTests::reportsCollisionsBeforeOrderedExtraction() {
                             return cao::run::ArchiveExtractionResult{};
                         }},
                 cao::run::ArchivePrecedence::explicitOrder({"z.bsa", "a.bsa"}));
-    QVERIFY(result.failures().empty());
+    QVERIFY(record.failures.empty());
     QVERIFY(reported);
     QCOMPARE(extractions, (std::vector{second, first}));
-    QCOMPARE(result.collisions().size(), std::size_t{1});
-    QCOMPARE(result.collisions().front().winningArchive(), second);
-    QCOMPARE(result.collisions().front().shadowedArchives().size(), std::size_t{1});
-    QCOMPARE(result.collisions().front().shadowedArchives().front(), first);
-    QCOMPARE(result.diagnostics().back().code(), cao::run::RunDiagnosticCode::ObserverFailed);
+    QCOMPARE(record.collisions.size(), std::size_t{1});
+    QCOMPARE(record.collisions.front().winningArchive(), second);
+    QCOMPARE(record.collisions.front().shadowedArchives().size(), std::size_t{1});
+    QCOMPARE(record.collisions.front().shadowedArchives().front(), first);
+    QCOMPARE(record.diagnostics.back().code(), cao::run::RunDiagnosticCode::ObserverFailed);
 }
 
 void AssetRunTests::filesystemTraversalPollsCancellation_data()
@@ -586,8 +593,9 @@ void AssetRunTests::filesystemTraversalPollsCancellation()
     bool executed = false;
     bool finalized = false;
     bool diagnosed = false;
-    const auto result = run.execute(
-        roots, AssetRunAdapters{.isCancelled = [&] { return armed && ++polls >= 4; },
+    cao::run::RunWorkRecord record;
+    run.execute(
+        roots, record, AssetRunAdapters{.isCancelled = [&] { return armed && ++polls >= 4; },
                                 .reportDiagnostics =
                                     [&](const cao::run::AssetRunDiagnostics&) { diagnosed = true; },
                                 .executeAssetWithResult =
@@ -607,8 +615,8 @@ void AssetRunTests::filesystemTraversalPollsCancellation()
                                         return cao::run::ArchiveFinalizationResult{};
                                     }});
 
-    QVERIFY(result.cancelled());
-    QVERIFY(result.ledger().routedAssets().empty());
+    QVERIFY(record.cancellationObserved);
+    QVERIFY(!record.ledger.has_value());
     QCOMPARE(extractions, scenario < 3 ? 0 : 1);
     QVERIFY(!executed);
     QVERIFY(!finalized);
@@ -632,8 +640,9 @@ void AssetRunTests::archiveExtractionPrecedesDefinitiveRoutedExecution()
     bool archiveExtracted = false;
     const AssetRun run(archiveAndTexturePolicy());
     const std::array roots{root};
-    const auto result = run.execute(
-        roots,
+    cao::run::RunWorkRecord record;
+    run.execute(
+        roots, record,
         AssetRunAdapters{
             .reportProgress = [&](const AssetRunProgress& update) { progress.push_back(update); },
             .executeAssetWithResult =
@@ -653,7 +662,7 @@ void AssetRunTests::archiveExtractionPrecedesDefinitiveRoutedExecution()
                     return cao::run::ArchiveExtractionResult{};
                 }});
 
-    QVERIFY(!result.cancelled());
+    QVERIFY(!record.cancellationObserved);
     QCOMPARE(executedPaths.size(), std::size_t{2});
     QCOMPARE(static_cast<std::size_t>(std::count(executedPaths.begin(), executedPaths.end(),
                                                  looseTexture)),
@@ -661,7 +670,7 @@ void AssetRunTests::archiveExtractionPrecedesDefinitiveRoutedExecution()
     QCOMPARE(static_cast<std::size_t>(std::count(executedPaths.begin(), executedPaths.end(),
                                                  extractedTexture)),
              std::size_t{1});
-    QCOMPARE(result.ledger().routedAssets().size(), std::size_t{2});
+    QCOMPARE(record.ledger.value().routedAssets().size(), std::size_t{2});
     QCOMPARE(progress.size(), std::size_t{3});
     QCOMPARE(progress[0].phase, cao::routing::RoutedAssetPhase::ArchiveExtraction);
     QCOMPARE(progress[0].completed, std::size_t{1});
@@ -697,8 +706,9 @@ void AssetRunTests::realExtractionPreservesLooseAssetPrecedence()
     const AssetRun run(archiveAndTexturePolicy());
     const std::array roots{root};
     cao::run::TemporaryArtifactRegistry artifacts;
-    const auto result = run.execute(
-        roots, AssetRunAdapters{.executeAssetWithResult =
+    cao::run::RunWorkRecord record;
+    run.execute(
+        roots, record, AssetRunAdapters{.executeAssetWithResult =
                                     [&](const cao::routing::RoutedAsset& asset) {
                                         executedPaths.push_back(asset.executionPath());
                                         return cao::execution::AssetExecutionResult::success();
@@ -709,9 +719,9 @@ void AssetRunTests::realExtractionPreservesLooseAssetPrecedence()
                                     }});
 
     QVERIFY(artifacts.performSafetyCleanup().empty());
-    QCOMPARE(result.archiveAttempts().size(), std::size_t{1});
-    QVERIFY(result.archiveAttempts().front().succeeded());
-    QCOMPARE(result.archiveAttempts().front().mutation, cao::execution::MutationState::Committed);
+    QCOMPARE(record.archiveAttempts.size(), std::size_t{1});
+    QVERIFY(record.archiveAttempts.front().succeeded());
+    QCOMPARE(record.archiveAttempts.front().mutation, cao::execution::MutationState::Committed);
     QCOMPARE(readFile(collision), QByteArray("loose collision"));
     QCOMPARE(readFile(archivedOnly), QByteArray("archived only"));
     QCOMPARE(static_cast<std::size_t>(std::count(executedPaths.begin(), executedPaths.end(),
@@ -720,7 +730,7 @@ void AssetRunTests::realExtractionPreservesLooseAssetPrecedence()
     QCOMPARE(static_cast<std::size_t>(std::count(executedPaths.begin(), executedPaths.end(),
                                                  archivedOnly)),
              std::size_t{1});
-    QCOMPARE(result.ledger().routedAssets().size(), std::size_t{2});
+    QCOMPARE(record.ledger.value().routedAssets().size(), std::size_t{2});
 }
 
 void AssetRunTests::executesOriginalLedgerAssetsInTargetOrder()
@@ -740,8 +750,9 @@ void AssetRunTests::executesOriginalLedgerAssetsInTargetOrder()
 
     std::vector<const cao::routing::RoutedAsset *> executedAssets;
     const AssetRun run(allLooseTargetsPolicy());
-    const auto result = run.execute(
-        paths, AssetRunAdapters{
+    cao::run::RunWorkRecord record;
+    run.execute(
+        paths, record, AssetRunAdapters{
                    .executeAssetWithResult =
                        [&](const cao::routing::RoutedAsset& asset) {
                            executedAssets.push_back(&asset);
@@ -757,7 +768,7 @@ void AssetRunTests::executesOriginalLedgerAssetsInTargetOrder()
     QCOMPARE(executedAssets.size(), expectedPaths.size());
     for (std::size_t index = 0; index < expectedPaths.size(); ++index) {
         QVERIFY(executedAssets[index]->executionPath() == expectedPaths[index]);
-        const auto ledgerAssets = result.ledger().routedAssets();
+        const auto ledgerAssets = record.ledger.value().routedAssets();
         const auto ledgerAsset = std::find_if(
             ledgerAssets.begin(), ledgerAssets.end(), [&](const cao::routing::RoutedAsset &asset) {
                 return asset.executionPath() == expectedPaths[index];
@@ -785,8 +796,9 @@ void AssetRunTests::progressAndSkipSummaryExcludeNonWork()
     std::size_t executionAttempts = 0;
     std::vector<AssetRunProgress> progress;
     const AssetRun run(selectiveLoosePolicy());
-    const auto result = run.execute(
-        paths,
+    cao::run::RunWorkRecord record;
+    run.execute(
+        paths, record,
         AssetRunAdapters{
             .reportProgress = [&](const AssetRunProgress& update) { progress.push_back(update); },
             .executeAssetWithResult =
@@ -800,16 +812,19 @@ void AssetRunTests::progressAndSkipSummaryExcludeNonWork()
                     return cao::run::ArchiveExtractionResult{};
                 }});
 
-    QCOMPARE(result.ledger().routedAssets().size(), std::size_t{2});
+    QCOMPARE(record.ledger.value().routedAssets().size(), std::size_t{2});
     QCOMPARE(executionAttempts, std::size_t{2});
     QCOMPARE(progress.size(), std::size_t{2});
     QCOMPARE(progress[0].completed, std::size_t{1});
     QCOMPARE(progress[0].total, std::size_t{2});
     QCOMPARE(progress[1].completed, std::size_t{2});
     QCOMPARE(progress[1].total, std::size_t{2});
-    QCOMPARE(result.skippedAssetCount(SkipReason::ExcludedAssetVariant), std::size_t{1});
-    QCOMPARE(result.skippedAssetCount(SkipReason::DisabledAssetKind), std::size_t{1});
-    QCOMPARE(result.skippedAssetCount(SkipReason::DisabledPhase), std::size_t{0});
+    QCOMPARE(cao::run::AssetRunDiagnostics(record).skippedAssetCount(SkipReason::ExcludedAssetVariant),
+             std::size_t{1});
+    QCOMPARE(cao::run::AssetRunDiagnostics(record).skippedAssetCount(SkipReason::DisabledAssetKind),
+             std::size_t{1});
+    QCOMPARE(cao::run::AssetRunDiagnostics(record).skippedAssetCount(SkipReason::DisabledPhase),
+             std::size_t{0});
 }
 
 void AssetRunTests::applyFinalizesArchivesAfterRoutedExecution()
@@ -824,8 +839,9 @@ void AssetRunTests::applyFinalizesArchivesAfterRoutedExecution()
     std::vector<QByteArray> events;
     const AssetRun run(archiveAndTexturePolicy());
     const std::array roots{texture};
-    static_cast<void>(run.execute(
-        roots, AssetRunAdapters{
+    cao::run::RunWorkRecord record;
+    run.execute(
+        roots, record, AssetRunAdapters{
                    .reportDiagnostics =
                        [&](const cao::run::AssetRunDiagnostics&) {
                            events.push_back(QByteArrayLiteral("report"));
@@ -844,7 +860,7 @@ void AssetRunTests::applyFinalizesArchivesAfterRoutedExecution()
                        [&] {
                            events.push_back(QByteArrayLiteral("finalize"));
                            return cao::run::ArchiveFinalizationResult{};
-                       }}));
+                       }});
 
     const std::vector<QByteArray> expectedEvents{QByteArrayLiteral("execute"),
                                                  QByteArrayLiteral("report"),
@@ -873,8 +889,9 @@ void AssetRunTests::linkedAssetsAreReportedBeforeFinalizationWithoutExecution()
     bool finalizedAfterReport = false;
     const AssetRun run(archiveAndTexturePolicy());
     const std::array roots{root};
-    const auto result = run.execute(
-        roots,
+    cao::run::RunWorkRecord record;
+    run.execute(
+        roots, record,
         AssetRunAdapters{
             .reportDiagnostics =
                 [&](const cao::run::AssetRunDiagnostics& diagnostics) {
@@ -899,15 +916,15 @@ void AssetRunTests::linkedAssetsAreReportedBeforeFinalizationWithoutExecution()
 
     // Remove the link itself before QTemporaryDir cleanup, which does not handle Windows links.
     QVERIFY(std::filesystem::remove(link));
-    QVERIFY(!result.cancelled());
+    QVERIFY(!record.cancellationObserved);
     QCOMPARE(executedPaths, std::vector<std::filesystem::path>{texture});
-    QCOMPARE(result.ledger().routedAssets().size(), std::size_t{1});
+    QCOMPARE(record.ledger.value().routedAssets().size(), std::size_t{1});
     QVERIFY(finalizedAfterReport);
     QCOMPARE(reportedDiagnostics.size(), std::size_t{1});
-    QCOMPARE(result.diagnostics().size(), reportedDiagnostics.size());
+    QCOMPARE(record.diagnostics.size(), reportedDiagnostics.size());
     for (std::size_t index = 0; index < reportedDiagnostics.size(); ++index) {
         const auto &reported = reportedDiagnostics[index];
-        const auto &retained = result.diagnostics()[index];
+        const auto &retained = record.diagnostics[index];
         QCOMPARE(reported.code(), cao::run::RunDiagnosticCode::LinkedEntryExcluded);
         QCOMPARE(reported.phase(), cao::run::RunPhase::DiscoveringArchives);
         QVERIFY(reported.path() == link);
@@ -931,8 +948,9 @@ void AssetRunTests::cancelledArchiveFinalizationIsReported()
     bool resultReportedBeforeFinalization = false;
     const AssetRun run(archiveAndTexturePolicy());
     const std::array roots{texture};
-    const auto result = run.execute(
-        roots,
+    cao::run::RunWorkRecord record;
+    run.execute(
+        roots, record,
         AssetRunAdapters{
             .reportDiagnostics =
                 [&](const cao::run::AssetRunDiagnostics&) {
@@ -951,10 +969,10 @@ void AssetRunTests::cancelledArchiveFinalizationIsReported()
                 [] { return cao::run::ArchiveFinalizationResult{.cancelled = true}; }});
 
     QVERIFY(resultReportedBeforeFinalization);
-    QVERIFY(result.cancelled());
-    QVERIFY(result.finalizationResult().has_value());
-    QVERIFY(result.finalizationResult()->cancelled);
-    QVERIFY(!result.finalizationResult()->failure);
+    QVERIFY(record.cancellationObserved);
+    QVERIFY(!record.finalizations.empty());
+    QVERIFY(record.finalizations.front().cancelled);
+    QVERIFY(!record.finalizations.front().failure);
 }
 
 void AssetRunTests::dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPathsSilent()
@@ -981,8 +999,9 @@ void AssetRunTests::dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPath
     std::vector<std::filesystem::path> executedPaths;
     const AssetRun run(dryRunArchivePolicy());
     const std::array roots{directoryRoot, explicitUnsupported};
-    const auto result = run.execute(
-        roots, AssetRunAdapters{.executeAssetWithResult =
+    cao::run::RunWorkRecord record;
+    run.execute(
+        roots, record, AssetRunAdapters{.executeAssetWithResult =
                                     [&](const cao::routing::RoutedAsset& asset) {
                                         executedPaths.push_back(asset.executionPath());
                                         return cao::execution::AssetExecutionResult::success();
@@ -995,8 +1014,9 @@ void AssetRunTests::dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPath
 
     QVERIFY(!extractionAttempted);
     QCOMPARE(executedPaths, std::vector<std::filesystem::path>{texture});
-    QCOMPARE(result.skippedAssetCount(SkipReason::DisabledPhase), std::size_t{2});
-    const auto unsupported = result.unsupportedExplicitPaths();
+    QCOMPARE(cao::run::AssetRunDiagnostics(record).skippedAssetCount(SkipReason::DisabledPhase),
+             std::size_t{2});
+    const auto& unsupported = record.unsupportedExplicitPaths;
     QCOMPARE(unsupported.size(), std::size_t{1});
     QVERIFY(unsupported.front() == explicitUnsupported);
     QVERIFY(std::find(unsupported.begin(), unsupported.end(), unsupportedDirectoryEntry)
@@ -1039,8 +1059,9 @@ void AssetRunTests::dryRunLeavesCompleteModTreeUnchangedWhileEvaluatingLooseAsse
     bool finalizationAttempted = false;
     const AssetRun run(dryRunLifecyclePolicy());
     const std::array roots{root};
-    const auto result = run.execute(
-        roots,
+    cao::run::RunWorkRecord record;
+    run.execute(
+        roots, record,
         AssetRunAdapters{
             .reportProgress = [&](const AssetRunProgress& update) { progress.push_back(update); },
             .executeAssetWithResult =
@@ -1081,9 +1102,11 @@ void AssetRunTests::dryRunLeavesCompleteModTreeUnchangedWhileEvaluatingLooseAsse
     QVERIFY(executed[1].optimization);
     QVERIFY(!executed[1].conversion);
     QVERIFY(executed[1].meshReferenceMaintenance);
-    QCOMPARE(result.ledger().routedAssets().size(), std::size_t{2});
-    QCOMPARE(result.skippedAssetCount(SkipReason::DisabledPhase), std::size_t{2});
-    QCOMPARE(result.skippedAssetCount(SkipReason::DisabledAssetKind), std::size_t{1});
+    QCOMPARE(record.ledger.value().routedAssets().size(), std::size_t{2});
+    QCOMPARE(cao::run::AssetRunDiagnostics(record).skippedAssetCount(SkipReason::DisabledPhase),
+             std::size_t{2});
+    QCOMPARE(cao::run::AssetRunDiagnostics(record).skippedAssetCount(SkipReason::DisabledAssetKind),
+             std::size_t{1});
     QCOMPARE(progress.size(), std::size_t{2});
     QCOMPARE(progress[0].completed, std::size_t{1});
     QCOMPARE(progress[0].total, std::size_t{2});
@@ -1105,8 +1128,9 @@ void AssetRunTests::cancellationStopsBetweenRoutedAssets()
     std::size_t attempts = 0;
     std::vector<AssetRunProgress> progress;
     const AssetRun run(allLooseTargetsPolicy());
-    const auto result = run.execute(
-        paths,
+    cao::run::RunWorkRecord record;
+    run.execute(
+        paths, record,
         AssetRunAdapters{
             .reportProgress = [&](const AssetRunProgress& update) { progress.push_back(update); },
             .isCancelled = [&] { return attempts == 1; },
@@ -1121,8 +1145,8 @@ void AssetRunTests::cancellationStopsBetweenRoutedAssets()
                     return cao::run::ArchiveExtractionResult{};
                 }});
 
-    QVERIFY(result.cancelled());
-    QCOMPARE(result.ledger().routedAssets().size(), std::size_t{2});
+    QVERIFY(record.cancellationObserved);
+    QCOMPARE(record.ledger.value().routedAssets().size(), std::size_t{2});
     QCOMPARE(attempts, std::size_t{1});
     QCOMPARE(progress.size(), std::size_t{1});
     QCOMPARE(progress.front().completed, std::size_t{1});
@@ -1148,8 +1172,9 @@ void AssetRunTests::archiveCancellationSkipsDefinitiveDiscovery()
     std::size_t extractionAttempts = 0;
     const AssetRun run(archiveAndTexturePolicy());
     const std::array roots{root};
-    const auto result = run.execute(
-        roots,
+    cao::run::RunWorkRecord record;
+    run.execute(
+        roots, record,
         AssetRunAdapters{.isCancelled = [&] { return extractionAttempts == 1; },
                          .executeAssetWithResult =
                              [](const cao::routing::RoutedAsset&) {
@@ -1162,9 +1187,9 @@ void AssetRunTests::archiveCancellationSkipsDefinitiveDiscovery()
                                  return cao::run::ArchiveExtractionResult{};
                              }});
 
-    QVERIFY(result.cancelled());
+    QVERIFY(record.cancellationObserved);
     QCOMPARE(extractionAttempts, std::size_t{1});
-    QVERIFY(result.ledger().routedAssets().empty());
+    QVERIFY(!record.ledger.has_value());
 }
 
 void AssetRunTests::finalArchiveCancellationSkipsDefinitiveDiscovery()
@@ -1184,8 +1209,9 @@ void AssetRunTests::finalArchiveCancellationSkipsDefinitiveDiscovery()
     std::size_t extractionAttempts = 0;
     const AssetRun run(archiveAndTexturePolicy());
     const std::array roots{root};
-    const auto result = run.execute(
-        roots, AssetRunAdapters{
+    cao::run::RunWorkRecord record;
+    run.execute(
+        roots, record, AssetRunAdapters{
                    .isCancelled = [&] { return extractionAttempts == 1; },
                    .executeAssetWithResult =
                        [](const cao::routing::RoutedAsset&) {
@@ -1198,9 +1224,9 @@ void AssetRunTests::finalArchiveCancellationSkipsDefinitiveDiscovery()
                            return cao::run::ArchiveExtractionResult{};
                        }});
 
-    QVERIFY(result.cancelled());
+    QVERIFY(record.cancellationObserved);
     QCOMPARE(extractionAttempts, std::size_t{1});
-    QVERIFY(result.ledger().routedAssets().empty());
+    QVERIFY(!record.ledger.has_value());
 }
 
 void AssetRunTests::cancellationDuringFinalAssetSkipsFinalization()
@@ -1218,8 +1244,9 @@ void AssetRunTests::cancellationDuringFinalAssetSkipsFinalization()
     bool finalized = false;
     bool reportedDiagnostics = false;
     const AssetRun run(allLooseTargetsPolicy());
-    const auto result = run.execute(
-        paths,
+    cao::run::RunWorkRecord record;
+    run.execute(
+        paths, record,
         AssetRunAdapters{
             // Cancellation only becomes observable once the last attempt has completed, which is
             // the case no loop head can catch.
@@ -1242,7 +1269,7 @@ void AssetRunTests::cancellationDuringFinalAssetSkipsFinalization()
                     return cao::run::ArchiveFinalizationResult{};
                 }});
 
-    QVERIFY(result.cancelled());
+    QVERIFY(record.cancellationObserved);
     QCOMPARE(attempts, paths.size());
     QVERIFY(!finalized);
     QVERIFY(!reportedDiagnostics);
@@ -1264,8 +1291,9 @@ void AssetRunTests::nestedArchivesAreReportedWithoutInflatingTheWorkTotal()
     std::size_t looseWorkTotal = 0;
     const AssetRun run(archiveAndTexturePolicy());
     const std::array roots{root};
-    const auto result = run.execute(
-        roots, AssetRunAdapters{.reportProgress =
+    cao::run::RunWorkRecord record;
+    run.execute(
+        roots, record, AssetRunAdapters{.reportProgress =
                                     [&](const AssetRunProgress& update) {
                                         if (update.phase ==
                                             cao::routing::RoutedAssetPhase::LooseAssetProcessing)
@@ -1290,7 +1318,7 @@ void AssetRunTests::nestedArchivesAreReportedWithoutInflatingTheWorkTotal()
                                         return cao::run::ArchiveExtractionResult{};
                                     }});
 
-    QVERIFY(!result.cancelled());
+    QVERIFY(!record.cancellationObserved);
     // Routing it would have promised a Routed Asset that no post-extraction target executes, so
     // progress would have reported a total the run could never complete.
     QCOMPARE(executedPaths, std::vector<std::filesystem::path>{extractedTexture});
@@ -1298,7 +1326,7 @@ void AssetRunTests::nestedArchivesAreReportedWithoutInflatingTheWorkTotal()
     // Silence would leave the author believing the nested Archive's contents were processed, when
     // the game will not read them either.
     QCOMPARE(reportedNestedArchives, std::size_t{1});
-    QCOMPARE(result.nestedArchiveCount(), std::size_t{1});
+    QCOMPARE(record.nestedArchiveCount, std::size_t{1});
 }
 
 void AssetRunTests::completeAttemptEvidenceSurvivesAdapters() {
@@ -1320,18 +1348,20 @@ void AssetRunTests::completeAttemptEvidenceSurvivesAdapters() {
             cao::execution::MutationState::Committed, {}, true, "", root});
         return finalization;
     };
-    const auto result = AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, adapters);
+    cao::run::RunWorkRecord record;
+    AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, record, adapters);
     adapters = {};
-    QCOMPARE(result.assetAttempts().size(), std::size_t{2});
-    QCOMPARE(result.assetAttempts()[0].modRoot, std::filesystem::canonical(root));
-    QVERIFY(result.assetAttempts()[0].result.succeeded());
-    QCOMPARE(result.assetAttempts()[0].result.mutationState(), cao::execution::MutationState::Committed);
-    QCOMPARE(result.assetAttempts()[0].asset.executionPath(), root / "a.dds");
-    QVERIFY(!result.assetAttempts()[1].result.succeeded());
-    QCOMPARE(result.executionFailures().size(), std::size_t{1});
-    QVERIFY(result.finalizationResult().has_value());
-    QCOMPARE(result.finalizationResult()->attempts.front().modRoot, root);
-    const auto record = result.workRecord();
+    QCOMPARE(record.assetAttempts.size(), std::size_t{2});
+    QCOMPARE(record.assetAttempts[0].modRoot, std::filesystem::canonical(root));
+    QVERIFY(record.assetAttempts[0].result.succeeded());
+    QCOMPARE(record.assetAttempts[0].result.mutationState(), cao::execution::MutationState::Committed);
+    QCOMPARE(record.assetAttempts[0].asset.executionPath(), root / "a.dds");
+    QVERIFY(!record.assetAttempts[1].result.succeeded());
+    QCOMPARE(std::ranges::count_if(record.assetAttempts, [](const auto& attempt) {
+        return !attempt.result.succeeded();
+    }), 1);
+    QVERIFY(!record.finalizations.empty());
+    QCOMPARE(record.finalizations.front().attempts.front().modRoot, root);
     QVERIFY(record.ledger.has_value());
     QCOMPARE(record.assetAttempts.size(), std::size_t{2});
     QCOMPARE(record.finalizations.size(), std::size_t{1});
@@ -1350,12 +1380,13 @@ void AssetRunTests::throwingAttemptRetainsCancellation() {
         cancelled = true;
         throw std::runtime_error("adapter failed");
     };
-    const auto result = AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, adapters);
-    QVERIFY(result.cancelled());
-    QCOMPARE(result.assetAttempts().size(), std::size_t{1});
-    QCOMPARE(result.assetAttempts()[0].result.mutationState(), cao::execution::MutationState::PartialOrUnknown);
-    QVERIFY(!result.assetAttempts()[0].result.safeToContinue());
-    QCOMPARE(result.assetAttempts()[0].result.message(), std::string("adapter failed"));
+    cao::run::RunWorkRecord record;
+    AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, record, adapters);
+    QVERIFY(record.cancellationObserved);
+    QCOMPARE(record.assetAttempts.size(), std::size_t{1});
+    QCOMPARE(record.assetAttempts[0].result.mutationState(), cao::execution::MutationState::PartialOrUnknown);
+    QVERIFY(!record.assetAttempts[0].result.safeToContinue());
+    QCOMPARE(record.assetAttempts[0].result.message(), std::string("adapter failed"));
 }
 
 void AssetRunTests::throwingFinalizerRetainsFailure() {
@@ -1366,13 +1397,14 @@ void AssetRunTests::throwingFinalizerRetainsFailure() {
     adapters.finalizeArchiveLifecycleWithResult = []() -> cao::run::ArchiveFinalizationResult {
         throw std::runtime_error("finalizer failed");
     };
-    const auto result = AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, adapters);
-    QVERIFY(!result.cancelled());
-    QVERIFY(result.finalizationResult().has_value());
-    QCOMPARE(result.finalizationResult()->failure,
+    cao::run::RunWorkRecord record;
+    AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, record, adapters);
+    QVERIFY(!record.cancellationObserved);
+    QVERIFY(!record.finalizations.empty());
+    QCOMPARE(record.finalizations.front().failure,
              std::optional{cao::run::ArchiveFinalizationFailure::UnexpectedException});
-    QVERIFY(!result.finalizationResult()->safeToContinue);
-    QCOMPARE(result.finalizationResult()->detail, std::string("finalizer failed"));
+    QVERIFY(!record.finalizations.front().safeToContinue);
+    QCOMPARE(record.finalizations.front().detail, std::string("finalizer failed"));
 }
 
 void AssetRunTests::throwingObserversPreserveCommittedWork() {
@@ -1391,7 +1423,8 @@ void AssetRunTests::throwingObserversPreserveCommittedWork() {
         finalized = true;
         return cao::run::ArchiveFinalizationResult{};
     };
-    const auto record = AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, adapters).workRecord();
+    cao::run::RunWorkRecord record;
+    AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, record, adapters);
     QCOMPARE(record.assetAttempts.size(), std::size_t{1});
     QCOMPARE(record.assetAttempts.front().result.mutationState(), cao::execution::MutationState::Committed);
     QCOMPARE(record.diagnostics.size(), std::size_t{2});
@@ -1413,7 +1446,8 @@ void AssetRunTests::relativeSelectionRetainsMutationScope() {
         return cao::execution::AssetExecutionResult::success(cao::execution::MutationState::Committed);
     };
     const auto relative = std::filesystem::relative(root, std::filesystem::current_path());
-    const auto record = AssetRun(archiveAndTexturePolicy()).execute(std::array{relative}, adapters).workRecord();
+    cao::run::RunWorkRecord record;
+    AssetRun(archiveAndTexturePolicy()).execute(std::array{relative}, record, adapters);
     QCOMPARE(record.assetAttempts.size(), std::size_t{1});
     QCOMPARE(record.assetAttempts.front().modRoot, root);
     QVERIFY(!std::filesystem::exists(root / "a.dds"));
@@ -1439,7 +1473,8 @@ void AssetRunTests::throwingDiagnosticsCancellationSkipsFinalization() {
         finalized = true;
         return cao::run::ArchiveFinalizationResult{};
     };
-    const auto record = AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, adapters).workRecord();
+    cao::run::RunWorkRecord record;
+    AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, record, adapters);
     QVERIFY(record.cancellationObserved);
     QVERIFY(!finalized);
     QVERIFY(record.finalizations.empty());
@@ -1470,7 +1505,8 @@ void AssetRunTests::lifecyclePhasesPrecedeAttempts() {
             throw std::runtime_error("Finalization preceded its phase observation");
         return cao::run::ArchiveFinalizationResult{};
     };
-    const auto record = AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, adapters).workRecord();
+    cao::run::RunWorkRecord record;
+    AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, record, adapters);
     QVERIFY(record.failures.empty());
     QCOMPARE(record.assetAttempts.size(), std::size_t{1});
     QVERIFY(record.assetAttempts.front().result.succeeded());
@@ -1489,7 +1525,8 @@ void AssetRunTests::emptyDryRunReportsOrderedPhases() {
     std::vector<cao::run::RunPhaseRecord> phases;
     AssetRunAdapters adapters;
     adapters.reportPhase = [&](const auto& record) { phases.push_back(record); };
-    const auto result = AssetRun(dryRunArchivePolicy()).execute(std::array{root}, adapters);
+    cao::run::RunWorkRecord record;
+    AssetRun(dryRunArchivePolicy()).execute(std::array{root}, record, adapters);
     QCOMPARE(phases.size(), std::size_t{5});
     QCOMPARE(phases[1].status(), cao::run::RunPhaseStatus::Skipped);
     QCOMPARE(*phases[1].skipReason(), cao::run::PhaseSkipReason::DryRun);
@@ -1497,7 +1534,7 @@ void AssetRunTests::emptyDryRunReportsOrderedPhases() {
     QCOMPARE(phases[3].progress()->total(), std::size_t{0});
     QCOMPARE(phases.back().status(), cao::run::RunPhaseStatus::Skipped);
     QCOMPARE(*phases.back().skipReason(), cao::run::PhaseSkipReason::DryRun);
-    QVERIFY(result.workRecord().assetAttempts.empty());
+    QVERIFY(record.assetAttempts.empty());
 }
 
 QTEST_MAIN(AssetRunTests)

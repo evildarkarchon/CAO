@@ -18,6 +18,11 @@ class RunObservationSink {
 
     /// Records an informational observation before execution continues; it cannot change outcome.
     virtual void recordDiagnostic(const RunDiagnostic& diagnostic) = 0;
+
+    /// Publishes evidence already owned by the work record; standalone sinks receive it normally.
+    virtual void publishRetainedDiagnostic(const RunDiagnostic& diagnostic) {
+        recordDiagnostic(diagnostic);
+    }
 };
 
 class TemporaryArtifactRegistry;

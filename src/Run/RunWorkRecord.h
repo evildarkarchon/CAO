@@ -13,6 +13,8 @@ struct RunWorkRecord final {
     std::vector<ArchiveFinalizationResult> finalizations;
     /// Discovery exclusions not represented in the definitive Loose Asset ledger.
     std::map<routing::SkipReason, std::size_t> skippedArchiveCounts;
+    std::vector<std::filesystem::path> unsupportedExplicitPaths;
+    std::size_t nestedArchiveCount{};
     std::vector<ArchiveCollision> collisions;
     std::vector<RunDiagnostic> diagnostics;
     std::vector<RunFailure> failures;
