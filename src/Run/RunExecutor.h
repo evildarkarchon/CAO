@@ -23,6 +23,11 @@ class RunObservationSink {
     virtual void publishRetainedDiagnostic(const RunDiagnostic& diagnostic) {
         recordDiagnostic(diagnostic);
     }
+
+    /// Publishes a failure already owned by work without requiring the executor to retain it again.
+    virtual void publishRetainedFailure(const RunFailure& failure) {
+        recordFailure(failure);
+    }
 };
 
 class TemporaryArtifactRegistry;

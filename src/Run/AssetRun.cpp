@@ -3,30 +3,13 @@
 #include "ArchiveFirstAssetDiscovery.h"
 #include "RunExecutor.h"
 #include "RunWorkRecord.h"
+#include "WorkObservationRecorder.h"
 
 #include <array>
 #include <stdexcept>
 #include <utility>
 
 namespace cao::run {
-namespace {
-/// Isolates synchronous presentation failures while retaining diagnostic evidence in the run.
-template <typename Callback>
-void reportSafely(RunWorkRecord& record, RunPhase phase,
-                  Callback&& callback) {
-    try {
-        callback();
-    } catch (const std::exception& error) {
-        // Presentation cannot suppress a completed attempt or abandon pending finalization.
-        record.diagnostics.emplace_back(RunDiagnosticCode::ObserverFailed, phase, error.what());
-    } catch (...) {
-        // Unknown observer exceptions have the same informational status as standard exceptions.
-        record.diagnostics.emplace_back(RunDiagnosticCode::ObserverFailed, phase,
-                                        "The observer threw a non-standard exception");
-    }
-}
-}  // namespace
-
 void executeAssetRun(const RunPreparation& preparation, RunWorkRecord& record,
                      RunObservationSink& observations, std::stop_token stop,
                      const AssetRunAdapters& operations) {
@@ -81,22 +64,10 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
     bool unsafeArchive = false;
     std::vector<ArchiveExtractionPlan> extractionPlans;
     std::size_t archiveSucceeded = 0;
-    std::size_t publishedDiagnostics = record.diagnostics.size();
-    const auto publishDiagnostics = [&] {
-        if (!observations) return;
-        // Copy each borrowed diagnostic before presentation can append ObserverFailed evidence.
-        // A throwing observer is attempted only once per flush, so publication cannot recurse.
-        const auto end = record.diagnostics.size();
-        while (publishedDiagnostics < end) {
-            const auto diagnostic = record.diagnostics[publishedDiagnostics++];
-            reportSafely(record, diagnostic.phase(), [&] {
-                observations->publishRetainedDiagnostic(diagnostic);
-            });
-        }
-        publishedDiagnostics = record.diagnostics.size();
-    };
+    WorkObservationRecorder recorder(record, observations);
+    const auto publishDiagnostics = [&] { recorder.publishDiagnostics(); };
     const auto reportPhase = [&](const RunPhaseRecord& phase) {
-        reportSafely(record, phase.phase(), [&] {
+        recorder.reportSafely(phase.phase(), [&] {
             if (observations) observations->recordPhase(phase);
             if (adapters.reportPhase) adapters.reportPhase(phase);
         });
@@ -139,7 +110,7 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
                     RunProgress::determinate(archives.size(), archiveSucceeded,
                                              completed - archiveSucceeded)));
                 if (adapters.reportProgress) {
-                    reportSafely(record, RunPhase::ExtractingArchives, [&] {
+                    recorder.reportSafely(RunPhase::ExtractingArchives, [&] {
                         adapters.reportProgress(AssetRunProgress{
                             routing::RoutedAssetPhase::ArchiveExtraction, completed, archives.size()});
                     });
@@ -163,7 +134,7 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
             // Retain preflight evidence before presentation or later discovery can unwind.
             record.collisions.assign(collisions.begin(), collisions.end());
             if (adapters.reportArchiveCollisions)
-                reportSafely(record, RunPhase::DiscoveringArchives, [&] {
+                recorder.reportSafely(RunPhase::DiscoveringArchives, [&] {
                     adapters.reportArchiveCollisions(collisions);
                 });
         },
@@ -179,6 +150,9 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
                 phase == RunPhase::ExtractingArchives
                     ? std::optional{RunProgress::determinate(extractionPlans.size())}
                     : std::nullopt));
+        }, [&](const RunDiagnostic& diagnostic) {
+            // Retain discovery evidence before later traversal can throw; publish after Assets.
+            recorder.retainDiagnostic(diagnostic);
         });
     const routing::AssetRouter router(_policy);
     std::map<routing::SkipReason, std::size_t> skippedArchiveCounts;
@@ -193,14 +167,7 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
                                            discoveryResult.unsupportedExplicitPaths().end());
     record.nestedArchiveCount = discoveryResult.nestedArchiveCount();
     record.cancellationObserved = unsafeArchive ? cancelled : discoveryResult.cancelled();
-    record.diagnostics.insert(record.diagnostics.end(), discoveryResult.diagnostics().begin(),
-                               discoveryResult.diagnostics().end());
-    for (const auto& failure : discoveryResult.failures()) {
-        reportSafely(record, failure.phase(), [&] {
-            if (observations) observations->recordFailure(failure);
-            else record.failures.push_back(failure);
-        });
-    }
+    for (const auto& failure : discoveryResult.failures()) recorder.recordFailure(failure);
     // Interrupted discovery can expose a partial tree but cannot promise a definitive ledger.
     if (!unsafeArchive && !discoveryResult.cancelled() && discoveryResult.failures().empty())
         record.ledger = router.route(discoveryResult.effectiveAssetTree().paths());
@@ -215,7 +182,7 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
         // A failed preflight has no trustworthy tree and must never reach mutation or finalization.
         if (adapters.reportDiscoveryFailure)
             for (const auto& failure : discoveryResult.failures())
-                reportSafely(record, failure.phase(), [&] {
+                recorder.reportSafely(failure.phase(), [&] {
                     adapters.reportDiscoveryFailure(failure);
                 });
         publishDiagnostics();
@@ -278,7 +245,7 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
             reportPhase(RunPhaseRecord::executed(RunPhase::ProcessingAssets,
                 RunProgress::determinate(total, assetSucceeded, completed - assetSucceeded)));
             if (adapters.reportProgress) {
-                reportSafely(record, RunPhase::ProcessingAssets, [&] {
+                recorder.reportSafely(RunPhase::ProcessingAssets, [&] {
                     adapters.reportProgress(AssetRunProgress{
                         routing::RoutedAssetPhase::LooseAssetProcessing, completed, total});
                 });
@@ -303,7 +270,7 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
     publishDiagnostics();
     if (adapters.reportDiagnostics) {
         const AssetRunDiagnostics diagnostics(record);
-        reportSafely(record, RunPhase::ProcessingAssets, [&] {
+        recorder.reportSafely(RunPhase::ProcessingAssets, [&] {
             adapters.reportDiagnostics(diagnostics);
         });
     }

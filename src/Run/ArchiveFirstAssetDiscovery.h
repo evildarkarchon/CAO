@@ -122,6 +122,9 @@ class ArchiveFirstAssetDiscovery final {
     /// before extraction; callers retaining plans must copy them before the callback returns.
     /// reportPhase observes extraction and effective-tree boundaries, including empty phases;
     /// callers must isolate observer exceptions before forwarding presentation callbacks.
+    /// retainDiagnostic synchronously borrows each new exclusion so callers can retain evidence
+    /// even if later discovery throws. The diagnostic remains owned by the result on normal return;
+    /// callers must copy it before the callback returns, and callback exceptions propagate.
     [[nodiscard]] ArchiveFirstAssetDiscoveryResult discover(
         std::span<const std::filesystem::path> roots,
         const ArchiveExtractionOperation& extractArchive,
@@ -129,7 +132,8 @@ class ArchiveFirstAssetDiscovery final {
         const ArchivePrecedence& precedence = ArchivePrecedence::deterministicDiscovery(),
         const std::function<void(std::span<const ArchiveCollision>)>& reportCollisions = {},
         const std::function<void(std::span<const ArchiveExtractionPlan>)>& reportExtractionPlan = {},
-        const std::function<void(RunPhase)>& reportPhase = {}) const;
+        const std::function<void(RunPhase)>& reportPhase = {},
+        const std::function<void(const RunDiagnostic&)>& retainDiagnostic = {}) const;
 
    private:
     routing::RoutingPolicy _policy;

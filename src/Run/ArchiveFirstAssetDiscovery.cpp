@@ -301,7 +301,8 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     const AssetDiscoveryCancellationPredicate& isCancelled, const ArchivePrecedence& precedence,
     const std::function<void(std::span<const ArchiveCollision>)>& reportCollisions,
     const std::function<void(std::span<const ArchiveExtractionPlan>)>& reportExtractionPlan,
-    const std::function<void(RunPhase)>& reportPhase) const {
+    const std::function<void(RunPhase)>& reportPhase,
+    const std::function<void(const RunDiagnostic&)>& retainDiagnostic) const {
     routing::AssetRouter router(_policy);
     // Routing is filename-only, so recognizing an Archive is cheap enough to repeat during the
     // definitive traversal. That traversal cannot ask the Archive pass instead: extraction can
@@ -342,9 +343,11 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     const auto excludeLinkedEntry = [&](const std::filesystem::path& path, const char* detail) {
         // Both discovery passes see unchanged links. Retain their first observation so one skipped
         // entry yields one actionable diagnostic rather than reporting the same exclusion twice.
-        if (diagnosedPaths.insert(path.lexically_normal()).second)
+        if (diagnosedPaths.insert(path.lexically_normal()).second) {
             diagnostics.emplace_back(RunDiagnosticCode::LinkedEntryExcluded, discoveryPhase,
                                      detail, path);
+            if (retainDiagnostic) retainDiagnostic(diagnostics.back());
+        }
     };
     // A partial scan is not a definitive tree and must never become executable work.
     const auto cancelledResult = [&] {

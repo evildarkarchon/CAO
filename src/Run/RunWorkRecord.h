@@ -18,6 +18,8 @@ struct RunWorkRecord final {
     std::vector<ArchiveCollision> collisions;
     std::vector<RunDiagnostic> diagnostics;
     std::vector<RunFailure> failures;
+    /// Internal publication position shared by Preparing and work; advance before calling observers.
+    std::size_t publishedDiagnostics{};
     bool cancellationObserved{};
 };
 }  // namespace cao::run

@@ -155,8 +155,16 @@ private slots:
  void preparingDiagnosticsSurviveWork();
  /// Owns complete Archive collision evidence after preparation and adapter lifetimes end.
  void productionWorkRetainsArchiveCollisions();
+ /// Covers diagnostic cancellation and exceptions during Preparing and work publication.
+ void discoveryDiagnosticCancellationFollowsAssetAttempt_data();
  /// Publishes discovery diagnostics after Asset processing and observes cancellation before packing.
  void discoveryDiagnosticCancellationFollowsAssetAttempt();
+ /// Covers progress exceptions with and without concurrent observer cancellation.
+ void throwingWorkObserversRetainEvidence_data();
+ /// Keeps one failed Asset attempt when downstream progress throws.
+ void throwingWorkObserversRetainEvidence();
+ /// Retains and publishes a fatal preflight failure once when its observer throws.
+ void throwingPreflightFailureObserverRetainsEvidence();
  /// Retains mixed Asset and aggregate finalization evidence after every borrowed dependency dies.
  void mixedWorkEvidenceOutlivesServices();
  /// Covers cancellation at the last protected attempt and concurrent unsafe mutation.
@@ -169,6 +177,8 @@ private slots:
  void committedExtractionSurvivesDiscoveryInterruption_data();
  /// A completed extraction remains exactly one durable attempt across later discovery boundaries.
  void committedExtractionSurvivesDiscoveryInterruption();
+ /// Keeps discovered exclusions when discovery unwinds after a committed extraction.
+ void discoveryDiagnosticsSurviveInterruption();
  /// Work configuration loading fails Preparing before stale artifacts are recovered.
  void workPreparationFailurePreservesStaleArtifacts();
  /// Exercises shared work composition after stale recovery on completion and orchestration failure.
@@ -265,7 +275,19 @@ private slots:
  void failedAttemptsAdvanceCompletedProgress();
 };
 
+void RunExecutorTests::discoveryDiagnosticCancellationFollowsAssetAttempt_data() {
+    QTest::addColumn<bool>("throwPreparing");
+    QTest::addColumn<bool>("throwWork");
+    QTest::addColumn<bool>("cancelWork");
+    QTest::newRow("cancel-diagnostic") << false << false << true;
+    QTest::newRow("throw-diagnostics") << true << true << false;
+    QTest::newRow("cancel-then-throw-diagnostic") << true << true << true;
+}
+
 void RunExecutorTests::discoveryDiagnosticCancellationFollowsAssetAttempt() {
+    QFETCH(bool, throwPreparing);
+    QFETCH(bool, throwWork);
+    QFETCH(bool, cancelWork);
     class Configuration final : public cao::run::RunConfigurationProvider {
        public:
         /// Supplies a Preparing exclusion to verify it survives later discovery publication.
@@ -280,18 +302,33 @@ void RunExecutorTests::discoveryDiagnosticCancellationFollowsAssetAttempt() {
         bool assetCompleted{};
         bool assetCompletedBeforeDiagnostic{};
         std::size_t linkedDiagnostics{};
-        /// Phase reports are irrelevant to this diagnostic-order boundary.
-        void recordPhase(const RunPhaseRecord&) override {}
+        bool throwPreparing{};
+        bool throwWork{};
+        bool cancelWork{};
+        QStringList order;
+        /// Marks mandatory cleanup after all work observations have been delivered.
+        void recordPhase(const RunPhaseRecord& phase) override {
+            if (phase.phase() == RunPhase::SafetyCleanup) order << "cleanup";
+        }
         /// This fixture expects no run-level failures.
         void recordFailure(const cao::run::RunFailure&) override {}
-        /// Cancels only on the discovered link, after recording whether the Asset already finished.
+        /// Exercises Preparing exceptions and optional cancellation before a work diagnostic throws.
         void recordDiagnostic(const cao::run::RunDiagnostic& diagnostic) override {
+            if (diagnostic.code() == cao::run::RunDiagnosticCode::IgnoredModExcluded) {
+                order << "preparing";
+                if (throwPreparing) throw std::runtime_error("Preparing observer failed");
+            }
             if (diagnostic.code() != cao::run::RunDiagnosticCode::LinkedEntryExcluded) return;
+            order << "work-diagnostic";
             ++linkedDiagnostics;
             assetCompletedBeforeDiagnostic = assetCompleted;
-            cancellation.request_stop();
+            if (cancelWork) cancellation.request_stop();
+            if (throwWork) throw std::runtime_error("work diagnostic observer failed");
         }
     } observer;
+    observer.throwPreparing = throwPreparing;
+    observer.throwWork = throwWork;
+    observer.cancelWork = cancelWork;
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
@@ -307,6 +344,7 @@ void RunExecutorTests::discoveryDiagnosticCancellationFollowsAssetAttempt() {
     ControlledAssetWork work;
     work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset&, const std::filesystem::path&) {
         observer.assetCompleted = true;
+        observer.order << "asset";
         return cao::execution::AssetExecutionResult::success();
     };
     std::size_t finalizations = 0;
@@ -321,16 +359,153 @@ void RunExecutorTests::discoveryDiagnosticCancellationFollowsAssetAttempt() {
         RunServices{cleanup, &observer, &configuration, &work}, observer.cancellation.get_token());
     // Remove the link before QTemporaryDir cleanup, which does not handle Windows links.
     QVERIFY(std::filesystem::remove(selected / "linked.dds"));
-    QCOMPARE(result.outcome(), RunOutcome::Cancelled);
+    observer.order << "completed";
+    QCOMPARE(result.outcome(), cancelWork ? RunOutcome::Cancelled : RunOutcome::Succeeded);
+    QCOMPARE(observer.order, QStringList({"preparing", "asset", "work-diagnostic", "cleanup", "completed"}));
     QVERIFY(observer.assetCompletedBeforeDiagnostic);
     QCOMPARE(observer.linkedDiagnostics, std::size_t{1});
     QCOMPARE(result.work().assetAttempts.size(), std::size_t{1});
-    QCOMPARE(finalizations, std::size_t{0});
-    QVERIFY(result.phase(RunPhase::ArchiveFinalization) == nullptr);
-    QCOMPARE(result.work().diagnostics.size(), std::size_t{2});
-    QCOMPARE(result.work().diagnostics.front().code(), cao::run::RunDiagnosticCode::IgnoredModExcluded);
-    QCOMPARE(result.work().diagnostics.back().code(), cao::run::RunDiagnosticCode::LinkedEntryExcluded);
+    QCOMPARE(finalizations, cancelWork ? std::size_t{0} : std::size_t{1});
+    QCOMPARE(result.phase(RunPhase::ArchiveFinalization) == nullptr, cancelWork);
+    const auto countDiagnostic = [&](cao::run::RunDiagnosticCode code) {
+        return std::count_if(result.work().diagnostics.begin(), result.work().diagnostics.end(),
+                             [=](const auto& diagnostic) { return diagnostic.code() == code; });
+    };
+    QCOMPARE(countDiagnostic(cao::run::RunDiagnosticCode::IgnoredModExcluded), 1);
+    QCOMPARE(countDiagnostic(cao::run::RunDiagnosticCode::LinkedEntryExcluded), 1);
+    QCOMPARE(countDiagnostic(cao::run::RunDiagnosticCode::ObserverFailed),
+             static_cast<int>(throwPreparing) + static_cast<int>(throwWork));
+    QVERIFY(result.failures().empty());
     QCOMPARE(cleanup.invocations(), std::size_t{1});
+    QVERIFY(!std::filesystem::exists(work.staged));
+}
+
+void RunExecutorTests::throwingWorkObserversRetainEvidence_data() {
+    QTest::addColumn<bool>("cancel");
+    QTest::newRow("throw-progress") << false;
+    QTest::newRow("cancel-then-throw-progress") << true;
+}
+
+void RunExecutorTests::throwingWorkObserversRetainEvidence() {
+    QFETCH(bool, cancel);
+    class Observer final : public cao::run::RunObservationSink {
+       public:
+        std::stop_source cancellation;
+        bool cancel{};
+        std::size_t progressCalls{};
+        std::size_t failureCalls{};
+        /// Throws only after the failed Asset has been recorded, at its completed progress boundary.
+        void recordPhase(const RunPhaseRecord& phase) override {
+            if (phase.phase() != RunPhase::ProcessingAssets || !phase.progress()
+                || phase.progress()->completed() != 1) return;
+            ++progressCalls;
+            if (cancel) cancellation.request_stop();
+            throw std::runtime_error("completed progress observer failed");
+        }
+        /// Counts unexpected run-level failures separately from the failed Asset operation.
+        void recordFailure(const cao::run::RunFailure&) override { ++failureCalls; }
+        /// Informational observer errors do not request further work or cancellation.
+        void recordDiagnostic(const cao::run::RunDiagnostic&) override {}
+    } observer;
+    observer.cancel = cancel;
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    std::ofstream(root / "asset.dds") << "original";
+    ControlledAssetWork work;
+    std::size_t attempts{};
+    std::size_t finalizations{};
+    work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset& asset,
+                                               const std::filesystem::path&) {
+        ++attempts;
+        return cao::execution::AssetExecutionResult::failed(
+            cao::execution::AssetExecutionFailure::CommitFailed, "controlled recoverable failure",
+            cao::execution::MutationState::None, true, asset.executionPath());
+    };
+    work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+        ++finalizations;
+        return cao::run::ArchiveFinalizationResult{};
+    };
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+        ModSelection::singleModRoot(root), {RequestedWork::NativeTextureOptimization});
+    const auto result = RunExecutor{}.execute(request,
+        RunServices{cleanup, &observer, configuration.get(), &work}, observer.cancellation.get_token());
+    QCOMPARE(result.outcome(), cancel ? RunOutcome::Cancelled : RunOutcome::CompletedWithFailures);
+    QCOMPARE(attempts, std::size_t{1});
+    QCOMPARE(observer.progressCalls, std::size_t{1});
+    QCOMPARE(observer.failureCalls, std::size_t{0});
+    QCOMPARE(result.work().assetAttempts.size(), std::size_t{1});
+    QVERIFY(result.work().failures.empty());
+    QVERIFY(result.failures().empty());
+    const auto& attempt = result.work().assetAttempts.front().result;
+    QCOMPARE(attempt.failure(), std::optional{cao::execution::AssetExecutionFailure::CommitFailed});
+    QCOMPARE(attempt.message(), std::string("controlled recoverable failure"));
+    const auto& progress = requirePhase(result, RunPhase::ProcessingAssets).progress();
+    QVERIFY(progress.has_value());
+    QCOMPARE(progress->completed(), std::size_t{1});
+    QCOMPARE(progress->failed(), std::size_t{1});
+    QCOMPARE(std::count_if(result.work().diagnostics.begin(), result.work().diagnostics.end(),
+        [](const auto& diagnostic) { return diagnostic.code() == cao::run::RunDiagnosticCode::ObserverFailed; }), 1);
+    QCOMPARE(finalizations, cancel ? std::size_t{0} : std::size_t{1});
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+    QVERIFY(!std::filesystem::exists(work.staged));
+    QCOMPARE(stagingBytes(root / "asset.dds"), QByteArray("original"));
+}
+
+void RunExecutorTests::throwingPreflightFailureObserverRetainsEvidence() {
+    class Observer final : public cao::run::RunObservationSink {
+       public:
+        std::size_t failureCalls{};
+        std::vector<cao::run::RunFailureCode> failures;
+        /// The executor's returned phase records supply lifecycle assertions for this fixture.
+        void recordPhase(const RunPhaseRecord&) override {}
+        /// Fails after accepting preflight evidence so delivery must never be retried.
+        void recordFailure(const cao::run::RunFailure& failure) override {
+            ++failureCalls;
+            failures.push_back(failure.code());
+            throw std::runtime_error("preflight failure observer failed");
+        }
+        /// Observer failures are informational and must not trigger another failure callback.
+        void recordDiagnostic(const cao::run::RunDiagnostic&) override {}
+    } observer;
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    std::ofstream(root / "broken.bsa") << "invalid archive";
+    ControlledAssetWork work;
+    std::size_t extractions{};
+    std::size_t finalizations{};
+    work.adapters.extractArchiveWithResult = [&](const cao::run::ArchiveExtractionPlan& plan) {
+        ++extractions;
+        return cao::run::ArchiveExtractionResult{plan.archivePath};
+    };
+    work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+        ++finalizations;
+        return cao::run::ArchiveFinalizationResult{};
+    };
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+        ModSelection::singleModRoot(root), {RequestedWork::ArchiveExtraction});
+    const auto result = RunExecutor{}.execute(request,
+        RunServices{cleanup, &observer, configuration.get(), &work});
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(observer.failureCalls, std::size_t{1});
+    QCOMPARE(observer.failures.front(), cao::run::RunFailureCode::ArchiveUnreadable);
+    QCOMPARE(result.work().failures.size(), std::size_t{1});
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().code(), cao::run::RunFailureCode::ArchiveUnreadable);
+    QCOMPARE(std::count_if(result.work().diagnostics.begin(), result.work().diagnostics.end(),
+        [](const auto& diagnostic) { return diagnostic.code() == cao::run::RunDiagnosticCode::ObserverFailed; }), 1);
+    QCOMPARE(extractions, std::size_t{0});
+    QCOMPARE(finalizations, std::size_t{0});
+    QVERIFY(result.work().archiveAttempts.empty());
+    QVERIFY(result.phase(RunPhase::ArchiveFinalization) == nullptr);
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+    QVERIFY(!std::filesystem::exists(work.staged));
+    QCOMPARE(stagingBytes(root / "broken.bsa"), QByteArray("invalid archive"));
 }
 
 void RunExecutorTests::productionWorkApplicability_data() {
@@ -935,6 +1110,56 @@ void RunExecutorTests::committedExtractionSurvivesDiscoveryInterruption() {
     QCOMPARE(stagingBytes(archivePath), originalArchive);
     QCOMPARE(result.phases().back().phase(), RunPhase::SafetyCleanup);
     QCOMPARE(result.phase(RunPhase::ArchiveFinalization) != nullptr, interruption == "none");
+}
+
+void RunExecutorTests::discoveryDiagnosticsSurviveInterruption() {
+    QTemporaryDir directory;
+    QTemporaryDir sourceDirectory;
+    QVERIFY(directory.isValid());
+    QVERIFY(sourceDirectory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    const auto source = std::filesystem::path(sourceDirectory.path().toStdWString());
+    std::ofstream(source / "asset.dds") << "archived";
+    auto archive = btu::bsa::ArchiveData(btu::bsa::Settings::get(btu::Game::SSE),
+                                      btu::bsa::ArchiveType::Textures);
+    QVERIFY(archive.add_file(source / "asset.dds"));
+    archive.set_out_path(root / "source.bsa");
+    QVERIFY(btu::bsa::write(false, std::move(archive), source).empty());
+    std::error_code error;
+    std::filesystem::create_symlink(source / "asset.dds", root / "linked.dds", error);
+    if (error) QSKIP("File symlink creation is unavailable on this host");
+    ControlledAssetWork work;
+    bool extracted{};
+    work.adapters.extractArchiveWithResult = [&](const cao::run::ArchiveExtractionPlan& plan) {
+        extracted = true;
+        std::ofstream(root / "asset.dds") << "committed";
+        return cao::run::ArchiveExtractionResult{plan.archivePath, cao::execution::MutationState::Committed};
+    };
+    // The cancellation boundary is outside the protected extraction callback and unwinds discovery.
+    work.adapters.isCancelled = [&] {
+        if (extracted) throw std::runtime_error("interrupted discovery after exclusion");
+        return false;
+    };
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+        ModSelection::singleModRoot(root), {RequestedWork::ArchiveExtraction});
+    const auto result = RunExecutor{}.execute(request,
+        RunServices{cleanup, nullptr, configuration.get(), &work});
+    // Remove the link before QTemporaryDir cleanup, which does not handle Windows links.
+    QVERIFY(std::filesystem::remove(root / "linked.dds"));
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(result.work().archiveAttempts.size(), std::size_t{1});
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().code(), cao::run::RunFailureCode::WorkServiceFailed);
+    QCOMPARE(result.work().diagnostics.size(), std::size_t{1});
+    QCOMPARE(result.work().diagnostics.front().code(), cao::run::RunDiagnosticCode::LinkedEntryExcluded);
+    QCOMPARE(result.work().diagnostics.front().path(), root / "linked.dds");
+    QVERIFY(!result.work().ledger.has_value());
+    QVERIFY(result.phase(RunPhase::ArchiveFinalization) == nullptr);
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+    QVERIFY(!std::filesystem::exists(work.staged));
+    QCOMPARE(stagingBytes(root / "asset.dds"), QByteArray("committed"));
 }
 
 void RunExecutorTests::cancelledRecoveryPreservesUnattemptedArtifacts() {

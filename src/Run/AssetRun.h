@@ -104,7 +104,7 @@ class AssetRun final {
     explicit AssetRun(routing::RoutingPolicy policy) noexcept;
 
     /// Appends completed evidence to the borrowed record before reporting or proceeding.
-    /// When supplied, observations publishes retained diagnostics and records failures in that record.
+    /// When supplied, observations publishes diagnostics and failures already retained in that record.
     /// Extracts routed Archives, batch-routes the resulting Effective Asset Tree once, offers the
     /// owned Routed Assets to the execution adapter, reports definitive routing diagnostics, then
     /// finalizes Archives in Apply mode only. Cancellation is observed between filesystem entries

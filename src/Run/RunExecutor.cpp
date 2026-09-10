@@ -2,6 +2,7 @@
 #include "PathOrdering.h"
 #include "StagingRecovery.h"
 #include "RunWorkRecord.h"
+#include "WorkObservationRecorder.h"
 #include "TemporaryArtifactRegistry.h"
 
 #include <algorithm>
@@ -17,10 +18,10 @@ namespace {
 /// Retains work observations before forwarding, independently of worker and presentation lifetime.
 class WorkObservations final : public RunObservationSink {
    public:
-    /// Borrows executor storage and the optional presentation sink for one work call.
+    /// Borrows executor storage and presentation through Preparing, work, and mandatory cleanup.
     WorkObservations(std::vector<RunPhaseRecord>& phases, RunWorkRecord& work,
                      RunPhase& finalPhase, RunObservationSink* downstream)
-        : _phases(phases), _work(work), _finalPhase(finalPhase), _downstream(downstream) {}
+        : _phases(phases), _recorder(work, downstream), _finalPhase(finalPhase), _downstream(downstream) {}
 
     /// Replaces a phase's latest counts without losing its traversal position.
     void recordPhase(const RunPhaseRecord& phase) override {
@@ -30,25 +31,33 @@ class WorkObservations final : public RunObservationSink {
         if (found == _phases.end()) _phases.push_back(phase);
         else *found = phase;
         _finalPhase = phase.phase();
-        if (_downstream) _downstream->recordPhase(phase);
+        _recorder.reportSafely(phase.phase(), [&] {
+            if (_downstream) _downstream->recordPhase(phase);
+        });
     }
     /// Owns failure detail even when a subsequent operation throws.
     void recordFailure(const RunFailure& failure) override {
-        _work.failures.push_back(failure);
-        if (_downstream) _downstream->recordFailure(failure);
+        _recorder.recordFailure(failure);
     }
     /// Owns informational observations without changing Run Outcome.
     void recordDiagnostic(const RunDiagnostic& diagnostic) override {
-        _work.diagnostics.push_back(diagnostic);
-        if (_downstream) _downstream->recordDiagnostic(diagnostic);
+        _recorder.recordDiagnostic(diagnostic);
     }
     /// Forwards work-owned diagnostics without appending a second copy to the same record.
     void publishRetainedDiagnostic(const RunDiagnostic& diagnostic) override {
-        if (_downstream) _downstream->recordDiagnostic(diagnostic);
+        _recorder.reportSafely(diagnostic.phase(), [&] {
+            if (_downstream) _downstream->recordDiagnostic(diagnostic);
+        });
+    }
+    /// Forwards a retained failure without letting observer errors become work failures.
+    void publishRetainedFailure(const RunFailure& failure) override {
+        _recorder.reportSafely(failure.phase(), [&] {
+            if (_downstream) _downstream->recordFailure(failure);
+        });
     }
    private:
     std::vector<RunPhaseRecord>& _phases;
-    RunWorkRecord& _work;
+    WorkObservationRecorder _recorder;
     RunPhase& _finalPhase;
     RunObservationSink* _downstream;
 };
@@ -233,21 +242,20 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
 
     // Preparing always executes: it is where the request becomes run-scoped state. It is
     // indeterminate work, so it reports no progress rather than a total of one.
-    phases.push_back(RunPhaseRecord::executed(RunPhase::Preparing));
-    if (services.observations != nullptr) services.observations->recordPhase(phases.back());
     auto finalPhase = RunPhase::Preparing;
+    WorkObservations observations(phases, work, finalPhase, services.observations);
+    observations.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
     auto outcome = RunOutcome::Succeeded;
     std::shared_ptr<const RunPreparation> preparation;
     StagingRecovery staging;
     TemporaryArtifactRegistry artifacts(&staging);
     if (!stop.stop_requested()) {
-        WorkObservations preparationObservations(phases, work, finalPhase, services.observations);
-        auto prepared = prepareRun(request, services.configuration, &preparationObservations, stop);
+        auto prepared = prepareRun(request, services.configuration, &observations, stop);
         if (auto* failure = std::get_if<RunFailure>(&prepared)) {
             outcome = RunOutcome::Failed;
             failures.push_back(std::move(*failure));
             if (services.observations != nullptr)
-                services.observations->recordFailure(failures.back());
+                observations.publishRetainedFailure(failures.back());
         } else {
             preparation = std::move(std::get<std::shared_ptr<const RunPreparation>>(prepared));
         }
@@ -266,7 +274,7 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
                                   "Work configuration threw a non-standard exception");
         }
         if (outcome == RunOutcome::Failed && services.observations)
-            services.observations->recordFailure(failures.back());
+            observations.publishRetainedFailure(failures.back());
     }
 
     if (preparation && outcome != RunOutcome::Failed &&
@@ -277,7 +285,7 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
                 outcome = RunOutcome::Failed;
                 failures.push_back(std::move(*failure));
                 if (services.observations != nullptr)
-                    services.observations->recordFailure(failures.back());
+                    observations.publishRetainedFailure(failures.back());
                 break;
             }
         }
@@ -288,7 +296,6 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
     } else if (stop.stop_requested()) {
         outcome = RunOutcome::Cancelled;
     } else if (request.hasRequestedWork() && services.work) {
-        WorkObservations observations(phases, work, finalPhase, services.observations);
         try {
             services.work->execute(*preparation, work, artifacts, observations, stop);
         } catch (const std::exception& error) {
@@ -304,21 +311,24 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
         outcome = RunOutcome::Failed;
         failures.emplace_back(RunFailureCode::RequestedWorkUnavailable, RunPhase::Preparing,
                               "Requested work requires run services that are not yet available");
-        if (services.observations != nullptr) services.observations->recordFailure(failures.back());
+        if (services.observations != nullptr) observations.publishRetainedFailure(failures.back());
     } else {
-        finalPhase = recordSkippedWorkPhases(phases, services.observations, stop);
+        finalPhase = recordSkippedWorkPhases(phases, &observations, stop);
     }
 
     // Safety Cleanup runs exactly once on every terminal path, before the terminal result is
     // committed, so cancellation and failure cannot litter Mod Roots with run-owned artifacts.
     phases.push_back(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
-    if (services.observations != nullptr) services.observations->recordPhase(phases.back());
+    // Cleanup publication is isolated without replacing the furthest work phase.
+    const auto workFinalPhase = finalPhase;
+    observations.recordPhase(phases.back());
+    finalPhase = workFinalPhase;
     auto cleanupFailures = collectSafetyCleanupFailures(artifacts);
     auto injectedCleanupFailures = collectSafetyCleanupFailures(services.safetyCleanup);
     cleanupFailures.insert(cleanupFailures.end(), injectedCleanupFailures.begin(),
                            injectedCleanupFailures.end());
     for (const auto& failure : cleanupFailures)
-        if (services.observations != nullptr) services.observations->recordFailure(failure);
+        if (services.observations != nullptr) observations.publishRetainedFailure(failure);
     return OptimizationRunResult::terminal(outcome, finalPhase, std::move(phases), std::move(runId),
                                            std::move(failures), std::move(preparation),
                                            std::move(cleanupFailures), stop.stop_requested(), &work);
