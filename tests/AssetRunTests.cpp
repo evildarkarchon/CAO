@@ -298,7 +298,7 @@ void AssetRunTests::archiveFailuresControlContinuation() {
     bool finalized = false;
     std::vector<AssetRunProgress> progress;
     AssetRunAdapters adapters;
-    adapters.executeAssetWithResult = [&](const auto&) {
+    adapters.executeAssetWithResult = [&](const auto&, const std::filesystem::path&) {
         ++assets;
         return cao::execution::AssetExecutionResult::success();
     };
@@ -365,7 +365,7 @@ void AssetRunTests::mutationAwareFailuresControlContinuation() {
         finalized = true;
         return cao::run::ArchiveFinalizationResult{};
     };
-    adapters.executeAssetWithResult = [&](const auto& asset) {
+    adapters.executeAssetWithResult = [&](const auto& asset, const std::filesystem::path&) {
         ++attempts;
         return attempts == static_cast<std::size_t>(failedAttempt)
                    ? cao::execution::AssetExecutionResult::failed(
@@ -417,7 +417,7 @@ void AssetRunTests::animationFailuresPreserveProgressAndEvidence() {
         finalized = true;
         return cao::run::ArchiveFinalizationResult{};
     };
-    adapters.executeAssetWithResult = [&](const auto& asset) {
+    adapters.executeAssetWithResult = [&](const auto& asset, const std::filesystem::path&) {
         ++attempts;
         if (attempts != static_cast<std::size_t>(failedAttempt))
             return cao::execution::AssetExecutionResult::success(
@@ -486,7 +486,7 @@ void AssetRunTests::unreadableArchiveStopsRunBeforeMutation() {
                                          throw std::runtime_error("failure observer");
                                      },
                                  .executeAssetWithResult =
-                                     [&](const auto&) {
+                                     [&](const auto&, const std::filesystem::path&) {
                                          executed = true;
                                          return cao::execution::AssetExecutionResult::success();
                                      },
@@ -544,7 +544,7 @@ void AssetRunTests::reportsCollisionsBeforeOrderedExtraction() {
                             throw std::runtime_error("collision observer");
                         },
                     .executeAssetWithResult =
-                        [](const auto&) { return cao::execution::AssetExecutionResult::success(); },
+                        [](const auto&, const std::filesystem::path&) { return cao::execution::AssetExecutionResult::success(); },
                     .extractArchiveWithResult =
                         [&](const auto& archive) {
                             QTest::qVerify(reported, "reported", "", __FILE__, __LINE__);
@@ -599,7 +599,7 @@ void AssetRunTests::filesystemTraversalPollsCancellation()
                                 .reportDiagnostics =
                                     [&](const cao::run::AssetRunDiagnostics&) { diagnosed = true; },
                                 .executeAssetWithResult =
-                                    [&](const cao::routing::RoutedAsset&) {
+                                    [&](const cao::routing::RoutedAsset&, const std::filesystem::path&) {
                                         executed = true;
                                         return cao::execution::AssetExecutionResult::success();
                                     },
@@ -646,7 +646,7 @@ void AssetRunTests::archiveExtractionPrecedesDefinitiveRoutedExecution()
         AssetRunAdapters{
             .reportProgress = [&](const AssetRunProgress& update) { progress.push_back(update); },
             .executeAssetWithResult =
-                [&](const cao::routing::RoutedAsset& asset) {
+                [&](const cao::routing::RoutedAsset& asset, const std::filesystem::path&) {
                     QTest::qVerify(archiveExtracted, "archiveExtracted", "", __FILE__, __LINE__);
                     executedPaths.push_back(asset.executionPath());
                     return cao::execution::AssetExecutionResult::success();
@@ -709,7 +709,7 @@ void AssetRunTests::realExtractionPreservesLooseAssetPrecedence()
     cao::run::RunWorkRecord record;
     run.execute(
         roots, record, AssetRunAdapters{.executeAssetWithResult =
-                                    [&](const cao::routing::RoutedAsset& asset) {
+                                    [&](const cao::routing::RoutedAsset& asset, const std::filesystem::path&) {
                                         executedPaths.push_back(asset.executionPath());
                                         return cao::execution::AssetExecutionResult::success();
                                     },
@@ -754,7 +754,7 @@ void AssetRunTests::executesOriginalLedgerAssetsInTargetOrder()
     run.execute(
         paths, record, AssetRunAdapters{
                    .executeAssetWithResult =
-                       [&](const cao::routing::RoutedAsset& asset) {
+                       [&](const cao::routing::RoutedAsset& asset, const std::filesystem::path&) {
                            executedAssets.push_back(&asset);
                            return cao::execution::AssetExecutionResult::success();
                        },
@@ -802,7 +802,7 @@ void AssetRunTests::progressAndSkipSummaryExcludeNonWork()
         AssetRunAdapters{
             .reportProgress = [&](const AssetRunProgress& update) { progress.push_back(update); },
             .executeAssetWithResult =
-                [&](const cao::routing::RoutedAsset&) {
+                [&](const cao::routing::RoutedAsset&, const std::filesystem::path&) {
                     ++executionAttempts;
                     return cao::execution::AssetExecutionResult::success();
                 },
@@ -847,7 +847,7 @@ void AssetRunTests::applyFinalizesArchivesAfterRoutedExecution()
                            events.push_back(QByteArrayLiteral("report"));
                        },
                    .executeAssetWithResult =
-                       [&](const cao::routing::RoutedAsset&) {
+                       [&](const cao::routing::RoutedAsset&, const std::filesystem::path&) {
                            events.push_back(QByteArrayLiteral("execute"));
                            return cao::execution::AssetExecutionResult::success();
                        },
@@ -899,7 +899,7 @@ void AssetRunTests::linkedAssetsAreReportedBeforeFinalizationWithoutExecution()
                                                diagnostics.diagnostics().end());
                 },
             .executeAssetWithResult =
-                [&](const cao::routing::RoutedAsset& asset) {
+                [&](const cao::routing::RoutedAsset& asset, const std::filesystem::path&) {
                     executedPaths.push_back(asset.executionPath());
                     return cao::execution::AssetExecutionResult::success();
                 },
@@ -957,7 +957,7 @@ void AssetRunTests::cancelledArchiveFinalizationIsReported()
                     resultReportedBeforeFinalization = true;
                 },
             .executeAssetWithResult =
-                [](const cao::routing::RoutedAsset&) {
+                [](const cao::routing::RoutedAsset&, const std::filesystem::path&) {
                     return cao::execution::AssetExecutionResult::success();
                 },
             .extractArchiveWithResult =
@@ -1002,7 +1002,7 @@ void AssetRunTests::dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPath
     cao::run::RunWorkRecord record;
     run.execute(
         roots, record, AssetRunAdapters{.executeAssetWithResult =
-                                    [&](const cao::routing::RoutedAsset& asset) {
+                                    [&](const cao::routing::RoutedAsset& asset, const std::filesystem::path&) {
                                         executedPaths.push_back(asset.executionPath());
                                         return cao::execution::AssetExecutionResult::success();
                                     },
@@ -1065,7 +1065,7 @@ void AssetRunTests::dryRunLeavesCompleteModTreeUnchangedWhileEvaluatingLooseAsse
         AssetRunAdapters{
             .reportProgress = [&](const AssetRunProgress& update) { progress.push_back(update); },
             .executeAssetWithResult =
-                [&](const cao::routing::RoutedAsset& asset) {
+                [&](const cao::routing::RoutedAsset& asset, const std::filesystem::path&) {
                     executed.push_back(ExecutionObservation{
                         asset.executionPath(), asset.executionMode(),
                         asset.operations().contains(cao::routing::AssetOperation::Optimization),
@@ -1135,7 +1135,7 @@ void AssetRunTests::cancellationStopsBetweenRoutedAssets()
             .reportProgress = [&](const AssetRunProgress& update) { progress.push_back(update); },
             .isCancelled = [&] { return attempts == 1; },
             .executeAssetWithResult =
-                [&](const cao::routing::RoutedAsset&) {
+                [&](const cao::routing::RoutedAsset&, const std::filesystem::path&) {
                     ++attempts;
                     return cao::execution::AssetExecutionResult::success();
                 },
@@ -1177,7 +1177,7 @@ void AssetRunTests::archiveCancellationSkipsDefinitiveDiscovery()
         roots, record,
         AssetRunAdapters{.isCancelled = [&] { return extractionAttempts == 1; },
                          .executeAssetWithResult =
-                             [](const cao::routing::RoutedAsset&) {
+                             [](const cao::routing::RoutedAsset&, const std::filesystem::path&) {
                                  qFatal("No Loose Asset should execute after Archive cancellation");
                                  return cao::execution::AssetExecutionResult::success();
                              },
@@ -1214,7 +1214,7 @@ void AssetRunTests::finalArchiveCancellationSkipsDefinitiveDiscovery()
         roots, record, AssetRunAdapters{
                    .isCancelled = [&] { return extractionAttempts == 1; },
                    .executeAssetWithResult =
-                       [](const cao::routing::RoutedAsset&) {
+                       [](const cao::routing::RoutedAsset&, const std::filesystem::path&) {
                            qFatal("No Loose Asset should execute after final Archive cancellation");
                            return cao::execution::AssetExecutionResult::success();
                        },
@@ -1254,7 +1254,7 @@ void AssetRunTests::cancellationDuringFinalAssetSkipsFinalization()
             .reportDiagnostics =
                 [&](const cao::run::AssetRunDiagnostics&) { reportedDiagnostics = true; },
             .executeAssetWithResult =
-                [&](const cao::routing::RoutedAsset&) {
+                [&](const cao::routing::RoutedAsset&, const std::filesystem::path&) {
                     ++attempts;
                     return cao::execution::AssetExecutionResult::success();
                 },
@@ -1304,7 +1304,7 @@ void AssetRunTests::nestedArchivesAreReportedWithoutInflatingTheWorkTotal()
                                         reportedNestedArchives = diagnostics.nestedArchiveCount();
                                     },
                                 .executeAssetWithResult =
-                                    [&](const cao::routing::RoutedAsset& asset) {
+                                    [&](const cao::routing::RoutedAsset& asset, const std::filesystem::path&) {
                                         executedPaths.push_back(asset.executionPath());
                                         return cao::execution::AssetExecutionResult::success();
                                     },
@@ -1337,7 +1337,7 @@ void AssetRunTests::completeAttemptEvidenceSurvivesAdapters() {
     writeFile(root / "b.dds");
     AssetRunAdapters adapters;
     int calls = 0;
-    adapters.executeAssetWithResult = [&](const auto&) {
+    adapters.executeAssetWithResult = [&](const auto&, const std::filesystem::path&) {
         using namespace cao::execution;
         return ++calls == 1 ? AssetExecutionResult::success(MutationState::Committed)
             : AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed, "retained");
@@ -1376,7 +1376,7 @@ void AssetRunTests::throwingAttemptRetainsCancellation() {
     AssetRunAdapters adapters;
     bool cancelled = false;
     adapters.isCancelled = [&] { return cancelled; };
-    adapters.executeAssetWithResult = [&](const auto&) -> cao::execution::AssetExecutionResult {
+    adapters.executeAssetWithResult = [&](const auto&, const std::filesystem::path&) -> cao::execution::AssetExecutionResult {
         cancelled = true;
         throw std::runtime_error("adapter failed");
     };
@@ -1413,7 +1413,7 @@ void AssetRunTests::throwingObserversPreserveCommittedWork() {
     const auto root = std::filesystem::path(directory.path().toStdWString());
     writeFile(root / "a.dds");
     AssetRunAdapters adapters;
-    adapters.executeAssetWithResult = [](const auto&) {
+    adapters.executeAssetWithResult = [](const auto&, const std::filesystem::path&) {
         return cao::execution::AssetExecutionResult::success(cao::execution::MutationState::Committed);
     };
     adapters.reportProgress = [](const auto&) { throw std::runtime_error("progress observer"); };
@@ -1441,7 +1441,7 @@ void AssetRunTests::relativeSelectionRetainsMutationScope() {
         std::filesystem::path(directory.path().toStdWString()));
     writeFile(root / "a.dds");
     AssetRunAdapters adapters;
-    adapters.executeAssetWithResult = [](const auto& asset) {
+    adapters.executeAssetWithResult = [](const auto& asset, const std::filesystem::path&) {
         std::filesystem::remove(asset.executionPath());
         return cao::execution::AssetExecutionResult::success(cao::execution::MutationState::Committed);
     };
@@ -1462,7 +1462,7 @@ void AssetRunTests::throwingDiagnosticsCancellationSkipsFinalization() {
     bool cancelled = false;
     bool finalized = false;
     adapters.isCancelled = [&] { return cancelled; };
-    adapters.executeAssetWithResult = [](const auto&) {
+    adapters.executeAssetWithResult = [](const auto&, const std::filesystem::path&) {
         return cao::execution::AssetExecutionResult::success(cao::execution::MutationState::Committed);
     };
     adapters.reportDiagnostics = [&](const auto&) {
@@ -1495,7 +1495,7 @@ void AssetRunTests::lifecyclePhasesPrecedeAttempts() {
     adapters.reportPhase = [&](const auto& record) {
         if (phases.empty() || phases.back() != record.phase()) phases.push_back(record.phase());
     };
-    adapters.executeAssetWithResult = [&](const auto&) {
+    adapters.executeAssetWithResult = [&](const auto&, const std::filesystem::path&) {
         if (phases.empty() || phases.back() != cao::run::RunPhase::ProcessingAssets)
             throw std::runtime_error("Asset attempt preceded its phase observation");
         return cao::execution::AssetExecutionResult::success();

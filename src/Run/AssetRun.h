@@ -70,9 +70,11 @@ struct AssetRunAdapters final {
     std::function<void(std::span<const ArchiveCollision>)> reportArchiveCollisions;
     /// Observes fatal discovery failures before returning without mutation.
     std::function<void(const RunFailure&)> reportDiscoveryFailure;
-    /// Executes with mutation evidence retained for every completed attempt.
+    /// Executes with the canonical Mod Root frozen before source mutation and retained with the outcome.
+    /// Borrows both arguments only until return; Assets outside prepared roots never reach this adapter.
     /// An unsafe result stops subsequent Assets and Archive finalization after attempt progress.
-    std::function<execution::AssetExecutionResult(const routing::RoutedAsset&)>
+    std::function<execution::AssetExecutionResult(const routing::RoutedAsset&,
+                                                  const std::filesystem::path&)>
         executeAssetWithResult;
     /// Extracts the completed manifest plan and reports mutation evidence.
     /// Unsafe continuation stops work independently of cancellation.
@@ -115,6 +117,8 @@ class AssetRun final {
     /// Archive precedence is validated before the first extraction callback.
     /// Result-bearing execution retains all attempts and converts adapter exceptions to unsafe
     /// outcomes. Unsafe continuation stops further work while retaining concurrent cancellation.
+    /// Resolves each Asset's canonical Mod Root before invoking processing and retains that same
+    /// identity with the outcome, even when processing removes the source. Unmatched Assets are rejected.
     void execute(
         std::span<const std::filesystem::path> roots, RunWorkRecord& record,
         const AssetRunAdapters& adapters,

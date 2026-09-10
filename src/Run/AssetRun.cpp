@@ -256,7 +256,9 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
             }
             auto attempt = execution::AssetExecutionResult::success();
             try {
-                attempt = adapters.executeAssetWithResult(asset.get());
+                if (modRoot.empty())
+                    throw std::logic_error("Routed Asset is outside prepared Mod Roots");
+                attempt = adapters.executeAssetWithResult(asset.get(), modRoot);
             } catch (const std::exception& error) {
                 // An exception cannot establish whether the adapter committed durable bytes.
                 attempt = execution::AssetExecutionResult::failed(

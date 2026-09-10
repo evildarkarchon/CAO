@@ -127,17 +127,8 @@ class ApplicationRunWork final : public RunWorkService {
         adapters.extractArchiveWithResult = [&](const ArchiveExtractionPlan& plan) {
             return archiveBackend().extract(plan, options.bBsaDeleteBackup, artifacts);
         };
-        adapters.executeAssetWithResult = [&](const routing::RoutedAsset& asset) {
-            std::filesystem::path modRoot;
-            for (const auto& root : preparation.modRoots()) {
-                const auto relative = asset.executionPath().lexically_relative(root);
-                if (!relative.empty() && *relative.begin() != "..") {
-                    modRoot = root;
-                    break;
-                }
-            }
-            if (modRoot.empty())
-                throw std::logic_error("Routed Asset is outside prepared Mod Roots");
+        adapters.executeAssetWithResult = [&](const routing::RoutedAsset& asset,
+                                               const std::filesystem::path& modRoot) {
             if (!optimizer) optimizer = std::make_unique<MainOptimizer>(options, _profile);
             return optimizer->process(asset, artifacts, modRoot);
         };

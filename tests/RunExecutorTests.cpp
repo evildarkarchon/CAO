@@ -135,6 +135,18 @@ class RunExecutorTests final : public QObject
     Q_OBJECT
 
 private slots:
+ /// Covers canonical identity for single and Several Mods through relative selections.
+ void processingAndEvidenceShareModRoot_data();
+ /// Detects missing or divergent roots supplied to operations beneath production recording.
+ void processingAndEvidenceShareModRoot();
+ /// Covers later fatal failure and cancellation after source-removing conversion.
+ void removedConversionRetainsModRoot_data();
+ /// Keeps processing scope and committed mutation evidence after the original Asset disappears.
+ void removedConversionRetainsModRoot();
+ /// Covers canonical reassignment and rejection when a discovered Asset is retargeted.
+ void retargetedAssetUsesCanonicalContainment_data();
+ /// Resolves scope at the operation boundary and never processes an Asset outside prepared roots.
+ void retargetedAssetUsesCanonicalContainment();
  /// Covers applicable-but-empty work, Dry Run evaluation, and fatal Archive preflight.
  void productionWorkApplicability_data();
  /// Uses the real composition to preserve phase distinctions and prohibit excluded operations.
@@ -293,7 +305,7 @@ void RunExecutorTests::discoveryDiagnosticCancellationFollowsAssetAttempt() {
     std::filesystem::create_symlink(root / "ignored" / "external.dds", selected / "linked.dds", error);
     if (error) QSKIP("File symlink creation is unavailable on this host");
     ControlledAssetWork work;
-    work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset&) {
+    work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset&, const std::filesystem::path&) {
         observer.assetCompleted = true;
         return cao::execution::AssetExecutionResult::success();
     };
@@ -341,7 +353,7 @@ void RunExecutorTests::productionWorkApplicability() {
     std::size_t assets = 0;
     std::size_t extractions = 0;
     std::size_t finalizations = 0;
-    work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset&) {
+    work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset&, const std::filesystem::path&) {
         ++assets;
         return cao::execution::AssetExecutionResult::success();
     };
@@ -471,6 +483,191 @@ void RunExecutorTests::productionWorkRetainsArchiveCollisions() {
     QVERIFY(!collision.looseAssetWins());
 }
 
+void RunExecutorTests::processingAndEvidenceShareModRoot_data() {
+    QTest::addColumn<bool>("several");
+    QTest::addColumn<bool>("relative");
+    QTest::newRow("single-absolute") << false << false;
+    QTest::newRow("single-relative") << false << true;
+    QTest::newRow("several-absolute") << true << false;
+    QTest::newRow("several-relative") << true << true;
+}
+
+void RunExecutorTests::processingAndEvidenceShareModRoot() {
+    QFETCH(bool, several);
+    QFETCH(bool, relative);
+    QTemporaryDir directory(QDir::currentPath() + "/executor-scope-XXXXXX");
+    QVERIFY(directory.isValid());
+    const auto selected = std::filesystem::canonical(
+        std::filesystem::path(directory.path().toStdWString()));
+    const std::vector<std::filesystem::path> roots = several
+        ? std::vector{selected / "first", selected / "second"} : std::vector{selected};
+    for (const auto& root : roots) {
+        std::filesystem::create_directories(root / "textures");
+        std::ofstream(root / "textures" / "asset.dds") << "original";
+    }
+    ControlledAssetWork work;
+    std::vector<std::filesystem::path> processingRoots;
+    work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset&,
+                                               const std::filesystem::path& modRoot) {
+        processingRoots.push_back(modRoot);
+        return cao::execution::AssetExecutionResult::success();
+    };
+    const auto selection = relative
+        ? std::filesystem::relative(selected, std::filesystem::current_path()) : selected;
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+        several ? ModSelection::childModRoots(selection) : ModSelection::singleModRoot(selection),
+        {RequestedWork::NativeTextureOptimization});
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto result = RunExecutor{}.execute(request,
+        RunServices{cleanup, nullptr, configuration.get(), &work});
+    QCOMPARE(result.outcome(), RunOutcome::Succeeded);
+    QCOMPARE(result.work().assetAttempts.size(), roots.size());
+    QCOMPARE(processingRoots.size(), roots.size());
+    for (std::size_t index = 0; index < roots.size(); ++index) {
+        const auto& attempt = result.work().assetAttempts[index];
+        QCOMPARE(processingRoots[index], roots[index]);
+        QCOMPARE(attempt.modRoot, processingRoots[index]);
+        QCOMPARE(attempt.asset.executionPath(), roots[index] / "textures" / "asset.dds");
+    }
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+}
+
+void RunExecutorTests::removedConversionRetainsModRoot_data() {
+    QTest::addColumn<bool>("cancel");
+    QTest::newRow("later-failure") << false;
+    QTest::newRow("later-cancellation") << true;
+}
+
+void RunExecutorTests::removedConversionRetainsModRoot() {
+    QFETCH(bool, cancel);
+    QTemporaryDir directory(QDir::currentPath() + "/executor-conversion-XXXXXX");
+    QVERIFY(directory.isValid());
+    const auto selected = std::filesystem::canonical(
+        std::filesystem::path(directory.path().toStdWString()));
+    const auto root = selected / "mod";
+    std::filesystem::create_directory(root);
+    const auto source = root / "original.tga";
+    const auto output = root / "original.dds";
+    std::ofstream(source) << "original";
+    std::optional<OptimizationRunResult> result;
+    std::filesystem::path processingRoot;
+    {
+        ControlledAssetWork work;
+        bool converted = false;
+        std::stop_source cancellation;
+        work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset& asset,
+                                                   const std::filesystem::path& modRoot) {
+            processingRoot = modRoot;
+            std::ofstream(output) << "converted";
+            if (!std::filesystem::remove(asset.executionPath()))
+                throw std::runtime_error("Conversion source did not exist");
+            converted = true;
+            return cao::execution::AssetExecutionResult::success(cao::execution::MutationState::Committed);
+        };
+        // The next cancellation checkpoint runs after the completed outcome has been retained.
+        work.adapters.isCancelled = [&] {
+            if (!converted) return false;
+            if (!cancel) throw std::runtime_error("later orchestration failure");
+            cancellation.request_stop();
+            return true;
+        };
+        std::size_t finalizations = 0;
+        work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+            ++finalizations;
+            return cao::run::ArchiveFinalizationResult{};
+        };
+        CountingSafetyCleanup cleanup;
+        const auto configuration = testRunConfiguration();
+        const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+            ModSelection::childModRoots(std::filesystem::relative(selected)),
+            {RequestedWork::ConvertibleTextureConversion});
+        result = RunExecutor{}.execute(request,
+            RunServices{cleanup, nullptr, configuration.get(), &work}, cancellation.get_token());
+        QCOMPARE(finalizations, std::size_t{0});
+        QCOMPARE(cleanup.invocations(), std::size_t{1});
+        QVERIFY(!std::filesystem::exists(work.staged));
+    }
+    QCOMPARE(result->outcome(), cancel ? RunOutcome::Cancelled : RunOutcome::Failed);
+    QCOMPARE(result->work().assetAttempts.size(), std::size_t{1});
+    const auto& attempt = result->work().assetAttempts.front();
+    QCOMPARE(processingRoot, root);
+    QCOMPARE(attempt.modRoot, processingRoot);
+    QCOMPARE(attempt.asset.executionPath(), source);
+    QVERIFY(attempt.asset.operations().contains(cao::routing::AssetOperation::Conversion));
+    QCOMPARE(attempt.result.mutationState(), cao::execution::MutationState::Committed);
+    QCOMPARE(result->mutationSummaries().size(), std::size_t{1});
+    const auto& summary = result->mutationSummaries().front();
+    QCOMPARE(summary.modRoot, processingRoot);
+    QCOMPARE(summary.kind, cao::run::MutationKind::AssetProcessing);
+    QCOMPARE(summary.committed, std::size_t{1});
+    QCOMPARE(summary.partialOrUnknown, std::size_t{0});
+    QCOMPARE(requirePhase(*result, RunPhase::ProcessingAssets).progress()->completed(), std::size_t{1});
+    QVERIFY(result->phase(RunPhase::ArchiveFinalization) == nullptr);
+    QVERIFY(!std::filesystem::exists(source));
+    QCOMPARE(stagingBytes(output), QByteArray("converted"));
+}
+
+void RunExecutorTests::retargetedAssetUsesCanonicalContainment_data() {
+    QTest::addColumn<bool>("outside");
+    QTest::newRow("prepared-sibling") << false;
+    QTest::newRow("outside-prepared-roots") << true;
+}
+
+void RunExecutorTests::retargetedAssetUsesCanonicalContainment() {
+    QFETCH(bool, outside);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto base = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    const auto selected = base / "mods";
+    const auto first = selected / "first";
+    const auto second = selected / "second";
+    std::filesystem::create_directories(first);
+    std::filesystem::create_directory(second);
+    const auto source = first / "asset.dds";
+    const auto target = (outside ? base : second) / "target.bin";
+    std::ofstream(source) << "original";
+    std::ofstream(target) << "target bytes";
+    ControlledAssetWork work;
+    bool retargeted = false;
+    work.adapters.reportPhase = [&](const RunPhaseRecord& phase) {
+        if (phase.phase() != RunPhase::ProcessingAssets || retargeted) return;
+        // Simulate a path change after discovery, before the first protected operation starts.
+        std::filesystem::remove(source);
+        std::filesystem::create_symlink(target, source);
+        retargeted = true;
+    };
+    std::vector<std::filesystem::path> processingRoots;
+    work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset&,
+                                               const std::filesystem::path& modRoot) {
+        processingRoots.push_back(modRoot);
+        return cao::execution::AssetExecutionResult::success();
+    };
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+        ModSelection::childModRoots(selected), {RequestedWork::NativeTextureOptimization});
+    const auto result = RunExecutor{}.execute(request,
+        RunServices{cleanup, nullptr, configuration.get(), &work});
+    // Remove the link before QTemporaryDir cleanup, which does not handle Windows links.
+    std::filesystem::remove(source);
+    QVERIFY(retargeted);
+    QCOMPARE(result.work().assetAttempts.size(), std::size_t{1});
+    const auto& attempt = result.work().assetAttempts.front();
+    if (outside) {
+        QCOMPARE(result.outcome(), RunOutcome::Failed);
+        QVERIFY(processingRoots.empty());
+        QVERIFY(attempt.modRoot.empty());
+        QVERIFY(!attempt.result.safeToContinue());
+    } else {
+        QCOMPARE(result.outcome(), RunOutcome::Succeeded);
+        QCOMPARE(processingRoots, std::vector<std::filesystem::path>{second});
+        QCOMPARE(attempt.modRoot, processingRoots.front());
+    }
+    QCOMPARE(stagingBytes(target), QByteArray("target bytes"));
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+}
+
 void RunExecutorTests::mixedWorkEvidenceOutlivesServices() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -485,7 +682,7 @@ void RunExecutorTests::mixedWorkEvidenceOutlivesServices() {
     {
         ControlledAssetWork work;
         std::size_t finalizerCalls = 0;
-        work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset& asset) {
+        work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset& asset, const std::filesystem::path&) {
             if (asset.executionPath() == failedAsset)
                 return cao::execution::AssetExecutionResult::failed(
                     cao::execution::AssetExecutionFailure::LoadFailed, "controlled load failure",
@@ -564,7 +761,7 @@ void RunExecutorTests::cancellationAfterAtomicAssetAttempt() {
     std::stop_source cancellation;
     std::size_t attempts = 0;
     std::size_t finalizerCalls = 0;
-    work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset& asset) {
+    work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset& asset, const std::filesystem::path&) {
         ++attempts;
         cancellation.request_stop();
         // The atomic callback finishes its mutation despite cancellation being requested inside it.
@@ -946,7 +1143,7 @@ void RunExecutorTests::workArtifactsShareRecoveryAndAreCleanedAfterFailure() {
     std::ofstream(texture) << "original";
     ControlledAssetWork work;
     bool committed = false;
-    work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset& asset) {
+    work.adapters.executeAssetWithResult = [&](const cao::routing::RoutedAsset& asset, const std::filesystem::path&) {
         std::ofstream(asset.executionPath(), std::ios::trunc) << "committed asset";
         committed = true;
         return cao::execution::AssetExecutionResult::success(cao::execution::MutationState::Committed);
