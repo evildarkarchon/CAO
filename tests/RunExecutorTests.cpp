@@ -1,5 +1,7 @@
 #include "Run/RunExecutor.h"
+#include "RunEvidenceTestUtils.h"
 #include "Run/AssetRun.h"
+#include "Run/RunEvidence.h"
 #include "Run/RunWorkRecord.h"
 #include "Run/TemporaryArtifactRegistry.h"
 #include "Run/StagingRecovery.h"
@@ -217,6 +219,8 @@ private slots:
  void policyConflictsFailPreparing();
  /// Verifies missing and throwing configuration providers cannot escape cleanup or claim success.
  void configurationLoadingFailuresAreTerminal();
+ /// Verifies cancellation observed after configuration loading exposes no partial preparation.
+ void cancellationDuringPreparingPublishesNoPreparation();
  /// Verifies a file cannot become a Mod Root even when its path canonicalizes successfully.
  void aNonDirectorySelectionFailsPreparing();
  /// Verifies explicit high-to-low Archive intent is owned by both request and prepared result.
@@ -273,6 +277,8 @@ private slots:
 
  /// Verifies completed attempts follow succeeded plus failed, so failures advance progress.
  void failedAttemptsAdvanceCompletedProgress();
+ /// Verifies evidence invariant violations escape user-facing failure classification after cleanup.
+ void evidenceInvariantViolationsRemainProgrammingDefects();
 };
 
 void RunExecutorTests::discoveryDiagnosticCancellationFollowsAssetAttempt_data() {
@@ -1732,8 +1738,8 @@ void RunExecutorTests::terminalPrecedenceRetainsAllEvidence() {
                                  RunPhase::SafetyCleanup, "retained artifact");
         const auto result = OptimizationRunResult::terminal(
             test.work, RunPhase::ArchiveFinalization,
-            {RunPhaseRecord::executed(RunPhase::SafetyCleanup)}, cao::run::createRunId(),
-            {}, {}, std::move(cleanup), test.cancelled);
+            terminalTestEvidence(RunPhase::SafetyCleanup, test.cancelled),
+            cao::run::createRunId(), {}, std::move(cleanup));
         QCOMPARE(result.outcome(), test.expected);
         QCOMPARE(result.cancellationObserved(), test.cancelled);
         QCOMPARE(result.cleanupFailures().size(), test.cleanup ? std::size_t{1} : std::size_t{0});
@@ -1986,6 +1992,7 @@ void RunExecutorTests::terminalResultOwnsItsDataAfterTheRunEnds()
 
     QCOMPARE(result->outcome(), RunOutcome::Succeeded);
     QCOMPARE(result->phases().size(), runPhaseSequence().size());
+    QCOMPARE(result->evidence().phases().size(), runPhaseSequence().size());
     QCOMPARE(requirePhase(*result, RunPhase::ProcessingAssets).skipReason(),
              std::optional{PhaseSkipReason::NoRequestedWork});
 }
@@ -2055,6 +2062,29 @@ void RunExecutorTests::failedAttemptsAdvanceCompletedProgress()
     QCOMPARE(progress.completed(), std::size_t{5});
 }
 
+void RunExecutorTests::evidenceInvariantViolationsRemainProgrammingDefects() {
+    class InvalidProgressWork final : public cao::run::RunWorkService {
+       public:
+        /// Publishes an impossible first progress account to exercise the evidence invariant seam.
+        void execute(const cao::run::RunPreparation&, cao::run::RunWorkRecord&,
+                     cao::run::TemporaryArtifactRegistry&, cao::run::RunObservationSink& observations,
+                     std::stop_token) override {
+            observations.recordPhase(RunPhaseRecord::executed(
+                RunPhase::ProcessingAssets, RunProgress::determinate(2, 1)));
+        }
+    } work;
+    CountingSafetyCleanup cleanup;
+    const auto request = RunRequest::create(
+        "profile", ExecutionMode::DryRun, ModSelection::singleModRoot(testModRoot()),
+        {RequestedWork::NativeTextureOptimization});
+
+    QVERIFY_EXCEPTION_THROWN(
+        static_cast<void>(RunExecutor{}.execute(
+            request, RunServices{cleanup, nullptr, testRunConfiguration().get(), &work})),
+        cao::run::RunEvidenceInvariantViolation);
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+}
+
 void RunExecutorTests::preparingRetainsTheResolvedRootAndPolicy() {
     class Configuration final : public cao::run::RunConfigurationProvider {
        public:
@@ -2079,6 +2109,7 @@ void RunExecutorTests::preparingRetainsTheResolvedRootAndPolicy() {
     }
     QCOMPARE(result->outcome(), RunOutcome::Succeeded);
     QVERIFY(result->preparation() != nullptr);
+    QVERIFY(result->evidence().preparation() != nullptr);
     QCOMPARE(result->preparation()->modRoots().size(), std::size_t{1});
     QCOMPARE(result->preparation()->modRoots().front(), std::filesystem::canonical(root));
     QCOMPARE(result->preparation()->policy().archiveExtension(), std::string(".bsa"));
@@ -2133,9 +2164,41 @@ void RunExecutorTests::configurationLoadingFailuresAreTerminal() {
         QCOMPARE(result.outcome(), RunOutcome::Failed);
         QCOMPARE(result.finalPhase(), RunPhase::Preparing);
         QCOMPARE(result.failures().size(), std::size_t{1});
+        QVERIFY(result.evidence().preparation() == nullptr);
         QVERIFY(!result.failures().front().detail().empty());
         QCOMPARE(cleanup.invocations(), std::size_t{1});
     }
+}
+
+void RunExecutorTests::cancellationDuringPreparingPublishesNoPreparation() {
+    class CancellingConfiguration final : public cao::run::RunConfigurationProvider {
+       public:
+        /// Completes one atomic load while requesting cancellation for the next safe checkpoint.
+        CancellingConfiguration(std::stop_source& cancellation) : _cancellation(cancellation) {}
+
+        /// Returns complete configuration that the cancelled Preparing phase must not publish.
+        cao::run::RunConfiguration load(std::string_view) const override {
+            _cancellation.request_stop();
+            return TestRunConfigurationProvider{}.load("profile");
+        }
+
+       private:
+        std::stop_source& _cancellation;
+    };
+
+    std::stop_source cancellation;
+    CancellingConfiguration configuration(cancellation);
+    CountingSafetyCleanup cleanup;
+    const auto result = RunExecutor{}.execute(
+        noWorkRequest(ExecutionMode::Apply), RunServices{cleanup, nullptr, &configuration},
+        cancellation.get_token());
+
+    QCOMPARE(result.outcome(), RunOutcome::Cancelled);
+    QVERIFY(result.evidence().cancellationObserved());
+    QVERIFY(result.evidence().preparation() == nullptr);
+    QCOMPARE(result.evidence().phases().size(), std::size_t{2});
+    QCOMPARE(result.evidence().phases().front().phase(), RunPhase::Preparing);
+    QCOMPARE(result.evidence().phases().back().phase(), RunPhase::SafetyCleanup);
 }
 
 void RunExecutorTests::aNonDirectorySelectionFailsPreparing() {
@@ -2194,9 +2257,7 @@ void RunExecutorTests::preparingDoesNotMutateAssetsOrArchives() {
                                                 {RequestedWork::ArchiveExtraction});
         const auto result = RunExecutor{}.execute(
             request, RunServices{cleanup, nullptr, testRunConfiguration().get()});
-        QVERIFY(result.preparation() != nullptr);
-        QCOMPARE(result.preparation()->policy().executionMode(), mode);
-        QVERIFY(result.preparation()->policy().requests(RequestedWork::ArchiveExtraction));
+        QVERIFY(result.preparation() == nullptr);
         QCOMPARE(result.failures().front().code(),
                  cao::run::RunFailureCode::RequestedWorkUnavailable);
         QCOMPARE(std::filesystem::last_write_time(root / "asset.dds"), textureTime);
@@ -2234,6 +2295,7 @@ void RunExecutorTests::workPreparationFailurePreservesStaleArtifacts() {
     QCOMPARE(result.outcome(), RunOutcome::Failed);
     QCOMPARE(result.finalPhase(), RunPhase::Preparing);
     QVERIFY(!work.executed);
+    QVERIFY(result.preparation() == nullptr);
     QVERIFY(std::filesystem::exists(stale / "temporary.dds"));
     QCOMPARE(cleanup.invocations(), std::size_t{1});
 }

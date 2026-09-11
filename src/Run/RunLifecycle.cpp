@@ -1,10 +1,12 @@
 #include "RunLifecycle.h"
+#include "RunEvidence.h"
 #include "RunWorkRecord.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <random>
+#include <stdexcept>
 #include <utility>
 
 namespace cao::run {
@@ -131,30 +133,28 @@ bool RunRequest::requests(const routing::RequestedWork work) const noexcept {
 bool RunRequest::hasRequestedWork() const noexcept { return !_requestedWork.empty(); }
 
 OptimizationRunResult::OptimizationRunResult(
-    const RunOutcome outcome, const RunPhase finalPhase, std::vector<RunPhaseRecord> phases,
-    RunId runId, std::vector<RunFailure> failures,
-    std::shared_ptr<const RunPreparation> preparation, std::vector<RunFailure> cleanupFailures,
-    const bool cancellationObserved, std::shared_ptr<const RunWorkRecord> work,
+    const RunOutcome outcome, const RunPhase finalPhase,
+    std::shared_ptr<const RunEvidence> evidence, RunId runId, std::vector<RunFailure> failures,
+    std::vector<RunFailure> cleanupFailures, std::shared_ptr<const RunWorkRecord> work,
     std::vector<MutationSummary> mutationSummaries) noexcept
     : _runId(std::move(runId)),
       _outcome(outcome),
       _finalPhase(finalPhase),
-      _phases(std::move(phases)),
+      _evidence(std::move(evidence)),
       _failures(std::move(failures)),
-      _preparation(std::move(preparation)),
       _cleanupFailures(std::move(cleanupFailures)),
-      _cancellationObserved(cancellationObserved || outcome == RunOutcome::Cancelled),
       _work(std::move(work)),
       _mutationSummaries(std::move(mutationSummaries)) {}
 
-OptimizationRunResult OptimizationRunResult::terminal(
-    RunOutcome outcome, const RunPhase finalPhase, std::vector<RunPhaseRecord> phases, RunId runId,
-    std::vector<RunFailure> failures, std::shared_ptr<const RunPreparation> preparation,
-    std::vector<RunFailure> cleanupFailures, bool cancellationObserved, const RunWorkRecord* work) {
+OptimizationRunResult OptimizationRunResult::terminal(RunOutcome outcome, const RunPhase finalPhase,
+                                                      RunEvidence evidence, RunId runId,
+                                                      std::vector<RunFailure> failures,
+                                                      std::vector<RunFailure> cleanupFailures,
+                                                      const RunWorkRecord* work) {
     // Copy instead of sharing caller storage: even a retained mutable service record cannot
     // rewrite evidence already published in a terminal event.
     auto ownedWork = std::make_shared<const RunWorkRecord>(work ? *work : RunWorkRecord{});
-    cancellationObserved = cancellationObserved || ownedWork->cancellationObserved;
+    const auto cancellationObserved = evidence.cancellationObserved();
     failures.insert(failures.end(), ownedWork->failures.begin(), ownedWork->failures.end());
     bool unsafe = !failures.empty();
     bool containedFailure = false;
@@ -181,7 +181,9 @@ OptimizationRunResult OptimizationRunResult::terminal(
         account(attempt.modRoot, MutationKind::ArchiveExtraction, attempt.mutation,
                 attempt.succeeded(), attempt.safeToContinue);
     for (const auto& finalization : ownedWork->finalizations) {
-        cancellationObserved = cancellationObserved || finalization.cancelled;
+        if (finalization.cancelled && !cancellationObserved)
+            throw std::logic_error(
+                "Cancelled Archive Finalization requires retained cancellation evidence");
         unsafe = unsafe || !finalization.safeToContinue;
         containedFailure = containedFailure || finalization.failure.has_value();
         for (const auto& attempt : finalization.attempts)
@@ -213,11 +215,10 @@ OptimizationRunResult OptimizationRunResult::terminal(
             outcome = RunOutcome::CompletedWithFailures;
         }
     }
-    return OptimizationRunResult(
-        outcome, finalPhase, std::move(phases), std::move(runId), std::move(failures),
-        preparation ? std::make_shared<const RunPreparation>(*preparation) : nullptr,
-        std::move(cleanupFailures), cancellationObserved, std::move(ownedWork),
-        std::move(summaries));
+    auto ownedEvidence = std::make_shared<const RunEvidence>(std::move(evidence));
+    return OptimizationRunResult(outcome, finalPhase, std::move(ownedEvidence), std::move(runId),
+                                 std::move(failures), std::move(cleanupFailures),
+                                 std::move(ownedWork), std::move(summaries));
 }
 
 std::size_t OptimizationRunResult::skippedAssetCount(routing::SkipReason reason) const noexcept {
@@ -230,12 +231,19 @@ RunOutcome OptimizationRunResult::outcome() const noexcept { return _outcome; }
 
 RunPhase OptimizationRunResult::finalPhase() const noexcept { return _finalPhase; }
 
-std::span<const RunPhaseRecord> OptimizationRunResult::phases() const noexcept { return _phases; }
+const RunPreparation* OptimizationRunResult::preparation() const noexcept {
+    return _evidence->preparation();
+}
+
+bool OptimizationRunResult::cancellationObserved() const noexcept {
+    return _evidence->cancellationObserved();
+}
+
+std::span<const RunPhaseRecord> OptimizationRunResult::phases() const noexcept {
+    return _evidence->phases();
+}
 
 const RunPhaseRecord* OptimizationRunResult::phase(const RunPhase phase) const noexcept {
-    const auto record =
-        std::find_if(_phases.begin(), _phases.end(),
-                     [phase](const auto& candidate) { return candidate.phase() == phase; });
-    return record == _phases.end() ? nullptr : &*record;
+    return _evidence->phase(phase);
 }
 }  // namespace cao::run

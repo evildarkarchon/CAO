@@ -83,6 +83,20 @@ set_target_properties(cao_run_executor_tests PROPERTIES AUTOMOC ON)
 
 add_test(NAME cao_run_executor_tests COMMAND cao_run_executor_tests)
 
+add_executable(cao_run_evidence_tests
+    RunEvidenceTests.cpp
+)
+
+target_link_libraries(cao_run_evidence_tests PRIVATE
+    Qt5::Test
+    cao_run_lifecycle
+    cao_run_setup
+)
+
+set_target_properties(cao_run_evidence_tests PROPERTIES AUTOMOC ON)
+
+add_test(NAME cao_run_evidence_tests COMMAND cao_run_evidence_tests)
+
 add_executable(cao_durable_staging_tests DurableStagingTests.cpp)
 target_link_libraries(cao_durable_staging_tests PRIVATE Qt5::Test cao_run_executor)
 set_target_properties(cao_durable_staging_tests PROPERTIES AUTOMOC ON)

@@ -1,4 +1,5 @@
 #include "Run/OptimizationRunService.h"
+#include "RunEvidenceTestUtils.h"
 #include "Run/RunExecutor.h"
 #include "Run/RunWorkRecord.h"
 #include "RunTestConfiguration.h"
@@ -228,8 +229,8 @@ private slots:
  /// Verifies a nonempty missing directory is a preparation failure rather than a Start Error.
  void missingModRootsAreTerminalFailures();
 
- /// Verifies copied terminal facts outlive the service, provider, handle, and request.
- void copiedResultsOwnTheirPreparationFacts();
+ /// Verifies failed preparation exposes no resolved facts after every producer is destroyed.
+ void failedPreparationExposesNoResolvedFactsAfterProducersExpire();
 
  /// Catches missing, reordered, or unidentified phase and terminal observations.
  void inlineEventsOwnAnOrderedRunHistory();
@@ -756,10 +757,9 @@ void OptimizationRunServiceTests::missingModRootsAreTerminalFailures() {
     QVERIFY(result.phase(RunPhase::SafetyCleanup) != nullptr);
 }
 
-void OptimizationRunServiceTests::copiedResultsOwnTheirPreparationFacts() {
+void OptimizationRunServiceTests::failedPreparationExposesNoResolvedFactsAfterProducersExpire() {
     std::optional<OptimizationRunResult> copied;
     std::weak_ptr<const cao::run::RunConfigurationProvider> releasedProvider;
-    const auto canonicalRoot = std::filesystem::canonical(testModRoot());
     {
         auto provider =
             std::make_shared<CallbackRunConfigurationProvider>([](std::string_view identity) {
@@ -780,17 +780,7 @@ void OptimizationRunServiceTests::copiedResultsOwnTheirPreparationFacts() {
     QCOMPARE(copied->outcome(), RunOutcome::Failed);
     QCOMPARE(copied->failures().size(), std::size_t{1});
     QCOMPARE(copied->failures().front().code(), cao::run::RunFailureCode::RequestedWorkUnavailable);
-    const auto* preparation = copied->preparation();
-    QVERIFY(preparation != nullptr);
-    QCOMPARE(preparation->modRoots().size(), std::size_t{1});
-    QVERIFY(preparation->modRoots().front() == canonicalRoot);
-    QCOMPARE(preparation->configuration().profile().archiveExtension.value(), std::string(".ba2"));
-    QCOMPARE(preparation->configuration().ignoredMods().size(), std::size_t{1});
-    QCOMPARE(preparation->configuration().ignoredMods().front(), std::string("IgnoredChild"));
-    QCOMPARE(preparation->policy().archiveExtension(), std::string(".ba2"));
-    QCOMPARE(preparation->policy().executionMode(), ExecutionMode::DryRun);
-    QVERIFY(preparation->policy().requests(RequestedWork::ConvertibleTextureConversion));
-    QVERIFY(preparation->policy().maintainsMeshReferences());
+    QVERIFY(copied->preparation() == nullptr);
 }
 
 void OptimizationRunServiceTests::inlineEventsOwnAnOrderedRunHistory()
@@ -1644,6 +1634,8 @@ void OptimizationRunServiceTests::terminalResultOwnsCompleteWorkEvidence() {
                                            std::vector{root / "lower.bsa"}, true);
             record.skippedArchiveCounts[cao::routing::SkipReason::DisabledAssetKind] = 3;
             observations.recordPhase(RunPhaseRecord::executed(
+                RunPhase::ProcessingAssets, RunProgress::determinate(4)));
+            observations.recordPhase(RunPhaseRecord::executed(
                 RunPhase::ProcessingAssets, RunProgress::determinate(4, 1, 1)));
             record.cancellationObserved = true;
         }
@@ -1704,6 +1696,8 @@ void OptimizationRunServiceTests::workExceptionRetainsEarlierEvidence() {
             record.archiveAttempts.push_back({root / "source.bsa", MutationState::Committed,
                                                {}, true, {}, root});
             observations.recordPhase(RunPhaseRecord::executed(
+                RunPhase::ExtractingArchives, RunProgress::determinate(2)));
+            observations.recordPhase(RunPhaseRecord::executed(
                 RunPhase::ExtractingArchives, RunProgress::determinate(2, 1)));
             record.cancellationObserved = true;
             throw std::runtime_error("later discovery failed");
@@ -1745,7 +1739,8 @@ void OptimizationRunServiceTests::terminalEvidenceDeterminesOutcomeAndMutationGr
     work.finalizations.push_back(finalization);
     const auto freeze = [&] {
         return OptimizationRunResult::terminal(RunOutcome::Succeeded, RunPhase::ArchiveFinalization,
-            {}, "419", {}, {}, {}, false, &work);
+            terminalTestEvidence(RunPhase::ArchiveFinalization, work.cancellationObserved), "419",
+            {}, {}, &work);
     };
     const auto contained = freeze();
     QCOMPARE(contained.outcome(), RunOutcome::CompletedWithFailures);

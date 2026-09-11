@@ -1,4 +1,5 @@
 #include "GuiRun.h"
+#include "RunEvidenceTestUtils.h"
 #include "Run/RunWorkRecord.h"
 #include <QTest>
 
@@ -63,8 +64,13 @@ class GuiRunTests final : public QObject {
             QCOMPARE(view.state().label, std::string("Cancelling - Processing Assets"));
             QVERIFY(!view.state().outcome);
             QCOMPARE(view.state().progress->completed(), std::size_t(3));
-            auto result = std::make_shared<const OptimizationRunResult>(
-                OptimizationRunResult::terminal(outcome, RunPhase::ProcessingAssets, {}, "run"));
+            auto result =
+                std::make_shared<const OptimizationRunResult>(OptimizationRunResult::terminal(
+                    outcome, RunPhase::ProcessingAssets,
+                    terminalTestEvidence(RunPhase::ProcessingAssets,
+                                         outcome == RunOutcome::Cancelled,
+                                         RunProgress::determinate(8, 2, 1)),
+                    "run"));
             QVERIFY(view.consume(RunEvent("run", 2, result)));
             QCOMPARE(view.state().label, std::string(label));
             QCOMPARE(view.state().outcome, std::optional(outcome));
@@ -90,7 +96,8 @@ class GuiRunTests final : public QObject {
             view.consume(RunEvent("run", 1, RunPhaseRecord::executed(RunPhase::SafetyCleanup))));
         QVERIFY(!view.requestClose());
         auto result = std::make_shared<const OptimizationRunResult>(OptimizationRunResult::terminal(
-            RunOutcome::Cancelled, RunPhase::ProcessingAssets, {}, "run"));
+            RunOutcome::Cancelled, RunPhase::ProcessingAssets,
+            terminalTestEvidence(RunPhase::ProcessingAssets, true), "run"));
         QVERIFY(view.consume(RunEvent("run", 2, result)));
         QVERIFY(view.requestClose());
         QVERIFY(view.state().closeRequested);
@@ -133,15 +140,14 @@ class GuiRunTests final : public QObject {
                                      std::vector<std::filesystem::path>{"shadowed.bsa"}, true);
         auto result = std::make_shared<const OptimizationRunResult>(OptimizationRunResult::terminal(
             RunOutcome::Cancelled, RunPhase::ArchiveFinalization,
-            {RunPhaseRecord::executed(RunPhase::ArchiveFinalization,
-                                      RunProgress::determinate(5, 1, 1))},
+            terminalTestEvidence(RunPhase::ArchiveFinalization, true,
+                                 RunProgress::determinate(5, 1, 1)),
             "run",
             {RunFailure(RunFailureCode::WorkServiceFailed, RunPhase::ArchiveFinalization,
                         "primary failure")},
-            {},
             {RunFailure(RunFailureCode::TemporaryArtifactCleanupFailed, RunPhase::SafetyCleanup,
                         "cleanup failure", {}, "staging.tmp")},
-            true, &work));
+            &work));
         cao::gui::RunViewModel view;
         view.begin("run");
         QVERIFY(

@@ -33,6 +33,8 @@ target_include_directories(cao_asset_run PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_compile_features(cao_asset_run PUBLIC cxx_std_20)
 
 add_library(cao_run_lifecycle
+    RunEvidence.cpp
+    RunEvidence.h
     RunLifecycle.cpp
     RunLifecycle.h
     RunPreparation.h

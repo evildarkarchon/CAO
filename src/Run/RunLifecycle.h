@@ -16,6 +16,7 @@
 
 namespace cao::run {
 struct RunWorkRecord;
+class RunEvidence;
 
 /// The durable operation whose attempts contribute to a Mod Root's mutation account.
 enum class MutationKind { ArchiveExtraction, AssetProcessing, ArchiveFinalization };
@@ -389,7 +390,7 @@ class RunRequest final {
 /// the originating Run Request have been destroyed.
 class OptimizationRunResult final {
    public:
-    /// Takes ownership of the traversed phase records once the run reaches its terminal state.
+    /// Takes ownership of sealed factual evidence once the run reaches its terminal state.
     ///
     /// The result exposes no mutator, so committing it here is what makes it immutable. It is a
     /// named public factory rather than a friendship because the Run Executor, and later the
@@ -399,21 +400,22 @@ class OptimizationRunResult final {
     /// contained. Fatal work wins over observed cancellation, which wins over contained work and
     /// cleanup errors. A cleanup service exception makes an otherwise uncancelled, nonfatal run
     /// Failed. All supplied failure evidence is retained without replacing the primary cause.
-    /// Copies preparation and optional work evidence so caller-held mutable aliases cannot change
-    /// the committed result. Typed attempt evidence also participates in outcome classification.
+    /// Copies optional work evidence so caller-held mutable aliases cannot change the committed
+    /// result. Typed attempt evidence also participates in outcome classification.
     [[nodiscard]] static OptimizationRunResult terminal(
-        RunOutcome outcome, RunPhase finalPhase, std::vector<RunPhaseRecord> phases,
-        RunId runId = createRunId(), std::vector<RunFailure> failures = {},
-        std::shared_ptr<const RunPreparation> preparation = {},
-        std::vector<RunFailure> cleanupFailures = {}, bool cancellationObserved = false,
+        RunOutcome outcome, RunPhase finalPhase, RunEvidence evidence, RunId runId = createRunId(),
+        std::vector<RunFailure> failures = {}, std::vector<RunFailure> cleanupFailures = {},
         const RunWorkRecord* work = nullptr);
+
+    /// Borrows the sealed factual record owned by this terminal result.
+    [[nodiscard]] const RunEvidence& evidence() const noexcept { return *_evidence; }
 
     /// Borrows the frozen work evidence; terminal() copies its input, retaining no mutable alias.
     [[nodiscard]] const RunWorkRecord& work() const noexcept { return *_work; }
 
     /// Borrows ordered resolved Mod Roots; empty when preparation did not resolve any roots.
     [[nodiscard]] std::span<const std::filesystem::path> modRoots() const noexcept {
-        return _preparation ? _preparation->modRoots() : std::span<const std::filesystem::path>{};
+        return preparation() ? preparation()->modRoots() : std::span<const std::filesystem::path>{};
     }
 
     /// Returns the aggregate recognized-Asset exclusions, including discovery's skipped Archives.
@@ -426,10 +428,10 @@ class OptimizationRunResult final {
 
     /// Reports cancellation observed before terminal classification, even when Failed wins.
     /// Later cancellation requests cannot rewrite this immutable observation.
-    [[nodiscard]] bool cancellationObserved() const noexcept { return _cancellationObserved; }
+    [[nodiscard]] bool cancellationObserved() const noexcept;
 
     /// Borrows owned preparation facts, or nullptr if preparation did not complete successfully.
-    [[nodiscard]] const RunPreparation* preparation() const noexcept { return _preparation.get(); }
+    [[nodiscard]] const RunPreparation* preparation() const noexcept;
 
     /// Borrows the identity shared with this run's observations for the result's lifetime.
     [[nodiscard]] const RunId& runId() const noexcept { return _runId; }
@@ -463,21 +465,17 @@ class OptimizationRunResult final {
 
    private:
     OptimizationRunResult(RunOutcome outcome, RunPhase finalPhase,
-                          std::vector<RunPhaseRecord> phases, RunId runId,
-                          std::vector<RunFailure> failures,
-                          std::shared_ptr<const RunPreparation> preparation,
-                          std::vector<RunFailure> cleanupFailures, bool cancellationObserved,
+                          std::shared_ptr<const RunEvidence> evidence, RunId runId,
+                          std::vector<RunFailure> failures, std::vector<RunFailure> cleanupFailures,
                           std::shared_ptr<const RunWorkRecord> work,
                           std::vector<MutationSummary> mutationSummaries) noexcept;
 
     RunId _runId;
     RunOutcome _outcome;
     RunPhase _finalPhase;
-    std::vector<RunPhaseRecord> _phases;
+    std::shared_ptr<const RunEvidence> _evidence;
     std::vector<RunFailure> _failures;
-    std::shared_ptr<const RunPreparation> _preparation;
     std::vector<RunFailure> _cleanupFailures;
-    bool _cancellationObserved;
     std::shared_ptr<const RunWorkRecord> _work;
     std::vector<MutationSummary> _mutationSummaries;
 };

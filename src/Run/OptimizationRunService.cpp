@@ -1,4 +1,5 @@
 #include "OptimizationRunService.h"
+#include "RunEvidence.h"
 
 #include "Run/RunExecutor.h"
 #include "Run/TemporaryArtifactRegistry.h"
@@ -153,14 +154,16 @@ class RunSharedState final : public RunObservationSink,
         std::vector<RunFailure> failures{
             RunFailure{RunFailureCode::SchedulingFailed, RunPhase::Preparing, std::move(detail)}};
         recordFailure(failures.front());
-        std::vector<RunPhaseRecord> phases;
-        phases.push_back(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
-        recordPhase(phases.back());
+        MutableRunEvidence evidence;
+        const auto cleanupPhase = RunPhaseRecord::executed(RunPhase::SafetyCleanup);
+        evidence.recordPhase(cleanupPhase);
+        recordPhase(cleanupPhase);
         auto cleanupFailures = collectSafetyCleanupFailures(_safetyCleanup);
         for (const auto& failure : cleanupFailures) recordFailure(failure);
+        if (_stop.stop_requested()) evidence.recordCancellationObservation();
         commit(OptimizationRunResult::terminal(RunOutcome::Failed, RunPhase::Preparing,
-                                               std::move(phases), _runId, std::move(failures), {},
-                                               std::move(cleanupFailures), _stop.stop_requested()));
+                                               std::move(evidence).consume(), _runId,
+                                               std::move(failures), std::move(cleanupFailures)));
     }
 
     /// Commits the one terminal result of this run and releases every waiter.

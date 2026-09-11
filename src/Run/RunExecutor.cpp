@@ -1,5 +1,6 @@
 #include "RunExecutor.h"
 #include "PathOrdering.h"
+#include "RunEvidence.h"
 #include "StagingRecovery.h"
 #include "RunWorkRecord.h"
 #include "WorkObservationRecorder.h"
@@ -19,22 +20,16 @@ namespace {
 class WorkObservations final : public RunObservationSink {
    public:
     /// Borrows executor storage and presentation through Preparing, work, and mandatory cleanup.
-    WorkObservations(std::vector<RunPhaseRecord>& phases, RunWorkRecord& work, RunPhase& finalPhase,
+    WorkObservations(MutableRunEvidence& evidence, RunWorkRecord& work, RunPhase& finalPhase,
                      RunObservationSink* downstream)
-        : _phases(phases),
+        : _evidence(evidence),
           _recorder(work, downstream),
           _finalPhase(finalPhase),
           _downstream(downstream) {}
 
     /// Replaces a phase's latest counts without losing its traversal position.
     void recordPhase(const RunPhaseRecord& phase) override {
-        const auto found = std::find_if(_phases.begin(), _phases.end(), [&](const auto& existing) {
-            return existing.phase() == phase.phase();
-        });
-        if (found == _phases.end())
-            _phases.push_back(phase);
-        else
-            *found = phase;
+        _evidence.recordPhase(phase);
         _finalPhase = phase.phase();
         _recorder.reportSafely(phase.phase(), [&] {
             if (_downstream) _downstream->recordPhase(phase);
@@ -60,7 +55,7 @@ class WorkObservations final : public RunObservationSink {
     }
 
    private:
-    std::vector<RunPhaseRecord>& _phases;
+    MutableRunEvidence& _evidence;
     WorkObservationRecorder _recorder;
     RunPhase& _finalPhase;
     RunObservationSink* _downstream;
@@ -170,15 +165,15 @@ std::variant<RunConfiguration, RunFailure> loadConfiguration(
     }
 }
 
-/// Prepares immutable facts without mutation; a null success value means loading was cancelled.
-std::variant<std::shared_ptr<const RunPreparation>, RunFailure> prepareRun(
+/// Prepares immutable facts without mutation; an absent success value means loading was cancelled.
+std::variant<std::optional<RunPreparation>, RunFailure> prepareRun(
     const RunRequest& request, const RunConfigurationProvider* provider,
     RunObservationSink* observations, std::stop_token stop) {
     auto loaded = loadConfiguration(request, provider);
     if (auto* failure = std::get_if<RunFailure>(&loaded)) return std::move(*failure);
     // A provider may finish an atomic read after cancellation. Do not resolve roots or compile
     // additional facts once that read returns and the cancellation can be observed safely.
-    if (stop.stop_requested()) return std::shared_ptr<const RunPreparation>{};
+    if (stop.stop_requested()) return std::optional<RunPreparation>{};
 
     auto configuration = std::move(std::get<RunConfiguration>(loaded));
     const auto policy =
@@ -195,10 +190,10 @@ std::variant<std::shared_ptr<const RunPreparation>, RunFailure> prepareRun(
 
     auto resolved = resolveModRoots(request.modSelection(), configuration, observations, stop);
     if (auto* failure = std::get_if<RunFailure>(&resolved)) return std::move(*failure);
-    if (stop.stop_requested()) return std::shared_ptr<const RunPreparation>{};
-    return std::make_shared<const RunPreparation>(
-        std::move(std::get<std::vector<std::filesystem::path>>(resolved)), std::move(configuration),
-        *policy.policy(), request.archivePrecedence());
+    if (stop.stop_requested()) return std::optional<RunPreparation>{};
+    return std::optional<RunPreparation>{
+        std::in_place, std::move(std::get<std::vector<std::filesystem::path>>(resolved)),
+        std::move(configuration), *policy.policy(), request.archivePrecedence()};
 }
 
 /// Records the work phases a request with no requested work skips, in canonical order.
@@ -210,16 +205,15 @@ std::variant<std::shared_ptr<const RunPreparation>, RunFailure> prepareRun(
 /// asked for nothing is excluded by the empty request, not by its mode.
 /// Returns the last traversed work phase, observing cancellation before each transition so an
 /// inline observation can stop traversal without inventing skipped phases after cancellation.
-RunPhase recordSkippedWorkPhases(std::vector<RunPhaseRecord>& phases,
-                                 RunObservationSink* observations, std::stop_token stop) {
+RunPhase recordSkippedWorkPhases(RunObservationSink& observations, std::stop_token stop) {
     auto finalPhase = RunPhase::Preparing;
     for (const auto phase : {RunPhase::DiscoveringArchives, RunPhase::ExtractingArchives,
                              RunPhase::BuildingEffectiveAssetTree, RunPhase::ProcessingAssets,
                              RunPhase::ArchiveFinalization}) {
         if (stop.stop_requested()) break;
-        phases.push_back(RunPhaseRecord::skipped(phase, PhaseSkipReason::NoRequestedWork));
+        const auto record = RunPhaseRecord::skipped(phase, PhaseSkipReason::NoRequestedWork);
         finalPhase = phase;
-        if (observations != nullptr) observations->recordPhase(phases.back());
+        observations.recordPhase(record);
     }
     return finalPhase;
 }
@@ -239,18 +233,19 @@ std::vector<RunFailure> collectSafetyCleanupFailures(SafetyCleanupService& servi
 
 OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunServices& services,
                                            std::stop_token stop, RunId runId) const {
-    std::vector<RunPhaseRecord> phases;
+    MutableRunEvidence evidence;
     std::vector<RunFailure> failures;
     RunWorkRecord work;
-    phases.reserve(runPhaseSequence().size());
 
     // Preparing always executes: it is where the request becomes run-scoped state. It is
     // indeterminate work, so it reports no progress rather than a total of one.
     auto finalPhase = RunPhase::Preparing;
-    WorkObservations observations(phases, work, finalPhase, services.observations);
+    WorkObservations observations(evidence, work, finalPhase, services.observations);
     observations.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
     auto outcome = RunOutcome::Succeeded;
-    std::shared_ptr<const RunPreparation> preparation;
+    std::exception_ptr evidenceInvariantViolation;
+    std::optional<RunPreparation> pendingPreparation;
+    const RunPreparation* preparation{};
     StagingRecovery staging;
     TemporaryArtifactRegistry artifacts(&staging);
     if (!stop.stop_requested()) {
@@ -261,11 +256,13 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
             if (services.observations != nullptr)
                 observations.publishRetainedFailure(failures.back());
         } else {
-            preparation = std::move(std::get<std::shared_ptr<const RunPreparation>>(prepared));
+            auto completed = std::move(std::get<std::optional<RunPreparation>>(prepared));
+            if (completed) pendingPreparation.emplace(std::move(*completed));
         }
     }
 
-    if (preparation && request.hasRequestedWork() && services.work && !stop.stop_requested()) {
+    if (pendingPreparation && request.hasRequestedWork() && services.work &&
+        !stop.stop_requested()) {
         try {
             services.work->prepare();
         } catch (const std::exception& error) {
@@ -281,9 +278,9 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
             observations.publishRetainedFailure(failures.back());
     }
 
-    if (preparation && outcome != RunOutcome::Failed &&
+    if (pendingPreparation && outcome != RunOutcome::Failed &&
         request.executionMode() == routing::ExecutionMode::Apply) {
-        for (const auto& root : preparation->modRoots()) {
+        for (const auto& root : pendingPreparation->modRoots()) {
             if (stop.stop_requested()) break;
             if (auto failure = staging.recover(root, stop)) {
                 outcome = RunOutcome::Failed;
@@ -295,6 +292,20 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
         }
     }
 
+    if (pendingPreparation && outcome != RunOutcome::Failed && request.hasRequestedWork() &&
+        services.work == nullptr && !stop.stop_requested()) {
+        // A request cannot establish successful Preparing facts when its required work service is
+        // absent. Keep the complete candidate private so terminal evidence exposes no partial
+        // success.
+        outcome = RunOutcome::Failed;
+        failures.emplace_back(RunFailureCode::RequestedWorkUnavailable, RunPhase::Preparing,
+                              "Requested work requires run services that are not yet available");
+        if (services.observations != nullptr) observations.publishRetainedFailure(failures.back());
+    }
+
+    if (pendingPreparation && outcome != RunOutcome::Failed && !stop.stop_requested())
+        preparation = &evidence.recordPreparation(std::move(*pendingPreparation));
+
     if (outcome == RunOutcome::Failed) {
         // Preparation failure stops traversal, but never bypasses the mandatory cleanup pass.
     } else if (stop.stop_requested()) {
@@ -302,6 +313,9 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
     } else if (request.hasRequestedWork() && services.work) {
         try {
             services.work->execute(*preparation, work, artifacts, observations, stop);
+        } catch (const RunEvidenceInvariantViolation&) {
+            // Preserve mandatory cleanup before propagating this programming defect to its owner.
+            evidenceInvariantViolation = std::current_exception();
         } catch (const std::exception& error) {
             observations.recordFailure(
                 RunFailure{RunFailureCode::WorkServiceFailed, finalPhase, error.what()});
@@ -310,23 +324,15 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
                 RunFailure{RunFailureCode::WorkServiceFailed, finalPhase,
                            "The work service threw a non-standard exception"});
         }
-    } else if (request.hasRequestedWork()) {
-        // Without a work service, traversing work phases would report success without performing
-        // the request. Preserve an explicit failure until the application supplies that service.
-        outcome = RunOutcome::Failed;
-        failures.emplace_back(RunFailureCode::RequestedWorkUnavailable, RunPhase::Preparing,
-                              "Requested work requires run services that are not yet available");
-        if (services.observations != nullptr) observations.publishRetainedFailure(failures.back());
     } else {
-        finalPhase = recordSkippedWorkPhases(phases, &observations, stop);
+        finalPhase = recordSkippedWorkPhases(observations, stop);
     }
 
     // Safety Cleanup runs exactly once on every terminal path, before the terminal result is
     // committed, so cancellation and failure cannot litter Mod Roots with run-owned artifacts.
-    phases.push_back(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
     // Cleanup publication is isolated without replacing the furthest work phase.
     const auto workFinalPhase = finalPhase;
-    observations.recordPhase(phases.back());
+    observations.recordPhase(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
     finalPhase = workFinalPhase;
     auto cleanupFailures = collectSafetyCleanupFailures(artifacts);
     auto injectedCleanupFailures = collectSafetyCleanupFailures(services.safetyCleanup);
@@ -334,8 +340,12 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
                            injectedCleanupFailures.end());
     for (const auto& failure : cleanupFailures)
         if (services.observations != nullptr) observations.publishRetainedFailure(failure);
-    return OptimizationRunResult::terminal(
-        outcome, finalPhase, std::move(phases), std::move(runId), std::move(failures),
-        std::move(preparation), std::move(cleanupFailures), stop.stop_requested(), &work);
+    if (evidenceInvariantViolation) std::rethrow_exception(evidenceInvariantViolation);
+    if (stop.stop_requested() || work.cancellationObserved)
+        evidence.recordCancellationObservation();
+    auto terminalEvidence = std::move(evidence).consume();
+    return OptimizationRunResult::terminal(outcome, finalPhase, std::move(terminalEvidence),
+                                           std::move(runId), std::move(failures),
+                                           std::move(cleanupFailures), &work);
 }
 }  // namespace cao::run
