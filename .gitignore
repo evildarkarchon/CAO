@@ -498,3 +498,11 @@ MigrationBackup/
 # End of https://www.gitignore.io/api/qt,git,vim,qtcreator,visualstudio,visualstudiocode
 *.pri
 /q
+
+graphify-out/
+.claude/settings.json
+.codex/hooks.json
+build/
+install/
+build-*/
+src/Version.h

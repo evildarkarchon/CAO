@@ -1,55 +1,65 @@
 /*!
-  * Stripped down version of this file https://github.com/aerisarn/ck-cmd/blob/master/src/commands/hkx/Convert.cpp
-  */
+ * Stripped down version of this file
+ * https://github.com/aerisarn/ck-cmd/blob/master/src/commands/hkx/Convert.cpp
+ */
 
 #include "AnimationsOptimizer.h"
 
-void AnimationsOptimizer::convert(const QString &filePath)
-{
+bool AnimationsOptimizer::convert(const QString& sourcePath, const QString& outputPath) {
     std::call_once(onceFlag, [this] {
         hkxcmdFound = QFile::exists(hkxcmdPath);
-        if (!hkxcmdFound)
-        {
+        if (!hkxcmdFound) {
             PLOG_ERROR << "HKXCMD not found. Animations won't be processed";
             return;
         }
     });
 
-    if (!hkxcmdFound)
-        return;
+    if (!hkxcmdFound) return false;
 
-    const QString tempHkx = "___tempAnimFile.hkx";
-    const QString outHkx = "___tempAnimFile-out.hkx";
-
-    QFile::remove(tempHkx);
-    QFile::remove(outHkx);
-
-    QFile file(filePath);
-    if (!file.copy(tempHkx)) {
-        PLOG_ERROR << QString("Cannot copy %1 in order to convert it").arg(filePath);
-        return;
+    const QFileInfo staging(outputPath);
+    const QFileInfo source(sourcePath);
+    if (outputPath.isEmpty() || !staging.isFile() || staging.isSymLink() || staging.size() != 0 ||
+        staging.suffix().compare("hkx", Qt::CaseInsensitive) != 0 ||
+        staging.canonicalFilePath().compare(source.canonicalFilePath(), Qt::CaseInsensitive) == 0) {
+        PLOG_ERROR << "Animation conversion requires an empty registered HKX staging file.";
+        return false;
     }
 
     QProcess hkxcmd(this);
-    const QString tempHkxFull = QDir::toNativeSeparators(QFileInfo(tempHkx).absoluteFilePath());
-    const QStringList args = {"convert", tempHkxFull, "-v", "AMD64"};
+    const QString sourceFull = QDir::toNativeSeparators(QFileInfo(sourcePath).absoluteFilePath());
+    const QString outputFull = QDir::toNativeSeparators(QFileInfo(outputPath).absoluteFilePath());
+    // An explicit output keeps every converter write within the registry's durable receipt.
+    // Passing only an input would let hkxcmd create an unregistered "-out" sibling.
+    const QStringList args = {"convert", sourceFull, "-o", outputFull, "-v", "AMD64"};
 
     hkxcmd.start(hkxcmdPath, args);
-    hkxcmd.waitForFinished();
+    if (!hkxcmd.waitForStarted()) {
+        PLOG_ERROR << QString("Cannot start Animation converter: %1").arg(hkxcmd.errorString());
+        return false;
+    }
+    if (!hkxcmd.waitForFinished()) {
+        // Stop the writer before returning ownership to cleanup or another commit attempt.
+        hkxcmd.kill();
+        hkxcmd.waitForFinished(-1);
+        PLOG_ERROR << QString("Animation converter did not finish for %1").arg(sourcePath);
+        return false;
+    }
 
     const QString output = hkxcmd.readAllStandardOutput() + hkxcmd.readAllStandardError();
-    const bool success = !output.contains("not loadable");
+    const QFileInfo converted(outputPath);
+    // hkxcmd can report load/save failures in its log while still exiting successfully.
+    const bool success = hkxcmd.exitStatus() == QProcess::NormalExit && hkxcmd.exitCode() == 0 &&
+                         !output.contains("not loadable", Qt::CaseInsensitive) &&
+                         !output.contains("Failed to save file", Qt::CaseInsensitive) &&
+                         !output.contains("Failed to load file", Qt::CaseInsensitive) &&
+                         !output.contains("Unexpected exception occurred", Qt::CaseInsensitive) &&
+                         converted.isFile() && converted.size() > 0;
 
     if (!success) {
-        PLOG_WARNING << QString("Cannot convert %1, it is probably already converted.").arg(filePath);
-        return;
+        PLOG_WARNING << QString("Cannot convert %1: %2").arg(sourcePath, output);
+        return false;
     }
 
-    QFile::remove(filePath);
-    if (!QFile::rename(outHkx, filePath)) {
-        PLOG_ERROR << QString("Failed to convert %1: Cannot copy it back to its path").arg(filePath);
-        return;
-    }
-
-    PLOG_INFO << QString("Successfully converted %1").arg(filePath);
+    PLOG_INFO << QString("Successfully staged converted Animation %1").arg(sourcePath);
+    return true;
 }

@@ -4,13 +4,18 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "Version.h"
+#include "ApplicationLogging.h"
 #ifdef GUI
 #include "MainWindow.h"
 #endif
-#include "Manager.h"
+#include "Run/ApplicationRunSetup.h"
+#ifndef GUI
+#include "CliRun.h"
+#include "Run/ApplicationRunWork.h"
+#endif
 
-void displayError(const std::string &err)
-{
+/// Presents bootstrap failures through the active application surface and existing logger.
+void displayError(const std::string& err) {
 #ifdef GUI
     QMessageBox box(QMessageBox::Critical, "Unknown error", QString::fromStdString(err));
     box.exec();
@@ -21,8 +26,8 @@ void displayError(const std::string &err)
     PLOG_FATAL << err;
 }
 
-int main(int argc, char *argv[])
-{
+/// Collects application intent and keeps the CLI run alive through cooperative cancellation.
+int main(int argc, char* argv[]) {
 #ifdef GUI
     QApplication app(argc, argv);
 #else
@@ -40,21 +45,37 @@ int main(int argc, char *argv[])
     qtTranslator.load(QLocale(), "AssetsOpt", "_", "translations");
     QCoreApplication::installTranslator(&AssetsOptTranslator);
 
-#ifdef GUI
-    MainWindow *window = new MainWindow;
-#else
-    Manager *manager = new Manager(QCoreApplication::arguments());
-#endif
-
     try {
+        OptionsCAO options;
 #ifdef GUI
+        options.readFromIni(Profiles::optionsSettings());
+#else
+        options.parseArguments(QCoreApplication::arguments());
+#endif
+        cao::application::configureLogging(Profiles::logPath(), options.bDebugLog);
+
+#ifdef GUI
+        MainWindow* window = new MainWindow;
         window->show();
 #else
-        manager->runOptimization();
+        const cao::cli::ConsoleInterrupt interruption;
+        cao::run::OptimizationRunService service(
+            cao::run::makeApplicationRunConfigurationProvider(),
+            cao::run::makeApplicationRunWork(options));
+        // Standard output has process lifetime; the observer owns its stream reference until join.
+        auto output = std::shared_ptr<std::ostream>(&std::cout, [](std::ostream*) {
+            // The C++ runtime owns standard output; the run must not delete it.
+        });
+        return cao::cli::run(service, cao::run::makeApplicationRunRequest(options),
+                             std::move(output), [&] { return interruption.requested(); });
 #endif
-    } catch (const std::exception &e) {
+    } catch (const std::exception& e) {
         displayError(e.what());
+#ifdef GUI
         return 1;
+#else
+        return 2;
+#endif
     }
 #ifdef GUI
     return QApplication::exec();

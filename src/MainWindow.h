@@ -4,26 +4,27 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma once
 
-#include "Manager.h"
+#include "GuiRun.h"
+#include "OptionsCAO.h"
+#include "Run/OptimizationRunService.h"
 #include "TexturesFormatSelectDialog.h"
 #include "pch.h"
 #include "ui_mainWindow.h"
 
-namespace Ui
-{
+namespace Ui {
 class MainWindow;
 }
 
-class MainWindow final : public QMainWindow
-{
+class MainWindow final : public QMainWindow {
     Q_DECLARE_TR_FUNCTIONS(MainWindow)
 
-public:
+   public:
     MainWindow();
+    /// Joins any retained run before releasing presentation widgets.
     ~MainWindow();
 
-private:
-    Ui::MainWindow *_ui;
+   private:
+    Ui::MainWindow* _ui;
 
     bool _bLockVariables = false;
 
@@ -32,32 +33,40 @@ private:
     void refreshProfiles();
     void createProfile();
 
-    void setDarkTheme(const bool &enabled);
+    void setDarkTheme(const bool& enabled);
 
     void resetUi() const;
 
-    void setGameMode(const QString &mode);
+    void setGameMode(const QString& mode);
 
-    void showTutorialWindow(const QString &title, const QString &text);
+    void showTutorialWindow(const QString& title, const QString& text);
 
+    /// Refreshes the legacy log while retaining structured observations as plain text.
     void updateLog() const;
+    /// Captures user intent and retains a run whose observations are queued to this window.
     void initProcess();
+    /// After terminal delivery, queues a pending close with controls locked or restores controls.
     void endProcess();
-    void readProgress(const QString &text, const int &max, const int &value) const;
+    /// Renders authoritative phase counts and terminal labels without calculating run progress.
+    void renderRun();
+    /// Requests cooperative cancellation and leaves the window alive for terminal delivery.
+    void cancelRun();
 
-    void setAdvancedSettingsEnabled(const bool &value);
+    void setAdvancedSettingsEnabled(const bool& value);
 
-    void closeEvent(QCloseEvent *event);
-    void dragEnterEvent(QDragEnterEvent *e);
-    void dropEvent(QDropEvent *e);
+    /// Defers destruction of an active run until its queued terminal observation is rendered.
+    void closeEvent(QCloseEvent* event) override;
+    void dragEnterEvent(QDragEnterEvent* e);
+    void dropEvent(QDropEvent* e);
 
     void firstStart();
 
-    int _progressBarValue{};
-
     OptionsCAO _options;
-    std::unique_ptr<Manager> _caoProcess;
+    std::unique_ptr<cao::run::OptimizationRunService> _runService;
+    std::optional<cao::run::RunHandle> _runHandle;
+    cao::gui::RunViewModel _runView;
+    std::size_t _renderedDetails{};
     bool _showTutorials;
-    TexturesFormatSelectDialog *texturesFormatDialog;
+    TexturesFormatSelectDialog* texturesFormatDialog;
     QTimer logTimer;
 };

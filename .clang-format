@@ -1,0 +1,31 @@
+---
+# Declare the language target
+Language: Cpp
+
+# Base the ruleset on a built-in standard style
+BasedOnStyle: Google
+
+# Set maximum length for lines
+ColumnLimit: 100
+
+# Indentation rules
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+# Brace positioning configuration
+BreakBeforeBraces: Attach
+
+# Pointer/Reference alignment (Left: int* p, Right: int *p, Middle: int * p)
+PointerAlignment: Left
+
+# Spaces layout adjustments
+SpaceAfterCStyleCast: false
+SpaceBeforeParens: ControlStatements
+SpacesInContainerLiterals: true
+
+# Clean-up features
+SortIncludes: false
+ReflowComments: true
+
+...
