@@ -64,6 +64,10 @@ _Avoid_: Options, command arguments
 A structural Run Request conflict or an already-active Optimization Run that prevents a new run from starting. It produces no Run Outcome.
 _Avoid_: Failed run, exception
 
+**Run Failure**:
+A retained failure of Optimization Run preparation or orchestration, distinct from an Operation Failure attached to a completed Asset or Archive attempt and from a Safety Cleanup failure. A Run Failure is Run Evidence that the Run Executor considers when classifying the Run Outcome.
+_Avoid_: Start Error, Operation Failure, Safety Cleanup failure, Run Outcome
+
 **Run Outcome**:
 The terminal classification of an Optimization Run: Succeeded, Completed With Failures, Cancelled, or Failed. Partial mutation is outcome detail, not a separate outcome.
 _Avoid_: Status, partial completion
@@ -71,6 +75,10 @@ _Avoid_: Status, partial completion
 **Run ID**:
 The unique identity of one Optimization Run, carried by its events and terminal result so observations from different runs cannot be confused.
 _Avoid_: Thread ID, task ID
+
+**Run Event**:
+One immutable ordered publication from an Optimization Run: a Run Phase transition, Run Diagnostic, Run Failure, or terminal result. Run Events are a live observation history and do not include every fact retained as Run Evidence.
+_Avoid_: Run Evidence, log message, callback
 
 **Run Phase**:
 A stable lifecycle stage of an Optimization Run, from preparation through Safety Cleanup. A Run Phase may report determinate or indeterminate Run Progress.
@@ -87,6 +95,10 @@ _Avoid_: Global percentage, work completed
 **Run Diagnostic**:
 An informational or warning-level observation emitted by an Optimization Run that never determines its Run Outcome.
 _Avoid_: Operation Failure, log message
+
+**Run Evidence**:
+The owned factual record accumulated by an Optimization Run from Preparing through Safety Cleanup, including successfully established Mod Roots, Routing Policy, and Archive Precedence; the latest account of each traversed Run Phase; Run Diagnostics; Run Failures; Operation Failures; collisions; completed attempts; and cleanup failures. Run Event history is separate: observers may receive multiple progress transitions while Run Evidence retains the terminal account for that Run Phase. Mutation summaries and aggregate counts are derived from authoritative Run Evidence rather than retained as independent facts. Run Evidence becomes immutable after Safety Cleanup and never determines the Run Outcome; the Run Executor classifies the terminal result from the retained facts.
+_Avoid_: Run Outcome, event history, log
 
 **Safety Cleanup**:
 The terminal Run Phase that releases run resources and removes only temporary artifacts owned by the Optimization Run. It neither rolls back completed mutations nor deletes backups or failed-output evidence.
