@@ -48,6 +48,7 @@ class WorkObservationRecorder final {
     /// boundary.
     void retainDiagnostic(const RunDiagnostic& diagnostic) {
         _record.diagnostics.push_back(diagnostic);
+        if (_sink) _sink->retainDiagnostic(diagnostic);
     }
 
     /// Publishes retained diagnostics at the caller's established reporting boundary, once each.

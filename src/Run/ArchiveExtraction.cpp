@@ -113,7 +113,7 @@ ArchiveExtractionResult ArchiveExtractor::extract(const ArchiveExtractionPlan& p
         for (const auto& entry : plan.mergeEntries) {
             auto& temporary = staged.at(entry);
             const auto destination =
-                prepareMergeTarget(root, source.parent_path() / std::filesystem::u8path(entry));
+                prepareMergeTarget(root, source.parent_path() / pathFromUtf8(entry));
 #ifdef _WIN32
             // The native no-replace commit also protects Loose Assets created after preflight.
             if (!MoveFileExW(temporary.path.c_str(), destination.path.c_str(),

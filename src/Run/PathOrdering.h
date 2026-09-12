@@ -10,6 +10,11 @@
 #include <string_view>
 
 namespace cao::run {
+/// Constructs a filesystem path from UTF-8 bytes without consulting the Windows ANSI code page.
+inline std::filesystem::path pathFromUtf8(const std::string_view value) {
+    return std::filesystem::path(std::u8string(value.begin(), value.end()));
+}
+
 /// Folds UTF-8 names independently of the process locale; invalid encoding throws to the caller.
 inline std::string foldedName(std::string_view name) {
     utf8proc_uint8_t* mapped = nullptr;

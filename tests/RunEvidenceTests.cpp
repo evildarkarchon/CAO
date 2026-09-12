@@ -13,7 +13,12 @@ using cao::routing::ExecutionMode;
 using cao::run::ArchivePrecedence;
 using cao::run::MutableRunEvidence;
 using cao::run::RunConfiguration;
+using cao::run::RunDiagnostic;
+using cao::run::RunDiagnosticCode;
 using cao::run::RunEvidence;
+using cao::run::RunFailure;
+using cao::run::RunFailureCode;
+using cao::run::RunObservationSink;
 using cao::run::RunPhase;
 using cao::run::RunPhaseRecord;
 using cao::run::RunPreparation;
@@ -62,6 +67,12 @@ class RunEvidenceTests final : public QObject {
     void preparationAndPostConsumptionMutationAreRejected();
     /// Verifies cancellation is retained as a fact without requiring terminal classification.
     void cancellationObservationIsSealedIndependently();
+    /// Verifies every live payload is already queryable when its publication callback begins.
+    void liveFactsAreRetainedBeforePublication();
+    /// Supplies each live payload category as the one whose adapter callback throws.
+    void throwingPublicationIsClaimedOnce_data();
+    /// Verifies observer failure is retained once without retry, recursion, or later replay.
+    void throwingPublicationIsClaimedOnce();
 };
 
 void RunEvidenceTests::successfulPreparationIsAtomicallyOwned() {
@@ -160,10 +171,9 @@ void RunEvidenceTests::progressRegressionsAreRejected() {
     QVERIFY_EXCEPTION_THROWN(
         evidence.recordPhase(RunPhaseRecord::executed(RunPhase::ExtractingArchives)),
         std::logic_error);
-    QVERIFY_EXCEPTION_THROWN(
-        evidence.recordPhase(RunPhaseRecord::skipped(
-            RunPhase::ExtractingArchives, cao::run::PhaseSkipReason::DryRun)),
-        std::logic_error);
+    QVERIFY_EXCEPTION_THROWN(evidence.recordPhase(RunPhaseRecord::skipped(
+                                 RunPhase::ExtractingArchives, cao::run::PhaseSkipReason::DryRun)),
+                             std::logic_error);
 }
 
 void RunEvidenceTests::preparationAndPostConsumptionMutationAreRejected() {
@@ -189,6 +199,124 @@ void RunEvidenceTests::cancellationObservationIsSealedIndependently() {
     const auto terminal = consumeAfterCleanup(evidence);
 
     QVERIFY(terminal.cancellationObserved());
+}
+
+void RunEvidenceTests::liveFactsAreRetainedBeforePublication() {
+    class InspectingObservation final : public RunObservationSink {
+       public:
+        const MutableRunEvidence* evidence{};
+        std::vector<int> payloadKinds;
+
+        /// Confirms the accepted phase is visible before the publication adapter runs.
+        void recordPhase(const RunPhaseRecord& phase) override {
+            QVERIFY(evidence->phase(phase.phase()) != nullptr);
+            payloadKinds.push_back(0);
+        }
+
+        /// Confirms the accepted failure is retained before the publication adapter runs.
+        void recordFailure(const RunFailure& failure) override {
+            QVERIFY(!evidence->failures().empty());
+            QCOMPARE(evidence->failures().back().code(), failure.code());
+            payloadKinds.push_back(2);
+        }
+
+        /// Confirms the accepted diagnostic is retained before the publication adapter runs.
+        void recordDiagnostic(const RunDiagnostic& diagnostic) override {
+            QVERIFY(!evidence->diagnostics().empty());
+            QCOMPARE(evidence->diagnostics().back().code(), diagnostic.code());
+            payloadKinds.push_back(1);
+        }
+    } observation;
+
+    MutableRunEvidence evidence{&observation};
+    observation.evidence = &evidence;
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
+    evidence.recordDiagnostic(RunDiagnostic{RunDiagnosticCode::IgnoredModExcluded,
+                                            RunPhase::Preparing, "retained diagnostic"});
+    evidence.recordFailure(RunFailure{RunFailureCode::ConfigurationLoadingFailed,
+                                      RunPhase::Preparing, "retained failure"});
+
+    const auto terminal = consumeAfterCleanup(evidence);
+
+    QCOMPARE(observation.payloadKinds, std::vector<int>({0, 1, 2, 0}));
+    QCOMPARE(terminal.diagnostics().size(), std::size_t{1});
+    QCOMPARE(terminal.failures().size(), std::size_t{1});
+}
+
+void RunEvidenceTests::throwingPublicationIsClaimedOnce_data() {
+    QTest::addColumn<int>("throwingKind");
+    QTest::newRow("phase") << 0;
+    QTest::newRow("diagnostic") << 1;
+    QTest::newRow("failure") << 2;
+}
+
+void RunEvidenceTests::throwingPublicationIsClaimedOnce() {
+    QFETCH(int, throwingKind);
+    class ThrowingObservation final : public RunObservationSink {
+       public:
+        explicit ThrowingObservation(const int throwingKind) : _throwingKind(throwingKind) {}
+
+        /// Throws from the selected first phase callback after recording its one invocation.
+        void recordPhase(const RunPhaseRecord&) override {
+            ++phaseCalls;
+            throwSelected(0);
+        }
+
+        /// Throws from the selected diagnostic callback without receiving generated failures.
+        void recordDiagnostic(const RunDiagnostic& diagnostic) override {
+            ++diagnosticCalls;
+            deliveredDiagnosticCodes.push_back(diagnostic.code());
+            throwSelected(1);
+        }
+
+        /// Throws from the selected failure callback after recording its one invocation.
+        void recordFailure(const RunFailure&) override {
+            ++failureCalls;
+            throwSelected(2);
+        }
+
+        std::size_t phaseCalls{};
+        std::size_t diagnosticCalls{};
+        std::size_t failureCalls{};
+        std::vector<RunDiagnosticCode> deliveredDiagnosticCodes;
+
+       private:
+        /// Raises one controlled adapter exception for the selected payload category.
+        void throwSelected(const int kind) {
+            if (!_thrown && kind == _throwingKind) {
+                _thrown = true;
+                throw std::runtime_error("controlled publication failure");
+            }
+        }
+
+        int _throwingKind;
+        bool _thrown{};
+    } observation{throwingKind};
+
+    MutableRunEvidence evidence{&observation};
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
+    evidence.recordDiagnostic(RunDiagnostic{RunDiagnosticCode::IgnoredModExcluded,
+                                            RunPhase::Preparing, "first diagnostic"});
+    evidence.recordFailure(RunFailure{RunFailureCode::ConfigurationLoadingFailed,
+                                      RunPhase::Preparing, "retained failure"});
+    evidence.recordDiagnostic(RunDiagnostic{RunDiagnosticCode::SeparatorModExcluded,
+                                            RunPhase::Preparing, "later diagnostic"});
+
+    const auto terminal = consumeAfterCleanup(evidence);
+    const auto observerFailures = std::count_if(
+        terminal.diagnostics().begin(), terminal.diagnostics().end(), [](const auto& diagnostic) {
+            return diagnostic.code() == RunDiagnosticCode::ObserverFailed;
+        });
+
+    QCOMPARE(observation.phaseCalls, std::size_t{2});
+    QCOMPARE(observation.diagnosticCalls, std::size_t{2});
+    QCOMPARE(observation.failureCalls, std::size_t{1});
+    QCOMPARE(observation.deliveredDiagnosticCodes,
+             std::vector<RunDiagnosticCode>(
+                 {RunDiagnosticCode::IgnoredModExcluded, RunDiagnosticCode::SeparatorModExcluded}));
+    QCOMPARE(observerFailures, 1);
+    QCOMPARE(terminal.diagnostics().size(), std::size_t{3});
+    QCOMPARE(terminal.failures().size(), std::size_t{1});
 }
 
 QTEST_MAIN(RunEvidenceTests)

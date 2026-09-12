@@ -2164,6 +2164,9 @@ void RunExecutorTests::configurationLoadingFailuresAreTerminal() {
         QCOMPARE(result.outcome(), RunOutcome::Failed);
         QCOMPARE(result.finalPhase(), RunPhase::Preparing);
         QCOMPARE(result.failures().size(), std::size_t{1});
+        QCOMPARE(result.evidence().failures().size(), std::size_t{1});
+        QCOMPARE(result.evidence().failures().front().code(),
+                 cao::run::RunFailureCode::ConfigurationLoadingFailed);
         QVERIFY(result.evidence().preparation() == nullptr);
         QVERIFY(!result.failures().front().detail().empty());
         QCOMPARE(cleanup.invocations(), std::size_t{1});

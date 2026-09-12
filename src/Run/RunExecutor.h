@@ -1,34 +1,10 @@
 #pragma once
 
-#include "Run/RunLifecycle.h"
+#include "Run/RunEvidence.h"
 
 #include <stop_token>
 
 namespace cao::run {
-/// Receives executor facts synchronously; the owning run handles presentation and isolation.
-class RunObservationSink {
-   public:
-    virtual ~RunObservationSink() = default;
-
-    /// Records a traversed phase before the executor proceeds; implementations must isolate
-    /// observers.
-    virtual void recordPhase(const RunPhaseRecord& phase) = 0;
-
-    /// Records a run-level failure before cleanup and terminal commit.
-    virtual void recordFailure(const RunFailure& failure) = 0;
-
-    /// Records an informational observation before execution continues; it cannot change outcome.
-    virtual void recordDiagnostic(const RunDiagnostic& diagnostic) = 0;
-
-    /// Publishes evidence already owned by the work record; standalone sinks receive it normally.
-    virtual void publishRetainedDiagnostic(const RunDiagnostic& diagnostic) {
-        recordDiagnostic(diagnostic);
-    }
-
-    /// Publishes a failure already owned by work without requiring the executor to retain it again.
-    virtual void publishRetainedFailure(const RunFailure& failure) { recordFailure(failure); }
-};
-
 class TemporaryArtifactRegistry;
 
 /// Performs requested work while recording owned evidence before proceeding to another attempt.

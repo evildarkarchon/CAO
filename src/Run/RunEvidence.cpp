@@ -13,6 +13,8 @@ class RunEvidenceStorage final {
    public:
     std::optional<RunPreparation> preparation;
     std::vector<RunPhaseRecord> phases;
+    std::vector<RunDiagnostic> diagnostics;
+    std::vector<RunFailure> failures;
     bool cancellationObserved{};
 };
 
@@ -61,6 +63,13 @@ RunEvidenceStorage& requireStorage(std::unique_ptr<RunEvidenceStorage>& storage)
         throw RunEvidenceInvariantViolation("Mutable Run Evidence has already been consumed");
     return *storage;
 }
+
+/// Returns readable live storage or rejects inspection of a consumed evidence owner.
+const RunEvidenceStorage& requireStorage(const std::unique_ptr<RunEvidenceStorage>& storage) {
+    if (!storage)
+        throw RunEvidenceInvariantViolation("Mutable Run Evidence has already been consumed");
+    return *storage;
+}
 }  // namespace
 
 RunEvidence::RunEvidence(std::unique_ptr<RunEvidenceStorage> storage)
@@ -79,9 +88,16 @@ const RunPhaseRecord* RunEvidence::phase(const RunPhase phase) const noexcept {
     return found == _storage->phases.end() ? nullptr : &*found;
 }
 
+std::span<const RunDiagnostic> RunEvidence::diagnostics() const noexcept {
+    return _storage->diagnostics;
+}
+
+std::span<const RunFailure> RunEvidence::failures() const noexcept { return _storage->failures; }
+
 bool RunEvidence::cancellationObserved() const noexcept { return _storage->cancellationObserved; }
 
-MutableRunEvidence::MutableRunEvidence() : _storage(std::make_unique<RunEvidenceStorage>()) {
+MutableRunEvidence::MutableRunEvidence(RunObservationSink* observations)
+    : _storage(std::make_unique<RunEvidenceStorage>()), _observations(observations) {
     _storage->phases.reserve(runPhaseSequence().size());
 }
 
@@ -90,8 +106,7 @@ MutableRunEvidence::~MutableRunEvidence() = default;
 const RunPreparation& MutableRunEvidence::recordPreparation(RunPreparation preparation) {
     auto& storage = requireStorage(_storage);
     if (storage.preparation)
-        throw RunEvidenceInvariantViolation(
-            "Successful Run preparation can only be recorded once");
+        throw RunEvidenceInvariantViolation("Successful Run preparation can only be recorded once");
     if (storage.phases.empty() || storage.phases.back().phase() != RunPhase::Preparing)
         throw RunEvidenceInvariantViolation(
             "Successful Run preparation must be recorded during Preparing");
@@ -110,20 +125,99 @@ void MutableRunEvidence::recordPhase(RunPhaseRecord phase) {
             throw RunEvidenceInvariantViolation(
                 "Determinate Run Phase progress must begin at zero");
         storage.phases.push_back(std::move(phase));
-        return;
+    } else {
+        auto& latest = storage.phases.back();
+        if (phase.phase() == latest.phase()) {
+            validateReplacement(latest, phase);
+            latest = std::move(phase);
+        } else {
+            if (phasePosition(phase.phase()) <= phasePosition(latest.phase()))
+                throw RunEvidenceInvariantViolation(
+                    "Run Phases must follow canonical traversal order");
+            if (phase.progress() && phase.progress()->completed() != 0)
+                throw RunEvidenceInvariantViolation(
+                    "Determinate Run Phase progress must begin at zero");
+            storage.phases.push_back(std::move(phase));
+        }
     }
 
-    auto& latest = storage.phases.back();
-    if (phase.phase() == latest.phase()) {
-        validateReplacement(latest, phase);
-        latest = std::move(phase);
-        return;
+    // Copy before calling out so reentrant publication cannot invalidate vector storage.
+    const auto retained = storage.phases.back();
+    publishPhase(retained);
+}
+
+void MutableRunEvidence::recordDiagnostic(RunDiagnostic diagnostic) {
+    retainDiagnostic(std::move(diagnostic));
+    publishDiagnostics();
+}
+
+void MutableRunEvidence::retainDiagnostic(RunDiagnostic diagnostic) {
+    auto& storage = requireStorage(_storage);
+    storage.diagnostics.push_back(std::move(diagnostic));
+    _diagnosticPublications.push_back(storage.diagnostics.size() - 1);
+}
+
+void MutableRunEvidence::recordFailure(RunFailure failure) {
+    auto& storage = requireStorage(_storage);
+    storage.failures.push_back(std::move(failure));
+    const auto retained = storage.failures.back();
+    publishFailure(retained);
+}
+
+const RunPhaseRecord* MutableRunEvidence::phase(const RunPhase phase) const {
+    const auto& storage = requireStorage(_storage);
+    const auto found =
+        std::find_if(storage.phases.begin(), storage.phases.end(),
+                     [phase](const auto& candidate) { return candidate.phase() == phase; });
+    return found == storage.phases.end() ? nullptr : &*found;
+}
+
+std::span<const RunDiagnostic> MutableRunEvidence::diagnostics() const {
+    return requireStorage(_storage).diagnostics;
+}
+
+std::span<const RunFailure> MutableRunEvidence::failures() const {
+    return requireStorage(_storage).failures;
+}
+
+void MutableRunEvidence::publishPhase(const RunPhaseRecord& phase) {
+    if (_observations == nullptr) return;
+    publishSafely(phase.phase(), [&] { _observations->recordPhase(phase); });
+}
+
+void MutableRunEvidence::publishSafely(const RunPhase phase,
+                                       const std::function<void()>& publication) {
+    try {
+        publication();
+    } catch (const std::exception& error) {
+        retainObserverFailure(phase, error.what());
+    } catch (...) {
+        retainObserverFailure(phase, "The observer threw a non-standard exception");
     }
-    if (phasePosition(phase.phase()) <= phasePosition(latest.phase()))
-        throw RunEvidenceInvariantViolation("Run Phases must follow canonical traversal order");
-    if (phase.progress() && phase.progress()->completed() != 0)
-        throw RunEvidenceInvariantViolation("Determinate Run Phase progress must begin at zero");
-    storage.phases.push_back(std::move(phase));
+}
+
+void MutableRunEvidence::publishDiagnostics() {
+    auto& storage = requireStorage(_storage);
+    while (_publishedDiagnostics < _diagnosticPublications.size()) {
+        // Claim before calling out and copy before ObserverFailed can reallocate diagnostic
+        // storage.
+        const auto retained = storage.diagnostics[_diagnosticPublications[_publishedDiagnostics++]];
+        if (_observations == nullptr) continue;
+        publishSafely(retained.phase(),
+                      [&] { _observations->publishRetainedDiagnostic(retained); });
+    }
+}
+
+void MutableRunEvidence::publishFailure(const RunFailure& failure) {
+    if (_observations == nullptr) return;
+    publishSafely(failure.phase(), [&] { _observations->publishRetainedFailure(failure); });
+}
+
+void MutableRunEvidence::retainObserverFailure(const RunPhase phase, std::string detail) {
+    auto& storage = requireStorage(_storage);
+    storage.diagnostics.emplace_back(RunDiagnosticCode::ObserverFailed, phase, std::move(detail));
+    // The generated diagnostic is deliberately absent from _diagnosticPublications, so the same
+    // failing path cannot receive it recursively or at a later boundary.
 }
 
 void MutableRunEvidence::recordCancellationObservation() {

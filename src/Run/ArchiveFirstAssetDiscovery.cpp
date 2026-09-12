@@ -79,7 +79,7 @@ std::string canonicalArchiveEntryPath(std::string name) {
     if (name.empty() || name.front() == '/' || name.find('\0') != std::string::npos ||
         name.find_first_of(":*?\"<>|") != std::string::npos)
         throw std::invalid_argument("Archive entry has an invalid game path.");
-    const auto path = std::filesystem::u8path(name).lexically_normal();
+    const auto path = pathFromUtf8(name).lexically_normal();
     if (path.empty() || path == "." || path.filename().empty() || *path.begin() == "..")
         throw std::invalid_argument("Archive entry escapes its extraction directory.");
     for (const auto& part : path) {
@@ -493,7 +493,7 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
             try {
                 // The existing extractor writes beside its Archive, including nested Archives.
                 // Compare the actual destination relative to the Mod Root, not just the raw name.
-                const auto local = std::filesystem::u8path(canonicalArchiveEntryPath(name));
+                const auto local = pathFromUtf8(canonicalArchiveEntryPath(name));
                 plan.entries.push_back(relativeName(local));
                 const auto destination =
                     std::filesystem::absolute(archive.executionPath()).parent_path() / local;
@@ -515,8 +515,8 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     }
     for (auto& plan : extractionPlans) {
         for (const auto& entry : plan.entries) {
-            const auto destination = std::filesystem::absolute(plan.archivePath).parent_path() /
-                                     std::filesystem::u8path(entry);
+            const auto destination =
+                std::filesystem::absolute(plan.archivePath).parent_path() / pathFromUtf8(entry);
             const auto gamePath =
                 foldedName(relativeName(destination.lexically_relative(plan.modRoot)));
             // Ownership is frozen before mutation: a failed winner must not promote a shadowed
@@ -531,7 +531,7 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
         if (found == entries.end()) continue;
         for (const auto& [gamePath, participants] : found->second) {
             if (participants.size() < 2) continue;
-            collisions.emplace_back(root, std::filesystem::u8path(gamePath), participants.front(),
+            collisions.emplace_back(root, pathFromUtf8(gamePath), participants.front(),
                                     std::vector(participants.begin() + 1, participants.end()),
                                     loosePaths[root].contains(gamePath));
         }
