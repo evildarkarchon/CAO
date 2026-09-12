@@ -1,10 +1,15 @@
+---
+id: run-evidence-04
+type: implementation
+status: open
+triage: ready-for-agent
+blocked_by:
+  - run-evidence-03
+---
+
 # 04: Retain Routing Ledger and Asset attempt evidence
 
 **What to build:** Carry definitive routing and Asset processing facts through Run Evidence so terminal consumers can inspect which Assets were routed, skipped, attempted, mutated, or failed without accessing mutable storage. Existing work order, progress, continuation safety, and cancellation behavior remain stable.
-
-**Blocked by:** 03: Retain Archive discovery and extraction evidence.
-
-**Status:** ready-for-agent
 
 - [ ] A Routing Ledger becomes available only after definitive routing succeeds; interrupted or failed discovery cannot expose a misleading partial ledger.
 - [ ] Recognized exclusions remain queryable by Skip Reason from authoritative discovery and Routing Ledger facts.

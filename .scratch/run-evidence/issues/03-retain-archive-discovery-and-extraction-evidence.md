@@ -1,10 +1,15 @@
+---
+id: run-evidence-03
+type: implementation
+status: open
+triage: ready-for-agent
+blocked_by:
+  - run-evidence-02
+---
+
 # 03: Retain Archive discovery and extraction evidence
 
 **What to build:** Carry Archive discovery and extraction facts through Run Evidence from the first discovery transition to terminal inspection. Users retain complete Archive precedence explanations, completed extraction attempts, discovery failures, and recognized exclusions even when cancellation, observer failure, or later work stops the run.
-
-**Blocked by:** 02: Make Run Evidence the publication boundary.
-
-**Status:** ready-for-agent
 
 - [ ] Run Evidence retains Archive Collisions with the winning and shadowed Archives needed to explain Archive Precedence.
 - [ ] Discovery exclusions, unsupported explicitly selected paths, nested Archive counts, and discovery Run Diagnostics are retained without duplicating derived counts.

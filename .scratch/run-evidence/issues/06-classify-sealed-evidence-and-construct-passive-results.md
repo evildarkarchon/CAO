@@ -1,10 +1,15 @@
+---
+id: run-evidence-06
+type: implementation
+status: open
+triage: ready-for-agent
+blocked_by:
+  - run-evidence-05
+---
+
 # 06: Classify sealed evidence and construct passive terminal results
 
 **What to build:** Consume complete Run Evidence into an immutable value, derive summaries from its authoritative facts, and make the Run Executor explicitly choose the terminal Run Outcome. Terminal result construction becomes a passive combination of that decision, the Run ID, final phase, and sealed evidence.
-
-**Blocked by:** 05: Retain Archive Finalization and cleanup evidence.
-
-**Status:** ready-for-agent
 
 - [ ] Mutation summaries are derived from completed Asset, Archive extraction, and Archive Finalization attempts while immutable evidence is created.
 - [ ] Aggregate Skip Reason counts are derived from authoritative discovery and Routing Ledger facts rather than retained as an independent mutable total.
