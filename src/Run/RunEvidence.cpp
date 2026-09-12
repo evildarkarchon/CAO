@@ -204,6 +204,23 @@ void MutableRunEvidence::recordFailure(RunFailure failure) {
     publishFailure(retained);
 }
 
+void MutableRunEvidence::recordArchiveDiscoveryStarted() {
+    recordPhase(RunPhaseRecord::executed(RunPhase::DiscoveringArchives));
+}
+
+void MutableRunEvidence::recordArchiveExtractionPlan(const std::size_t total) {
+    recordPhase(
+        RunPhaseRecord::executed(RunPhase::ExtractingArchives, RunProgress::determinate(total)));
+}
+
+void MutableRunEvidence::recordDryRunArchiveExtraction() {
+    recordPhase(RunPhaseRecord::skipped(RunPhase::ExtractingArchives, PhaseSkipReason::DryRun));
+}
+
+void MutableRunEvidence::recordEffectiveAssetTreeStarted() {
+    recordPhase(RunPhaseRecord::executed(RunPhase::BuildingEffectiveAssetTree));
+}
+
 void MutableRunEvidence::recordArchiveCollisions(
     const std::span<const ArchiveCollision> collisions) {
     auto& storage = requireStorage(_storage);
@@ -216,12 +233,24 @@ void MutableRunEvidence::recordArchiveCollisions(
     storage.archiveCollisionsRecorded = true;
 }
 
-void MutableRunEvidence::recordArchiveExtractionAttempt(ArchiveExtractionResult attempt) {
+void MutableRunEvidence::recordArchiveExtractionAttempt(ArchiveExtractionResult attempt,
+                                                        const std::size_t total) {
     auto& storage = requireStorage(_storage);
     if (storage.phases.empty() || storage.phases.back().phase() != RunPhase::ExtractingArchives)
         throw RunEvidenceInvariantViolation(
             "Archive extraction attempts must be recorded during Extracting Archives");
+    const auto& extractionPhase = storage.phases.back();
+    if (!extractionPhase.progress() || extractionPhase.progress()->total() != total)
+        throw RunEvidenceInvariantViolation(
+            "Archive extraction attempts must use the immutable planned total");
+    if (storage.archiveExtractionAttempts.size() >= total)
+        throw RunEvidenceInvariantViolation(
+            "Archive extraction attempts cannot exceed the planned total");
+    const auto succeeded = extractionPhase.progress()->succeeded() + attempt.succeeded();
+    const auto failed = extractionPhase.progress()->failed() + !attempt.succeeded();
     storage.archiveExtractionAttempts.push_back(std::move(attempt));
+    recordPhase(RunPhaseRecord::executed(RunPhase::ExtractingArchives,
+                                         RunProgress::determinate(total, succeeded, failed)));
 }
 
 void MutableRunEvidence::recordArchiveDiscovery(ArchiveDiscoveryEvidence discovery) {
@@ -245,6 +274,11 @@ const RunPhaseRecord* MutableRunEvidence::phase(const RunPhase phase) const {
         std::find_if(storage.phases.begin(), storage.phases.end(),
                      [phase](const auto& candidate) { return candidate.phase() == phase; });
     return found == storage.phases.end() ? nullptr : &*found;
+}
+
+const RunPhaseRecord* MutableRunEvidence::currentPhase() const {
+    const auto& storage = requireStorage(_storage);
+    return storage.phases.empty() ? nullptr : &storage.phases.back();
 }
 
 std::span<const RunDiagnostic> MutableRunEvidence::diagnostics() const {

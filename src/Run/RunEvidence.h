@@ -175,6 +175,18 @@ class MutableRunEvidence final {
     /// Retains one run-level failure before publishing it at most once through the adapter.
     void recordFailure(RunFailure failure);
 
+    /// Accepts that Archive discovery started and advances the executor-owned lifecycle account.
+    void recordArchiveDiscoveryStarted();
+
+    /// Accepts the immutable Archive extraction total and starts determinate phase progress.
+    void recordArchiveExtractionPlan(std::size_t total);
+
+    /// Accepts that Dry Run made Archive extraction inapplicable without inventing a work total.
+    void recordDryRunArchiveExtraction();
+
+    /// Accepts that definitive Effective Asset Tree discovery started after Archive attempts.
+    void recordEffectiveAssetTreeStarted();
+
     /// Retains the complete collision plan while Archive discovery owns the current phase.
     ///
     /// Discovery reports the plan once before extraction. A second plan or a report outside
@@ -184,8 +196,9 @@ class MutableRunEvidence final {
     /// Retains one completed Archive extraction attempt during the extraction phase.
     ///
     /// The complete result remains attempt-local evidence: its Operation Failure is not copied
-    /// into run-level failure storage, and the caller reports phase progress separately.
-    void recordArchiveExtractionAttempt(ArchiveExtractionResult attempt);
+    /// into run-level failure storage. The immutable planned total and retained attempts derive the
+    /// executor-owned phase progress published after retention.
+    void recordArchiveExtractionAttempt(ArchiveExtractionResult attempt, std::size_t total);
 
     /// Retains the complete non-derived Archive discovery facts from one returned discovery call.
     ///
@@ -195,6 +208,9 @@ class MutableRunEvidence final {
 
     /// Returns the latest accepted record for a phase, or nullptr when it was never reached.
     [[nodiscard]] const RunPhaseRecord* phase(RunPhase phase) const;
+
+    /// Returns the current executor-owned lifecycle position, or nullptr before traversal starts.
+    [[nodiscard]] const RunPhaseRecord* currentPhase() const;
 
     /// Returns informational observations accepted so far without exposing mutable storage.
     [[nodiscard]] std::span<const RunDiagnostic> diagnostics() const;

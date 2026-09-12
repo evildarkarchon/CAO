@@ -311,19 +311,26 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
     } else if (stop.stop_requested()) {
         outcome = RunOutcome::Cancelled;
     } else if (request.hasRequestedWork() && services.work) {
+        const auto synchronizeFinalPhase = [&] {
+            if (const auto* current = evidence.currentPhase()) finalPhase = current->phase();
+        };
         try {
             services.work->execute(*preparation, work, evidence, artifacts, observations, stop);
         } catch (const RunEvidenceInvariantViolation&) {
             // Preserve mandatory cleanup before propagating this programming defect to its owner.
+            synchronizeFinalPhase();
             evidenceInvariantViolation = std::current_exception();
         } catch (const std::exception& error) {
+            synchronizeFinalPhase();
             observations.recordFailure(
                 RunFailure{RunFailureCode::WorkServiceFailed, finalPhase, error.what()});
         } catch (...) {
+            synchronizeFinalPhase();
             observations.recordFailure(
                 RunFailure{RunFailureCode::WorkServiceFailed, finalPhase,
                            "The work service threw a non-standard exception"});
         }
+        synchronizeFinalPhase();
     } else {
         finalPhase = recordSkippedWorkPhases(observations, stop);
     }

@@ -66,13 +66,18 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots, RunWo
     std::size_t archiveSucceeded = 0;
     WorkObservationRecorder recorder(record, observations, evidence);
     const auto publishDiagnostics = [&] { recorder.publishDiagnostics(); };
-    const auto reportPhase = [&](const RunPhaseRecord& phase) {
+    const auto reportRemainingPhase = [&](const RunPhaseRecord& phase) {
         recorder.reportSafely(phase.phase(), [&] {
             if (observations) observations->recordPhase(phase);
             if (adapters.reportPhase) adapters.reportPhase(phase);
         });
     };
-    reportPhase(RunPhaseRecord::executed(RunPhase::DiscoveringArchives));
+    const auto reportArchivePhaseToAdapter = [&](const RunPhaseRecord& phase) {
+        if (adapters.reportPhase)
+            recorder.reportSafely(phase.phase(), [&] { adapters.reportPhase(phase); });
+    };
+    recorder.recordArchiveDiscoveryStarted();
+    reportArchivePhaseToAdapter(RunPhaseRecord::executed(RunPhase::DiscoveringArchives));
     const auto discoveryResult = discovery.discover(
         roots,
         [&](const std::span<const routing::RoutedAsset> archives) {
@@ -104,9 +109,9 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots, RunWo
                                 attempt.mutation == execution::MutationState::PartialOrUnknown;
                 attempt.modRoot = plan.modRoot;
                 if (attempt.succeeded()) ++archiveSucceeded;
-                recorder.recordArchiveExtractionAttempt(std::move(attempt));
+                recorder.recordArchiveExtractionAttempt(std::move(attempt), archives.size());
                 ++completed;
-                reportPhase(RunPhaseRecord::executed(
+                reportArchivePhaseToAdapter(RunPhaseRecord::executed(
                     RunPhase::ExtractingArchives,
                     RunProgress::determinate(archives.size(), archiveSucceeded,
                                              completed - archiveSucceeded)));
@@ -145,13 +150,19 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots, RunWo
         [&](RunPhase phase) {
             if (phase == RunPhase::ExtractingArchives &&
                 _policy.executionMode() == routing::ExecutionMode::DryRun) {
-                reportPhase(RunPhaseRecord::skipped(phase, PhaseSkipReason::DryRun));
+                recorder.recordDryRunArchiveExtraction();
+                reportArchivePhaseToAdapter(
+                    RunPhaseRecord::skipped(phase, PhaseSkipReason::DryRun));
                 return;
             }
-            reportPhase(RunPhaseRecord::executed(
-                phase, phase == RunPhase::ExtractingArchives
-                           ? std::optional{RunProgress::determinate(extractionPlans.size())}
-                           : std::nullopt));
+            if (phase == RunPhase::ExtractingArchives) {
+                recorder.recordArchiveExtractionPlan(extractionPlans.size());
+                reportArchivePhaseToAdapter(RunPhaseRecord::executed(
+                    phase, RunProgress::determinate(extractionPlans.size())));
+            } else {
+                recorder.recordEffectiveAssetTreeStarted();
+                reportArchivePhaseToAdapter(RunPhaseRecord::executed(phase));
+            }
         },
         [&](const RunDiagnostic& diagnostic) {
             // Retain discovery evidence before later traversal can throw; publish after Assets.
@@ -199,7 +210,7 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots, RunWo
         return;
     }
     const auto total = (*record.ledger).routedAssets().size();
-    reportPhase(
+    reportRemainingPhase(
         RunPhaseRecord::executed(RunPhase::ProcessingAssets, RunProgress::determinate(total)));
     std::size_t completed = 0;
     std::size_t assetSucceeded = 0;
@@ -246,7 +257,7 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots, RunWo
             if (attempt.succeeded()) ++assetSucceeded;
             record.assetAttempts.push_back({std::move(modRoot), asset.get(), std::move(attempt)});
             ++completed;
-            reportPhase(RunPhaseRecord::executed(
+            reportRemainingPhase(RunPhaseRecord::executed(
                 RunPhase::ProcessingAssets,
                 RunProgress::determinate(total, assetSucceeded, completed - assetSucceeded)));
             if (adapters.reportProgress) {
@@ -286,7 +297,7 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots, RunWo
         return;
     }
 
-    reportPhase(
+    reportRemainingPhase(
         _policy.executionMode() == routing::ExecutionMode::DryRun
             ? RunPhaseRecord::skipped(RunPhase::ArchiveFinalization, PhaseSkipReason::DryRun)
             : (!adapters.finalizeArchiveLifecycleWithResult

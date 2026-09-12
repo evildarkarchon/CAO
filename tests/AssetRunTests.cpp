@@ -204,8 +204,42 @@ class DiscoveryEvidenceObservation final : public cao::run::RunObservationSink {
         _evidence.recordDiagnostic(diagnostic);
     }
 
+    /// Retains deferred discovery diagnostics before AssetRun reaches its publication boundary.
+    void retainDiagnostic(const cao::run::RunDiagnostic& diagnostic) override {
+        _evidence.retainDiagnostic(diagnostic);
+    }
+
+    /// Publishes the next diagnostic already retained by the concrete evidence owner.
+    void publishRetainedDiagnostic(const cao::run::RunDiagnostic&) override {
+        _evidence.publishDiagnostics();
+    }
+
+    /// Retains and publishes a discovery Run Failure through the concrete evidence owner.
+    void publishRetainedFailure(const cao::run::RunFailure& failure) override {
+        _evidence.recordFailure(failure);
+    }
+
    private:
     cao::run::MutableRunEvidence& _evidence;
+};
+
+/// Owns the executor-side evidence lifetime around one direct synchronous AssetRun test.
+class AssetRunEvidenceFixture final {
+   public:
+    AssetRunEvidenceFixture() : observation(evidence) {
+        evidence.recordPhase(cao::run::RunPhaseRecord::executed(cao::run::RunPhase::Preparing));
+    }
+
+    /// Applies the executor's terminal cancellation and Safety Cleanup responsibilities.
+    cao::run::RunEvidence seal(const bool cancellationObserved = false) {
+        if (cancellationObserved) evidence.recordCancellationObservation();
+        evidence.recordPhase(
+            cao::run::RunPhaseRecord::executed(cao::run::RunPhase::SafetyCleanup));
+        return std::move(evidence).consume();
+    }
+
+    cao::run::MutableRunEvidence evidence;
+    DiscoveryEvidenceObservation observation;
 };
 }
 
@@ -348,19 +382,34 @@ void AssetRunTests::archiveFailuresControlContinuation() {
         return attempt;
     };
     cao::run::RunWorkRecord record;
-    AssetRun(archiveAndTexturePolicy()).execute(std::array{root}, record, adapters);
+    AssetRunEvidenceFixture evidence;
+    AssetRun(archiveAndTexturePolicy())
+        .execute(std::array{root}, record, adapters,
+                 cao::run::ArchivePrecedence::deterministicDiscovery(), &evidence.observation,
+                 &evidence.evidence);
+    const auto terminalEvidence = evidence.seal();
     QCOMPARE(attempts, canContinue ? std::size_t{2} : static_cast<std::size_t>(failedAttempt));
     QCOMPARE(assets, canContinue ? std::size_t{1} : std::size_t{0});
     QCOMPARE(finalized, canContinue);
     QCOMPARE(record.ledger.has_value(), canContinue);
     QVERIFY(!record.cancellationObserved);
     QCOMPARE(record.archiveAttempts.size(), attempts);
+    QCOMPARE(terminalEvidence.archiveExtractionAttempts().size(), attempts);
     const auto& failure = record.archiveAttempts[failedAttempt - 1];
+    const auto& retainedFailure = terminalEvidence.archiveExtractionAttempts()[failedAttempt - 1];
     QCOMPARE(failure.modRoot, root);
+    QCOMPARE(retainedFailure.modRoot, root);
     QVERIFY(!failure.succeeded());
+    QVERIFY(!retainedFailure.succeeded());
     QCOMPARE(failure.safeToContinue, safe);
+    QCOMPARE(retainedFailure.safeToContinue, safe);
     QCOMPARE(failure.detail, std::string("Injected merge failure"));
+    QCOMPARE(retainedFailure.detail, std::string("Injected merge failure"));
     QVERIFY(failure.archivePath == root / (failedAttempt == 1 ? "a.bsa" : "b.bsa"));
+    const auto* extractionPhase = terminalEvidence.phase(cao::run::RunPhase::ExtractingArchives);
+    QVERIFY(extractionPhase != nullptr);
+    QCOMPARE(extractionPhase->progress()->completed(), attempts);
+    QCOMPARE(extractionPhase->progress()->total(), std::size_t{2});
     QCOMPARE(progress[attempts - 1].completed, attempts);
     QCOMPARE(progress[attempts - 1].total, std::size_t{2});
 }
@@ -555,6 +604,7 @@ void AssetRunTests::reportsCollisionsBeforeOrderedExtraction() {
     bool reported = false;
     std::vector<std::filesystem::path> extractions;
     cao::run::RunWorkRecord record;
+    AssetRunEvidenceFixture evidence;
     AssetRun(archiveAndTexturePolicy())
             .execute(
                 std::array{root}, record,
@@ -576,7 +626,9 @@ void AssetRunTests::reportsCollisionsBeforeOrderedExtraction() {
                             extractions.push_back(archive.archivePath);
                             return cao::run::ArchiveExtractionResult{};
                         }},
-                cao::run::ArchivePrecedence::explicitOrder({"z.bsa", "a.bsa"}));
+                cao::run::ArchivePrecedence::explicitOrder({"z.bsa", "a.bsa"}),
+                &evidence.observation, &evidence.evidence);
+    const auto terminalEvidence = evidence.seal();
     QVERIFY(record.failures.empty());
     QVERIFY(reported);
     QCOMPARE(extractions, (std::vector{second, first}));
@@ -585,6 +637,12 @@ void AssetRunTests::reportsCollisionsBeforeOrderedExtraction() {
     QCOMPARE(record.collisions.front().shadowedArchives().size(), std::size_t{1});
     QCOMPARE(record.collisions.front().shadowedArchives().front(), first);
     QCOMPARE(record.diagnostics.back().code(), cao::run::RunDiagnosticCode::ObserverFailed);
+    QCOMPARE(terminalEvidence.archiveCollisions().size(), std::size_t{1});
+    QCOMPARE(terminalEvidence.archiveCollisions().front().winningArchive(), second);
+    QCOMPARE(terminalEvidence.archiveCollisions().front().shadowedArchives().front(), first);
+    QCOMPARE(terminalEvidence.archiveExtractionAttempts().size(), std::size_t{2});
+    QCOMPARE(terminalEvidence.diagnostics().back().code(),
+             cao::run::RunDiagnosticCode::ObserverFailed);
 }
 
 void AssetRunTests::filesystemTraversalPollsCancellation_data()
@@ -1025,9 +1083,7 @@ void AssetRunTests::dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPath
     const AssetRun run(dryRunArchivePolicy());
     const std::array roots{directoryRoot, explicitUnsupported};
     cao::run::RunWorkRecord record;
-    cao::run::MutableRunEvidence evidence;
-    evidence.recordPhase(cao::run::RunPhaseRecord::executed(cao::run::RunPhase::Preparing));
-    DiscoveryEvidenceObservation observation(evidence);
+    AssetRunEvidenceFixture evidence;
     run.execute(
         roots, record, AssetRunAdapters{.executeAssetWithResult =
                                     [&](const cao::routing::RoutedAsset& asset, const std::filesystem::path&) {
@@ -1039,9 +1095,9 @@ void AssetRunTests::dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPath
                                          extractionAttempted = true;
                                          return cao::run::ArchiveExtractionResult{};
                                      }},
-        cao::run::ArchivePrecedence::deterministicDiscovery(), &observation, &evidence);
-    evidence.recordPhase(cao::run::RunPhaseRecord::executed(cao::run::RunPhase::SafetyCleanup));
-    const auto terminalEvidence = std::move(evidence).consume();
+        cao::run::ArchivePrecedence::deterministicDiscovery(), &evidence.observation,
+        &evidence.evidence);
+    const auto terminalEvidence = evidence.seal();
 
     QVERIFY(!extractionAttempted);
     QCOMPARE(executedPaths, std::vector<std::filesystem::path>{texture});
@@ -1212,6 +1268,7 @@ void AssetRunTests::archiveCancellationSkipsDefinitiveDiscovery()
     const AssetRun run(archiveAndTexturePolicy());
     const std::array roots{root};
     cao::run::RunWorkRecord record;
+    AssetRunEvidenceFixture evidence;
     run.execute(
         roots, record,
         AssetRunAdapters{.isCancelled = [&] { return extractionAttempts == 1; },
@@ -1224,11 +1281,20 @@ void AssetRunTests::archiveCancellationSkipsDefinitiveDiscovery()
                              [&](const cao::run::ArchiveExtractionPlan&) {
                                  ++extractionAttempts;
                                  return cao::run::ArchiveExtractionResult{};
-                             }});
+                             }},
+        cao::run::ArchivePrecedence::deterministicDiscovery(), &evidence.observation,
+        &evidence.evidence);
+    const auto terminalEvidence = evidence.seal(record.cancellationObserved);
 
     QVERIFY(record.cancellationObserved);
     QCOMPARE(extractionAttempts, std::size_t{1});
     QVERIFY(!record.ledger.has_value());
+    QVERIFY(terminalEvidence.cancellationObserved());
+    QCOMPARE(terminalEvidence.archiveExtractionAttempts().size(), std::size_t{1});
+    const auto* extractionPhase = terminalEvidence.phase(cao::run::RunPhase::ExtractingArchives);
+    QVERIFY(extractionPhase != nullptr);
+    QCOMPARE(extractionPhase->progress()->completed(), std::size_t{1});
+    QCOMPARE(extractionPhase->progress()->total(), std::size_t{2});
 }
 
 void AssetRunTests::finalArchiveCancellationSkipsDefinitiveDiscovery()

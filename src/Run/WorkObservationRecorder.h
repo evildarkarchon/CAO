@@ -3,11 +3,13 @@
 #include "RunExecutor.h"
 #include "RunWorkRecord.h"
 
+#include <algorithm>
 #include <exception>
 
 namespace cao::run {
-/// Coordinates retention and synchronous publication in the executor-owned record.
-/// Borrows the record and optional sink; neither may be retained beyond their execution lifetime.
+/// Coordinates transitional work-record retention with synchronous Run Evidence publication.
+/// Borrows the record, optional observation sink, and optional concrete evidence owner; none may be
+/// retained beyond their execution lifetime.
 class WorkObservationRecorder final {
    public:
     /// Shares publication position and optionally mirrors Archive facts into concrete Run Evidence.
@@ -39,6 +41,44 @@ class WorkObservationRecorder final {
         });
     }
 
+    /// Reports typed Archive discovery while Run Evidence owns lifecycle translation.
+    void recordArchiveDiscoveryStarted() {
+        if (_evidence) {
+            _evidence->recordArchiveDiscoveryStarted();
+            return;
+        }
+        reportPhaseWithoutEvidence(RunPhaseRecord::executed(RunPhase::DiscoveringArchives));
+    }
+
+    /// Reports the immutable Archive work total while Run Evidence owns phase progress.
+    void recordArchiveExtractionPlan(const std::size_t total) {
+        if (_evidence) {
+            _evidence->recordArchiveExtractionPlan(total);
+            return;
+        }
+        reportPhaseWithoutEvidence(RunPhaseRecord::executed(RunPhase::ExtractingArchives,
+                                                            RunProgress::determinate(total)));
+    }
+
+    /// Reports Dry Run exclusion without letting AssetRun construct executor evidence.
+    void recordDryRunArchiveExtraction() {
+        if (_evidence) {
+            _evidence->recordDryRunArchiveExtraction();
+            return;
+        }
+        reportPhaseWithoutEvidence(
+            RunPhaseRecord::skipped(RunPhase::ExtractingArchives, PhaseSkipReason::DryRun));
+    }
+
+    /// Reports entry into definitive Effective Asset Tree discovery.
+    void recordEffectiveAssetTreeStarted() {
+        if (_evidence) {
+            _evidence->recordEffectiveAssetTreeStarted();
+            return;
+        }
+        reportPhaseWithoutEvidence(RunPhaseRecord::executed(RunPhase::BuildingEffectiveAssetTree));
+    }
+
     /// Retains the complete collision plan before any presentation callback can interrupt work.
     void recordArchiveCollisions(const std::span<const ArchiveCollision> collisions) {
         if (_evidence) _evidence->recordArchiveCollisions(collisions);
@@ -46,9 +86,18 @@ class WorkObservationRecorder final {
     }
 
     /// Retains one complete Archive attempt before its progress or cancellation boundary.
-    void recordArchiveExtractionAttempt(ArchiveExtractionResult attempt) {
-        if (_evidence) _evidence->recordArchiveExtractionAttempt(attempt);
+    void recordArchiveExtractionAttempt(ArchiveExtractionResult attempt, const std::size_t total) {
+        if (_evidence) _evidence->recordArchiveExtractionAttempt(attempt, total);
         _record.archiveAttempts.push_back(std::move(attempt));
+        if (!_evidence && _sink) {
+            const auto succeeded = static_cast<std::size_t>(
+                std::count_if(_record.archiveAttempts.begin(), _record.archiveAttempts.end(),
+                              [](const auto& completed) { return completed.succeeded(); }));
+            reportPhaseWithoutEvidence(RunPhaseRecord::executed(
+                RunPhase::ExtractingArchives,
+                RunProgress::determinate(total, succeeded,
+                                         _record.archiveAttempts.size() - succeeded)));
+        }
     }
 
     /// Retains one complete returned discovery fact set in both staged migration views.
@@ -94,6 +143,13 @@ class WorkObservationRecorder final {
     }
 
    private:
+    /// Preserves legacy direct-AssetRun phase observation while migration has no evidence owner.
+    void reportPhaseWithoutEvidence(const RunPhaseRecord& phase) {
+        reportSafely(phase.phase(), [&] {
+            if (_sink) _sink->recordPhase(phase);
+        });
+    }
+
     RunWorkRecord& _record;
     RunObservationSink* _sink;
     MutableRunEvidence* _evidence;
