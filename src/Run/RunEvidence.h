@@ -3,7 +3,9 @@
 #include "Run/RunLifecycle.h"
 
 #include <cstddef>
+#include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -11,7 +13,31 @@
 #include <vector>
 
 namespace cao::run {
+struct ArchiveExtractionResult;
 class RunEvidenceStorage;
+
+/// Owns the non-derived Archive facts established when one discovery call returns.
+class ArchiveDiscoveryEvidence final {
+   public:
+    /// Takes ownership of raw Archive exclusions and malformed nested-Archive evidence.
+    ArchiveDiscoveryEvidence(std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
+                             std::vector<std::filesystem::path> unsupportedExplicitPaths,
+                             std::size_t nestedArchiveCount) noexcept;
+
+    /// Returns the raw recognized-Archive exclusions for one stable reason.
+    [[nodiscard]] std::size_t skippedArchiveCount(routing::SkipReason reason) const noexcept;
+
+    /// Borrows explicitly selected unsupported paths in first-observation order.
+    [[nodiscard]] std::span<const std::filesystem::path> unsupportedExplicitPaths() const noexcept;
+
+    /// Returns the count of distinct Archives discovered only after extraction.
+    [[nodiscard]] std::size_t nestedArchiveCount() const noexcept;
+
+   private:
+    std::map<routing::SkipReason, std::size_t> _skippedArchiveCounts;
+    std::vector<std::filesystem::path> _unsupportedExplicitPaths;
+    std::size_t _nestedArchiveCount{};
+};
 
 /// Signals a violated Run Evidence programming invariant rather than a user-facing Run Failure.
 class RunEvidenceInvariantViolation final : public std::logic_error {
@@ -81,6 +107,16 @@ class RunEvidence final {
     /// Returns run-level failures in the order Run Evidence accepted them.
     [[nodiscard]] std::span<const RunFailure> failures() const noexcept;
 
+    /// Returns preflight Archive Collisions with precedence winners and ordered shadowed Archives.
+    [[nodiscard]] std::span<const ArchiveCollision> archiveCollisions() const noexcept;
+
+    /// Returns completed Archive extraction attempts in attempted order.
+    [[nodiscard]] std::span<const ArchiveExtractionResult> archiveExtractionAttempts()
+        const noexcept;
+
+    /// Returns the completed Archive discovery fact set, or nullptr if discovery unwound.
+    [[nodiscard]] const ArchiveDiscoveryEvidence* archiveDiscovery() const noexcept;
+
     /// Reports whether cooperative cancellation was observed before evidence was consumed.
     [[nodiscard]] bool cancellationObserved() const noexcept;
 
@@ -138,6 +174,24 @@ class MutableRunEvidence final {
 
     /// Retains one run-level failure before publishing it at most once through the adapter.
     void recordFailure(RunFailure failure);
+
+    /// Retains the complete collision plan while Archive discovery owns the current phase.
+    ///
+    /// Discovery reports the plan once before extraction. A second plan or a report outside
+    /// Discovering Archives is a programming invariant violation.
+    void recordArchiveCollisions(std::span<const ArchiveCollision> collisions);
+
+    /// Retains one completed Archive extraction attempt during the extraction phase.
+    ///
+    /// The complete result remains attempt-local evidence: its Operation Failure is not copied
+    /// into run-level failure storage, and the caller reports phase progress separately.
+    void recordArchiveExtractionAttempt(ArchiveExtractionResult attempt);
+
+    /// Retains the complete non-derived Archive discovery facts from one returned discovery call.
+    ///
+    /// Early cancellation and discovery failures can still return trustworthy exclusions while
+    /// an exception that unwinds discovery records no misleading completed fact set.
+    void recordArchiveDiscovery(ArchiveDiscoveryEvidence discovery);
 
     /// Returns the latest accepted record for a phase, or nullptr when it was never reached.
     [[nodiscard]] const RunPhaseRecord* phase(RunPhase phase) const;

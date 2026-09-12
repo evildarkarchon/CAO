@@ -17,14 +17,14 @@ class RunWorkService {
     /// Stateless services need no preparation. Exceptions fail Preparing and still trigger cleanup.
     virtual void prepare() {}
 
-    /// Uses prepared inputs until return and appends completed evidence without retaining
-    /// references. Reports phase counts through observations and checks stop between atomic
-    /// attempts. Exceptions become fatal WorkServiceFailed evidence without discarding earlier
-    /// records. The executor owns artifacts through mandatory Safety Cleanup; work never cleans the
-    /// registry.
+    /// Uses prepared inputs until return and submits completed facts to the concrete evidence owner
+    /// without retaining references. The compatibility record remains available during migration.
+    /// Reports phase counts through observations and checks stop between atomic attempts.
+    /// Exceptions become fatal WorkServiceFailed evidence without discarding earlier records. The
+    /// executor owns artifacts through mandatory Safety Cleanup; work never cleans the registry.
     virtual void execute(const RunPreparation& preparation, RunWorkRecord& record,
-                         TemporaryArtifactRegistry& artifacts, RunObservationSink& observations,
-                         std::stop_token stop) = 0;
+                         MutableRunEvidence& evidence, TemporaryArtifactRegistry& artifacts,
+                         RunObservationSink& observations, std::stop_token stop) = 0;
 };
 
 /// Removes the temporary artifacts one Optimization Run registered.

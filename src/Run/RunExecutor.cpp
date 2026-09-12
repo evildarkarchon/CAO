@@ -312,7 +312,7 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
         outcome = RunOutcome::Cancelled;
     } else if (request.hasRequestedWork() && services.work) {
         try {
-            services.work->execute(*preparation, work, artifacts, observations, stop);
+            services.work->execute(*preparation, work, evidence, artifacts, observations, stop);
         } catch (const RunEvidenceInvariantViolation&) {
             // Preserve mandatory cleanup before propagating this programming defect to its owner.
             evidenceInvariantViolation = std::current_exception();

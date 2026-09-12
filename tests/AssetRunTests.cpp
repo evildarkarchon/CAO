@@ -1,5 +1,6 @@
 #include "Run/AssetRun.h"
 #include "Run/ArchiveFirstAssetDiscovery.h"
+#include "Run/RunEvidence.h"
 #include "Run/RunWorkRecord.h"
 
 #include <QtTest>
@@ -182,6 +183,30 @@ void createFixtureArchive(const std::filesystem::path& path) {
     writeFile(entry);
     createTextureArchive(path, staging, std::array{entry});
 }
+
+/// Routes AssetRun lifecycle publication into the concrete evidence owner used by the executor.
+class DiscoveryEvidenceObservation final : public cao::run::RunObservationSink {
+   public:
+    /// Borrows worker-confined evidence for this synchronous AssetRun call.
+    explicit DiscoveryEvidenceObservation(cao::run::MutableRunEvidence& evidence)
+        : _evidence(evidence) {}
+
+    /// Lets the Run Evidence module retain the executor-owned lifecycle position.
+    void recordPhase(const cao::run::RunPhaseRecord& phase) override {
+        _evidence.recordPhase(phase);
+    }
+    /// Retains any discovery Run Failure separately from attempt-local Operation Failures.
+    void recordFailure(const cao::run::RunFailure& failure) override {
+        _evidence.recordFailure(failure);
+    }
+    /// Retains discovery diagnostics through their established publication path.
+    void recordDiagnostic(const cao::run::RunDiagnostic& diagnostic) override {
+        _evidence.recordDiagnostic(diagnostic);
+    }
+
+   private:
+    cao::run::MutableRunEvidence& _evidence;
+};
 }
 
 class AssetRunTests final : public QObject
@@ -1000,17 +1025,23 @@ void AssetRunTests::dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPath
     const AssetRun run(dryRunArchivePolicy());
     const std::array roots{directoryRoot, explicitUnsupported};
     cao::run::RunWorkRecord record;
+    cao::run::MutableRunEvidence evidence;
+    evidence.recordPhase(cao::run::RunPhaseRecord::executed(cao::run::RunPhase::Preparing));
+    DiscoveryEvidenceObservation observation(evidence);
     run.execute(
         roots, record, AssetRunAdapters{.executeAssetWithResult =
                                     [&](const cao::routing::RoutedAsset& asset, const std::filesystem::path&) {
                                         executedPaths.push_back(asset.executionPath());
                                         return cao::execution::AssetExecutionResult::success();
                                     },
-                                .extractArchiveWithResult =
-                                    [&](const cao::run::ArchiveExtractionPlan&) {
-                                        extractionAttempted = true;
-                                        return cao::run::ArchiveExtractionResult{};
-                                    }});
+                                 .extractArchiveWithResult =
+                                     [&](const cao::run::ArchiveExtractionPlan&) {
+                                         extractionAttempted = true;
+                                         return cao::run::ArchiveExtractionResult{};
+                                     }},
+        cao::run::ArchivePrecedence::deterministicDiscovery(), &observation, &evidence);
+    evidence.recordPhase(cao::run::RunPhaseRecord::executed(cao::run::RunPhase::SafetyCleanup));
+    const auto terminalEvidence = std::move(evidence).consume();
 
     QVERIFY(!extractionAttempted);
     QCOMPARE(executedPaths, std::vector<std::filesystem::path>{texture});
@@ -1021,6 +1052,14 @@ void AssetRunTests::dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPath
     QVERIFY(unsupported.front() == explicitUnsupported);
     QVERIFY(std::find(unsupported.begin(), unsupported.end(), unsupportedDirectoryEntry)
             == unsupported.end());
+    QVERIFY(terminalEvidence.archiveDiscovery() != nullptr);
+    QCOMPARE(terminalEvidence.archiveDiscovery()->skippedArchiveCount(SkipReason::DisabledPhase),
+             std::size_t{2});
+    QCOMPARE(terminalEvidence.archiveDiscovery()->unsupportedExplicitPaths().size(),
+             std::size_t{1});
+    QCOMPARE(terminalEvidence.archiveDiscovery()->unsupportedExplicitPaths().front(),
+             explicitUnsupported);
+    QCOMPARE(terminalEvidence.archiveDiscovery()->nestedArchiveCount(), std::size_t{0});
 }
 
 void AssetRunTests::dryRunLeavesCompleteModTreeUnchangedWhileEvaluatingLooseAssets()

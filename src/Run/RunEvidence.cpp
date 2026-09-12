@@ -1,5 +1,6 @@
 #include "RunEvidence.h"
 
+#include "ArchiveExtraction.h"
 #include "RunLifecycle.h"
 
 #include <algorithm>
@@ -15,6 +16,10 @@ class RunEvidenceStorage final {
     std::vector<RunPhaseRecord> phases;
     std::vector<RunDiagnostic> diagnostics;
     std::vector<RunFailure> failures;
+    std::vector<ArchiveCollision> archiveCollisions;
+    std::vector<ArchiveExtractionResult> archiveExtractionAttempts;
+    std::optional<ArchiveDiscoveryEvidence> archiveDiscovery;
+    bool archiveCollisionsRecorded{};
     bool cancellationObserved{};
 };
 
@@ -72,6 +77,29 @@ const RunEvidenceStorage& requireStorage(const std::unique_ptr<RunEvidenceStorag
 }
 }  // namespace
 
+ArchiveDiscoveryEvidence::ArchiveDiscoveryEvidence(
+    std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
+    std::vector<std::filesystem::path> unsupportedExplicitPaths,
+    const std::size_t nestedArchiveCount) noexcept
+    : _skippedArchiveCounts(std::move(skippedArchiveCounts)),
+      _unsupportedExplicitPaths(std::move(unsupportedExplicitPaths)),
+      _nestedArchiveCount(nestedArchiveCount) {}
+
+std::size_t ArchiveDiscoveryEvidence::skippedArchiveCount(
+    const routing::SkipReason reason) const noexcept {
+    const auto found = _skippedArchiveCounts.find(reason);
+    return found == _skippedArchiveCounts.end() ? 0 : found->second;
+}
+
+std::span<const std::filesystem::path> ArchiveDiscoveryEvidence::unsupportedExplicitPaths()
+    const noexcept {
+    return _unsupportedExplicitPaths;
+}
+
+std::size_t ArchiveDiscoveryEvidence::nestedArchiveCount() const noexcept {
+    return _nestedArchiveCount;
+}
+
 RunEvidence::RunEvidence(std::unique_ptr<RunEvidenceStorage> storage)
     : _storage(std::move(storage)) {}
 
@@ -93,6 +121,18 @@ std::span<const RunDiagnostic> RunEvidence::diagnostics() const noexcept {
 }
 
 std::span<const RunFailure> RunEvidence::failures() const noexcept { return _storage->failures; }
+
+std::span<const ArchiveCollision> RunEvidence::archiveCollisions() const noexcept {
+    return _storage->archiveCollisions;
+}
+
+std::span<const ArchiveExtractionResult> RunEvidence::archiveExtractionAttempts() const noexcept {
+    return _storage->archiveExtractionAttempts;
+}
+
+const ArchiveDiscoveryEvidence* RunEvidence::archiveDiscovery() const noexcept {
+    return _storage->archiveDiscovery ? &*_storage->archiveDiscovery : nullptr;
+}
 
 bool RunEvidence::cancellationObserved() const noexcept { return _storage->cancellationObserved; }
 
@@ -162,6 +202,41 @@ void MutableRunEvidence::recordFailure(RunFailure failure) {
     storage.failures.push_back(std::move(failure));
     const auto retained = storage.failures.back();
     publishFailure(retained);
+}
+
+void MutableRunEvidence::recordArchiveCollisions(
+    const std::span<const ArchiveCollision> collisions) {
+    auto& storage = requireStorage(_storage);
+    if (storage.phases.empty() || storage.phases.back().phase() != RunPhase::DiscoveringArchives)
+        throw RunEvidenceInvariantViolation(
+            "Archive Collisions must be recorded during Discovering Archives");
+    if (storage.archiveCollisionsRecorded)
+        throw RunEvidenceInvariantViolation("Archive Collisions can only be recorded once");
+    storage.archiveCollisions.assign(collisions.begin(), collisions.end());
+    storage.archiveCollisionsRecorded = true;
+}
+
+void MutableRunEvidence::recordArchiveExtractionAttempt(ArchiveExtractionResult attempt) {
+    auto& storage = requireStorage(_storage);
+    if (storage.phases.empty() || storage.phases.back().phase() != RunPhase::ExtractingArchives)
+        throw RunEvidenceInvariantViolation(
+            "Archive extraction attempts must be recorded during Extracting Archives");
+    storage.archiveExtractionAttempts.push_back(std::move(attempt));
+}
+
+void MutableRunEvidence::recordArchiveDiscovery(ArchiveDiscoveryEvidence discovery) {
+    auto& storage = requireStorage(_storage);
+    if (storage.phases.empty())
+        throw RunEvidenceInvariantViolation(
+            "Archive discovery evidence requires a discovery Run Phase");
+    const auto position = phasePosition(storage.phases.back().phase());
+    if (position < phasePosition(RunPhase::DiscoveringArchives) ||
+        position > phasePosition(RunPhase::BuildingEffectiveAssetTree))
+        throw RunEvidenceInvariantViolation(
+            "Archive discovery evidence must be recorded during Archive discovery");
+    if (storage.archiveDiscovery)
+        throw RunEvidenceInvariantViolation("Archive discovery evidence can only be recorded once");
+    storage.archiveDiscovery.emplace(std::move(discovery));
 }
 
 const RunPhaseRecord* MutableRunEvidence::phase(const RunPhase phase) const {

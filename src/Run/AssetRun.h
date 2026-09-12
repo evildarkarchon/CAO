@@ -87,17 +87,19 @@ struct AssetRunAdapters final {
 };
 
 class RunObservationSink;
+class MutableRunEvidence;
 
 /// Runs the production AssetRun composition beneath the synchronous Run Executor.
 /// Borrows preparation, executor-owned evidence, observations, and operation closures until return;
 /// completed outcomes survive later orchestration exceptions, which propagate to the executor.
-/// Operations return outcomes without recording them. Work retains evidence before the sink reports
-/// phases, progress, and diagnostics; cancellation combines the stop token with the optional
-/// adapter. The executor retains terminal classification and mandatory Safety Cleanup after this
-/// call unwinds.
+/// Operations return outcomes without recording them. Archive facts enter the concrete evidence
+/// owner before the compatibility work record or any presentation callback; work reports phase
+/// position and progress through the executor-owned observation adapter. Cancellation combines the
+/// stop token with the optional adapter. The executor retains terminal classification and mandatory
+/// Safety Cleanup after this call unwinds.
 void executeAssetRun(const RunPreparation& preparation, RunWorkRecord& record,
-                     RunObservationSink& observations, std::stop_token stop,
-                     const AssetRunAdapters& operations);
+                     MutableRunEvidence& evidence, RunObservationSink& observations,
+                     std::stop_token stop, const AssetRunAdapters& operations);
 
 /// Orchestrates Archive-first discovery, definitive routing, and carried Asset execution.
 class AssetRun final {
@@ -105,8 +107,9 @@ class AssetRun final {
     /// Owns the immutable policy used for both Archive selection and definitive routing.
     explicit AssetRun(routing::RoutingPolicy policy) noexcept;
 
-    /// Appends completed evidence to the borrowed record before reporting or proceeding.
-    /// When supplied, observations publishes diagnostics and failures already retained in that
+    /// Appends completed evidence to the borrowed compatibility record before proceeding.
+    /// When supplied, the concrete evidence owner first retains Archive discovery, collision, and
+    /// extraction facts; observations publishes diagnostics and failures already retained in the
     /// record. Extracts routed Archives, batch-routes the resulting Effective Asset Tree once,
     /// offers the owned Routed Assets to the execution adapter, reports definitive routing
     /// diagnostics, then finalizes Archives in Apply mode only. Cancellation is observed between
@@ -124,7 +127,8 @@ class AssetRun final {
     void execute(std::span<const std::filesystem::path> roots, RunWorkRecord& record,
                  const AssetRunAdapters& adapters,
                  const ArchivePrecedence& precedence = ArchivePrecedence::deterministicDiscovery(),
-                 RunObservationSink* observations = nullptr) const;
+                 RunObservationSink* observations = nullptr,
+                 MutableRunEvidence* evidence = nullptr) const;
 
    private:
     routing::RoutingPolicy _policy;

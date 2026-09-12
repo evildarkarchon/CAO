@@ -21,6 +21,7 @@ class GatedCliWork final : public cao::run::RunWorkService {
     std::promise<void> release;
     /// Publishes an in-flight attempt, then records completion before observing cancellation.
     void execute(const cao::run::RunPreparation&, cao::run::RunWorkRecord& record,
+                 cao::run::MutableRunEvidence&,
                  cao::run::TemporaryArtifactRegistry&, cao::run::RunObservationSink& observations,
                  std::stop_token stop) override {
         observations.recordPhase(cao::run::RunPhaseRecord::executed(

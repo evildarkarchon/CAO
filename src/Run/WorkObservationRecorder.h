@@ -10,9 +10,10 @@ namespace cao::run {
 /// Borrows the record and optional sink; neither may be retained beyond their execution lifetime.
 class WorkObservationRecorder final {
    public:
-    /// Shares publication position across Preparing, AssetRun, and interrupted work.
-    WorkObservationRecorder(RunWorkRecord& record, RunObservationSink* sink)
-        : _record(record), _sink(sink) {}
+    /// Shares publication position and optionally mirrors Archive facts into concrete Run Evidence.
+    WorkObservationRecorder(RunWorkRecord& record, RunObservationSink* sink,
+                            MutableRunEvidence* evidence = nullptr)
+        : _record(record), _sink(sink), _evidence(evidence) {}
 
     /// Isolates presentation exceptions after evidence is retained, without changing Run Outcome.
     template <typename Callback>
@@ -36,6 +37,33 @@ class WorkObservationRecorder final {
         reportSafely(retained.phase(), [&] {
             if (_sink) _sink->publishRetainedFailure(retained);
         });
+    }
+
+    /// Retains the complete collision plan before any presentation callback can interrupt work.
+    void recordArchiveCollisions(const std::span<const ArchiveCollision> collisions) {
+        if (_evidence) _evidence->recordArchiveCollisions(collisions);
+        _record.collisions.assign(collisions.begin(), collisions.end());
+    }
+
+    /// Retains one complete Archive attempt before its progress or cancellation boundary.
+    void recordArchiveExtractionAttempt(ArchiveExtractionResult attempt) {
+        if (_evidence) _evidence->recordArchiveExtractionAttempt(attempt);
+        _record.archiveAttempts.push_back(std::move(attempt));
+    }
+
+    /// Retains one complete returned discovery fact set in both staged migration views.
+    void recordArchiveDiscovery(const ArchiveDiscoveryEvidence& discovery) {
+        if (_evidence) _evidence->recordArchiveDiscovery(discovery);
+        _record.skippedArchiveCounts.clear();
+        for (const auto reason :
+             {routing::SkipReason::DisabledPhase, routing::SkipReason::DisabledAssetKind,
+              routing::SkipReason::ExcludedAssetVariant}) {
+            const auto count = discovery.skippedArchiveCount(reason);
+            if (count != 0) _record.skippedArchiveCounts.emplace(reason, count);
+        }
+        _record.unsupportedExplicitPaths.assign(discovery.unsupportedExplicitPaths().begin(),
+                                                discovery.unsupportedExplicitPaths().end());
+        _record.nestedArchiveCount = discovery.nestedArchiveCount();
     }
 
     /// Retains and immediately publishes a Preparing or caller-supplied informational observation.
@@ -68,5 +96,6 @@ class WorkObservationRecorder final {
    private:
     RunWorkRecord& _record;
     RunObservationSink* _sink;
+    MutableRunEvidence* _evidence;
 };
 }  // namespace cao::run

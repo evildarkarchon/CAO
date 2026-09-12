@@ -11,8 +11,8 @@
 
 namespace cao::run {
 void executeAssetRun(const RunPreparation& preparation, RunWorkRecord& record,
-                     RunObservationSink& observations, std::stop_token stop,
-                     const AssetRunAdapters& operations) {
+                     MutableRunEvidence& evidence, RunObservationSink& observations,
+                     std::stop_token stop, const AssetRunAdapters& operations) {
     // Cancellation and observation adaptation borrow only this synchronous work call.
     AssetRunAdapters adapters = operations;
     adapters.isCancelled = [&] {
@@ -20,7 +20,7 @@ void executeAssetRun(const RunPreparation& preparation, RunWorkRecord& record,
     };
     AssetRun(preparation.policy())
         .execute(preparation.modRoots(), record, adapters, preparation.archivePrecedence(),
-                 &observations);
+                 &observations, &evidence);
 }
 
 AssetRunDiagnostics::AssetRunDiagnostics(const RunWorkRecord& record) noexcept : _record(record) {}
@@ -49,7 +49,7 @@ AssetRun::AssetRun(routing::RoutingPolicy policy) noexcept : _policy(std::move(p
 
 void AssetRun::execute(const std::span<const std::filesystem::path> roots, RunWorkRecord& record,
                        const AssetRunAdapters& adapters, const ArchivePrecedence& precedence,
-                       RunObservationSink* observations) const {
+                       RunObservationSink* observations, MutableRunEvidence* evidence) const {
     // Freeze scopes before adapters can remove files or retarget selected directory aliases.
     std::vector<std::filesystem::path> modRoots;
     for (const auto& root : roots) {
@@ -64,7 +64,7 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots, RunWo
     bool unsafeArchive = false;
     std::vector<ArchiveExtractionPlan> extractionPlans;
     std::size_t archiveSucceeded = 0;
-    WorkObservationRecorder recorder(record, observations);
+    WorkObservationRecorder recorder(record, observations, evidence);
     const auto publishDiagnostics = [&] { recorder.publishDiagnostics(); };
     const auto reportPhase = [&](const RunPhaseRecord& phase) {
         recorder.reportSafely(phase.phase(), [&] {
@@ -104,7 +104,7 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots, RunWo
                                 attempt.mutation == execution::MutationState::PartialOrUnknown;
                 attempt.modRoot = plan.modRoot;
                 if (attempt.succeeded()) ++archiveSucceeded;
-                record.archiveAttempts.push_back(std::move(attempt));
+                recorder.recordArchiveExtractionAttempt(std::move(attempt));
                 ++completed;
                 reportPhase(RunPhaseRecord::executed(
                     RunPhase::ExtractingArchives,
@@ -134,7 +134,7 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots, RunWo
         adapters.isCancelled, precedence,
         [&](std::span<const ArchiveCollision> collisions) {
             // Retain preflight evidence before presentation or later discovery can unwind.
-            record.collisions.assign(collisions.begin(), collisions.end());
+            recorder.recordArchiveCollisions(collisions);
             if (adapters.reportArchiveCollisions)
                 recorder.reportSafely(RunPhase::DiscoveringArchives,
                                       [&] { adapters.reportArchiveCollisions(collisions); });
@@ -165,10 +165,11 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots, RunWo
         const auto count = discoveryResult.skippedArchiveCount(reason);
         if (count != 0) skippedArchiveCounts.emplace(reason, count);
     }
-    record.skippedArchiveCounts = std::move(skippedArchiveCounts);
-    record.unsupportedExplicitPaths.assign(discoveryResult.unsupportedExplicitPaths().begin(),
-                                           discoveryResult.unsupportedExplicitPaths().end());
-    record.nestedArchiveCount = discoveryResult.nestedArchiveCount();
+    recorder.recordArchiveDiscovery(ArchiveDiscoveryEvidence{
+        std::move(skippedArchiveCounts),
+        std::vector<std::filesystem::path>(discoveryResult.unsupportedExplicitPaths().begin(),
+                                           discoveryResult.unsupportedExplicitPaths().end()),
+        discoveryResult.nestedArchiveCount()});
     record.cancellationObserved = unsafeArchive ? cancelled : discoveryResult.cancelled();
     for (const auto& failure : discoveryResult.failures()) recorder.recordFailure(failure);
     // Interrupted discovery can expose a partial tree but cannot promise a definitive ledger.

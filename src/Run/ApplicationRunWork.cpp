@@ -112,8 +112,8 @@ class ApplicationRunWork final : public RunWorkService {
 
     /// Runs all roots together so routing, precedence, progress and evidence share one lifecycle.
     void execute(const RunPreparation& preparation, RunWorkRecord& record,
-                 TemporaryArtifactRegistry& artifacts, RunObservationSink& observations,
-                 std::stop_token stop) override {
+                 MutableRunEvidence& evidence, TemporaryArtifactRegistry& artifacts,
+                 RunObservationSink& observations, std::stop_token stop) override {
         OptionsCAO options;
         _options.apply(options);
         options.bDryRun = preparation.policy().executionMode() == routing::ExecutionMode::DryRun;
@@ -159,7 +159,7 @@ class ApplicationRunWork final : public RunWorkService {
             }
             return result;
         };
-        executeAssetRun(preparation, record, observations, stop, adapters);
+        executeAssetRun(preparation, record, evidence, observations, stop, adapters);
     }
 
    private:

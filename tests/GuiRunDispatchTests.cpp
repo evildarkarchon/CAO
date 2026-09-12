@@ -20,6 +20,7 @@ class GatedAttempt final : public cao::run::RunWorkService {
 
     /// Registers real cleanup work and delays return without interrupting the atomic attempt.
     void execute(const cao::run::RunPreparation&, cao::run::RunWorkRecord&,
+                 cao::run::MutableRunEvidence&,
                  cao::run::TemporaryArtifactRegistry& artifacts,
                  cao::run::RunObservationSink& observations, std::stop_token) override {
         static_cast<void>(artifacts.registerArtifact(artifact));

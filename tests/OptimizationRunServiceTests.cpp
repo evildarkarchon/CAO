@@ -1616,6 +1616,7 @@ void OptimizationRunServiceTests::terminalResultOwnsCompleteWorkEvidence() {
        public:
         /// Supplies known attempt evidence through the same seam as a production work service.
         void execute(const RunPreparation& preparation, RunWorkRecord& record,
+                     MutableRunEvidence&,
                      TemporaryArtifactRegistry&,
                      RunObservationSink& observations, std::stop_token) override {
             const auto root = preparation.modRoots().front();
@@ -1690,6 +1691,7 @@ void OptimizationRunServiceTests::workExceptionRetainsEarlierEvidence() {
        public:
         /// Records a completed boundary, then simulates an unexpected later service failure.
         void execute(const RunPreparation& preparation, RunWorkRecord& record,
+                     MutableRunEvidence&,
                      TemporaryArtifactRegistry&,
                      RunObservationSink& observations, std::stop_token) override {
             const auto root = preparation.modRoots().front();
