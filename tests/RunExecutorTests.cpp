@@ -172,6 +172,8 @@ private slots:
  void throwingPreflightFailureObserverRetainsEvidence();
  /// Retains mixed Asset and aggregate finalization evidence after every borrowed dependency dies.
  void mixedWorkEvidenceOutlivesServices();
+ /// Retains a committed Archive output when its finalizer cancels before further work.
+ void archiveFinalizationCancellationRetainsCommittedOutput();
  /// Covers cancellation at the last protected attempt and concurrent unsafe mutation.
  void cancellationAfterAtomicAssetAttempt_data();
  /// Counts the completed attempt before stopping without reaching Archive finalization.
@@ -241,6 +243,8 @@ private slots:
 
  /// Verifies Safety Cleanup still runs exactly once when the run terminates as Failed.
  void safetyCleanupRunsOnEveryTerminalPath();
+ /// Routes a scheduling failure through the executor's mandatory cleanup and evidence boundary.
+ void schedulingFailureRetainsOrderedCleanupEvidence();
 
  /// Verifies cleanup owns paths before creation and releases only explicitly committed output.
  void registeredArtifactsAreCleanedAndCommittedOutputSurvives();
@@ -1002,6 +1006,16 @@ void RunExecutorTests::mixedWorkEvidenceOutlivesServices() {
     QCOMPARE(progress->failed(), std::size_t{1});
     QCOMPARE(result->work().finalizations.size(), std::size_t{1});
     const auto& finalization = result->work().finalizations.front();
+    const auto* retainedFinalization = result->evidence().archiveFinalization();
+    QVERIFY(retainedFinalization != nullptr);
+    QCOMPARE(retainedFinalization->attempts.size(), std::size_t{2});
+    QCOMPARE(retainedFinalization->attempts.front().modRoot, root);
+    QCOMPARE(retainedFinalization->attempts.front().mutation,
+             cao::execution::MutationState::Committed);
+    QCOMPARE(retainedFinalization->attempts.back().failure,
+             std::optional{cao::run::ArchiveFinalizationFailure::WriteFailed});
+    QCOMPARE(retainedFinalization->attempts.back().detail, std::string("write detail"));
+    QVERIFY(result->evidence().failures().empty());
     QCOMPARE(finalization.attempts.size(), std::size_t{2});
     QCOMPARE(finalization.attempts.front().archivePath, output);
     QCOMPARE(finalization.attempts.front().modRoot, root);
@@ -1018,6 +1032,55 @@ void RunExecutorTests::mixedWorkEvidenceOutlivesServices() {
     QCOMPARE(stagingBytes(failedAsset), QByteArray("original"));
     QCOMPARE(stagingBytes(output), QByteArray("packed"));
     QCOMPARE(result->phases().back().phase(), RunPhase::SafetyCleanup);
+}
+
+void RunExecutorTests::archiveFinalizationCancellationRetainsCommittedOutput() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(
+        std::filesystem::path(directory.path().toStdWString()));
+    const auto output = root / "committed.bsa";
+    ControlledAssetWork work;
+    std::size_t calls{};
+    work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+        ++calls;
+        std::ofstream(output) << "committed output";
+        cao::run::ArchiveFinalizationResult finalization;
+        finalization.attempts.push_back(
+            {output, cao::execution::MutationState::Committed, {}, true, {}, root});
+        finalization.cancelled = true;
+        return finalization;
+    };
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create(
+        "SkyrimSE", ExecutionMode::Apply, ModSelection::singleModRoot(root),
+        {RequestedWork::ArchiveCreation});
+
+    const auto result = RunExecutor{}.execute(
+        request, RunServices{cleanup, nullptr, configuration.get(), &work});
+
+    QCOMPARE(calls, std::size_t{1});
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+    QCOMPARE(result.outcome(), RunOutcome::Cancelled);
+    QCOMPARE(result.finalPhase(), RunPhase::ArchiveFinalization);
+    QVERIFY(result.cancellationObserved());
+    QVERIFY(result.failures().empty());
+    QVERIFY(result.evidence().failures().empty());
+    const auto* finalization = result.evidence().archiveFinalization();
+    QVERIFY(finalization != nullptr);
+    QVERIFY(finalization->cancelled);
+    QCOMPARE(finalization->attempts.size(), std::size_t{1});
+    QCOMPARE(finalization->attempts.front().modRoot, root);
+    QCOMPARE(finalization->attempts.front().mutation,
+             cao::execution::MutationState::Committed);
+    QVERIFY(finalization->attempts.front().safeToContinue);
+    const auto& progress = requirePhase(result, RunPhase::ArchiveFinalization).progress();
+    QVERIFY(progress.has_value());
+    QCOMPARE(progress->completed(), std::size_t{1});
+    QVERIFY(result.evidence().safetyCleanupFailures().empty());
+    QVERIFY(!std::filesystem::exists(work.staged));
+    QCOMPARE(stagingBytes(output), QByteArray("committed output"));
 }
 
 void RunExecutorTests::cancellationAfterAtomicAssetAttempt_data() {
@@ -1717,6 +1780,48 @@ void RunExecutorTests::registeredArtifactsAreCleanedAndCommittedOutputSurvives()
     QVERIFY_EXCEPTION_THROWN(artifacts.commit(temporaryRegistration), std::logic_error);
 }
 
+void RunExecutorTests::schedulingFailureRetainsOrderedCleanupEvidence() {
+    class FailingCleanup final : public SafetyCleanupService {
+       public:
+        /// Borrows the cancellation source until the synchronous cleanup pass returns.
+        explicit FailingCleanup(std::stop_source& stop) : _stop(stop) {}
+        /// Attempts both removals after requesting cancellation at cleanup entry.
+        std::vector<cao::run::RunFailure> performSafetyCleanup() override {
+            ++calls;
+            _stop.request_stop();
+            return {{cao::run::RunFailureCode::TemporaryArtifactCleanupFailed,
+                     RunPhase::SafetyCleanup, "first artifact"},
+                    {cao::run::RunFailureCode::TemporaryArtifactCleanupFailed,
+                     RunPhase::SafetyCleanup, "second artifact"}};
+        }
+        std::size_t calls{};
+
+       private:
+        std::stop_source& _stop;
+    };
+    std::stop_source stop;
+    FailingCleanup cleanup(stop);
+
+    const auto result = RunExecutor{}.schedulingFailure(
+        "scheduler exhausted", cleanup, nullptr, stop.get_token());
+
+    QCOMPARE(cleanup.calls, std::size_t{1});
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(result.finalPhase(), RunPhase::Preparing);
+    QVERIFY(result.cancellationObserved());
+    QCOMPARE(result.phases().size(), std::size_t{1});
+    QCOMPARE(result.phases().front().phase(), RunPhase::SafetyCleanup);
+    QCOMPARE(result.evidence().failures().size(), std::size_t{1});
+    QCOMPARE(result.evidence().failures().front().code(),
+             cao::run::RunFailureCode::SchedulingFailed);
+    QCOMPARE(result.evidence().safetyCleanupFailures().size(), std::size_t{2});
+    QCOMPARE(result.evidence().safetyCleanupFailures()[0].detail(),
+             std::string("first artifact"));
+    QCOMPARE(result.evidence().safetyCleanupFailures()[1].detail(),
+             std::string("second artifact"));
+    QCOMPARE(result.cleanupFailures().size(), std::size_t{2});
+}
+
 void RunExecutorTests::cleanupFailuresAreAggregatedWithoutDeletingRetainedMaterial() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -1749,8 +1854,14 @@ void RunExecutorTests::cleanupFailuresAreAggregatedWithoutDeletingRetainedMateri
     }
     QCOMPARE(result->outcome(), RunOutcome::CompletedWithFailures);
     QCOMPARE(result->cleanupFailures().size(), std::size_t{2});
+    QCOMPARE(result->evidence().safetyCleanupFailures().size(), std::size_t{2});
+    QVERIFY(result->evidence().failures().empty());
     QCOMPARE(result->cleanupFailures()[0].path(), std::filesystem::canonical(evidence));
     QCOMPARE(result->cleanupFailures()[1].path(), std::filesystem::canonical(staging));
+    QCOMPARE(result->evidence().safetyCleanupFailures()[0].path(),
+             std::filesystem::canonical(evidence));
+    QCOMPARE(result->evidence().safetyCleanupFailures()[1].path(),
+             std::filesystem::canonical(staging));
     for (const auto& failure : result->cleanupFailures()) {
         QCOMPARE(failure.code(), cao::run::RunFailureCode::TemporaryArtifactCleanupFailed);
         QCOMPARE(failure.phase(), RunPhase::SafetyCleanup);
@@ -1811,14 +1922,14 @@ void RunExecutorTests::cleanupFailuresPreserveThePrimaryOutcome() {
         std::stop_source stop;
         class CleanupObservation final : public cao::run::RunObservationSink {
            public:
-            /// Cancels at cleanup entry and observes failure ordering without interrupting removal.
+            /// Cancels at cleanup entry without interrupting removal.
             explicit CleanupObservation(std::stop_source& stop) : _stop(stop) {}
             /// Requests cancellation after the work outcome has already been determined.
             void recordPhase(const RunPhaseRecord& phase) override {
                 lastPhase = phase.phase();
                 if (lastPhase == RunPhase::SafetyCleanup) _stop.request_stop();
             }
-            /// Captures the phase associated with each failure for ordering assertions.
+            /// Captures run-level failure publication, excluding final cleanup failures.
             void recordFailure(const cao::run::RunFailure&) override {
                 failurePhases.push_back(lastPhase);
             }
@@ -1838,8 +1949,10 @@ void RunExecutorTests::cleanupFailuresPreserveThePrimaryOutcome() {
             stop.get_token());
         QCOMPARE(result.outcome(), fatal ? RunOutcome::Failed : RunOutcome::Cancelled);
         QCOMPARE(result.cleanupFailures().size(), std::size_t{1});
+        QCOMPARE(result.evidence().safetyCleanupFailures().size(), std::size_t{1});
         QCOMPARE(result.failures().size(), fatal ? std::size_t{1} : std::size_t{0});
-        QCOMPARE(observations.failurePhases.back(), RunPhase::SafetyCleanup);
+        QCOMPARE(observations.failurePhases.size(), fatal ? std::size_t{1} : std::size_t{0});
+        if (fatal) QCOMPARE(observations.failurePhases.front(), RunPhase::Preparing);
         QVERIFY(std::filesystem::exists(retained / "unregistered"));
     }
 }
@@ -1936,7 +2049,10 @@ void RunExecutorTests::cleanupExceptionsPreserveCancellation() {
         QCOMPARE(cleanup.invocations, 1);
         QVERIFY(result.failures().empty());
         QCOMPARE(result.cleanupFailures().size(), std::size_t{1});
+        QCOMPARE(result.evidence().safetyCleanupFailures().size(), std::size_t{1});
         QCOMPARE(result.cleanupFailures().front().code(),
+                 cao::run::RunFailureCode::SafetyCleanupServiceFailed);
+        QCOMPARE(result.evidence().safetyCleanupFailures().front().code(),
                  cao::run::RunFailureCode::SafetyCleanupServiceFailed);
     }
 }
@@ -1964,6 +2080,8 @@ void RunExecutorTests::cleanupServiceExceptionsAreTerminal() {
         QCOMPARE(result.outcome(), RunOutcome::Failed);
         QCOMPARE(cleanup.invocations, 1);
         QCOMPARE(result.cleanupFailures().size(), std::size_t{1});
+        QCOMPARE(result.evidence().safetyCleanupFailures().size(), std::size_t{1});
+        QVERIFY(result.evidence().failures().empty());
         QCOMPARE(result.cleanupFailures().front().code(),
                  cao::run::RunFailureCode::SafetyCleanupServiceFailed);
     }

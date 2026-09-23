@@ -151,18 +151,9 @@ class RunSharedState final : public RunObservationSink,
     /// a phase the run never entered may not claim an outcome it never observed.
     void commitSchedulingFailure(std::string detail) {
         const RunExecutionScope scope(this);
-        MutableRunEvidence evidence{this};
-        std::vector<RunFailure> failures{
-            RunFailure{RunFailureCode::SchedulingFailed, RunPhase::Preparing, std::move(detail)}};
-        evidence.recordFailure(failures.front());
-        const auto cleanupPhase = RunPhaseRecord::executed(RunPhase::SafetyCleanup);
-        evidence.recordPhase(cleanupPhase);
-        auto cleanupFailures = collectSafetyCleanupFailures(_safetyCleanup);
-        for (const auto& failure : cleanupFailures) evidence.recordFailure(failure);
-        if (_stop.stop_requested()) evidence.recordCancellationObservation();
-        commit(OptimizationRunResult::terminal(RunOutcome::Failed, RunPhase::Preparing,
-                                               std::move(evidence).consume(), _runId,
-                                               std::move(failures), std::move(cleanupFailures)));
+        const RunExecutor executor;
+        commit(executor.schedulingFailure(std::move(detail), _safetyCleanup, this,
+                                          _stop.get_token(), _runId));
     }
 
     /// Commits the one terminal result of this run and releases every waiter.

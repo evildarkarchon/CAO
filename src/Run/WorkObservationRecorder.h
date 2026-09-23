@@ -13,9 +13,13 @@ namespace cao::run {
 class WorkObservationRecorder final {
    public:
     /// Shares publication position and optionally mirrors Archive and Asset facts into Run Evidence.
+    /// Throws RunEvidenceInvariantViolation if concrete evidence has no phase reporter.
     WorkObservationRecorder(RunWorkRecord& record, RunObservationSink* sink,
                             MutableRunEvidence* evidence = nullptr)
-        : _record(record), _sink(sink), _evidence(evidence) {}
+        : _record(record), _sink(sink), _evidence(evidence) {
+        if (_evidence && !_sink)
+            throw RunEvidenceInvariantViolation("Run Evidence requires a work phase reporter");
+    }
 
     /// Isolates presentation exceptions after evidence is retained, without changing Run Outcome.
     template <typename Callback>
@@ -41,42 +45,38 @@ class WorkObservationRecorder final {
         });
     }
 
-    /// Reports typed Archive discovery while Run Evidence owns lifecycle translation.
-    void recordArchiveDiscoveryStarted() {
-        if (_evidence) {
-            _evidence->recordArchiveDiscoveryStarted();
-            return;
-        }
-        reportPhaseWithoutEvidence(RunPhaseRecord::executed(RunPhase::DiscoveringArchives));
+    /// Submits discovery entry to the executor's phase reporter.
+    [[nodiscard]] RunPhaseRecord recordArchiveDiscoveryStarted() {
+        if (_evidence) return _sink->archiveDiscoveryStarted();
+        auto phase = RunPhaseRecord::executed(RunPhase::DiscoveringArchives);
+        reportPhaseWithoutEvidence(phase);
+        return phase;
     }
 
-    /// Reports the immutable Archive work total while Run Evidence owns phase progress.
-    void recordArchiveExtractionPlan(const std::size_t total) {
-        if (_evidence) {
-            _evidence->recordArchiveExtractionPlan(total);
-            return;
-        }
-        reportPhaseWithoutEvidence(RunPhaseRecord::executed(RunPhase::ExtractingArchives,
-                                                            RunProgress::determinate(total)));
+    /// Submits the immutable Archive work total to the executor's phase reporter.
+    [[nodiscard]] RunPhaseRecord recordArchiveExtractionPlan(const std::size_t total) {
+        if (_evidence) return _sink->archiveExtractionPlanned(total);
+        auto phase = RunPhaseRecord::executed(RunPhase::ExtractingArchives,
+                                              RunProgress::determinate(total));
+        reportPhaseWithoutEvidence(phase);
+        return phase;
     }
 
     /// Reports Dry Run exclusion without letting AssetRun construct executor evidence.
-    void recordDryRunArchiveExtraction() {
-        if (_evidence) {
-            _evidence->recordDryRunArchiveExtraction();
-            return;
-        }
-        reportPhaseWithoutEvidence(
-            RunPhaseRecord::skipped(RunPhase::ExtractingArchives, PhaseSkipReason::DryRun));
+    [[nodiscard]] RunPhaseRecord recordDryRunArchiveExtraction() {
+        if (_evidence) return _sink->dryRunArchiveExtraction();
+        auto phase = RunPhaseRecord::skipped(RunPhase::ExtractingArchives,
+                                             PhaseSkipReason::DryRun);
+        reportPhaseWithoutEvidence(phase);
+        return phase;
     }
 
     /// Reports entry into definitive Effective Asset Tree discovery.
-    void recordEffectiveAssetTreeStarted() {
-        if (_evidence) {
-            _evidence->recordEffectiveAssetTreeStarted();
-            return;
-        }
-        reportPhaseWithoutEvidence(RunPhaseRecord::executed(RunPhase::BuildingEffectiveAssetTree));
+    [[nodiscard]] RunPhaseRecord recordEffectiveAssetTreeStarted() {
+        if (_evidence) return _sink->effectiveAssetTreeStarted();
+        auto phase = RunPhaseRecord::executed(RunPhase::BuildingEffectiveAssetTree);
+        reportPhaseWithoutEvidence(phase);
+        return phase;
     }
 
     /// Retains the complete collision plan before any presentation callback can interrupt work.
@@ -122,14 +122,27 @@ class WorkObservationRecorder final {
     }
 
     /// Reports the routed-only Asset total through concrete executor-owned evidence, when present.
-    void recordAssetProcessingPlan(const std::size_t total) {
-        if (_evidence) _evidence->recordAssetProcessingPlan(total);
+    [[nodiscard]] RunPhaseRecord recordAssetProcessingPlan(const std::size_t total) {
+        if (_evidence) return _sink->assetProcessingPlanned(total);
+        return RunPhaseRecord::executed(RunPhase::ProcessingAssets,
+                                        RunProgress::determinate(total));
     }
 
     /// Retains one completed Asset attempt before concrete evidence publishes phase progress.
     void recordAssetAttempt(RoutedAssetAttempt attempt, const std::size_t total) {
         if (_evidence) _evidence->recordAssetAttempt(attempt, total);
         _record.assetAttempts.push_back(std::move(attempt));
+    }
+
+    /// Retains finalization status after all streamed attempts, or replays direct adapter results.
+    /// Propagates RunEvidenceInvariantViolation when the returned attempts contradict retention.
+    void recordArchiveFinalization(ArchiveFinalizationResult result) {
+        if (_evidence) {
+            _evidence->recordArchiveFinalization(std::move(result));
+            _record.finalizations.push_back(*_evidence->archiveFinalization());
+        } else {
+            _record.finalizations.push_back(std::move(result));
+        }
     }
 
     /// Retains and immediately publishes a Preparing or caller-supplied informational observation.

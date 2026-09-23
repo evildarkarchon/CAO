@@ -14,6 +14,8 @@
 
 namespace cao::run {
 struct ArchiveExtractionResult;
+struct ArchiveFinalizationAttempt;
+struct ArchiveFinalizationResult;
 struct RoutedAssetAttempt;
 class RunEvidenceStorage;
 
@@ -46,10 +48,11 @@ class RunEvidenceInvariantViolation final : public std::logic_error {
     using std::logic_error::logic_error;
 };
 
-/// Receives facts after Run Evidence has retained them and claimed their publication position.
+/// Receives typed work milestones and facts after Run Evidence has claimed publication positions.
 ///
-/// Implementations adapt the synchronous Run Executor to production Run Event delivery or to a
-/// test observer. Exceptions are isolated by MutableRunEvidence and become informational evidence.
+/// The Run Executor translates milestones into lifecycle records. Direct AssetRun observers use
+/// the default phase translation for compatibility. Exceptions from publication are isolated by
+/// MutableRunEvidence; work milestone contract violations propagate to the executor.
 class RunObservationSink {
    public:
     virtual ~RunObservationSink() = default;
@@ -73,6 +76,29 @@ class RunObservationSink {
 
     /// Publishes a failure already owned by lower work without retaining it there again.
     virtual void publishRetainedFailure(const RunFailure& failure) { recordFailure(failure); }
+
+    /// Submits the frozen Archive output total before any completed output is published.
+    /// The default throws RunEvidenceInvariantViolation when no evidence reporter is installed.
+    virtual void recordArchiveFinalizationPlan(std::size_t total);
+
+    /// Submits a completed output before its progress is published; implementations own a copy.
+    /// The default throws RunEvidenceInvariantViolation when no evidence reporter is installed.
+    virtual void recordArchiveFinalizationAttempt(const ArchiveFinalizationAttempt&,
+                                                  std::size_t total);
+
+    /// Reports discovery entry for the executor to translate into the next Run Phase.
+    virtual RunPhaseRecord archiveDiscoveryStarted();
+    /// Reports the immutable extraction total before any Archive attempt.
+    virtual RunPhaseRecord archiveExtractionPlanned(std::size_t total);
+    /// Reports that Dry Run excludes Archive extraction.
+    virtual RunPhaseRecord dryRunArchiveExtraction();
+    /// Reports entry into definitive Effective Asset Tree discovery.
+    virtual RunPhaseRecord effectiveAssetTreeStarted();
+    /// Reports the definitive routed Asset total before attempts begin.
+    virtual RunPhaseRecord assetProcessingPlanned(std::size_t total);
+    /// Reports finalizer availability; the executor selects its final work phase record.
+    virtual RunPhaseRecord archiveFinalizationAvailable(routing::ExecutionMode mode,
+                                                        bool hasFinalizer);
 };
 
 /// The immutable factual record consumed from one Optimization Run's mutable evidence owner.
@@ -127,6 +153,12 @@ class RunEvidence final {
 
     /// Borrows completed Asset attempts in execution order, including failed unsafe attempts.
     [[nodiscard]] std::span<const RoutedAssetAttempt> assetAttempts() const noexcept;
+
+    /// Borrows finalization attempts and phase-level status, or nullptr when it was not attempted.
+    [[nodiscard]] const ArchiveFinalizationResult* archiveFinalization() const noexcept;
+
+    /// Borrows final Safety Cleanup failures in attempted order, apart from Run Failures.
+    [[nodiscard]] std::span<const RunFailure> safetyCleanupFailures() const noexcept;
 
     /// Reports whether cooperative cancellation was observed before evidence was consumed.
     [[nodiscard]] bool cancellationObserved() const noexcept;
@@ -228,6 +260,26 @@ class MutableRunEvidence final {
     /// Its exact operation result remains attached to the Routed Asset in attempted order.
     void recordAssetAttempt(RoutedAssetAttempt attempt, std::size_t total);
 
+    /// Starts determinate Archive Finalization progress with the frozen output count.
+    /// Throws RunEvidenceInvariantViolation for a second plan or a plan outside the executed phase.
+    void recordArchiveFinalizationPlan(std::size_t total);
+
+    /// Retains one completed output attempt before publishing its progress update.
+    /// Throws RunEvidenceInvariantViolation for a missing/mismatched plan, wrong phase, or excess
+    /// attempt count.
+    void recordArchiveFinalizationAttempt(ArchiveFinalizationAttempt attempt, std::size_t total);
+
+    /// Retains the returned finalization status and any attempts not already streamed.
+    /// Previously streamed attempts must match the returned prefix; phase-level failure and
+    /// cancellation remain distinct from Operation Failures on individual attempts. Throws
+    /// RunEvidenceInvariantViolation for a wrong phase, repeated result, or mismatched attempts.
+    void recordArchiveFinalization(ArchiveFinalizationResult result);
+
+    /// Retains one final Safety Cleanup failure without publishing it as a Run Failure.
+    /// Cleanup services may return several failures; callers submit each in attempted order.
+    /// Throws RunEvidenceInvariantViolation for a wrong phase or non-cleanup failure code.
+    void recordSafetyCleanupFailure(RunFailure failure);
+
     /// Returns the latest accepted record for a phase, or nullptr when it was never reached.
     [[nodiscard]] const RunPhaseRecord* phase(RunPhase phase) const;
 
@@ -239,6 +291,9 @@ class MutableRunEvidence final {
 
     /// Returns run-level failures accepted so far without exposing mutable storage.
     [[nodiscard]] std::span<const RunFailure> failures() const;
+
+    /// Borrows finalization already retained by this worker, including streamed attempts.
+    [[nodiscard]] const ArchiveFinalizationResult* archiveFinalization() const;
 
     /// Retains that cancellation was observed without selecting or changing a Run Outcome.
     void recordCancellationObservation();

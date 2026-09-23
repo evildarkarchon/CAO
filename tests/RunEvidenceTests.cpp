@@ -1,4 +1,5 @@
 #include "Run/RunEvidence.h"
+#include "Run/ArchiveFinalizationResult.h"
 #include "Run/RunSetup.h"
 
 #include <QtTest>
@@ -11,11 +12,13 @@
 
 using cao::routing::ExecutionMode;
 using cao::run::ArchivePrecedence;
+using cao::run::ArchiveFinalizationResult;
 using cao::run::MutableRunEvidence;
 using cao::run::RunConfiguration;
 using cao::run::RunDiagnostic;
 using cao::run::RunDiagnosticCode;
 using cao::run::RunEvidence;
+using cao::run::RunEvidenceInvariantViolation;
 using cao::run::RunFailure;
 using cao::run::RunFailureCode;
 using cao::run::RunObservationSink;
@@ -67,6 +70,12 @@ class RunEvidenceTests final : public QObject {
     void preparationAndPostConsumptionMutationAreRejected();
     /// Verifies cancellation is retained as a fact without requiring terminal classification.
     void cancellationObservationIsSealedIndependently();
+    /// Keeps Archive and Safety Cleanup failures out of run-level failure storage.
+    void finalizationAndCleanupFailuresRemainSeparate();
+    /// Publishes each completed Archive output only after its full attempt is retained.
+    void finalizationProgressPublishesRetainedAttempt();
+    /// Preserves streamed outputs when finalization fails before returning its result.
+    void interruptedFinalizationRetainsCompletedAttempts();
     /// Verifies every live payload is already queryable when its publication callback begins.
     void liveFactsAreRetainedBeforePublication();
     /// Supplies each live payload category as the one whose adapter callback throws.
@@ -199,6 +208,128 @@ void RunEvidenceTests::cancellationObservationIsSealedIndependently() {
     const auto terminal = consumeAfterCleanup(evidence);
 
     QVERIFY(terminal.cancellationObserved());
+}
+
+void RunEvidenceTests::finalizationAndCleanupFailuresRemainSeparate() {
+    using cao::execution::MutationState;
+    using cao::run::ArchiveFinalizationFailure;
+
+    MutableRunEvidence evidence;
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
+    QVERIFY_EXCEPTION_THROWN(evidence.recordArchiveFinalizationPlan(2),
+                             RunEvidenceInvariantViolation);
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::ArchiveFinalization));
+    evidence.recordArchiveFinalizationPlan(2);
+    evidence.recordArchiveFinalization(ArchiveFinalizationResult{{
+        {"first.bsa", MutationState::Committed, {}, true, {}, "first-mod"},
+        {"second.bsa", MutationState::Committed,
+         ArchiveFinalizationFailure::SourceCleanupFailed, true, "source retained", "second-mod"}}});
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
+    evidence.recordSafetyCleanupFailure(
+        RunFailure{RunFailureCode::TemporaryArtifactCleanupFailed, RunPhase::SafetyCleanup,
+                   "first temporary artifact"});
+    evidence.recordSafetyCleanupFailure(
+        RunFailure{RunFailureCode::SafetyCleanupServiceFailed, RunPhase::SafetyCleanup,
+                   "cleanup service exception"});
+
+    const auto terminal = std::move(evidence).consume();
+
+    const auto* finalization = terminal.archiveFinalization();
+    QVERIFY(finalization != nullptr);
+    QCOMPARE(finalization->attempts.size(), std::size_t{2});
+    QCOMPARE(finalization->attempts[0].modRoot, std::filesystem::path("first-mod"));
+    QCOMPARE(finalization->attempts[0].mutation, MutationState::Committed);
+    QVERIFY(!finalization->attempts[0].failure);
+    QCOMPARE(finalization->attempts[1].modRoot, std::filesystem::path("second-mod"));
+    QCOMPARE(finalization->attempts[1].failure,
+             std::optional{ArchiveFinalizationFailure::SourceCleanupFailed});
+    QVERIFY(finalization->attempts[1].safeToContinue);
+    QCOMPARE(terminal.phase(RunPhase::ArchiveFinalization)->progress()->completed(),
+             std::size_t{2});
+    QVERIFY(terminal.failures().empty());
+    QCOMPARE(terminal.safetyCleanupFailures().size(), std::size_t{2});
+    QCOMPARE(terminal.safetyCleanupFailures()[0].detail(),
+             std::string("first temporary artifact"));
+    QCOMPARE(terminal.safetyCleanupFailures()[1].detail(),
+             std::string("cleanup service exception"));
+}
+
+void RunEvidenceTests::finalizationProgressPublishesRetainedAttempt() {
+    class InspectingObservation final : public RunObservationSink {
+       public:
+        const MutableRunEvidence* evidence{};
+        std::size_t completed{};
+
+        /// Reads the exact output attempt during its completed progress publication.
+        void recordPhase(const RunPhaseRecord& phase) override {
+            if (phase.phase() != RunPhase::ArchiveFinalization || !phase.progress() ||
+                phase.progress()->completed() == 0)
+                return;
+            const auto* finalization = evidence->archiveFinalization();
+            QVERIFY(finalization != nullptr);
+            QCOMPARE(finalization->attempts.size(), phase.progress()->completed());
+            QCOMPARE(finalization->attempts.back().modRoot,
+                     std::filesystem::path(phase.progress()->completed() == 1 ? "first-mod"
+                                                                           : "second-mod"));
+            completed = phase.progress()->completed();
+        }
+        /// This fixture produces no run-level failures.
+        void recordFailure(const RunFailure&) override {}
+        /// This fixture produces no diagnostics.
+        void recordDiagnostic(const RunDiagnostic&) override {}
+    } observation;
+    MutableRunEvidence evidence{&observation};
+    observation.evidence = &evidence;
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::ArchiveFinalization));
+    evidence.recordArchiveFinalizationPlan(2);
+    ArchiveFinalizationResult finalization;
+    finalization.attempts.push_back(
+        {"first.bsa", cao::execution::MutationState::Committed, {}, true, {}, "first-mod"});
+    finalization.attempts.push_back(
+        {"second.bsa", cao::execution::MutationState::None,
+         cao::run::ArchiveFinalizationFailure::WriteFailed, true, "failed write", "second-mod"});
+    evidence.recordArchiveFinalizationAttempt(finalization.attempts.front(), 2);
+    evidence.recordArchiveFinalizationAttempt(finalization.attempts.back(), 2);
+    evidence.recordArchiveFinalization(std::move(finalization));
+
+    const auto terminal = consumeAfterCleanup(evidence);
+    QCOMPARE(observation.completed, std::size_t{2});
+    QCOMPARE(terminal.archiveFinalization()->attempts.size(), std::size_t{2});
+    QCOMPARE(terminal.phase(RunPhase::ArchiveFinalization)->progress()->succeeded(),
+             std::size_t{1});
+    QCOMPARE(terminal.phase(RunPhase::ArchiveFinalization)->progress()->failed(),
+             std::size_t{1});
+}
+
+void RunEvidenceTests::interruptedFinalizationRetainsCompletedAttempts() {
+    MutableRunEvidence evidence;
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::ArchiveFinalization));
+    evidence.recordArchiveFinalizationPlan(2);
+    evidence.recordArchiveFinalizationAttempt(
+        {"committed.bsa", cao::execution::MutationState::Committed, {}, true, {}, "first-mod"},
+        2);
+    ArchiveFinalizationResult interrupted;
+    interrupted.failure = cao::run::ArchiveFinalizationFailure::UnexpectedException;
+    interrupted.safeToContinue = false;
+    interrupted.detail = "packing interrupted";
+    evidence.recordArchiveFinalization(std::move(interrupted));
+
+    const auto terminal = consumeAfterCleanup(evidence);
+    const auto* finalization = terminal.archiveFinalization();
+    QVERIFY(finalization != nullptr);
+    QCOMPARE(finalization->attempts.size(), std::size_t{1});
+    QCOMPARE(finalization->attempts.front().modRoot, std::filesystem::path("first-mod"));
+    QCOMPARE(finalization->attempts.front().mutation,
+             cao::execution::MutationState::Committed);
+    QCOMPARE(finalization->failure,
+             std::optional{cao::run::ArchiveFinalizationFailure::UnexpectedException});
+    QVERIFY(!finalization->safeToContinue);
+    QCOMPARE(terminal.phase(RunPhase::ArchiveFinalization)->progress()->total(),
+             std::size_t{2});
+    QCOMPARE(terminal.phase(RunPhase::ArchiveFinalization)->progress()->completed(),
+             std::size_t{1});
 }
 
 void RunEvidenceTests::liveFactsAreRetainedBeforePublication() {

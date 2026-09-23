@@ -19,13 +19,56 @@ namespace {
 class WorkObservations final : public RunObservationSink {
    public:
     /// Borrows worker-confined evidence and the compatibility work record through cleanup.
-    WorkObservations(MutableRunEvidence& evidence, RunWorkRecord& work, RunPhase& finalPhase)
-        : _evidence(evidence), _work(work), _finalPhase(finalPhase) {}
+    WorkObservations(MutableRunEvidence& evidence, RunWorkRecord& work,
+                     routing::ExecutionMode mode)
+        : _evidence(evidence), _work(work), _mode(mode) {}
 
     /// Replaces a phase's latest counts without losing its traversal position.
     void recordPhase(const RunPhaseRecord& phase) override {
         _evidence.recordPhase(phase);
-        _finalPhase = phase.phase();
+    }
+
+    /// Translates work milestones into the executor's canonical lifecycle account.
+    RunPhaseRecord archiveDiscoveryStarted() override {
+        _evidence.recordArchiveDiscoveryStarted();
+        return *_evidence.currentPhase();
+    }
+    /// Starts Archive extraction with the discovered immutable attempt total.
+    RunPhaseRecord archiveExtractionPlanned(const std::size_t total) override {
+        _evidence.recordArchiveExtractionPlan(total);
+        return *_evidence.currentPhase();
+    }
+    /// Excludes Archive extraction when the prepared policy is a Dry Run.
+    RunPhaseRecord dryRunArchiveExtraction() override {
+        _evidence.recordDryRunArchiveExtraction();
+        return *_evidence.currentPhase();
+    }
+    /// Starts definitive Effective Asset Tree discovery after Archive handling.
+    RunPhaseRecord effectiveAssetTreeStarted() override {
+        _evidence.recordEffectiveAssetTreeStarted();
+        return *_evidence.currentPhase();
+    }
+    /// Starts Asset processing with the retained Routing Ledger's exact work total.
+    RunPhaseRecord assetProcessingPlanned(const std::size_t total) override {
+        _evidence.recordAssetProcessingPlan(total);
+        return *_evidence.currentPhase();
+    }
+    /// Selects the final work phase from the request mode and available finalizer.
+    /// Throws RunEvidenceInvariantViolation if work changes the prepared execution mode.
+    RunPhaseRecord archiveFinalizationAvailable(const routing::ExecutionMode mode,
+                                                const bool hasFinalizer) override {
+        if (mode != _mode)
+            throw RunEvidenceInvariantViolation("Work mode differs from the Run Request");
+        const auto phase = _mode == routing::ExecutionMode::DryRun
+                               ? RunPhaseRecord::skipped(RunPhase::ArchiveFinalization,
+                                                         PhaseSkipReason::DryRun)
+                               : hasFinalizer
+                                     ? RunPhaseRecord::executed(RunPhase::ArchiveFinalization)
+                                     : RunPhaseRecord::skipped(
+                                           RunPhase::ArchiveFinalization,
+                                           PhaseSkipReason::NoRequestedWork);
+        recordPhase(phase);
+        return phase;
     }
 
     /// Retains a new work failure in both migration stores before publishing from Run Evidence.
@@ -58,10 +101,21 @@ class WorkObservations final : public RunObservationSink {
         _evidence.recordFailure(failure);
     }
 
+    /// Retains the frozen Archive output count before packing can commit an output.
+    void recordArchiveFinalizationPlan(const std::size_t total) override {
+        _evidence.recordArchiveFinalizationPlan(total);
+    }
+
+    /// Retains each committed or failed output before its progress event is published.
+    void recordArchiveFinalizationAttempt(const ArchiveFinalizationAttempt& attempt,
+                                          const std::size_t total) override {
+        _evidence.recordArchiveFinalizationAttempt(attempt, total);
+    }
+
    private:
     MutableRunEvidence& _evidence;
     RunWorkRecord& _work;
-    RunPhase& _finalPhase;
+    routing::ExecutionMode _mode;
 };
 
 /// Tests existing directory identities, including platform-specific case and path aliases.
@@ -234,6 +288,22 @@ std::vector<RunFailure> collectSafetyCleanupFailures(SafetyCleanupService& servi
     }
 }
 
+OptimizationRunResult RunExecutor::schedulingFailure(
+    std::string detail, SafetyCleanupService& cleanup, RunObservationSink* observations,
+    const std::stop_token stop, RunId runId) const {
+    MutableRunEvidence evidence{observations};
+    std::vector<RunFailure> failures{
+        RunFailure{RunFailureCode::SchedulingFailed, RunPhase::Preparing, std::move(detail)}};
+    evidence.recordFailure(failures.front());
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
+    auto cleanupFailures = collectSafetyCleanupFailures(cleanup);
+    for (const auto& failure : cleanupFailures) evidence.recordSafetyCleanupFailure(failure);
+    if (stop.stop_requested()) evidence.recordCancellationObservation();
+    return OptimizationRunResult::terminal(RunOutcome::Failed, RunPhase::Preparing,
+                                           std::move(evidence).consume(), std::move(runId),
+                                           std::move(failures), std::move(cleanupFailures));
+}
+
 OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunServices& services,
                                            std::stop_token stop, RunId runId) const {
     MutableRunEvidence evidence{services.observations};
@@ -243,7 +313,7 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
     // Preparing always executes: it is where the request becomes run-scoped state. It is
     // indeterminate work, so it reports no progress rather than a total of one.
     auto finalPhase = RunPhase::Preparing;
-    WorkObservations observations(evidence, work, finalPhase);
+    WorkObservations observations(evidence, work, request.executionMode());
     observations.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
     auto outcome = RunOutcome::Succeeded;
     std::exception_ptr evidenceInvariantViolation;
@@ -337,15 +407,16 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
 
     // Safety Cleanup runs exactly once on every terminal path, before the terminal result is
     // committed, so cancellation and failure cannot litter Mod Roots with run-owned artifacts.
-    // Cleanup publication is isolated without replacing the furthest work phase.
-    const auto workFinalPhase = finalPhase;
+    // Cleanup failure retention does not replace the furthest work phase or publish a Run Failure.
+    const auto workFinalPhase = evidence.currentPhase() ? evidence.currentPhase()->phase()
+                                                        : RunPhase::Preparing;
     observations.recordPhase(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
     finalPhase = workFinalPhase;
     auto cleanupFailures = collectSafetyCleanupFailures(artifacts);
     auto injectedCleanupFailures = collectSafetyCleanupFailures(services.safetyCleanup);
     cleanupFailures.insert(cleanupFailures.end(), injectedCleanupFailures.begin(),
                            injectedCleanupFailures.end());
-    for (const auto& failure : cleanupFailures) observations.publishRetainedFailure(failure);
+    for (const auto& failure : cleanupFailures) evidence.recordSafetyCleanupFailure(failure);
     if (evidenceInvariantViolation) std::rethrow_exception(evidenceInvariantViolation);
     if (stop.stop_requested() || work.cancellationObserved)
         evidence.recordCancellationObservation();

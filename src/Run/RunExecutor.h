@@ -3,6 +3,7 @@
 #include "Run/RunEvidence.h"
 
 #include <stop_token>
+#include <string>
 
 namespace cao::run {
 class TemporaryArtifactRegistry;
@@ -91,5 +92,14 @@ class RunExecutor final {
                                                 const RunServices& services,
                                                 std::stop_token stop = {},
                                                 RunId runId = createRunId()) const;
+
+    /// Commits a worker scheduling failure through the same mandatory cleanup boundary.
+    /// No work phase was traversed, so Preparing remains the final work phase while only Safety
+    /// Cleanup is recorded. Cleanup is non-cancellable; a request observed before or during it is
+    /// retained after the single pass. The returned result owns both failure categories.
+    [[nodiscard]] OptimizationRunResult schedulingFailure(
+        std::string detail, SafetyCleanupService& cleanup,
+        RunObservationSink* observations = nullptr, std::stop_token stop = {},
+        RunId runId = createRunId()) const;
 };
 }  // namespace cao::run

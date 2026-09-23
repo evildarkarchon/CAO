@@ -410,16 +410,22 @@ void MainOptimizerTests::finalizationFreezesTotalAndCancelsBetweenOutputs() {
     cao::run::TemporaryArtifactRegistry artifacts;
     std::stop_source stop;
     std::vector<cao::run::ArchiveFinalizationProgress> progress;
+    std::vector<cao::run::ArchiveFinalizationAttempt> completedAttempts;
     const auto result = optimizer.finalize(plan, artifacts, stop.get_token(),
         [&](const cao::run::ArchiveFinalizationProgress& value) {
+            QCOMPARE(completedAttempts.size(), value.completed);
             progress.push_back(value);
             if (static_cast<int>(value.completed) == cancelAfter) stop.request_stop();
+        }, cao::run::availableArchiveCapacity,
+        [&](const cao::run::ArchiveFinalizationAttempt& attempt) {
+            completedAttempts.push_back(attempt);
         });
     // Directory pruning belongs to finalization and must wait for the entire output plan.
     for (const auto& mod : roots)
         QCOMPARE(std::filesystem::exists(mod / "textures"), cancelAfter >= 0);
     const auto attempted = cancelAfter < 0 ? std::size_t{2} : static_cast<std::size_t>(cancelAfter);
     QCOMPARE(result.attempts.size(), attempted);
+    QCOMPARE(completedAttempts.size(), attempted);
     QCOMPARE(result.cancelled, cancelAfter >= 0);
     QVERIFY(result.safeToContinue);
     QCOMPARE(progress.size(), attempted + 1);
@@ -435,6 +441,10 @@ void MainOptimizerTests::finalizationFreezesTotalAndCancelsBetweenOutputs() {
         QCOMPARE(std::filesystem::exists(output.sources.front()), index >= attempted);
         if (index < attempted) {
             QVERIFY(result.attempts[index].succeeded());
+            QCOMPARE(completedAttempts[index].modRoot, output.modRoot);
+            QCOMPARE(completedAttempts[index].archivePath, output.archivePath);
+            QCOMPARE(completedAttempts[index].mutation,
+                     cao::execution::MutationState::Committed);
             QVERIFY(btu::bsa::read_archive(output.archivePath).has_value());
         }
     }
@@ -505,8 +515,10 @@ void MainOptimizerTests::finalizationCapacityChecks() {
     QCOMPARE(plan.outputs().size(), std::size_t{2});
     bool firstCommitted = false;
     cao::run::TemporaryArtifactRegistry artifacts;
+    std::vector<cao::run::ArchiveFinalizationAttempt> completedAttempts;
     const auto result = optimizer.finalize(plan, artifacts, {},
         [&](const cao::run::ArchiveFinalizationProgress& value) {
+            QCOMPARE(completedAttempts.size(), value.completed);
             firstCommitted = value.succeeded > 0;
             if (scenario == 3 && value.completed == 1)
                 writeFile(plan.outputs()[1].sources.front(), QByteArray(1024 * 1024, 'y'));
@@ -517,7 +529,10 @@ void MainOptimizerTests::finalizationCapacityChecks() {
             if (scenario == 3 && firstCommitted) return plan.outputs()[1].estimatedCapacityBytes;
             if (firstCommitted) return 0;
             return std::numeric_limits<std::uintmax_t>::max();
+        }, [&](const cao::run::ArchiveFinalizationAttempt& attempt) {
+            completedAttempts.push_back(attempt);
         });
+    QCOMPARE(completedAttempts.size(), result.attempts.size());
     QVERIFY(result.safeToContinue);
     QVERIFY(!result.cancelled);
     const auto committed = scenario == 0 ? 0u : scenario == 1 ? 2u : 1u;
@@ -537,6 +552,8 @@ void MainOptimizerTests::finalizationCapacityChecks() {
     }
     if (scenario != 1) {
         QVERIFY(result.attempts.back().failure == cao::run::ArchiveFinalizationFailure::InsufficientCapacity);
+        QCOMPARE(completedAttempts.back().failure,
+                 std::optional{cao::run::ArchiveFinalizationFailure::InsufficientCapacity});
         QCOMPARE(result.attempts.back().mutation, cao::execution::MutationState::None);
         QVERIFY(!result.attempts.back().detail.empty());
     }

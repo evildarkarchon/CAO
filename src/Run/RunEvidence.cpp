@@ -1,6 +1,7 @@
 #include "RunEvidence.h"
 
 #include "ArchiveExtraction.h"
+#include "ArchiveFinalizationResult.h"
 #include "AssetRun.h"
 #include "RunLifecycle.h"
 
@@ -22,6 +23,10 @@ class RunEvidenceStorage final {
     std::optional<ArchiveDiscoveryEvidence> archiveDiscovery;
     std::optional<routing::RoutingLedger> routingLedger;
     std::vector<RoutedAssetAttempt> assetAttempts;
+    std::optional<ArchiveFinalizationResult> archiveFinalization;
+    std::optional<std::size_t> archiveFinalizationTotal;
+    bool archiveFinalizationCompleted{};
+    std::vector<RunFailure> safetyCleanupFailures;
     bool archiveCollisionsRecorded{};
     bool cancellationObserved{};
 };
@@ -65,6 +70,14 @@ void validateReplacement(const RunPhaseRecord& previous, const RunPhaseRecord& r
         throw RunEvidenceInvariantViolation("Run Phase progress cannot regress");
 }
 
+/// Checks that a streamed output still describes the same completed attempt on return.
+bool sameFinalizationAttempt(const ArchiveFinalizationAttempt& left,
+                             const ArchiveFinalizationAttempt& right) {
+    return left.archivePath == right.archivePath && left.modRoot == right.modRoot &&
+           left.mutation == right.mutation && left.failure == right.failure &&
+           left.safeToContinue == right.safeToContinue && left.detail == right.detail;
+}
+
 /// Returns live mutable storage or rejects use of a consumed evidence owner.
 RunEvidenceStorage& requireStorage(std::unique_ptr<RunEvidenceStorage>& storage) {
     if (!storage)
@@ -79,6 +92,61 @@ const RunEvidenceStorage& requireStorage(const std::unique_ptr<RunEvidenceStorag
     return *storage;
 }
 }  // namespace
+
+void RunObservationSink::recordArchiveFinalizationPlan(std::size_t) {
+    throw RunEvidenceInvariantViolation("Archive Finalization needs an evidence reporter");
+}
+
+void RunObservationSink::recordArchiveFinalizationAttempt(const ArchiveFinalizationAttempt&,
+                                                          std::size_t) {
+    throw RunEvidenceInvariantViolation("Archive attempts need an evidence reporter");
+}
+
+RunPhaseRecord RunObservationSink::archiveDiscoveryStarted() {
+    auto phase = RunPhaseRecord::executed(RunPhase::DiscoveringArchives);
+    recordPhase(phase);
+    return phase;
+}
+
+RunPhaseRecord RunObservationSink::archiveExtractionPlanned(const std::size_t total) {
+    auto phase = RunPhaseRecord::executed(RunPhase::ExtractingArchives,
+                                          RunProgress::determinate(total));
+    recordPhase(phase);
+    return phase;
+}
+
+RunPhaseRecord RunObservationSink::dryRunArchiveExtraction() {
+    auto phase = RunPhaseRecord::skipped(RunPhase::ExtractingArchives,
+                                         PhaseSkipReason::DryRun);
+    recordPhase(phase);
+    return phase;
+}
+
+RunPhaseRecord RunObservationSink::effectiveAssetTreeStarted() {
+    auto phase = RunPhaseRecord::executed(RunPhase::BuildingEffectiveAssetTree);
+    recordPhase(phase);
+    return phase;
+}
+
+RunPhaseRecord RunObservationSink::assetProcessingPlanned(const std::size_t total) {
+    auto phase = RunPhaseRecord::executed(RunPhase::ProcessingAssets,
+                                          RunProgress::determinate(total));
+    recordPhase(phase);
+    return phase;
+}
+
+RunPhaseRecord RunObservationSink::archiveFinalizationAvailable(
+    const routing::ExecutionMode mode, const bool hasFinalizer) {
+    auto phase = mode == routing::ExecutionMode::DryRun
+                     ? RunPhaseRecord::skipped(RunPhase::ArchiveFinalization,
+                                               PhaseSkipReason::DryRun)
+                     : hasFinalizer
+                           ? RunPhaseRecord::executed(RunPhase::ArchiveFinalization)
+                           : RunPhaseRecord::skipped(RunPhase::ArchiveFinalization,
+                                                     PhaseSkipReason::NoRequestedWork);
+    recordPhase(phase);
+    return phase;
+}
 
 ArchiveDiscoveryEvidence::ArchiveDiscoveryEvidence(
     std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
@@ -150,6 +218,14 @@ std::size_t RunEvidence::skippedAssetCount(const routing::SkipReason reason) con
 
 std::span<const RoutedAssetAttempt> RunEvidence::assetAttempts() const noexcept {
     return _storage->assetAttempts;
+}
+
+const ArchiveFinalizationResult* RunEvidence::archiveFinalization() const noexcept {
+    return _storage->archiveFinalization ? &*_storage->archiveFinalization : nullptr;
+}
+
+std::span<const RunFailure> RunEvidence::safetyCleanupFailures() const noexcept {
+    return _storage->safetyCleanupFailures;
 }
 
 bool RunEvidence::cancellationObserved() const noexcept { return _storage->cancellationObserved; }
@@ -328,6 +404,85 @@ void MutableRunEvidence::recordAssetAttempt(RoutedAssetAttempt attempt,
                                          RunProgress::determinate(total, succeeded, failed)));
 }
 
+void MutableRunEvidence::recordArchiveFinalizationPlan(const std::size_t total) {
+    auto& storage = requireStorage(_storage);
+    if (storage.archiveFinalizationTotal || storage.phases.empty() ||
+        storage.phases.back().phase() != RunPhase::ArchiveFinalization ||
+        storage.phases.back().status() != RunPhaseStatus::Executed ||
+        storage.phases.back().progress())
+        throw RunEvidenceInvariantViolation(
+            "Archive Finalization needs an executed phase and one immutable plan");
+    storage.archiveFinalizationTotal = total;
+    storage.archiveFinalization.emplace();
+    recordPhase(RunPhaseRecord::executed(RunPhase::ArchiveFinalization,
+                                         RunProgress::determinate(total)));
+}
+
+void MutableRunEvidence::recordArchiveFinalizationAttempt(ArchiveFinalizationAttempt attempt,
+                                                           const std::size_t total) {
+    auto& storage = requireStorage(_storage);
+    if (!storage.archiveFinalizationTotal || *storage.archiveFinalizationTotal != total ||
+        storage.archiveFinalizationCompleted || storage.phases.empty() ||
+        storage.phases.back().phase() != RunPhase::ArchiveFinalization ||
+        storage.phases.back().status() != RunPhaseStatus::Executed ||
+        !storage.phases.back().progress())
+        throw RunEvidenceInvariantViolation(
+            "Archive Finalization attempts require the immutable executed plan");
+    auto& finalization = *storage.archiveFinalization;
+    if (finalization.attempts.size() >= total)
+        throw RunEvidenceInvariantViolation(
+            "Archive Finalization attempts cannot exceed the planned total");
+    const auto succeeded = storage.phases.back().progress()->succeeded() + attempt.succeeded();
+    const auto failed = storage.phases.back().progress()->failed() + !attempt.succeeded();
+    finalization.attempts.push_back(std::move(attempt));
+    recordPhase(RunPhaseRecord::executed(RunPhase::ArchiveFinalization,
+                                         RunProgress::determinate(total, succeeded, failed)));
+}
+
+void MutableRunEvidence::recordArchiveFinalization(ArchiveFinalizationResult result) {
+    auto& storage = requireStorage(_storage);
+    if (storage.archiveFinalizationCompleted || storage.phases.empty() ||
+        storage.phases.back().phase() != RunPhase::ArchiveFinalization ||
+        storage.phases.back().status() != RunPhaseStatus::Executed)
+        throw RunEvidenceInvariantViolation(
+            "Archive Finalization results require the executed work phase exactly once");
+    if (!storage.archiveFinalizationTotal && result.attempts.empty()) {
+        // A finalizer may fail or cancel before planning establishes a trustworthy total.
+        // Retain its phase-level status without inventing zero planned outputs.
+        storage.archiveFinalization.emplace(std::move(result));
+        storage.archiveFinalizationCompleted = true;
+        if (storage.archiveFinalization->cancelled) storage.cancellationObserved = true;
+        return;
+    }
+    if (!storage.archiveFinalizationTotal) recordArchiveFinalizationPlan(result.attempts.size());
+    const auto total = *storage.archiveFinalizationTotal;
+    const auto& streamed = storage.archiveFinalization->attempts;
+    if (result.failure == ArchiveFinalizationFailure::UnexpectedException &&
+        !result.safeToContinue && result.attempts.empty())
+        result.attempts = streamed;
+    if (result.attempts.size() > total || streamed.size() > result.attempts.size() ||
+        !std::equal(streamed.begin(), streamed.end(), result.attempts.begin(),
+                    sameFinalizationAttempt))
+        throw RunEvidenceInvariantViolation(
+            "Returned Archive Finalization attempts must match retained attempt order");
+    for (std::size_t index = streamed.size(); index < result.attempts.size(); ++index)
+        recordArchiveFinalizationAttempt(result.attempts[index], total);
+    storage.archiveFinalization = std::move(result);
+    storage.archiveFinalizationCompleted = true;
+    if (storage.archiveFinalization->cancelled) storage.cancellationObserved = true;
+}
+
+void MutableRunEvidence::recordSafetyCleanupFailure(RunFailure failure) {
+    auto& storage = requireStorage(_storage);
+    if (storage.phases.empty() || storage.phases.back().phase() != RunPhase::SafetyCleanup ||
+        failure.phase() != RunPhase::SafetyCleanup ||
+        (failure.code() != RunFailureCode::TemporaryArtifactCleanupFailed &&
+         failure.code() != RunFailureCode::SafetyCleanupServiceFailed))
+        throw RunEvidenceInvariantViolation(
+            "Safety Cleanup failures require the cleanup phase and a cleanup failure code");
+    storage.safetyCleanupFailures.push_back(std::move(failure));
+}
+
 const RunPhaseRecord* MutableRunEvidence::phase(const RunPhase phase) const {
     const auto& storage = requireStorage(_storage);
     const auto found =
@@ -347,6 +502,11 @@ std::span<const RunDiagnostic> MutableRunEvidence::diagnostics() const {
 
 std::span<const RunFailure> MutableRunEvidence::failures() const {
     return requireStorage(_storage).failures;
+}
+
+const ArchiveFinalizationResult* MutableRunEvidence::archiveFinalization() const {
+    const auto& storage = requireStorage(_storage);
+    return storage.archiveFinalization ? &*storage.archiveFinalization : nullptr;
 }
 
 void MutableRunEvidence::publishPhase(const RunPhaseRecord& phase) {

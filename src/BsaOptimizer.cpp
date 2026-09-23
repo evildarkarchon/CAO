@@ -344,7 +344,8 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
     const cao::run::ArchiveFinalizationPlan& plan, cao::run::TemporaryArtifactRegistry& artifacts,
     const std::stop_token stop,
     std::function<void(const cao::run::ArchiveFinalizationProgress&)> progress,
-    cao::run::CapacityProbe capacity) const {
+    cao::run::CapacityProbe capacity,
+    std::function<void(const cao::run::ArchiveFinalizationAttempt&)> onAttempt) const {
     namespace fs = std::filesystem;
     using namespace cao::run;
     using cao::execution::MutationState;
@@ -377,6 +378,7 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
         attempt.failure = ArchiveFinalizationFailure::InsufficientCapacity;
         attempt.detail = archiveCapacityDetail(required, *available);
         result.attempts.push_back(std::move(attempt));
+        if (onAttempt) onAttempt(result.attempts.back());
         ++counts.completed;
         ++counts.failed;
         report();
@@ -493,6 +495,7 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
             ++counts.failed;
         result.safeToContinue = attempt.safeToContinue;
         result.attempts.push_back(std::move(attempt));
+        if (onAttempt) onAttempt(result.attempts.back());
         report();
         if (!result.safeToContinue) break;
     }

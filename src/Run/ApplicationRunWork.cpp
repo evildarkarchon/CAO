@@ -135,18 +135,18 @@ class ApplicationRunWork final : public RunWorkService {
         adapters.finalizeArchiveLifecycleWithResult = [&] {
             if (options.bBsaCreate) {
                 auto plan = archiveBackend().planFinalization(preparation.modRoots(), options);
+                const auto total = plan.outputs().size();
+                observations.recordArchiveFinalizationPlan(total);
                 auto result = archiveBackend().finalize(
-                    plan, artifacts, stop, [&](const ArchiveFinalizationProgress& progress) {
-                        observations.recordPhase(RunPhaseRecord::executed(
-                            RunPhase::ArchiveFinalization,
-                            RunProgress::determinate(progress.total, progress.succeeded,
-                                                     progress.failed)));
+                    plan, artifacts, stop, {}, availableArchiveCapacity,
+                    [&](const ArchiveFinalizationAttempt& attempt) {
+                        // Evidence owns each atomic result before its progress event is published.
+                        observations.recordArchiveFinalizationAttempt(attempt, total);
                     });
                 return result;
             }
             ArchiveFinalizationResult result;
-            observations.recordPhase(RunPhaseRecord::executed(RunPhase::ArchiveFinalization,
-                                                              RunProgress::determinate(0)));
+            observations.recordArchiveFinalizationPlan(0);
             // Empty-directory pruning is the legacy Apply finalization even without packing.
             // It preserves roots and reserved staging, which belongs to executor cleanup.
             for (const auto& root : preparation.modRoots()) {
