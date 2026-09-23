@@ -1,6 +1,9 @@
 #include "GuiRunDispatch.h"
 #include "GuiRun.h"
+#include "AssetExecution/AssetExecutor.h"
+#include "AssetRouting/AssetRouter.h"
 #include "Run/TemporaryArtifactRegistry.h"
+#include "Run/AssetRun.h"
 #include "RunTestConfiguration.h"
 
 #include <QtTest>
@@ -18,15 +21,35 @@ class GatedAttempt final : public cao::run::RunWorkService {
     /// Owns the temporary path; the caller retains its directory until the worker is joined.
     explicit GatedAttempt(std::filesystem::path path) : artifact(std::move(path)) {}
 
-    /// Registers real cleanup work and delays return without interrupting the atomic attempt.
-    void execute(const cao::run::RunPreparation&, cao::run::RunWorkRecord&,
-                 cao::run::MutableRunEvidence&,
+    /// Retains two completed attempts, then holds a third open before mandatory cleanup.
+    void execute(const cao::run::RunPreparation& preparation, cao::run::RunWorkRecord&,
+                 cao::run::MutableRunEvidence& evidence,
                  cao::run::TemporaryArtifactRegistry& artifacts,
                  cao::run::RunObservationSink& observations, std::stop_token) override {
+        const auto root = preparation.modRoots().front();
+        observations.archiveDiscoveryStarted();
+        evidence.recordArchiveDiscovery(cao::run::ArchiveDiscoveryEvidence({}, {}, 0));
+        observations.archiveExtractionPlanned(0);
+        observations.effectiveAssetTreeStarted();
+        const cao::routing::AssetRouter router(preparation.policy());
+        const std::vector paths{root / "committed.dds", root / "failed.dds", root / "pending.dds"};
+        auto ledger = router.route(paths);
+        // Attempts need routed values after the evidence owner consumes the definitive ledger.
+        const auto assets = std::vector<cao::routing::RoutedAsset>(ledger.routedAssets().begin(),
+                                                                   ledger.routedAssets().end());
+        evidence.recordRoutingLedger(std::move(ledger));
+        observations.assetProcessingPlanned(3);
+        evidence.recordAssetAttempt({root, assets[0],
+                                     cao::execution::AssetExecutionResult::success(
+                                         cao::execution::MutationState::Committed)},
+                                    3);
+        evidence.recordAssetAttempt(
+            {root, assets[1],
+             cao::execution::AssetExecutionResult::failed(
+                 cao::execution::AssetExecutionFailure::SaveFailed, "queued asset failure")},
+            3);
         static_cast<void>(artifacts.registerArtifact(artifact));
         std::ofstream(artifact) << "temporary attempt output";
-        observations.recordPhase(cao::run::RunPhaseRecord::executed(
-            cao::run::RunPhase::ProcessingAssets, cao::run::RunProgress::determinate(2, 0, 0)));
         entered.store(true);
         release.acquire();
     }
@@ -132,16 +155,20 @@ void GuiRunDispatchTests::closeWaitsForCleanupAndTerminalDelivery() {
     cao::gui::RunViewModel view;
     bool terminalDelivered{};
     bool cleanupFinishedAtDelivery{};
+    std::shared_ptr<const OptimizationRunResult> eventResult;
     auto observation = cao::gui::queuedObservation(target.get(), [&](const RunEvent& event) {
+        if (const auto* terminal =
+                std::get_if<std::shared_ptr<const OptimizationRunResult>>(&event.payload()))
+            eventResult = *terminal;
         if (!view.consume(event) || !view.state().outcome) return;
         terminalDelivered = true;
         cleanupFinishedAtDelivery = !std::filesystem::exists(artifact);
     });
-    auto started = service->start(
-        RunRequest::create("SkyrimSE", cao::routing::ExecutionMode::Apply,
-                           ModSelection::singleModRoot(root),
-                           {cao::routing::RequestedWork::NativeTextureOptimization}),
-        std::vector<RunObservation>{std::move(observation)});
+    auto started =
+        service->start(RunRequest::create("SkyrimSE", cao::routing::ExecutionMode::Apply,
+                                          ModSelection::singleModRoot(root),
+                                          {cao::routing::RequestedWork::NativeTextureOptimization}),
+                       std::vector<RunObservation>{std::move(observation)});
     // This guard must unwind before the owning handle, which joins the blocked worker.
     ReleaseAttempt release{*work};
     QVERIFY(started.started());
@@ -152,7 +179,7 @@ void GuiRunDispatchTests::closeWaitsForCleanupAndTerminalDelivery() {
     started.handle()->requestCancellation();
     QVERIFY(!view.requestClose());
     QCOMPARE(view.state().label, std::string("Cancelling - Processing Assets"));
-    QCOMPARE(view.state().progress->completed(), std::size_t{0});
+    QCOMPARE(view.state().progress->completed(), std::size_t{2});
     QVERIFY(std::filesystem::exists(artifact));
     QVERIFY(!terminalDelivered);
     QVERIFY(target);
@@ -161,7 +188,7 @@ void GuiRunDispatchTests::closeWaitsForCleanupAndTerminalDelivery() {
 
     release.released = true;
     release.work.release.release();
-    const auto result = started.handle()->wait();
+    const auto& result = started.handle()->wait();
     QCOMPARE(result.outcome(), RunOutcome::Cancelled);
     QVERIFY(!std::filesystem::exists(artifact));
     QVERIFY(!terminalDelivered);
@@ -170,6 +197,13 @@ void GuiRunDispatchTests::closeWaitsForCleanupAndTerminalDelivery() {
 
     QTRY_VERIFY(terminalDelivered);
     QVERIFY(cleanupFinishedAtDelivery);
+    QCOMPARE(eventResult.get(), &result);
+    QCOMPARE(started.handle()->terminalResult(), &result);
+    std::string details;
+    for (const auto& line : view.state().details) details += line + '\n';
+    QVERIFY(details.find("queued asset failure") != std::string::npos);
+    QVERIFY(details.find("Committed Mutations Retained") != std::string::npos);
+    QVERIFY(details.find("committed=1") != std::string::npos);
     QVERIFY(view.requestClose());
     QVERIFY(!view.canStart());
     target.reset();

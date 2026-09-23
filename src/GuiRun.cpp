@@ -1,5 +1,7 @@
 #include "GuiRun.h"
-#include "Run/RunWorkRecord.h"
+#include "Run/ArchiveExtraction.h"
+#include "Run/ArchiveFinalizationResult.h"
+#include "Run/AssetRun.h"
 #include <sstream>
 
 namespace cao::gui {
@@ -49,7 +51,7 @@ void appendResultDetails(std::vector<std::string>& details,
     for (const auto& failure : result.cleanupFailures())
         details.push_back("Cleanup Failure: " + failure.detail() + " | " +
                           failure.path().generic_string());
-    for (const auto& attempt : result.work().assetAttempts) {
+    for (const auto& attempt : result.assetAttempts()) {
         if (!attempt.result.succeeded())
             details.push_back("Asset Failure: " + attempt.asset.executionPath().generic_string() +
                               " | " + attempt.result.operation() + " | " +
@@ -57,13 +59,14 @@ void appendResultDetails(std::vector<std::string>& details,
                               attempt.result.affectedPath().generic_string() + " | " +
                               attempt.result.serviceDetail());
     }
-    for (const auto& attempt : result.work().archiveAttempts)
+    for (const auto& attempt : result.archiveExtractionAttempts())
         if (!attempt.succeeded())
             details.push_back("Archive Failure: " + attempt.archivePath.generic_string() + " | " +
                               attempt.detail);
-    for (const auto& finalization : result.work().finalizations) {
-        if (finalization.failure) details.push_back("Finalization Failure: " + finalization.detail);
-        for (const auto& attempt : finalization.attempts)
+    if (const auto* finalization = result.archiveFinalization()) {
+        if (finalization->failure)
+            details.push_back("Finalization Failure: " + finalization->detail);
+        for (const auto& attempt : finalization->attempts)
             if (!attempt.succeeded())
                 details.push_back("Archive Failure: " + attempt.archivePath.generic_string() +
                                   " | " + attempt.detail);
@@ -75,7 +78,7 @@ void appendResultDetails(std::vector<std::string>& details,
              << " | partial-or-unknown=" << mutation.partialOrUnknown;
         details.push_back(text.str());
     }
-    for (const auto& collision : result.work().collisions) {
+    for (const auto& collision : result.archiveCollisions()) {
         std::string text = "Archive Collision: " + collision.modRoot().generic_string() + " | " +
                            collision.gamePath().generic_string() +
                            " | winner=" + collision.winningArchive().generic_string() +

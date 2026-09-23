@@ -1,7 +1,80 @@
 #include "GuiRun.h"
-#include "RunEvidenceTestUtils.h"
-#include "Run/RunWorkRecord.h"
+#include "RunTestConfiguration.h"
+#include "Run/RunExecutor.h"
+#include "Run/AssetRun.h"
+#include "Run/ArchiveExtraction.h"
+#include "Run/ArchiveFinalizationResult.h"
+#include "Run/TemporaryArtifactRegistry.h"
+#include "AssetRouting/AssetRouter.h"
 #include <QTest>
+
+#include <array>
+#include <tuple>
+
+namespace {
+enum class ClassificationScenario { AllSuccessful, ContainedFailure, Cancelled, UnsafeFailure };
+
+/// Completes three routed attempts, leaving five pending only when cancellation is requested.
+cao::run::OptimizationRunResult classifiedRun(const ClassificationScenario scenario) {
+    using namespace cao::run;
+    class Work final : public RunWorkService {
+       public:
+        /// Borrows cancellation intent until synchronous execution has returned.
+        Work(const ClassificationScenario scenario, std::stop_source& cancellation)
+            : _scenario(scenario), _cancellation(cancellation) {}
+
+        /// Submits completed attempts to the executor without manufacturing a terminal result.
+        void execute(const RunPreparation& preparation, RunWorkRecord&,
+                     MutableRunEvidence& evidence, TemporaryArtifactRegistry&,
+                     RunObservationSink& observations, std::stop_token) override {
+            const auto root = preparation.modRoots().front();
+            observations.archiveDiscoveryStarted();
+            evidence.recordArchiveDiscovery(ArchiveDiscoveryEvidence({}, {}, 0));
+            observations.dryRunArchiveExtraction();
+            observations.effectiveAssetTreeStarted();
+            const cao::routing::AssetRouter router(preparation.policy());
+            std::vector<std::filesystem::path> paths;
+            const std::size_t total = _scenario == ClassificationScenario::Cancelled ? 8 : 3;
+            for (std::size_t index = 0; index < total; ++index)
+                paths.push_back(root / ("asset-" + std::to_string(index) + ".dds"));
+            auto ledger = router.route(paths);
+            // Attempts need routed values after the evidence owner consumes the definitive ledger.
+            const auto assets = std::vector<cao::routing::RoutedAsset>(
+                ledger.routedAssets().begin(), ledger.routedAssets().end());
+            evidence.recordRoutingLedger(std::move(ledger));
+            observations.assetProcessingPlanned(total);
+            evidence.recordAssetAttempt(
+                {root, assets[0], cao::execution::AssetExecutionResult::success()}, total);
+            evidence.recordAssetAttempt(
+                {root, assets[1], cao::execution::AssetExecutionResult::success()}, total);
+            const bool failed = _scenario == ClassificationScenario::ContainedFailure ||
+                                _scenario == ClassificationScenario::UnsafeFailure;
+            const auto third = failed ? cao::execution::AssetExecutionResult::failed(
+                                            cao::execution::AssetExecutionFailure::SaveFailed,
+                                            "third attempt failed",
+                                            _scenario == ClassificationScenario::UnsafeFailure
+                                                ? cao::execution::MutationState::PartialOrUnknown
+                                                : cao::execution::MutationState::None)
+                                      : cao::execution::AssetExecutionResult::success();
+            evidence.recordAssetAttempt({root, assets[2], third}, total);
+            if (_scenario == ClassificationScenario::Cancelled) _cancellation.request_stop();
+        }
+
+       private:
+        ClassificationScenario _scenario;
+        std::stop_source& _cancellation;
+    };
+    std::stop_source cancellation;
+    Work work(scenario, cancellation);
+    TemporaryArtifactRegistry cleanup;
+    return RunExecutor().execute(
+        RunRequest::create("SkyrimSE", cao::routing::ExecutionMode::DryRun,
+                           ModSelection::singleModRoot(testModRoot()),
+                           {cao::routing::RequestedWork::NativeTextureOptimization}),
+        RunServices{cleanup, nullptr, testRunConfiguration().get(), &work},
+        cancellation.get_token(), "run");
+}
+}  // namespace
 
 class GuiRunTests final : public QObject {
     Q_OBJECT
@@ -46,36 +119,34 @@ class GuiRunTests final : public QObject {
     /// Cancellation is intent until terminal delivery and only success is presented as Done.
     void presentsTerminalClassification() {
         using namespace cao::run;
-        for (const auto& [outcome, label] :
-             {std::pair{RunOutcome::Succeeded, "Done"},
-              {RunOutcome::CompletedWithFailures, "Completed With Failures"},
-              {RunOutcome::Cancelled, "Cancelled"},
-              {RunOutcome::Failed, "Failed"}}) {
+        for (const auto& [scenario, outcome, label] :
+             {std::tuple{ClassificationScenario::AllSuccessful, RunOutcome::Succeeded, "Done"},
+              {ClassificationScenario::ContainedFailure, RunOutcome::CompletedWithFailures,
+               "Completed With Failures"},
+              {ClassificationScenario::Cancelled, RunOutcome::Cancelled, "Cancelled"},
+              {ClassificationScenario::UnsafeFailure, RunOutcome::Failed, "Failed"}}) {
+            const std::size_t total = scenario == ClassificationScenario::Cancelled ? 8 : 3;
             cao::gui::RunViewModel view;
             view.begin("run");
-            QVERIFY(view.consume(
-                RunEvent("run", 1,
-                         RunPhaseRecord::executed(RunPhase::ProcessingAssets,
-                                                  RunProgress::determinate(8, 2, 1)))));
+            QVERIFY(
+                view.consume(RunEvent("run", 1,
+                                      RunPhaseRecord::executed(RunPhase::ProcessingAssets,
+                                                               RunProgress::determinate(total)))));
             view.requestCancellation();
             view.requestCancellation();
             QVERIFY(view.state().active);
             QVERIFY(view.state().cancellationRequested);
             QCOMPARE(view.state().label, std::string("Cancelling - Processing Assets"));
             QVERIFY(!view.state().outcome);
-            QCOMPARE(view.state().progress->completed(), std::size_t(3));
-            auto result =
-                std::make_shared<const OptimizationRunResult>(OptimizationRunResult::terminal(
-                    outcome, RunPhase::ProcessingAssets,
-                    terminalTestEvidence(RunPhase::ProcessingAssets,
-                                         outcome == RunOutcome::Cancelled,
-                                         RunProgress::determinate(8, 2, 1)),
-                    "run"));
+            QCOMPARE(view.state().progress->completed(), std::size_t(0));
+            auto result = std::make_shared<const OptimizationRunResult>(classifiedRun(scenario));
+            QCOMPARE(result->outcome(), outcome);
             QVERIFY(view.consume(RunEvent("run", 2, result)));
             QCOMPARE(view.state().label, std::string(label));
             QCOMPARE(view.state().outcome, std::optional(outcome));
             QVERIFY(!view.state().active);
             QCOMPARE(view.state().progress->completed(), std::size_t(3));
+            QCOMPARE(view.state().progress->total(), total);
             view.requestCancellation();
             QCOMPARE(view.state().label, std::string(label));
         }
@@ -95,9 +166,9 @@ class GuiRunTests final : public QObject {
         QVERIFY(
             view.consume(RunEvent("run", 1, RunPhaseRecord::executed(RunPhase::SafetyCleanup))));
         QVERIFY(!view.requestClose());
-        auto result = std::make_shared<const OptimizationRunResult>(OptimizationRunResult::terminal(
-            RunOutcome::Cancelled, RunPhase::ProcessingAssets,
-            terminalTestEvidence(RunPhase::ProcessingAssets, true), "run"));
+        auto result = std::make_shared<const OptimizationRunResult>(
+            classifiedRun(ClassificationScenario::Cancelled));
+        QCOMPARE(result->outcome(), RunOutcome::Cancelled);
         QVERIFY(view.consume(RunEvent("run", 2, result)));
         QVERIFY(view.requestClose());
         QVERIFY(view.state().closeRequested);
@@ -117,50 +188,78 @@ class GuiRunTests final : public QObject {
         QVERIFY(!view.consume(RunEvent("new", 2, RunPhaseRecord::executed(RunPhase::Preparing))));
         QCOMPARE(view.state().label, std::string("Processing Assets"));
     }
-    /// Unsafe work retains observed cancellation, collision winners, and mutations.
+    /// Failed work presents sealed attempts, collision winners, cleanup, and durable mutations.
     void presentsTerminalEvidence() {
         using namespace cao::run;
-        RunWorkRecord work;
-        work.finalizations.push_back(ArchiveFinalizationResult{
-            .attempts = {ArchiveFinalizationAttempt{
-                             .archivePath = "mod/output.bsa",
-                             .mutation = cao::execution::MutationState::Committed,
-                             .failure = ArchiveFinalizationFailure::SourceCleanupFailed,
-                             .safeToContinue = true,
-                             .detail = "source remains usable",
-                             .modRoot = "mod"},
-                         ArchiveFinalizationAttempt{.archivePath = "mod/output-two.bsa",
-                                                    .mutation = cao::execution::MutationState::None,
-                                                    .safeToContinue = true,
-                                                    .modRoot = "mod"}}});
-        work.archiveAttempts.push_back(
-            ArchiveExtractionResult{.archivePath = "mod/input.bsa",
-                                    .mutation = cao::execution::MutationState::PartialOrUnknown,
-                                    .failure = ArchiveExtractionFailure::MergeFailed,
-                                    .safeToContinue = false,
-                                    .detail = "merge interrupted",
-                                    .modRoot = "mod"});
-        work.collisions.emplace_back("mod", "textures/a.dds", "winner.bsa",
-                                     std::vector<std::filesystem::path>{"shadowed.bsa"}, true);
-        MutableRunEvidence evidence;
-        evidence.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
-        evidence.recordArchiveDiscoveryStarted();
-        evidence.recordArchiveCollisions(work.collisions);
-        evidence.recordArchiveExtractionPlan(1);
-        evidence.recordArchiveExtractionAttempt(work.archiveAttempts.front(), 1);
-        evidence.recordPhase(RunPhaseRecord::executed(RunPhase::ArchiveFinalization));
-        evidence.recordArchiveFinalizationPlan(5);
-        evidence.recordArchiveFinalization(work.finalizations.front());
-        evidence.recordFailure(RunFailure(RunFailureCode::WorkServiceFailed,
-                                          RunPhase::ArchiveFinalization, "primary failure"));
-        evidence.recordPhase(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
-        evidence.recordSafetyCleanupFailure(
-            RunFailure(RunFailureCode::TemporaryArtifactCleanupFailed, RunPhase::SafetyCleanup,
-                       "cleanup failure", {}, "staging.tmp"));
-        evidence.recordCancellationObservation();
-        auto result = std::make_shared<const OptimizationRunResult>(
-            OptimizationRunResult::terminal(RunOutcome::Failed, RunPhase::ArchiveFinalization,
-                                            std::move(evidence).consume(), "run", &work));
+        using cao::execution::MutationState;
+        class EvidenceOnlyWork final : public RunWorkService {
+           public:
+            /// Submits completed work without populating the transitional work record.
+            void execute(const RunPreparation& preparation, RunWorkRecord&,
+                         MutableRunEvidence& evidence, TemporaryArtifactRegistry&,
+                         RunObservationSink& observations, std::stop_token) override {
+                const auto root = preparation.modRoots().front();
+                observations.archiveDiscoveryStarted();
+                const std::array collisions{ArchiveCollision(
+                    root, "textures/a.dds", root / "winner.bsa", {root / "shadowed.bsa"}, true)};
+                evidence.recordArchiveCollisions(collisions);
+                evidence.recordArchiveDiscovery(ArchiveDiscoveryEvidence({}, {}, 0));
+                observations.archiveExtractionPlanned(2);
+                evidence.recordArchiveExtractionAttempt(
+                    {root / "committed.bsa", MutationState::Committed, {}, true, {}, root}, 2);
+                evidence.recordArchiveExtractionAttempt(
+                    {root / "input.bsa", MutationState::PartialOrUnknown,
+                     ArchiveExtractionFailure::MergeFailed, false, "merge interrupted", root},
+                    2);
+                observations.effectiveAssetTreeStarted();
+                const cao::routing::AssetRouter router(preparation.policy());
+                const std::vector paths{root / "failed.dds"};
+                auto ledger = router.route(paths);
+                // The attempt still needs its route after evidence takes ownership of the ledger.
+                const auto asset = ledger.routedAssets().front();
+                evidence.recordRoutingLedger(std::move(ledger));
+                observations.assetProcessingPlanned(1);
+                evidence.recordAssetAttempt(
+                    {root, asset,
+                     cao::execution::AssetExecutionResult::failed(
+                         cao::execution::AssetExecutionFailure::SaveFailed, "asset save failed",
+                         MutationState::Committed, true, root / "failed.dds", "save_texture",
+                         "backend detail")},
+                    1);
+                observations.archiveFinalizationAvailable(cao::routing::ExecutionMode::Apply, true);
+                evidence.recordArchiveFinalizationPlan(5);
+                evidence.recordArchiveFinalization(ArchiveFinalizationResult{
+                    .attempts = {ArchiveFinalizationAttempt{
+                                     .archivePath = root / "output.bsa",
+                                     .mutation = MutationState::Committed,
+                                     .failure = ArchiveFinalizationFailure::SourceCleanupFailed,
+                                     .safeToContinue = true,
+                                     .detail = "source remains usable",
+                                     .modRoot = root},
+                                 ArchiveFinalizationAttempt{.archivePath = root / "output-two.bsa",
+                                                            .modRoot = root}}});
+                observations.recordFailure(RunFailure(RunFailureCode::WorkServiceFailed,
+                                                      RunPhase::ArchiveFinalization,
+                                                      "primary failure"));
+            }
+        } work;
+        class FailingCleanup final : public SafetyCleanupService {
+           public:
+            /// Reports a remaining temporary artifact from the mandatory cleanup pass.
+            std::vector<RunFailure> performSafetyCleanup() override {
+                return {RunFailure(RunFailureCode::TemporaryArtifactCleanupFailed,
+                                   RunPhase::SafetyCleanup, "cleanup failure", {}, "staging.tmp")};
+            }
+        } cleanup;
+        const auto root = testModRoot();
+        const auto result = std::make_shared<const OptimizationRunResult>(RunExecutor().execute(
+            RunRequest::create("SkyrimSE", cao::routing::ExecutionMode::Apply,
+                               ModSelection::singleModRoot(root),
+                               {cao::routing::RequestedWork::ArchiveExtraction,
+                                cao::routing::RequestedWork::NativeTextureOptimization,
+                                cao::routing::RequestedWork::ArchiveCreation}),
+            RunServices{cleanup, nullptr, testRunConfiguration().get(), &work}, {}, "run"));
+        QCOMPARE(result->outcome(), RunOutcome::Failed);
         cao::gui::RunViewModel view;
         view.begin("run");
         QVERIFY(
@@ -170,8 +269,9 @@ class GuiRunTests final : public QObject {
         for (const auto& line : view.state().details) details += line + '\n';
         for (const auto* expected :
              {"primary failure", "cleanup failure", "staging.tmp", "source remains usable",
-              "merge interrupted", "winner.bsa", "shadowed.bsa", "loose-asset-wins=yes",
-              "Committed Mutations Retained", "partial-or-unknown=1", "Cancellation Observed: yes"})
+              "merge interrupted", "asset save failed", "save_texture", "backend detail",
+              "winner.bsa", "shadowed.bsa", "loose-asset-wins=yes", "Committed Mutations Retained",
+              "committed=1", "partial-or-unknown=1", "Cancellation Observed: no"})
             QVERIFY2(details.find(expected) != std::string::npos, expected);
         QVERIFY(view.state().progress);
         QCOMPARE(view.state().progress->completed(), std::size_t(2));
