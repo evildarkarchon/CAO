@@ -245,6 +245,10 @@ class AssetExecutionTests final : public QObject {
     void textureStagingIsRegisteredBeforeSave();
     /// Commit failure retains both original files and cleanup removes only the staged output.
     void textureCommitFailure();
+    /// Defines native and convertible Texture destinations for a post-publication release failure.
+    void texturePublicationReleaseFailure_data();
+    /// Retains committed Texture bytes and the conversion source when ownership release fails.
+    void texturePublicationReleaseFailure();
     /// Cleanup evidence remains secondary to the original backend save failure.
     void textureCleanupFailurePreservesPrimaryFailure();
     /// Read-only backend exceptions are fatal and cannot create staged or durable output.
@@ -513,6 +517,54 @@ void AssetExecutionTests::textureCommitFailure() {
     QVERIFY(!std::filesystem::exists(backend.savedTexturePath));
 }
 
+void AssetExecutionTests::texturePublicationReleaseFailure_data() {
+    QTest::addColumn<bool>("conversion");
+    QTest::newRow("native replacement") << false;
+    QTest::newRow("convertible replacement") << true;
+}
+
+void AssetExecutionTests::texturePublicationReleaseFailure() {
+    QFETCH(bool, conversion);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString()) / "Mod";
+    std::filesystem::create_directory(root);
+    const auto source = root / (conversion ? "source.tga" : "native.dds");
+    const auto destination = conversion ? root / "source.dds" : source;
+    std::ofstream(source) << "original";
+    if (conversion) std::ofstream(destination) << "old destination";
+    RecordingBackend backend;
+    backend.textureSave = [&](const std::filesystem::path& path) {
+        std::ofstream(path) << (conversion ? "converted" : "optimized");
+        // The manifest scratch name is created after staging, so only ownership release fails.
+        std::ofstream scratch(root / ".cao-staging" / "ownership.manifest.next");
+        scratch << "occupied scratch";
+        return static_cast<bool>(scratch);
+    };
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply,
+                   {conversion ? RequestedWork::ConvertibleTextureConversion
+                               : RequestedWork::NativeTextureOptimization},
+                   source),
+        artifacts, root);
+
+    QVERIFY(!result.succeeded());
+    QCOMPARE(result.failure().value(), AssetExecutionFailure::CommitFailed);
+    QCOMPARE(result.mutationState(), MutationState::Committed);
+    QCOMPARE(result.operation(), std::string("commit_texture"));
+    QVERIFY(result.affectedPath() == destination);
+    QVERIFY(!result.serviceDetail().empty());
+    QCOMPARE(readBytes(destination), conversion ? std::string("converted")
+                                               : std::string("optimized"));
+    if (conversion) QCOMPARE(readBytes(source), std::string("original"));
+    QCOMPARE(backend.textureRemovals, 0);
+    QVERIFY(!std::filesystem::exists(backend.savedTexturePath));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+    QCOMPARE(readBytes(destination), conversion ? std::string("converted")
+                                               : std::string("optimized"));
+}
+
 void AssetExecutionTests::textureCleanupFailurePreservesPrimaryFailure() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -643,6 +695,7 @@ void AssetExecutionTests::conversionOnlyTextureExecution() {
         QCOMPARE(readBytes(source), std::string("original"));
         QCOMPARE(readBytes(destination), std::string("old destination"));
         QCOMPARE(result.mutationState(), MutationState::None);
+        QVERIFY(!std::filesystem::exists(destination.parent_path() / ".cao-staging"));
     }
 }
 

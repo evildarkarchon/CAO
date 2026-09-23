@@ -197,8 +197,8 @@ class AssetExecutor final {
                                                const std::filesystem::path& modRoot = {}) const;
 
    private:
-    /// Executes one carried Texture transaction, including conversion output replacement in Apply
-    /// mode.
+    /// Saves and validates a Texture under Temporary Ownership before replace publication in Apply
+    /// mode. Conversion removes its source only after publication and ownership release.
     [[nodiscard]] AssetExecutionResult executeTexture(const routing::RoutedAsset& asset,
                                                       run::TemporaryArtifactRegistry& artifacts,
                                                       const std::filesystem::path& modRoot) const;

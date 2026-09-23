@@ -243,12 +243,11 @@ AssetExecutionResult AssetExecutor::executeTexture(const routing::RoutedAsset& a
 
         boundary = "stage_texture";
         affectedPath = outputPath;
-        const auto staging = artifacts.stageFile(
-            modRoot.empty() ? std::filesystem::absolute(outputPath).parent_path()
-                            : std::filesystem::absolute(modRoot),
-            std::filesystem::absolute(outputPath));
-        const auto& staged = staging.path;
-        const auto registration = staging.registration;
+        const auto absoluteOutput = std::filesystem::absolute(outputPath);
+        auto receipt = artifacts.stageFileForPublication(
+            modRoot.empty() ? absoluteOutput.parent_path() : std::filesystem::absolute(modRoot),
+            absoluteOutput);
+        const auto staged = receipt.path();
         boundary = "save_texture";
         if (!_backend.saveTexture(staged)) {
             return AssetExecutionResult::failed(
@@ -261,13 +260,17 @@ AssetExecutionResult AssetExecutor::executeTexture(const routing::RoutedAsset& a
                                                 "Saved Texture is not a usable regular file.",
                                                 mutation, true, affectedPath, boundary);
         boundary = "commit_texture";
-        if (const auto error = commitStagedAsset(staged, outputPath)) {
+        const auto publication = receipt.publish(absoluteOutput, run::PublicationPolicy::Replace);
+        if (publication.state != run::PublicationState::PublishedAndReleased) {
+            // Publication commits the destination before durable ownership release. Its result
+            // carries that fact even when the release fails after the native move.
+            const bool published = publication.state == run::PublicationState::PublishedStillOwned;
+            mutation = published ? MutationState::Committed : MutationState::None;
             return AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed,
-                                                "Failed to commit Texture output.", mutation, true,
-                                                affectedPath, boundary, error.message());
+                                                "Failed to publish Texture output.", mutation, !published,
+                                                affectedPath, boundary, publication.errorDetail);
         }
         mutation = MutationState::Committed;
-        artifacts.commit(registration);
         if (asset.operations().contains(routing::AssetOperation::Conversion) &&
             texture->variant() == routing::TextureVariant::Convertible) {
             boundary = "remove_texture_source";
