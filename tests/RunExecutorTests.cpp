@@ -1,5 +1,4 @@
 #include "Run/RunExecutor.h"
-#include "RunEvidenceTestUtils.h"
 #include "Run/AssetRun.h"
 #include "Run/RunEvidence.h"
 #include "Run/RunWorkRecord.h"
@@ -196,7 +195,7 @@ private slots:
  void fatalFailureRetainsConcurrentCancellation();
  /// Verifies cleanup exceptions cannot replace cancellation, including cancellation during cleanup.
  void cleanupExceptionsPreserveCancellation();
- /// Exercises the shared terminal boundary with independent work, cancellation, and cleanup facts.
+ /// Classifies sealed work, cancellation, and cleanup facts at the executor terminal boundary.
  void terminalPrecedenceRetainsAllEvidence();
  /// Verifies the filesystem recovery seam observes cancellation before attempting a deletion.
  void cancelledRecoveryPreservesUnattemptedArtifacts();
@@ -1989,40 +1988,108 @@ void RunExecutorTests::fatalFailureRetainsConcurrentCancellation() {
 }
 
 void RunExecutorTests::terminalPrecedenceRetainsAllEvidence() {
+    enum class WorkFact { Succeeded, ContainedFailure, UnsafeMutation, FatalFailure };
+    class Work final : public cao::run::RunWorkService {
+       public:
+        /// Borrows the case selection until the synchronous executor returns.
+        explicit Work(const WorkFact fact) : _fact(fact) {}
+
+        /// Records the authoritative attempt before the executor seals and classifies it.
+        void execute(const cao::run::RunPreparation& preparation, cao::run::RunWorkRecord&,
+                     cao::run::MutableRunEvidence& evidence, cao::run::TemporaryArtifactRegistry&,
+                     cao::run::RunObservationSink& observations, std::stop_token) override {
+            observations.archiveDiscoveryStarted();
+            if (_fact == WorkFact::FatalFailure) throw std::runtime_error("work service failed");
+            const auto total = _fact == WorkFact::Succeeded ? std::size_t{0} : std::size_t{1};
+            observations.archiveExtractionPlanned(total);
+            if (total == 0) return;
+            const auto root = preparation.modRoots().front();
+            const auto mutation = _fact == WorkFact::UnsafeMutation
+                                      ? cao::execution::MutationState::PartialOrUnknown
+                                      : cao::execution::MutationState::None;
+            evidence.recordArchiveExtractionAttempt(
+                {root / "source.bsa", mutation,
+                 cao::run::ArchiveExtractionFailure::ExtractionFailed, true, "operation failed",
+                 root},
+                total);
+        }
+
+       private:
+        WorkFact _fact;
+    };
+    class Cleanup final : public SafetyCleanupService {
+       public:
+        /// Borrows the stop source so cancellation can be observed during mandatory cleanup.
+        Cleanup(std::stop_source& stop, const bool cancel, const bool fail)
+            : _stop(stop), _cancel(cancel), _fail(fail) {}
+
+        /// Optionally requests cancellation and reports one safely contained cleanup failure.
+        std::vector<cao::run::RunFailure> performSafetyCleanup() override {
+            if (_cancel) _stop.request_stop();
+            if (!_fail) return {};
+            return {{cao::run::RunFailureCode::TemporaryArtifactCleanupFailed,
+                     RunPhase::SafetyCleanup, "retained artifact"}};
+        }
+
+       private:
+        std::stop_source& _stop;
+        bool _cancel;
+        bool _fail;
+    };
     struct Case {
-        RunOutcome work;
+        WorkFact work;
         bool cancelled;
         bool cleanup;
         RunOutcome expected;
     };
     const Case cases[] = {
-        {RunOutcome::Succeeded, false, false, RunOutcome::Succeeded},
-        {RunOutcome::Succeeded, false, true, RunOutcome::CompletedWithFailures},
-        {RunOutcome::Succeeded, true, false, RunOutcome::Cancelled},
-        {RunOutcome::Succeeded, true, true, RunOutcome::Cancelled},
-        {RunOutcome::CompletedWithFailures, false, false, RunOutcome::CompletedWithFailures},
-        {RunOutcome::CompletedWithFailures, false, true, RunOutcome::CompletedWithFailures},
-        {RunOutcome::CompletedWithFailures, true, false, RunOutcome::Cancelled},
-        {RunOutcome::CompletedWithFailures, true, true, RunOutcome::Cancelled},
-        {RunOutcome::Failed, false, false, RunOutcome::Failed},
-        {RunOutcome::Failed, false, true, RunOutcome::Failed},
-        {RunOutcome::Failed, true, false, RunOutcome::Failed},
-        {RunOutcome::Failed, true, true, RunOutcome::Failed},
+        {WorkFact::Succeeded, false, false, RunOutcome::Succeeded},
+        {WorkFact::Succeeded, false, true, RunOutcome::CompletedWithFailures},
+        {WorkFact::Succeeded, true, false, RunOutcome::Cancelled},
+        {WorkFact::Succeeded, true, true, RunOutcome::Cancelled},
+        {WorkFact::ContainedFailure, false, false, RunOutcome::CompletedWithFailures},
+        {WorkFact::ContainedFailure, false, true, RunOutcome::CompletedWithFailures},
+        {WorkFact::ContainedFailure, true, false, RunOutcome::Cancelled},
+        {WorkFact::ContainedFailure, true, true, RunOutcome::Cancelled},
+        {WorkFact::UnsafeMutation, false, false, RunOutcome::Failed},
+        {WorkFact::UnsafeMutation, false, true, RunOutcome::Failed},
+        {WorkFact::UnsafeMutation, true, false, RunOutcome::Failed},
+        {WorkFact::UnsafeMutation, true, true, RunOutcome::Failed},
+        {WorkFact::FatalFailure, false, false, RunOutcome::Failed},
+        {WorkFact::FatalFailure, false, true, RunOutcome::Failed},
+        {WorkFact::FatalFailure, true, false, RunOutcome::Failed},
+        {WorkFact::FatalFailure, true, true, RunOutcome::Failed},
     };
     for (const auto& test : cases) {
-        std::vector<cao::run::RunFailure> cleanup;
-        if (test.cleanup)
-            cleanup.emplace_back(cao::run::RunFailureCode::TemporaryArtifactCleanupFailed,
-                                 RunPhase::SafetyCleanup, "retained artifact");
-        const auto result = OptimizationRunResult::terminal(
-            test.work, RunPhase::ArchiveFinalization,
-            terminalTestEvidence(RunPhase::SafetyCleanup, test.cancelled),
-            cao::run::createRunId(), {}, std::move(cleanup));
+        std::stop_source stop;
+        Work work(test.work);
+        Cleanup cleanup(stop, test.cancelled, test.cleanup);
+        const auto request = RunRequest::create("SkyrimSE", ExecutionMode::DryRun,
+                                                ModSelection::singleModRoot(testModRoot()),
+                                                {RequestedWork::ArchiveExtraction});
+        const auto configuration = testRunConfiguration();
+        std::optional<OptimizationRunResult> terminal;
+        try {
+            terminal.emplace(RunExecutor{}.execute(
+                request, RunServices{cleanup, nullptr, configuration.get(), &work},
+                stop.get_token()));
+        } catch (const std::exception& error) {
+            QFAIL(error.what());
+        }
+        const auto& result = *terminal;
         QCOMPARE(result.outcome(), test.expected);
         QCOMPARE(result.cancellationObserved(), test.cancelled);
         QCOMPARE(result.cleanupFailures().size(), test.cleanup ? std::size_t{1} : std::size_t{0});
         if (test.cleanup)
             QCOMPARE(result.cleanupFailures().front().detail(), std::string("retained artifact"));
+        QCOMPARE(result.evidence().archiveExtractionAttempts().size(),
+                 test.work == WorkFact::ContainedFailure || test.work == WorkFact::UnsafeMutation
+                     ? std::size_t{1}
+                     : std::size_t{0});
+        QCOMPARE(result.evidence().failures().size(),
+                 test.work == WorkFact::FatalFailure ? std::size_t{1} : std::size_t{0});
+        QCOMPARE(result.mutationSummaries().size(),
+                 test.work == WorkFact::UnsafeMutation ? std::size_t{1} : std::size_t{0});
     }
 }
 

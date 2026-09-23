@@ -1,4 +1,5 @@
 #include "Run/RunEvidence.h"
+#include "Run/ArchiveExtraction.h"
 #include "Run/ArchiveFinalizationResult.h"
 #include "Run/RunSetup.h"
 
@@ -76,6 +77,8 @@ class RunEvidenceTests final : public QObject {
     void finalizationProgressPublishesRetainedAttempt();
     /// Preserves streamed outputs when finalization fails before returning its result.
     void interruptedFinalizationRetainsCompletedAttempts();
+    /// Derives committed and uncertain mutation counts from sealed attempts in Mod Root order.
+    void sealedMutationSummariesReflectCompletedAttempts();
     /// Verifies every live payload is already queryable when its publication callback begins.
     void liveFactsAreRetainedBeforePublication();
     /// Supplies each live payload category as the one whose adapter callback throws.
@@ -252,6 +255,9 @@ void RunEvidenceTests::finalizationAndCleanupFailuresRemainSeparate() {
              std::string("first temporary artifact"));
     QCOMPARE(terminal.safetyCleanupFailures()[1].detail(),
              std::string("cleanup service exception"));
+    QCOMPARE(terminal.cleanupFailures().size(), std::size_t{2});
+    QCOMPARE(terminal.cleanupFailures()[0].detail(), std::string("first temporary artifact"));
+    QCOMPARE(terminal.cleanupFailures()[1].detail(), std::string("cleanup service exception"));
 }
 
 void RunEvidenceTests::finalizationProgressPublishesRetainedAttempt() {
@@ -330,6 +336,51 @@ void RunEvidenceTests::interruptedFinalizationRetainsCompletedAttempts() {
              std::size_t{2});
     QCOMPARE(terminal.phase(RunPhase::ArchiveFinalization)->progress()->completed(),
              std::size_t{1});
+}
+
+void RunEvidenceTests::sealedMutationSummariesReflectCompletedAttempts() {
+    using cao::execution::MutationState;
+    using cao::run::ArchiveExtractionFailure;
+    using cao::run::ArchiveFinalizationFailure;
+    using cao::run::MutationKind;
+
+    std::optional<RunEvidence> terminal;
+    {
+        MutableRunEvidence evidence;
+        evidence.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
+        evidence.recordPhase(RunPhaseRecord::executed(RunPhase::DiscoveringArchives));
+        evidence.recordArchiveExtractionPlan(3);
+        evidence.recordArchiveExtractionAttempt(
+            {"first.bsa", MutationState::Committed, {}, true, {}, "alpha"}, 3);
+        evidence.recordArchiveExtractionAttempt(
+            {"second.bsa", MutationState::PartialOrUnknown, ArchiveExtractionFailure::MergeFailed,
+             false, "uncertain merge", "alpha"},
+            3);
+        evidence.recordArchiveExtractionAttempt(
+            {"third.bsa", MutationState::None, ArchiveExtractionFailure::ExtractionFailed, true,
+             "no write", "beta"},
+            3);
+        evidence.recordPhase(RunPhaseRecord::executed(RunPhase::ArchiveFinalization));
+        evidence.recordArchiveFinalizationPlan(2);
+        evidence.recordArchiveFinalization(ArchiveFinalizationResult{
+            {{"packed-a.bsa", MutationState::Committed, {}, true, {}, "alpha"},
+             {"packed-b.bsa", MutationState::Committed,
+              ArchiveFinalizationFailure::SourceCleanupFailed, true, "source retained", "beta"}}});
+        terminal.emplace(consumeAfterCleanup(evidence));
+    }
+
+    const auto summaries = terminal->mutationSummaries();
+    QCOMPARE(summaries.size(), std::size_t{3});
+    QCOMPARE(summaries[0].modRoot, std::filesystem::path("alpha"));
+    QCOMPARE(summaries[0].kind, MutationKind::ArchiveExtraction);
+    QCOMPARE(summaries[0].committed, std::size_t{1});
+    QCOMPARE(summaries[0].partialOrUnknown, std::size_t{1});
+    QCOMPARE(summaries[1].modRoot, std::filesystem::path("alpha"));
+    QCOMPARE(summaries[1].kind, MutationKind::ArchiveFinalization);
+    QCOMPARE(summaries[1].committed, std::size_t{1});
+    QCOMPARE(summaries[2].modRoot, std::filesystem::path("beta"));
+    QCOMPARE(summaries[2].kind, MutationKind::ArchiveFinalization);
+    QCOMPARE(summaries[2].committed, std::size_t{1});
 }
 
 void RunEvidenceTests::liveFactsAreRetainedBeforePublication() {

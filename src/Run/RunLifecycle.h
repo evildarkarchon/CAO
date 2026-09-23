@@ -16,6 +16,10 @@
 
 namespace cao::run {
 struct RunWorkRecord;
+struct ArchiveExtractionResult;
+struct ArchiveFinalizationResult;
+struct RoutedAssetAttempt;
+class ArchiveDiscoveryEvidence;
 class RunEvidence;
 
 /// The durable operation whose attempts contribute to a Mod Root's mutation account.
@@ -390,27 +394,47 @@ class RunRequest final {
 /// the originating Run Request have been destroyed.
 class OptimizationRunResult final {
    public:
-    /// Takes ownership of sealed factual evidence once the run reaches its terminal state.
-    ///
-    /// The result exposes no mutator, so committing it here is what makes it immutable. It is a
-    /// named public factory rather than a friendship because the Run Executor, and later the
-    /// asynchronous Optimization Run service, both commit terminal results from libraries that
-    /// link this one.
-    /// The supplied outcome classifies work: Failed is fatal, CompletedWithFailures is safely
-    /// contained. Fatal work wins over observed cancellation, which wins over contained work and
-    /// cleanup errors. A cleanup service exception makes an otherwise uncancelled, nonfatal run
-    /// Failed. All supplied failure evidence is retained without replacing the primary cause.
-    /// Copies optional work evidence so caller-held mutable aliases cannot change the committed
-    /// result. Typed attempt evidence also participates in outcome classification.
-    [[nodiscard]] static OptimizationRunResult terminal(
-        RunOutcome outcome, RunPhase finalPhase, RunEvidence evidence, RunId runId = createRunId(),
-        std::vector<RunFailure> failures = {}, std::vector<RunFailure> cleanupFailures = {},
-        const RunWorkRecord* work = nullptr);
+    /// Combines the Run Executor's chosen outcome and identity with sealed factual evidence.
+    /// The result retains the supplied outcome without reclassifying any evidence.
+    [[nodiscard]] static OptimizationRunResult terminal(RunOutcome outcome, RunPhase finalPhase,
+                                                        RunEvidence evidence,
+                                                        RunId runId = createRunId());
+
+    /// Copies transitional work for callers still migrating to the sealed evidence interface.
+    /// Sealed evidence remains authoritative for every public factual result view.
+    [[nodiscard]] static OptimizationRunResult terminal(RunOutcome outcome, RunPhase finalPhase,
+                                                        RunEvidence evidence, RunId runId,
+                                                        const RunWorkRecord* work);
 
     /// Borrows the sealed factual record owned by this terminal result.
     [[nodiscard]] const RunEvidence& evidence() const noexcept { return *_evidence; }
 
-    /// Borrows the frozen work evidence; terminal() copies its input, retaining no mutable alias.
+    /// Borrows informational observations accepted before terminal construction.
+    [[nodiscard]] std::span<const RunDiagnostic> diagnostics() const noexcept;
+
+    /// Borrows preflight Archive Collisions with precedence winners and shadowed Archives.
+    [[nodiscard]] std::span<const ArchiveCollision> archiveCollisions() const noexcept;
+
+    /// Borrows completed Archive extraction attempts in attempted order.
+    [[nodiscard]] std::span<const ArchiveExtractionResult> archiveExtractionAttempts()
+        const noexcept;
+
+    /// Borrows completed Archive discovery facts, or nullptr when discovery did not return.
+    [[nodiscard]] const ArchiveDiscoveryEvidence* archiveDiscovery() const noexcept;
+
+    /// Borrows definitive routing, or nullptr when routing did not complete.
+    [[nodiscard]] const routing::RoutingLedger* routingLedger() const noexcept;
+
+    /// Borrows completed Asset attempts in execution order.
+    [[nodiscard]] std::span<const RoutedAssetAttempt> assetAttempts() const noexcept;
+
+    /// Borrows Archive Finalization status and attempts, or nullptr if it was not attempted.
+    [[nodiscard]] const ArchiveFinalizationResult* archiveFinalization() const noexcept;
+
+    /// Borrows failures from the final Safety Cleanup pass in attempted order.
+    [[nodiscard]] std::span<const RunFailure> safetyCleanupFailures() const noexcept;
+
+    /// Borrows transitional frozen work evidence while adapters migrate to focused views.
     [[nodiscard]] const RunWorkRecord& work() const noexcept { return *_work; }
 
     /// Borrows ordered resolved Mod Roots; empty when preparation did not resolve any roots.
@@ -422,9 +446,7 @@ class OptimizationRunResult final {
     [[nodiscard]] std::size_t skippedAssetCount(routing::SkipReason reason) const noexcept;
 
     /// Borrows mutation counts ordered by Mod Root and kind, including retained unsafe effects.
-    [[nodiscard]] std::span<const MutationSummary> mutationSummaries() const noexcept {
-        return _mutationSummaries;
-    }
+    [[nodiscard]] std::span<const MutationSummary> mutationSummaries() const noexcept;
 
     /// Reports cancellation observed before terminal classification, even when Failed wins.
     /// Later cancellation requests cannot rewrite this immutable observation.
@@ -436,14 +458,11 @@ class OptimizationRunResult final {
     /// Borrows the identity shared with this run's observations for the result's lifetime.
     [[nodiscard]] const RunId& runId() const noexcept { return _runId; }
 
-    /// Returns run-level failures in observation order; cleanupFailures retains cleanup errors.
-    /// Typed Asset and Archive operation failures remain in work()'s complete attempt records.
-    [[nodiscard]] std::span<const RunFailure> failures() const noexcept { return _failures; }
+    /// Returns sealed run-level failures in observation order, apart from Operation Failures.
+    [[nodiscard]] std::span<const RunFailure> failures() const noexcept;
 
-    /// Borrows all cleanup failures in attempted removal order, separately from the primary cause.
-    [[nodiscard]] std::span<const RunFailure> cleanupFailures() const noexcept {
-        return _cleanupFailures;
-    }
+    /// Borrows attempt-local and final Safety Cleanup failures in attempted removal order.
+    [[nodiscard]] std::span<const RunFailure> cleanupFailures() const noexcept;
 
     [[nodiscard]] RunOutcome outcome() const noexcept;
 
@@ -464,20 +483,16 @@ class OptimizationRunResult final {
     [[nodiscard]] const RunPhaseRecord* phase(RunPhase phase) const noexcept;
 
    private:
+    /// Owns the already sealed evidence and transitional work without judging their contents.
     OptimizationRunResult(RunOutcome outcome, RunPhase finalPhase,
                           std::shared_ptr<const RunEvidence> evidence, RunId runId,
-                          std::vector<RunFailure> failures, std::vector<RunFailure> cleanupFailures,
-                          std::shared_ptr<const RunWorkRecord> work,
-                          std::vector<MutationSummary> mutationSummaries) noexcept;
+                          std::shared_ptr<const RunWorkRecord> work) noexcept;
 
     RunId _runId;
     RunOutcome _outcome;
     RunPhase _finalPhase;
     std::shared_ptr<const RunEvidence> _evidence;
-    std::vector<RunFailure> _failures;
-    std::vector<RunFailure> _cleanupFailures;
     std::shared_ptr<const RunWorkRecord> _work;
-    std::vector<MutationSummary> _mutationSummaries;
 };
 
 /// An owning immutable observation; copies keep terminal payloads alive independently of handles.

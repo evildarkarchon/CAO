@@ -1,5 +1,4 @@
 #include "CliRun.h"
-#include "RunEvidenceTestUtils.h"
 #include "RunTestConfiguration.h"
 #include "Run/RunExecutor.h"
 #include "Run/RunWorkRecord.h"
@@ -135,9 +134,15 @@ class CliRunTests final : public QObject {
                 .safeToContinue = true,
                 .detail = "source remains usable",
                 .modRoot = "mod"}}});
-        auto result = std::make_shared<const OptimizationRunResult>(OptimizationRunResult::terminal(
-            RunOutcome::Cancelled, RunPhase::ArchiveFinalization,
-            terminalTestEvidence(RunPhase::ArchiveFinalization, true), "retained", {}, {}, &work));
+        MutableRunEvidence evidence;
+        evidence.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
+        evidence.recordPhase(RunPhaseRecord::executed(RunPhase::ArchiveFinalization));
+        evidence.recordArchiveFinalization(work.finalizations.front());
+        evidence.recordPhase(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
+        evidence.recordCancellationObservation();
+        auto result = std::make_shared<const OptimizationRunResult>(
+            OptimizationRunResult::terminal(RunOutcome::Cancelled, RunPhase::ArchiveFinalization,
+                                            std::move(evidence).consume(), "retained", &work));
         std::ostringstream output;
         cao::cli::renderEvent(output, RunEvent("retained", 12, result));
         const auto text = output.str();

@@ -151,6 +151,9 @@ class RunEvidence final {
     /// Returns recognized exclusions from authoritative Archive discovery and routing facts.
     [[nodiscard]] std::size_t skippedAssetCount(routing::SkipReason reason) const noexcept;
 
+    /// Borrows counts derived at sealing from completed attempts, ordered by Mod Root and kind.
+    [[nodiscard]] std::span<const MutationSummary> mutationSummaries() const noexcept;
+
     /// Borrows completed Asset attempts in execution order, including failed unsafe attempts.
     [[nodiscard]] std::span<const RoutedAssetAttempt> assetAttempts() const noexcept;
 
@@ -159,6 +162,9 @@ class RunEvidence final {
 
     /// Borrows final Safety Cleanup failures in attempted order, apart from Run Failures.
     [[nodiscard]] std::span<const RunFailure> safetyCleanupFailures() const noexcept;
+
+    /// Borrows attempt-local cleanup failures followed by final Safety Cleanup failures.
+    [[nodiscard]] std::span<const RunFailure> cleanupFailures() const noexcept;
 
     /// Reports whether cooperative cancellation was observed before evidence was consumed.
     [[nodiscard]] bool cancellationObserved() const noexcept;

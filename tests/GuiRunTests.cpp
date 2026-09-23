@@ -117,18 +117,22 @@ class GuiRunTests final : public QObject {
         QVERIFY(!view.consume(RunEvent("new", 2, RunPhaseRecord::executed(RunPhase::Preparing))));
         QCOMPARE(view.state().label, std::string("Processing Assets"));
     }
-    /// Cancellation retains independently inspectable failures, collision winners, and mutations.
+    /// Unsafe work retains observed cancellation, collision winners, and mutations.
     void presentsTerminalEvidence() {
         using namespace cao::run;
         RunWorkRecord work;
         work.finalizations.push_back(ArchiveFinalizationResult{
             .attempts = {ArchiveFinalizationAttempt{
-                .archivePath = "mod/output.bsa",
-                .mutation = cao::execution::MutationState::Committed,
-                .failure = ArchiveFinalizationFailure::SourceCleanupFailed,
-                .safeToContinue = true,
-                .detail = "source remains usable",
-                .modRoot = "mod"}}});
+                             .archivePath = "mod/output.bsa",
+                             .mutation = cao::execution::MutationState::Committed,
+                             .failure = ArchiveFinalizationFailure::SourceCleanupFailed,
+                             .safeToContinue = true,
+                             .detail = "source remains usable",
+                             .modRoot = "mod"},
+                         ArchiveFinalizationAttempt{.archivePath = "mod/output-two.bsa",
+                                                    .mutation = cao::execution::MutationState::None,
+                                                    .safeToContinue = true,
+                                                    .modRoot = "mod"}}});
         work.archiveAttempts.push_back(
             ArchiveExtractionResult{.archivePath = "mod/input.bsa",
                                     .mutation = cao::execution::MutationState::PartialOrUnknown,
@@ -138,16 +142,25 @@ class GuiRunTests final : public QObject {
                                     .modRoot = "mod"});
         work.collisions.emplace_back("mod", "textures/a.dds", "winner.bsa",
                                      std::vector<std::filesystem::path>{"shadowed.bsa"}, true);
-        auto result = std::make_shared<const OptimizationRunResult>(OptimizationRunResult::terminal(
-            RunOutcome::Cancelled, RunPhase::ArchiveFinalization,
-            terminalTestEvidence(RunPhase::ArchiveFinalization, true,
-                                 RunProgress::determinate(5, 1, 1)),
-            "run",
-            {RunFailure(RunFailureCode::WorkServiceFailed, RunPhase::ArchiveFinalization,
-                        "primary failure")},
-            {RunFailure(RunFailureCode::TemporaryArtifactCleanupFailed, RunPhase::SafetyCleanup,
-                        "cleanup failure", {}, "staging.tmp")},
-            &work));
+        MutableRunEvidence evidence;
+        evidence.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
+        evidence.recordArchiveDiscoveryStarted();
+        evidence.recordArchiveCollisions(work.collisions);
+        evidence.recordArchiveExtractionPlan(1);
+        evidence.recordArchiveExtractionAttempt(work.archiveAttempts.front(), 1);
+        evidence.recordPhase(RunPhaseRecord::executed(RunPhase::ArchiveFinalization));
+        evidence.recordArchiveFinalizationPlan(5);
+        evidence.recordArchiveFinalization(work.finalizations.front());
+        evidence.recordFailure(RunFailure(RunFailureCode::WorkServiceFailed,
+                                          RunPhase::ArchiveFinalization, "primary failure"));
+        evidence.recordPhase(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
+        evidence.recordSafetyCleanupFailure(
+            RunFailure(RunFailureCode::TemporaryArtifactCleanupFailed, RunPhase::SafetyCleanup,
+                       "cleanup failure", {}, "staging.tmp"));
+        evidence.recordCancellationObservation();
+        auto result = std::make_shared<const OptimizationRunResult>(
+            OptimizationRunResult::terminal(RunOutcome::Failed, RunPhase::ArchiveFinalization,
+                                            std::move(evidence).consume(), "run", &work));
         cao::gui::RunViewModel view;
         view.begin("run");
         QVERIFY(

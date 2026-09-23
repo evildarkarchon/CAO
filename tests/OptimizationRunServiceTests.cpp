@@ -186,12 +186,14 @@ class OptimizationRunServiceTests final : public QObject
     Q_OBJECT
 
 private slots:
- /// Verifies complete work evidence survives handle, provider, and service teardown.
- void terminalResultOwnsCompleteWorkEvidence();
+ /// Verifies sealed evidence and the terminal event survive handle and service teardown.
+ void terminalResultSharesSealedEvidenceAcrossObservationPaths();
  /// Verifies later work exceptions preserve completed attempts and fatal/cancellation precedence.
  void workExceptionRetainsEarlierEvidence();
- /// Verifies frozen multi-root mutation evidence determines outcomes without borrowing input storage.
- void terminalEvidenceDeterminesOutcomeAndMutationGroups();
+ /// Verifies terminal construction preserves the Run Executor's classification.
+ void terminalConstructionPreservesChosenOutcome();
+ /// Verifies terminal views retain each sealed evidence category without exposing its storage.
+ void terminalResultExposesSealedEvidenceViews();
  /// Exercises symbolic links and Windows junctions as duplicate Mod Root aliases.
  void severalModsRejectsDuplicateLinkedRoots_data();
  /// Verifies aliases cannot select the same Mod Root twice and failure still reaches cleanup.
@@ -1608,41 +1610,48 @@ int main(int argc, char** argv)
 }
 #include "OptimizationRunServiceTests.moc"
 
-/// Verifies the service freezes owned work evidence before publishing its terminal event.
-void OptimizationRunServiceTests::terminalResultOwnsCompleteWorkEvidence() {
+/// Verifies the service shares one terminal value and retains sealed facts after teardown.
+void OptimizationRunServiceTests::terminalResultSharesSealedEvidenceAcrossObservationPaths() {
     using namespace cao::run;
     using namespace cao::execution;
     class Work final : public RunWorkService {
        public:
-        /// Supplies known attempt evidence through the same seam as a production work service.
+        /// Supplies completed work facts through the same evidence seam as production work.
         void execute(const RunPreparation& preparation, RunWorkRecord& record,
-                     MutableRunEvidence&,
-                     TemporaryArtifactRegistry&,
+                     MutableRunEvidence& evidence, TemporaryArtifactRegistry&,
                      RunObservationSink& observations, std::stop_token) override {
             const auto root = preparation.modRoots().front();
             const cao::routing::AssetRouter router(preparation.policy());
             const std::vector paths{root / "changed.dds", root / "failed.dds"};
             record.ledger = router.route(paths);
+            observations.archiveDiscoveryStarted();
+            record.collisions.emplace_back(root, "shared.dds", root / "source.bsa",
+                                           std::vector{root / "lower.bsa"}, true);
+            evidence.recordArchiveCollisions(record.collisions);
+            record.skippedArchiveCounts[cao::routing::SkipReason::DisabledAssetKind] = 3;
+            evidence.recordArchiveDiscovery(ArchiveDiscoveryEvidence(
+                {{cao::routing::SkipReason::DisabledAssetKind, 3}}, {}, 0));
+            observations.archiveExtractionPlanned(1);
+            record.archiveAttempts.push_back(
+                {root / "source.bsa", MutationState::Committed, {}, true, {}, root});
+            evidence.recordArchiveExtractionAttempt(record.archiveAttempts.front(), 1);
+            observations.effectiveAssetTreeStarted();
+            evidence.recordRoutingLedger(*record.ledger);
+            observations.assetProcessingPlanned(record.ledger->routedAssets().size());
             for (const auto& asset : record.ledger->routedAssets()) {
                 const auto result = asset.executionPath().filename() == "changed.dds"
                     ? AssetExecutionResult::success(MutationState::Committed)
                     : AssetExecutionResult::failed(AssetExecutionFailure::SaveFailed, "save failed");
                 record.assetAttempts.push_back({root, asset, result});
+                evidence.recordAssetAttempt(record.assetAttempts.back(),
+                                            record.ledger->routedAssets().size());
             }
-            record.archiveAttempts.push_back({root / "source.bsa", MutationState::Committed,
-                                               {}, true, {}, root});
-            record.collisions.emplace_back(root, "shared.dds", root / "source.bsa",
-                                           std::vector{root / "lower.bsa"}, true);
-            record.skippedArchiveCounts[cao::routing::SkipReason::DisabledAssetKind] = 3;
-            observations.recordPhase(RunPhaseRecord::executed(
-                RunPhase::ProcessingAssets, RunProgress::determinate(4)));
-            observations.recordPhase(RunPhaseRecord::executed(
-                RunPhase::ProcessingAssets, RunProgress::determinate(4, 1, 1)));
             record.cancellationObserved = true;
         }
     };
     std::optional<OptimizationRunResult> retained;
     std::shared_ptr<const OptimizationRunResult> eventResult;
+    const OptimizationRunResult* sharedResult{};
     {
         cao::run::InlineRunScheduler scheduler;
         auto work = std::make_shared<Work>();
@@ -1654,24 +1663,30 @@ void OptimizationRunServiceTests::terminalResultOwnsCompleteWorkEvidence() {
                         &event.payload())) eventResult = *terminal;
             });
         QVERIFY(started.started());
-        retained = started.handle()->wait();
+        const auto& waited = started.handle()->wait();
+        sharedResult = &waited;
+        QCOMPARE(started.handle()->terminalResult(), sharedResult);
+        QCOMPARE(eventResult.get(), sharedResult);
+        retained = waited;
     }
     QVERIFY(retained.has_value());
     QVERIFY(eventResult);
+    QCOMPARE(eventResult.get(), sharedResult);
     QCOMPARE(retained->outcome(), RunOutcome::Cancelled);
     QVERIFY(retained->cancellationObserved());
     QCOMPARE(retained->modRoots().size(), std::size_t{1});
-    QCOMPARE(retained->work().ledger->routedAssets().size(), std::size_t{2});
-    QCOMPARE(retained->work().assetAttempts.size(), std::size_t{2});
-    QCOMPARE(retained->work().assetAttempts[0].asset.executionPath().filename(),
+    QVERIFY(retained->routingLedger() != nullptr);
+    QCOMPARE(retained->routingLedger()->routedAssets().size(), std::size_t{2});
+    QCOMPARE(retained->assetAttempts().size(), std::size_t{2});
+    QCOMPARE(retained->assetAttempts()[0].asset.executionPath().filename(),
              std::filesystem::path("changed.dds"));
-    QCOMPARE(retained->work().assetAttempts[1].result.failure(),
+    QCOMPARE(retained->assetAttempts()[1].result.failure(),
              std::optional{AssetExecutionFailure::SaveFailed});
-    QCOMPARE(retained->work().archiveAttempts.size(), std::size_t{1});
-    QCOMPARE(retained->work().collisions.front().shadowedArchives().size(), std::size_t{1});
+    QCOMPARE(retained->archiveExtractionAttempts().size(), std::size_t{1});
+    QCOMPARE(retained->archiveCollisions().front().shadowedArchives().size(), std::size_t{1});
     QCOMPARE(retained->skippedAssetCount(cao::routing::SkipReason::DisabledAssetKind), std::size_t{3});
     QCOMPARE(retained->phase(RunPhase::ProcessingAssets)->progress()->completed(), std::size_t{2});
-    QCOMPARE(retained->phase(RunPhase::ProcessingAssets)->progress()->total(), std::size_t{4});
+    QCOMPARE(retained->phase(RunPhase::ProcessingAssets)->progress()->total(), std::size_t{2});
     QCOMPARE(retained->mutationSummaries().size(), std::size_t{2});
     for (const auto& summary : retained->mutationSummaries()) {
         QCOMPARE(summary.modRoot, retained->modRoots().front());
@@ -1680,7 +1695,7 @@ void OptimizationRunServiceTests::terminalResultOwnsCompleteWorkEvidence() {
     }
     QCOMPARE(eventResult->runId(), retained->runId());
     QCOMPARE(eventResult->outcome(), retained->outcome());
-    QCOMPARE(eventResult->work().assetAttempts.size(), retained->work().assetAttempts.size());
+    QCOMPARE(eventResult->assetAttempts().size(), retained->assetAttempts().size());
 }
 
 /// Verifies fatal service exceptions retain already committed attempts through cleanup and teardown.
@@ -1691,16 +1706,14 @@ void OptimizationRunServiceTests::workExceptionRetainsEarlierEvidence() {
        public:
         /// Records a completed boundary, then simulates an unexpected later service failure.
         void execute(const RunPreparation& preparation, RunWorkRecord& record,
-                     MutableRunEvidence&,
-                     TemporaryArtifactRegistry&,
+                     MutableRunEvidence& evidence, TemporaryArtifactRegistry&,
                      RunObservationSink& observations, std::stop_token) override {
             const auto root = preparation.modRoots().front();
-            record.archiveAttempts.push_back({root / "source.bsa", MutationState::Committed,
-                                               {}, true, {}, root});
             observations.recordPhase(RunPhaseRecord::executed(
                 RunPhase::ExtractingArchives, RunProgress::determinate(2)));
-            observations.recordPhase(RunPhaseRecord::executed(
-                RunPhase::ExtractingArchives, RunProgress::determinate(2, 1)));
+            record.archiveAttempts.push_back(
+                {root / "source.bsa", MutationState::Committed, {}, true, {}, root});
+            evidence.recordArchiveExtractionAttempt(record.archiveAttempts.front(), 2);
             record.cancellationObserved = true;
             throw std::runtime_error("later discovery failed");
         }
@@ -1719,50 +1732,68 @@ void OptimizationRunServiceTests::workExceptionRetainsEarlierEvidence() {
     QCOMPARE(result.failures().front().detail(), std::string("later discovery failed"));
     QCOMPARE(result.phase(RunPhase::ExtractingArchives)->progress()->completed(), std::size_t{1});
     QVERIFY(result.phase(RunPhase::SafetyCleanup));
-    QVERIFY(!result.work().ledger);
-    QCOMPARE(result.work().archiveAttempts.size(), std::size_t{1});
+    QVERIFY(result.routingLedger() == nullptr);
+    QCOMPARE(result.archiveExtractionAttempts().size(), std::size_t{1});
     QCOMPARE(result.mutationSummaries().front().committed, std::size_t{1});
 }
 
-/// Verifies aggregation counts attempts by scope/kind and never rewrites a frozen terminal value.
-void OptimizationRunServiceTests::terminalEvidenceDeterminesOutcomeAndMutationGroups() {
+/// Verifies terminal construction retains the chosen outcome even when evidence records
+/// cancellation.
+void OptimizationRunServiceTests::terminalConstructionPreservesChosenOutcome() {
     using namespace cao::run;
-    using namespace cao::execution;
-    RunWorkRecord work;
-    work.archiveAttempts = {
-        {"alpha/a.bsa", MutationState::Committed, {}, true, {}, "alpha"},
-        {"alpha/b.bsa", MutationState::Committed, ArchiveExtractionFailure::SourceCleanupFailed,
-         true, "source retained", "alpha"},
-        {"beta/c.bsa", MutationState::None, {}, true, {}, "beta"}};
+    const auto result = OptimizationRunResult::terminal(
+        RunOutcome::Succeeded, RunPhase::ArchiveFinalization,
+        terminalTestEvidence(RunPhase::ArchiveFinalization, true), "419");
+    QCOMPARE(result.outcome(), RunOutcome::Succeeded);
+    QVERIFY(result.cancellationObserved());
+    QCOMPARE(result.runId(), RunId("419"));
+}
+
+/// Verifies result views borrow factual evidence retained before terminal construction.
+void OptimizationRunServiceTests::terminalResultExposesSealedEvidenceViews() {
+    using namespace cao::run;
+    using cao::execution::MutationState;
+    MutableRunEvidence evidence;
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
+    evidence.recordDiagnostic(
+        RunDiagnostic(RunDiagnosticCode::IgnoredModExcluded, RunPhase::Preparing, "excluded"));
+    evidence.recordArchiveDiscoveryStarted();
+    const std::vector<ArchiveCollision> collisions{
+        ArchiveCollision("mod", "textures/a.dds", "winner.bsa", {"lower.bsa"}, true)};
+    evidence.recordArchiveCollisions(collisions);
+    evidence.recordArchiveDiscovery(ArchiveDiscoveryEvidence(
+        {{cao::routing::SkipReason::DisabledAssetKind, 2}}, {"unsupported.bsa"}, 1));
+    evidence.recordArchiveExtractionPlan(1);
+    evidence.recordArchiveExtractionAttempt(
+        {"mod/input.bsa", MutationState::Committed, {}, true, {}, "mod"}, 1);
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::ArchiveFinalization));
     ArchiveFinalizationResult finalization;
-    finalization.attempts = {
-        {"beta/out.bsa", MutationState::Committed, ArchiveFinalizationFailure::SourceCleanupFailed,
-         true, "sources retained", "beta"}};
-    work.finalizations.push_back(finalization);
-    const auto freeze = [&] {
-        return OptimizationRunResult::terminal(RunOutcome::Succeeded, RunPhase::ArchiveFinalization,
-            terminalTestEvidence(RunPhase::ArchiveFinalization, work.cancellationObserved), "419",
-            {}, {}, &work);
-    };
-    const auto contained = freeze();
-    QCOMPARE(contained.outcome(), RunOutcome::CompletedWithFailures);
-    QCOMPARE(contained.mutationSummaries().size(), std::size_t{2});
-    QCOMPARE(contained.mutationSummaries()[0].kind, MutationKind::ArchiveExtraction);
-    QCOMPARE(contained.mutationSummaries()[0].committed, std::size_t{2});
-    QCOMPARE(contained.mutationSummaries()[1].modRoot, std::filesystem::path("beta"));
-    QCOMPARE(contained.mutationSummaries()[1].kind, MutationKind::ArchiveFinalization);
-    work.cancellationObserved = true;
-    QCOMPARE(freeze().outcome(), RunOutcome::Cancelled);
-    // Contradictory safety claims cannot hide a partial mutation.
-    work.finalizations.front().attempts.front().mutation = MutationState::PartialOrUnknown;
-    const auto unsafe = freeze();
-    QCOMPARE(unsafe.outcome(), RunOutcome::Failed);
-    QVERIFY(unsafe.cancellationObserved());
-    QCOMPARE(unsafe.mutationSummaries()[1].committed, std::size_t{0});
-    QCOMPARE(unsafe.mutationSummaries()[1].partialOrUnknown, std::size_t{1});
-    work.archiveAttempts.clear();
-    work.finalizations.clear();
-    QCOMPARE(contained.work().archiveAttempts.size(), std::size_t{3});
-    QCOMPARE(contained.work().finalizations.front().attempts.front().mutation, MutationState::Committed);
-    QVERIFY(!contained.cancellationObserved());
+    finalization.attempts.push_back(
+        {"mod/output.bsa", MutationState::Committed, {}, true, {}, "mod"});
+    evidence.recordArchiveFinalization(std::move(finalization));
+    evidence.recordFailure(
+        RunFailure(RunFailureCode::WorkServiceFailed, RunPhase::ArchiveFinalization, "failed"));
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
+    evidence.recordSafetyCleanupFailure(RunFailure(RunFailureCode::TemporaryArtifactCleanupFailed,
+                                                   RunPhase::SafetyCleanup, "cleanup"));
+
+    const auto result = OptimizationRunResult::terminal(
+        RunOutcome::Failed, RunPhase::ArchiveFinalization, std::move(evidence).consume(), "views");
+    QCOMPARE(result.diagnostics().size(), std::size_t{1});
+    QCOMPARE(result.diagnostics().front().detail(), std::string("excluded"));
+    QCOMPARE(result.archiveCollisions().size(), std::size_t{1});
+    QCOMPARE(result.archiveExtractionAttempts().size(), std::size_t{1});
+    QVERIFY(result.archiveDiscovery() != nullptr);
+    QCOMPARE(result.archiveDiscovery()->nestedArchiveCount(), std::size_t{1});
+    QVERIFY(result.routingLedger() == nullptr);
+    QVERIFY(result.assetAttempts().empty());
+    QVERIFY(result.archiveFinalization() != nullptr);
+    QCOMPARE(result.archiveFinalization()->attempts.size(), std::size_t{1});
+    QCOMPARE(result.safetyCleanupFailures().size(), std::size_t{1});
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().detail(), std::string("failed"));
+    QCOMPARE(result.cleanupFailures().size(), std::size_t{1});
+    QCOMPARE(result.cleanupFailures().front().detail(), std::string("cleanup"));
+    QCOMPARE(result.skippedAssetCount(cao::routing::SkipReason::DisabledAssetKind), std::size_t{2});
+    QCOMPARE(result.mutationSummaries().size(), std::size_t{2});
 }

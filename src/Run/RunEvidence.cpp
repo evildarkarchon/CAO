@@ -6,6 +6,7 @@
 #include "RunLifecycle.h"
 
 #include <algorithm>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -27,6 +28,9 @@ class RunEvidenceStorage final {
     std::optional<std::size_t> archiveFinalizationTotal;
     bool archiveFinalizationCompleted{};
     std::vector<RunFailure> safetyCleanupFailures;
+    std::vector<RunFailure> cleanupFailures;
+    std::vector<MutationSummary> mutationSummaries;
+    std::map<routing::SkipReason, std::size_t> skippedAssetCounts;
     bool archiveCollisionsRecorded{};
     bool cancellationObserved{};
 };
@@ -90,6 +94,60 @@ const RunEvidenceStorage& requireStorage(const std::unique_ptr<RunEvidenceStorag
     if (!storage)
         throw RunEvidenceInvariantViolation("Mutable Run Evidence has already been consumed");
     return *storage;
+}
+
+/// Groups durable effects from the completed attempts just before their storage becomes sealed.
+std::vector<MutationSummary> deriveMutationSummaries(const RunEvidenceStorage& storage) {
+    std::map<std::pair<std::filesystem::path, MutationKind>, MutationSummary> grouped;
+    const auto account = [&grouped](const std::filesystem::path& root, const MutationKind kind,
+                                    const execution::MutationState mutation) {
+        if (mutation == execution::MutationState::None) return;
+        auto entry = grouped.try_emplace(std::pair{root, kind}, MutationSummary{root, kind}).first;
+        if (mutation == execution::MutationState::Committed)
+            ++entry->second.committed;
+        else
+            ++entry->second.partialOrUnknown;
+    };
+    for (const auto& attempt : storage.assetAttempts)
+        account(attempt.modRoot, MutationKind::AssetProcessing, attempt.result.mutationState());
+    for (const auto& attempt : storage.archiveExtractionAttempts)
+        account(attempt.modRoot, MutationKind::ArchiveExtraction, attempt.mutation);
+    if (storage.archiveFinalization) {
+        for (const auto& attempt : storage.archiveFinalization->attempts)
+            account(attempt.modRoot, MutationKind::ArchiveFinalization, attempt.mutation);
+    }
+    std::vector<MutationSummary> summaries;
+    summaries.reserve(grouped.size());
+    for (auto& [key, summary] : grouped) summaries.push_back(std::move(summary));
+    return summaries;
+}
+
+/// Preserves attempt-local cleanup evidence before the run's mandatory final cleanup failures.
+std::vector<RunFailure> deriveCleanupFailures(const RunEvidenceStorage& storage) {
+    std::vector<RunFailure> failures;
+    for (const auto& attempt : storage.assetAttempts) {
+        const auto local = attempt.result.cleanupFailures();
+        failures.insert(failures.end(), local.begin(), local.end());
+    }
+    failures.insert(failures.end(), storage.safetyCleanupFailures.begin(),
+                    storage.safetyCleanupFailures.end());
+    return failures;
+}
+
+/// Aggregates the closed Skip Reason set from discovery and definitive routing at sealing.
+std::map<routing::SkipReason, std::size_t> deriveSkippedAssetCounts(
+    const RunEvidenceStorage& storage) {
+    std::map<routing::SkipReason, std::size_t> counts;
+    for (const auto reason :
+         {routing::SkipReason::DisabledPhase, routing::SkipReason::DisabledAssetKind,
+          routing::SkipReason::ExcludedAssetVariant}) {
+        const auto discovered =
+            storage.archiveDiscovery ? storage.archiveDiscovery->skippedArchiveCount(reason) : 0;
+        const auto routed =
+            storage.routingLedger ? storage.routingLedger->skippedAssetCount(reason) : 0;
+        if (const auto total = discovered + routed; total != 0) counts.emplace(reason, total);
+    }
+    return counts;
 }
 }  // namespace
 
@@ -210,10 +268,12 @@ const routing::RoutingLedger* RunEvidence::routingLedger() const noexcept {
 }
 
 std::size_t RunEvidence::skippedAssetCount(const routing::SkipReason reason) const noexcept {
-    return (_storage->archiveDiscovery
-                ? _storage->archiveDiscovery->skippedArchiveCount(reason)
-                : 0) +
-           (_storage->routingLedger ? _storage->routingLedger->skippedAssetCount(reason) : 0);
+    const auto found = _storage->skippedAssetCounts.find(reason);
+    return found == _storage->skippedAssetCounts.end() ? 0 : found->second;
+}
+
+std::span<const MutationSummary> RunEvidence::mutationSummaries() const noexcept {
+    return _storage->mutationSummaries;
 }
 
 std::span<const RoutedAssetAttempt> RunEvidence::assetAttempts() const noexcept {
@@ -226,6 +286,10 @@ const ArchiveFinalizationResult* RunEvidence::archiveFinalization() const noexce
 
 std::span<const RunFailure> RunEvidence::safetyCleanupFailures() const noexcept {
     return _storage->safetyCleanupFailures;
+}
+
+std::span<const RunFailure> RunEvidence::cleanupFailures() const noexcept {
+    return _storage->cleanupFailures;
 }
 
 bool RunEvidence::cancellationObserved() const noexcept { return _storage->cancellationObserved; }
@@ -558,6 +622,10 @@ RunEvidence MutableRunEvidence::consume() && {
     if (storage.phases.empty() || storage.phases.back().phase() != RunPhase::SafetyCleanup)
         throw RunEvidenceInvariantViolation(
             "Run Evidence can only be consumed after Safety Cleanup");
+    // Derive stable summaries from retained facts after every producer has stopped.
+    storage.mutationSummaries = deriveMutationSummaries(storage);
+    storage.cleanupFailures = deriveCleanupFailures(storage);
+    storage.skippedAssetCounts = deriveSkippedAssetCounts(storage);
     return RunEvidence(std::move(_storage));
 }
 }  // namespace cao::run
