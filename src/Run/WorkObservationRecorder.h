@@ -12,7 +12,7 @@ namespace cao::run {
 /// retained beyond their execution lifetime.
 class WorkObservationRecorder final {
    public:
-    /// Shares publication position and optionally mirrors Archive facts into concrete Run Evidence.
+    /// Shares publication position and optionally mirrors Archive and Asset facts into Run Evidence.
     WorkObservationRecorder(RunWorkRecord& record, RunObservationSink* sink,
                             MutableRunEvidence* evidence = nullptr)
         : _record(record), _sink(sink), _evidence(evidence) {}
@@ -113,6 +113,23 @@ class WorkObservationRecorder final {
         _record.unsupportedExplicitPaths.assign(discovery.unsupportedExplicitPaths().begin(),
                                                 discovery.unsupportedExplicitPaths().end());
         _record.nestedArchiveCount = discovery.nestedArchiveCount();
+    }
+
+    /// Retains a complete definitive ledger before the compatibility record can expose it.
+    void recordRoutingLedger(routing::RoutingLedger ledger) {
+        if (_evidence) _evidence->recordRoutingLedger(ledger);
+        _record.ledger.emplace(std::move(ledger));
+    }
+
+    /// Reports the routed-only Asset total through concrete executor-owned evidence, when present.
+    void recordAssetProcessingPlan(const std::size_t total) {
+        if (_evidence) _evidence->recordAssetProcessingPlan(total);
+    }
+
+    /// Retains one completed Asset attempt before concrete evidence publishes phase progress.
+    void recordAssetAttempt(RoutedAssetAttempt attempt, const std::size_t total) {
+        if (_evidence) _evidence->recordAssetAttempt(attempt, total);
+        _record.assetAttempts.push_back(std::move(attempt));
     }
 
     /// Retains and immediately publishes a Preparing or caller-supplied informational observation.

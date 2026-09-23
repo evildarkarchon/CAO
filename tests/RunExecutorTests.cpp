@@ -154,6 +154,8 @@ private slots:
  void productionWorkApplicability_data();
  /// Uses the real composition to preserve phase distinctions and prohibit excluded operations.
  void productionWorkApplicability();
+ /// Verifies executor-published work phases precede the atomic Asset and finalization callbacks.
+ void assetWorkPhasesPrecedeAttempts();
  /// Retains Preparing exclusions across completed production work without a presentation sink.
  void preparingDiagnosticsSurviveWork();
  /// Owns complete Archive collision evidence after preparation and adapter lifetimes end.
@@ -523,6 +525,7 @@ void RunExecutorTests::productionWorkApplicability_data() {
     QTest::addColumn<QString>("scenario");
     QTest::newRow("empty-requested-work") << QString("empty");
     QTest::newRow("dry-run-evaluation") << QString("dry");
+    QTest::newRow("empty-dry-run") << QString("empty-dry");
     QTest::newRow("fatal-archive-preflight") << QString("preflight");
 }
 
@@ -531,9 +534,10 @@ void RunExecutorTests::productionWorkApplicability() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
-    const bool dryRun = scenario == "dry";
+    const bool dryRun = scenario == "dry" || scenario == "empty-dry";
+    const bool emptyDryRun = scenario == "empty-dry";
     const bool preflight = scenario == "preflight";
-    if (dryRun) std::ofstream(root / "asset.dds") << "untouched";
+    if (dryRun && !emptyDryRun) std::ofstream(root / "asset.dds") << "untouched";
     if (preflight) std::ofstream(root / "broken.bsa") << "invalid archive";
     ControlledAssetWork work;
     std::size_t assets = 0;
@@ -560,7 +564,7 @@ void RunExecutorTests::productionWorkApplicability() {
         {RequestedWork::NativeTextureOptimization, RequestedWork::ArchiveExtraction});
     const auto result = RunExecutor{}.execute(request, RunServices{cleanup, nullptr, configuration.get(), &work});
     QCOMPARE(result.outcome(), preflight ? RunOutcome::Failed : RunOutcome::Succeeded);
-    QCOMPARE(assets, dryRun ? std::size_t{1} : std::size_t{0});
+    QCOMPARE(assets, dryRun && !emptyDryRun ? std::size_t{1} : std::size_t{0});
     QCOMPARE(extractions, std::size_t{0});
     QCOMPARE(finalizations, std::size_t{0});
     QVERIFY(result.work().finalizations.empty());
@@ -571,23 +575,35 @@ void RunExecutorTests::productionWorkApplicability() {
         QCOMPARE(result.failures().size(), std::size_t{1});
         QCOMPARE(result.failures().front().code(), cao::run::RunFailureCode::ArchiveUnreadable);
         QVERIFY(!result.work().ledger.has_value());
+        QVERIFY(result.evidence().routingLedger() == nullptr);
         QVERIFY(result.phase(RunPhase::ProcessingAssets) == nullptr);
         QVERIFY(result.phase(RunPhase::ArchiveFinalization) == nullptr);
         QCOMPARE(stagingBytes(root / "broken.bsa"), QByteArray("invalid archive"));
     } else {
         QVERIFY(result.work().ledger.has_value());
+        QVERIFY(result.evidence().routingLedger() != nullptr);
         const auto& phase = requirePhase(result, RunPhase::ProcessingAssets);
         QCOMPARE(phase.status(), RunPhaseStatus::Executed);
         QVERIFY(phase.progress().has_value());
-        QCOMPARE(phase.progress()->total(), dryRun ? std::size_t{1} : std::size_t{0});
+        QCOMPARE(phase.progress()->total(), dryRun && !emptyDryRun ? std::size_t{1}
+                                                                    : std::size_t{0});
         QCOMPARE(phase.progress()->completed(), phase.progress()->total());
+        if (dryRun) {
+            const auto& extraction = requirePhase(result, RunPhase::ExtractingArchives);
+            QCOMPARE(extraction.status(), RunPhaseStatus::Skipped);
+            QCOMPARE(extraction.skipReason(), std::optional{PhaseSkipReason::DryRun});
+            QVERIFY(!extraction.progress());
+            QCOMPARE(result.evidence().assetAttempts().size(),
+                     emptyDryRun ? std::size_t{0} : std::size_t{1});
+        }
         QCOMPARE(requirePhase(result, RunPhase::ArchiveFinalization).skipReason(),
                  std::optional{dryRun ? PhaseSkipReason::DryRun : PhaseSkipReason::NoRequestedWork});
     }
     if (dryRun) {
         QVERIFY(work.staged.empty());
         QVERIFY(!std::filesystem::exists(root / ".cao-staging"));
-        QCOMPARE(stagingBytes(root / "asset.dds"), QByteArray("untouched"));
+        if (!emptyDryRun)
+            QCOMPARE(stagingBytes(root / "asset.dds"), QByteArray("untouched"));
     } else {
         QVERIFY(!work.staged.empty());
         QVERIFY(!std::filesystem::exists(work.staged));
@@ -677,6 +693,51 @@ void RunExecutorTests::productionWorkRetainsArchiveCollisions() {
                                       cao::run::RunDiagnosticCode::ObserverFailed;
                            }),
              1);
+}
+
+void RunExecutorTests::assetWorkPhasesPrecedeAttempts() {
+    class PhaseObservation final : public cao::run::RunObservationSink {
+       public:
+        std::vector<RunPhase> traversed;
+
+        /// Keeps one position per phase while progress replacements retain their own publications.
+        void recordPhase(const RunPhaseRecord& phase) override {
+            if (traversed.empty() || traversed.back() != phase.phase())
+                traversed.push_back(phase.phase());
+        }
+        /// This successful fixture expects no run-level failure publication.
+        void recordFailure(const cao::run::RunFailure&) override {}
+        /// Informational publication does not affect the phase ordering under test.
+        void recordDiagnostic(const cao::run::RunDiagnostic&) override {}
+    } observation;
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(std::filesystem::path(directory.path().toStdWString()));
+    std::ofstream(root / "texture.dds") << "original";
+    ControlledAssetWork work;
+    work.adapters.executeAssetWithResult = [&](const auto&, const std::filesystem::path&) {
+        if (observation.traversed.empty() ||
+            observation.traversed.back() != RunPhase::ProcessingAssets)
+            throw std::runtime_error("Asset attempt preceded Processing Assets publication");
+        return cao::execution::AssetExecutionResult::success();
+    };
+    work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+        if (observation.traversed.empty() ||
+            observation.traversed.back() != RunPhase::ArchiveFinalization)
+            throw std::runtime_error("Finalization preceded Archive Finalization publication");
+        return cao::run::ArchiveFinalizationResult{};
+    };
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create("SkyrimSE", ExecutionMode::Apply,
+        ModSelection::singleModRoot(root), {RequestedWork::NativeTextureOptimization});
+    const auto result = RunExecutor{}.execute(request,
+        RunServices{cleanup, &observation, configuration.get(), &work});
+
+    QCOMPARE(result.outcome(), RunOutcome::Succeeded);
+    QCOMPARE(result.evidence().assetAttempts().size(), std::size_t{1});
+    QCOMPARE(observation.traversed,
+             std::vector<RunPhase>(runPhaseSequence().begin(), runPhaseSequence().end()));
 }
 
 void RunExecutorTests::processingAndEvidenceShareModRoot_data() {
@@ -908,6 +969,25 @@ void RunExecutorTests::mixedWorkEvidenceOutlivesServices() {
     QVERIFY(result->work().ledger.has_value());
     QCOMPARE(result->work().ledger->routedAssets().size(), std::size_t{2});
     QCOMPARE(result->work().assetAttempts.size(), std::size_t{2});
+    const auto* routed = result->evidence().routingLedger();
+    QVERIFY(routed != nullptr);
+    QCOMPARE(routed->routedAssets().size(), std::size_t{2});
+    QCOMPARE(routed->routedAssets()[0].executionPath(), successfulAsset);
+    QCOMPARE(routed->routedAssets()[1].executionPath(), failedAsset);
+    const auto retainedAttempts = result->evidence().assetAttempts();
+    QCOMPARE(retainedAttempts.size(), std::size_t{2});
+    QCOMPARE(retainedAttempts[0].modRoot, root);
+    QCOMPARE(retainedAttempts[0].asset.executionPath(), successfulAsset);
+    QCOMPARE(retainedAttempts[0].result.mutationState(), cao::execution::MutationState::Committed);
+    QCOMPARE(retainedAttempts[1].modRoot, root);
+    QCOMPARE(retainedAttempts[1].asset.executionPath(), failedAsset);
+    QCOMPARE(retainedAttempts[1].result.failure(),
+             std::optional{cao::execution::AssetExecutionFailure::LoadFailed});
+    QCOMPARE(retainedAttempts[1].result.affectedPath(), failedAsset);
+    QCOMPARE(retainedAttempts[1].result.operation(), std::string("load_texture"));
+    QCOMPARE(retainedAttempts[1].result.serviceDetail(), std::string("raw detail"));
+    QCOMPARE(retainedAttempts[1].result.mutationState(), cao::execution::MutationState::None);
+    QVERIFY(retainedAttempts[1].result.safeToContinue());
     const auto& failed = result->work().assetAttempts.back();
     QCOMPARE(failed.modRoot, root);
     QCOMPARE(failed.asset.executionPath(), failedAsset);
@@ -984,6 +1064,17 @@ void RunExecutorTests::cancellationAfterAtomicAssetAttempt() {
     QCOMPARE(finalizerCalls, std::size_t{0});
     QCOMPARE(result.work().assetAttempts.size(), std::size_t{1});
     QVERIFY(result.work().ledger.has_value());
+    QVERIFY(result.evidence().routingLedger() != nullptr);
+    QCOMPARE(result.evidence().routingLedger()->routedAssets().size(),
+             unsafe ? std::size_t{2} : std::size_t{1});
+    QCOMPARE(result.evidence().assetAttempts().size(), std::size_t{1});
+    const auto& retained = result.evidence().assetAttempts().front();
+    QCOMPARE(retained.modRoot, root);
+    QCOMPARE(retained.asset.executionPath(), root / "a.dds");
+    QCOMPARE(retained.result.mutationState(),
+             unsafe ? cao::execution::MutationState::PartialOrUnknown
+                    : cao::execution::MutationState::Committed);
+    QCOMPARE(retained.result.safeToContinue(), !unsafe);
     const auto& progress = requirePhase(result, RunPhase::ProcessingAssets).progress();
     QVERIFY(progress.has_value());
     QCOMPARE(progress->total(), unsafe ? std::size_t{2} : std::size_t{1});
@@ -1165,6 +1256,10 @@ void RunExecutorTests::committedExtractionSurvivesDiscoveryInterruption() {
     QCOMPARE(attempt.mutation, cao::execution::MutationState::Committed);
     QVERIFY(attempt.succeeded());
     QCOMPARE(result.work().ledger.has_value(), interruption == "none");
+    QCOMPARE(result.evidence().routingLedger() != nullptr, interruption == "none");
+    if (interruption == "none")
+        QCOMPARE(result.evidence().routingLedger()->routedAssets().size(), std::size_t{0});
+    QVERIFY(result.evidence().assetAttempts().empty());
     QVERIFY(result.work().assetAttempts.empty());
     QVERIFY(result.work().finalizations.empty());
     QCOMPARE(result.mutationSummaries().size(), std::size_t{1});

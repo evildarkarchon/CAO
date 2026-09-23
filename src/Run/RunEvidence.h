@@ -14,6 +14,7 @@
 
 namespace cao::run {
 struct ArchiveExtractionResult;
+struct RoutedAssetAttempt;
 class RunEvidenceStorage;
 
 /// Owns the non-derived Archive facts established when one discovery call returns.
@@ -117,6 +118,16 @@ class RunEvidence final {
     /// Returns the completed Archive discovery fact set, or nullptr if discovery unwound.
     [[nodiscard]] const ArchiveDiscoveryEvidence* archiveDiscovery() const noexcept;
 
+    /// Borrows definitive routing, or returns nullptr when discovery never completed routing.
+    /// An empty ledger still means routing completed successfully with no Routed Assets.
+    [[nodiscard]] const routing::RoutingLedger* routingLedger() const noexcept;
+
+    /// Returns recognized exclusions from authoritative Archive discovery and routing facts.
+    [[nodiscard]] std::size_t skippedAssetCount(routing::SkipReason reason) const noexcept;
+
+    /// Borrows completed Asset attempts in execution order, including failed unsafe attempts.
+    [[nodiscard]] std::span<const RoutedAssetAttempt> assetAttempts() const noexcept;
+
     /// Reports whether cooperative cancellation was observed before evidence was consumed.
     [[nodiscard]] bool cancellationObserved() const noexcept;
 
@@ -205,6 +216,17 @@ class MutableRunEvidence final {
     /// Early cancellation and discovery failures can still return trustworthy exclusions while
     /// an exception that unwinds discovery records no misleading completed fact set.
     void recordArchiveDiscovery(ArchiveDiscoveryEvidence discovery);
+
+    /// Retains one definitive batch routing result after Effective Asset Tree discovery.
+    /// Failed or interrupted discovery must never submit a partial Routing Ledger.
+    void recordRoutingLedger(routing::RoutingLedger ledger);
+
+    /// Starts Processing Assets with the immutable routed-only total from the retained ledger.
+    void recordAssetProcessingPlan(std::size_t total);
+
+    /// Retains a completed Asset attempt before publishing progress against the routed total.
+    /// Its exact operation result remains attached to the Routed Asset in attempted order.
+    void recordAssetAttempt(RoutedAssetAttempt attempt, std::size_t total);
 
     /// Returns the latest accepted record for a phase, or nullptr when it was never reached.
     [[nodiscard]] const RunPhaseRecord* phase(RunPhase phase) const;

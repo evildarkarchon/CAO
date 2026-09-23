@@ -1,6 +1,7 @@
 #include "RunEvidence.h"
 
 #include "ArchiveExtraction.h"
+#include "AssetRun.h"
 #include "RunLifecycle.h"
 
 #include <algorithm>
@@ -19,6 +20,8 @@ class RunEvidenceStorage final {
     std::vector<ArchiveCollision> archiveCollisions;
     std::vector<ArchiveExtractionResult> archiveExtractionAttempts;
     std::optional<ArchiveDiscoveryEvidence> archiveDiscovery;
+    std::optional<routing::RoutingLedger> routingLedger;
+    std::vector<RoutedAssetAttempt> assetAttempts;
     bool archiveCollisionsRecorded{};
     bool cancellationObserved{};
 };
@@ -132,6 +135,21 @@ std::span<const ArchiveExtractionResult> RunEvidence::archiveExtractionAttempts(
 
 const ArchiveDiscoveryEvidence* RunEvidence::archiveDiscovery() const noexcept {
     return _storage->archiveDiscovery ? &*_storage->archiveDiscovery : nullptr;
+}
+
+const routing::RoutingLedger* RunEvidence::routingLedger() const noexcept {
+    return _storage->routingLedger ? &*_storage->routingLedger : nullptr;
+}
+
+std::size_t RunEvidence::skippedAssetCount(const routing::SkipReason reason) const noexcept {
+    return (_storage->archiveDiscovery
+                ? _storage->archiveDiscovery->skippedArchiveCount(reason)
+                : 0) +
+           (_storage->routingLedger ? _storage->routingLedger->skippedAssetCount(reason) : 0);
+}
+
+std::span<const RoutedAssetAttempt> RunEvidence::assetAttempts() const noexcept {
+    return _storage->assetAttempts;
 }
 
 bool RunEvidence::cancellationObserved() const noexcept { return _storage->cancellationObserved; }
@@ -266,6 +284,48 @@ void MutableRunEvidence::recordArchiveDiscovery(ArchiveDiscoveryEvidence discove
     if (storage.archiveDiscovery)
         throw RunEvidenceInvariantViolation("Archive discovery evidence can only be recorded once");
     storage.archiveDiscovery.emplace(std::move(discovery));
+}
+
+void MutableRunEvidence::recordRoutingLedger(routing::RoutingLedger ledger) {
+    auto& storage = requireStorage(_storage);
+    if (storage.phases.empty() ||
+        storage.phases.back().phase() != RunPhase::BuildingEffectiveAssetTree ||
+        !storage.archiveDiscovery || !storage.failures.empty())
+        throw RunEvidenceInvariantViolation(
+            "Routing Ledger requires completed, successful Effective Asset Tree discovery");
+    if (storage.routingLedger)
+        throw RunEvidenceInvariantViolation("Definitive routing can only be recorded once");
+    storage.routingLedger.emplace(std::move(ledger));
+}
+
+void MutableRunEvidence::recordAssetProcessingPlan(const std::size_t total) {
+    auto& storage = requireStorage(_storage);
+    if (!storage.routingLedger || storage.routingLedger->routedAssets().size() != total)
+        throw RunEvidenceInvariantViolation(
+            "Processing Assets total must match the definitive Routing Ledger");
+    recordPhase(RunPhaseRecord::executed(RunPhase::ProcessingAssets,
+                                         RunProgress::determinate(total)));
+}
+
+void MutableRunEvidence::recordAssetAttempt(RoutedAssetAttempt attempt,
+                                            const std::size_t total) {
+    auto& storage = requireStorage(_storage);
+    if (storage.phases.empty() || storage.phases.back().phase() != RunPhase::ProcessingAssets)
+        throw RunEvidenceInvariantViolation(
+            "Asset attempts must be recorded during Processing Assets");
+    const auto& processingPhase = storage.phases.back();
+    if (!storage.routingLedger || storage.routingLedger->routedAssets().size() != total ||
+        !processingPhase.progress() || processingPhase.progress()->total() != total)
+        throw RunEvidenceInvariantViolation(
+            "Asset attempts must use the immutable routed-work total");
+    if (storage.assetAttempts.size() >= total)
+        throw RunEvidenceInvariantViolation(
+            "Asset attempts cannot exceed the routed-work total");
+    const auto succeeded = processingPhase.progress()->succeeded() + attempt.result.succeeded();
+    const auto failed = processingPhase.progress()->failed() + !attempt.result.succeeded();
+    storage.assetAttempts.push_back(std::move(attempt));
+    recordPhase(RunPhaseRecord::executed(RunPhase::ProcessingAssets,
+                                         RunProgress::determinate(total, succeeded, failed)));
 }
 
 const RunPhaseRecord* MutableRunEvidence::phase(const RunPhase phase) const {

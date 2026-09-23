@@ -92,11 +92,11 @@ class MutableRunEvidence;
 /// Runs the production AssetRun composition beneath the synchronous Run Executor.
 /// Borrows preparation, executor-owned evidence, observations, and operation closures until return;
 /// completed outcomes survive later orchestration exceptions, which propagate to the executor.
-/// Operations return outcomes without recording them. Archive facts enter the concrete evidence
-/// owner before the compatibility work record or any presentation callback; work reports phase
-/// position and progress through the executor-owned observation adapter. Cancellation combines the
-/// stop token with the optional adapter. The executor retains terminal classification and mandatory
-/// Safety Cleanup after this call unwinds.
+/// Operations return outcomes without recording them. Archive and Asset facts enter the concrete
+/// evidence owner before the compatibility work record or any presentation callback; work reports
+/// phase position and progress through the executor-owned observation adapter. Cancellation
+/// combines the stop token with the optional adapter. The executor retains terminal classification
+/// and mandatory Safety Cleanup after this call unwinds.
 void executeAssetRun(const RunPreparation& preparation, RunWorkRecord& record,
                      MutableRunEvidence& evidence, RunObservationSink& observations,
                      std::stop_token stop, const AssetRunAdapters& operations);
@@ -108,13 +108,14 @@ class AssetRun final {
     explicit AssetRun(routing::RoutingPolicy policy) noexcept;
 
     /// Appends completed evidence to the borrowed compatibility record before proceeding.
-    /// When supplied, the concrete evidence owner first retains Archive discovery, collision, and
-    /// extraction facts; observations publishes diagnostics and failures already retained in the
-    /// record. Extracts routed Archives, batch-routes the resulting Effective Asset Tree once,
-    /// offers the owned Routed Assets to the execution adapter, reports definitive routing
-    /// diagnostics, then finalizes Archives in Apply mode only. Cancellation is observed between
-    /// filesystem entries and attempts, and once more after the final attempt, so an adapter is
-    /// never abandoned mid-operation and a cancelled run never reaches diagnostics or finalization.
+    /// When supplied, the concrete evidence owner first retains Archive discovery, collision,
+    /// extraction, Routing Ledger, and Asset attempt facts; observations publishes diagnostics and
+    /// failures already retained in the record. Extracts routed Archives, batch-routes the resulting
+    /// Effective Asset Tree once, offers the owned Routed Assets to the execution adapter, and
+    /// reports definitive routing diagnostics before Apply-only Archive finalization. Cancellation
+    /// is observed between filesystem entries and attempts, and once more after the final attempt.
+    /// An adapter is never abandoned mid-operation, and cancellation skips diagnostics and
+    /// finalization.
     /// A finalizer reports cancellation in its result. Filesystem races are skipped during
     /// discovery. Presentation exceptions become informational ObserverFailed diagnostics without
     /// discarding attempts. Extraction exceptions retain unknown mutation evidence and stop the
