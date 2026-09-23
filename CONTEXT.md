@@ -104,6 +104,10 @@ _Avoid_: Run Outcome, event history, log
 The terminal Run Phase that releases run resources and removes only temporary artifacts owned by the Optimization Run. It neither rolls back completed mutations nor deletes backups or failed-output evidence.
 _Avoid_: Rollback, finalization
 
+**Temporary Ownership**:
+An Optimization Run's claim over temporary paths it creates or marks for Safety Cleanup. It permits cleanup of only those paths and may outlive a committed destination if ownership release fails; it never covers source Assets, backups, or committed outputs.
+_Avoid_: Output ownership, blanket Mod Root cleanup
+
 **Committed Mutation**:
 A durable filesystem change completed by an Optimization Run. It is retained even when a later operation causes cancellation or failure.
 _Avoid_: Temporary artifact, partial write
