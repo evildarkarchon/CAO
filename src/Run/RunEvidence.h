@@ -48,11 +48,8 @@ class RunEvidenceInvariantViolation final : public std::logic_error {
     using std::logic_error::logic_error;
 };
 
-/// Receives typed work milestones and facts after Run Evidence has claimed publication positions.
-///
-/// The Run Executor translates milestones into lifecycle records. Direct AssetRun observers use
-/// the default phase translation for compatibility. Exceptions from publication are isolated by
-/// MutableRunEvidence; work milestone contract violations propagate to the executor.
+/// Receives live facts only after Run Evidence has retained them and claimed publication.
+/// Exceptions from publication are isolated by MutableRunEvidence.
 class RunObservationSink {
    public:
     virtual ~RunObservationSink() = default;
@@ -66,39 +63,6 @@ class RunObservationSink {
     /// Observes one retained informational diagnostic.
     virtual void recordDiagnostic(const RunDiagnostic& diagnostic) = 0;
 
-    /// Accepts a diagnostic that a lower work boundary deliberately publishes later.
-    virtual void retainDiagnostic(const RunDiagnostic&) {}
-
-    /// Publishes evidence already owned by a lower work record without retaining it there again.
-    virtual void publishRetainedDiagnostic(const RunDiagnostic& diagnostic) {
-        recordDiagnostic(diagnostic);
-    }
-
-    /// Publishes a failure already owned by lower work without retaining it there again.
-    virtual void publishRetainedFailure(const RunFailure& failure) { recordFailure(failure); }
-
-    /// Submits the frozen Archive output total before any completed output is published.
-    /// The default throws RunEvidenceInvariantViolation when no evidence reporter is installed.
-    virtual void recordArchiveFinalizationPlan(std::size_t total);
-
-    /// Submits a completed output before its progress is published; implementations own a copy.
-    /// The default throws RunEvidenceInvariantViolation when no evidence reporter is installed.
-    virtual void recordArchiveFinalizationAttempt(const ArchiveFinalizationAttempt&,
-                                                  std::size_t total);
-
-    /// Reports discovery entry for the executor to translate into the next Run Phase.
-    virtual RunPhaseRecord archiveDiscoveryStarted();
-    /// Reports the immutable extraction total before any Archive attempt.
-    virtual RunPhaseRecord archiveExtractionPlanned(std::size_t total);
-    /// Reports that Dry Run excludes Archive extraction.
-    virtual RunPhaseRecord dryRunArchiveExtraction();
-    /// Reports entry into definitive Effective Asset Tree discovery.
-    virtual RunPhaseRecord effectiveAssetTreeStarted();
-    /// Reports the definitive routed Asset total before attempts begin.
-    virtual RunPhaseRecord assetProcessingPlanned(std::size_t total);
-    /// Reports finalizer availability; the executor selects its final work phase record.
-    virtual RunPhaseRecord archiveFinalizationAvailable(routing::ExecutionMode mode,
-                                                        bool hasFinalizer);
 };
 
 /// The immutable factual record consumed from one Optimization Run's mutable evidence owner.
@@ -298,8 +262,21 @@ class MutableRunEvidence final {
     /// Returns run-level failures accepted so far without exposing mutable storage.
     [[nodiscard]] std::span<const RunFailure> failures() const;
 
+    /// Borrows completed Archive discovery facts, or nullptr until discovery returns.
+    [[nodiscard]] const ArchiveDiscoveryEvidence* archiveDiscovery() const;
+
+    /// Borrows definitive routing, or nullptr before successful routing completes.
+    [[nodiscard]] const routing::RoutingLedger* routingLedger() const;
+
+    /// Calculates recognized exclusions from the accepted discovery and routing facts.
+    [[nodiscard]] std::size_t skippedAssetCount(routing::SkipReason reason) const;
+
     /// Borrows finalization already retained by this worker, including streamed attempts.
     [[nodiscard]] const ArchiveFinalizationResult* archiveFinalization() const;
+
+    /// Runs one presentation callback, retaining its exception as an unpublished diagnostic.
+    /// Evidence invariant failures must be submitted outside this boundary so they propagate.
+    void reportSafely(RunPhase phase, const std::function<void()>& publication);
 
     /// Retains that cancellation was observed without selecting or changing a Run Outcome.
     void recordCancellationObservation();
@@ -315,8 +292,6 @@ class MutableRunEvidence final {
     void publishPhase(const RunPhaseRecord& phase);
     /// Publishes one retained failure after irreversibly advancing its publication position.
     void publishFailure(const RunFailure& failure);
-    /// Converts an adapter exception to one non-recursive informational diagnostic.
-    void publishSafely(RunPhase phase, const std::function<void()>& publication);
     /// Retains an adapter exception without feeding it back through the same failing path.
     void retainObserverFailure(RunPhase phase, std::string detail);
 
@@ -324,5 +299,65 @@ class MutableRunEvidence final {
     RunObservationSink* _observations;
     std::size_t _publishedDiagnostics{};
     std::vector<std::size_t> _diagnosticPublications;
+};
+
+/// Borrows the sole mutable evidence owner while withholding lifecycle mutation from work.
+///
+/// Work submits complete typed facts through this view. It owns no storage or publication cursor,
+/// and must not outlive its worker-confined MutableRunEvidence owner. Structural violations from
+/// the owner propagate as RunEvidenceInvariantViolation.
+class RunWorkEvidence final {
+   public:
+    /// Borrows one mutable owner for the duration of a synchronous work call.
+    explicit RunWorkEvidence(MutableRunEvidence& evidence) noexcept;
+    /// Keeps this phase-restricted view at one stable worker-confined address.
+    RunWorkEvidence(const RunWorkEvidence&) = delete;
+    /// Prevents rebinding an evidence view to another run's mutable owner.
+    RunWorkEvidence& operator=(const RunWorkEvidence&) = delete;
+    /// Prevents transferring a borrowed view beyond its synchronous work lifetime.
+    RunWorkEvidence(RunWorkEvidence&&) = delete;
+    /// Prevents move assignment from changing which run owns accepted work facts.
+    RunWorkEvidence& operator=(RunWorkEvidence&&) = delete;
+
+    /// Retains the preflight collision plan before any Archive extraction or reporting.
+    void recordArchiveCollisions(std::span<const ArchiveCollision> collisions);
+    /// Retains an atomic Archive extraction result and advances its planned progress.
+    void recordArchiveExtractionAttempt(ArchiveExtractionResult attempt, std::size_t total);
+    /// Retains the complete Archive discovery fact set after the discovery call returns.
+    void recordArchiveDiscovery(ArchiveDiscoveryEvidence discovery);
+    /// Retains definitive routing before Asset processing starts.
+    void recordRoutingLedger(routing::RoutingLedger ledger);
+    /// Retains an atomic Asset result and advances its planned progress.
+    void recordAssetAttempt(RoutedAssetAttempt attempt, std::size_t total);
+    /// Retains the frozen Archive output total before streamed finalization attempts.
+    void recordArchiveFinalizationPlan(std::size_t total);
+    /// Retains one completed Archive output before its progress event.
+    void recordArchiveFinalizationAttempt(ArchiveFinalizationAttempt attempt, std::size_t total);
+    /// Retains the finalizer's complete result after streamed attempts.
+    void recordArchiveFinalization(ArchiveFinalizationResult result);
+    /// Retains and publishes a run-level failure through the evidence owner.
+    void recordFailure(RunFailure failure);
+    /// Retains a diagnostic whose established publication boundary is later in work.
+    void retainDiagnostic(RunDiagnostic diagnostic);
+    /// Publishes deferred diagnostics at most once through the evidence owner.
+    void publishDiagnostics();
+    /// Runs a presentation callback and retains its exception without recursive publication.
+    void reportSafely(RunPhase phase, const std::function<void()>& publication);
+    /// Retains cooperative cancellation independently of the eventual Run Outcome.
+    void recordCancellationObservation();
+
+    /// Borrows the latest executor-owned phase for optional work presentation.
+    [[nodiscard]] const RunPhaseRecord* currentPhase() const;
+    /// Borrows accepted diagnostics for a synchronous work reporting callback.
+    [[nodiscard]] std::span<const RunDiagnostic> diagnostics() const;
+    /// Borrows completed Archive discovery facts, or nullptr until discovery returns.
+    [[nodiscard]] const ArchiveDiscoveryEvidence* archiveDiscovery() const;
+    /// Borrows definitive routing, or nullptr until routing completes.
+    [[nodiscard]] const routing::RoutingLedger* routingLedger() const;
+    /// Calculates recognized exclusions from authoritative work facts accepted so far.
+    [[nodiscard]] std::size_t skippedAssetCount(routing::SkipReason reason) const;
+
+   private:
+    MutableRunEvidence& _evidence;
 };
 }  // namespace cao::run

@@ -24,9 +24,9 @@ cao::run::OptimizationRunResult classifiedRun(const ClassificationScenario scena
             : _scenario(scenario), _cancellation(cancellation) {}
 
         /// Submits completed attempts to the executor without manufacturing a terminal result.
-        void execute(const RunPreparation& preparation, RunWorkRecord&,
-                     MutableRunEvidence& evidence, TemporaryArtifactRegistry&,
-                     RunObservationSink& observations, std::stop_token) override {
+        void execute(const RunPreparation& preparation, RunWorkEvidence& evidence,
+                     TemporaryArtifactRegistry&,
+                     RunWorkMilestones& observations, std::stop_token) override {
             const auto root = preparation.modRoots().front();
             observations.archiveDiscoveryStarted();
             evidence.recordArchiveDiscovery(ArchiveDiscoveryEvidence({}, {}, 0));
@@ -194,10 +194,10 @@ class GuiRunTests final : public QObject {
         using cao::execution::MutationState;
         class EvidenceOnlyWork final : public RunWorkService {
            public:
-            /// Submits completed work without populating the transitional work record.
-            void execute(const RunPreparation& preparation, RunWorkRecord&,
-                         MutableRunEvidence& evidence, TemporaryArtifactRegistry&,
-                         RunObservationSink& observations, std::stop_token) override {
+            /// Submits completed work directly to the executor's evidence owner.
+            void execute(const RunPreparation& preparation, RunWorkEvidence& evidence,
+                         TemporaryArtifactRegistry&,
+                         RunWorkMilestones& observations, std::stop_token) override {
                 const auto root = preparation.modRoots().front();
                 observations.archiveDiscoveryStarted();
                 const std::array collisions{ArchiveCollision(
@@ -238,9 +238,9 @@ class GuiRunTests final : public QObject {
                                      .modRoot = root},
                                  ArchiveFinalizationAttempt{.archivePath = root / "output-two.bsa",
                                                             .modRoot = root}}});
-                observations.recordFailure(RunFailure(RunFailureCode::WorkServiceFailed,
-                                                      RunPhase::ArchiveFinalization,
-                                                      "primary failure"));
+                evidence.recordFailure(RunFailure(RunFailureCode::WorkServiceFailed,
+                                                  RunPhase::ArchiveFinalization,
+                                                  "primary failure"));
             }
         } work;
         class FailingCleanup final : public SafetyCleanupService {

@@ -26,7 +26,8 @@ struct AssetRunProgress final {
 using AssetRunProgressAdapter = std::function<void(const AssetRunProgress&)>;
 using AssetRunCancellationAdapter = std::function<bool()>;
 
-struct RunWorkRecord;
+class RunWorkMilestones;
+class RunWorkEvidence;
 
 /// Owns a completed attempt's routed identity, resolved scope, and durable outcome.
 struct RoutedAssetAttempt final {
@@ -50,11 +51,11 @@ class AssetRunDiagnostics final {
     /// Borrows structured discovery observations for the duration of the reporting callback.
     [[nodiscard]] std::span<const RunDiagnostic> diagnostics() const noexcept;
 
-    /// Borrows work evidence; the record must outlive this view and any synchronous callback.
-    explicit AssetRunDiagnostics(const RunWorkRecord& record) noexcept;
+    /// Borrows worker-confined evidence for one synchronous reporting callback.
+    explicit AssetRunDiagnostics(const RunWorkEvidence& evidence) noexcept;
 
    private:
-    const RunWorkRecord& _record;
+    const RunWorkEvidence& _evidence;
 };
 
 using AssetRunDiagnosticsAdapter = std::function<void(const AssetRunDiagnostics&)>;
@@ -86,20 +87,16 @@ struct AssetRunAdapters final {
     std::function<void(const RunPhaseRecord&)> reportPhase;
 };
 
-class RunObservationSink;
-class MutableRunEvidence;
-
 /// Runs the production AssetRun composition beneath the synchronous Run Executor.
-/// Borrows preparation, executor-owned evidence, observations, and operation closures until return;
+/// Borrows preparation, executor-owned work evidence, milestones, and operations until return;
 /// completed outcomes survive later orchestration exceptions, which propagate to the executor.
 /// Operations return outcomes without recording them. Archive and Asset facts enter the concrete
-/// evidence owner before the compatibility work record or any presentation callback; work reports
-/// phase position and progress through the executor-owned observation adapter. Cancellation
-/// combines the stop token with the optional adapter. The executor retains terminal classification
-/// and mandatory Safety Cleanup after this call unwinds.
-void executeAssetRun(const RunPreparation& preparation, RunWorkRecord& record,
-                     MutableRunEvidence& evidence, RunObservationSink& observations,
-                     std::stop_token stop, const AssetRunAdapters& operations);
+/// evidence owner before any presentation callback; milestones let the executor choose phase
+/// position and progress. Cancellation combines the stop token with the optional adapter. The
+/// executor retains terminal classification and mandatory Safety Cleanup after this call unwinds.
+void executeAssetRun(const RunPreparation& preparation, RunWorkEvidence& evidence,
+                     RunWorkMilestones& milestones, std::stop_token stop,
+                     const AssetRunAdapters& operations);
 
 /// Orchestrates Archive-first discovery, definitive routing, and carried Asset execution.
 class AssetRun final {
@@ -107,11 +104,10 @@ class AssetRun final {
     /// Owns the immutable policy used for both Archive selection and definitive routing.
     explicit AssetRun(routing::RoutingPolicy policy) noexcept;
 
-    /// Appends completed evidence to the borrowed compatibility record before proceeding.
-    /// When supplied, the concrete evidence owner first retains Archive discovery, collision,
-    /// extraction, Routing Ledger, and Asset attempt facts; observations publishes diagnostics and
-    /// failures already retained in the record. Extracts routed Archives, batch-routes the resulting
-    /// Effective Asset Tree once, offers the owned Routed Assets to the execution adapter, and
+    /// Submits completed Archive discovery, collision, extraction, Routing Ledger, and Asset
+    /// attempt facts to the borrowed evidence owner before proceeding or reporting them. Extracts
+    /// routed Archives, batch-routes the resulting Effective Asset Tree once, offers the owned
+    /// Routed Assets to the execution adapter, and
     /// reports definitive routing diagnostics before Apply-only Archive finalization. Cancellation
     /// is observed between filesystem entries and attempts, and once more after the final attempt.
     /// An adapter is never abandoned mid-operation, and cancellation skips diagnostics and
@@ -125,11 +121,9 @@ class AssetRun final {
     /// retaining concurrent cancellation. Resolves each Asset's canonical Mod Root before invoking
     /// processing and retains that same identity with the outcome, even when processing removes the
     /// source. Unmatched Assets are rejected.
-    void execute(std::span<const std::filesystem::path> roots, RunWorkRecord& record,
-                 const AssetRunAdapters& adapters,
-                 const ArchivePrecedence& precedence = ArchivePrecedence::deterministicDiscovery(),
-                 RunObservationSink* observations = nullptr,
-                 MutableRunEvidence* evidence = nullptr) const;
+    void execute(std::span<const std::filesystem::path> roots, RunWorkEvidence& evidence,
+                 const AssetRunAdapters& adapters, const ArchivePrecedence& precedence,
+                 RunWorkMilestones& milestones) const;
 
    private:
     routing::RoutingPolicy _policy;

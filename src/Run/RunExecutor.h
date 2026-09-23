@@ -8,8 +8,32 @@
 namespace cao::run {
 class TemporaryArtifactRegistry;
 
+/// Receives typed work milestones while the Run Executor alone selects Run Phases.
+///
+/// Each method returns the accepted current phase for optional synchronous work presentation.
+/// Evidence invariant violations propagate as RunEvidenceInvariantViolation.
+class RunWorkMilestones {
+   public:
+    /// Releases the borrowed milestone interface without owning executor evidence.
+    virtual ~RunWorkMilestones() = default;
+
+    /// Enters Archive discovery before any collision or extraction facts.
+    virtual RunPhaseRecord archiveDiscoveryStarted() = 0;
+    /// Starts Archive extraction with its immutable attempted-work total.
+    virtual RunPhaseRecord archiveExtractionPlanned(std::size_t total) = 0;
+    /// Records the Dry Run exclusion of Archive extraction.
+    virtual RunPhaseRecord dryRunArchiveExtraction() = 0;
+    /// Enters definitive Effective Asset Tree discovery after Archive work.
+    virtual RunPhaseRecord effectiveAssetTreeStarted() = 0;
+    /// Starts Asset processing with the retained Routing Ledger's routed total.
+    virtual RunPhaseRecord assetProcessingPlanned(std::size_t total) = 0;
+    /// Selects the final work phase from prepared execution mode and finalizer availability.
+    virtual RunPhaseRecord archiveFinalizationAvailable(routing::ExecutionMode mode,
+                                                        bool hasFinalizer) = 0;
+};
+
 /// Performs requested work while recording owned evidence before proceeding to another attempt.
-/// The executor retains the record if a later boundary throws; it always owns terminal cleanup.
+/// The executor retains completed facts if a later boundary throws and always owns cleanup.
 class RunWorkService {
    public:
     virtual ~RunWorkService() = default;
@@ -18,14 +42,14 @@ class RunWorkService {
     /// Stateless services need no preparation. Exceptions fail Preparing and still trigger cleanup.
     virtual void prepare() {}
 
-    /// Uses prepared inputs until return and submits completed facts to the concrete evidence owner
-    /// without retaining references. The compatibility record remains available during migration.
-    /// Reports phase counts through observations and checks stop between atomic attempts.
+    /// Uses prepared inputs until return and submits complete facts through a phase-restricted
+    /// evidence view. Reports typed milestones to the executor and checks stop between atomic
+    /// attempts without retaining references.
     /// Exceptions become fatal WorkServiceFailed evidence without discarding earlier records. The
     /// executor owns artifacts through mandatory Safety Cleanup; work never cleans the registry.
-    virtual void execute(const RunPreparation& preparation, RunWorkRecord& record,
-                         MutableRunEvidence& evidence, TemporaryArtifactRegistry& artifacts,
-                         RunObservationSink& observations, std::stop_token stop) = 0;
+    virtual void execute(const RunPreparation& preparation, RunWorkEvidence& evidence,
+                         TemporaryArtifactRegistry& artifacts,
+                         RunWorkMilestones& milestones, std::stop_token stop) = 0;
 };
 
 /// Removes the temporary artifacts one Optimization Run registered.

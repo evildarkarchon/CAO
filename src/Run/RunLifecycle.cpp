@@ -1,6 +1,5 @@
 #include "RunLifecycle.h"
 #include "RunEvidence.h"
-#include "RunWorkRecord.h"
 
 #include <algorithm>
 #include <array>
@@ -133,32 +132,18 @@ bool RunRequest::hasRequestedWork() const noexcept { return !_requestedWork.empt
 
 OptimizationRunResult::OptimizationRunResult(const RunOutcome outcome, const RunPhase finalPhase,
                                              std::shared_ptr<const RunEvidence> evidence,
-                                             RunId runId,
-                                             std::shared_ptr<const RunWorkRecord> work) noexcept
+                                             RunId runId) noexcept
     : _runId(std::move(runId)),
       _outcome(outcome),
       _finalPhase(finalPhase),
-      _evidence(std::move(evidence)),
-      _work(std::move(work)) {}
+      _evidence(std::move(evidence)) {}
 
 OptimizationRunResult OptimizationRunResult::terminal(const RunOutcome outcome,
                                                       const RunPhase finalPhase,
                                                       RunEvidence evidence, RunId runId) {
     return OptimizationRunResult(outcome, finalPhase,
                                  std::make_shared<const RunEvidence>(std::move(evidence)),
-                                 std::move(runId), std::make_shared<const RunWorkRecord>());
-}
-
-OptimizationRunResult OptimizationRunResult::terminal(const RunOutcome outcome,
-                                                      const RunPhase finalPhase,
-                                                      RunEvidence evidence, RunId runId,
-                                                      const RunWorkRecord* work) {
-    // Copy instead of sharing caller storage: even a retained mutable service record cannot
-    // rewrite evidence already published in a terminal event.
-    auto ownedWork = std::make_shared<const RunWorkRecord>(work ? *work : RunWorkRecord{});
-    return OptimizationRunResult(outcome, finalPhase,
-                                 std::make_shared<const RunEvidence>(std::move(evidence)),
-                                 std::move(runId), std::move(ownedWork));
+                                 std::move(runId));
 }
 
 std::size_t OptimizationRunResult::skippedAssetCount(routing::SkipReason reason) const noexcept {

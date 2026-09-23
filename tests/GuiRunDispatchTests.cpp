@@ -22,10 +22,10 @@ class GatedAttempt final : public cao::run::RunWorkService {
     explicit GatedAttempt(std::filesystem::path path) : artifact(std::move(path)) {}
 
     /// Retains two completed attempts, then holds a third open before mandatory cleanup.
-    void execute(const cao::run::RunPreparation& preparation, cao::run::RunWorkRecord&,
-                 cao::run::MutableRunEvidence& evidence,
+    void execute(const cao::run::RunPreparation& preparation,
+                 cao::run::RunWorkEvidence& evidence,
                  cao::run::TemporaryArtifactRegistry& artifacts,
-                 cao::run::RunObservationSink& observations, std::stop_token) override {
+                 cao::run::RunWorkMilestones& observations, std::stop_token) override {
         const auto root = preparation.modRoots().front();
         observations.archiveDiscoveryStarted();
         evidence.recordArchiveDiscovery(cao::run::ArchiveDiscoveryEvidence({}, {}, 0));

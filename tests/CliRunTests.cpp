@@ -13,6 +13,7 @@
 #include <sstream>
 #include <thread>
 #include <tuple>
+#include <vector>
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
@@ -23,25 +24,33 @@ class GatedCliWork final : public cao::run::RunWorkService {
    public:
     std::promise<void> entered;
     std::promise<void> release;
-    /// Publishes an in-flight attempt, then records completion before the executor observes
-    /// cancellation.
-    void execute(const cao::run::RunPreparation&, cao::run::RunWorkRecord&,
-                 cao::run::MutableRunEvidence&,
-                 cao::run::TemporaryArtifactRegistry&, cao::run::RunObservationSink& observations,
+    /// Plans two routed attempts, then completes one before the executor observes cancellation.
+    void execute(const cao::run::RunPreparation& preparation, cao::run::RunWorkEvidence& evidence,
+                 cao::run::TemporaryArtifactRegistry&, cao::run::RunWorkMilestones& observations,
                  std::stop_token) override {
-        observations.recordPhase(cao::run::RunPhaseRecord::executed(
-            cao::run::RunPhase::ProcessingAssets, cao::run::RunProgress::determinate(2)));
+        const auto root = preparation.modRoots().front();
+        observations.archiveDiscoveryStarted();
+        evidence.recordArchiveDiscovery(cao::run::ArchiveDiscoveryEvidence({}, {}, 0));
+        observations.archiveExtractionPlanned(0);
+        observations.effectiveAssetTreeStarted();
+        const cao::routing::AssetRouter router(preparation.policy());
+        const std::vector paths{root / "completed.dds", root / "pending.dds"};
+        auto ledger = router.route(paths);
+        // The completed attempt needs its route after evidence takes ownership of the ledger.
+        const auto asset = ledger.routedAssets().front();
+        evidence.recordRoutingLedger(std::move(ledger));
+        observations.assetProcessingPlanned(2);
         entered.set_value();
         release.get_future().wait();
-        observations.recordPhase(cao::run::RunPhaseRecord::executed(
-            cao::run::RunPhase::ProcessingAssets, cao::run::RunProgress::determinate(2, 1)));
+        evidence.recordAssetAttempt(
+            {root, asset, cao::execution::AssetExecutionResult::success()}, 2);
     }
 };
 
 namespace {
 enum class TerminalScenario { ContainedFailure, Cancelled, Unsafe, CleanupFailure };
 
-/// Submits terminal facts through the executor while leaving its transitional work record empty.
+/// Submits terminal facts through the executor's evidence owner.
 class TerminalCliWork final : public cao::run::RunWorkService {
    public:
     /// Borrows cancellation only until the synchronous work call completes.
@@ -49,10 +58,10 @@ class TerminalCliWork final : public cao::run::RunWorkService {
         : _scenario(scenario), _cancellation(cancellation) {}
 
     /// Records completed Archive and Asset attempts before their terminal classification.
-    void execute(const cao::run::RunPreparation& preparation, cao::run::RunWorkRecord&,
-                 cao::run::MutableRunEvidence& evidence,
+    void execute(const cao::run::RunPreparation& preparation,
+                 cao::run::RunWorkEvidence& evidence,
                  cao::run::TemporaryArtifactRegistry&,
-                 cao::run::RunObservationSink& observations, std::stop_token) override {
+                 cao::run::RunWorkMilestones& observations, std::stop_token) override {
         using namespace cao::run;
         using cao::execution::MutationState;
         const auto root = preparation.modRoots().front();
@@ -90,9 +99,9 @@ class TerminalCliWork final : public cao::run::RunWorkService {
                       "backend detail");
         evidence.recordAssetAttempt({root, asset, result}, 1);
         if (_scenario == TerminalScenario::Unsafe) {
-            observations.recordFailure(RunFailure(RunFailureCode::WorkServiceFailed,
-                                                  RunPhase::ProcessingAssets, "primary failure",
-                                                  {}, root / "fatal.bsa"));
+            evidence.recordFailure(RunFailure(RunFailureCode::WorkServiceFailed,
+                                              RunPhase::ProcessingAssets, "primary failure",
+                                              {}, root / "fatal.bsa"));
             return;
         }
         observations.archiveFinalizationAvailable(cao::routing::ExecutionMode::Apply, true);
@@ -232,7 +241,7 @@ class CliRunTests final : public QObject {
         QVERIFY(text.find("Safety Cleanup") < text.find("Cancelled"));
         QVERIFY(text.find("|2|2") == std::string::npos);
     }
-    /// Every terminal classification renders its sealed facts without a populated work record.
+    /// Every terminal classification renders its sealed facts.
     void rendersFocusedTerminalEvidence() {
         using namespace cao::run;
         for (const auto& [scenario, expectedOutcome, label] :

@@ -4,7 +4,6 @@
 #include "MainOptimizer.h"
 #include "OptimizerProfileSnapshot.h"
 #include "Run/AssetRun.h"
-#include "Run/RunWorkRecord.h"
 #include "Run/TemporaryArtifactRegistry.h"
 
 #include <stdexcept>
@@ -111,9 +110,9 @@ class ApplicationRunWork final : public RunWorkService {
     void prepare() override { _profile.loadAuxiliaryFiles(); }
 
     /// Runs all roots together so routing, precedence, progress and evidence share one lifecycle.
-    void execute(const RunPreparation& preparation, RunWorkRecord& record,
-                 MutableRunEvidence& evidence, TemporaryArtifactRegistry& artifacts,
-                 RunObservationSink& observations, std::stop_token stop) override {
+    void execute(const RunPreparation& preparation, RunWorkEvidence& evidence,
+                 TemporaryArtifactRegistry& artifacts,
+                 RunWorkMilestones& milestones, std::stop_token stop) override {
         OptionsCAO options;
         _options.apply(options);
         options.bDryRun = preparation.policy().executionMode() == routing::ExecutionMode::DryRun;
@@ -136,17 +135,17 @@ class ApplicationRunWork final : public RunWorkService {
             if (options.bBsaCreate) {
                 auto plan = archiveBackend().planFinalization(preparation.modRoots(), options);
                 const auto total = plan.outputs().size();
-                observations.recordArchiveFinalizationPlan(total);
+                evidence.recordArchiveFinalizationPlan(total);
                 auto result = archiveBackend().finalize(
                     plan, artifacts, stop, {}, availableArchiveCapacity,
                     [&](const ArchiveFinalizationAttempt& attempt) {
                         // Evidence owns each atomic result before its progress event is published.
-                        observations.recordArchiveFinalizationAttempt(attempt, total);
+                        evidence.recordArchiveFinalizationAttempt(attempt, total);
                     });
                 return result;
             }
             ArchiveFinalizationResult result;
-            observations.recordArchiveFinalizationPlan(0);
+            evidence.recordArchiveFinalizationPlan(0);
             // Empty-directory pruning is the legacy Apply finalization even without packing.
             // It preserves roots and reserved staging, which belongs to executor cleanup.
             for (const auto& root : preparation.modRoots()) {
@@ -159,7 +158,7 @@ class ApplicationRunWork final : public RunWorkService {
             }
             return result;
         };
-        executeAssetRun(preparation, record, evidence, observations, stop, adapters);
+        executeAssetRun(preparation, evidence, milestones, stop, adapters);
     }
 
    private:

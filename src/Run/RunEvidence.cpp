@@ -151,61 +151,6 @@ std::map<routing::SkipReason, std::size_t> deriveSkippedAssetCounts(
 }
 }  // namespace
 
-void RunObservationSink::recordArchiveFinalizationPlan(std::size_t) {
-    throw RunEvidenceInvariantViolation("Archive Finalization needs an evidence reporter");
-}
-
-void RunObservationSink::recordArchiveFinalizationAttempt(const ArchiveFinalizationAttempt&,
-                                                          std::size_t) {
-    throw RunEvidenceInvariantViolation("Archive attempts need an evidence reporter");
-}
-
-RunPhaseRecord RunObservationSink::archiveDiscoveryStarted() {
-    auto phase = RunPhaseRecord::executed(RunPhase::DiscoveringArchives);
-    recordPhase(phase);
-    return phase;
-}
-
-RunPhaseRecord RunObservationSink::archiveExtractionPlanned(const std::size_t total) {
-    auto phase = RunPhaseRecord::executed(RunPhase::ExtractingArchives,
-                                          RunProgress::determinate(total));
-    recordPhase(phase);
-    return phase;
-}
-
-RunPhaseRecord RunObservationSink::dryRunArchiveExtraction() {
-    auto phase = RunPhaseRecord::skipped(RunPhase::ExtractingArchives,
-                                         PhaseSkipReason::DryRun);
-    recordPhase(phase);
-    return phase;
-}
-
-RunPhaseRecord RunObservationSink::effectiveAssetTreeStarted() {
-    auto phase = RunPhaseRecord::executed(RunPhase::BuildingEffectiveAssetTree);
-    recordPhase(phase);
-    return phase;
-}
-
-RunPhaseRecord RunObservationSink::assetProcessingPlanned(const std::size_t total) {
-    auto phase = RunPhaseRecord::executed(RunPhase::ProcessingAssets,
-                                          RunProgress::determinate(total));
-    recordPhase(phase);
-    return phase;
-}
-
-RunPhaseRecord RunObservationSink::archiveFinalizationAvailable(
-    const routing::ExecutionMode mode, const bool hasFinalizer) {
-    auto phase = mode == routing::ExecutionMode::DryRun
-                     ? RunPhaseRecord::skipped(RunPhase::ArchiveFinalization,
-                                               PhaseSkipReason::DryRun)
-                     : hasFinalizer
-                           ? RunPhaseRecord::executed(RunPhase::ArchiveFinalization)
-                           : RunPhaseRecord::skipped(RunPhase::ArchiveFinalization,
-                                                     PhaseSkipReason::NoRequestedWork);
-    recordPhase(phase);
-    return phase;
-}
-
 ArchiveDiscoveryEvidence::ArchiveDiscoveryEvidence(
     std::map<routing::SkipReason, std::size_t> skippedArchiveCounts,
     std::vector<std::filesystem::path> unsupportedExplicitPaths,
@@ -568,6 +513,22 @@ std::span<const RunFailure> MutableRunEvidence::failures() const {
     return requireStorage(_storage).failures;
 }
 
+const ArchiveDiscoveryEvidence* MutableRunEvidence::archiveDiscovery() const {
+    const auto& storage = requireStorage(_storage);
+    return storage.archiveDiscovery ? &*storage.archiveDiscovery : nullptr;
+}
+
+const routing::RoutingLedger* MutableRunEvidence::routingLedger() const {
+    const auto& storage = requireStorage(_storage);
+    return storage.routingLedger ? &*storage.routingLedger : nullptr;
+}
+
+std::size_t MutableRunEvidence::skippedAssetCount(const routing::SkipReason reason) const {
+    const auto& storage = requireStorage(_storage);
+    return (storage.archiveDiscovery ? storage.archiveDiscovery->skippedArchiveCount(reason) : 0) +
+           (storage.routingLedger ? storage.routingLedger->skippedAssetCount(reason) : 0);
+}
+
 const ArchiveFinalizationResult* MutableRunEvidence::archiveFinalization() const {
     const auto& storage = requireStorage(_storage);
     return storage.archiveFinalization ? &*storage.archiveFinalization : nullptr;
@@ -575,11 +536,11 @@ const ArchiveFinalizationResult* MutableRunEvidence::archiveFinalization() const
 
 void MutableRunEvidence::publishPhase(const RunPhaseRecord& phase) {
     if (_observations == nullptr) return;
-    publishSafely(phase.phase(), [&] { _observations->recordPhase(phase); });
+    reportSafely(phase.phase(), [&] { _observations->recordPhase(phase); });
 }
 
-void MutableRunEvidence::publishSafely(const RunPhase phase,
-                                       const std::function<void()>& publication) {
+void MutableRunEvidence::reportSafely(const RunPhase phase,
+                                      const std::function<void()>& publication) {
     try {
         publication();
     } catch (const std::exception& error) {
@@ -596,14 +557,13 @@ void MutableRunEvidence::publishDiagnostics() {
         // storage.
         const auto retained = storage.diagnostics[_diagnosticPublications[_publishedDiagnostics++]];
         if (_observations == nullptr) continue;
-        publishSafely(retained.phase(),
-                      [&] { _observations->publishRetainedDiagnostic(retained); });
+        reportSafely(retained.phase(), [&] { _observations->recordDiagnostic(retained); });
     }
 }
 
 void MutableRunEvidence::publishFailure(const RunFailure& failure) {
     if (_observations == nullptr) return;
-    publishSafely(failure.phase(), [&] { _observations->publishRetainedFailure(failure); });
+    reportSafely(failure.phase(), [&] { _observations->recordFailure(failure); });
 }
 
 void MutableRunEvidence::retainObserverFailure(const RunPhase phase, std::string detail) {
@@ -627,5 +587,80 @@ RunEvidence MutableRunEvidence::consume() && {
     storage.cleanupFailures = deriveCleanupFailures(storage);
     storage.skippedAssetCounts = deriveSkippedAssetCounts(storage);
     return RunEvidence(std::move(_storage));
+}
+
+RunWorkEvidence::RunWorkEvidence(MutableRunEvidence& evidence) noexcept : _evidence(evidence) {}
+
+void RunWorkEvidence::recordArchiveCollisions(std::span<const ArchiveCollision> collisions) {
+    _evidence.recordArchiveCollisions(collisions);
+}
+
+void RunWorkEvidence::recordArchiveExtractionAttempt(ArchiveExtractionResult attempt,
+                                                     std::size_t total) {
+    _evidence.recordArchiveExtractionAttempt(std::move(attempt), total);
+}
+
+void RunWorkEvidence::recordArchiveDiscovery(ArchiveDiscoveryEvidence discovery) {
+    _evidence.recordArchiveDiscovery(std::move(discovery));
+}
+
+void RunWorkEvidence::recordRoutingLedger(routing::RoutingLedger ledger) {
+    _evidence.recordRoutingLedger(std::move(ledger));
+}
+
+void RunWorkEvidence::recordAssetAttempt(RoutedAssetAttempt attempt, std::size_t total) {
+    _evidence.recordAssetAttempt(std::move(attempt), total);
+}
+
+void RunWorkEvidence::recordArchiveFinalizationPlan(std::size_t total) {
+    _evidence.recordArchiveFinalizationPlan(total);
+}
+
+void RunWorkEvidence::recordArchiveFinalizationAttempt(ArchiveFinalizationAttempt attempt,
+                                                       std::size_t total) {
+    _evidence.recordArchiveFinalizationAttempt(std::move(attempt), total);
+}
+
+void RunWorkEvidence::recordArchiveFinalization(ArchiveFinalizationResult result) {
+    _evidence.recordArchiveFinalization(std::move(result));
+}
+
+void RunWorkEvidence::recordFailure(RunFailure failure) {
+    _evidence.recordFailure(std::move(failure));
+}
+
+void RunWorkEvidence::retainDiagnostic(RunDiagnostic diagnostic) {
+    _evidence.retainDiagnostic(std::move(diagnostic));
+}
+
+void RunWorkEvidence::publishDiagnostics() { _evidence.publishDiagnostics(); }
+
+void RunWorkEvidence::reportSafely(RunPhase phase,
+                                   const std::function<void()>& publication) {
+    _evidence.reportSafely(phase, publication);
+}
+
+void RunWorkEvidence::recordCancellationObservation() {
+    _evidence.recordCancellationObservation();
+}
+
+const RunPhaseRecord* RunWorkEvidence::currentPhase() const {
+    return _evidence.currentPhase();
+}
+
+std::span<const RunDiagnostic> RunWorkEvidence::diagnostics() const {
+    return _evidence.diagnostics();
+}
+
+const ArchiveDiscoveryEvidence* RunWorkEvidence::archiveDiscovery() const {
+    return _evidence.archiveDiscovery();
+}
+
+const routing::RoutingLedger* RunWorkEvidence::routingLedger() const {
+    return _evidence.routingLedger();
+}
+
+std::size_t RunWorkEvidence::skippedAssetCount(routing::SkipReason reason) const {
+    return _evidence.skippedAssetCount(reason);
 }
 }  // namespace cao::run

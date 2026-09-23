@@ -1,8 +1,10 @@
 #include "RunExecutor.h"
+#include "AssetRun.h"
+#include "ArchiveExtraction.h"
+#include "ArchiveFinalizationResult.h"
 #include "PathOrdering.h"
 #include "RunEvidence.h"
 #include "StagingRecovery.h"
-#include "RunWorkRecord.h"
 #include "TemporaryArtifactRegistry.h"
 
 #include <algorithm>
@@ -15,18 +17,12 @@
 
 namespace cao::run {
 namespace {
-/// Adapts executor and work facts into the Run Evidence retention/publication boundary.
-class WorkObservations final : public RunObservationSink {
+/// Adapts typed work milestones into the Run Executor's lifecycle authority.
+class ExecutorMilestones final : public RunWorkMilestones {
    public:
-    /// Borrows worker-confined evidence and the compatibility work record through cleanup.
-    WorkObservations(MutableRunEvidence& evidence, RunWorkRecord& work,
-                     routing::ExecutionMode mode)
-        : _evidence(evidence), _work(work), _mode(mode) {}
-
-    /// Replaces a phase's latest counts without losing its traversal position.
-    void recordPhase(const RunPhaseRecord& phase) override {
-        _evidence.recordPhase(phase);
-    }
+    /// Borrows worker-confined evidence through the synchronous work call.
+    ExecutorMilestones(MutableRunEvidence& evidence, routing::ExecutionMode mode)
+        : _evidence(evidence), _mode(mode) {}
 
     /// Translates work milestones into the executor's canonical lifecycle account.
     RunPhaseRecord archiveDiscoveryStarted() override {
@@ -67,54 +63,12 @@ class WorkObservations final : public RunObservationSink {
                                      : RunPhaseRecord::skipped(
                                            RunPhase::ArchiveFinalization,
                                            PhaseSkipReason::NoRequestedWork);
-        recordPhase(phase);
+        _evidence.recordPhase(phase);
         return phase;
-    }
-
-    /// Retains a new work failure in both migration stores before publishing from Run Evidence.
-    void recordFailure(const RunFailure& failure) override {
-        _work.failures.push_back(failure);
-        _evidence.recordFailure(failure);
-    }
-
-    /// Retains a new informational observation before publishing from Run Evidence.
-    void recordDiagnostic(const RunDiagnostic& diagnostic) override {
-        _work.diagnostics.push_back(diagnostic);
-        // AssetRun still carries the transitional cursor; keep it past facts whose real
-        // publication position is already owned by Run Evidence.
-        _work.publishedDiagnostics = _work.diagnostics.size();
-        _evidence.recordDiagnostic(diagnostic);
-    }
-
-    /// Publishes a work-owned diagnostic through Run Evidence without duplicating the work copy.
-    void publishRetainedDiagnostic(const RunDiagnostic&) override {
-        _evidence.publishDiagnostics();
-    }
-
-    /// Hands deferred work evidence to Run Evidence without changing its publication boundary.
-    void retainDiagnostic(const RunDiagnostic& diagnostic) override {
-        _evidence.retainDiagnostic(diagnostic);
-    }
-
-    /// Publishes a work-owned failure through Run Evidence without duplicating the work copy.
-    void publishRetainedFailure(const RunFailure& failure) override {
-        _evidence.recordFailure(failure);
-    }
-
-    /// Retains the frozen Archive output count before packing can commit an output.
-    void recordArchiveFinalizationPlan(const std::size_t total) override {
-        _evidence.recordArchiveFinalizationPlan(total);
-    }
-
-    /// Retains each committed or failed output before its progress event is published.
-    void recordArchiveFinalizationAttempt(const ArchiveFinalizationAttempt& attempt,
-                                          const std::size_t total) override {
-        _evidence.recordArchiveFinalizationAttempt(attempt, total);
     }
 
    private:
     MutableRunEvidence& _evidence;
-    RunWorkRecord& _work;
     routing::ExecutionMode _mode;
 };
 
@@ -133,10 +87,11 @@ bool containsDirectory(const std::filesystem::path& boundary, std::filesystem::p
 
 /// Resolves independent roots without recursion or mutation; lookup errors fail all preparation.
 /// Each linked selection is resolved once, and overlapping directory identities are rejected.
-/// A filesystem root cannot bound one mod or a mods directory safely.
+/// A filesystem root cannot bound one mod or a mods directory safely. Exclusions enter evidence
+/// before their observation callbacks run.
 std::variant<std::vector<std::filesystem::path>, RunFailure> resolveModRoots(
     const ModSelection& selection, const RunConfiguration& configuration,
-    RunObservationSink* observations, std::stop_token stop) {
+    MutableRunEvidence& evidence, std::stop_token stop) {
     try {
         std::error_code error;
         auto root = std::filesystem::canonical(selection.directory(), error);
@@ -181,14 +136,13 @@ std::variant<std::vector<std::filesystem::path>, RunFailure> resolveModRoots(
                 });
             // A child matching both policies owes one exclusion. Preserve separator precedence.
             if (separator || ignoredNames.contains(child.folded)) {
-                if (observations != nullptr)
-                    observations->recordDiagnostic(RunDiagnostic{
-                        separator ? RunDiagnosticCode::SeparatorModExcluded
-                                  : RunDiagnosticCode::IgnoredModExcluded,
-                        RunPhase::Preparing,
-                        separator ? "The child Mod Root matches a configured separator marker"
-                                  : "The child Mod Root matches an ignored-mod name",
-                        child.path});
+                evidence.recordDiagnostic(RunDiagnostic{
+                    separator ? RunDiagnosticCode::SeparatorModExcluded
+                              : RunDiagnosticCode::IgnoredModExcluded,
+                    RunPhase::Preparing,
+                    separator ? "The child Mod Root matches a configured separator marker"
+                              : "The child Mod Root matches an ignored-mod name",
+                    child.path});
                 continue;
             }
             // Sort the selected entry names before resolving links: target names do not define run
@@ -227,9 +181,10 @@ std::variant<RunConfiguration, RunFailure> loadConfiguration(
 }
 
 /// Prepares immutable facts without mutation; an absent success value means loading was cancelled.
+/// The evidence owner retains and publishes any Preparing exclusions while resolving roots.
 std::variant<std::optional<RunPreparation>, RunFailure> prepareRun(
     const RunRequest& request, const RunConfigurationProvider* provider,
-    RunObservationSink* observations, std::stop_token stop) {
+    MutableRunEvidence& evidence, std::stop_token stop) {
     auto loaded = loadConfiguration(request, provider);
     if (auto* failure = std::get_if<RunFailure>(&loaded)) return std::move(*failure);
     // A provider may finish an atomic read after cancellation. Do not resolve roots or compile
@@ -249,7 +204,7 @@ std::variant<std::optional<RunPreparation>, RunFailure> prepareRun(
             "The loaded profile conflicts with the requested Routing Policy",
             routing::PolicyValidationErrors(policy.errors().begin(), policy.errors().end())};
 
-    auto resolved = resolveModRoots(request.modSelection(), configuration, observations, stop);
+    auto resolved = resolveModRoots(request.modSelection(), configuration, evidence, stop);
     if (auto* failure = std::get_if<RunFailure>(&resolved)) return std::move(*failure);
     if (stop.stop_requested()) return std::optional<RunPreparation>{};
     return std::optional<RunPreparation>{
@@ -266,7 +221,7 @@ std::variant<std::optional<RunPreparation>, RunFailure> prepareRun(
 /// asked for nothing is excluded by the empty request, not by its mode.
 /// Returns the last traversed work phase, observing cancellation before each transition so an
 /// inline observation can stop traversal without inventing skipped phases after cancellation.
-RunPhase recordSkippedWorkPhases(RunObservationSink& observations, std::stop_token stop) {
+RunPhase recordSkippedWorkPhases(MutableRunEvidence& evidence, std::stop_token stop) {
     auto finalPhase = RunPhase::Preparing;
     for (const auto phase : {RunPhase::DiscoveringArchives, RunPhase::ExtractingArchives,
                              RunPhase::BuildingEffectiveAssetTree, RunPhase::ProcessingAssets,
@@ -274,7 +229,7 @@ RunPhase recordSkippedWorkPhases(RunObservationSink& observations, std::stop_tok
         if (stop.stop_requested()) break;
         const auto record = RunPhaseRecord::skipped(phase, PhaseSkipReason::NoRequestedWork);
         finalPhase = phase;
-        observations.recordPhase(record);
+        evidence.recordPhase(record);
     }
     return finalPhase;
 }
@@ -346,14 +301,13 @@ OptimizationRunResult RunExecutor::schedulingFailure(
 OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunServices& services,
                                            std::stop_token stop, RunId runId) const {
     MutableRunEvidence evidence{services.observations};
-    std::vector<RunFailure> failures;
-    RunWorkRecord work;
 
     // Preparing always executes: it is where the request becomes run-scoped state. It is
     // indeterminate work, so it reports no progress rather than a total of one.
     auto finalPhase = RunPhase::Preparing;
-    WorkObservations observations(evidence, work, request.executionMode());
-    observations.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
+    ExecutorMilestones milestones(evidence, request.executionMode());
+    RunWorkEvidence workEvidence(evidence);
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
     auto outcome = RunOutcome::Succeeded;
     std::exception_ptr evidenceInvariantViolation;
     std::optional<RunPreparation> pendingPreparation;
@@ -361,11 +315,10 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
     StagingRecovery staging;
     TemporaryArtifactRegistry artifacts(&staging);
     if (!stop.stop_requested()) {
-        auto prepared = prepareRun(request, services.configuration, &observations, stop);
+        auto prepared = prepareRun(request, services.configuration, evidence, stop);
         if (auto* failure = std::get_if<RunFailure>(&prepared)) {
             outcome = RunOutcome::Failed;
-            failures.push_back(std::move(*failure));
-            observations.publishRetainedFailure(failures.back());
+            evidence.recordFailure(std::move(*failure));
         } else {
             auto completed = std::move(std::get<std::optional<RunPreparation>>(prepared));
             if (completed) pendingPreparation.emplace(std::move(*completed));
@@ -378,14 +331,14 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
             services.work->prepare();
         } catch (const std::exception& error) {
             outcome = RunOutcome::Failed;
-            failures.emplace_back(RunFailureCode::ConfigurationLoadingFailed, RunPhase::Preparing,
-                                  error.what());
+            evidence.recordFailure(RunFailure{RunFailureCode::ConfigurationLoadingFailed,
+                                              RunPhase::Preparing, error.what()});
         } catch (...) {
             outcome = RunOutcome::Failed;
-            failures.emplace_back(RunFailureCode::ConfigurationLoadingFailed, RunPhase::Preparing,
-                                  "Work configuration threw a non-standard exception");
+            evidence.recordFailure(RunFailure{RunFailureCode::ConfigurationLoadingFailed,
+                                              RunPhase::Preparing,
+                                              "Work configuration threw a non-standard exception"});
         }
-        if (outcome == RunOutcome::Failed) observations.publishRetainedFailure(failures.back());
     }
 
     if (pendingPreparation && outcome != RunOutcome::Failed &&
@@ -394,8 +347,7 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
             if (stop.stop_requested()) break;
             if (auto failure = staging.recover(root, stop)) {
                 outcome = RunOutcome::Failed;
-                failures.push_back(std::move(*failure));
-                observations.publishRetainedFailure(failures.back());
+                evidence.recordFailure(std::move(*failure));
                 break;
             }
         }
@@ -407,9 +359,9 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
         // absent. Keep the complete candidate private so terminal evidence exposes no partial
         // success.
         outcome = RunOutcome::Failed;
-        failures.emplace_back(RunFailureCode::RequestedWorkUnavailable, RunPhase::Preparing,
-                              "Requested work requires run services that are not yet available");
-        observations.publishRetainedFailure(failures.back());
+        evidence.recordFailure(RunFailure{
+            RunFailureCode::RequestedWorkUnavailable, RunPhase::Preparing,
+            "Requested work requires run services that are not yet available"});
     }
 
     if (pendingPreparation && outcome != RunOutcome::Failed && !stop.stop_requested())
@@ -424,24 +376,24 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
             if (const auto* current = evidence.currentPhase()) finalPhase = current->phase();
         };
         try {
-            services.work->execute(*preparation, work, evidence, artifacts, observations, stop);
+            services.work->execute(*preparation, workEvidence, artifacts, milestones, stop);
         } catch (const RunEvidenceInvariantViolation&) {
             // Preserve mandatory cleanup before propagating this programming defect to its owner.
             synchronizeFinalPhase();
             evidenceInvariantViolation = std::current_exception();
         } catch (const std::exception& error) {
             synchronizeFinalPhase();
-            observations.recordFailure(
+            evidence.recordFailure(
                 RunFailure{RunFailureCode::WorkServiceFailed, finalPhase, error.what()});
         } catch (...) {
             synchronizeFinalPhase();
-            observations.recordFailure(
+            evidence.recordFailure(
                 RunFailure{RunFailureCode::WorkServiceFailed, finalPhase,
                            "The work service threw a non-standard exception"});
         }
         synchronizeFinalPhase();
     } else {
-        finalPhase = recordSkippedWorkPhases(observations, stop);
+        finalPhase = recordSkippedWorkPhases(evidence, stop);
     }
 
     // Safety Cleanup runs exactly once on every terminal path, before the terminal result is
@@ -449,7 +401,7 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
     // Cleanup failure retention does not replace the furthest work phase or publish a Run Failure.
     const auto workFinalPhase = evidence.currentPhase() ? evidence.currentPhase()->phase()
                                                         : RunPhase::Preparing;
-    observations.recordPhase(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
     finalPhase = workFinalPhase;
     auto cleanupFailures = collectSafetyCleanupFailures(artifacts);
     auto injectedCleanupFailures = collectSafetyCleanupFailures(services.safetyCleanup);
@@ -457,17 +409,10 @@ OptimizationRunResult RunExecutor::execute(const RunRequest& request, const RunS
                            injectedCleanupFailures.end());
     for (const auto& failure : cleanupFailures) evidence.recordSafetyCleanupFailure(failure);
     if (evidenceInvariantViolation) std::rethrow_exception(evidenceInvariantViolation);
-    if (stop.stop_requested() || work.cancellationObserved)
-        evidence.recordCancellationObservation();
+    if (stop.stop_requested()) evidence.recordCancellationObservation();
     auto terminalEvidence = std::move(evidence).consume();
     outcome = classifyTerminalOutcome(terminalEvidence);
-    // Preserve the transitional terminal work view from the authoritative sealed sequence. Doing
-    // this earlier would let its single cursor skip deferred work diagnostics while withholding an
-    // ObserverFailed generated by a different publication boundary.
-    work.diagnostics.assign(terminalEvidence.diagnostics().begin(),
-                            terminalEvidence.diagnostics().end());
-    work.publishedDiagnostics = work.diagnostics.size();
     return OptimizationRunResult::terminal(outcome, finalPhase, std::move(terminalEvidence),
-                                           std::move(runId), &work);
+                                           std::move(runId));
 }
 }  // namespace cao::run

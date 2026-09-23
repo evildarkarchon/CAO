@@ -15,7 +15,6 @@
 #include <vector>
 
 namespace cao::run {
-struct RunWorkRecord;
 struct ArchiveExtractionResult;
 struct ArchiveFinalizationResult;
 struct RoutedAssetAttempt;
@@ -400,12 +399,6 @@ class OptimizationRunResult final {
                                                         RunEvidence evidence,
                                                         RunId runId = createRunId());
 
-    /// Copies transitional work for callers still migrating to the sealed evidence interface.
-    /// Sealed evidence remains authoritative for every public factual result view.
-    [[nodiscard]] static OptimizationRunResult terminal(RunOutcome outcome, RunPhase finalPhase,
-                                                        RunEvidence evidence, RunId runId,
-                                                        const RunWorkRecord* work);
-
     /// Borrows the sealed factual record owned by this terminal result.
     [[nodiscard]] const RunEvidence& evidence() const noexcept { return *_evidence; }
 
@@ -433,9 +426,6 @@ class OptimizationRunResult final {
 
     /// Borrows failures from the final Safety Cleanup pass in attempted order.
     [[nodiscard]] std::span<const RunFailure> safetyCleanupFailures() const noexcept;
-
-    /// Borrows transitional frozen work evidence while adapters migrate to focused views.
-    [[nodiscard]] const RunWorkRecord& work() const noexcept { return *_work; }
 
     /// Borrows ordered resolved Mod Roots; empty when preparation did not resolve any roots.
     [[nodiscard]] std::span<const std::filesystem::path> modRoots() const noexcept {
@@ -483,16 +473,14 @@ class OptimizationRunResult final {
     [[nodiscard]] const RunPhaseRecord* phase(RunPhase phase) const noexcept;
 
    private:
-    /// Owns the already sealed evidence and transitional work without judging their contents.
+    /// Owns the already sealed evidence without judging its contents.
     OptimizationRunResult(RunOutcome outcome, RunPhase finalPhase,
-                          std::shared_ptr<const RunEvidence> evidence, RunId runId,
-                          std::shared_ptr<const RunWorkRecord> work) noexcept;
+                          std::shared_ptr<const RunEvidence> evidence, RunId runId) noexcept;
 
     RunId _runId;
     RunOutcome _outcome;
     RunPhase _finalPhase;
     std::shared_ptr<const RunEvidence> _evidence;
-    std::shared_ptr<const RunWorkRecord> _work;
 };
 
 /// An owning immutable observation; copies keep terminal payloads alive independently of handles.

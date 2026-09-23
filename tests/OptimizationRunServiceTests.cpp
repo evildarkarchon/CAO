@@ -1,7 +1,8 @@
 #include "Run/OptimizationRunService.h"
-#include "RunEvidenceTestUtils.h"
+#include "Run/ArchiveExtraction.h"
+#include "Run/ArchiveFinalizationResult.h"
+#include "Run/AssetRun.h"
 #include "Run/RunExecutor.h"
-#include "Run/RunWorkRecord.h"
 #include "RunTestConfiguration.h"
 
 #include <QtTest>
@@ -15,6 +16,7 @@
 #include <functional>
 #include <memory>
 #include <semaphore>
+#include <stop_token>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -190,7 +192,7 @@ private slots:
  void terminalResultSharesSealedEvidenceAcrossObservationPaths();
  /// Verifies later work exceptions preserve completed attempts and fatal/cancellation precedence.
  void workExceptionRetainsEarlierEvidence();
- /// Verifies terminal construction preserves the Run Executor's classification.
+ /// Verifies passive terminal construction keeps a supplied outcome despite cancellation evidence.
  void terminalConstructionPreservesChosenOutcome();
  /// Verifies terminal views retain each sealed evidence category without exposing its storage.
  void terminalResultExposesSealedEvidenceViews();
@@ -1617,36 +1619,33 @@ void OptimizationRunServiceTests::terminalResultSharesSealedEvidenceAcrossObserv
     class Work final : public RunWorkService {
        public:
         /// Supplies completed work facts through the same evidence seam as production work.
-        void execute(const RunPreparation& preparation, RunWorkRecord& record,
-                     MutableRunEvidence& evidence, TemporaryArtifactRegistry&,
-                     RunObservationSink& observations, std::stop_token) override {
+        void execute(const RunPreparation& preparation, RunWorkEvidence& evidence,
+                     TemporaryArtifactRegistry&,
+                     RunWorkMilestones& observations, std::stop_token) override {
             const auto root = preparation.modRoots().front();
             const cao::routing::AssetRouter router(preparation.policy());
             const std::vector paths{root / "changed.dds", root / "failed.dds"};
-            record.ledger = router.route(paths);
+            const auto ledger = router.route(paths);
             observations.archiveDiscoveryStarted();
-            record.collisions.emplace_back(root, "shared.dds", root / "source.bsa",
-                                           std::vector{root / "lower.bsa"}, true);
-            evidence.recordArchiveCollisions(record.collisions);
-            record.skippedArchiveCounts[cao::routing::SkipReason::DisabledAssetKind] = 3;
+            const std::vector collisions{ArchiveCollision(
+                root, "shared.dds", root / "source.bsa", std::vector{root / "lower.bsa"}, true)};
+            evidence.recordArchiveCollisions(collisions);
             evidence.recordArchiveDiscovery(ArchiveDiscoveryEvidence(
                 {{cao::routing::SkipReason::DisabledAssetKind, 3}}, {}, 0));
             observations.archiveExtractionPlanned(1);
-            record.archiveAttempts.push_back(
-                {root / "source.bsa", MutationState::Committed, {}, true, {}, root});
-            evidence.recordArchiveExtractionAttempt(record.archiveAttempts.front(), 1);
+            evidence.recordArchiveExtractionAttempt(
+                {root / "source.bsa", MutationState::Committed, {}, true, {}, root}, 1);
             observations.effectiveAssetTreeStarted();
-            evidence.recordRoutingLedger(*record.ledger);
-            observations.assetProcessingPlanned(record.ledger->routedAssets().size());
-            for (const auto& asset : record.ledger->routedAssets()) {
+            evidence.recordRoutingLedger(ledger);
+            const auto total = ledger.routedAssets().size();
+            observations.assetProcessingPlanned(total);
+            for (const auto& asset : ledger.routedAssets()) {
                 const auto result = asset.executionPath().filename() == "changed.dds"
                     ? AssetExecutionResult::success(MutationState::Committed)
                     : AssetExecutionResult::failed(AssetExecutionFailure::SaveFailed, "save failed");
-                record.assetAttempts.push_back({root, asset, result});
-                evidence.recordAssetAttempt(record.assetAttempts.back(),
-                                            record.ledger->routedAssets().size());
+                evidence.recordAssetAttempt({root, asset, result}, total);
             }
-            record.cancellationObserved = true;
+            evidence.recordCancellationObservation();
         }
     };
     std::optional<OptimizationRunResult> retained;
@@ -1705,16 +1704,15 @@ void OptimizationRunServiceTests::workExceptionRetainsEarlierEvidence() {
     class Work final : public RunWorkService {
        public:
         /// Records a completed boundary, then simulates an unexpected later service failure.
-        void execute(const RunPreparation& preparation, RunWorkRecord& record,
-                     MutableRunEvidence& evidence, TemporaryArtifactRegistry&,
-                     RunObservationSink& observations, std::stop_token) override {
+        void execute(const RunPreparation& preparation, RunWorkEvidence& evidence,
+                     TemporaryArtifactRegistry&,
+                     RunWorkMilestones& observations, std::stop_token) override {
             const auto root = preparation.modRoots().front();
-            observations.recordPhase(RunPhaseRecord::executed(
-                RunPhase::ExtractingArchives, RunProgress::determinate(2)));
-            record.archiveAttempts.push_back(
-                {root / "source.bsa", MutationState::Committed, {}, true, {}, root});
-            evidence.recordArchiveExtractionAttempt(record.archiveAttempts.front(), 2);
-            record.cancellationObserved = true;
+            observations.archiveDiscoveryStarted();
+            observations.archiveExtractionPlanned(2);
+            evidence.recordArchiveExtractionAttempt(
+                {root / "source.bsa", MutationState::Committed, {}, true, {}, root}, 2);
+            evidence.recordCancellationObservation();
             throw std::runtime_error("later discovery failed");
         }
     };
@@ -1741,51 +1739,93 @@ void OptimizationRunServiceTests::workExceptionRetainsEarlierEvidence() {
 /// cancellation.
 void OptimizationRunServiceTests::terminalConstructionPreservesChosenOutcome() {
     using namespace cao::run;
+    class Cleanup final : public SafetyCleanupService {
+       public:
+        /// Completes the mandatory cleanup pass without adding a failure to the source evidence.
+        std::vector<RunFailure> performSafetyCleanup() override { return {}; }
+    } cleanup;
+    const auto configuration = testRunConfiguration();
+    std::stop_source cancellation;
+    cancellation.request_stop();
+    const auto source = RunExecutor{}.execute(
+        noWorkRequest(), RunServices{cleanup, nullptr, configuration.get()},
+        cancellation.get_token());
+    QVERIFY(source.cancellationObserved());
     const auto result = OptimizationRunResult::terminal(
-        RunOutcome::Succeeded, RunPhase::ArchiveFinalization,
-        terminalTestEvidence(RunPhase::ArchiveFinalization, true), "419");
+        RunOutcome::Succeeded, source.finalPhase(), source.evidence(), "419");
     QCOMPARE(result.outcome(), RunOutcome::Succeeded);
     QVERIFY(result.cancellationObserved());
     QCOMPARE(result.runId(), RunId("419"));
 }
 
-/// Verifies result views borrow factual evidence retained before terminal construction.
+/// Verifies focused terminal views expose work and cleanup facts retained by the executor.
 void OptimizationRunServiceTests::terminalResultExposesSealedEvidenceViews() {
     using namespace cao::run;
     using cao::execution::MutationState;
-    MutableRunEvidence evidence;
-    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
-    evidence.recordDiagnostic(
-        RunDiagnostic(RunDiagnosticCode::IgnoredModExcluded, RunPhase::Preparing, "excluded"));
-    evidence.recordArchiveDiscoveryStarted();
-    const std::vector<ArchiveCollision> collisions{
-        ArchiveCollision("mod", "textures/a.dds", "winner.bsa", {"lower.bsa"}, true)};
-    evidence.recordArchiveCollisions(collisions);
-    evidence.recordArchiveDiscovery(ArchiveDiscoveryEvidence(
-        {{cao::routing::SkipReason::DisabledAssetKind, 2}}, {"unsupported.bsa"}, 1));
-    evidence.recordArchiveExtractionPlan(1);
-    evidence.recordArchiveExtractionAttempt(
-        {"mod/input.bsa", MutationState::Committed, {}, true, {}, "mod"}, 1);
-    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::ArchiveFinalization));
-    ArchiveFinalizationResult finalization;
-    finalization.attempts.push_back(
-        {"mod/output.bsa", MutationState::Committed, {}, true, {}, "mod"});
-    evidence.recordArchiveFinalization(std::move(finalization));
-    evidence.recordFailure(
-        RunFailure(RunFailureCode::WorkServiceFailed, RunPhase::ArchiveFinalization, "failed"));
-    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::SafetyCleanup));
-    evidence.recordSafetyCleanupFailure(RunFailure(RunFailureCode::TemporaryArtifactCleanupFailed,
-                                                   RunPhase::SafetyCleanup, "cleanup"));
-
-    const auto result = OptimizationRunResult::terminal(
-        RunOutcome::Failed, RunPhase::ArchiveFinalization, std::move(evidence).consume(), "views");
+    class Work final : public RunWorkService {
+       public:
+        /// Submits a complete Archive path through the executor's typed milestones and evidence.
+        /// A later service exception supplies the run-level failure after finalization is retained.
+        void execute(const RunPreparation& preparation, RunWorkEvidence& evidence,
+                     TemporaryArtifactRegistry&, RunWorkMilestones& milestones,
+                     std::stop_token) override {
+            const auto root = preparation.modRoots().front();
+            milestones.archiveDiscoveryStarted();
+            const std::vector collisions{ArchiveCollision(
+                root, "textures/a.dds", root / "winner.bsa", {root / "lower.bsa"}, true)};
+            evidence.recordArchiveCollisions(collisions);
+            milestones.archiveExtractionPlanned(1);
+            evidence.recordArchiveExtractionAttempt(
+                {root / "input.bsa", MutationState::Committed, {}, true, {}, root}, 1);
+            milestones.effectiveAssetTreeStarted();
+            evidence.recordArchiveDiscovery(ArchiveDiscoveryEvidence(
+                {{cao::routing::SkipReason::DisabledAssetKind, 2}},
+                {root / "unsupported.bsa"}, 1));
+            evidence.retainDiagnostic(RunDiagnostic(
+                RunDiagnosticCode::LinkedEntryExcluded, RunPhase::BuildingEffectiveAssetTree,
+                "excluded"));
+            evidence.publishDiagnostics();
+            const cao::routing::AssetRouter router(preparation.policy());
+            const auto ledger = router.route(std::vector<std::filesystem::path>{});
+            evidence.recordRoutingLedger(ledger);
+            milestones.assetProcessingPlanned(ledger.routedAssets().size());
+            milestones.archiveFinalizationAvailable(preparation.policy().executionMode(), true);
+            const ArchiveFinalizationAttempt output{
+                root / "output.bsa", MutationState::Committed, {}, true, {}, root};
+            evidence.recordArchiveFinalizationPlan(1);
+            evidence.recordArchiveFinalizationAttempt(output, 1);
+            ArchiveFinalizationResult finalization;
+            finalization.attempts.push_back(output);
+            evidence.recordArchiveFinalization(std::move(finalization));
+            throw std::runtime_error("failed");
+        }
+    } work;
+    class Cleanup final : public SafetyCleanupService {
+       public:
+        /// Simulates a failed mandatory cleanup service after work has completed.
+        std::vector<RunFailure> performSafetyCleanup() override {
+            throw std::runtime_error("cleanup");
+        }
+    } cleanup;
+    const auto configuration = testRunConfiguration();
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const std::filesystem::path root(directory.path().toStdWString());
+    const auto request = RunRequest::create(
+        "SkyrimSE", ExecutionMode::Apply, ModSelection::singleModRoot(root),
+        {RequestedWork::ArchiveExtraction, RequestedWork::ArchiveCreation});
+    const auto result = RunExecutor{}.execute(
+        request, RunServices{cleanup, nullptr, configuration.get(), &work}, {}, "views");
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(result.finalPhase(), RunPhase::ArchiveFinalization);
     QCOMPARE(result.diagnostics().size(), std::size_t{1});
     QCOMPARE(result.diagnostics().front().detail(), std::string("excluded"));
     QCOMPARE(result.archiveCollisions().size(), std::size_t{1});
     QCOMPARE(result.archiveExtractionAttempts().size(), std::size_t{1});
     QVERIFY(result.archiveDiscovery() != nullptr);
     QCOMPARE(result.archiveDiscovery()->nestedArchiveCount(), std::size_t{1});
-    QVERIFY(result.routingLedger() == nullptr);
+    QVERIFY(result.routingLedger() != nullptr);
+    QVERIFY(result.routingLedger()->routedAssets().empty());
     QVERIFY(result.assetAttempts().empty());
     QVERIFY(result.archiveFinalization() != nullptr);
     QCOMPARE(result.archiveFinalization()->attempts.size(), std::size_t{1});
