@@ -6,6 +6,19 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 
 - One feature per directory: `.scratch/<feature-slug>/`
 - The spec is `.scratch/<feature-slug>/spec.md`
+- New specs start with YAML frontmatter so their triage role is unambiguous:
+
+```yaml
+---
+id: <feature-slug>
+type: specification
+status: open
+triage: ready-for-agent
+blocked_by: []
+---
+```
+
+- Older specs with a plain `Status:` line are legacy; use YAML frontmatter for new specs.
 - Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
 - Every implementation issue starts with canonical YAML frontmatter:
 
@@ -21,7 +34,7 @@ blocked_by:
 ```
 
 - `id` is unique and stable. Dependencies use IDs rather than filenames, numbers, or prose titles.
-- `status` is the issue lifecycle: `open` or `closed`. Only open issues carry `triage`.
+- `status` is the issue or spec lifecycle: `open` or `closed`. Only open records carry `triage`.
 - `triage` uses the role strings in `triage-labels.md`.
 - `blocked_by` is always a YAML list. An issue is eligible only when it is open, has an actionable triage role, and every referenced issue is closed.
 - Missing dependency IDs, duplicate IDs, self-dependencies, and dependency cycles are invalid. Agents must not claim or implement an invalid or blocked issue.
@@ -30,9 +43,9 @@ blocked_by:
 
 ## When a skill says "publish to the issue tracker"
 
-Create the spec at `.scratch/<feature-slug>/spec.md` or an implementation ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, creating directories as needed. Use the next unused ticket number within that feature directory.
+Create the spec at `.scratch/<feature-slug>/spec.md` or an implementation ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, creating directories as needed. Use the next unused ticket number within that feature directory for a ticket.
 
-Populate the complete frontmatter above. Resolve dependency IDs before publishing the ticket and reject cycles rather than encoding them.
+Use the spec frontmatter for a spec and the implementation frontmatter for a ticket. Resolve dependency IDs before publishing a ticket and reject cycles rather than encoding them.
 
 ## When a skill says "fetch the relevant ticket"
 
