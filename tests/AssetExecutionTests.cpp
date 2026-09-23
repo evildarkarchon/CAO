@@ -278,8 +278,10 @@ class AssetExecutionTests final : public QObject {
     void meshWithoutChanges_data();
     /// Keeps unchanged and preview operations read-only on disk.
     void meshWithoutChanges();
-    /// A closed registry after save cannot erase already committed Mesh mutation evidence.
-    void meshRegistrationFailureAfterCommit();
+    /// Exercises both Mesh producers when ownership release fails after replacement.
+    void meshPublicationReleaseFailure_data();
+    /// Retains committed Mesh bytes and mutation evidence through Safety Cleanup.
+    void meshPublicationReleaseFailure();
     /// A directory obstructing the staging area leaves the original Mesh intact.
     void meshStagingFailure();
     /// Failed destination replacement retains unowned contents and cleans only staging.
@@ -824,28 +826,51 @@ void AssetExecutionTests::meshWithoutChanges() {
                            std::filesystem::directory_iterator()), std::ptrdiff_t{1});
 }
 
-void AssetExecutionTests::meshRegistrationFailureAfterCommit() {
+void AssetExecutionTests::meshPublicationReleaseFailure_data() {
+    QTest::addColumn<int>("request");
+    QTest::addColumn<QString>("expectedBytes");
+    QTest::newRow("optimization") << static_cast<int>(RequestedWork::StandardMeshOptimization)
+                                   << QStringLiteral("textures/armor.tga optimized");
+    QTest::newRow("reference maintenance")
+        << static_cast<int>(RequestedWork::ConvertibleTextureConversion)
+        << QStringLiteral("textures/armor.dds");
+}
+
+void AssetExecutionTests::meshPublicationReleaseFailure() {
+    QFETCH(int, request);
+    QFETCH(QString, expectedBytes);
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    const auto source = std::filesystem::path(directory.path().toStdWString()) / "actor.nif";
+    const auto root = std::filesystem::path(directory.path().toStdWString()) / "Mod";
+    std::filesystem::create_directory(root);
+    const auto source = root / "actor.nif";
     std::ofstream(source) << "original";
     cao::run::TemporaryArtifactRegistry artifacts;
     RecordingBackend backend;
     backend.meshSave = [&](const std::filesystem::path& staged) {
-        // Close the registry to inject its documented terminal-registration contract failure.
-        artifacts.performSafetyCleanup();
-        std::ofstream(staged) << "saved mesh";
-        return true;
+        if (readBytes(source) != "original")
+            throw std::runtime_error("Mesh changed before publication");
+        std::ofstream(staged) << backend.meshContents;
+        // This name is occupied after staging, so only ownership release fails.
+        std::ofstream scratch(root / ".cao-staging" / "ownership.manifest.next");
+        scratch << "occupied scratch";
+        return static_cast<bool>(scratch);
     };
     const auto result = AssetExecutor(backend).execute(
-        routeAsset(ExecutionMode::Apply, {RequestedWork::StandardMeshOptimization}, source),
-        artifacts);
-    QCOMPARE(result.failure().value(), AssetExecutionFailure::BackendException);
+        routeAsset(ExecutionMode::Apply, {static_cast<RequestedWork>(request)}, source),
+        artifacts, root);
+
+    QVERIFY(!result.succeeded());
+    QCOMPARE(result.failure().value(), AssetExecutionFailure::CommitFailed);
     QCOMPARE(result.mutationState(), MutationState::Committed);
     QVERIFY(!result.safeToContinue());
     QCOMPARE(result.operation(), std::string("commit_mesh"));
-    QCOMPARE(readBytes(source), std::string("saved mesh"));
+    QVERIFY(result.affectedPath() == source);
+    QVERIFY(!result.serviceDetail().empty());
+    QCOMPARE(readBytes(source), expectedBytes.toStdString());
     QVERIFY(!std::filesystem::exists(backend.savedMeshPath));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+    QCOMPARE(readBytes(source), expectedBytes.toStdString());
 }
 
 void AssetExecutionTests::meshStagingFailure() {

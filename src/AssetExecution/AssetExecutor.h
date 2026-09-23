@@ -165,7 +165,7 @@ class AssetExecutionBackend {
     virtual OperationResult maintainMeshReferences(routing::ExecutionMode mode) = 0;
 
     /// Writes the loaded Mesh only to the supplied registered staging path after all operations.
-    /// Closes every output handle before returning so the executor can commit the staged file.
+    /// Closes every output handle before returning so the executor can publish the staged file.
     virtual bool saveMesh(const std::filesystem::path& path) = 0;
 
     /// Reads the source Animation and writes changed Apply output only to registered outputPath.
@@ -203,8 +203,9 @@ class AssetExecutor final {
                                                       run::TemporaryArtifactRegistry& artifacts,
                                                       const std::filesystem::path& modRoot) const;
 
-    /// Executes independent Mesh operations through one load and at most one staged Apply commit.
-    /// Reports the exact durable mutation and contains backend exceptions at their failed boundary.
+    /// Executes independent Mesh operations through one load and at most one staged Apply
+    /// publication. Reports the committed fact even if ownership release fails after replacement.
+    /// Contains backend exceptions at their failed boundary.
     [[nodiscard]] AssetExecutionResult executeMesh(const routing::RoutedAsset& asset,
                                                    run::TemporaryArtifactRegistry& artifacts,
                                                    const std::filesystem::path& modRoot) const;

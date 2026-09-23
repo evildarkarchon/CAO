@@ -362,24 +362,28 @@ AssetExecutionResult AssetExecutor::executeMesh(const routing::RoutedAsset& asse
             return AssetExecutionResult::success();
 
         boundary = "stage_mesh";
-        const auto staging =
-            artifacts.stageFile(modRoot.empty() ? std::filesystem::absolute(path).parent_path()
-                                                : std::filesystem::absolute(modRoot),
-                                std::filesystem::absolute(path));
+        const auto absolutePath = std::filesystem::absolute(path);
+        auto receipt = artifacts.stageFileForPublication(
+            modRoot.empty() ? absolutePath.parent_path() : std::filesystem::absolute(modRoot),
+            absolutePath);
+        const auto staged = receipt.path();
         boundary = "save_mesh";
-        if (!_backend.saveMesh(staging.path) || !assetFingerprint(staging.path))
+        if (!_backend.saveMesh(staged) || !assetFingerprint(staged))
             return AssetExecutionResult::failed(AssetExecutionFailure::SaveFailed,
                                                 "Failed to save a usable Mesh staging file.",
                                                 mutation, true, path, boundary);
         boundary = "commit_mesh";
-        if (const auto error = commitStagedAsset(staging.path, path))
+        const auto publication = receipt.publish(absolutePath, run::PublicationPolicy::Replace);
+        if (publication.state != run::PublicationState::PublishedAndReleased) {
+            // Publication commits the replacement before releasing Temporary Ownership. Retain
+            // that fact when the release fails so Run Evidence reports the committed Mesh.
+            const bool published = publication.state == run::PublicationState::PublishedStillOwned;
+            mutation = published ? MutationState::Committed : MutationState::None;
             return AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed,
-                                                "Failed to commit Mesh output.", mutation, true,
-                                                path, boundary, error.message());
-        // Release may fail after replacement; the committed Mesh must still be reported and
-        // retained.
+                                                "Failed to publish Mesh output.", mutation,
+                                                !published, path, boundary, publication.errorDetail);
+        }
         mutation = MutationState::Committed;
-        artifacts.commit(staging.registration);
         return AssetExecutionResult::success(mutation);
     } catch (const std::filesystem::filesystem_error& error) {
         const bool stagingFailure = boundary == "stage_mesh";
