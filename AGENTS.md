@@ -1,3 +1,7 @@
+## Platform scope
+
+CAO targets Windows; some dependencies require porting for POSIX. Validate releases with Windows profile triplets and Windows runtime behavior. Treat POSIX-only findings as compatibility notes unless a task explicitly includes porting.
+
 ## Build workflow
 
 - Use the project's profile triplets as the primary workflow for building the program and validating changes.
