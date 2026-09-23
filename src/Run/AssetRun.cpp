@@ -76,6 +76,14 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots, RunWo
         if (adapters.reportPhase)
             recorder.reportSafely(phase.phase(), [&] { adapters.reportPhase(phase); });
     };
+    const auto reportAssetPhase = [&](const RunPhaseRecord& phase) {
+        // Concrete evidence publishes phase progress itself; direct AssetRun callers retain their
+        // existing observation path while the compatibility record remains in use.
+        if (evidence)
+            reportWorkPhaseToAdapter(phase);
+        else
+            reportRemainingPhase(phase);
+    };
     recorder.recordArchiveDiscoveryStarted();
     reportWorkPhaseToAdapter(RunPhaseRecord::executed(RunPhase::DiscoveringArchives));
     const auto discoveryResult = discovery.discover(
@@ -212,12 +220,8 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots, RunWo
     const auto total = (*record.ledger).routedAssets().size();
     const auto processingPlan =
         RunPhaseRecord::executed(RunPhase::ProcessingAssets, RunProgress::determinate(total));
-    if (evidence) {
-        recorder.recordAssetProcessingPlan(total);
-        reportWorkPhaseToAdapter(processingPlan);
-    } else {
-        reportRemainingPhase(processingPlan);
-    }
+    if (evidence) recorder.recordAssetProcessingPlan(total);
+    reportAssetPhase(processingPlan);
     std::size_t completed = 0;
     std::size_t assetSucceeded = 0;
     for (const auto target : targetOrder) {
@@ -267,10 +271,7 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots, RunWo
             const auto processingProgress = RunPhaseRecord::executed(
                 RunPhase::ProcessingAssets,
                 RunProgress::determinate(total, assetSucceeded, completed - assetSucceeded));
-            if (evidence)
-                reportWorkPhaseToAdapter(processingProgress);
-            else
-                reportRemainingPhase(processingProgress);
+            reportAssetPhase(processingProgress);
             if (adapters.reportProgress) {
                 recorder.reportSafely(RunPhase::ProcessingAssets, [&] {
                     adapters.reportProgress(AssetRunProgress{

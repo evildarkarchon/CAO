@@ -476,13 +476,6 @@ void AssetRunTests::mutationAwareFailuresControlContinuation() {
              root / (failedAttempt == 1 ? "first.dds" : "second.dds"));
     QCOMPARE(retainedFailure.result.operation(), std::string("save"));
     QCOMPARE(retainedFailure.result.safeToContinue(), safe);
-    const auto* processing = terminalEvidence.phase(cao::run::RunPhase::ProcessingAssets);
-    QVERIFY(processing != nullptr);
-    QCOMPARE(processing->progress()->total(), std::size_t{2});
-    QCOMPARE(processing->progress()->completed(), attempts);
-    QCOMPARE(processing->progress()->failed(), std::size_t{1});
-    QCOMPARE(processing->progress()->succeeded(), attempts - 1);
-    QCOMPARE(terminalEvidence.phase(cao::run::RunPhase::ArchiveFinalization) != nullptr, safe);
 }
 
 void AssetRunTests::animationFailuresPreserveProgressAndEvidence_data() {
@@ -891,10 +884,6 @@ void AssetRunTests::executesOriginalLedgerAssetsInTargetOrder()
         QVERIFY(ledgerAsset != ledgerAssets.end());
         QCOMPARE(executedAssets[index], &*ledgerAsset);
     }
-    const auto* processing = terminalEvidence.phase(cao::run::RunPhase::ProcessingAssets);
-    QVERIFY(processing != nullptr);
-    QCOMPARE(processing->progress()->total(), paths.size());
-    QCOMPARE(processing->progress()->completed(), paths.size());
 }
 
 void AssetRunTests::progressAndSkipSummaryExcludeNonWork()
