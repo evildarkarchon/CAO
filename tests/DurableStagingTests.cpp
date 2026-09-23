@@ -4,6 +4,9 @@
 #include <filesystem>
 #include <fstream>
 #include <cstdio>
+#include <optional>
+#include <type_traits>
+#include <utility>
 
 namespace fs = std::filesystem;
 
@@ -46,6 +49,28 @@ class DurableStagingTests final : public QObject {
     void cleanupContinuesAfterADamagedTemporary();
     /// Releasing a file before its destination move must preserve source and cleanup ownership.
     void prematureReleaseKeepsOwnership();
+    /// Both publication policies commit staged bytes and release only the temporary path.
+    void publicationPoliciesPreserveDestinationBytes();
+    /// No-replace publication refuses a destination that became occupied after staging.
+    void occupiedDestinationIsNotPublished();
+    /// A missing staged file fails before destination mutation and consumes its receipt.
+    void unavailableStagedFileConsumesReceipt();
+    /// A receipt is movable but cannot authorize a second publication attempt.
+    void publicationReceiptIsMoveOnlyAndOneUse();
+    /// A receipt cannot invoke an ownership scope after that scope has ended.
+    void expiredPublicationScopeCannotPublish();
+    /// Asset publication cannot redirect staged bytes to another destination.
+    void assetPublicationRejectsChangedDestination();
+    /// Archive publication rejects destinations outside its root or in reserved staging.
+    void archivePublicationRejectsUnsafeDestinations();
+    /// Win32 device aliases cannot become ordinary committed files below a Mod Root.
+    void archivePublicationRejectsDeviceAlias();
+    /// A linked destination parent cannot redirect committed bytes outside the Mod Root.
+    void archivePublicationRejectsLinkedParent();
+    /// Replacing an Asset parent after staging invalidates its publication route.
+    void assetPublicationRejectsReplacedParent();
+    /// A failed durable release retains the published fact and leaves recovery ownership intact.
+    void publicationReleaseFailurePreservesCommittedDestination();
 };
 
 void DurableStagingTests::abandonedArchiveEntryIsRecovered() {
@@ -438,6 +463,321 @@ void DurableStagingTests::prematureReleaseKeepsOwnership() {
     QFile original(QString::fromStdWString(destination.wstring()));
     QVERIFY(original.open(QIODevice::ReadOnly));
     QCOMPARE(original.readAll(), QByteArray("original"));
+}
+
+void DurableStagingTests::publicationPoliciesPreserveDestinationBytes() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto assetDestination = root / "texture.dds";
+    const auto archiveDestination = root / "entry.pex";
+    std::ofstream(assetDestination, std::ios::binary) << "old asset";
+    cao::run::TemporaryArtifactRegistry registry;
+
+    auto asset = registry.stageFileForPublication(root, assetDestination);
+    const auto assetTemporary = asset.path();
+    std::ofstream(assetTemporary, std::ios::binary) << "new asset";
+    const auto assetResult =
+        asset.publish(assetDestination, cao::run::PublicationPolicy::Replace);
+    QVERIFY2(assetResult.state == cao::run::PublicationState::PublishedAndReleased,
+             assetResult.errorDetail.c_str());
+    QVERIFY(assetResult.errorDetail.empty());
+
+    auto archive = registry.stageArchiveFileForPublication(root);
+    const auto archiveTemporary = archive.path();
+    std::ofstream(archiveTemporary, std::ios::binary) << "new archive entry";
+    const auto archiveResult =
+        archive.publish(archiveDestination, cao::run::PublicationPolicy::NoReplace);
+    QCOMPARE(archiveResult.state, cao::run::PublicationState::PublishedAndReleased);
+    QVERIFY(archiveResult.errorDetail.empty());
+    QVERIFY(registry.performSafetyCleanup().empty());
+    QVERIFY(!fs::exists(assetTemporary));
+    QVERIFY(!fs::exists(archiveTemporary));
+    QFile assetBytes(QString::fromStdWString(assetDestination.wstring()));
+    QVERIFY(assetBytes.open(QIODevice::ReadOnly));
+    QCOMPARE(assetBytes.readAll(), QByteArray("new asset"));
+    QFile archiveBytes(QString::fromStdWString(archiveDestination.wstring()));
+    QVERIFY(archiveBytes.open(QIODevice::ReadOnly));
+    QCOMPARE(archiveBytes.readAll(), QByteArray("new archive entry"));
+}
+
+void DurableStagingTests::occupiedDestinationIsNotPublished() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto destination = root / "entry.pex";
+    cao::run::TemporaryArtifactRegistry registry;
+    auto receipt = registry.stageArchiveFileForPublication(root);
+    const auto temporary = receipt.path();
+    std::ofstream(temporary, std::ios::binary) << "new entry";
+    // Occupy the leaf after staging so the final native no-replace operation must arbitrate it.
+    std::ofstream(destination, std::ios::binary) << "competing entry";
+    const auto result = receipt.publish(destination, cao::run::PublicationPolicy::NoReplace);
+    QCOMPARE(result.state, cao::run::PublicationState::NotPublished);
+    QVERIFY(!result.errorDetail.empty());
+    QVERIFY(fs::exists(temporary));
+    QVERIFY(registry.performSafetyCleanup().empty());
+    QVERIFY(!fs::exists(temporary));
+    QFile output(QString::fromStdWString(destination.wstring()));
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    QCOMPARE(output.readAll(), QByteArray("competing entry"));
+}
+
+void DurableStagingTests::unavailableStagedFileConsumesReceipt() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto destination = root / "texture.dds";
+    std::ofstream(destination, std::ios::binary) << "original";
+    cao::run::TemporaryArtifactRegistry registry;
+    auto receipt = registry.stageFileForPublication(root, destination);
+    const auto temporary = receipt.path();
+    QVERIFY(fs::remove(temporary));
+    const auto first = receipt.publish(destination, cao::run::PublicationPolicy::Replace);
+    QCOMPARE(first.state, cao::run::PublicationState::NotPublished);
+    QVERIFY(!first.errorDetail.empty());
+    // Recreating the same owned name must not revive a consumed publication authority.
+    std::ofstream(temporary, std::ios::binary) << "late bytes";
+    const auto second = receipt.publish(destination, cao::run::PublicationPolicy::Replace);
+    QCOMPARE(second.state, cao::run::PublicationState::NotPublished);
+    QVERIFY(!second.errorDetail.empty());
+    QVERIFY(registry.performSafetyCleanup().empty());
+    QVERIFY(!fs::exists(temporary));
+    QFile output(QString::fromStdWString(destination.wstring()));
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    QCOMPARE(output.readAll(), QByteArray("original"));
+}
+
+void DurableStagingTests::publicationReceiptIsMoveOnlyAndOneUse() {
+    using Receipt = cao::run::TemporaryArtifactRegistry::PublicationReceipt;
+    static_assert(!std::is_copy_constructible_v<Receipt>);
+    static_assert(!std::is_copy_assignable_v<Receipt>);
+    static_assert(std::is_move_constructible_v<Receipt>);
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto destination = root / "texture.dds";
+    cao::run::TemporaryArtifactRegistry registry;
+    auto original = registry.stageFileForPublication(root, destination);
+    auto receipt = std::move(original);
+    std::ofstream(receipt.path(), std::ios::binary) << "once";
+    const auto first = receipt.publish(destination, cao::run::PublicationPolicy::Replace);
+    QVERIFY2(first.state == cao::run::PublicationState::PublishedAndReleased,
+             first.errorDetail.c_str());
+    const auto second = receipt.publish(destination, cao::run::PublicationPolicy::Replace);
+    QCOMPARE(second.state, cao::run::PublicationState::NotPublished);
+    QVERIFY(!second.errorDetail.empty());
+    QVERIFY(registry.performSafetyCleanup().empty());
+    QFile output(QString::fromStdWString(destination.wstring()));
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    QCOMPARE(output.readAll(), QByteArray("once"));
+}
+
+void DurableStagingTests::expiredPublicationScopeCannotPublish() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto destination = root / "entry.pex";
+    std::optional<cao::run::TemporaryArtifactRegistry::PublicationReceipt> receipt;
+    fs::path temporary;
+    {
+        cao::run::TemporaryArtifactRegistry registry;
+        receipt.emplace(registry.stageArchiveFileForPublication(root));
+        temporary = receipt->path();
+        std::ofstream(temporary, std::ios::binary) << "unpublished";
+    }
+    QVERIFY_EXCEPTION_THROWN((void)receipt->path(), std::logic_error);
+    const auto result = receipt->publish(destination, cao::run::PublicationPolicy::NoReplace);
+    QCOMPARE(result.state, cao::run::PublicationState::NotPublished);
+    QVERIFY(!result.errorDetail.empty());
+    QVERIFY(!fs::exists(destination));
+    cao::run::StagingRecovery recovery;
+    QVERIFY(!recovery.recover(root).has_value());
+    QVERIFY(!fs::exists(temporary));
+}
+
+void DurableStagingTests::assetPublicationRejectsChangedDestination() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto intended = root / "intended.dds";
+    const auto redirected = root / "redirected.dds";
+    cao::run::TemporaryArtifactRegistry registry;
+    auto receipt = registry.stageFileForPublication(root, intended);
+    const auto temporary = receipt.path();
+    std::ofstream(temporary, std::ios::binary) << "staged";
+    const auto result = receipt.publish(redirected, cao::run::PublicationPolicy::Replace);
+    QCOMPARE(result.state, cao::run::PublicationState::NotPublished);
+    QVERIFY(!result.errorDetail.empty());
+    QVERIFY(!fs::exists(intended));
+    QVERIFY(!fs::exists(redirected));
+    QVERIFY(fs::exists(temporary));
+    QVERIFY(registry.performSafetyCleanup().empty());
+    QVERIFY(!fs::exists(temporary));
+}
+
+void DurableStagingTests::archivePublicationRejectsUnsafeDestinations() {
+    QTemporaryDir directory;
+    QTemporaryDir outside;
+    QVERIFY(directory.isValid());
+    QVERIFY(outside.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto escaped = fs::canonical(fs::path(outside.path().toStdWString())) / "escape.pex";
+    const auto reserved = root / ".cao-staging" / "reserved.pex";
+    cao::run::TemporaryArtifactRegistry registry;
+
+    auto escapedReceipt = registry.stageArchiveFileForPublication(root);
+    const auto escapedTemporary = escapedReceipt.path();
+    std::ofstream(escapedTemporary, std::ios::binary) << "escape";
+    const auto escapedResult =
+        escapedReceipt.publish(escaped, cao::run::PublicationPolicy::NoReplace);
+    QCOMPARE(escapedResult.state, cao::run::PublicationState::NotPublished);
+    QVERIFY(!escapedResult.errorDetail.empty());
+    QVERIFY(!fs::exists(escaped));
+
+    auto reservedReceipt = registry.stageArchiveFileForPublication(root);
+    const auto reservedTemporary = reservedReceipt.path();
+    std::ofstream(reservedTemporary, std::ios::binary) << "reserved";
+    const auto reservedResult =
+        reservedReceipt.publish(reserved, cao::run::PublicationPolicy::NoReplace);
+    QCOMPARE(reservedResult.state, cao::run::PublicationState::NotPublished);
+    QVERIFY(!reservedResult.errorDetail.empty());
+    QVERIFY(!fs::exists(reserved));
+
+    auto relativeReceipt = registry.stageArchiveFileForPublication(root);
+    const auto relativeTemporary = relativeReceipt.path();
+    std::ofstream(relativeTemporary, std::ios::binary) << "relative";
+    const auto relativeResult = relativeReceipt.publish(
+        fs::path("relative.pex"), cao::run::PublicationPolicy::NoReplace);
+    QCOMPARE(relativeResult.state, cao::run::PublicationState::NotPublished);
+    QVERIFY(!relativeResult.errorDetail.empty());
+
+    QVERIFY(registry.performSafetyCleanup().empty());
+    QVERIFY(!fs::exists(escapedTemporary));
+    QVERIFY(!fs::exists(reservedTemporary));
+    QVERIFY(!fs::exists(relativeTemporary));
+}
+
+void DurableStagingTests::archivePublicationRejectsDeviceAlias() {
+#ifdef _WIN32
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    cao::run::TemporaryArtifactRegistry registry;
+    auto receipt = registry.stageArchiveFileForPublication(root);
+    const auto temporary = receipt.path();
+    std::ofstream(temporary, std::ios::binary) << "staged";
+    const auto result = receipt.publish(root / "NUL.pex", cao::run::PublicationPolicy::NoReplace);
+    QCOMPARE(result.state, cao::run::PublicationState::NotPublished);
+    QVERIFY(!result.errorDetail.empty());
+    QVERIFY(fs::exists(temporary));
+    QVERIFY(registry.performSafetyCleanup().empty());
+#else
+    QSKIP("DOS device aliases apply only to Windows publication");
+#endif
+}
+
+void DurableStagingTests::archivePublicationRejectsLinkedParent() {
+    QTemporaryDir directory;
+    QTemporaryDir outside;
+    QVERIFY(directory.isValid());
+    QVERIFY(outside.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto outsideRoot = fs::canonical(fs::path(outside.path().toStdWString()));
+    const auto linkedParent = root / "linked";
+    std::error_code linkError;
+    fs::create_directory_symlink(outsideRoot, linkedParent, linkError);
+    if (linkError) QSKIP("This filesystem does not permit directory symlinks");
+
+    cao::run::TemporaryArtifactRegistry registry;
+    auto receipt = registry.stageArchiveFileForPublication(root);
+    const auto temporary = receipt.path();
+    std::ofstream(temporary, std::ios::binary) << "staged";
+    const auto result =
+        receipt.publish(linkedParent / "entry.pex", cao::run::PublicationPolicy::NoReplace);
+    QCOMPARE(result.state, cao::run::PublicationState::NotPublished);
+    QVERIFY(!result.errorDetail.empty());
+    QVERIFY(!fs::exists(outsideRoot / "entry.pex"));
+    QVERIFY(registry.performSafetyCleanup().empty());
+    QVERIFY(!fs::exists(temporary));
+    QVERIFY(fs::remove(linkedParent));
+}
+
+void DurableStagingTests::assetPublicationRejectsReplacedParent() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto parent = root / "assets";
+    const auto shiftedParent = root / "shifted-assets";
+    QVERIFY(fs::create_directory(parent));
+    const auto destination = parent / "texture.dds";
+    cao::run::TemporaryArtifactRegistry registry;
+    auto receipt = registry.stageFileForPublication(root, destination);
+    const auto temporary = receipt.path();
+    std::ofstream(temporary, std::ios::binary) << "staged";
+    std::error_code renameError;
+    fs::rename(parent, shiftedParent, renameError);
+    if (renameError) {
+        QVERIFY(registry.performSafetyCleanup().empty());
+        QSKIP("The staged parent is pinned against replacement by this filesystem");
+    }
+    QVERIFY(fs::create_directory(parent));
+    fs::rename(shiftedParent / temporary.filename(), temporary, renameError);
+    if (renameError) {
+        fs::remove(parent);
+        fs::rename(shiftedParent, parent);
+        QVERIFY(registry.performSafetyCleanup().empty());
+        QSKIP("The staged file is pinned against relocation by this filesystem");
+    }
+    // The staged name exists again, so only the changed parent identity can reject this route.
+    const auto result = receipt.publish(destination, cao::run::PublicationPolicy::Replace);
+    QCOMPARE(result.state, cao::run::PublicationState::NotPublished);
+    QVERIFY(!result.errorDetail.empty());
+    QVERIFY(!fs::exists(destination));
+    fs::rename(temporary, shiftedParent / temporary.filename());
+    QVERIFY(fs::remove(parent));
+    fs::rename(shiftedParent, parent);
+    QVERIFY(registry.performSafetyCleanup().empty());
+    QVERIFY(!fs::exists(temporary));
+}
+
+void DurableStagingTests::publicationReleaseFailurePreservesCommittedDestination() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto destination = root / "entry.pex";
+    fs::path temporary;
+    const auto scratch = root / ".cao-staging" / "ownership.manifest.next";
+    {
+        cao::run::TemporaryArtifactRegistry registry;
+        auto receipt = registry.stageArchiveFileForPublication(root);
+        temporary = receipt.path();
+        std::ofstream(temporary, std::ios::binary) << "committed entry";
+        // The fixed scratch name blocks only the post-publication manifest release.
+        std::ofstream(scratch, std::ios::binary) << "occupied scratch";
+        const auto result =
+            receipt.publish(destination, cao::run::PublicationPolicy::NoReplace);
+        QVERIFY2(result.state == cao::run::PublicationState::PublishedStillOwned,
+                 result.errorDetail.c_str());
+        QVERIFY(!result.errorDetail.empty());
+        QVERIFY(!fs::exists(temporary));
+        QFile output(QString::fromStdWString(destination.wstring()));
+        QVERIFY(output.open(QIODevice::ReadOnly));
+        QCOMPARE(output.readAll(), QByteArray("committed entry"));
+        QVERIFY(registry.performSafetyCleanup().empty());
+        cao::run::StagingRecovery contender;
+        const auto active = contender.recover(root);
+        QVERIFY(active.has_value());
+        QCOMPARE(active->code(), cao::run::RunFailureCode::StagingActive);
+    }
+    cao::run::StagingRecovery recovery;
+    QVERIFY(!recovery.recover(root).has_value());
+    QVERIFY(!fs::exists(scratch));
+    QVERIFY(!fs::exists(temporary));
+    QFile output(QString::fromStdWString(destination.wstring()));
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    QCOMPARE(output.readAll(), QByteArray("committed entry"));
 }
 
 /// Runs a real interrupted producer without destructor cleanup, or the normal Qt test suite.
