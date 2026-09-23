@@ -6,6 +6,7 @@
 
 #include <btu/bsa/archive_data.hpp>
 
+#include <map>
 #include <span>
 
 class BSAOptimizer;
@@ -40,7 +41,7 @@ class ArchiveFinalizationPlan final {
     bool _compress{};
     bool _deleteSources{};
     bool _createDummies{};
-    std::uintmax_t _dummyCapacityBytes{};
+    std::map<std::filesystem::path, std::uintmax_t> _dummyCapacityByRoot;
 };
 
 }  // namespace cao::run

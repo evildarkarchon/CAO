@@ -133,6 +133,7 @@ bool containsDirectory(const std::filesystem::path& boundary, std::filesystem::p
 
 /// Resolves independent roots without recursion or mutation; lookup errors fail all preparation.
 /// Each linked selection is resolved once, and overlapping directory identities are rejected.
+/// A filesystem root cannot bound one mod or a mods directory safely.
 std::variant<std::vector<std::filesystem::path>, RunFailure> resolveModRoots(
     const ModSelection& selection, const RunConfiguration& configuration,
     RunObservationSink* observations, std::stop_token stop) {
@@ -143,6 +144,9 @@ std::variant<std::vector<std::filesystem::path>, RunFailure> resolveModRoots(
             return RunFailure{
                 RunFailureCode::ModSelectionResolutionFailed, RunPhase::Preparing,
                 "The selected Mod Root could not be resolved to an existing directory"};
+        if (root == root.root_path())
+            return RunFailure{RunFailureCode::ModSelectionResolutionFailed, RunPhase::Preparing,
+                              "A filesystem root cannot be selected as a Mod Root or mods directory"};
         if (selection.kind() == ModSelectionKind::SingleModRoot)
             return std::vector{std::move(root)};
 

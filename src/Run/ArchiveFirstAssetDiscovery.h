@@ -94,8 +94,10 @@ class ArchiveFirstAssetDiscoveryResult final {
 class ArchiveFirstAssetDiscovery final {
    public:
     /// Owns an immutable policy copy used to recognize and enable Archive extraction.
+    /// The volume probe identifies roots for batch capacity checks and may return unknown.
     explicit ArchiveFirstAssetDiscovery(routing::RoutingPolicy policy,
-                                        CapacityProbe capacity = availableArchiveCapacity) noexcept;
+                                        CapacityProbe capacity = availableArchiveCapacity,
+                                        VolumeIdentityProbe volumeIdentity = archiveVolumeIdentity) noexcept;
 
     /// Selects enabled Archives, passes the complete batch for synchronous extraction, then
     /// traverses roots once for definitive paths. An Archive supplied directly as a root also
@@ -140,5 +142,6 @@ class ArchiveFirstAssetDiscovery final {
    private:
     routing::RoutingPolicy _policy;
     CapacityProbe _capacity;
+    VolumeIdentityProbe _volumeIdentity;
 };
 }  // namespace cao::run

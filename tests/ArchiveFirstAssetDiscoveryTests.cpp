@@ -177,6 +177,10 @@ class ArchiveFirstAssetDiscoveryTests final : public QObject
    private slots:
     /// A shortage in a later root prevents every extraction and preserves original Archives.
     void insufficientCapacityBlocksEntireBatch();
+    /// Independent volumes each need only their own Archive staging estimate.
+    void capacityIsGroupedByVolume();
+    /// An unidentified volume with Archive work keeps the conservative batch estimate.
+    void unknownVolumeWithWorkRetainsBatchCapacity();
     /// Compressed and shadowed bytes still need full decompressed staging capacity.
     void compressedShadowedEntryRequiresCapacity();
     /// Rechecks fresh payload sizes before staging and treats unavailable capacity as unknown.
@@ -302,6 +306,62 @@ void ArchiveFirstAssetDiscoveryTests::insufficientCapacityBlocksEntireBatch() {
     QVERIFY(std::filesystem::exists(first / "source.bsa"));
     QVERIFY(std::filesystem::exists(last / "source.bsa"));
     QVERIFY(!std::filesystem::exists(first / "textures"));
+}
+
+void ArchiveFirstAssetDiscoveryTests::capacityIsGroupedByVolume() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto parent = std::filesystem::path(directory.path().toStdWString());
+    const auto first = parent / "first";
+    const auto last = parent / "last";
+    createFixtureArchive(first / "source.bsa");
+    createFixtureArchive(last / "source.bsa");
+    const auto perVolume =
+        cao::run::inspectArchiveInventory(first / "source.bsa").estimatedCapacityBytes;
+    QCOMPARE(cao::run::inspectArchiveInventory(last / "source.bsa").estimatedCapacityBytes,
+             perVolume);
+    const ArchiveFirstAssetDiscovery discovery(
+        archiveEnabledPolicy(),
+        [=](const auto&) -> std::optional<std::uintmax_t> { return perVolume; },
+        [=](const auto& root) -> std::optional<std::string> {
+            return root == std::filesystem::canonical(first) ? "first-volume" : "last-volume";
+        });
+    bool extracted = false;
+    const auto result = discovery.discover(std::array{first, last}, [&](auto archives) {
+        extracted = archives.size() == 2;
+        return true;
+    });
+    QVERIFY2(result.failures().empty(),
+             result.failures().empty() ? "" : result.failures().front().detail().c_str());
+    QVERIFY(extracted);
+}
+
+void ArchiveFirstAssetDiscoveryTests::unknownVolumeWithWorkRetainsBatchCapacity() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto parent = std::filesystem::path(directory.path().toStdWString());
+    const auto first = parent / "first";
+    const auto last = parent / "last";
+    createFixtureArchive(first / "source.bsa");
+    createFixtureArchive(last / "source.bsa");
+    const auto perArchive =
+        cao::run::inspectArchiveInventory(first / "source.bsa").estimatedCapacityBytes;
+    const ArchiveFirstAssetDiscovery discovery(
+        archiveEnabledPolicy(),
+        [=](const auto&) -> std::optional<std::uintmax_t> { return perArchive; },
+        [=](const auto& root) -> std::optional<std::string> {
+            if (root == std::filesystem::canonical(first)) return "known-volume";
+            return std::nullopt;
+        });
+    bool extracted = false;
+    const auto result = discovery.discover(std::array{first, last}, [&](auto) {
+        extracted = true;
+        return true;
+    });
+    QVERIFY(!extracted);
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().code(),
+             cao::run::RunFailureCode::ArchiveInsufficientCapacity);
 }
 
 void ArchiveFirstAssetDiscoveryTests::compressedShadowedEntryRequiresCapacity() {

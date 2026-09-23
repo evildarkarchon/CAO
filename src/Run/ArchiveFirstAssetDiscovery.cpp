@@ -292,8 +292,11 @@ std::size_t ArchiveFirstAssetDiscoveryResult::nestedArchiveCount() const noexcep
 }
 
 ArchiveFirstAssetDiscovery::ArchiveFirstAssetDiscovery(routing::RoutingPolicy policy,
-                                                       CapacityProbe capacity) noexcept
-    : _policy(std::move(policy)), _capacity(std::move(capacity)) {}
+                                                       CapacityProbe capacity,
+                                                       VolumeIdentityProbe volumeIdentity) noexcept
+    : _policy(std::move(policy)),
+      _capacity(std::move(capacity)),
+      _volumeIdentity(std::move(volumeIdentity)) {}
 
 ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     const std::span<const std::filesystem::path> roots,
@@ -536,12 +539,13 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
                                     loosePaths[root].contains(gamePath));
         }
     }
-    // Count the whole batch at every root, conservatively covering roots sharing a volume.
-    // No credit is taken for source deletion or cleanup of shadowed staging after the phase.
-    std::uintmax_t required = 0;
+    // A volume must fit all of its roots before extraction begins. No credit is taken for source
+    // deletion or cleanup of shadowed staging after the phase.
+    ArchiveVolumeCapacityRequirements requirements(_volumeIdentity);
     for (const auto& plan : extractionPlans)
-        required = saturatedCapacityAdd(required, plan.estimatedCapacityBytes);
+        requirements.add(plan.modRoot, plan.estimatedCapacityBytes);
     for (const auto& plan : extractionPlans) {
+        const auto required = requirements.requiredAt(plan.modRoot);
         const auto available = _capacity ? _capacity(plan.modRoot) : std::nullopt;
         if (available && *available < required)
             return failedResult(RunFailureCode::ArchiveInsufficientCapacity, plan.modRoot,

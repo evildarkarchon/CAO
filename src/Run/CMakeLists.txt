@@ -1,4 +1,6 @@
 add_library(cao_run_discovery
+    ArchiveCapacity.cpp
+    ArchiveCapacity.h
     ArchiveFirstAssetDiscovery.cpp
     ArchiveFirstAssetDiscovery.h
     ArchiveExtraction.cpp

@@ -64,12 +64,15 @@ class BSAOptimizer final : public QObject {
     /// Known capacity shortages stop before mutation; unknown capacity proceeds with atomic
     /// attempts. onAttempt receives each completed output before presentation progress; it is an
     /// evidence boundary and its exceptions propagate to the Run Executor for mandatory cleanup.
+    /// volumeIdentity groups roots for batch capacity checks; unknown identity retains a
+    /// conservative whole-batch estimate.
     [[nodiscard]] cao::run::ArchiveFinalizationResult finalize(
         const cao::run::ArchiveFinalizationPlan& plan,
         cao::run::TemporaryArtifactRegistry& artifacts, std::stop_token stop = {},
         std::function<void(const cao::run::ArchiveFinalizationProgress&)> progress = {},
         cao::run::CapacityProbe capacity = cao::run::availableArchiveCapacity,
-        std::function<void(const cao::run::ArchiveFinalizationAttempt&)> onAttempt = {}) const;
+        std::function<void(const cao::run::ArchiveFinalizationAttempt&)> onAttempt = {},
+        cao::run::VolumeIdentityProbe volumeIdentity = cao::run::archiveVolumeIdentity) const;
 
    private:
     OptimizerProfileSnapshot _profile;

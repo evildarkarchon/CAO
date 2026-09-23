@@ -148,6 +148,12 @@ private slots:
  void finalizationCapacityChecks_data();
  /// Ensures capacity failures preserve unattempted sources and prevent directory pruning.
  void finalizationCapacityChecks();
+ /// Allows independent volumes to finalize when each fits its own output estimate.
+ void finalizationCapacityIsGroupedByVolume();
+ /// An idle Mod Root with unknown identity must not inflate other volumes' output estimates.
+ void idleUnknownVolumeDoesNotInflateCapacity();
+ /// Rechecks only the remaining dummy-plugin reserve after each same-volume root completes.
+ void dummyCapacityDecreasesAfterEachRoot();
  /// Reports plugin-only capacity failure without inventing output progress or pruning folders.
  void finalizationCapacityWithoutOutputs();
  /// Exercises backup and delete source choices after successful and failed extraction.
@@ -557,6 +563,121 @@ void MainOptimizerTests::finalizationCapacityChecks() {
         QCOMPARE(result.attempts.back().mutation, cao::execution::MutationState::None);
         QVERIFY(!result.attempts.back().detail.empty());
     }
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void MainOptimizerTests::finalizationCapacityIsGroupedByVolume() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto parent = std::filesystem::path(directory.path().toStdWString());
+    writeFile(parent / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const std::array roots{parent / "mod-a", parent / "mod-b"};
+    for (const auto& root : roots)
+        writeFile(root / "textures" / "asset.dds", QByteArrayLiteral("source bytes"));
+    OptionsCAO options;
+    options.bBsaCreateDummies = false;
+    options.bBsaCompress = false;
+    options.bBsaDeleteSource = false;
+    const BSAOptimizer optimizer;
+    const auto plan = optimizer.planFinalization(roots, options);
+    QCOMPARE(plan.outputs().size(), std::size_t{2});
+    const auto capacity = [&](const std::filesystem::path& path)
+        -> std::optional<std::uintmax_t> {
+        const auto output = std::find_if(plan.outputs().begin(), plan.outputs().end(),
+                                         [&](const auto& value) { return value.modRoot == path; });
+        return output->estimatedCapacityBytes;
+    };
+    const auto volume = [&](const std::filesystem::path& path) -> std::optional<std::string> {
+        return path == std::filesystem::canonical(roots.front()) ? "first-volume"
+                                                              : "second-volume";
+    };
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts, {}, {}, capacity, {}, volume);
+    QCOMPARE(result.attempts.size(), std::size_t{2});
+    QVERIFY(result.safeToContinue);
+    QVERIFY(!result.failure);
+    for (const auto& attempt : result.attempts) {
+        QVERIFY(attempt.succeeded());
+        QVERIFY(std::filesystem::exists(attempt.archivePath));
+    }
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void MainOptimizerTests::idleUnknownVolumeDoesNotInflateCapacity() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto parent = std::filesystem::path(directory.path().toStdWString());
+    writeFile(parent / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const std::array roots{parent / "mod-a", parent / "mod-b", parent / "mod-idle"};
+    for (std::size_t index = 0; index < 2; ++index)
+        writeFile(roots[index] / "textures" / "asset.dds", QByteArrayLiteral("source bytes"));
+    std::filesystem::create_directory(roots.back());
+    OptionsCAO options;
+    options.bBsaCreateDummies = false;
+    options.bBsaCompress = false;
+    const BSAOptimizer optimizer;
+    const auto plan = optimizer.planFinalization(roots, options);
+    QCOMPARE(plan.outputs().size(), std::size_t{2});
+    const auto capacity = [&](const std::filesystem::path& path)
+        -> std::optional<std::uintmax_t> {
+        if (path == std::filesystem::canonical(roots.back())) return 0;
+        const auto output = std::find_if(plan.outputs().begin(), plan.outputs().end(),
+                                         [&](const auto& value) { return value.modRoot == path; });
+        return output->estimatedCapacityBytes;
+    };
+    const auto volume = [&](const std::filesystem::path& path) -> std::optional<std::string> {
+        if (path == std::filesystem::canonical(roots.back())) return std::nullopt;
+        return path == std::filesystem::canonical(roots.front()) ? "first-volume"
+                                                              : "second-volume";
+    };
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts, {}, {}, capacity, {}, volume);
+    QCOMPARE(result.attempts.size(), std::size_t{2});
+    QVERIFY(!result.failure);
+    for (const auto& attempt : result.attempts) QVERIFY(attempt.succeeded());
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void MainOptimizerTests::dummyCapacityDecreasesAfterEachRoot() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto parent = std::filesystem::path(directory.path().toStdWString());
+    writeFile(parent / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const std::array roots{parent / "mod-a", parent / "mod-b"};
+    for (const auto& root : roots)
+        writeFile(root / "existing.bsa", QByteArrayLiteral("retained archive"));
+    OptionsCAO options;
+    options.bBsaCreateDummies = true;
+    const BSAOptimizer optimizer;
+    const auto plan = optimizer.planFinalization(roots, options);
+    QVERIFY(plan.outputs().empty());
+    const auto firstPlugin = roots.front() / "existing.esp";
+    const auto capacity = [&](const std::filesystem::path&)
+        -> std::optional<std::uintmax_t> {
+        if (std::filesystem::exists(firstPlugin)) return std::filesystem::file_size(firstPlugin);
+        return std::numeric_limits<std::uintmax_t>::max();
+    };
+    std::size_t volumeQueries = 0;
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(
+        plan, artifacts, {}, {}, capacity, {},
+        [&](const auto&) -> std::optional<std::string> {
+            ++volumeQueries;
+            return "shared-volume";
+        });
+    QVERIFY(!result.failure);
+    QVERIFY(result.attempts.empty());
+    QCOMPARE(volumeQueries, roots.size());
+    for (const auto& root : roots) QVERIFY(std::filesystem::exists(root / "existing.esp"));
     QVERIFY(artifacts.performSafetyCleanup().empty());
 }
 

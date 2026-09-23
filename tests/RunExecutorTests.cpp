@@ -228,6 +228,10 @@ private slots:
  void cancellationDuringPreparingPublishesNoPreparation();
  /// Verifies a file cannot become a Mod Root even when its path canonicalizes successfully.
  void aNonDirectorySelectionFailsPreparing();
+ /// Covers direct and dot-suffixed selections of a filesystem volume root.
+ void filesystemRootSelectionFailsPreparing_data();
+ /// Rejects a whole volume before it can become a prepared Mod Root.
+ void filesystemRootSelectionFailsPreparing();
  /// Verifies explicit high-to-low Archive intent is owned by both request and prepared result.
  void archivePrecedenceIntentIsRetained();
  /// Verifies both modes leave Asset and Archive bytes and timestamps unchanged during Preparing.
@@ -2499,6 +2503,31 @@ void RunExecutorTests::aNonDirectorySelectionFailsPreparing() {
     QCOMPARE(result.failures().size(), std::size_t{1});
     QCOMPARE(cleanup.invocations(), std::size_t{1});
     QVERIFY(file.exists());
+}
+
+void RunExecutorTests::filesystemRootSelectionFailsPreparing_data() {
+    QTest::addColumn<bool>("dotSuffix");
+    QTest::newRow("volume-root") << false;
+    QTest::newRow("volume-root-dot") << true;
+}
+
+void RunExecutorTests::filesystemRootSelectionFailsPreparing() {
+    QFETCH(bool, dotSuffix);
+    const auto volumeRoot = std::filesystem::current_path().root_path();
+    const auto selection = dotSuffix ? volumeRoot / "." : volumeRoot;
+    CountingSafetyCleanup cleanup;
+    const auto request = RunRequest::create(
+        "profile", ExecutionMode::DryRun, ModSelection::singleModRoot(selection), {});
+    const auto result =
+        RunExecutor{}.execute(request, RunServices{cleanup, nullptr, testRunConfiguration().get()});
+
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(result.finalPhase(), RunPhase::Preparing);
+    QVERIFY(result.preparation() == nullptr);
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().code(),
+             cao::run::RunFailureCode::ModSelectionResolutionFailed);
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
 }
 
 void RunExecutorTests::archivePrecedenceIntentIsRetained() {

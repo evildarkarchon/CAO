@@ -12,6 +12,7 @@
 
 #include <array>
 #include <fstream>
+#include <map>
 #include <set>
 
 #ifdef _WIN32
@@ -204,13 +205,14 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
     for (const auto& inputRoot : roots) {
         const auto root = fs::canonical(inputRoot);
         plan._roots.push_back(root);
+        auto& dummyCapacity = plan._dummyCapacityByRoot[root];
         if (plan._createDummies && settings.s_dummy_plugin) {
             // Existing Archives can also need plugins in the final cleanup pass, even with no
             // new outputs. Count every Archive conservatively without assuming plugin reuse.
             const auto existing = list_archive(fs::directory_iterator(root), {}, settings);
-            plan._dummyCapacityBytes = cao::run::saturatedCapacityAdd(
-                plan._dummyCapacityBytes, cao::run::saturatedCapacityMultiply(
-                                              existing.size(), settings.s_dummy_plugin->size()));
+            dummyCapacity = cao::run::saturatedCapacityAdd(
+                dummyCapacity, cao::run::saturatedCapacityMultiply(
+                                   existing.size(), settings.s_dummy_plugin->size()));
         }
         auto plugins = list_plugins(fs::directory_iterator(root), {}, settings);
         // Dummy cleanup is a mutation. Ignore their names for planning, but retain them until
@@ -345,7 +347,8 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
     const std::stop_token stop,
     std::function<void(const cao::run::ArchiveFinalizationProgress&)> progress,
     cao::run::CapacityProbe capacity,
-    std::function<void(const cao::run::ArchiveFinalizationAttempt&)> onAttempt) const {
+    std::function<void(const cao::run::ArchiveFinalizationAttempt&)> onAttempt,
+    cao::run::VolumeIdentityProbe volumeIdentity) const {
     namespace fs = std::filesystem;
     using namespace cao::run;
     using cao::execution::MutationState;
@@ -388,16 +391,30 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
         result.cancelled = true;
         return result;
     }
-    auto phaseCapacity = plan._dummyCapacityBytes;
+    // Freeze each canonical root's volume once for all preflight and later rechecks. Rebuilding
+    // the remaining dummy reserve must not turn Several Mods into repeated native volume queries.
+    std::map<fs::path, std::optional<std::string>> volumeByRoot;
+    for (const auto& root : plan._roots)
+        volumeByRoot.emplace(root, volumeIdentity ? volumeIdentity(root) : std::nullopt);
+    const auto cachedVolumeIdentity = [&](const fs::path& root) { return volumeByRoot.at(root); };
+    ArchiveVolumeCapacityRequirements phaseCapacity(cachedVolumeIdentity);
+    ArchiveVolumeCapacityRequirements dummyCapacity(cachedVolumeIdentity);
+    for (const auto& root : plan._roots) {
+        const auto required = plan._dummyCapacityByRoot.at(root);
+        phaseCapacity.add(root, required);
+        dummyCapacity.add(root, required);
+    }
     for (const auto& output : plan.outputs())
-        phaseCapacity = saturatedCapacityAdd(phaseCapacity, output.estimatedCapacityBytes);
-    // Sum the entire phase for every root: separate roots may share a volume, and planned
-    // source deletion must not be treated as available space before it has actually happened.
+        phaseCapacity.add(output.modRoot, output.estimatedCapacityBytes);
+    // A volume must fit its complete phase before any root mutates; planned source deletion
+    // cannot be treated as available space before it actually happens.
     for (const auto& root : plan._roots) {
         const auto output = std::find_if(plan.outputs().begin(), plan.outputs().end(),
                                          [&](const auto& value) { return value.modRoot == root; });
+        // A Mod Root with no planned writes cannot run out of staging space during this phase.
+        if (output == plan.outputs().end() && plan._dummyCapacityByRoot.at(root) == 0) continue;
         if (!hasCapacity(root, output == plan.outputs().end() ? fs::path{} : output->archivePath,
-                         phaseCapacity))
+                         phaseCapacity.requiredAt(root)))
             return result;
     }
     for (std::size_t index = 0; index < plan.outputs().size(); ++index) {
@@ -420,7 +437,7 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
             if (!hasCapacity(
                     output.modRoot, output.archivePath,
                     saturatedCapacityAdd(std::max(output.estimatedCapacityBytes, currentCapacity),
-                                         plan._dummyCapacityBytes)))
+                                         dummyCapacity.requiredAt(output.modRoot))))
                 return result;
             const auto staged = artifacts.stageArchiveFile(output.modRoot);
             auto archive = plan._archives[index];
@@ -502,8 +519,16 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
     result.cancelled = result.cancelled || stop.stop_requested();
     if (!result.cancelled && result.safeToContinue) {
         try {
-            for (const auto& root : plan._roots) {
-                if (!hasCapacity(root, {}, plan._dummyCapacityBytes)) return result;
+            for (auto rootIt = plan._roots.begin(); rootIt != plan._roots.end(); ++rootIt) {
+                const auto& root = *rootIt;
+                if (plan._dummyCapacityByRoot.at(root) != 0) {
+                    ArchiveVolumeCapacityRequirements remainingDummy(cachedVolumeIdentity);
+                    for (auto remaining = rootIt; remaining != plan._roots.end(); ++remaining)
+                        remainingDummy.add(*remaining, plan._dummyCapacityByRoot.at(*remaining));
+                    // Earlier roots have already consumed their plugin allowance, so rechecking
+                    // it would reject later roots despite a sufficient initial phase budget.
+                    if (!hasCapacity(root, {}, remainingDummy.requiredAt(root))) return result;
+                }
                 auto plugins =
                     btu::bsa::list_plugins(fs::directory_iterator(root), {}, plan._settings);
                 // Do not remove loading plugins already committed as part of output attempts.
