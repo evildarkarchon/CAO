@@ -27,6 +27,8 @@ class CliExecutionTests final : public QObject {
 
     /// Executes the actual CLI and verifies exit status after every selected Asset is attempted.
     void reportsAssetExecutionStatus();
+    /// Reports pruned empty directories as retained Archive Finalization mutations.
+    void reportsDirectoryPruningMutation();
 };
 
 void CliExecutionTests::refusesUnknownStagingBeforeAssetTraversal() {
@@ -115,6 +117,27 @@ void CliExecutionTests::reportsAssetExecutionStatus() {
         QCOMPARE(QFile::exists(root.filePath("mod/" + name + ".caobad")), quarantined);
     }
     QCOMPARE(process.exitCode(), expectedExitCode);
+}
+
+void CliExecutionTests::reportsDirectoryPruningMutation() {
+    const QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QDir root(directory.path());
+    QVERIFY(root.mkpath("profiles/SSE"));
+    QVERIFY(root.mkpath("mod/empty"));
+    QVERIFY(QFile::copy(QStringLiteral(CAO_SOURCE_DIR "/profiles/SSE/profile.ini"),
+                       root.filePath("profiles/SSE/profile.ini")));
+
+    QProcess process;
+    process.setWorkingDirectory(directory.path());
+    process.start(QStringLiteral(CAO_CLI_PATH), {root.filePath("mod"), "om", "SSE", "--t0"});
+    QVERIFY2(process.waitForStarted(), qPrintable(process.errorString()));
+    QVERIFY2(process.waitForFinished(30000), qPrintable(process.errorString()));
+    QCOMPARE(process.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(process.exitCode(), 0);
+    QVERIFY(!QFile::exists(root.filePath("mod/empty")));
+    const auto standardOutput = process.readAllStandardOutput();
+    QVERIFY(standardOutput.contains("Archive Finalization|1|partial-or-unknown=0"));
 }
 
 QTEST_GUILESS_MAIN(CliExecutionTests)

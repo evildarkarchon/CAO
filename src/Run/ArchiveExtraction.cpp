@@ -92,19 +92,23 @@ ArchiveExtractionResult ArchiveExtractor::extract(const ArchiveExtractionPlan& p
         const std::set<std::string> expected(plan.entries.begin(), plan.entries.end());
         if (expected.size() != plan.entries.size())
             throw std::runtime_error("Archive manifest contains duplicate canonical entries.");
-        for (const auto& entry : expected)
+        std::set<std::string> comparisonKeys;
+        for (const auto& entry : expected) {
             if (canonicalArchiveEntryPath(entry) != entry)
                 throw std::runtime_error("Archive plan contains a noncanonical entry.");
+            if (!comparisonKeys.insert(foldedName(entry)).second)
+                throw std::runtime_error("Archive manifest contains aliased entries.");
+        }
         for (const auto& entry : plan.mergeEntries)
             if (!expected.contains(entry))
                 throw std::runtime_error("Archive merge entry is absent from its manifest.");
-        std::map<std::string, TemporaryArtifactRegistry::StagedFile> staged;
+        std::map<std::string, TemporaryArtifactRegistry::PublicationReceipt> staged;
         for (auto& [name, file] : *archive) {
             const auto entry = canonicalArchiveEntryPath(name);
             if (!expected.contains(entry) || staged.contains(entry))
                 throw std::runtime_error("Archive manifest changed after preflight.");
-            auto temporary = _artifacts.stageArchiveFile(plan.modRoot);
-            file.write(temporary.path);
+            auto temporary = _artifacts.stageArchiveFileForPublication(plan.modRoot);
+            file.write(temporary.path());
             staged.emplace(entry, std::move(temporary));
         }
         if (staged.size() != expected.size())
@@ -114,18 +118,14 @@ ArchiveExtractionResult ArchiveExtractor::extract(const ArchiveExtractionPlan& p
             auto& temporary = staged.at(entry);
             const auto destination =
                 prepareMergeTarget(root, source.parent_path() / pathFromUtf8(entry));
-#ifdef _WIN32
-            // The native no-replace commit also protects Loose Assets created after preflight.
-            if (!MoveFileExW(temporary.path.c_str(), destination.path.c_str(),
-                             MOVEFILE_WRITE_THROUGH))
-                throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
-#else
-            // Hard-link publication is atomic and refuses existing destinations. An unlink
-            // failure must retain the committed destination and report uncertain mutation.
-            std::filesystem::create_hard_link(temporary.path, destination.path);
-            std::filesystem::remove(temporary.path);
-#endif
-            _artifacts.commit(temporary.registration);
+            // The source Archive may be removed after extraction, so flush staged bytes before
+            // publication while retaining the native no-replace rule for competing Loose Assets.
+            const auto publication =
+                temporary.publish(destination.path, PublicationPolicy::NoReplace);
+            if (publication.state != PublicationState::PublishedAndReleased)
+                throw std::runtime_error(publication.errorDetail.empty()
+                                             ? "Archive publication did not complete."
+                                             : publication.errorDetail);
             result.mutation = execution::MutationState::Committed;
         }
         return result;

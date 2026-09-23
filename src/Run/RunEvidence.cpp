@@ -96,17 +96,18 @@ const RunEvidenceStorage& requireStorage(const std::unique_ptr<RunEvidenceStorag
     return *storage;
 }
 
-/// Groups durable effects from the completed attempts just before their storage becomes sealed.
+/// Groups durable effects from completed attempts and non-output finalization mutations at sealing.
 std::vector<MutationSummary> deriveMutationSummaries(const RunEvidenceStorage& storage) {
     std::map<std::pair<std::filesystem::path, MutationKind>, MutationSummary> grouped;
     const auto account = [&grouped](const std::filesystem::path& root, const MutationKind kind,
-                                    const execution::MutationState mutation) {
+                                    const execution::MutationState mutation,
+                                    const std::size_t count = 1) {
         if (mutation == execution::MutationState::None) return;
         auto entry = grouped.try_emplace(std::pair{root, kind}, MutationSummary{root, kind}).first;
         if (mutation == execution::MutationState::Committed)
-            ++entry->second.committed;
+            entry->second.committed += count;
         else
-            ++entry->second.partialOrUnknown;
+            entry->second.partialOrUnknown += count;
     };
     for (const auto& attempt : storage.assetAttempts)
         account(attempt.modRoot, MutationKind::AssetProcessing, attempt.result.mutationState());
@@ -115,6 +116,9 @@ std::vector<MutationSummary> deriveMutationSummaries(const RunEvidenceStorage& s
     if (storage.archiveFinalization) {
         for (const auto& attempt : storage.archiveFinalization->attempts)
             account(attempt.modRoot, MutationKind::ArchiveFinalization, attempt.mutation);
+        for (const auto& mutation : storage.archiveFinalization->mutations)
+            account(mutation.modRoot, MutationKind::ArchiveFinalization, mutation.mutation,
+                    mutation.count);
     }
     std::vector<MutationSummary> summaries;
     summaries.reserve(grouped.size());

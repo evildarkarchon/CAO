@@ -24,7 +24,9 @@ class RunEvidence;
 /// The durable operation whose attempts contribute to a Mod Root's mutation account.
 enum class MutationKind { ArchiveExtraction, AssetProcessing, ArchiveFinalization };
 
-/// Counts mutated attempts, not files or bytes; uncertain effects never count as committed.
+/// Counts retained effects per Mod Root and work kind. An attempt contributes one; finalization
+/// also counts each directory pruned or plugin changed outside its planned output attempts.
+/// Uncertain effects never count as committed.
 struct MutationSummary final {
     std::filesystem::path modRoot;
     MutationKind kind;

@@ -51,6 +51,8 @@ private slots:
     void requestOwnsCallerIntent();
     /// Loads the named profile and fallback exclusions independently of subsequent UI selection.
     void providerLoadsOwnedConfiguration();
+    /// An unreadable selected exclusion file cannot silently permit every child Mod Root.
+    void providerRejectsUnreadableIgnoredMods();
     /// Covers numeric choices that parsing accepts but optimization cannot safely execute.
     void requestRejectsInvalidOptionValues_data();
     /// Rejects invalid option values without attempting filesystem preparation.
@@ -219,6 +221,15 @@ void ApplicationRunSetupTests::providerLoadsOwnedConfiguration()
     QCOMPARE(configuration.ignoredMods()[0], std::string("Tool Mod"));
     QCOMPARE(configuration.separatorMarkers()[0], std::string("separator"));
     QVERIFY_EXCEPTION_THROWN(static_cast<void>(provider->load("MissingProfile")), std::runtime_error);
+}
+
+void ApplicationRunSetupTests::providerRejectsUnreadableIgnoredMods()
+{
+    const auto ignoredPath = QStringLiteral("profiles/FO4/ignoredMods.txt");
+    QVERIFY(QDir().mkdir(ignoredPath));
+    QVERIFY(QFile::exists(ignoredPath));
+    const auto provider = cao::run::makeApplicationRunConfigurationProvider();
+    QVERIFY_EXCEPTION_THROWN(static_cast<void>(provider->load("FO4")), std::runtime_error);
 }
 
 void ApplicationRunSetupTests::requestRejectsInvalidOptionValues_data()

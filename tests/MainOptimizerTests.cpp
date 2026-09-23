@@ -156,6 +156,16 @@ private slots:
  void dummyCapacityDecreasesAfterEachRoot();
  /// Reports plugin-only capacity failure without inventing output progress or pruning folders.
  void finalizationCapacityWithoutOutputs();
+ /// Stops finalization planning before traversing a cancelled Mod Root.
+ void finalizationPlanningObservesCancellation();
+ /// Retains a phase failure if plugin cleanup throws after a completed output.
+ void finalizationReportsPostOutputException();
+ /// Stops plugin cleanup when cancellation arrives between Mod Roots.
+ void finalizationCancelsPluginCleanupBetweenRoots();
+ /// Retains loading-plugin changes for existing Archives even with zero planned outputs.
+ void finalizationRetainsPluginMutations_data();
+ /// Derives plugin-only mutation evidence without inventing output attempts.
+ void finalizationRetainsPluginMutations();
  /// Exercises backup and delete source choices after successful and failed extraction.
  void archiveSourceCleanupRequiresSuccessfulMerge_data();
  /// Preserves original Archive bytes on failure and never replaces an existing backup.
@@ -194,6 +204,9 @@ private slots:
 
  /// Verifies a stale quarantine file cannot leave a newly extracted malformed Asset packable.
  void loadFailureUsesCollisionSafeQuarantineName();
+
+ /// Stops later mutation when a malformed Asset remains packable after quarantine fails.
+ void failedQuarantineMakesLoadFailureUnsafe();
 
  /// Verifies reporting a malformed input never mutates a Dry Run tree.
  void dryRunLoadFailureDoesNotQuarantine();
@@ -378,6 +391,157 @@ void MainOptimizerTests::failedPackingRetainsSourcesAndExistingArchives() {
 #else
     QSKIP("Windows sharing modes provide a deterministic source read failure.");
 #endif
+}
+
+void MainOptimizerTests::finalizationPlanningObservesCancellation() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = root / "mod";
+    const auto source = mod / "textures" / "asset.dds";
+    writeFile(source, QByteArrayLiteral("source bytes"));
+    OptionsCAO options;
+    std::stop_source stop;
+    stop.request_stop();
+    bool cancelled = false;
+    try {
+        const std::array roots{mod};
+        static_cast<void>(BSAOptimizer().planFinalization(roots, options, stop.get_token()));
+    } catch (const cao::run::ArchiveFinalizationPlanningCancelled&) {
+        cancelled = true;
+    }
+    QVERIFY(cancelled);
+    QVERIFY(std::filesystem::exists(source));
+    QVERIFY(!std::filesystem::exists(mod / ".cao-staging"));
+}
+
+void MainOptimizerTests::finalizationReportsPostOutputException() {
+#ifdef _WIN32
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto parent = std::filesystem::path(directory.path().toStdWString());
+    writeFile(parent / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = parent / "mod";
+    writeFile(mod / "textures" / "asset.dds", QByteArrayLiteral("source bytes"));
+    OptionsCAO options;
+    options.bBsaCreateDummies = false;
+    options.bBsaCompress = false;
+    options.bBsaDeleteSource = false;
+    const std::array roots{mod};
+    const BSAOptimizer optimizer;
+    const auto plan = optimizer.planFinalization(roots, options);
+    QCOMPARE(plan.outputs().size(), std::size_t{1});
+    cao::run::TemporaryArtifactRegistry artifacts;
+    HANDLE heldRoot = INVALID_HANDLE_VALUE;
+    const auto result = optimizer.finalize(
+        plan, artifacts, {}, {}, cao::run::availableArchiveCapacity,
+        [&](const cao::run::ArchiveFinalizationAttempt&) {
+            heldRoot = CreateFileW(mod.c_str(), FILE_LIST_DIRECTORY, 0, nullptr, OPEN_EXISTING,
+                                   FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        });
+    QVERIFY(heldRoot != INVALID_HANDLE_VALUE);
+    QVERIFY(CloseHandle(heldRoot));
+    QCOMPARE(result.attempts.size(), std::size_t{1});
+    QVERIFY(result.attempts.front().succeeded());
+    QVERIFY(!result.safeToContinue);
+    QCOMPARE(result.failure,
+             std::optional{cao::run::ArchiveFinalizationFailure::UnexpectedException});
+    QVERIFY(!result.detail.empty());
+    QVERIFY(std::filesystem::exists(plan.outputs().front().archivePath));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+#else
+    QSKIP("Windows directory sharing modes provide a deterministic post-output failure.");
+#endif
+}
+
+void MainOptimizerTests::finalizationCancelsPluginCleanupBetweenRoots() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto parent = std::filesystem::path(directory.path().toStdWString());
+    writeFile(parent / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const std::array roots{parent / "mod-a", parent / "mod-b"};
+    for (const auto& root : roots) {
+        writeFile(root / "existing.bsa", QByteArrayLiteral("retained archive"));
+        std::filesystem::create_directories(root / "empty" / "nested");
+    }
+    OptionsCAO options;
+    options.bBsaCreateDummies = true;
+    const BSAOptimizer optimizer;
+    const auto plan = optimizer.planFinalization(roots, options);
+    QVERIFY(plan.outputs().empty());
+    const auto firstPlugin = roots.front() / "existing.esp";
+    const auto secondPlugin = roots.back() / "existing.esp";
+    std::stop_source stop;
+    const auto capacity = [&](const std::filesystem::path& root)
+        -> std::optional<std::uintmax_t> {
+        if (root == std::filesystem::canonical(roots.back()) &&
+            std::filesystem::exists(firstPlugin))
+            stop.request_stop();
+        return std::numeric_limits<std::uintmax_t>::max();
+    };
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts, stop.get_token(), {}, capacity);
+    QVERIFY(result.cancelled);
+    QVERIFY(result.safeToContinue);
+    QVERIFY(std::filesystem::exists(firstPlugin));
+    QVERIFY(!std::filesystem::exists(secondPlugin));
+    for (const auto& root : roots)
+        QVERIFY(std::filesystem::exists(root / "empty" / "nested"));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void MainOptimizerTests::finalizationRetainsPluginMutations_data() {
+    QTest::addColumn<bool>("createDummies");
+    QTest::newRow("create-for-existing-archive") << true;
+    QTest::newRow("remove-existing-dummy") << false;
+}
+
+void MainOptimizerTests::finalizationRetainsPluginMutations() {
+    QFETCH(bool, createDummies);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto parent = std::filesystem::path(directory.path().toStdWString());
+    writeFile(parent / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = parent / "mod";
+    writeFile(mod / "existing.bsa", QByteArrayLiteral("retained archive"));
+    const auto plugin = mod / "existing.esp";
+    if (!createDummies)
+        writeFile(plugin, QByteArray(static_cast<int>(btu::bsa::dummy::sse.size()), '\0'));
+    OptionsCAO options;
+    options.bBsaCreateDummies = createDummies;
+    const std::array roots{mod};
+    const BSAOptimizer optimizer;
+    const auto plan = optimizer.planFinalization(roots, options);
+    QVERIFY(plan.outputs().empty());
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts);
+    QVERIFY(result.attempts.empty());
+    QVERIFY(!result.failure);
+    QVERIFY(result.safeToContinue);
+    QCOMPARE(result.mutations.size(), std::size_t{1});
+    const auto& mutation = result.mutations.front();
+    QCOMPARE(mutation.modRoot, std::filesystem::canonical(mod));
+    QCOMPARE(mutation.path, plugin);
+    QCOMPARE(mutation.kind, createDummies
+             ? cao::run::ArchiveFinalizationMutationKind::PluginCreation
+             : cao::run::ArchiveFinalizationMutationKind::PluginRemoval);
+    QCOMPARE(mutation.mutation, cao::execution::MutationState::Committed);
+    QCOMPARE(mutation.count, std::size_t{1});
+    QCOMPARE(std::filesystem::exists(plugin), createDummies);
+    QVERIFY(artifacts.performSafetyCleanup().empty());
 }
 
 void MainOptimizerTests::finalizationFreezesTotalAndCancelsBetweenOutputs_data() {
@@ -951,6 +1115,39 @@ void MainOptimizerTests::loadFailureUsesCollisionSafeQuarantineName()
     QVERIFY(!std::filesystem::exists(malformedTexture));
     QVERIFY(std::filesystem::is_regular_file(staleQuarantine));
     QVERIFY(std::filesystem::is_regular_file(root / "collision-malformed.dds.caobad.1"));
+}
+
+void MainOptimizerTests::failedQuarantineMakesLoadFailureUnsafe()
+{
+#ifndef _WIN32
+    QSKIP("Windows sharing modes provide a deterministic quarantine rename failure.");
+#else
+    QVERIFY(_temporaryDirectory.isValid());
+
+    const ScopedCurrentDirectory isolatedWorkingDirectory(_temporaryDirectory.path());
+    const auto root = std::filesystem::path(_temporaryDirectory.path().toStdWString());
+    const auto malformedTexture = root / "locked-malformed.dds";
+    writeFile(malformedTexture, QByteArrayLiteral("malformed"));
+
+    // The optimizer can read the malformed input, while Windows denies its quarantine rename.
+    const auto nativeHandle = CreateFileW(malformedTexture.c_str(), GENERIC_READ,
+                                          FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                          FILE_ATTRIBUTE_NORMAL, nullptr);
+    QVERIFY(nativeHandle != INVALID_HANDLE_VALUE);
+    const std::unique_ptr<void, decltype(&CloseHandle)> handle(nativeHandle, &CloseHandle);
+
+    OptionsCAO options;
+    options.mode = OptionsCAO::SingleMod;
+    options.userPath = _temporaryDirectory.path();
+    MainOptimizer optimizer(options);
+
+    const auto result = optimizer.process(routeAsset(malformedTexture));
+
+    QCOMPARE(result.failure(), AssetExecutionFailure::LoadFailed);
+    QVERIFY(!result.safeToContinue());
+    QCOMPARE(result.mutationState(), cao::execution::MutationState::None);
+    QVERIFY(std::filesystem::is_regular_file(malformedTexture));
+#endif
 }
 
 void MainOptimizerTests::dryRunLoadFailureDoesNotQuarantine()

@@ -20,11 +20,14 @@
 #endif
 
 namespace {
-/// Estimates current source content and format overhead; stat failures propagate before staging.
-std::uintmax_t estimatePackedCapacity(const cao::run::ArchiveFinalizationOutput& output) {
+/// Estimates source content and format overhead; planning can stop between source stats, while
+/// finalization intentionally finishes each atomic output attempt once it starts.
+std::uintmax_t estimatePackedCapacity(const cao::run::ArchiveFinalizationOutput& output,
+                                      const std::stop_token stop = {}) {
     using namespace cao::run;
     auto estimate = std::uintmax_t{65536};
     for (const auto& source : output.sources) {
+        if (stop.stop_requested()) throw cao::run::ArchiveFinalizationPlanningCancelled{};
         // Zlib/LZ4 framing, up to four BA2 texture chunks, and BSA directory/name tables
         // need space beyond source bytes. Filesystem allocation and metadata remain estimates.
         const auto payload = saturatedCapacityMultiply(std::filesystem::file_size(source), 2);
@@ -192,7 +195,8 @@ cao::run::ArchiveExtractionResult BSAOptimizer::extract(
 }
 
 cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
-    const std::span<const std::filesystem::path> roots, const OptionsCAO& options) const {
+    const std::span<const std::filesystem::path> roots, const OptionsCAO& options,
+    const std::stop_token stop) const {
     namespace fs = std::filesystem;
     using namespace btu::bsa;
     cao::run::ArchiveFinalizationPlan plan;
@@ -202,13 +206,19 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
     plan._createDummies = options.bBsaCreateDummies;
     const auto& settings = plan._settings;
     std::set<fs::path> reserved;
+    // Planning must not publish a partial work total after cancellation; no output has mutated.
+    const auto checkCancelled = [&] {
+        if (stop.stop_requested()) throw cao::run::ArchiveFinalizationPlanningCancelled{};
+    };
     for (const auto& inputRoot : roots) {
+        checkCancelled();
         const auto root = fs::canonical(inputRoot);
         plan._roots.push_back(root);
         auto& dummyCapacity = plan._dummyCapacityByRoot[root];
         if (plan._createDummies && settings.s_dummy_plugin) {
             // Existing Archives can also need plugins in the final cleanup pass, even with no
             // new outputs. Count every Archive conservatively without assuming plugin reuse.
+            checkCancelled();
             const auto existing = list_archive(fs::directory_iterator(root), {}, settings);
             dummyCapacity = cao::run::saturatedCapacityAdd(
                 dummyCapacity, cao::run::saturatedCapacityMultiply(
@@ -219,6 +229,7 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
         // all output attempts finish so cancellation cannot strand an existing Archive.
         if (settings.s_dummy_plugin) {
             std::erase_if(plugins, [&](const auto& plugin) {
+                checkCancelled();
                 return fs::file_size(plugin.full_path()) == settings.s_dummy_plugin->size();
             });
         }
@@ -230,6 +241,7 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
         std::vector<fs::path> sources;
         for (auto it = fs::recursive_directory_iterator(root);
              it != fs::recursive_directory_iterator(); ++it) {
+            checkCancelled();
             const auto path = it->path();
             bool excluded = cao::run::hasStagingComponent(path.lexically_relative(root)) ||
                             fs::is_symlink(it->symlink_status());
@@ -254,6 +266,7 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
         auto textures = ArchiveData(settings, ArchiveType::Textures);
         std::vector<ArchiveData> archives;
         for (const auto& source : sources) {
+            checkCancelled();
             const auto type = get_filetype(source, root, settings);
             if (type != FileTypes::Standard && type != FileTypes::Texture &&
                 type != FileTypes::Incompressible)
@@ -277,6 +290,7 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
         if (options.bBsaMergeTexture) mergeSettings |= MergeSettings::MergeTextures;
         merge(archives, mergeSettings);
         for (auto& archive : archives) {
+            checkCancelled();
             const auto suffix = archive.get_type() == ArchiveType::Textures
                                     ? settings.texture_suffix.value_or(u8"")
                                     : settings.suffix.value_or(u8"");
@@ -290,6 +304,7 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
             };
             std::optional<FilePath> selected;
             for (auto plugin : plugins) {
+                checkCancelled();
                 plugin.ext = settings.extension;
                 plugin.suffix = suffix;
                 if (available(plugin)) {
@@ -302,6 +317,7 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
                 candidate.ext = settings.extension;
                 candidate.suffix = suffix;
                 for (std::uint32_t counter = 0; counter < 255; ++counter) {
+                    checkCancelled();
                     candidate.counter = counter;
                     if (available(candidate)) {
                         selected = candidate;
@@ -316,6 +332,7 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
             if (plan._createDummies && settings.s_dummy_plugin) {
                 bool loaded = false;
                 for (const auto& extension : settings.plugin_extensions) {
+                    checkCancelled();
                     auto plugin = *selected;
                     plugin.ext = extension;
                     loaded = loaded || fs::exists(plugin.full_path());
@@ -332,13 +349,14 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
             plan._outputs.push_back(
                 {root, destination, {archive.begin(), archive.end()}, pluginPath});
             auto& output = plan._outputs.back();
-            output.estimatedCapacityBytes = estimatePackedCapacity(output);
+            output.estimatedCapacityBytes = estimatePackedCapacity(output, stop);
             if (pluginPath)
                 output.estimatedCapacityBytes = cao::run::saturatedCapacityAdd(
                     output.estimatedCapacityBytes, settings.s_dummy_plugin->size());
             plan._archives.push_back(std::move(archive));
         }
     }
+    checkCancelled();
     return plan;
 }
 
@@ -518,8 +536,17 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
     }
     result.cancelled = result.cancelled || stop.stop_requested();
     if (!result.cancelled && result.safeToContinue) {
+        const auto pluginPaths = [](const std::vector<btu::bsa::FilePath>& plugins) {
+            std::set<fs::path> paths;
+            for (const auto& plugin : plugins) paths.insert(plugin.full_path());
+            return paths;
+        };
         try {
             for (auto rootIt = plan._roots.begin(); rootIt != plan._roots.end(); ++rootIt) {
+                if (stop.stop_requested()) {
+                    result.cancelled = true;
+                    break;
+                }
                 const auto& root = *rootIt;
                 if (plan._dummyCapacityByRoot.at(root) != 0) {
                     ArchiveVolumeCapacityRequirements remainingDummy(cachedVolumeIdentity);
@@ -529,16 +556,74 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
                     // it would reject later roots despite a sufficient initial phase budget.
                     if (!hasCapacity(root, {}, remainingDummy.requiredAt(root))) return result;
                 }
+                // Capacity and directory probes may block while a cancellation arrives; do not
+                // start the next root's plugin mutation after either probe completes.
+                if (stop.stop_requested()) {
+                    result.cancelled = true;
+                    break;
+                }
                 auto plugins =
                     btu::bsa::list_plugins(fs::directory_iterator(root), {}, plan._settings);
-                // Do not remove loading plugins already committed as part of output attempts.
-                // When dummy creation is disabled, retain the existing explicit cleanup choice.
-                if (!plan._createDummies) btu::bsa::clean_dummy_plugins(plugins, plan._settings);
-                if (plan._createDummies) {
-                    const auto archives =
-                        btu::bsa::list_archive(fs::directory_iterator(root), {}, plan._settings);
-                    btu::bsa::make_dummy_plugins(archives, plan._settings);
+                if (stop.stop_requested()) {
+                    result.cancelled = true;
+                    break;
                 }
+                // Output-owned plugins are already represented by their Archive attempts.
+                // Snapshot only this cleanup pass so existing-Archive plugin changes remain
+                // authoritative evidence even when a bethutil helper stops partway through.
+                const auto before = pluginPaths(plugins);
+                const auto recordPluginChanges = [&] {
+                    std::set<fs::path> after;
+                    try {
+                        after = pluginPaths(btu::bsa::list_plugins(
+                            fs::directory_iterator(root), {}, plan._settings));
+                    } catch (...) {
+                        // If the post-mutation inventory is unreadable, the effect is unknown.
+                        result.mutations.push_back(
+                            {.modRoot = root,
+                             .path = root,
+                             .kind = plan._createDummies
+                                         ? ArchiveFinalizationMutationKind::PluginCreation
+                                         : ArchiveFinalizationMutationKind::PluginRemoval,
+                             .mutation = MutationState::PartialOrUnknown});
+                        throw;
+                    }
+                    for (const auto& plugin : before) {
+                        if (!after.contains(plugin))
+                            result.mutations.push_back(
+                                {.modRoot = root,
+                                 .path = plugin,
+                                 .kind = ArchiveFinalizationMutationKind::PluginRemoval,
+                                 .mutation = MutationState::Committed});
+                    }
+                    for (const auto& plugin : after) {
+                        if (!before.contains(plugin))
+                            result.mutations.push_back(
+                                {.modRoot = root,
+                                 .path = plugin,
+                                 .kind = ArchiveFinalizationMutationKind::PluginCreation,
+                                 .mutation = MutationState::Committed});
+                    }
+                };
+                try {
+                    // Do not remove loading plugins already committed as part of output attempts.
+                    // When dummy creation is disabled, retain the existing explicit cleanup choice.
+                    if (!plan._createDummies)
+                        btu::bsa::clean_dummy_plugins(plugins, plan._settings);
+                    if (plan._createDummies) {
+                        const auto archives = btu::bsa::list_archive(fs::directory_iterator(root),
+                                                                     {}, plan._settings);
+                        if (stop.stop_requested()) {
+                            result.cancelled = true;
+                            break;
+                        }
+                        btu::bsa::make_dummy_plugins(archives, plan._settings);
+                    }
+                } catch (...) {
+                    recordPluginChanges();
+                    throw;
+                }
+                recordPluginChanges();
             }
             // All planned outputs and plugin work must finish before pruning any Mod Root.
             // Recoverable attempts retain their source evidence; cancellation retains all paths.
@@ -547,12 +632,24 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
                     result.cancelled = true;
                     break;
                 }
-                FilesystemOperations::deleteEmptyDirectories(
+                const auto pruned = FilesystemOperations::deleteEmptyDirectories(
                     QString::fromStdWString(root.wstring()));
+                if (pruned != 0)
+                    result.mutations.push_back(
+                        {.modRoot = root,
+                         .path = root,
+                         .kind = ArchiveFinalizationMutationKind::EmptyDirectoryPruning,
+                         .mutation = MutationState::Committed,
+                         .count = pruned});
             }
         } catch (const std::exception& error) {
             result.safeToContinue = false;
+            result.failure = ArchiveFinalizationFailure::UnexpectedException;
             result.detail = error.what();
+        } catch (...) {
+            result.safeToContinue = false;
+            result.failure = ArchiveFinalizationFailure::UnexpectedException;
+            result.detail = "Unexpected Archive finalization cleanup exception.";
         }
     }
     return result;

@@ -35,6 +35,22 @@ struct ArchiveFinalizationProgress final {
     std::size_t failed{};
 };
 
+/// Kinds of finalization effects outside planned Archive output attempts.
+enum class ArchiveFinalizationMutationKind {
+    EmptyDirectoryPruning,
+    PluginCreation,
+    PluginRemoval
+};
+
+/// Records completed effects that Archive output attempts cannot account for.
+struct ArchiveFinalizationMutation final {
+    std::filesystem::path modRoot;
+    std::filesystem::path path;
+    ArchiveFinalizationMutationKind kind;
+    execution::MutationState mutation{execution::MutationState::None};
+    std::size_t count{1};
+};
+
 /// Owns finalization evidence independently of the plan and temporary-artifact lifetime.
 struct ArchiveFinalizationResult final {
     std::vector<ArchiveFinalizationAttempt> attempts;
@@ -43,5 +59,6 @@ struct ArchiveFinalizationResult final {
     bool cancelled{};
     bool safeToContinue{true};
     std::string detail;
+    std::vector<ArchiveFinalizationMutation> mutations;
 };
 }  // namespace cao::run

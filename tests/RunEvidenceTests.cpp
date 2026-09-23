@@ -79,6 +79,8 @@ class RunEvidenceTests final : public QObject {
     void interruptedFinalizationRetainsCompletedAttempts();
     /// Derives committed and uncertain mutation counts from sealed attempts in Mod Root order.
     void sealedMutationSummariesReflectCompletedAttempts();
+    /// Seals plugin-only finalization effects even when the output plan contains no attempts.
+    void pluginOnlyFinalizationMutationsAreSealed();
     /// Verifies every live payload is already queryable when its publication callback begins.
     void liveFactsAreRetainedBeforePublication();
     /// Supplies each live payload category as the one whose adapter callback throws.
@@ -381,6 +383,42 @@ void RunEvidenceTests::sealedMutationSummariesReflectCompletedAttempts() {
     QCOMPARE(summaries[2].modRoot, std::filesystem::path("beta"));
     QCOMPARE(summaries[2].kind, MutationKind::ArchiveFinalization);
     QCOMPARE(summaries[2].committed, std::size_t{1});
+}
+
+void RunEvidenceTests::pluginOnlyFinalizationMutationsAreSealed() {
+    using cao::execution::MutationState;
+    using cao::run::ArchiveFinalizationMutationKind;
+    using cao::run::MutationKind;
+
+    MutableRunEvidence evidence;
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::ArchiveFinalization));
+    evidence.recordArchiveFinalizationPlan(0);
+    ArchiveFinalizationResult finalization;
+    finalization.mutations.push_back({.modRoot = "first-mod",
+                                      .path = "first-mod/existing.esp",
+                                      .kind = ArchiveFinalizationMutationKind::PluginCreation,
+                                      .mutation = MutationState::Committed});
+    finalization.mutations.push_back({.modRoot = "second-mod",
+                                      .path = "second-mod/old.esp",
+                                      .kind = ArchiveFinalizationMutationKind::PluginRemoval,
+                                      .mutation = MutationState::Committed});
+    evidence.recordArchiveFinalization(std::move(finalization));
+
+    const auto terminal = consumeAfterCleanup(evidence);
+    const auto* retained = terminal.archiveFinalization();
+    QVERIFY(retained != nullptr);
+    QVERIFY(retained->attempts.empty());
+    QCOMPARE(retained->mutations.size(), std::size_t{2});
+    QCOMPARE(terminal.phase(RunPhase::ArchiveFinalization)->progress()->total(), std::size_t{0});
+    const auto summaries = terminal.mutationSummaries();
+    QCOMPARE(summaries.size(), std::size_t{2});
+    QCOMPARE(summaries[0].modRoot, std::filesystem::path("first-mod"));
+    QCOMPARE(summaries[0].kind, MutationKind::ArchiveFinalization);
+    QCOMPARE(summaries[0].committed, std::size_t{1});
+    QCOMPARE(summaries[1].modRoot, std::filesystem::path("second-mod"));
+    QCOMPARE(summaries[1].kind, MutationKind::ArchiveFinalization);
+    QCOMPARE(summaries[1].committed, std::size_t{1});
 }
 
 void RunEvidenceTests::liveFactsAreRetainedBeforePublication() {

@@ -73,7 +73,7 @@ ArchiveInventory inspectArchiveInventory(const std::filesystem::path& path) {
     return inventory;
 }
 
-/// Canonicalizes a contained game path; rejects names whose extraction could escape or alias.
+/// Normalizes a contained game path without changing its spelling; rejects escaping or aliasing names.
 std::string canonicalArchiveEntryPath(std::string name) {
     std::replace(name.begin(), name.end(), '\\', '/');
     if (name.empty() || name.front() == '/' || name.find('\0') != std::string::npos ||
@@ -87,7 +87,7 @@ std::string canonicalArchiveEntryPath(std::string name) {
         if (text.back() == '.' || text.back() == ' ' || isStagingName(part))
             throw std::invalid_argument("Archive entry aliases an unsafe or reserved path.");
     }
-    return foldedName(relativeName(path));
+    return relativeName(path);
 }
 namespace {
 /// Checks the resolved path's ancestry using native filesystem identity, including Windows casing.

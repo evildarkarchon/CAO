@@ -133,16 +133,21 @@ class ApplicationRunWork final : public RunWorkService {
         };
         adapters.finalizeArchiveLifecycleWithResult = [&] {
             if (options.bBsaCreate) {
-                auto plan = archiveBackend().planFinalization(preparation.modRoots(), options);
-                const auto total = plan.outputs().size();
-                evidence.recordArchiveFinalizationPlan(total);
-                auto result = archiveBackend().finalize(
-                    plan, artifacts, stop, {}, availableArchiveCapacity,
-                    [&](const ArchiveFinalizationAttempt& attempt) {
-                        // Evidence owns each atomic result before its progress event is published.
-                        evidence.recordArchiveFinalizationAttempt(attempt, total);
-                    });
-                return result;
+                try {
+                    auto plan = archiveBackend().planFinalization(preparation.modRoots(), options,
+                                                                   stop);
+                    const auto total = plan.outputs().size();
+                    evidence.recordArchiveFinalizationPlan(total);
+                    return archiveBackend().finalize(
+                        plan, artifacts, stop, {}, availableArchiveCapacity,
+                        [&](const ArchiveFinalizationAttempt& attempt) {
+                            // Evidence owns each atomic result before its progress event is published.
+                            evidence.recordArchiveFinalizationAttempt(attempt, total);
+                        });
+                } catch (const ArchiveFinalizationPlanningCancelled&) {
+                    // Planning made no mutations or trustworthy output total before cancellation.
+                    return ArchiveFinalizationResult{.cancelled = true};
+                }
             }
             ArchiveFinalizationResult result;
             evidence.recordArchiveFinalizationPlan(0);
@@ -153,8 +158,15 @@ class ApplicationRunWork final : public RunWorkService {
                     result.cancelled = true;
                     break;
                 }
-                FilesystemOperations::deleteEmptyDirectories(
+                const auto removed = FilesystemOperations::deleteEmptyDirectories(
                     QString::fromStdWString(root.wstring()));
+                if (removed != 0)
+                    result.mutations.push_back(ArchiveFinalizationMutation{
+                        .modRoot = root,
+                        .path = root,
+                        .kind = ArchiveFinalizationMutationKind::EmptyDirectoryPruning,
+                        .mutation = execution::MutationState::Committed,
+                        .count = removed});
             }
             return result;
         };

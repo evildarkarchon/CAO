@@ -193,6 +193,8 @@ class ArchiveFirstAssetDiscoveryTests final : public QObject
     void stagedExtractionCommitsPayload_data();
     /// Exercises the staged writer for every supported Archive container.
     void stagedExtractionCommitsPayload();
+    /// Extraction keeps an Archive entry's Unicode spelling in the published Loose Asset.
+    void unicodeEntrySpellingSurvivesExtraction();
     /// A source whose manifest changes after preflight must fail before any live merge.
     void changedManifestFailsBeforeMerge();
     /// A link inserted after preflight cannot redirect a staged commit outside the Mod Root.
@@ -467,6 +469,38 @@ void ArchiveFirstAssetDiscoveryTests::stagedExtractionCommitsPayload() {
     QCOMPARE(readFile(archive), original);
     QVERIFY(artifacts.performSafetyCleanup().empty());
     QCOMPARE(readFile(root / "textures/a.dds"), QByteArray("B"));
+}
+
+void ArchiveFirstAssetDiscoveryTests::unicodeEntrySpellingSurvivesExtraction() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto archive = root / "source.bsa";
+    createRawArchive(archive, 1, "Textures/Stra\xC3\x9F" "e.DDS");
+    const auto original = root / "Textures" / std::filesystem::path(u8"Straße.DDS");
+    const auto folded = root / "textures" / "strasse.dds";
+    std::vector<cao::run::ArchiveExtractionPlan> plans;
+    std::vector<cao::run::ArchiveExtractionResult> attempts;
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = ArchiveFirstAssetDiscovery(archiveEnabledPolicy()).discover(
+        std::array{root},
+        [&](const auto&) {
+            for (const auto& plan : plans)
+                attempts.push_back(cao::run::ArchiveExtractor(artifacts).extract(plan));
+            return true;
+        },
+        {}, cao::run::ArchivePrecedence::deterministicDiscovery(), {},
+        [&](std::span<const cao::run::ArchiveExtractionPlan> preflight) {
+            plans.assign(preflight.begin(), preflight.end());
+        });
+    QVERIFY(result.failures().empty());
+    QCOMPARE(attempts.size(), std::size_t{1});
+    QVERIFY2(attempts.front().succeeded(), attempts.front().detail.c_str());
+    QVERIFY(std::filesystem::exists(original));
+    QCOMPARE(readFile(original), QByteArray("B"));
+    QVERIFY(!std::filesystem::exists(folded));
+    QCOMPARE(pathCount(result.effectiveAssetTree().paths(), original), std::size_t{1});
+    QVERIFY(artifacts.performSafetyCleanup().empty());
 }
 
 void ArchiveFirstAssetDiscoveryTests::partialMergeRetainsCommittedOutput() {

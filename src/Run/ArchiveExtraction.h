@@ -4,7 +4,7 @@
 #include "ArchiveCapacity.h"
 
 namespace cao::run {
-/// Normalizes a manifest name to a case-folded game path, rejecting unsafe or reserved names.
+/// Normalizes a manifest name to its original-spelling game path, rejecting unsafe or reserved names.
 /// Throws invalid_argument for invalid paths and runtime_error for invalid UTF-8.
 [[nodiscard]] std::string canonicalArchiveEntryPath(std::string name);
 
@@ -19,7 +19,7 @@ struct ArchiveInventory final {
 [[nodiscard]] ArchiveInventory inspectArchiveInventory(const std::filesystem::path& path);
 
 /// Owns the manifest paths and precedence winners frozen before any Archive is extracted.
-/// Entry names are canonical paths relative to the Archive's containing directory.
+/// Entry names keep normalized source spelling relative to the Archive's containing directory.
 struct ArchiveExtractionPlan final {
     std::filesystem::path archivePath;
     std::filesystem::path modRoot;

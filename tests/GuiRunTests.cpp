@@ -264,9 +264,14 @@ class GuiRunTests final : public QObject {
         view.begin("run");
         QVERIFY(
             view.consume(RunEvent("run", 1, RunPhaseRecord::executed(RunPhase::SafetyCleanup))));
-        QVERIFY(view.consume(RunEvent("run", 2, result)));
+        QVERIFY(view.consume(RunEvent("run", 2, result->failures().front())));
+        QVERIFY(view.consume(RunEvent("run", 3, result)));
         std::string details;
         for (const auto& line : view.state().details) details += line + '\n';
+        std::size_t primaryFailures = 0;
+        for (const auto& line : view.state().details)
+            if (line.find("Failure: primary failure") != std::string::npos) ++primaryFailures;
+        QCOMPARE(primaryFailures, std::size_t{1});
         for (const auto* expected :
              {"primary failure", "cleanup failure", "staging.tmp", "source remains usable",
               "merge interrupted", "asset save failed", "save_texture", "backend detail",
@@ -277,7 +282,7 @@ class GuiRunTests final : public QObject {
         QCOMPARE(view.state().progress->completed(), std::size_t(2));
         QCOMPARE(view.state().progress->total(), std::size_t(5));
         const auto terminalLabel = view.state().label;
-        QVERIFY(view.consume(RunEvent("run", 3,
+        QVERIFY(view.consume(RunEvent("run", 4,
                                       RunDiagnostic(RunDiagnosticCode::ObserverFailed,
                                                     RunPhase::SafetyCleanup, "late diagnostic"))));
         QCOMPARE(view.state().label, terminalLabel);

@@ -138,6 +138,11 @@ cao::execution::AssetExecutionResult MainOptimizer::finishAttempt(
                     *result.failure(), result.message(), cao::execution::MutationState::Committed,
                     result.safeToContinue(), result.affectedPath(), result.operation(),
                     result.serviceDetail());
+            } else if (!quarantined) {
+                // The malformed source is still packable; finalization must not consume it.
+                result = cao::execution::AssetExecutionResult::failed(
+                    *result.failure(), result.message(), result.mutationState(), false,
+                    result.affectedPath(), result.operation(), result.serviceDetail());
             }
         }
     }

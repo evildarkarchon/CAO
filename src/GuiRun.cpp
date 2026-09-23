@@ -2,6 +2,7 @@
 #include "Run/ArchiveExtraction.h"
 #include "Run/ArchiveFinalizationResult.h"
 #include "Run/AssetRun.h"
+#include <map>
 #include <sstream>
 
 namespace cao::gui {
@@ -38,7 +39,8 @@ const char* mutationName(run::MutationKind kind) noexcept {
     }
     return "Unknown Mutation";
 }
-/// Retains owned result evidence, including changes cancellation cannot roll back.
+/// Retains owned result evidence, including changes cancellation cannot roll back. A streamed
+/// run failure is already visible and must not be repeated when its terminal copy arrives.
 void appendResultDetails(std::vector<std::string>& details,
                          const run::OptimizationRunResult& result) {
     details.push_back(std::string("Cancellation Observed: ") +
@@ -46,8 +48,18 @@ void appendResultDetails(std::vector<std::string>& details,
     details.push_back(std::string("Final Phase: ") + phaseName(result.finalPhase()));
     for (const auto& root : result.modRoots())
         details.push_back("Mod Root: " + root.generic_string());
-    for (const auto& failure : result.failures())
-        details.push_back("Failure: " + failure.detail() + " | " + failure.path().generic_string());
+    std::map<std::string, std::size_t> streamedFailures;
+    for (const auto& detail : details)
+        if (detail.starts_with("Failure: ")) ++streamedFailures[detail];
+    for (const auto& failure : result.failures()) {
+        auto detail = "Failure: " + failure.detail() + " | " + failure.path().generic_string();
+        if (auto found = streamedFailures.find(detail);
+            found != streamedFailures.end() && found->second != 0) {
+            --found->second;
+        } else {
+            details.push_back(std::move(detail));
+        }
+    }
     for (const auto& failure : result.cleanupFailures())
         details.push_back("Cleanup Failure: " + failure.detail() + " | " +
                           failure.path().generic_string());

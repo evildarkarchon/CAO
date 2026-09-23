@@ -54,6 +54,12 @@ class ApplicationRunConfigurationProvider final : public RunConfigurationProvide
                 const auto line = QString::fromUtf8(ignoredFile.readLine()).simplified();
                 if (!line.isEmpty() && !line.startsWith('#')) ignored.push_back(line.toStdString());
             }
+            if (ignoredFile.error() != QFileDevice::NoError)
+                throw std::runtime_error("The ignored-mod configuration could not be read");
+        } else if (QFile::exists(ignoredPath)) {
+            // Missing optional exclusions are allowed; unreadable exclusions would silently
+            // enable processing of children the profile intended to skip.
+            throw std::runtime_error("The ignored-mod configuration could not be opened");
         }
         return RunConfiguration(std::move(facts), std::move(ignored), {"separator"});
     }

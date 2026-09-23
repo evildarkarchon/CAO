@@ -8,10 +8,18 @@
 
 #include <map>
 #include <span>
+#include <stdexcept>
 
 class BSAOptimizer;
 
 namespace cao::run {
+/// Aborts an incomplete mutation-free plan when cancellation arrives during source traversal.
+class ArchiveFinalizationPlanningCancelled final : public std::runtime_error {
+   public:
+    ArchiveFinalizationPlanningCancelled()
+        : std::runtime_error("Archive finalization planning was cancelled.") {}
+};
+
 /// One frozen output and the complete source set consumed by its atomic attempt.
 struct ArchiveFinalizationOutput final {
     std::filesystem::path modRoot;

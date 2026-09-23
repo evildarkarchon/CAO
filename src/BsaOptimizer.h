@@ -52,9 +52,11 @@ class BSAOptimizer final : public QObject {
     void packAll(const QString& folderPath, const OptionsCAO& options) const;
 
     /// Freezes output names and source partitions for all ordered Mod Roots without mutation.
-    /// Throws on unreadable trees or unplannable inputs before any output is attempted.
+    /// Polls stop between inputs and throws ArchiveFinalizationPlanningCancelled instead of
+    /// publishing an incomplete plan. Other unreadable or unplannable inputs also throw.
     [[nodiscard]] cao::run::ArchiveFinalizationPlan planFinalization(
-        std::span<const std::filesystem::path> roots, const OptionsCAO& options) const;
+        std::span<const std::filesystem::path> roots, const OptionsCAO& options,
+        std::stop_token stop = {}) const;
 
     /// Stages, commits, and cleans each planned output without mid-attempt cancellation.
     /// Reports zero-based progress synchronously, isolating observer exceptions. The caller owns

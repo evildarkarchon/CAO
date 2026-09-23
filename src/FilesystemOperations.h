@@ -20,8 +20,9 @@ class FilesystemOperations final : public QObject {
      * * Preserves the selected root, its ancestors, and linked directories; removal is best
      * effort.
      * \param folderPath The path of the folder where empty dirs will be deleted
+     * \return The number of child directories actually removed.
      */
-    static void deleteEmptyDirectories(const QString& folderPath);
+    static std::size_t deleteEmptyDirectories(const QString& folderPath);
     /*!
      * \brief Compares if two folders have the same file structure. Currently only used for testing.
      * \param folder1 The first folder

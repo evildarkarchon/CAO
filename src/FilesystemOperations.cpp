@@ -7,7 +7,7 @@
 #include "PluginsOperations.h"
 #include "Run/StagingPaths.h"
 
-void FilesystemOperations::deleteEmptyDirectories(const QString& folderPath) {
+std::size_t FilesystemOperations::deleteEmptyDirectories(const QString& folderPath) {
     QDirIterator dirIt(folderPath, QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
                        QDirIterator::Subdirectories);
     QMap<int, QStringList> dirs;
@@ -28,11 +28,14 @@ void FilesystemOperations::deleteEmptyDirectories(const QString& folderPath) {
     QMapIterator<int, QStringList> i(dirs);
 
     i.toBack();
+    std::size_t removed = 0;
     while (i.hasPrevious()) {
         i.previous();
         // Remove only the enumerated child, never empty ancestors outside this Mod Root.
-        for (int j = 0; j < i.value().size(); ++j) dir.rmdir(i.value().at(j));
+        for (int j = 0; j < i.value().size(); ++j)
+            if (dir.rmdir(i.value().at(j))) ++removed;
     }
+    return removed;
 }
 
 bool FilesystemOperations::compareFolders(const QString& folder1, const QString& folder2,
