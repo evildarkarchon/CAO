@@ -1,5 +1,7 @@
 #include "CliRun.h"
-#include "Run/RunWorkRecord.h"
+#include "Run/ArchiveExtraction.h"
+#include "Run/ArchiveFinalizationResult.h"
+#include "Run/AssetRun.h"
 #include <chrono>
 #include <atomic>
 #include <csignal>
@@ -76,23 +78,28 @@ const char* mutationName(const run::MutationKind kind) noexcept {
 /// Renders terminal-owned evidence, including effects that cancellation cannot roll back.
 void renderDetails(std::ostream& text, const run::OptimizationRunResult& result) {
     text << "\nCancellation Observed|" << (result.cancellationObserved() ? "yes" : "no");
-    for (const auto& root : result.modRoots()) text << "\nMod Root|" << root;
+    for (const auto& root : result.modRoots()) text << "\nMod Root|" << root.generic_string();
+    for (const auto& failure : result.failures())
+        text << "\nRun Failure|" << failure.detail() << '|' << failure.path().generic_string();
     for (const auto& failure : result.cleanupFailures())
-        text << "\nCleanup Failure|" << failure.detail() << '|' << failure.path();
-    for (const auto& attempt : result.work().assetAttempts) {
+        text << "\nCleanup Failure|" << failure.detail() << '|' << failure.path().generic_string();
+    for (const auto& attempt : result.assetAttempts()) {
         if (!attempt.result.succeeded())
-            text << "\nAsset Failure|" << attempt.asset.executionPath() << '|'
+            text << "\nAsset Failure|" << attempt.asset.executionPath().generic_string() << '|'
                  << attempt.result.operation() << '|' << attempt.result.message() << '|'
+                 << attempt.result.affectedPath().generic_string() << '|'
                  << attempt.result.serviceDetail();
     }
-    for (const auto& attempt : result.work().archiveAttempts)
+    for (const auto& attempt : result.archiveExtractionAttempts())
         if (!attempt.succeeded())
-            text << "\nArchive Failure|" << attempt.archivePath << '|' << attempt.detail;
-    for (const auto& finalization : result.work().finalizations) {
-        if (finalization.failure) text << "\nFinalization Failure|" << finalization.detail;
-        for (const auto& attempt : finalization.attempts)
+            text << "\nArchive Failure|" << attempt.archivePath.generic_string() << '|'
+                 << attempt.detail;
+    if (const auto* finalization = result.archiveFinalization()) {
+        if (finalization->failure) text << "\nFinalization Failure|" << finalization->detail;
+        for (const auto& attempt : finalization->attempts)
             if (!attempt.succeeded())
-                text << "\nArchive Failure|" << attempt.archivePath << '|' << attempt.detail;
+                text << "\nArchive Failure|" << attempt.archivePath.generic_string() << '|'
+                     << attempt.detail;
     }
     for (const auto& mutation : result.mutationSummaries()) {
         // These are completed effects retained by the service, never estimates of remaining work.
@@ -100,11 +107,13 @@ void renderDetails(std::ostream& text, const run::OptimizationRunResult& result)
              << mutationName(mutation.kind) << '|' << mutation.committed
              << "|partial-or-unknown=" << mutation.partialOrUnknown;
     }
-    for (const auto& collision : result.work().collisions) {
-        text << "\nArchive Collision|" << collision.gamePath()
-             << "|winner=" << collision.winningArchive()
-             << "|loose-asset-wins=" << collision.looseAssetWins();
-        for (const auto& shadowed : collision.shadowedArchives()) text << "|shadowed=" << shadowed;
+    for (const auto& collision : result.archiveCollisions()) {
+        text << "\nArchive Collision|" << collision.modRoot().generic_string() << '|'
+             << collision.gamePath().generic_string()
+             << "|winner=" << collision.winningArchive().generic_string()
+             << "|loose-asset-wins=" << (collision.looseAssetWins() ? "yes" : "no");
+        for (const auto& shadowed : collision.shadowedArchives())
+            text << "|shadowed=" << shadowed.generic_string();
     }
     for (const auto reason :
          {routing::SkipReason::DisabledPhase, routing::SkipReason::DisabledAssetKind,

@@ -12,9 +12,10 @@ These are the service's phase-local counters, not an overall percentage. Failed 
 advance completed progress; cancelled, unattempted work does not. Indeterminate and
 skipped phases have no invented progress total. Skipped phases include their reason.
 
-The terminal event names the outcome and final work phase, with operation and cleanup
-failures, cancellation observation, and retained mutation details. Safety Cleanup is
-reported before the terminal event. Committed outputs remain after cancellation or failure.
+The terminal event names the outcome and final work phase. Its sealed details include
+Run Failures, Operation Failures, Safety Cleanup failures, Archive Collisions, cancellation
+observation, and committed mutation counts by Mod Root and operation kind. Safety Cleanup
+is reported before the terminal event. Committed outputs remain after cancellation or failure.
 
 Ctrl+C requests cooperative cancellation. The CLI keeps waiting for the in-flight
 attempt and Safety Cleanup. Repeated Ctrl+C requests do not force the worker to stop.
