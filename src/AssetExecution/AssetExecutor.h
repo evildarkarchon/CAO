@@ -210,7 +210,9 @@ class AssetExecutor final {
                                                    run::TemporaryArtifactRegistry& artifacts,
                                                    const std::filesystem::path& modRoot) const;
 
-    /// Stages changed Animation output and reports durable mutation at each failure boundary.
+    /// Stages Apply-mode Animation output under Temporary Ownership and publishes usable changed
+    /// bytes through a one-use replacement receipt. Reports committed mutation even if ownership
+    /// release fails after publication.
     [[nodiscard]] AssetExecutionResult executeAnimation(const routing::RoutedAsset& asset,
                                                         run::TemporaryArtifactRegistry& artifacts,
                                                         const std::filesystem::path& modRoot) const;

@@ -15,7 +15,7 @@ class AnimationsOptimizer final : public QObject {
     /// Ports an Oldrim Animation with the Havok post-processor and reports every execution failure.
     /// Reads sourcePath without changing it and writes only to the caller's registered staging
     /// outputPath. Returns true only after the process succeeds and produces a nonempty file;
-    /// the caller retains responsibility for committing or cleaning the staged output.
+    /// the caller retains responsibility for publishing or cleaning the staged output.
     [[nodiscard]] bool convert(const QString& sourcePath, const QString& outputPath);
 
    private:

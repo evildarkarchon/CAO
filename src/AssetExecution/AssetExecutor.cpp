@@ -5,10 +5,6 @@
 #include <fstream>
 #include <utility>
 
-#ifdef _WIN32
-#include <Windows.h>
-#endif
-
 namespace cao::execution {
 namespace {
 /// Captures readable bytes without retaining a potentially large Asset in memory.
@@ -32,31 +28,6 @@ std::optional<std::pair<std::uint64_t, std::uint64_t>> assetFingerprint(
     }
     if (!input.eof() || input.bad() || size == 0) return std::nullopt;
     return std::pair{size, hash};
-}
-
-/// Flushes staged bytes and replaces a same-volume destination without a cross-volume copy
-/// fallback.
-std::error_code commitStagedAsset(const std::filesystem::path& staged,
-                                  const std::filesystem::path& destination) {
-#ifdef _WIN32
-    const auto file = CreateFileW(staged.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                                  OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-    if (file == INVALID_HANDLE_VALUE)
-        return {static_cast<int>(GetLastError()), std::system_category()};
-    // Durable ownership must never get ahead of a destination whose bytes are still buffered.
-    const bool flushed = FlushFileBuffers(file) != 0;
-    const auto error = GetLastError();
-    CloseHandle(file);
-    if (!flushed) return {static_cast<int>(error), std::system_category()};
-    if (!MoveFileExW(staged.c_str(), destination.c_str(),
-                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-        return {static_cast<int>(GetLastError()), std::system_category()};
-    return {};
-#else
-    std::error_code error;
-    std::filesystem::rename(staged, destination, error);
-    return error;
-#endif
 }
 
 }  // namespace
@@ -424,36 +395,40 @@ AssetExecutionResult AssetExecutor::executeAnimation(const routing::RoutedAsset&
     auto mutation = MutationState::None;
     std::string boundary = "optimize_animation";
     try {
-        std::optional<run::TemporaryArtifactRegistry::StagedFile> staging;
+        std::optional<run::TemporaryArtifactRegistry::PublicationReceipt> receipt;
+        std::filesystem::path destination;
         if (asset.executionMode() == routing::ExecutionMode::Apply) {
             boundary = "stage_animation";
-            staging =
-                artifacts.stageFile(modRoot.empty() ? std::filesystem::absolute(path).parent_path()
-                                                    : std::filesystem::absolute(modRoot),
-                                    std::filesystem::absolute(path));
+            destination = std::filesystem::absolute(path);
+            receipt.emplace(artifacts.stageFileForPublication(
+                modRoot.empty() ? destination.parent_path() : std::filesystem::absolute(modRoot),
+                destination));
         }
         boundary = "optimize_animation";
         const auto operation = _backend.optimizeAnimation(
-            path, staging ? staging->path : std::filesystem::path{}, asset.executionMode());
+            path, receipt ? receipt->path() : std::filesystem::path{}, asset.executionMode());
         if (!operation.succeeded())
             return AssetExecutionResult::failed(AssetExecutionFailure::OperationFailed,
                                                 "Failed to optimize Animation.", mutation, true,
                                                 path, boundary, operation.message());
-        if (!staging || !operation.wouldChange()) return AssetExecutionResult::success();
+        if (!receipt || !operation.wouldChange()) return AssetExecutionResult::success();
         boundary = "save_animation";
-        if (!assetFingerprint(staging->path))
+        if (!assetFingerprint(receipt->path()))
             return AssetExecutionResult::failed(AssetExecutionFailure::SaveFailed,
                                                 "Animation output is not a usable regular file.",
                                                 mutation, true, path, boundary);
         boundary = "commit_animation";
-        if (const auto error = commitStagedAsset(staging->path, path))
+        const auto publication = receipt->publish(destination, run::PublicationPolicy::Replace);
+        if (publication.state != run::PublicationState::PublishedAndReleased) {
+            // The native replacement precedes ownership release; a release failure still leaves a
+            // Committed Mutation and is unsafe for this run to continue.
+            const bool published = publication.state == run::PublicationState::PublishedStillOwned;
+            mutation = published ? MutationState::Committed : MutationState::None;
             return AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed,
-                                                "Failed to commit Animation output.", mutation,
-                                                true, path, boundary, error.message());
-        // Ownership release can throw after replacement; retain the committed mutation in that
-        // case.
+                                                "Failed to publish Animation output.", mutation,
+                                                !published, path, boundary, publication.errorDetail);
+        }
         mutation = MutationState::Committed;
-        artifacts.commit(staging->registration);
         return AssetExecutionResult::success(mutation);
     } catch (const std::filesystem::filesystem_error& error) {
         const bool stagingFailure = boundary == "stage_animation";

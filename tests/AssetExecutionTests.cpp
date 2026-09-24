@@ -314,6 +314,10 @@ class AssetExecutionTests final : public QObject {
     void animationStagedOutcomes_data();
     /// Preserves original bytes and reports the stable failed boundary while cleaning staging.
     void animationStagedOutcomes();
+    /// Preserves an occupied destination when replacement fails before publication.
+    void animationCommitFailure();
+    /// Retains the replacement and Committed Mutation when Temporary Ownership release fails.
+    void animationPublicationReleaseFailure();
 
     /// Verifies a reported backend failure cannot alter the earlier Routing Decision.
     void executionFailurePreservesRoutedDecision();
@@ -1054,6 +1058,14 @@ void AssetExecutionTests::animationExecution() {
     QCOMPARE(backend.animationOptimizations, 1);
     QVERIFY(backend.animationPath == asset.executionPath());
     QCOMPARE(backend.animationMode.value(), executionMode);
+    if (executionMode == ExecutionMode::DryRun) {
+        QVERIFY(backend.savedAnimationPath.empty());
+        QVERIFY(!std::filesystem::exists(source.parent_path() / ".cao-staging"));
+    } else {
+        QVERIFY(backend.savedAnimationPath.parent_path() == source.parent_path());
+        QVERIFY(cao::run::isStagingName(backend.savedAnimationPath));
+        QVERIFY(!std::filesystem::exists(backend.savedAnimationPath));
+    }
 }
 
 void AssetExecutionTests::animationFailureIsReported() {
@@ -1125,6 +1137,64 @@ void AssetExecutionTests::animationStagedOutcomes() {
     QVERIFY(result.affectedPath() == source);
     QCOMPARE(result.phase(), cao::run::RunPhase::ProcessingAssets);
     if (scenario == 2) QCOMPARE(result.serviceDetail(), std::string("converter exception"));
+}
+
+void AssetExecutionTests::animationCommitFailure() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto destination = root / "Walk.hkx";
+    // The backend accepts this fixture, but publication must reject replacing a directory.
+    std::filesystem::create_directory(destination);
+    std::ofstream(destination / "unowned") << "keep";
+    RecordingBackend backend;
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::AnimationOptimization}, destination));
+
+    QCOMPARE(result.failure().value(), AssetExecutionFailure::CommitFailed);
+    QCOMPARE(result.mutationState(), MutationState::None);
+    QVERIFY(result.safeToContinue());
+    QCOMPARE(result.operation(), std::string("commit_animation"));
+    QVERIFY(result.affectedPath() == destination);
+    QCOMPARE(readBytes(destination / "unowned"), std::string("keep"));
+    QVERIFY(!std::filesystem::exists(backend.savedAnimationPath));
+    QVERIFY(result.cleanupFailures().empty());
+}
+
+void AssetExecutionTests::animationPublicationReleaseFailure() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString()) / "Mod";
+    std::filesystem::create_directory(root);
+    const auto source = root / "Walk.hkx";
+    std::ofstream(source) << "original";
+    cao::run::TemporaryArtifactRegistry artifacts;
+    RecordingBackend backend;
+    backend.animationSave = [&](const std::filesystem::path& staged) {
+        if (readBytes(source) != "original")
+            throw std::runtime_error("Animation changed before publication");
+        std::ofstream(staged) << "converted";
+        // Occupy the ownership scratch name after staging so publication succeeds but release fails.
+        std::ofstream scratch(root / ".cao-staging" / "ownership.manifest.next");
+        scratch << "occupied scratch";
+        return static_cast<bool>(scratch) ? OperationResult::changed()
+                                          : OperationResult::failed("scratch setup failed");
+    };
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::AnimationOptimization}, source),
+        artifacts, root);
+
+    QVERIFY(!result.succeeded());
+    QCOMPARE(result.failure().value(), AssetExecutionFailure::CommitFailed);
+    QCOMPARE(result.mutationState(), MutationState::Committed);
+    QVERIFY(!result.safeToContinue());
+    QCOMPARE(result.operation(), std::string("commit_animation"));
+    QVERIFY(result.affectedPath() == source);
+    QVERIFY(!result.serviceDetail().empty());
+    QCOMPARE(readBytes(source), std::string("converted"));
+    QVERIFY(!std::filesystem::exists(backend.savedAnimationPath));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+    QCOMPARE(readBytes(source), std::string("converted"));
 }
 
 void AssetExecutionTests::executionFailurePreservesRoutedDecision() {
