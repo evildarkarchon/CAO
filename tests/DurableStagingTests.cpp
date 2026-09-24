@@ -71,6 +71,8 @@ class DurableStagingTests final : public QObject {
     void assetPublicationRejectsReplacedParent();
     /// A failed durable release retains the published fact and leaves recovery ownership intact.
     void publicationReleaseFailurePreservesCommittedDestination();
+    /// Recovery retains an Archive destination and removes abandoned staging after producer death.
+    void archivePublicationSurvivesProducerTermination();
 };
 
 void DurableStagingTests::abandonedArchiveEntryIsRecovered() {
@@ -780,9 +782,62 @@ void DurableStagingTests::publicationReleaseFailurePreservesCommittedDestination
     QCOMPARE(output.readAll(), QByteArray("committed entry"));
 }
 
+void DurableStagingTests::archivePublicationSurvivesProducerTermination() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto destination = root / "scripts" / "entry.pex";
+    QVERIFY(fs::create_directory(destination.parent_path()));
+    const auto unrelated = root / "unrelated.txt";
+    std::ofstream(unrelated, std::ios::binary) << "keep this";
+
+    QProcess producer;
+    producer.start(QCoreApplication::applicationFilePath(),
+                   {"--archive-publication-crash", QString::fromStdWString(root.wstring())});
+    QVERIFY(producer.waitForReadyRead(10000));
+    QCOMPARE(producer.readAllStandardOutput().trimmed(), QByteArray("published-still-owned"));
+    cao::run::StagingRecovery contender;
+    const auto active = contender.recover(root);
+    QVERIFY(active.has_value());
+    QCOMPARE(active->code(), cao::run::RunFailureCode::StagingActive);
+    producer.kill();
+    QVERIFY(producer.waitForFinished());
+
+    cao::run::StagingRecovery recovery;
+    QVERIFY(!recovery.recover(root).has_value());
+    QFile output(QString::fromStdWString(destination.wstring()));
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    QCOMPARE(output.readAll(), QByteArray("committed entry"));
+    QFile retained(QString::fromStdWString(unrelated.wstring()));
+    QVERIFY(retained.open(QIODevice::ReadOnly));
+    QCOMPARE(retained.readAll(), QByteArray("keep this"));
+    const auto staging = root / ".cao-staging";
+    for (const auto& entry : fs::directory_iterator(staging))
+        QVERIFY(!entry.is_directory());
+    QVERIFY(!fs::exists(staging / "ownership.manifest.next"));
+}
+
 /// Runs a real interrupted producer without destructor cleanup, or the normal Qt test suite.
 int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
+    if (application.arguments().size() == 3 &&
+        application.arguments().at(1) == "--archive-publication-crash") {
+        const auto root = fs::canonical(fs::path(application.arguments().at(2).toStdWString()));
+        cao::run::TemporaryArtifactRegistry registry;
+        auto published = registry.stageArchiveFileForPublication(root);
+        auto abandoned = registry.stageArchiveFileForPublication(root);
+        std::ofstream(published.path(), std::ios::binary) << "committed entry";
+        std::ofstream(abandoned.path(), std::ios::binary) << "abandoned entry";
+        // Occupying scratch after both stages forces release to fail after native publication.
+        std::ofstream(root / ".cao-staging" / "ownership.manifest.next", std::ios::binary)
+            << "occupied scratch";
+        const auto result = published.publish(root / "scripts" / "entry.pex",
+                                              cao::run::PublicationPolicy::NoReplace);
+        if (result.state != cao::run::PublicationState::PublishedStillOwned) return 2;
+        std::fputs("published-still-owned\n", stdout);
+        std::fflush(stdout);
+        return application.exec();
+    }
     if (application.arguments().size() == 3 && application.arguments().at(1) == "--staging-crash") {
         const auto root = fs::canonical(fs::path(application.arguments().at(2).toStdWString()));
         cao::run::TemporaryArtifactRegistry registry;

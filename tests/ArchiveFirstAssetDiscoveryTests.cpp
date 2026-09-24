@@ -195,6 +195,10 @@ class ArchiveFirstAssetDiscoveryTests final : public QObject
     void stagedExtractionCommitsPayload();
     /// Extraction keeps an Archive entry's Unicode spelling in the published Loose Asset.
     void unicodeEntrySpellingSurvivesExtraction();
+    /// Extraction publishes beneath an existing directory's game-path casing.
+    void extractionUsesExistingParentCasing();
+    /// A Loose Asset created after preflight blocks the planned Archive merge.
+    void lateLooseAssetBlocksArchiveMerge();
     /// A source whose manifest changes after preflight must fail before any live merge.
     void changedManifestFailsBeforeMerge();
     /// A link inserted after preflight cannot redirect a staged commit outside the Mod Root.
@@ -501,6 +505,63 @@ void ArchiveFirstAssetDiscoveryTests::unicodeEntrySpellingSurvivesExtraction() {
     QVERIFY(!std::filesystem::exists(folded));
     QCOMPARE(pathCount(result.effectiveAssetTree().paths(), original), std::size_t{1});
     QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void ArchiveFirstAssetDiscoveryTests::extractionUsesExistingParentCasing() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto archive = root / "source.bsa";
+    createRawArchive(archive, 1, "textures/a.dds");
+    QVERIFY(std::filesystem::create_directory(root / "Textures"));
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = cao::run::ArchiveExtractor(artifacts).extract(
+        {archive, root, {"textures/a.dds"}, {"textures/a.dds"}});
+    QVERIFY2(result.succeeded(), result.detail.c_str());
+    QCOMPARE(readFile(root / "Textures" / "a.dds"), QByteArray("B"));
+    std::vector<std::filesystem::path> matchingParents;
+    for (const auto& entry : std::filesystem::directory_iterator(root)) {
+        if (QString::compare(QString::fromStdWString(entry.path().filename().wstring()),
+                             "textures", Qt::CaseInsensitive) == 0)
+            matchingParents.push_back(entry.path().filename());
+    }
+    QCOMPARE(matchingParents, std::vector<std::filesystem::path>{"Textures"});
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void ArchiveFirstAssetDiscoveryTests::lateLooseAssetBlocksArchiveMerge() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto archive = root / "source.bsa";
+    const auto loose = root / "Textures" / "A.DDS";
+    createRawArchive(archive, 1, "textures/a.dds");
+    std::vector<cao::run::ArchiveExtractionPlan> plans;
+    std::vector<cao::run::ArchiveExtractionResult> attempts;
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto discovery = ArchiveFirstAssetDiscovery(archiveEnabledPolicy()).discover(
+        std::array{root},
+        [&](const auto&) {
+            for (const auto& plan : plans)
+                attempts.push_back(cao::run::ArchiveExtractor(artifacts).extract(plan));
+            return true;
+        },
+        {}, cao::run::ArchivePrecedence::deterministicDiscovery(), {},
+        [&](std::span<const cao::run::ArchiveExtractionPlan> preflight) {
+            plans.assign(preflight.begin(), preflight.end());
+            writeFile(loose, "late loose");
+        });
+    QVERIFY(discovery.failures().empty());
+    QCOMPARE(plans.size(), std::size_t{1});
+    QCOMPARE(plans.front().mergeEntries, std::vector<std::string>{"textures/a.dds"});
+    QCOMPARE(attempts.size(), std::size_t{1});
+    QCOMPARE(attempts.front().failure, cao::run::ArchiveExtractionFailure::MergeFailed);
+    QCOMPARE(attempts.front().mutation, cao::execution::MutationState::PartialOrUnknown);
+    QVERIFY(!attempts.front().safeToContinue);
+    QCOMPARE(readFile(loose), QByteArray("late loose"));
+    QVERIFY(std::filesystem::exists(archive));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+    QCOMPARE(readFile(loose), QByteArray("late loose"));
 }
 
 void ArchiveFirstAssetDiscoveryTests::partialMergeRetainsCommittedOutput() {

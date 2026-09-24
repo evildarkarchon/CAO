@@ -122,10 +122,13 @@ ArchiveExtractionResult ArchiveExtractor::extract(const ArchiveExtractionPlan& p
             // publication while retaining the native no-replace rule for competing Loose Assets.
             const auto publication =
                 temporary.publish(destination.path, PublicationPolicy::NoReplace);
-            if (publication.state != PublicationState::PublishedAndReleased)
+            if (publication.state != PublicationState::PublishedAndReleased) {
+                // The destination may already be committed; the existing attempt-level failure
+                // still reports partial mutation and prevents unsafe continuation.
                 throw std::runtime_error(publication.errorDetail.empty()
                                              ? "Archive publication did not complete."
                                              : publication.errorDetail);
+            }
             result.mutation = execution::MutationState::Committed;
         }
         return result;
