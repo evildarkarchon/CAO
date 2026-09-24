@@ -59,9 +59,9 @@ int main(int argc, char* argv[]) {
         window->show();
 #else
         const cao::cli::ConsoleInterrupt interruption;
+        auto configuration = cao::run::makeApplicationRunConfigurationProvider();
         cao::run::OptimizationRunService service(
-            cao::run::makeApplicationRunConfigurationProvider(),
-            cao::run::makeApplicationRunWork(options));
+            configuration, cao::run::makeApplicationRunWork(options, configuration));
         // Standard output has process lifetime; the observer owns its stream reference until join.
         auto output = std::shared_ptr<std::ostream>(&std::cout, [](std::ostream*) {
             // The C++ runtime owns standard output; the run must not delete it.

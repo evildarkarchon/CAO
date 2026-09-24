@@ -1,5 +1,7 @@
 #include "ApplicationRunWork.h"
 
+#include "ApplicationRunSetup.h"
+
 #include "BsaOptimizer.h"
 #include "MainOptimizer.h"
 #include "OptimizerProfileSnapshot.h"
@@ -102,12 +104,16 @@ struct OptionsSnapshot final {
 /// Bridges the application backends into one executor-owned evidence and cleanup lifetime.
 class ApplicationRunWork final : public RunWorkService {
    public:
-    /// Captures all application state while still on the caller thread.
-    explicit ApplicationRunWork(const OptionsCAO& options)
-        : _options(options), _profile(OptimizerProfileSnapshot::captureIntent()) {}
+    /// Captures option intent and retains the configuration provider before scheduling.
+    ApplicationRunWork(const OptionsCAO& options,
+                       std::shared_ptr<const ApplicationRunConfigurationProvider> configuration)
+        : _options(options), _configuration(std::move(configuration)) {}
 
-    /// Reads auxiliary configuration only after start, on the execution thread during Preparing.
-    void prepare() override { _profile.loadAuxiliaryFiles(); }
+    /// Pins the provider's completed Preparing snapshot for the whole work lifetime.
+    void prepare() override {
+        _profile = _configuration->preparedOptimizerProfile();
+        if (!_profile) throw std::logic_error("The selected profile was not prepared");
+    }
 
     /// Runs all roots together so routing, precedence, progress and evidence share one lifecycle.
     void execute(const RunPreparation& preparation, RunWorkEvidence& evidence,
@@ -119,7 +125,7 @@ class ApplicationRunWork final : public RunWorkService {
         std::unique_ptr<MainOptimizer> optimizer;
         std::unique_ptr<BSAOptimizer> archives;
         const auto archiveBackend = [&]() -> BSAOptimizer& {
-            if (!archives) archives = std::make_unique<BSAOptimizer>(_profile);
+            if (!archives) archives = std::make_unique<BSAOptimizer>(*_profile);
             return *archives;
         };
         AssetRunAdapters adapters;
@@ -128,7 +134,7 @@ class ApplicationRunWork final : public RunWorkService {
         };
         adapters.executeAssetWithResult = [&](const routing::RoutedAsset& asset,
                                               const std::filesystem::path& modRoot) {
-            if (!optimizer) optimizer = std::make_unique<MainOptimizer>(options, _profile);
+            if (!optimizer) optimizer = std::make_unique<MainOptimizer>(options, *_profile);
             return optimizer->process(asset, artifacts, modRoot);
         };
         adapters.finalizeArchiveLifecycleWithResult = [&] {
@@ -175,11 +181,14 @@ class ApplicationRunWork final : public RunWorkService {
 
    private:
     OptionsSnapshot _options;
-    OptimizerProfileSnapshot _profile;
+    std::shared_ptr<const ApplicationRunConfigurationProvider> _configuration;
+    std::shared_ptr<const OptimizerProfileSnapshot> _profile;
 };
 }  // namespace
 
-std::shared_ptr<RunWorkService> makeApplicationRunWork(const OptionsCAO& options) {
-    return std::make_shared<ApplicationRunWork>(options);
+std::shared_ptr<RunWorkService> makeApplicationRunWork(
+    const OptionsCAO& options,
+    std::shared_ptr<const ApplicationRunConfigurationProvider> configuration) {
+    return std::make_shared<ApplicationRunWork>(options, std::move(configuration));
 }
 }  // namespace cao::run

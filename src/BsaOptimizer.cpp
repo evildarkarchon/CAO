@@ -83,6 +83,47 @@ bool readablePackedSource(const std::filesystem::path& source) {
     return input.eof() && !input.bad() && bytesRead == expectedSize;
 }
 
+#ifdef _WIN32
+using PackedSourceHandle = std::unique_ptr<void, decltype(&CloseHandle)>;
+
+struct PackedSourceFacts final {
+    BY_HANDLE_FILE_INFORMATION file{};
+    FILE_BASIC_INFO basic{};
+};
+
+/// Captures a native file ID and change metadata, rejecting aliases to links or directories.
+PackedSourceFacts inspectPackedSource(HANDLE handle, const std::filesystem::path& source) {
+    PackedSourceFacts facts;
+    if (!GetFileInformationByHandle(handle, &facts.file) ||
+        !GetFileInformationByHandleEx(handle, FileBasicInfo, &facts.basic,
+                                      sizeof(facts.basic)))
+        throw std::filesystem::filesystem_error(
+            "Could not inspect packed source", source,
+            std::error_code(static_cast<int>(GetLastError()), std::system_category()));
+    if (facts.file.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY))
+        throw std::runtime_error("A packed source is no longer an ordinary file.");
+    return facts;
+}
+
+/// Requires the same file object and unchanged content-relevant metadata after the writer exits.
+bool samePackedSource(const PackedSourceFacts& earlier, const PackedSourceFacts& current) {
+    return earlier.file.dwVolumeSerialNumber == current.file.dwVolumeSerialNumber &&
+           earlier.file.nFileIndexHigh == current.file.nFileIndexHigh &&
+           earlier.file.nFileIndexLow == current.file.nFileIndexLow &&
+           earlier.file.ftCreationTime.dwHighDateTime ==
+               current.file.ftCreationTime.dwHighDateTime &&
+           earlier.file.ftCreationTime.dwLowDateTime ==
+               current.file.ftCreationTime.dwLowDateTime &&
+           earlier.file.ftLastWriteTime.dwHighDateTime ==
+               current.file.ftLastWriteTime.dwHighDateTime &&
+           earlier.file.ftLastWriteTime.dwLowDateTime ==
+               current.file.ftLastWriteTime.dwLowDateTime &&
+           earlier.file.nFileSizeHigh == current.file.nFileSizeHigh &&
+           earlier.file.nFileSizeLow == current.file.nFileSizeLow &&
+           earlier.basic.ChangeTime.QuadPart == current.basic.ChangeTime.QuadPart;
+}
+#endif
+
 /// Publishes a source backup without replacing any directory entry, including dangling links.
 /// Retries occupied names; other filesystem failures leave the source or published backup intact.
 void backupExtractedArchive(const std::filesystem::path& source) {
@@ -111,6 +152,58 @@ void backupExtractedArchive(const std::filesystem::path& source) {
     }
 }
 }  // namespace
+
+#ifdef _WIN32
+struct cao::run::PackedSourcePin::State final {
+    std::filesystem::path source;
+    PackedSourceHandle pinned{nullptr, &CloseHandle};
+    PackedSourceFacts facts;
+};
+
+cao::run::PackedSourcePin::PackedSourcePin(std::filesystem::path source)
+    : _state(std::make_unique<State>()) {
+    _state->source = std::move(source);
+    const auto handle = CreateFileW(_state->source.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                                    nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        throw std::filesystem::filesystem_error(
+            "Could not pin packed source", _state->source,
+            std::error_code(static_cast<int>(GetLastError()), std::system_category()));
+    _state->pinned.reset(handle);
+    _state->facts = inspectPackedSource(handle, _state->source);
+}
+
+cao::run::PackedSourcePin::~PackedSourcePin() = default;
+cao::run::PackedSourcePin::PackedSourcePin(PackedSourcePin&&) noexcept = default;
+cao::run::PackedSourcePin& cao::run::PackedSourcePin::operator=(PackedSourcePin&&) noexcept =
+    default;
+
+void cao::run::PackedSourcePin::releaseForCleanup() noexcept {
+    if (_state) _state->pinned.reset();
+}
+
+void cao::run::PackedSourcePin::removeIfUnchanged() {
+    if (!_state) throw std::logic_error("A moved packed source pin cannot remove a source.");
+    releaseForCleanup();
+    // The writer opens sources without delete sharing. Reopen with DELETE only after it exits,
+    // and compare identities on this handle before marking it for deletion.
+    const auto handle = CreateFileW(_state->source.c_str(), DELETE | FILE_READ_ATTRIBUTES,
+                                    FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                    FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        throw std::filesystem::filesystem_error(
+            "Could not reopen packed source for cleanup", _state->source,
+            std::error_code(static_cast<int>(GetLastError()), std::system_category()));
+    PackedSourceHandle candidate(handle, &CloseHandle);
+    if (!samePackedSource(_state->facts, inspectPackedSource(handle, _state->source)))
+        throw std::runtime_error("A packed source changed before cleanup.");
+    FILE_DISPOSITION_INFO disposition{TRUE};
+    if (!SetFileInformationByHandle(handle, FileDispositionInfo, &disposition,
+                                    sizeof(disposition)))
+        throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
+                                "A packed source could not be removed");
+}
+#endif
 
 BSAOptimizer::BSAOptimizer() : BSAOptimizer(OptimizerProfileSnapshot::capture()) {}
 
@@ -457,6 +550,13 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
                     saturatedCapacityAdd(std::max(output.estimatedCapacityBytes, currentCapacity),
                                          dummyCapacity.requiredAt(output.modRoot))))
                 return result;
+#ifdef _WIN32
+            std::vector<PackedSourcePin> sourcePins;
+            if (plan._deleteSources) {
+                sourcePins.reserve(output.sources.size());
+                for (const auto& source : output.sources) sourcePins.emplace_back(source);
+            }
+#endif
             const auto staged = artifacts.stageArchiveFile(output.modRoot);
             auto archive = plan._archives[index];
             archive.set_out_path(staged.path);
@@ -493,11 +593,19 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
             }
             boundary = ArchiveFinalizationFailure::SourceCleanupFailed;
             if (plan._deleteSources) {
+#ifdef _WIN32
+                for (auto& pin : sourcePins) {
+                    pin.releaseForCleanup();
+                    pin.removeIfUnchanged();
+                    ++removedSources;
+                }
+#else
                 for (const auto& source : output.sources) {
                     if (!fs::remove(source))
                         throw std::runtime_error("A packed source could not be removed.");
                     ++removedSources;
                 }
+#endif
             }
         } catch (const std::exception& error) {
             attempt.failure = boundary;

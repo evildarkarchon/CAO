@@ -177,6 +177,9 @@ private slots:
  /// Retains every Loose Asset when an output cannot include all of its planned sources.
  void failedPackingRetainsSourcesAndExistingArchives();
 
+ /// Keeps a replacement after the packed file pin is released for guarded cleanup.
+ void packedSourcePinPreservesReplacement();
+
  /// Covers cancellation before work, between outputs, and after the final output.
  void finalizationFreezesTotalAndCancelsBetweenOutputs_data();
  /// Observes a complete multi-root plan before mutation and commits only attempted outputs.
@@ -390,6 +393,36 @@ void MainOptimizerTests::failedPackingRetainsSourcesAndExistingArchives() {
     QCOMPARE(archive.readAll(), QByteArrayLiteral("previous archive bytes"));
 #else
     QSKIP("Windows sharing modes provide a deterministic source read failure.");
+#endif
+}
+
+void MainOptimizerTests::packedSourcePinPreservesReplacement() {
+#ifdef _WIN32
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto source = root / "textures" / "asset.dds";
+    const auto displaced = root / "textures" / "displaced.dds";
+    writeFile(source, QByteArrayLiteral("original source bytes"));
+
+    cao::run::PackedSourcePin pin(source);
+    // A writer cannot replace the file while the archive reader's pin is open.
+    QVERIFY(!MoveFileExW(source.c_str(), displaced.c_str(), 0));
+    const auto movedParent = root / "moved-textures";
+    QVERIFY(!MoveFileExW(source.parent_path().c_str(), movedParent.c_str(), 0));
+    pin.releaseForCleanup();
+    QVERIFY(MoveFileExW(source.c_str(), displaced.c_str(), 0));
+    writeFile(source, QByteArrayLiteral("replacement source bytes"));
+    QVERIFY_EXCEPTION_THROWN(pin.removeIfUnchanged(), std::runtime_error);
+
+    QFile retained(QString::fromStdWString(source.wstring()));
+    QVERIFY(retained.open(QIODevice::ReadOnly));
+    QCOMPARE(retained.readAll(), QByteArrayLiteral("replacement source bytes"));
+    QFile old(QString::fromStdWString(displaced.wstring()));
+    QVERIFY(old.open(QIODevice::ReadOnly));
+    QCOMPARE(old.readAll(), QByteArrayLiteral("original source bytes"));
+#else
+    QSKIP("Windows file handles provide the packed-source identity guard.");
 #endif
 }
 

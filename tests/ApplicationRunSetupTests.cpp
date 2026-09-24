@@ -51,6 +51,8 @@ private slots:
     void requestOwnsCallerIntent();
     /// Loads the named profile and fallback exclusions independently of subsequent UI selection.
     void providerLoadsOwnedConfiguration();
+    /// Uses the profile.ini version loaded during Preparing for both routing and backend settings.
+    void providerLoadsRoutingAndBackendFromTheSameUpdatedProfile();
     /// An unreadable selected exclusion file cannot silently permit every child Mod Root.
     void providerRejectsUnreadableIgnoredMods();
     /// Covers numeric choices that parsing accepts but optimization cannot safely execute.
@@ -221,6 +223,36 @@ void ApplicationRunSetupTests::providerLoadsOwnedConfiguration()
     QCOMPARE(configuration.ignoredMods()[0], std::string("Tool Mod"));
     QCOMPARE(configuration.separatorMarkers()[0], std::string("separator"));
     QVERIFY_EXCEPTION_THROWN(static_cast<void>(provider->load("MissingProfile")), std::runtime_error);
+}
+
+void ApplicationRunSetupTests::providerLoadsRoutingAndBackendFromTheSameUpdatedProfile()
+{
+    const auto profileDirectory = QStringLiteral("profiles/UpdatedBeforePreparing");
+    QVERIFY(QDir().mkpath(profileDirectory));
+    const auto profilePath = profileDirectory + QStringLiteral("/profile.ini");
+    QVERIFY(QFile::copy(QStringLiteral(CAO_SOURCE_DIR "/profiles/FO4/profile.ini"), profilePath));
+
+    Profiles::setCurrentProfile(QStringLiteral("UpdatedBeforePreparing"));
+    const auto capturedBeforePreparing = OptimizerProfileSnapshot::captureIntent();
+    const auto provider = cao::run::makeApplicationRunConfigurationProvider();
+    QSettings updated(profilePath, QSettings::IniFormat);
+    updated.setValue(QStringLiteral("BSA/bsaGame"), 4);
+    updated.setValue(QStringLiteral("BSA/maxBsaUncompressedSize"), 1.0);
+    updated.setValue(QStringLiteral("Meshes/meshesStream"), 110);
+    updated.setValue(QStringLiteral("Textures/texturesFormat"), 87);
+    updated.sync();
+    QCOMPARE(updated.status(), QSettings::NoError);
+
+    const auto configuration = provider->load("UpdatedBeforePreparing");
+    const auto backend = provider->preparedOptimizerProfile();
+    QVERIFY(backend);
+    QCOMPARE(capturedBeforePreparing.bsaGame, static_cast<btu::Game>(5));
+    QCOMPARE(configuration.profile().archiveExtension, std::optional<std::string>(".bsa"));
+    QCOMPARE(backend->bsaGame, static_cast<btu::Game>(4));
+    QCOMPARE(backend->maxBsaUncompressedSize,
+             static_cast<double>(btu::bsa::Settings::get(static_cast<btu::Game>(4)).max_size));
+    QCOMPARE(backend->meshesStream, 110u);
+    QCOMPARE(backend->texturesFormat, static_cast<DXGI_FORMAT>(87));
 }
 
 void ApplicationRunSetupTests::providerRejectsUnreadableIgnoredMods()

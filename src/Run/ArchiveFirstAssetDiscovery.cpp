@@ -6,8 +6,10 @@
 #include <bsa/bsa.hpp>
 
 #include <algorithm>
+#include <iterator>
 #include <map>
 #include <set>
+#include <string_view>
 #include <system_error>
 #include <unordered_set>
 #include <utility>
@@ -73,6 +75,26 @@ ArchiveInventory inspectArchiveInventory(const std::filesystem::path& path) {
     return inventory;
 }
 
+namespace {
+/// Matches the Win32 device basenames rejected again by publication, including numbered devices.
+bool reservedWindowsDeviceName(std::string_view component) {
+    auto stem = std::string(component.substr(0, component.find('.')));
+    std::transform(stem.begin(), stem.end(), stem.begin(), [](const unsigned char character) {
+        return character >= 'a' && character <= 'z'
+                   ? static_cast<char>(character - ('a' - 'A'))
+                   : static_cast<char>(character);
+    });
+    if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" ||
+        stem == "CONIN$" || stem == "CONOUT$")
+        return true;
+    if (stem.size() < 4 || (!stem.starts_with("COM") && !stem.starts_with("LPT")))
+        return false;
+    const auto number = std::string_view(stem).substr(3);
+    return (number.size() == 1 && number.front() >= '1' && number.front() <= '9') ||
+           number == "\xC2\xB9" || number == "\xC2\xB2" || number == "\xC2\xB3";
+}
+}  // namespace
+
 /// Normalizes a contained game path without changing its spelling; rejects escaping or aliasing names.
 std::string canonicalArchiveEntryPath(std::string name) {
     std::replace(name.begin(), name.end(), '\\', '/');
@@ -84,7 +106,8 @@ std::string canonicalArchiveEntryPath(std::string name) {
         throw std::invalid_argument("Archive entry escapes its extraction directory.");
     for (const auto& part : path) {
         const auto text = relativeName(part);
-        if (text.back() == '.' || text.back() == ' ' || isStagingName(part))
+        if (text.back() == '.' || text.back() == ' ' || isStagingName(part) ||
+            reservedWindowsDeviceName(text))
             throw std::invalid_argument("Archive entry aliases an unsafe or reserved path.");
     }
     return relativeName(path);
@@ -101,6 +124,44 @@ bool isWithinRoot(const std::filesystem::path& resolvedPath,
         ancestor = parent;
     }
     return false;
+}
+
+/// Rejects already occupied destinations and non-directory parents using game-path casing.
+/// An ordinary Loose Asset at the leaf remains authoritative and therefore needs no merge.
+void validateExistingArchiveDestination(const std::filesystem::path& root,
+                                        const std::filesystem::path& destination,
+                                        bool hasLooseFile) {
+    auto parent = root;
+    const auto relative = destination.lexically_relative(root);
+    for (auto part = relative.begin(); part != relative.end(); ++part) {
+        const auto folded = foldedName(relativeName(*part));
+        std::optional<std::filesystem::path> existing;
+        for (const auto& entry : std::filesystem::directory_iterator(parent)) {
+            if (foldedName(relativeName(entry.path().filename())) != folded) continue;
+            if (existing)
+                throw std::invalid_argument("Archive destination has ambiguous casing.");
+            existing = entry.path();
+        }
+        if (!existing) return;
+        const auto status = std::filesystem::symlink_status(*existing);
+        if (std::next(part) == relative.end()) {
+            // A contained file link is a Loose Asset; follow only the leaf when checking its type.
+            if (!hasLooseFile || !std::filesystem::is_regular_file(*existing))
+                throw std::invalid_argument("Archive destination is already occupied.");
+        } else {
+            if (!std::filesystem::is_directory(status) || std::filesystem::is_symlink(status))
+                throw std::invalid_argument("Archive destination parent is not an ordinary directory.");
+#ifdef _WIN32
+            // Some reparse directories are not classified as symlinks by std::filesystem.
+            const auto attributes = GetFileAttributesW(existing->c_str());
+            if (attributes == INVALID_FILE_ATTRIBUTES)
+                throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
+            if (attributes & FILE_ATTRIBUTE_REPARSE_POINT)
+                throw std::invalid_argument("Archive destination parent is a reparse point.");
+#endif
+            parent = *existing;
+        }
+    }
 }
 
 /// Validates and applies complete high-to-low intent within one already resolved Mod Root.
@@ -491,6 +552,7 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
         auto& plan =
             extractionPlans.emplace_back(ArchiveExtractionPlan{archive.executionPath(), root});
         plan.estimatedCapacityBytes = inventory.estimatedCapacityBytes;
+        std::set<std::string> ownGamePaths;
         for (const auto& name : inventory.names) {
             if (isCancelled && isCancelled()) return cancelledResult();
             try {
@@ -507,6 +569,10 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
                         "Archive entry resolves outside the Mod Root or cannot be resolved.");
                 const auto gamePath =
                     foldedName(relativeName(destination.lexically_relative(root)));
+                if (!ownGamePaths.insert(gamePath).second)
+                    throw std::invalid_argument("Archive manifest contains aliased entries.");
+                validateExistingArchiveDestination(
+                    root, destination, loosePaths[root].contains(gamePath));
                 auto& participants = entries[root][gamePath];
                 if (participants.empty() || participants.back() != archive.executionPath())
                     participants.push_back(archive.executionPath());
@@ -516,6 +582,7 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
             }
         }
     }
+    std::map<std::filesystem::path, std::set<std::string>> plannedMergePaths;
     for (auto& plan : extractionPlans) {
         for (const auto& entry : plan.entries) {
             const auto destination =
@@ -525,8 +592,22 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
             // Ownership is frozen before mutation: a failed winner must not promote a shadowed
             // Archive, and a Loose Asset removed later still retains its preflight precedence.
             if (entries.at(plan.modRoot).at(gamePath).front() == plan.archivePath &&
-                !loosePaths[plan.modRoot].contains(gamePath))
+                !loosePaths[plan.modRoot].contains(gamePath)) {
+                auto& planned = plannedMergePaths[plan.modRoot];
+                for (auto slash = gamePath.find('/'); slash != std::string::npos;
+                     slash = gamePath.find('/', slash + 1)) {
+                    if (planned.contains(gamePath.substr(0, slash)))
+                        return failedResult(RunFailureCode::ArchiveEntryInvalid, plan.archivePath,
+                                            "Archive entries require a file and directory at the same game path.");
+                }
+                const auto prefix = gamePath + '/';
+                const auto child = planned.lower_bound(prefix);
+                if (child != planned.end() && child->starts_with(prefix))
+                    return failedResult(RunFailureCode::ArchiveEntryInvalid, plan.archivePath,
+                                        "Archive entries require a file and directory at the same game path.");
+                planned.insert(gamePath);
                 plan.mergeEntries.push_back(entry);
+            }
         }
     }
     for (const auto& root : precedenceScopes) {

@@ -274,9 +274,9 @@ void MainWindow::initProcess() {
     try {
         auto request = cao::run::makeApplicationRunRequest(_options);
         _runHandle.reset();
+        auto configuration = cao::run::makeApplicationRunConfigurationProvider();
         _runService = std::make_unique<cao::run::OptimizationRunService>(
-            cao::run::makeApplicationRunConfigurationProvider(),
-            cao::run::makeApplicationRunWork(_options));
+            configuration, cao::run::makeApplicationRunWork(_options, configuration));
         auto observation =
             cao::gui::queuedObservation(this, [this](const cao::run::RunEvent& event) {
                 const bool wasActive = _runView.state().active;

@@ -12,7 +12,35 @@
 #include "Run/ArchiveFinalization.h"
 #include "pch.h"
 
+#include <memory>
+
 class OptionsCAO;
+
+#ifdef _WIN32
+namespace cao::run {
+/// Holds a packed source stable while the archive writer reads it, then removes only that file.
+class PackedSourcePin final {
+   public:
+    /// Opens an ordinary source for reading while denying concurrent writes and renames.
+    explicit PackedSourcePin(std::filesystem::path source);
+    ~PackedSourcePin();
+    PackedSourcePin(PackedSourcePin&&) noexcept;
+    PackedSourcePin& operator=(PackedSourcePin&&) noexcept;
+    PackedSourcePin(const PackedSourcePin&) = delete;
+    PackedSourcePin& operator=(const PackedSourcePin&) = delete;
+
+    /// Releases the writer-period handle so a DELETE-capable handle can be opened.
+    void releaseForCleanup() noexcept;
+    /// Reopens the source without write/delete sharing and deletes only its recorded identity.
+    /// Throws if file identity or change metadata differs, or Windows rejects deletion.
+    void removeIfUnchanged();
+
+   private:
+    struct State;
+    std::unique_ptr<State> _state;
+};
+}  // namespace cao::run
+#endif
 
 /*!
  * \brief Manages BSA : extract and create them

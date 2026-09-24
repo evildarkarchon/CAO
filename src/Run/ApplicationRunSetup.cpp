@@ -1,72 +1,74 @@
 #include "ApplicationRunSetup.h"
 
+#include "OptimizerProfileSnapshot.h"
 #include "Profiles.h"
 
 #include <stdexcept>
 
 namespace cao::run {
-namespace {
-/// Loads one run's settings with thread-local Qt objects and no profile-singleton access.
-class ApplicationRunConfigurationProvider final : public RunConfigurationProvider {
-   public:
-    /// Owns the absolute configuration root before asynchronous execution can change context.
-    explicit ApplicationRunConfigurationProvider(QString profilesDirectory)
-        : _profilesDirectory(std::move(profilesDirectory)) {}
+ApplicationRunConfigurationProvider::ApplicationRunConfigurationProvider(QString profilesDirectory)
+    : _profilesDirectory(std::move(profilesDirectory)) {}
 
-    /// Reads owned profile capabilities and legacy child exclusions; missing profiles fail
-    /// Preparing.
-    RunConfiguration load(std::string_view identity) const override {
-        const auto name = QString::fromUtf8(identity.data(), static_cast<int>(identity.size()));
-        const QDir profiles(_profilesDirectory);
-        const QDir selected(profiles.filePath(name));
-        const auto profilePath = selected.filePath(QStringLiteral("profile.ini"));
-        if (!QFile::exists(profilePath))
-            throw std::runtime_error("Selected profile is unavailable");
-        QSettings settings(profilePath, QSettings::IniFormat);
-        const auto game = static_cast<btu::Game>(settings.value("BSA/bsaGame").toInt());
-        const auto extension = btu::common::as_ascii(btu::bsa::Settings::get(game).extension);
-        const bool textures = settings.value("Textures/texturesEnabled").toBool();
-        const bool meshes = settings.value("Meshes/meshesEnabled").toBool();
-        const bool archives = settings.value("BSA/bsaEnabled").toBool();
-        SelectedProfileFacts facts{
-            .archiveExtension = std::string(extension.data(), extension.size()),
-            .supportsNativeTextureOptimization = textures,
-            .supportsTextureConversion = textures,
-            .supportsStandardMeshOptimization = meshes,
-            .supportsTerrainMeshOptimization = meshes,
-            .supportsAnimationOptimization =
-                settings.value("Animations/animationsEnabled").toBool(),
-            .supportsArchiveExtraction = archives,
-            .supportsMeshReferenceMaintenance = textures,
-            .supportsArchiveCreation = archives,
-        };
-        if (settings.status() != QSettings::NoError)
-            throw std::runtime_error("Selected profile could not be read");
+RunConfiguration ApplicationRunConfigurationProvider::load(std::string_view identity) const {
+    const auto name = QString::fromUtf8(identity.data(), static_cast<int>(identity.size()));
+    const QDir profiles(_profilesDirectory);
+    const QDir selected(profiles.filePath(name));
+    const auto profilePath = selected.filePath(QStringLiteral("profile.ini"));
+    if (!QFile::exists(profilePath))
+        throw std::runtime_error("Selected profile is unavailable");
+    QSettings settings(profilePath, QSettings::IniFormat);
+    const auto game = static_cast<btu::Game>(settings.value("BSA/bsaGame").toInt());
+    const auto extension = btu::common::as_ascii(btu::bsa::Settings::get(game).extension);
+    const bool textures = settings.value("Textures/texturesEnabled").toBool();
+    const bool meshes = settings.value("Meshes/meshesEnabled").toBool();
+    const bool archives = settings.value("BSA/bsaEnabled").toBool();
+    SelectedProfileFacts facts{
+        .archiveExtension = std::string(extension.data(), extension.size()),
+        .supportsNativeTextureOptimization = textures,
+        .supportsTextureConversion = textures,
+        .supportsStandardMeshOptimization = meshes,
+        .supportsTerrainMeshOptimization = meshes,
+        .supportsAnimationOptimization =
+            settings.value("Animations/animationsEnabled").toBool(),
+        .supportsArchiveExtraction = archives,
+        .supportsMeshReferenceMaintenance = textures,
+        .supportsArchiveCreation = archives,
+    };
+    const auto selectedPath = selected.absolutePath();
+    const auto fallbackPath = profiles.absoluteFilePath(QStringLiteral("SSE"));
+    auto optimizer = OptimizerProfileSnapshot::fromSettings(settings, selectedPath, fallbackPath);
+    if (settings.status() != QSettings::NoError)
+        throw std::runtime_error("Selected profile could not be read");
 
-        // Preserve Profiles::getFile's SSE fallback without sharing its QObject-owned settings.
-        auto ignoredPath = selected.filePath(QStringLiteral("ignoredMods.txt"));
-        if (!QFile::exists(ignoredPath))
-            ignoredPath = profiles.filePath(QStringLiteral("SSE/ignoredMods.txt"));
-        QFile ignoredFile(ignoredPath);
-        std::vector<std::string> ignored;
-        if (ignoredFile.open(QIODevice::ReadOnly)) {
-            while (!ignoredFile.atEnd()) {
-                const auto line = QString::fromUtf8(ignoredFile.readLine()).simplified();
-                if (!line.isEmpty() && !line.startsWith('#')) ignored.push_back(line.toStdString());
-            }
-            if (ignoredFile.error() != QFileDevice::NoError)
-                throw std::runtime_error("The ignored-mod configuration could not be read");
-        } else if (QFile::exists(ignoredPath)) {
-            // Missing optional exclusions are allowed; unreadable exclusions would silently
-            // enable processing of children the profile intended to skip.
-            throw std::runtime_error("The ignored-mod configuration could not be opened");
+    // Preserve Profiles::getFile's SSE fallback without sharing its QObject-owned settings.
+    auto ignoredPath = selected.filePath(QStringLiteral("ignoredMods.txt"));
+    if (!QFile::exists(ignoredPath))
+        ignoredPath = profiles.filePath(QStringLiteral("SSE/ignoredMods.txt"));
+    QFile ignoredFile(ignoredPath);
+    std::vector<std::string> ignored;
+    if (ignoredFile.open(QIODevice::ReadOnly)) {
+        while (!ignoredFile.atEnd()) {
+            const auto line = QString::fromUtf8(ignoredFile.readLine()).simplified();
+            if (!line.isEmpty() && !line.startsWith('#')) ignored.push_back(line.toStdString());
         }
-        return RunConfiguration(std::move(facts), std::move(ignored), {"separator"});
+        if (ignoredFile.error() != QFileDevice::NoError)
+            throw std::runtime_error("The ignored-mod configuration could not be read");
+    } else if (QFile::exists(ignoredPath)) {
+        // Missing optional exclusions are allowed; unreadable exclusions would silently
+        // enable processing of children the profile intended to skip.
+        throw std::runtime_error("The ignored-mod configuration could not be opened");
     }
+    // Publish only after every Preparing read succeeds; work never sees a partial profile.
+    _optimizerProfile = std::make_shared<const OptimizerProfileSnapshot>(std::move(optimizer));
+    return RunConfiguration(std::move(facts), std::move(ignored), {"separator"});
+}
 
-   private:
-    QString _profilesDirectory;
-};
+std::shared_ptr<const OptimizerProfileSnapshot>
+ApplicationRunConfigurationProvider::preparedOptimizerProfile() const {
+    return _optimizerProfile;
+}
+
+namespace {
 
 /// Snapshots application option facts without allowing OptionsCAO to cross the AssetRouting
 /// interface.
@@ -78,8 +80,9 @@ ApplicationRunChoices choicesFrom(const OptionsCAO& options) {
     // explicit.
     // Resaving is independent of optimization level, so resave-only runs still need Mesh routing.
     const bool optimizeMeshes = options.iMeshesOptimizationLevel > 0 || options.bMeshesResave;
-    // A profile's TGA preference only participates when the user selected Texture work for this
-    // run.
+    // Freeze the user-facing TGA choice with the run request; Preparing refreshes capabilities
+    // and backend settings, but a later profile.ini edit must not rewrite requested work.
+    // The choice only participates when the user selected Texture work for this run.
     return ApplicationRunChoices{
         .executionMode =
             options.bDryRun ? routing::ExecutionMode::DryRun : routing::ExecutionMode::Apply,
@@ -151,7 +154,8 @@ RunRequest makeApplicationRunRequest(const OptionsCAO& options) {
                               std::move(selection), std::move(work));
 }
 
-std::shared_ptr<const RunConfigurationProvider> makeApplicationRunConfigurationProvider() {
+std::shared_ptr<const ApplicationRunConfigurationProvider>
+makeApplicationRunConfigurationProvider() {
     return std::make_shared<ApplicationRunConfigurationProvider>(QDir("profiles").absolutePath());
 }
 
