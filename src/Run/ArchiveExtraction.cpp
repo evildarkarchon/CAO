@@ -1,4 +1,5 @@
 #include "ArchiveExtraction.h"
+#include "ArchivePathComparison.h"
 #include "PathOrdering.h"
 #include "StagingPaths.h"
 #include <btu/bsa/archive.hpp>
@@ -30,10 +31,10 @@ MergeTarget prepareMergeTarget(const std::filesystem::path& root,
     MergeTarget target{root};
     for (auto part = relative.begin(); part != relative.end(); ++part) {
         const bool leaf = std::next(part) == relative.end();
-        const auto folded = foldedName(relativeName(*part));
+        const auto name = relativeName(*part);
         std::optional<std::filesystem::path> existing;
         for (const auto& entry : std::filesystem::directory_iterator(target.path)) {
-            if (foldedName(relativeName(entry.path().filename())) != folded) continue;
+            if (!sameArchiveGamePath(relativeName(entry.path().filename()), name)) continue;
             if (existing) throw std::runtime_error("Archive destination has ambiguous casing.");
             existing = entry.path();
         }
@@ -92,11 +93,11 @@ ArchiveExtractionResult ArchiveExtractor::extract(const ArchiveExtractionPlan& p
         const std::set<std::string> expected(plan.entries.begin(), plan.entries.end());
         if (expected.size() != plan.entries.size())
             throw std::runtime_error("Archive manifest contains duplicate canonical entries.");
-        std::set<std::string> comparisonKeys;
+        std::set<std::string, ArchiveGamePathLess> comparisonKeys;
         for (const auto& entry : expected) {
             if (canonicalArchiveEntryPath(entry) != entry)
                 throw std::runtime_error("Archive plan contains a noncanonical entry.");
-            if (!comparisonKeys.insert(foldedName(entry)).second)
+            if (!comparisonKeys.insert(entry).second)
                 throw std::runtime_error("Archive manifest contains aliased entries.");
         }
         for (const auto& entry : plan.mergeEntries)

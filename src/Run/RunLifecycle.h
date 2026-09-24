@@ -145,7 +145,7 @@ class ArchiveCollision final {
 
     /// Borrows the canonical Mod Root that defines this collision's scope.
     [[nodiscard]] const std::filesystem::path& modRoot() const noexcept { return _modRoot; }
-    /// Borrows the normalized, case-folded path relative to the Mod Root.
+    /// Borrows the normalized path relative to the Mod Root, spelled as in the winning Archive.
     [[nodiscard]] const std::filesystem::path& gamePath() const noexcept { return _gamePath; }
     /// Borrows the highest-precedence Archive's discovered path.
     [[nodiscard]] const std::filesystem::path& winningArchive() const noexcept {

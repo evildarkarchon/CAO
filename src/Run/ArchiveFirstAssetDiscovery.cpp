@@ -1,4 +1,5 @@
 #include "ArchiveFirstAssetDiscovery.h"
+#include "ArchivePathComparison.h"
 #include "PathOrdering.h"
 #include "StagingPaths.h"
 
@@ -98,7 +99,11 @@ bool reservedWindowsDeviceName(std::string_view component) {
 /// Normalizes a contained game path without changing its spelling; rejects escaping or aliasing names.
 std::string canonicalArchiveEntryPath(std::string name) {
     std::replace(name.begin(), name.end(), '\\', '/');
-    if (name.empty() || name.front() == '/' || name.find('\0') != std::string::npos ||
+    // Reject every Win32 control character before any Archive in the batch can publish a file.
+    const auto hasControl = std::any_of(name.begin(), name.end(), [](const unsigned char character) {
+        return character < 32;
+    });
+    if (name.empty() || name.front() == '/' || hasControl ||
         name.find_first_of(":*?\"<>|") != std::string::npos)
         throw std::invalid_argument("Archive entry has an invalid game path.");
     const auto path = pathFromUtf8(name).lexically_normal();
@@ -134,10 +139,10 @@ void validateExistingArchiveDestination(const std::filesystem::path& root,
     auto parent = root;
     const auto relative = destination.lexically_relative(root);
     for (auto part = relative.begin(); part != relative.end(); ++part) {
-        const auto folded = foldedName(relativeName(*part));
+        const auto name = relativeName(*part);
         std::optional<std::filesystem::path> existing;
         for (const auto& entry : std::filesystem::directory_iterator(parent)) {
-            if (foldedName(relativeName(entry.path().filename())) != folded) continue;
+            if (!sameArchiveGamePath(relativeName(entry.path().filename()), name)) continue;
             if (existing)
                 throw std::invalid_argument("Archive destination has ambiguous casing.");
             existing = entry.path();
@@ -162,6 +167,17 @@ void validateExistingArchiveDestination(const std::filesystem::path& root,
             parent = *existing;
         }
     }
+}
+
+/// Finds a parent game path at a component boundary using Windows filename equivalence.
+bool hasArchiveGamePathAncestor(std::string_view path, std::string_view ancestor) {
+    // Equivalent UTF-16 names may occupy different UTF-8 byte lengths, so compare each
+    // component prefix instead of slicing by the ancestor's byte count.
+    for (auto slash = path.find('/'); slash != std::string_view::npos;
+         slash = path.find('/', slash + 1)) {
+        if (sameArchiveGamePath(path.substr(0, slash), ancestor)) return true;
+    }
+    return false;
 }
 
 /// Validates and applies complete high-to-low intent within one already resolved Mod Root.
@@ -195,7 +211,7 @@ std::variant<std::vector<routing::RoutedAsset>, RunFailure> validateArchiveOrder
             const auto left = relativeName(std::filesystem::absolute(archive.executionPath()));
             const auto right = relativeName(candidate);
 #ifdef _WIN32
-            return foldedName(left) == foldedName(right);
+            return sameArchiveGamePath(left, right);
 #else
             return left == right;
 #endif
@@ -387,7 +403,7 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
     std::vector<routing::RoutedAsset> selectedArchives;
     std::vector<std::filesystem::path> precedenceScopes;
     std::map<std::filesystem::path, std::filesystem::path> archiveRoots;
-    std::map<std::filesystem::path, std::set<std::string>> loosePaths;
+    std::map<std::filesystem::path, std::set<std::string, ArchiveGamePathLess>> loosePaths;
     std::vector<ArchiveCollision> collisions;
     std::vector<std::filesystem::path> extractionDestinations;
     std::map<routing::SkipReason, std::size_t> skippedArchiveCounts;
@@ -456,7 +472,7 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
             [&](const std::filesystem::path& path, const bool explicitRoot) {
                 if (!namesAnArchive(path))
                     loosePaths[canonicalRoot].insert(
-                        foldedName(relativeName(path.lexically_relative(canonicalRoot))));
+                        relativeName(path.lexically_relative(canonicalRoot)));
                 auto decision = router.route(path);
                 if (auto* routedAsset = std::get_if<routing::RoutedAsset>(&decision)) {
                     if (routedAsset->kind() == routing::AssetKind::Archive &&
@@ -531,13 +547,13 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
                 for (const auto& scope : precedenceScopes)
                     if (isWithinRoot(absolute, scope))
                         loosePaths[scope].insert(
-                            foldedName(relativeName(absolute.lexically_relative(scope))));
+                            relativeName(absolute.lexically_relative(scope)));
             }
         });
     if (!censusComplete) return cancelledResult();
 
-    std::map<std::filesystem::path, std::map<std::string, std::vector<std::filesystem::path>>>
-        entries;
+    std::map<std::filesystem::path,
+             std::map<std::string, std::vector<std::filesystem::path>, ArchiveGamePathLess>> entries;
     std::vector<ArchiveExtractionPlan> extractionPlans;
     for (const auto& archive : selectedArchives) {
         if (isCancelled && isCancelled()) return cancelledResult();
@@ -552,7 +568,7 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
         auto& plan =
             extractionPlans.emplace_back(ArchiveExtractionPlan{archive.executionPath(), root});
         plan.estimatedCapacityBytes = inventory.estimatedCapacityBytes;
-        std::set<std::string> ownGamePaths;
+        std::set<std::string, ArchiveGamePathLess> ownGamePaths;
         for (const auto& name : inventory.names) {
             if (isCancelled && isCancelled()) return cancelledResult();
             try {
@@ -567,8 +583,7 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
                 if (error || !isWithinRoot(resolved, root))
                     throw std::invalid_argument(
                         "Archive entry resolves outside the Mod Root or cannot be resolved.");
-                const auto gamePath =
-                    foldedName(relativeName(destination.lexically_relative(root)));
+                const auto gamePath = relativeName(destination.lexically_relative(root));
                 if (!ownGamePaths.insert(gamePath).second)
                     throw std::invalid_argument("Archive manifest contains aliased entries.");
                 validateExistingArchiveDestination(
@@ -582,13 +597,12 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
             }
         }
     }
-    std::map<std::filesystem::path, std::set<std::string>> plannedMergePaths;
+    std::map<std::filesystem::path, std::set<std::string, ArchiveGamePathLess>> plannedMergePaths;
     for (auto& plan : extractionPlans) {
         for (const auto& entry : plan.entries) {
             const auto destination =
                 std::filesystem::absolute(plan.archivePath).parent_path() / pathFromUtf8(entry);
-            const auto gamePath =
-                foldedName(relativeName(destination.lexically_relative(plan.modRoot)));
+            const auto gamePath = relativeName(destination.lexically_relative(plan.modRoot));
             // Ownership is frozen before mutation: a failed winner must not promote a shadowed
             // Archive, and a Loose Asset removed later still retains its preflight precedence.
             if (entries.at(plan.modRoot).at(gamePath).front() == plan.archivePath &&
@@ -602,7 +616,7 @@ ArchiveFirstAssetDiscoveryResult ArchiveFirstAssetDiscovery::discover(
                 }
                 const auto prefix = gamePath + '/';
                 const auto child = planned.lower_bound(prefix);
-                if (child != planned.end() && child->starts_with(prefix))
+                if (child != planned.end() && hasArchiveGamePathAncestor(*child, gamePath))
                     return failedResult(RunFailureCode::ArchiveEntryInvalid, plan.archivePath,
                                         "Archive entries require a file and directory at the same game path.");
                 planned.insert(gamePath);

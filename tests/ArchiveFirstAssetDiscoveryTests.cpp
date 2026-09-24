@@ -188,6 +188,35 @@ void createAliasedArchive(const std::filesystem::path& path, const std::string& 
     writeFile(path, bytes);
 }
 
+/// Writes two distinct TES4 records whose final UTF-8 names differ only by sharp s versus ss.
+/// The replacement keeps serialized offsets intact while preserving separate payloads.
+void createDistinctWindowsNamesArchive(const std::filesystem::path& path) {
+    QVERIFY(QDir().mkpath(QString::fromStdWString(path.parent_path().wstring())));
+    bsa::tes4::archive archive;
+    archive.archive_flags(bsa::tes4::archive_flag::directory_strings |
+                          bsa::tes4::archive_flag::file_strings);
+    bsa::tes4::directory directory;
+    for (const auto& [name, byte] :
+         std::array{std::pair{"strasse.dds", std::byte{0x41}},
+                    std::pair{"strasze.dds", std::byte{0x42}}}) {
+        const std::array payload{byte};
+        bsa::tes4::file file;
+        file.read(payload, bsa::tes4::version::sse);
+        directory.insert(bsa::tes4::file::key(name), std::move(file));
+    }
+    archive.insert(bsa::tes4::directory::key("textures"), std::move(directory));
+    archive.write(path, bsa::tes4::version::sse);
+
+    auto bytes = readFile(path);
+    const auto original = QByteArray("strasze.dds");
+    const auto replacement = QByteArray("stra\xC3\x9F" "e.dds");
+    QCOMPARE(original.size(), replacement.size());
+    const auto position = bytes.indexOf(original);
+    QVERIFY(position >= 0);
+    bytes.replace(position, original.size(), replacement);
+    writeFile(path, bytes);
+}
+
 /// Counts exact path occurrences without relying on unspecified directory traversal order.
 std::size_t pathCount(const std::span<const std::filesystem::path> paths,
                       const std::filesystem::path &expected)
@@ -221,6 +250,8 @@ class ArchiveFirstAssetDiscoveryTests final : public QObject
     void stagedExtractionCommitsPayload();
     /// Extraction keeps an Archive entry's Unicode spelling in the published Loose Asset.
     void unicodeEntrySpellingSurvivesExtraction();
+    /// Windows-distinct sharp-s and ss entries both publish from one Archive.
+    void distinctWindowsNamesBothPublish();
     /// Extraction publishes beneath an existing directory's game-path casing.
     void extractionUsesExistingParentCasing();
     /// A Loose Asset created after preflight blocks the planned Archive merge.
@@ -237,7 +268,7 @@ class ArchiveFirstAssetDiscoveryTests final : public QObject
     void frozenPrecedenceSurvivesFailures();
     /// Covers all supported raw Archive formats with and without unsafe path traversal.
     void rawManifestPaths_data();
-    /// Verifies canonical collision paths and structured rejection before extraction.
+    /// Verifies collision paths retain the winning Archive's spelling and reject escapes.
     void rawManifestPaths();
     /// Covers exact and folded aliases within one Archive manifest.
     void sameArchiveAliasesBlockBatch_data();
@@ -259,6 +290,10 @@ class ArchiveFirstAssetDiscoveryTests final : public QObject
     void windowsDeviceNamesBlockBatch_data();
     /// Win32-reserved names in a later Archive stop the whole extraction batch.
     void windowsDeviceNamesBlockBatch();
+    /// Covers C0 controls in both leaf and directory components.
+    void windowsControlCharactersBlockBatch_data();
+    /// Invalid Windows control characters fail the complete batch before mutation.
+    void windowsControlCharactersBlockBatch();
     /// Verifies collisions remain scoped to independent Mod Roots.
     void collisionsDoNotCrossModRoots();
     /// Verifies a late unreadable Mod Root prevents extraction in all preceding roots.
@@ -553,6 +588,49 @@ void ArchiveFirstAssetDiscoveryTests::unicodeEntrySpellingSurvivesExtraction() {
     QVERIFY(artifacts.performSafetyCleanup().empty());
 }
 
+void ArchiveFirstAssetDiscoveryTests::distinctWindowsNamesBothPublish() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto archive = root / "source.bsa";
+    createDistinctWindowsNamesArchive(archive);
+    const auto plain = root / "textures" / "strasse.dds";
+    const auto sharp = root / "textures" / std::filesystem::path(u8"stra\u00dfe.dds");
+    const auto inventory = cao::run::inspectArchiveInventory(archive);
+    QCOMPARE(inventory.names.size(), std::size_t{2});
+    QVERIFY(std::find(inventory.names.begin(), inventory.names.end(), "textures/strasse.dds") !=
+            inventory.names.end());
+    QVERIFY(std::find(inventory.names.begin(), inventory.names.end(),
+                      "textures/stra\xC3\x9F" "e.dds") != inventory.names.end());
+
+    std::vector<cao::run::ArchiveExtractionPlan> plans;
+    std::vector<cao::run::ArchiveExtractionResult> attempts;
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = ArchiveFirstAssetDiscovery(archiveEnabledPolicy()).discover(
+        std::array{root},
+        [&](const auto&) {
+            for (const auto& plan : plans)
+                attempts.push_back(cao::run::ArchiveExtractor(artifacts).extract(plan));
+            return true;
+        },
+        {}, cao::run::ArchivePrecedence::deterministicDiscovery(), {},
+        [&](std::span<const cao::run::ArchiveExtractionPlan> preflight) {
+            plans.assign(preflight.begin(), preflight.end());
+        });
+
+    QVERIFY(result.failures().empty());
+    QVERIFY(result.collisions().empty());
+    QCOMPARE(plans.size(), std::size_t{1});
+    QCOMPARE(plans.front().mergeEntries.size(), std::size_t{2});
+    QCOMPARE(attempts.size(), std::size_t{1});
+    QVERIFY2(attempts.front().succeeded(), attempts.front().detail.c_str());
+    QCOMPARE(readFile(plain), QByteArray("A"));
+    QCOMPARE(readFile(sharp), QByteArray("B"));
+    QCOMPARE(pathCount(result.effectiveAssetTree().paths(), plain), std::size_t{1});
+    QCOMPARE(pathCount(result.effectiveAssetTree().paths(), sharp), std::size_t{1});
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
 void ArchiveFirstAssetDiscoveryTests::extractionUsesExistingParentCasing() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -760,7 +838,7 @@ void ArchiveFirstAssetDiscoveryTests::rawManifestPaths() {
         QCOMPARE(extractions, std::size_t{2});
         QCOMPARE(result.collisions().size(), std::size_t{1});
         QCOMPARE(result.collisions().front().gamePath(),
-                 std::filesystem::path("textures/shared.dds"));
+                 std::filesystem::path("Textures/Shared.dds"));
         QCOMPARE(result.collisions().front().winningArchive(), first);
         QCOMPARE(result.collisions().front().shadowedArchives().front(), second);
     }
@@ -971,6 +1049,41 @@ void ArchiveFirstAssetDiscoveryTests::windowsDeviceNamesBlockBatch_data() {
 }
 
 void ArchiveFirstAssetDiscoveryTests::windowsDeviceNamesBlockBatch() {
+    QFETCH(QString, entry);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto base = std::filesystem::path(directory.path().toStdWString());
+    const std::array roots{base / "first", base / "last"};
+    const auto first = roots[0] / "source.bsa";
+    const auto last = roots[1] / "source.bsa";
+    createFixtureArchive(first);
+    createRawArchive(last, 1, entry.toUtf8().toStdString());
+    const auto beforeFirst = readFile(first);
+    const auto beforeLast = readFile(last);
+
+    std::size_t extractions = 0;
+    const auto result = ArchiveFirstAssetDiscovery(archiveEnabledPolicy()).discover(
+        roots, [&](const auto& archives) {
+            extractions += archives.size();
+            return true;
+        });
+
+    QCOMPARE(extractions, std::size_t{0});
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().code(), cao::run::RunFailureCode::ArchiveEntryInvalid);
+    QVERIFY(std::filesystem::equivalent(result.failures().front().path(), last));
+    QCOMPARE(readFile(first), beforeFirst);
+    QCOMPARE(readFile(last), beforeLast);
+    QVERIFY(!std::filesystem::exists(roots[0] / "textures"));
+}
+
+void ArchiveFirstAssetDiscoveryTests::windowsControlCharactersBlockBatch_data() {
+    QTest::addColumn<QString>("entry");
+    QTest::newRow("control in leaf") << QStringLiteral("textures/bad\u0001.dds");
+    QTest::newRow("control in parent") << QStringLiteral("bad\u001F/file.dds");
+}
+
+void ArchiveFirstAssetDiscoveryTests::windowsControlCharactersBlockBatch() {
     QFETCH(QString, entry);
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
