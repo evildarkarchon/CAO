@@ -6,7 +6,6 @@
 #include "Run/ArchiveFinalizationResult.h"
 #include "AssetRouting/AssetRouter.h"
 #include <QTest>
-#include <QProcess>
 #include <array>
 #include <atomic>
 #include <future>
@@ -14,10 +13,6 @@
 #include <thread>
 #include <tuple>
 #include <vector>
-#ifdef _WIN32
-#define NOMINMAX
-#include <windows.h>
-#endif
 
 /// Holds one atomic attempt until the caller confirms repeated cancellation cannot finish it.
 class GatedCliWork final : public cao::run::RunWorkService {
@@ -156,22 +151,6 @@ cao::run::RunRequest terminalCliRequest() {
 class CliRunTests final : public QObject {
     Q_OBJECT
    private slots:
-    /// Exercises actual repeated Windows Ctrl+C delivery in an isolated hidden console.
-    void consoleInterruptsRemainCooperative() {
-#ifdef _WIN32
-        QProcess process;
-        process.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* arguments) {
-            arguments->flags |= CREATE_NEW_CONSOLE;
-            arguments->startupInfo->dwFlags |= STARTF_USESHOWWINDOW;
-            arguments->startupInfo->wShowWindow = SW_HIDE;
-        });
-        process.start(QCoreApplication::applicationFilePath(), {"--interrupt-probe"});
-        QVERIFY(process.waitForStarted());
-        QVERIFY(process.waitForFinished(10000));
-        QCOMPARE(process.exitStatus(), QProcess::NormalExit);
-        QCOMPARE(process.exitCode(), 0);
-#endif
-    }
     /// Checks shell status against the four public outcomes and synchronous rejection.
     void exitCodes() {
         using cao::run::RunOutcome;
@@ -329,22 +308,9 @@ class CliRunTests final : public QObject {
         QVERIFY(output.str().find("Committed Mutations Retained|") != std::string::npos);
     }
 };
-/// Runs native interrupt checks outside the test runner's console so Ctrl+C cannot escape the test.
+/// Runs CLI rendering and cancellation tests without generating native console events.
 int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
-#ifdef _WIN32
-    if (application.arguments().contains("--interrupt-probe")) {
-        cao::cli::ConsoleInterrupt interruption;
-        if (!GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0)) return 10;
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-        while (!interruption.requested() && std::chrono::steady_clock::now() < deadline)
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        if (!interruption.requested()) return 11;
-        if (!GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0)) return 12;
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        return interruption.requested() ? 0 : 13;
-    }
-#endif
     CliRunTests tests;
     return QTest::qExec(&tests, argc, argv);
 }

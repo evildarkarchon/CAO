@@ -240,6 +240,13 @@ target_link_libraries(cao_cli_run_tests PRIVATE Qt5::Test cao_cli_run)
 set_target_properties(cao_cli_run_tests PROPERTIES AUTOMOC ON)
 add_test(NAME cao_cli_run_tests COMMAND cao_cli_run_tests)
 
+# The real Ctrl+C probe needs a Windows console, so keep it selectable for native runs.
+add_executable(cao_cli_console_interrupt_tests CliConsoleInterruptTests.cpp)
+target_link_libraries(cao_cli_console_interrupt_tests PRIVATE Qt5::Test cao_cli_run)
+set_target_properties(cao_cli_console_interrupt_tests PROPERTIES AUTOMOC ON)
+add_test(NAME cao_cli_console_interrupt_tests COMMAND cao_cli_console_interrupt_tests)
+set_tests_properties(cao_cli_console_interrupt_tests PROPERTIES LABELS native-console)
+
 add_executable(cao_gui_run_tests GuiRunTests.cpp)
 target_link_libraries(cao_gui_run_tests PRIVATE Qt5::Test cao_gui_run)
 set_target_properties(cao_gui_run_tests PROPERTIES AUTOMOC ON)
