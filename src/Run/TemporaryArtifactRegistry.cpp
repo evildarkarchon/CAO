@@ -448,7 +448,9 @@ void TemporaryArtifactRegistry::commit(Registration registration) {
     if (_cleaned || registration._owner != this || _artifacts.at(registration._index).committed)
         throw std::logic_error("The temporary artifact registration is no longer owned");
     auto& artifact = _artifacts[registration._index];
-    if (artifact.durable) _recovery->releaseFile(artifact.path);
+    // Only publication may release a durable claim after committing a destination.
+    if (artifact.durable)
+        throw std::logic_error("Durable staged files require a publication receipt");
     artifact.committed = true;
 }
 

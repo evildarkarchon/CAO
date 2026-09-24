@@ -19,8 +19,8 @@ class DurableStagingTests final : public QObject {
     void archiveCleanupKeepsCommittedEntry();
     /// Missing durable ownership would leave the interrupted output unrecoverable.
     void abandonedOutputIsRecovered();
-    /// Recovery must not delete a destination whose rename preceded a killed process.
-    void killedAfterRenameKeepsDestination();
+    /// Recovery must not delete an Asset destination published before a killed producer exits.
+    void killedAfterPublicationKeepsDestination();
     /// A stale record for a missing temporary file must not block a later producer.
     void recoveryAndProductionShareTheOwnershipLock();
     /// A cancelled preparation leaves its durable sibling registration for a later recovery.
@@ -47,8 +47,8 @@ class DurableStagingTests final : public QObject {
     void unownedBootstrapIsRejected();
     /// One damaged entry must not stop cleanup of independently registered temporary files.
     void cleanupContinuesAfterADamagedTemporary();
-    /// Releasing a file before its destination move must preserve source and cleanup ownership.
-    void prematureReleaseKeepsOwnership();
+    /// Generic commit cannot release durable staging before or after a separate destination move.
+    void genericCommitCannotReleaseDurableStage();
     /// Both publication policies commit staged bytes and release only the temporary path.
     void publicationPoliciesPreserveDestinationBytes();
     /// No-replace publication refuses a destination that became occupied after staging.
@@ -101,17 +101,19 @@ void DurableStagingTests::archiveCleanupKeepsCommittedEntry() {
     const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
     const auto destination = root / "entry.pex";
     cao::run::TemporaryArtifactRegistry registry;
-    const auto committed = registry.stageArchiveFile(root);
-    const auto abandoned = registry.stageArchiveFile(root);
-    QVERIFY(committed.path != abandoned.path);
-    std::ofstream(committed.path, std::ios::binary) << "complete script";
-    std::ofstream(abandoned.path, std::ios::binary) << "partial script";
-    QVERIFY_EXCEPTION_THROWN(registry.commit(committed.registration), std::logic_error);
-    fs::rename(committed.path, destination);
-    registry.commit(committed.registration);
+    auto committed = registry.stageArchiveFileForPublication(root);
+    auto abandoned = registry.stageArchiveFileForPublication(root);
+    const auto committedPath = committed.path();
+    const auto abandonedPath = abandoned.path();
+    QVERIFY(committedPath != abandonedPath);
+    std::ofstream(committedPath, std::ios::binary) << "complete script";
+    std::ofstream(abandonedPath, std::ios::binary) << "partial script";
+    const auto publication = committed.publish(destination, cao::run::PublicationPolicy::NoReplace);
+    QVERIFY2(publication.state == cao::run::PublicationState::PublishedAndReleased,
+             publication.errorDetail.c_str());
     QVERIFY(registry.performSafetyCleanup().empty());
-    QVERIFY(!fs::exists(abandoned.path));
-    QVERIFY(!fs::exists(committed.path.parent_path()));
+    QVERIFY(!fs::exists(abandonedPath));
+    QVERIFY(!fs::exists(committedPath.parent_path()));
     QVERIFY_EXCEPTION_THROWN((void)registry.stageArchiveFile(root), std::logic_error);
     QFile output(QString::fromStdWString(destination.wstring()));
     QVERIFY(output.open(QIODevice::ReadOnly));
@@ -142,7 +144,7 @@ void DurableStagingTests::abandonedOutputIsRecovered() {
     QVERIFY(fs::exists(destination));
 }
 
-void DurableStagingTests::killedAfterRenameKeepsDestination() {
+void DurableStagingTests::killedAfterPublicationKeepsDestination() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
@@ -151,7 +153,7 @@ void DurableStagingTests::killedAfterRenameKeepsDestination() {
     child.start(QCoreApplication::applicationFilePath(), {"--staging-crash", directory.path()});
     QVERIFY(child.waitForStarted());
     QVERIFY(child.waitForReadyRead(10000));
-    QCOMPARE(child.readAllStandardOutput().trimmed(), QByteArray("renamed"));
+    QCOMPARE(child.readAllStandardOutput().trimmed(), QByteArray("published-still-owned"));
     cao::run::StagingRecovery blocked;
     const auto active = blocked.recover(root);
     QVERIFY(active.has_value());
@@ -410,14 +412,17 @@ void DurableStagingTests::cleanupRemovesTheRunChildAndKeepsCommittedOutput() {
     const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
     const auto destination = root / "texture.dds";
     cao::run::TemporaryArtifactRegistry registry;
-    const auto staged = registry.stageFile(root, destination);
-    std::ofstream(staged.path) << "committed";
-    fs::rename(staged.path, destination);
-    registry.commit(staged.registration);
-    const auto uncommitted = registry.stageFile(root, root / "other.dds");
+    auto staged = registry.stageFileForPublication(root, destination);
+    const auto stagedPath = staged.path();
+    std::ofstream(stagedPath) << "committed";
+    const auto publication = staged.publish(destination, cao::run::PublicationPolicy::Replace);
+    QVERIFY2(publication.state == cao::run::PublicationState::PublishedAndReleased,
+             publication.errorDetail.c_str());
+    auto uncommitted = registry.stageFileForPublication(root, root / "other.dds");
+    const auto uncommittedPath = uncommitted.path();
     QVERIFY(registry.performSafetyCleanup().empty());
-    QVERIFY(!fs::exists(staged.path));
-    QVERIFY(!fs::exists(uncommitted.path));
+    QVERIFY(!fs::exists(stagedPath));
+    QVERIFY(!fs::exists(uncommittedPath));
     QVERIFY(fs::exists(root));
     QVERIFY(fs::exists(destination));
     QVERIFY(registry.performSafetyCleanup().empty());
@@ -450,7 +455,7 @@ void DurableStagingTests::cleanupContinuesAfterADamagedTemporary() {
     QVERIFY(fs::exists(damaged.path / "unregistered"));
 }
 
-void DurableStagingTests::prematureReleaseKeepsOwnership() {
+void DurableStagingTests::genericCommitCannotReleaseDurableStage() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
@@ -460,8 +465,16 @@ void DurableStagingTests::prematureReleaseKeepsOwnership() {
     const auto staged = registry.stageFile(root, destination);
     QVERIFY_EXCEPTION_THROWN(registry.commit(staged.registration), std::logic_error);
     QVERIFY(fs::exists(staged.path));
+    const auto archive = registry.stageArchiveFile(root);
+    QVERIFY_EXCEPTION_THROWN(registry.commit(archive.registration), std::logic_error);
+    const auto separatelyMoved = root / "separately-moved.dds";
+    fs::rename(staged.path, separatelyMoved);
+    QVERIFY_EXCEPTION_THROWN(registry.commit(staged.registration), std::logic_error);
+    // Restoring the registered name makes retained ownership observable through cleanup.
+    fs::rename(separatelyMoved, staged.path);
     QVERIFY(registry.performSafetyCleanup().empty());
     QVERIFY(!fs::exists(staged.path));
+    QVERIFY(!fs::exists(archive.path));
     QFile original(QString::fromStdWString(destination.wstring()));
     QVERIFY(original.open(QIODevice::ReadOnly));
     QCOMPARE(original.readAll(), QByteArray("original"));
@@ -841,10 +854,14 @@ int main(int argc, char** argv) {
     if (application.arguments().size() == 3 && application.arguments().at(1) == "--staging-crash") {
         const auto root = fs::canonical(fs::path(application.arguments().at(2).toStdWString()));
         cao::run::TemporaryArtifactRegistry registry;
-        const auto staged = registry.stageFile(root, root / "texture.dds");
-        std::ofstream(staged.path) << "converted";
-        fs::rename(staged.path, root / "texture.dds");
-        std::fputs("renamed\n", stdout);
+        auto staged = registry.stageFileForPublication(root, root / "texture.dds");
+        std::ofstream(staged.path()) << "converted";
+        // The occupied snapshot name holds the old claim after destination publication.
+        std::ofstream(root / ".cao-staging" / "ownership.manifest.next") << "occupied scratch";
+        const auto result =
+            staged.publish(root / "texture.dds", cao::run::PublicationPolicy::Replace);
+        if (result.state != cao::run::PublicationState::PublishedStillOwned) return 2;
+        std::fputs("published-still-owned\n", stdout);
         std::fflush(stdout);
         return application.exec();
     }

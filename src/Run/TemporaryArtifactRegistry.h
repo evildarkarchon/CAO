@@ -22,8 +22,8 @@ struct PublicationResult {
 };
 /// Owns only explicitly registered temporary paths for one run, on its execution thread.
 /// Register each directory before its children; directory cleanup is deliberately non-recursive.
-/// Backups, completed mutations, and failed-output evidence must never be registered. If an
-/// artifact becomes durable output or retained evidence, explicitly commit its registration.
+/// Backups, completed mutations, and failed-output evidence must never be registered. Commit
+/// non-durable retained artifacts; publish durable staged output through a one-use receipt.
 class TemporaryArtifactRegistry final : public SafetyCleanupService {
    public:
     /// Owns a lazy recovery scope, or borrows one that must outlive this registry.
@@ -75,12 +75,14 @@ class TemporaryArtifactRegistry final : public SafetyCleanupService {
     /// Safety Cleanup has closed registration.
     [[nodiscard]] std::optional<RunFailure> prepareRoot(const std::filesystem::path& modRoot,
                                                         std::stop_token stop = {});
-    /// Flushes ownership before exclusively creating an empty staging file beside its destination.
-    /// Throws on invalid ownership, unavailable locks, or filesystem failures.
+    /// Flushes ownership before creating an empty Asset sibling without publication authority.
+    /// For recoverable staging only; use a publication receipt to commit durable output. Throws on
+    /// invalid ownership, unavailable locks, or filesystem failures.
     [[nodiscard]] StagedFile stageFile(const std::filesystem::path& modRoot,
                                        const std::filesystem::path& destination);
-    /// Flushes ownership before creating a unique empty file in the durable Archive run child.
-    /// Throws on invalid ownership, unavailable locks, filesystem failures, or closed registration.
+    /// Flushes ownership before creating an Archive entry without publication authority. Use a
+    /// publication receipt to commit durable output. Throws on invalid ownership, unavailable
+    /// locks, filesystem failures, or closed registration.
     [[nodiscard]] StagedFile stageArchiveFile(const std::filesystem::path& modRoot);
 
     /// Creates a durable Asset sibling and binds a move-only receipt to its canonical Mod Root,
@@ -97,9 +99,9 @@ class TemporaryArtifactRegistry final : public SafetyCleanupService {
     /// after cleanup starts. Callers must keep parent identities stable through cleanup.
     [[nodiscard]] Registration registerArtifact(const std::filesystem::path& path);
 
-    /// Releases an artifact after durable commit, without deleting it. Durable staged files must
-    /// first be moved out of staging; in-memory registrations may also retain existing evidence.
-    /// Throws logic_error for a foreign, already committed, or terminal registration.
+    /// Retains a non-durable registered artifact without deleting it. Durable staged files require
+    /// receipt publication, even if their temporary name is absent. Throws `logic_error` for a
+    /// durable, foreign, already committed, or terminal registration.
     void commit(Registration registration);
 
     /// Removes remaining paths once in reverse registration order, without following directory

@@ -7,6 +7,7 @@
 #include <stop_token>
 
 namespace cao::run {
+class TemporaryArtifactRegistry;
 /// Produces and recovers manifest-owned temporary entries, retaining OS locks through Safety
 /// Cleanup. The executor owns one instance on its execution thread; destruction releases locks
 /// without deleting control files. Absent staging is not created by recovery.
@@ -25,6 +26,14 @@ class StagingRecovery final {
     [[nodiscard]] std::optional<RunFailure> recover(const std::filesystem::path& modRoot,
                                                     std::stop_token stop = {});
 
+    /// Removes verified durable artifacts and empty run children, retaining locks until
+    /// destruction. Returns every cleanup failure after attempting all independently owned
+    /// artifacts.
+    [[nodiscard]] std::vector<RunFailure> cleanupArtifacts();
+
+   private:
+    // Only Temporary Ownership can create a durable stage or release its claim after publication.
+    friend class TemporaryArtifactRegistry;
     /// Registers a unique sibling temporary name durably, then exclusively creates its empty file.
     /// Reuses recovered ownership locks; throws if ownership or same-root containment fails.
     [[nodiscard]] std::filesystem::path stageFile(const std::filesystem::path& modRoot,
@@ -32,16 +41,10 @@ class StagingRecovery final {
     /// Durably registers and exclusively creates a unique empty file beneath the owned run child.
     /// Accepts arbitrary Archive entry bytes; throws on invalid roots, ownership, or I/O failures.
     [[nodiscard]] std::filesystem::path stageArchiveFile(const std::filesystem::path& modRoot);
-    /// Flushes removal of a temporary registration after its file was committed elsewhere.
+    /// Flushes removal of a temporary registration after receipt publication committed it.
     /// The destination is deliberately never part of this protocol or its deletion records. Throws
     /// `logic_error` if the file still exists or the supplied path is not registered.
     void releaseFile(const std::filesystem::path& temporary);
-    /// Removes verified durable artifacts and empty run children, retaining locks until
-    /// destruction. Returns every cleanup failure after attempting all independently owned
-    /// artifacts.
-    [[nodiscard]] std::vector<RunFailure> cleanupArtifacts();
-
-   private:
     /// Acquires or reuses root ownership and publishes the run child before any staged bytes.
     void prepareArea(const std::filesystem::path& root);
     /// Publishes one file registration before creation, rolling back names rejected by CREATE_NEW.
