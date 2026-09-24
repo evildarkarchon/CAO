@@ -18,22 +18,28 @@ class OptionsCAO;
 
 #ifdef _WIN32
 namespace cao::run {
-/// Holds a packed source stable while the archive writer reads it, then removes only that file.
-class PackedSourcePin final {
+/// Holds a source stable while an Archive is read or written, then cleans only that file.
+class SourceFilePin final {
    public:
     /// Opens an ordinary source for reading while denying concurrent writes and renames.
-    explicit PackedSourcePin(std::filesystem::path source);
-    ~PackedSourcePin();
-    PackedSourcePin(PackedSourcePin&&) noexcept;
-    PackedSourcePin& operator=(PackedSourcePin&&) noexcept;
-    PackedSourcePin(const PackedSourcePin&) = delete;
-    PackedSourcePin& operator=(const PackedSourcePin&) = delete;
+    explicit SourceFilePin(std::filesystem::path source);
+    ~SourceFilePin();
+    SourceFilePin(SourceFilePin&&) noexcept;
+    SourceFilePin& operator=(SourceFilePin&&) noexcept;
+    SourceFilePin(const SourceFilePin&) = delete;
+    SourceFilePin& operator=(const SourceFilePin&) = delete;
 
-    /// Releases the writer-period handle so a DELETE-capable handle can be opened.
+    /// Releases the read-period handle so a DELETE-capable handle can be opened.
     void releaseForCleanup() noexcept;
     /// Reopens the source without write/delete sharing and deletes only its recorded identity.
     /// Throws if file identity or change metadata differs, or Windows rejects deletion.
     void removeIfUnchanged();
+    /// Renames only the recorded identity to an unoccupied .bak name, retrying occupied names.
+    /// Throws if the source changed or no backup could be published.
+    void backupIfUnchanged();
+    /// Pins the unchanged source again while the caller verifies recoverable Archive bytes.
+    /// Throws if its path no longer names the recorded source.
+    void pinUnchangedForRecovery();
 
    private:
     struct State;
@@ -62,8 +68,9 @@ class BSAOptimizer final : public QObject {
      */
     void extract(QString bsaPath, const bool deleteBackup) const;
     /// Stages a planned Archive with run-owned artifacts, then backs up or removes its source
-    /// only after merge succeeds. Cleanup failure permits continuation only with committed
-    /// Assets and a source Archive that can still be opened; otherwise mutation is uncertain.
+    /// only after merge succeeds. On Windows, pins the Archive through extraction and checks
+    /// its identity before cleanup. Cleanup failure permits continuation only with committed
+    /// Assets and the same source Archive still readable; otherwise mutation is uncertain.
     [[nodiscard]] cao::run::ArchiveExtractionResult extract(
         const cao::run::ArchiveExtractionPlan& plan, bool deleteBackup,
         cao::run::TemporaryArtifactRegistry& artifacts) const;

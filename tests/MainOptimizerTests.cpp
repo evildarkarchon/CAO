@@ -171,6 +171,14 @@ private slots:
  void archiveSourceCleanupRequiresSuccessfulMerge_data();
  /// Preserves original Archive bytes on failure and never replaces an existing backup.
  void archiveSourceCleanupRequiresSuccessfulMerge();
+ /// Rejects a source link so cleanup cannot act on a different directory entry than the reader.
+ void archiveSourceLinkIsNotCleaned_data();
+ /// Keeps the source link and its target when either cleanup policy is requested.
+ void archiveSourceLinkIsNotCleaned();
+ /// Checks both cleanup operations after the extracted source name is replaced.
+ void extractedSourceReplacementIsNotCleaned_data();
+ /// Retains a new Archive at the original path and the earlier extracted source.
+ void extractedSourceReplacementIsNotCleaned();
 
  /// Keeps temporary Texture bytes out of archives and their packed-source deletion pass.
  void packingPreservesStagingFiles();
@@ -328,6 +336,103 @@ void MainOptimizerTests::archiveSourceCleanupRequiresSuccessfulMerge() {
     QVERIFY(artifacts.performSafetyCleanup().empty());
 }
 
+void MainOptimizerTests::archiveSourceLinkIsNotCleaned_data() {
+    QTest::addColumn<bool>("deleteBackup");
+    QTest::newRow("backup") << false;
+    QTest::newRow("delete") << true;
+}
+
+void MainOptimizerTests::archiveSourceLinkIsNotCleaned() {
+#ifdef _WIN32
+    QFETCH(bool, deleteBackup);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto mod = root / "mod";
+    const auto target = mod / "original.bsa";
+    const auto source = mod / "assets.bsa";
+    const auto fixture = root / "input" / "fixture.dds";
+    QVERIFY(std::filesystem::create_directories(mod));
+    writeFile(fixture, QByteArrayLiteral("archived bytes"));
+    auto archive = btu::bsa::ArchiveData(btu::bsa::Settings::get(btu::Game::SSE),
+                                        btu::bsa::ArchiveType::Textures);
+    QVERIFY(archive.add_file(fixture));
+    archive.set_out_path(target);
+    QVERIFY(btu::bsa::write(false, std::move(archive), root / "input").empty());
+    std::error_code linkError;
+    std::filesystem::create_symlink(target, source, linkError);
+    QVERIFY2(!linkError, linkError.message().c_str());
+
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = BSAOptimizer().extract(
+        {source, mod, {"fixture.dds"}, {"fixture.dds"}}, deleteBackup, artifacts);
+    QVERIFY(result.failure.has_value());
+    QVERIFY(std::filesystem::is_symlink(std::filesystem::symlink_status(source)));
+    QVERIFY(std::filesystem::exists(target));
+    QVERIFY(!std::filesystem::exists(mod / "fixture.dds"));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+#else
+    QSKIP("Windows source pins reject reparse points before archive extraction.");
+#endif
+}
+
+void MainOptimizerTests::extractedSourceReplacementIsNotCleaned_data() {
+    QTest::addColumn<bool>("deleteBackup");
+    QTest::newRow("backup") << false;
+    QTest::newRow("delete") << true;
+}
+
+void MainOptimizerTests::extractedSourceReplacementIsNotCleaned() {
+#ifdef _WIN32
+    QFETCH(bool, deleteBackup);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto mod = root / "mod";
+    const auto source = mod / "assets.bsa";
+    const auto displaced = mod / "earlier.bsa";
+    const auto fixture = root / "input" / "fixture.dds";
+    writeFile(fixture, QByteArrayLiteral("archived bytes"));
+    QVERIFY(std::filesystem::create_directories(mod));
+    auto archive = btu::bsa::ArchiveData(btu::bsa::Settings::get(btu::Game::SSE),
+                                        btu::bsa::ArchiveType::Textures);
+    QVERIFY(archive.add_file(fixture));
+    archive.set_out_path(source);
+    QVERIFY(btu::bsa::write(false, std::move(archive), root / "input").empty());
+
+    cao::run::SourceFilePin pin(source);
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = cao::run::ArchiveExtractor(artifacts).extract(
+        {source, mod, {"fixture.dds"}, {"fixture.dds"}});
+    QVERIFY(result.succeeded());
+    pin.releaseForCleanup();
+    QVERIFY(MoveFileExW(source.c_str(), displaced.c_str(), 0));
+    writeFile(fixture, QByteArrayLiteral("replacement bytes"));
+    auto replacement = btu::bsa::ArchiveData(btu::bsa::Settings::get(btu::Game::SSE),
+                                            btu::bsa::ArchiveType::Textures);
+    QVERIFY(replacement.add_file(fixture));
+    replacement.set_out_path(source);
+    QVERIFY(btu::bsa::write(false, std::move(replacement), root / "input").empty());
+
+    if (deleteBackup)
+        QVERIFY_EXCEPTION_THROWN(pin.removeIfUnchanged(), std::runtime_error);
+    else
+        QVERIFY_EXCEPTION_THROWN(pin.backupIfUnchanged(), std::runtime_error);
+    QVERIFY_EXCEPTION_THROWN(pin.pinUnchangedForRecovery(), std::runtime_error);
+    QVERIFY(std::filesystem::exists(source));
+    QVERIFY(std::filesystem::exists(displaced));
+    QVERIFY(!std::filesystem::exists(mod / "assets.bsa.bak"));
+    QFile extracted(QString::fromStdWString((mod / "fixture.dds").wstring()));
+    QVERIFY(extracted.open(QIODevice::ReadOnly));
+    QCOMPARE(extracted.readAll(), QByteArrayLiteral("archived bytes"));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+#else
+    QSKIP("Windows file handles provide the extracted-source identity guard.");
+#endif
+}
+
 void MainOptimizerTests::packingPreservesStagingFiles() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -412,7 +517,7 @@ void MainOptimizerTests::packedSourcePinPreservesReplacement() {
     const auto displaced = root / "textures" / "displaced.dds";
     writeFile(source, QByteArrayLiteral("original source bytes"));
 
-    cao::run::PackedSourcePin pin(source);
+    cao::run::SourceFilePin pin(source);
     // A writer cannot replace the file while the archive reader's pin is open.
     QVERIFY(!MoveFileExW(source.c_str(), displaced.c_str(), 0));
     const auto movedParent = root / "moved-textures";
