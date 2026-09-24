@@ -10,6 +10,7 @@
 #include <QTest>
 
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -187,6 +188,12 @@ private slots:
 
  /// Reserves distinct names without filesystem placeholders and rejects a later occupied output.
  void plannedNamesAreDistinctAndCommitPreservesNewDestination();
+
+ /// Keeps a published Archive and its source when a competing plugin occupies the planned name.
+ void plannedPluginCollisionRetainsCommittedArchive();
+
+ /// Reuses an exact dummy created after planning without replacing its filesystem entry.
+ void plannedExactDummyIsReused();
 
  /// Exercises retained source recovery with readable and byte-locked files.
  void committedArchiveRetainsLockedSource_data();
@@ -940,6 +947,83 @@ void MainOptimizerTests::plannedNamesAreDistinctAndCommitPreservesNewDestination
     QVERIFY(artifacts.performSafetyCleanup().empty());
 }
 
+void MainOptimizerTests::plannedPluginCollisionRetainsCommittedArchive() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = root / "mod";
+    const auto source = mod / "textures" / "asset.dds";
+    writeFile(source, QByteArrayLiteral("source bytes"));
+    OptionsCAO options;
+    options.bBsaCreateDummies = true;
+    options.bBsaCompress = false;
+    options.bBsaDeleteSource = true;
+    const BSAOptimizer optimizer;
+    const std::array roots{mod};
+    const auto plan = optimizer.planFinalization(roots, options);
+    QCOMPARE(plan.outputs().size(), std::size_t{1});
+    QVERIFY(plan.outputs().front().pluginPath.has_value());
+    const auto& output = plan.outputs().front();
+    writeFile(*output.pluginPath, QByteArrayLiteral("competing plugin bytes"));
+
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts);
+    QCOMPARE(result.attempts.size(), std::size_t{1});
+    QCOMPARE(result.attempts.front().failure,
+             std::optional{cao::run::ArchiveFinalizationFailure::PluginCreationFailed});
+    QCOMPARE(result.attempts.front().mutation, cao::execution::MutationState::Committed);
+    QVERIFY(!result.attempts.front().safeToContinue);
+    QVERIFY(btu::bsa::read_archive(output.archivePath).has_value());
+    QVERIFY(std::filesystem::exists(source));
+    QFile plugin(QString::fromStdWString(output.pluginPath->wstring()));
+    QVERIFY(plugin.open(QIODevice::ReadOnly));
+    QCOMPARE(plugin.readAll(), QByteArrayLiteral("competing plugin bytes"));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void MainOptimizerTests::plannedExactDummyIsReused() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = root / "mod";
+    const auto source = mod / "textures" / "asset.dds";
+    writeFile(source, QByteArrayLiteral("source bytes"));
+    OptionsCAO options;
+    options.bBsaCreateDummies = true;
+    options.bBsaCompress = false;
+    options.bBsaDeleteSource = true;
+    const BSAOptimizer optimizer;
+    const std::array roots{mod};
+    const auto plan = optimizer.planFinalization(roots, options);
+    QCOMPARE(plan.outputs().size(), std::size_t{1});
+    QVERIFY(plan.outputs().front().pluginPath.has_value());
+    const auto& output = plan.outputs().front();
+    const auto& dummy = btu::bsa::dummy::sse;
+    writeFile(*output.pluginPath, QByteArray(reinterpret_cast<const char*>(dummy.data()),
+                                             static_cast<int>(dummy.size())));
+    const auto originalWriteTime = std::filesystem::last_write_time(*output.pluginPath) -
+                                   std::chrono::hours(24);
+    std::filesystem::last_write_time(*output.pluginPath, originalWriteTime);
+
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts);
+    QCOMPARE(result.attempts.size(), std::size_t{1});
+    QVERIFY(result.attempts.front().succeeded());
+    QCOMPARE(result.attempts.front().mutation, cao::execution::MutationState::Committed);
+    QVERIFY(btu::bsa::read_archive(output.archivePath).has_value());
+    QVERIFY(!std::filesystem::exists(source));
+    QCOMPARE(std::filesystem::last_write_time(*output.pluginPath), originalWriteTime);
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
 void MainOptimizerTests::cancellationPreservesCommittedArchiveLoadingPlugin() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -1028,9 +1112,7 @@ void MainOptimizerTests::committedArchiveRetainsLockedSource() {
     QVERIFY(!result.attempts.front().succeeded());
     QCOMPARE(result.attempts.front().failure,
              cao::run::ArchiveFinalizationFailure::SourceCleanupFailed);
-    QCOMPARE(result.attempts.front().mutation, denyReads
-        ? cao::execution::MutationState::PartialOrUnknown
-        : cao::execution::MutationState::Committed);
+    QCOMPARE(result.attempts.front().mutation, cao::execution::MutationState::Committed);
     QCOMPARE(result.safeToContinue, !denyReads);
     QVERIFY(btu::bsa::read_archive(plan.outputs().front().archivePath).has_value());
     QCOMPARE(std::filesystem::exists(laterSource), denyReads);

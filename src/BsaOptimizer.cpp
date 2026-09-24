@@ -39,32 +39,6 @@ std::uintmax_t estimatePackedCapacity(const cao::run::ArchiveFinalizationOutput&
     return estimate;
 }
 
-/// Publishes flushed same-volume bytes without replacing a competing entry. Records durable
-/// mutation immediately, even if releasing the old staging name subsequently fails.
-void publishArchiveFile(const std::filesystem::path& staged,
-                        const std::filesystem::path& destination,
-                        cao::execution::MutationState& mutation) {
-#ifdef _WIN32
-    const auto file = CreateFileW(staged.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE)
-        throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
-    const bool flushed = FlushFileBuffers(file) != 0;
-    const auto error = GetLastError();
-    CloseHandle(file);
-    if (!flushed) throw std::system_error(static_cast<int>(error), std::system_category());
-    // Names were reserved only in memory. A competing creator must not be overwritten,
-    // and omitting COPY_ALLOWED ensures this commit never becomes a cross-volume copy.
-    if (!MoveFileExW(staged.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH))
-        throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
-    mutation = cao::execution::MutationState::Committed;
-#else
-    std::filesystem::create_hard_link(staged, destination);
-    mutation = cao::execution::MutationState::Committed;
-    std::filesystem::remove(staged);
-#endif
-}
-
 /// Proves retained source bytes can still be read after a failed deletion, without loading them
 /// all into memory. A directory or substituted link is not usable retained source material.
 bool readablePackedSource(const std::filesystem::path& source) {
@@ -557,14 +531,21 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
                 for (const auto& source : output.sources) sourcePins.emplace_back(source);
             }
 #endif
-            const auto staged = artifacts.stageArchiveFile(output.modRoot);
+            auto staged = artifacts.stageArchiveFileForPublication(output.modRoot);
             auto archive = plan._archives[index];
-            archive.set_out_path(staged.path);
+            archive.set_out_path(staged.path());
             const auto errors = btu::bsa::write(plan._compress, std::move(archive), output.modRoot);
             if (!errors.empty()) throw std::runtime_error(errors.front().second);
             boundary = ArchiveFinalizationFailure::CommitFailed;
-            publishArchiveFile(staged.path, output.archivePath, attempt.mutation);
-            artifacts.commit(staged.registration);
+            const auto archivePublication =
+                staged.publish(output.archivePath, PublicationPolicy::NoReplace);
+            // Native publication commits the Archive before durable ownership release.
+            if (archivePublication.state != PublicationState::NotPublished)
+                attempt.mutation = MutationState::Committed;
+            if (archivePublication.state != PublicationState::PublishedAndReleased)
+                throw std::runtime_error(archivePublication.errorDetail.empty()
+                                             ? "Archive publication did not complete."
+                                             : archivePublication.errorDetail);
             boundary = ArchiveFinalizationFailure::PluginCreationFailed;
             if (output.pluginPath) {
                 const auto& bytes = *plan._settings.s_dummy_plugin;
@@ -581,14 +562,19 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
                                     }))
                         throw std::runtime_error("The planned loading plugin is occupied.");
                 } else {
-                    const auto stagedPlugin = artifacts.stageArchiveFile(output.modRoot);
-                    std::ofstream file(stagedPlugin.path, std::ios::binary | std::ios::trunc);
+                    auto stagedPlugin = artifacts.stageArchiveFileForPublication(output.modRoot);
+                    std::ofstream file(stagedPlugin.path(), std::ios::binary | std::ios::trunc);
                     file.write(reinterpret_cast<const char*>(bytes.data()),
                                static_cast<std::streamsize>(bytes.size()));
                     file.close();
                     if (!file) throw std::runtime_error("Could not stage the loading plugin.");
-                    publishArchiveFile(stagedPlugin.path, plugin, attempt.mutation);
-                    artifacts.commit(stagedPlugin.registration);
+                    // Recheck the leaf natively after the exact-dummy probe: a newcomer wins.
+                    const auto pluginPublication =
+                        stagedPlugin.publish(plugin, PublicationPolicy::NoReplace);
+                    if (pluginPublication.state != PublicationState::PublishedAndReleased)
+                        throw std::runtime_error(pluginPublication.errorDetail.empty()
+                                                     ? "Loading plugin publication did not complete."
+                                                     : pluginPublication.errorDetail);
                 }
             }
             boundary = ArchiveFinalizationFailure::SourceCleanupFailed;
@@ -610,8 +596,9 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
         } catch (const std::exception& error) {
             attempt.failure = boundary;
             attempt.detail = error.what();
-            // Write/commit errors leave sources intact. Once committed, only a usable Archive
-            // can justify continuing after source cleanup or ownership release fails.
+            // Publication or plugin errors leave sources intact. Once committed, only a usable
+            // Archive and surviving sources can justify continuing after later failures. The
+            // publication result remains authoritative even when continuation is unsafe.
             if (attempt.mutation == MutationState::Committed) {
                 try {
                     attempt.safeToContinue =
@@ -624,7 +611,6 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
                     // Verification failure preserves the original error and stops later attempts.
                     attempt.safeToContinue = false;
                 }
-                if (!attempt.safeToContinue) attempt.mutation = MutationState::PartialOrUnknown;
             }
         } catch (...) {
             attempt.failure = ArchiveFinalizationFailure::UnexpectedException;

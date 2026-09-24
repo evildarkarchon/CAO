@@ -86,7 +86,9 @@ class BSAOptimizer final : public QObject {
         std::span<const std::filesystem::path> roots, const OptionsCAO& options,
         std::stop_token stop = {}) const;
 
-    /// Stages, commits, and cleans each planned output without mid-attempt cancellation.
+    /// Publishes each planned Archive and missing loading plugin through one-use no-replace
+    /// staging, then cleans its sources without mid-attempt cancellation. A release or later
+    /// cleanup failure retains the committed Archive mutation in the completed attempt.
     /// Reports zero-based progress synchronously, isolating observer exceptions. The caller owns
     /// artifacts through Safety Cleanup; a failed or cancelled run retains committed outputs.
     /// Prunes empty children per Mod Root only after all outputs finish without cancellation or
