@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <type_traits>
 #include <utility>
 
@@ -85,6 +86,8 @@ class DurableStagingTests final : public QObject {
     void assetPublicationRejectsReplacedParent();
     /// Replacement refuses a different leaf even when its pathname and parent stay the same.
     void assetPublicationRejectsReplacedDestination();
+    /// A rename-capable open handle prevents a destination snapshot from reading stale bytes.
+    void destinationSnapshotRejectsOpenRenameHandle();
     /// A same-size Asset edit with restored timestamps cannot be replaced by stale output.
     void assetPublicationRejectsInPlaceDestinationEdit();
     /// A failed durable release retains the published fact and leaves recovery ownership intact.
@@ -894,6 +897,36 @@ void DurableStagingTests::assetPublicationRejectsReplacedDestination() {
     QCOMPARE(fs::file_size(oldDestination), std::uintmax_t{8});
     QVERIFY(registry.performSafetyCleanup().empty());
     QVERIFY(!fs::exists(temporary));
+}
+
+void DurableStagingTests::destinationSnapshotRejectsOpenRenameHandle() {
+#ifdef _WIN32
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto destination = root / "texture.dds";
+    std::ofstream(destination, std::ios::binary) << "original";
+    const auto renameHandle = CreateFileW(
+        destination.c_str(), DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    QVERIFY(renameHandle != INVALID_HANDLE_VALUE);
+
+    cao::run::TemporaryArtifactRegistry registry;
+    std::optional<DWORD> snapshotError;
+    try {
+        (void)registry.capturePublicationTarget(root, destination);
+    } catch (const std::system_error& error) {
+        snapshotError = static_cast<DWORD>(error.code().value());
+    }
+    CloseHandle(renameHandle);
+    // Sharing checks are symmetric: an existing DELETE handle conflicts with a snapshot
+    // that refuses delete sharing, just as a rename would while the snapshot is open.
+    QVERIFY(snapshotError.has_value());
+    QCOMPARE(*snapshotError, static_cast<DWORD>(ERROR_SHARING_VIOLATION));
+    (void)registry.capturePublicationTarget(root, destination);
+#else
+    QSKIP("Windows file sharing is required for this regression");
+#endif
 }
 
 void DurableStagingTests::assetPublicationRejectsInPlaceDestinationEdit() {

@@ -255,8 +255,9 @@ PinnedDestination pinDestination(const fs::path& root, const fs::path& destinati
 std::optional<DestinationSnapshot> destinationIdentity(const fs::path& path) {
 #ifdef _WIN32
     // Deny write sharing while reading so one snapshot cannot combine bytes from two revisions.
+    // Deny delete sharing so a rename cannot detach the file while its bytes are hashed.
     const auto handle = CreateFileW(
-        path.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_DELETE,
+        path.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
         nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         const auto error = GetLastError();
