@@ -5,6 +5,7 @@
 #include <chrono>
 #include <atomic>
 #include <csignal>
+#include <filesystem>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -15,6 +16,12 @@
 
 namespace cao::cli {
 namespace {
+/// Preserves a path's recorded spelling while encoding it independently of the Windows code page.
+std::string genericPathUtf8(const std::filesystem::path& path) {
+    const auto utf8 = path.generic_u8string();
+    return std::string(utf8.begin(), utf8.end());
+}
+
 #ifdef _WIN32
 std::atomic<bool> interruptRequested{};
 /// Windows dispatches console events on another thread; never borrow a handle in this callback.
@@ -78,42 +85,42 @@ const char* mutationName(const run::MutationKind kind) noexcept {
 /// Renders terminal-owned evidence, including effects that cancellation cannot roll back.
 void renderDetails(std::ostream& text, const run::OptimizationRunResult& result) {
     text << "\nCancellation Observed|" << (result.cancellationObserved() ? "yes" : "no");
-    for (const auto& root : result.modRoots()) text << "\nMod Root|" << root.generic_string();
+    for (const auto& root : result.modRoots()) text << "\nMod Root|" << genericPathUtf8(root);
     for (const auto& failure : result.failures())
-        text << "\nRun Failure|" << failure.detail() << '|' << failure.path().generic_string();
+        text << "\nRun Failure|" << failure.detail() << '|' << genericPathUtf8(failure.path());
     for (const auto& failure : result.cleanupFailures())
-        text << "\nCleanup Failure|" << failure.detail() << '|' << failure.path().generic_string();
+        text << "\nCleanup Failure|" << failure.detail() << '|' << genericPathUtf8(failure.path());
     for (const auto& attempt : result.assetAttempts()) {
         if (!attempt.result.succeeded())
-            text << "\nAsset Failure|" << attempt.asset.executionPath().generic_string() << '|'
+            text << "\nAsset Failure|" << genericPathUtf8(attempt.asset.executionPath()) << '|'
                  << attempt.result.operation() << '|' << attempt.result.message() << '|'
-                 << attempt.result.affectedPath().generic_string() << '|'
+                 << genericPathUtf8(attempt.result.affectedPath()) << '|'
                  << attempt.result.serviceDetail();
     }
     for (const auto& attempt : result.archiveExtractionAttempts())
         if (!attempt.succeeded())
-            text << "\nArchive Failure|" << attempt.archivePath.generic_string() << '|'
+            text << "\nArchive Failure|" << genericPathUtf8(attempt.archivePath) << '|'
                  << attempt.detail;
     if (const auto* finalization = result.archiveFinalization()) {
         if (finalization->failure) text << "\nFinalization Failure|" << finalization->detail;
         for (const auto& attempt : finalization->attempts)
             if (!attempt.succeeded())
-                text << "\nArchive Failure|" << attempt.archivePath.generic_string() << '|'
+                text << "\nArchive Failure|" << genericPathUtf8(attempt.archivePath) << '|'
                      << attempt.detail;
     }
     for (const auto& mutation : result.mutationSummaries()) {
         // These are completed effects retained by the service, never estimates of remaining work.
-        text << "\nCommitted Mutations Retained|" << mutation.modRoot.generic_string() << '|'
+        text << "\nCommitted Mutations Retained|" << genericPathUtf8(mutation.modRoot) << '|'
              << mutationName(mutation.kind) << '|' << mutation.committed
              << "|partial-or-unknown=" << mutation.partialOrUnknown;
     }
     for (const auto& collision : result.archiveCollisions()) {
-        text << "\nArchive Collision|" << collision.modRoot().generic_string() << '|'
-             << collision.gamePath().generic_string()
-             << "|winner=" << collision.winningArchive().generic_string()
+        text << "\nArchive Collision|" << genericPathUtf8(collision.modRoot()) << '|'
+             << genericPathUtf8(collision.gamePath())
+             << "|winner=" << genericPathUtf8(collision.winningArchive())
              << "|loose-asset-wins=" << (collision.looseAssetWins() ? "yes" : "no");
         for (const auto& shadowed : collision.shadowedArchives())
-            text << "|shadowed=" << shadowed.generic_string();
+            text << "|shadowed=" << genericPathUtf8(shadowed);
     }
     for (const auto reason :
          {routing::SkipReason::DisabledPhase, routing::SkipReason::DisabledAssetKind,
@@ -143,11 +150,11 @@ void renderEvent(std::ostream& output, const run::RunEvent& event) {
         }
     } else if (const auto* diagnostic = std::get_if<run::RunDiagnostic>(&event.payload())) {
         text << "Diagnostic|" << phaseName(diagnostic->phase()) << '|' << diagnostic->detail()
-             << '|' << diagnostic->path();
+             << '|' << genericPathUtf8(diagnostic->path());
     } else if (const auto* failure = std::get_if<run::RunFailure>(&event.payload())) {
         text << "Failure|" << phaseName(failure->phase()) << '|'
              << static_cast<int>(failure->code()) << '|' << failure->detail() << '|'
-             << failure->path();
+             << genericPathUtf8(failure->path());
     } else {
         const auto& result =
             *std::get<std::shared_ptr<const run::OptimizationRunResult>>(event.payload());

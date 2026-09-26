@@ -40,6 +40,14 @@ struct EntryIdentity {
     bool operator==(const EntryIdentity&) const = default;
 };
 
+struct DestinationSnapshot {
+    EntryIdentity identity;
+    std::uint64_t size{};
+    std::uint64_t lastWriteTime{};
+    std::uint64_t changeTime{};
+    bool operator==(const DestinationSnapshot&) const = default;
+};
+
 #ifdef _WIN32
 /// Rejects DOS devices, which Win32 recognizes even with an extension in any directory.
 bool reservedDeviceName(const std::wstring& name) {
@@ -216,9 +224,9 @@ PinnedDestination pinDestination(const fs::path& root, const fs::path& destinati
     return pinned;
 }
 
-/// Reads an ordinary destination leaf's stable identity, or absence, without following links.
+/// Reads a destination leaf's identity and content-relevant metadata without following links.
 /// An existing directory remains an invalid publication target but is left for native arbitration.
-std::optional<EntryIdentity> destinationIdentity(const fs::path& path) {
+std::optional<DestinationSnapshot> destinationIdentity(const fs::path& path) {
 #ifdef _WIN32
     const auto handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
@@ -237,7 +245,15 @@ std::optional<EntryIdentity> destinationIdentity(const fs::path& path) {
     if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
         throw std::invalid_argument("Publication destination is linked");
     if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) return std::nullopt;
-    return ordinaryIdentity(leaf, false);
+    FILE_BASIC_INFO basic{};
+    if (!GetFileInformationByHandleEx(leaf.get(), FileBasicInfo, &basic, sizeof(basic)))
+        throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
+    // File IDs survive in-place writes; size, last-write, and change time reveal ordinary edits.
+    return DestinationSnapshot{ordinaryIdentity(leaf, false),
+                               (static_cast<std::uint64_t>(info.nFileSizeHigh) << 32) |
+                                   info.nFileSizeLow,
+                               static_cast<std::uint64_t>(basic.LastWriteTime.QuadPart),
+                               static_cast<std::uint64_t>(basic.ChangeTime.QuadPart)};
 #else
     struct stat info{};
     if (::lstat(path.c_str(), &info) != 0) {
@@ -247,7 +263,7 @@ std::optional<EntryIdentity> destinationIdentity(const fs::path& path) {
     if (S_ISDIR(info.st_mode)) return std::nullopt;
     const auto handle = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (handle < 0) throw std::system_error(errno, std::generic_category());
-    return ordinaryIdentity(NativeEntry(handle), false);
+    return DestinationSnapshot{ordinaryIdentity(NativeEntry(handle), false)};
 #endif
 }
 
@@ -326,7 +342,7 @@ struct TemporaryArtifactRegistry::PublicationTarget::State {
     fs::path root;
     fs::path destination;
     EntryIdentity parent;
-    std::optional<EntryIdentity> leaf;
+    std::optional<DestinationSnapshot> leaf;
 };
 
 TemporaryArtifactRegistry::PublicationTarget::PublicationTarget(std::unique_ptr<State> state)
@@ -345,7 +361,7 @@ struct TemporaryArtifactRegistry::PublicationReceipt::State {
     fs::path temporary;
     std::optional<fs::path> intendedDestination;
     std::optional<EntryIdentity> stagedParent;
-    std::optional<EntryIdentity> stagedLeaf;
+    std::optional<DestinationSnapshot> stagedLeaf;
 };
 
 TemporaryArtifactRegistry::PublicationReceipt::PublicationReceipt(std::unique_ptr<State> state)
@@ -473,8 +489,8 @@ PublicationResult TemporaryArtifactRegistry::publishReceipt(PublicationReceipt::
         const auto parent = pinDestination(receipt.root, destination, receipt.stagedParent);
         {
             const auto staged = flushStagedFile(receipt.temporary, parent.parentIdentity);
-            // The saved bytes came from the identity captured before loading, not a new leaf
-            // installed at the same pathname while the backend was running.
+            // The saved bytes came from the leaf captured before loading, not a replacement
+            // or an in-place edit of that leaf while the backend was running.
             if (receipt.intendedDestination && destinationIdentity(destination) != receipt.stagedLeaf)
                 throw std::invalid_argument("Publication destination changed after input capture");
             publishNative(staged, receipt.temporary, parent, destination, policy, published);

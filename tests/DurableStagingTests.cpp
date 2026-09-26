@@ -3,8 +3,10 @@
 #include <QtTest>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <cstdio>
 #include <optional>
+#include <string>
 #include <type_traits>
 #include <utility>
 
@@ -23,6 +25,8 @@ class DurableStagingTests final : public QObject {
     void killedAfterPublicationKeepsDestination();
     /// A stale record for a missing temporary file must not block a later producer.
     void recoveryAndProductionShareTheOwnershipLock();
+    /// A missing sibling and its removed parent do not invalidate durable ownership.
+    void recoverySkipsMissingSiblingParent();
     /// A clean Apply root stays pinned before the first staging artifact is created.
     void cleanRootCannotBeRenamedDuringRecoveryScope();
     /// A cancelled preparation leaves its durable sibling registration for a later recovery.
@@ -49,6 +53,10 @@ class DurableStagingTests final : public QObject {
     void unownedBootstrapIsRejected();
     /// One damaged entry must not stop cleanup of independently registered temporary files.
     void cleanupContinuesAfterADamagedTemporary();
+    /// Covers nested staged Texture, Mesh, and Animation parents on Windows.
+    void nestedStagedParentsStayPinnedThroughSafetyCleanup_data();
+    /// A staged parent cannot be renamed into a junction during Safety Cleanup.
+    void nestedStagedParentsStayPinnedThroughSafetyCleanup();
     /// Generic commit cannot release durable staging before or after a separate destination move.
     void genericCommitCannotReleaseDurableStage();
     /// Both publication policies commit staged bytes and release only the temporary path.
@@ -73,6 +81,8 @@ class DurableStagingTests final : public QObject {
     void assetPublicationRejectsReplacedParent();
     /// Replacement refuses a different leaf even when its pathname and parent stay the same.
     void assetPublicationRejectsReplacedDestination();
+    /// A native Asset edited in place after loading cannot be replaced by stale output.
+    void assetPublicationRejectsInPlaceDestinationEdit();
     /// A failed durable release retains the published fact and leaves recovery ownership intact.
     void publicationReleaseFailurePreservesCommittedDestination();
     /// Recovery retains an Archive destination and removes abandoned staging after producer death.
@@ -484,6 +494,79 @@ void DurableStagingTests::cleanupContinuesAfterADamagedTemporary() {
     QVERIFY(fs::exists(damaged.path / "unregistered"));
 }
 
+void DurableStagingTests::recoverySkipsMissingSiblingParent() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto parent = root / "textures" / "nested";
+    QVERIFY(fs::create_directories(parent));
+    fs::path temporary;
+    {
+        cao::run::TemporaryArtifactRegistry producer;
+        temporary = producer.stageFile(root, parent / "texture.dds").path;
+    }
+    QVERIFY(fs::remove(temporary));
+    QVERIFY(fs::remove(parent));
+
+    cao::run::StagingRecovery recovery;
+    const auto failure = recovery.recover(root);
+    QVERIFY2(!failure.has_value(), failure ? failure->detail().c_str() : "");
+    QVERIFY(!fs::exists(temporary));
+}
+
+void DurableStagingTests::nestedStagedParentsStayPinnedThroughSafetyCleanup_data() {
+    QTest::addColumn<QString>("extension");
+    QTest::newRow("texture") << QStringLiteral(".dds");
+    QTest::newRow("mesh") << QStringLiteral(".nif");
+    QTest::newRow("animation") << QStringLiteral(".hkx");
+}
+
+void DurableStagingTests::nestedStagedParentsStayPinnedThroughSafetyCleanup() {
+#ifdef _WIN32
+    QFETCH(QString, extension);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto ancestor = root / "assets";
+    const auto parent = ancestor / "nested";
+    const auto shiftedParent = ancestor / "shifted";
+    QVERIFY(fs::create_directories(parent));
+    const auto destination =
+        parent / fs::path((QStringLiteral("source") + extension).toStdWString());
+    const auto renamingDenied = [](const fs::path& directoryPath) {
+        const auto shifted = directoryPath.parent_path() /
+                             (directoryPath.filename().wstring() + L"-shifted");
+        std::error_code error;
+        fs::rename(directoryPath, shifted, error);
+        const bool denied = static_cast<bool>(error);
+        if (!denied) fs::rename(shifted, directoryPath);
+        return denied;
+    };
+
+    {
+        cao::run::TemporaryArtifactRegistry registry;
+        auto receipt = registry.stageFileForPublication(root, destination);
+        const auto staged = receipt.path();
+        std::ofstream(staged, std::ios::binary) << "unpublished";
+
+        // A pin on just the immediate parent would still allow a higher ancestor to be swapped.
+        QVERIFY2(renamingDenied(parent), "The staged parent was replaceable before cleanup");
+        QVERIFY2(renamingDenied(ancestor), "A staged ancestor was replaceable before cleanup");
+        QVERIFY(registry.performSafetyCleanup().empty());
+        QVERIFY(!fs::exists(staged));
+
+        QVERIFY2(renamingDenied(parent), "The staged parent was replaceable during cleanup");
+        QVERIFY2(renamingDenied(ancestor), "A staged ancestor was replaceable during cleanup");
+    }
+
+    std::error_code renameError;
+    fs::rename(parent, shiftedParent, renameError);
+    QVERIFY2(!renameError, renameError.message().c_str());
+#else
+    QSKIP("Directory pinning against rename is a Windows runtime contract");
+#endif
+}
+
 void DurableStagingTests::genericCommitCannotReleaseDurableStage() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -807,6 +890,40 @@ void DurableStagingTests::assetPublicationRejectsReplacedDestination() {
     QCOMPARE(fs::file_size(oldDestination), std::uintmax_t{8});
     QVERIFY(registry.performSafetyCleanup().empty());
     QVERIFY(!fs::exists(temporary));
+}
+
+void DurableStagingTests::assetPublicationRejectsInPlaceDestinationEdit() {
+#ifdef _WIN32
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto destination = root / "texture.dds";
+    std::ofstream(destination, std::ios::binary) << "original";
+    cao::run::TemporaryArtifactRegistry registry;
+    auto target = registry.capturePublicationTarget(root, destination);
+    std::ifstream loaded(destination, std::ios::binary);
+    QVERIFY(loaded.is_open());
+    QCOMPARE(std::string(std::istreambuf_iterator<char>(loaded), std::istreambuf_iterator<char>()),
+             std::string("original"));
+    loaded.close();
+    auto receipt = registry.stageFileForPublication(std::move(target));
+    const auto temporary = receipt.path();
+    std::ofstream(temporary, std::ios::binary) << "optimized original";
+    // Truncation and rewrite keep the leaf's file ID while changing the bytes it contains.
+    // The final size is unchanged, so the timestamp fields must reveal the edit.
+    std::ofstream(destination, std::ios::binary | std::ios::trunc) << "revised!";
+    const auto result = receipt.publish(destination, cao::run::PublicationPolicy::Replace);
+    QCOMPARE(result.state, cao::run::PublicationState::NotPublished);
+    QVERIFY(result.errorDetail.find("Publication destination changed after input capture") !=
+            std::string::npos);
+    QVERIFY(registry.performSafetyCleanup().empty());
+    QVERIFY(!fs::exists(temporary));
+    QFile output(QString::fromStdWString(destination.wstring()));
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    QCOMPARE(output.readAll(), QByteArray("revised!"));
+#else
+    QSKIP("Windows destination metadata is required for this regression");
+#endif
 }
 
 void DurableStagingTests::publicationReleaseFailurePreservesCommittedDestination() {
