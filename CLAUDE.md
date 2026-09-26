@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues are tracked as local Markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+Issues and specs are tracked in GitHub Issues for `evildarkarchon/CAO`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
