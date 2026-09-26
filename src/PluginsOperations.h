@@ -54,17 +54,16 @@ constexpr char GROUP_TNAM[4] = {'T', 'N', 'A', 'M'};
 constexpr char GROUP_TXST[4] = {'T', 'X', 'S', 'T'};
 constexpr char GROUP_TX00[4] = {'T', 'X', '0', '0'};
 
-class PluginsOperations final : public QObject
-{
+class PluginsOperations final : public QObject {
     Q_DECLARE_TR_FUNCTIONS(PluginsOperations)
 
-public:
+   public:
     /*!
-   * \brief listHeadparts List all the headparts in a plugin file
-   * \param filepath The path of the file to scan
-   * \return The list of headparts
-   */
-    static QStringList listHeadparts(const QString &filepath);
+     * \brief listHeadparts List all the headparts in a plugin file
+     * \param filepath The path of the file to scan
+     * \return The list of headparts
+     */
+    static QStringList listHeadparts(const QString& filepath);
 
-    static QStringList listLandscapeTextures(const QString &filepath);
+    static QStringList listLandscapeTextures(const QString& filepath);
 };

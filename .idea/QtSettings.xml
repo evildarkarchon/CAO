@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="QtSettings">
+    <option name="myCurrentProfile" value="vs2026-windows" />
+    <option name="mySettingsPerProfile">
+      <map>
+        <entry key="ninja-windows">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="$PROJECT_DIR$/build/vcpkg_installed/x64-windows-static-md/qml" />
+              <option name="myQtBinPath" value="$PROJECT_DIR$/build/vcpkg_installed/x64-windows-static-md/tools/qt5/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="vs2026-windows">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="$PROJECT_DIR$/build/vs2026/vcpkg_installed/x64-windows-static-md/qml" />
+              <option name="myQtBinPath" value="$PROJECT_DIR$/build/vs2026/vcpkg_installed/x64-windows-static-md/tools/qt5/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+</project>

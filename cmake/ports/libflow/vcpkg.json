@@ -1,0 +1,6 @@
+{
+  "name": "libflow",
+  "version-semver": "0.0.1",
+  "description": "A functional programming library for C++17 and C++20",
+  "homepage": "https://github.com/Guekka/libflow"
+}

@@ -3,37 +3,32 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #include "Profiles.h"
-#include "Manager.h"
+#include "FilesystemOperations.h"
 
 const QString defaultProfile = "SSE";
 
-Profiles *Profiles::_instance;
+Profiles* Profiles::_instance;
 
-Profiles::Profiles(){};
+Profiles::Profiles() {};
 
-void Profiles::init()
-{
+void Profiles::init() {
     _commonSettings = new QSettings("profiles/common.ini", QSettings::IniFormat, this);
     findProfiles(QDir("profiles"));
-    const QString &mode = _commonSettings->value("profile").toString();
+    const QString& mode = _commonSettings->value("profile").toString();
     loadProfile(mode);
 
     auto sets = btu::bsa::Settings::get(Profiles::bsaGame());
 
-    if (_maxBsaUncompressedSize < sets.max_size)
-        _maxBsaUncompressedSize = sets.max_size;
+    if (_maxBsaUncompressedSize < sets.max_size) _maxBsaUncompressedSize = sets.max_size;
 }
 
-size_t Profiles::findProfiles(const QDir &dir)
-{
+size_t Profiles::findProfiles(const QDir& dir) {
     _profileDir = dir;
     size_t counter = 0;
     _profiles.clear();
-    for (const auto &subDir : _profileDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
-    {
-        const QString &ini = dir.absoluteFilePath(subDir + "/profile.ini");
-        if (QFile::exists(ini))
-        {
+    for (const auto& subDir : _profileDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        const QString& ini = dir.absoluteFilePath(subDir + "/profile.ini");
+        if (QFile::exists(ini)) {
             _profiles << subDir;
             ++counter;
         }
@@ -42,15 +37,15 @@ size_t Profiles::findProfiles(const QDir &dir)
     return counter;
 }
 
-void Profiles::loadProfile(const QString &newProfile)
-{
+void Profiles::loadProfile(const QString& newProfile) {
     _currentProfile = exists(newProfile) ? newProfile : defaultProfile;
     _commonSettings->setValue("profile", _currentProfile);
 
-    _logPath = QDir::toNativeSeparators(
-        QString("%1/logs/%2/%3.html")
-            .arg(QDir::currentPath(), _currentProfile, QDateTime::currentDateTime().toString("yy.MM.dd.hh.mm")));
-    const QString &folder = _profileDir.absoluteFilePath(_currentProfile);
+    _logPath =
+        QDir::toNativeSeparators(QString("%1/logs/%2/%3.html")
+                                     .arg(QDir::currentPath(), _currentProfile,
+                                          QDateTime::currentDateTime().toString("yy.MM.dd.hh.mm")));
+    const QString& folder = _profileDir.absoluteFilePath(_currentProfile);
     _profileSettings = new QSettings(folder + "/profile.ini", QSettings::IniFormat, this);
     _optionsSettings = new QSettings(folder + "/settings.ini", QSettings::IniFormat, this);
 
@@ -59,31 +54,26 @@ void Profiles::loadProfile(const QString &newProfile)
     readFromIni();
 }
 
-bool Profiles::exists(const QString &profile)
-{
+bool Profiles::exists(const QString& profile) {
     getInstance().findProfiles(QDir("profiles"));
     return getInstance()._profiles.contains(profile) && !profile.isEmpty();
 }
 
-QStringList Profiles::list()
-{
-    return getInstance()._profiles;
-}
+QStringList Profiles::list() { return getInstance()._profiles; }
 
-void Profiles::create(const QString &name, const QString &baseProfile)
-{
-    const QString &baseFolder = getInstance()._profileDir.absoluteFilePath(exists(baseProfile) ? baseProfile
-                                                                                               : defaultProfile);
-    const QString &newFolder = getInstance()._profileDir.absoluteFilePath(name);
+void Profiles::create(const QString& name, const QString& baseProfile) {
+    const QString& baseFolder = getInstance()._profileDir.absoluteFilePath(
+        exists(baseProfile) ? baseProfile : defaultProfile);
+    const QString& newFolder = getInstance()._profileDir.absoluteFilePath(name);
     FilesystemOperations::copyDir(baseFolder, newFolder, false);
     QFile::remove(newFolder + "/isBase");
     getInstance().findProfiles(getInstance()._profileDir);
 }
 
-QFile Profiles::getFile(const QString &filename)
-{
-    const QDir &currentProfileDir(getInstance()._profileDir.absoluteFilePath(getInstance().currentProfile()));
-    const QDir &defaultProfileDir(getInstance()._profileDir.absoluteFilePath(defaultProfile));
+QFile Profiles::getFile(const QString& filename) {
+    const QDir& currentProfileDir(
+        getInstance()._profileDir.absoluteFilePath(getInstance().currentProfile()));
+    const QDir& defaultProfileDir(getInstance()._profileDir.absoluteFilePath(defaultProfile));
 
     if (currentProfileDir.exists(filename))
         return QFile(currentProfileDir.filePath(filename));
@@ -93,8 +83,7 @@ QFile Profiles::getFile(const QString &filename)
         return QFile();
 }
 
-void Profiles::saveToIni()
-{
+void Profiles::saveToIni() {
     _profileSettings->beginGroup("BSA");
     _profileSettings->setValue("bsaEnabled", _bsaEnabled);
     _profileSettings->setValue("maxBsaUncompressedSize", _maxBsaUncompressedSize);
@@ -118,8 +107,7 @@ void Profiles::saveToIni()
     _profileSettings->endGroup();
 }
 
-void Profiles::readFromIni()
-{
+void Profiles::readFromIni() {
     _profileSettings->beginGroup("BSA");
     _bsaEnabled = _profileSettings->value("bsaEnabled").toBool();
     _maxBsaUncompressedSize = _profileSettings->value("maxBsaUncompressedSize").toDouble();
@@ -127,8 +115,8 @@ void Profiles::readFromIni()
     _profileSettings->endGroup();
     _profileSettings->beginGroup("Meshes");
     _meshesEnabled = _profileSettings->value("meshesEnabled").toBool();
-    _meshesFileVersion = static_cast<nifly::NiFileVersion>(
-        _profileSettings->value("meshesFileVersion").toInt());
+    _meshesFileVersion =
+        static_cast<nifly::NiFileVersion>(_profileSettings->value("meshesFileVersion").toInt());
     _meshesStream = _profileSettings->value("meshesStream").toUInt();
     _meshesUser = _profileSettings->value("meshesUser").toUInt();
     _profileSettings->endGroup();
@@ -144,25 +132,18 @@ void Profiles::readFromIni()
     _profileSettings->endGroup();
 }
 #ifdef GUI
-void Profiles::loadProfile(Ui::MainWindow *ui)
-{
+void Profiles::loadProfile(Ui::MainWindow* ui) {
     _currentProfile = uiToGame(ui);
     saveToUi(ui);
     loadProfile(_currentProfile);
 }
 
-QString Profiles::uiToGame(Ui::MainWindow *ui)
-{
-    return ui->presets->currentText();
-}
+QString Profiles::uiToGame(Ui::MainWindow* ui) { return ui->presets->currentText(); }
 
-void Profiles::saveToUi(Ui::MainWindow *ui)
-{
-    const auto iterateComboBox = [](QComboBox *box, const QVariant data) {
-        for (int i = 0; i < box->count(); ++i)
-        {
-            if (box->itemData(i) == data)
-            {
+void Profiles::saveToUi(Ui::MainWindow* ui) {
+    const auto iterateComboBox = [](QComboBox* box, const QVariant data) {
+        for (int i = 0; i < box->count(); ++i) {
+            if (box->itemData(i) == data) {
                 box->setCurrentIndex(i);
                 break;
             }
@@ -176,7 +157,7 @@ void Profiles::saveToUi(Ui::MainWindow *ui)
     iterateComboBox(ui->meshesStream, _meshesStream);
     iterateComboBox(ui->meshesVersion, _meshesFileVersion);
 
-    //Animation format is not working when converting from amd64, thus not added to UI
+    // Animation format is not working when converting from amd64, thus not added to UI
 
     iterateComboBox(ui->texturesOutputFormat, _texturesFormat);
     ui->texturesTgaConversionCheckBox->setChecked(_texturesConvertTga);
@@ -184,42 +165,37 @@ void Profiles::saveToUi(Ui::MainWindow *ui)
 
     QStringList unwantedFormats;
     ui->texturesUnwantedFormatsList->clear();
-    for (const QVariant &variant : _texturesUnwantedFormats)
-    {
-        const DXGI_FORMAT &format = variant.value<DXGI_FORMAT>();
+    for (const QVariant& variant : _texturesUnwantedFormats) {
+        const DXGI_FORMAT& format = variant.value<DXGI_FORMAT>();
         ui->texturesUnwantedFormatsList->addItem(dxgiFormatToString(format));
     }
 }
 
-void Profiles::readFromUi(Ui::MainWindow *ui)
-{
+void Profiles::readFromUi(Ui::MainWindow* ui) {
     _bsaGame = static_cast<btu::Game>(ui->bsaGame->currentData().toInt());
     _maxBsaUncompressedSize = ui->bsaMaximumSize->value() * GigaByte;
 
     _meshesUser = ui->meshesUser->currentData().toUInt();
     _meshesStream = ui->meshesStream->currentData().toUInt();
     _meshesFileVersion = ui->meshesVersion->currentData().value<nifly::NiFileVersion>();
-    //Animation format is not working currently, thus not added to UI
+    // Animation format is not working currently, thus not added to UI
 
     _texturesFormat = ui->texturesOutputFormat->currentData().value<DXGI_FORMAT>();
     _texturesConvertTga = ui->texturesTgaConversionCheckBox->isChecked();
     _texturesCompressInterface = ui->texturesCompressInterfaceCheckBox->isChecked();
 
     _texturesUnwantedFormats.clear();
-    for (int i = 0; i < ui->texturesUnwantedFormatsList->count(); ++i)
-    {
-        const auto &entry = ui->texturesUnwantedFormatsList->item(i);
-        const DXGI_FORMAT &format = stringToDxgiFormat(entry->text());
+    for (int i = 0; i < ui->texturesUnwantedFormatsList->count(); ++i) {
+        const auto& entry = ui->texturesUnwantedFormatsList->item(i);
+        const DXGI_FORMAT& format = stringToDxgiFormat(entry->text());
         if (!_texturesUnwantedFormats.contains(format) && format != DXGI_FORMAT_UNKNOWN)
             _texturesUnwantedFormats += format;
     }
 }
 #endif
 
-Profiles &Profiles::getInstance()
-{
-    if (!_instance)
-    {
+Profiles& Profiles::getInstance() {
+    if (!_instance) {
         _instance = new Profiles();
         _instance->init();
     }
