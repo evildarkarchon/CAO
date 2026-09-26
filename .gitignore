@@ -507,4 +507,4 @@ install/
 build-*/
 src/Version.h
 .codegraph/
-*.lock
+/vcpkg_installed/vcpkg/vcpkg-running.lock
