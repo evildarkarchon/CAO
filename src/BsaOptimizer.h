@@ -21,8 +21,16 @@ namespace cao::run {
 /// Holds a source stable while an Archive is read or written, then cleans only that file.
 class SourceFilePin final {
    public:
+    /// Opaque shared ownership of ordinary ancestor directories for one Mod Root.
+    struct DirectoryPins;
+    /// Creates a Mod Root-scoped set of ancestor handles reusable by one output's source pins.
+    [[nodiscard]] static std::shared_ptr<DirectoryPins> sharedDirectoryPins(
+        std::filesystem::path modRoot);
     /// Opens an ordinary source for reading while denying concurrent writes and renames.
-    explicit SourceFilePin(std::filesystem::path source);
+    /// Pins its directory chain within modRoot until cleanup so no ancestor can redirect the path.
+    /// Throws when a parent is a reparse point or the source is outside that Mod Root.
+    SourceFilePin(std::filesystem::path source, std::filesystem::path modRoot,
+                  std::shared_ptr<DirectoryPins> directoryPins = {});
     ~SourceFilePin();
     SourceFilePin(SourceFilePin&&) noexcept;
     SourceFilePin& operator=(SourceFilePin&&) noexcept;
@@ -30,6 +38,7 @@ class SourceFilePin final {
     SourceFilePin& operator=(const SourceFilePin&) = delete;
 
     /// Releases the read-period handle so a DELETE-capable handle can be opened.
+    /// Directory pins remain live to prevent a parent substitution during that transition.
     void releaseForCleanup() noexcept;
     /// Reopens the source without write/delete sharing and deletes only its recorded identity.
     /// Throws if file identity or change metadata differs, or Windows rejects deletion.

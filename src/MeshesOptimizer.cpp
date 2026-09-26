@@ -6,6 +6,7 @@
 #include "MeshesOptimizer.h"
 #include "FilesystemOperations.h"
 #include "MeshReferenceMaintenance.h"
+#include "Run/AssetInitializationCancelled.h"
 
 using namespace nifly;
 
@@ -47,7 +48,8 @@ ScanResult MeshesOptimizer::scan(NifFile& nif) const {
         return good;
 }
 
-void MeshesOptimizer::listHeadparts(const QString& directory) {
+void MeshesOptimizer::listHeadparts(const QString& directory, std::stop_token stop) {
+    cao::run::throwIfAssetInitializationCancelled(stop);
     headparts = _profile.customHeadparts;
     for (auto& path : headparts) path = QDir::cleanPath(path);
 
@@ -58,9 +60,12 @@ void MeshesOptimizer::listHeadparts(const QString& directory) {
     }
 
     QDirIterator it(directory, QDirIterator::Subdirectories);
-    for (const auto& plugin : FilesystemOperations::listPlugins(it))
+    for (const auto& plugin : FilesystemOperations::listPlugins(it, stop)) {
+        cao::run::throwIfAssetInitializationCancelled(stop);
         headparts += PluginsOperations::listHeadparts(plugin);
+    }
 
+    cao::run::throwIfAssetInitializationCancelled(stop);
     headparts.removeDuplicates();
 }
 

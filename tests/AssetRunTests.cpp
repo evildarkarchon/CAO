@@ -13,6 +13,7 @@
 #include <array>
 #include <filesystem>
 #include <initializer_list>
+#include <stop_token>
 #include <utility>
 #include <vector>
 
@@ -327,6 +328,9 @@ private slots:
 
  /// Verifies cancellation stops before the next Routed Asset without changing the work total.
  void cancellationStopsBetweenRoutedAssets();
+
+ /// Cancellation during backend initialization records no attempted Asset or uncertain mutation.
+ void initializationCancellationDoesNotInventAttempt();
 
  /// Verifies Archive cancellation returns before definitive Loose Asset discovery.
  void archiveCancellationSkipsDefinitiveDiscovery();
@@ -1304,6 +1308,47 @@ void AssetRunTests::cancellationStopsBetweenRoutedAssets()
     QCOMPARE(progress.size(), std::size_t{1});
     QCOMPARE(progress.front().completed, std::size_t{1});
     QCOMPARE(progress.front().total, std::size_t{2});
+}
+
+void AssetRunTests::initializationCancellationDoesNotInventAttempt()
+{
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+
+    const auto asset = std::filesystem::path(temporaryDirectory.path().toStdWString()) /
+                       "textures" / "first.dds";
+    writeFile(asset);
+    const std::array paths{asset};
+    std::stop_source stop;
+    std::vector<AssetRunProgress> progress;
+    bool finalized = false;
+    AssetRunEvidenceFixture evidence;
+    AssetRun(allLooseTargetsPolicy())
+        .execute(paths, evidence.workEvidence,
+                 AssetRunAdapters{
+                     .reportProgress = [&](const AssetRunProgress& update) {
+                         progress.push_back(update);
+                     },
+                     .isCancelled = [&] { return stop.stop_requested(); },
+                     .executeAssetWithResult = [&](const cao::routing::RoutedAsset&,
+                                                   const std::filesystem::path&)
+                         -> cao::execution::AssetExecutionResult {
+                         stop.request_stop();
+                         throw cao::run::AssetInitializationCancelled{};
+                     },
+                     .finalizeArchiveLifecycleWithResult = [&] {
+                         finalized = true;
+                         return cao::run::ArchiveFinalizationResult{};
+                     }},
+                 cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);
+    const auto terminalEvidence = evidence.seal();
+
+    QVERIFY(terminalEvidence.cancellationObserved());
+    QCOMPARE(terminalEvidence.routingLedger()->routedAssets().size(), std::size_t{1});
+    QVERIFY(terminalEvidence.assetAttempts().empty());
+    QVERIFY(progress.empty());
+    QVERIFY(!finalized);
+    QVERIFY(std::filesystem::is_regular_file(asset));
 }
 
 void AssetRunTests::archiveCancellationSkipsDefinitiveDiscovery()

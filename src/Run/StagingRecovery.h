@@ -22,7 +22,8 @@ class StagingRecovery final {
 
     /// Checks a canonical Mod Root and recovers its verified stale staging. Returns actionable
     /// Preparing failures for active, unknown, or inaccessible contents. Cancellation returns no
-    /// failure and leaves unattempted entries intact; the executor owns its outcome. Apply only.
+    /// failure and leaves unattempted entries intact; the executor owns its outcome. Retains a root
+    /// pin even when no staging exists. Apply only.
     [[nodiscard]] std::optional<RunFailure> recover(const std::filesystem::path& modRoot,
                                                     std::stop_token stop = {});
 

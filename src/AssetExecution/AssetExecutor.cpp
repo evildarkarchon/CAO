@@ -2,8 +2,15 @@
 
 #include <exception>
 #include <array>
+#include <cstring>
 #include <fstream>
+#include <memory>
+#include <system_error>
 #include <utility>
+
+#ifdef _WIN32
+#include <Windows.h>
+#endif
 
 namespace cao::execution {
 namespace {
@@ -29,6 +36,136 @@ std::optional<std::pair<std::uint64_t, std::uint64_t>> assetFingerprint(
     if (!input.eof() || input.bad() || size == 0) return std::nullopt;
     return std::pair{size, hash};
 }
+
+#ifdef _WIN32
+struct SourceIdentity {
+    std::uint64_t volume{};
+    std::array<std::byte, 16> file{};
+    bool fullFileId{};
+    bool operator==(const SourceIdentity&) const = default;
+};
+
+/// Reads a regular, unlinked file's stable Win32 identity without following a reparse point.
+std::optional<SourceIdentity> sourceIdentity(HANDLE handle) noexcept {
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (!GetFileInformationByHandle(handle, &info) ||
+        (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+        info.nNumberOfLinks != 1)
+        return std::nullopt;
+    SourceIdentity identity;
+    FILE_ID_INFO fileId{};
+    if (GetFileInformationByHandleEx(handle, FileIdInfo, &fileId, sizeof(fileId))) {
+        identity.volume = fileId.VolumeSerialNumber;
+        std::memcpy(identity.file.data(), fileId.FileId.Identifier, identity.file.size());
+        identity.fullFileId = true;
+    } else {
+        // Older file systems can lack FileIdInfo; match the registry's 64-bit fallback.
+        identity.volume = info.dwVolumeSerialNumber;
+        const auto index = (static_cast<std::uint64_t>(info.nFileIndexHigh) << 32) |
+                           info.nFileIndexLow;
+        std::memcpy(identity.file.data(), &index, sizeof(index));
+    }
+    return identity;
+}
+
+/// Pins the source read before loading and deletes only that opened file after publication.
+/// Delete sharing lets readers and renames proceed; denied write sharing protects loaded bytes.
+/// Delete access is acquired later so backends that do not share it can still read the source.
+class PinnedConvertibleSource final {
+   public:
+    /// Opens an ordinary source for stable read access and records its original readable bytes.
+    explicit PinnedConvertibleSource(const std::filesystem::path& path) : _path(path) {
+        _handle = CreateFileW(path.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES,
+                              FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+                              OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (_handle == INVALID_HANDLE_VALUE)
+            throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
+        _identity = sourceIdentity(_handle);
+        _bytes = fingerprint();
+        if (!_identity || !_bytes) {
+            close();
+            throw std::invalid_argument("Convertible Texture source is not an ordinary readable file");
+        }
+    }
+    PinnedConvertibleSource(const PinnedConvertibleSource&) = delete;
+    PinnedConvertibleSource& operator=(const PinnedConvertibleSource&) = delete;
+    /// Releases the source handle without deleting when publication or removal did not complete.
+    ~PinnedConvertibleSource() { close(); }
+
+    /// Reports whether the original path still names the opened, unmodified source file.
+    [[nodiscard]] bool unchangedAtPath() const noexcept {
+        if (_handle == INVALID_HANDLE_VALUE) return false;
+        const auto current = CreateFileW(_path.c_str(), FILE_READ_ATTRIBUTES,
+                                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                         nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT,
+                                         nullptr);
+        if (current == INVALID_HANDLE_VALUE) return false;
+        const auto identity = sourceIdentity(current);
+        CloseHandle(current);
+        return identity && identity == _identity && fingerprint() == _bytes;
+    }
+
+    /// Opens delete authority for the same verified file and closes both handles after disposition.
+    [[nodiscard]] bool removeVerified() noexcept {
+        if (!unchangedAtPath()) return false;
+        const auto deletion = CreateFileW(_path.c_str(), DELETE | FILE_READ_ATTRIBUTES,
+                                          FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+                                          OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (deletion == INVALID_HANDLE_VALUE) return false;
+        if (sourceIdentity(deletion) != _identity || !unchangedAtPath()) {
+            CloseHandle(deletion);
+            return false;
+        }
+        FILE_DISPOSITION_INFO disposition{};
+        disposition.DeleteFile = TRUE;
+        if (!SetFileInformationByHandle(deletion, FileDispositionInfo, &disposition,
+                                        sizeof(disposition))) {
+            CloseHandle(deletion);
+            return false;
+        }
+        CloseHandle(deletion);
+        close();
+        return true;
+    }
+
+   private:
+    /// Hashes the pinned file object so a pathname replacement cannot supply the comparison bytes.
+    [[nodiscard]] std::optional<std::pair<std::uint64_t, std::uint64_t>> fingerprint() const noexcept {
+        LARGE_INTEGER start{};
+        if (_handle == INVALID_HANDLE_VALUE ||
+            !SetFilePointerEx(_handle, start, nullptr, FILE_BEGIN))
+            return std::nullopt;
+        std::array<char, 8192> buffer{};
+        std::uint64_t hash = 14695981039346656037ULL;
+        std::uint64_t size = 0;
+        DWORD count = 0;
+        while (ReadFile(_handle, buffer.data(), static_cast<DWORD>(buffer.size()), &count,
+                        nullptr)) {
+            if (count == 0) {
+                if (size == 0) return std::nullopt;
+                return std::pair{size, hash};
+            }
+            for (DWORD index = 0; index < count; ++index) {
+                hash ^= static_cast<unsigned char>(buffer[index]);
+                hash *= 1099511628211ULL;
+            }
+            size += count;
+        }
+        return std::nullopt;
+    }
+
+    /// Closes a live source handle once, including after disposition has marked it for deletion.
+    void close() noexcept {
+        if (_handle != INVALID_HANDLE_VALUE) CloseHandle(_handle);
+        _handle = INVALID_HANDLE_VALUE;
+    }
+
+    std::filesystem::path _path;
+    HANDLE _handle{INVALID_HANDLE_VALUE};
+    std::optional<SourceIdentity> _identity;
+    std::optional<std::pair<std::uint64_t, std::uint64_t>> _bytes;
+};
+#endif
 
 }  // namespace
 
@@ -190,14 +327,38 @@ AssetExecutionResult AssetExecutor::executeTexture(const routing::RoutedAsset& a
     auto mutation = MutationState::None;
     bool removingSource = false;
     decltype(assetFingerprint(outputPath)) sourceBefore, outputBefore;
-    // A removal backend may fail after changing either path. Retain byte fingerprints so a
-    // readable but truncated/replaced file cannot be mistaken for a safely retained original.
+    std::optional<run::TemporaryArtifactRegistry::PublicationTarget> target;
+#ifdef _WIN32
+    std::unique_ptr<PinnedConvertibleSource> sourcePin;
+#endif
+    // A removal backend may fail after changing either path. The source's opened identity and
+    // saved output bytes must both survive before such a failure can be considered recoverable.
     const auto retainedFilesUsable = [&] {
-        return sourceBefore && outputBefore &&
-               sourceBefore == assetFingerprint(asset.executionPath()) &&
-               outputBefore == assetFingerprint(outputPath);
+        if (!outputBefore || outputBefore != assetFingerprint(outputPath)) return false;
+#ifdef _WIN32
+        return sourcePin && sourcePin->unchangedAtPath();
+#else
+        return sourceBefore && sourceBefore == assetFingerprint(asset.executionPath());
+#endif
     };
     try {
+        if (asset.executionMode() == routing::ExecutionMode::Apply) {
+            if (asset.operations().contains(routing::AssetOperation::Conversion) &&
+                texture->variant() == routing::TextureVariant::Convertible) {
+                boundary = "pin_texture_source";
+#ifdef _WIN32
+                sourcePin = std::make_unique<PinnedConvertibleSource>(asset.executionPath());
+#else
+                sourceBefore = assetFingerprint(asset.executionPath());
+#endif
+            }
+            boundary = "capture_texture_destination";
+            const auto absoluteOutput = std::filesystem::absolute(outputPath);
+            target.emplace(artifacts.capturePublicationTarget(
+                modRoot.empty() ? absoluteOutput.parent_path() : std::filesystem::absolute(modRoot),
+                absoluteOutput));
+        }
+        boundary = "load_texture";
         if (!_backend.loadTexture(asset.executionPath(), texture->variant())) {
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::LoadFailed, "Failed to load Texture.", mutation, true,
@@ -215,9 +376,7 @@ AssetExecutionResult AssetExecutor::executeTexture(const routing::RoutedAsset& a
         boundary = "stage_texture";
         affectedPath = outputPath;
         const auto absoluteOutput = std::filesystem::absolute(outputPath);
-        auto receipt = artifacts.stageFileForPublication(
-            modRoot.empty() ? absoluteOutput.parent_path() : std::filesystem::absolute(modRoot),
-            absoluteOutput);
+        auto receipt = artifacts.stageFileForPublication(std::move(*target));
         const auto staged = receipt.path();
         boundary = "save_texture";
         if (!_backend.saveTexture(staged)) {
@@ -246,14 +405,27 @@ AssetExecutionResult AssetExecutor::executeTexture(const routing::RoutedAsset& a
             texture->variant() == routing::TextureVariant::Convertible) {
             boundary = "remove_texture_source";
             affectedPath = asset.executionPath();
-            sourceBefore = assetFingerprint(affectedPath);
             if (!retainedFilesUsable())
                 return AssetExecutionResult::failed(
                     AssetExecutionFailure::SourceRemovalFailed,
                     "Cannot verify conversion files before removal.", mutation, false, affectedPath,
                     boundary);
             removingSource = true;
-            if (!_backend.removeTexture(affectedPath)) {
+            bool removalAttempted = false;
+            bool removalSucceeded = false;
+            // A backend success alone cannot authorize deleting by pathname or claiming removal.
+            const std::function<bool()> removeVerified = [&] {
+                if (removalAttempted) return false;
+                removalAttempted = true;
+#ifdef _WIN32
+                removalSucceeded = sourcePin && sourcePin->removeVerified();
+#else
+                removalSucceeded = std::filesystem::remove(affectedPath);
+#endif
+                return removalSucceeded;
+            };
+            const bool reportedRemoved = _backend.removeTexture(affectedPath, removeVerified);
+            if (!reportedRemoved || !removalSucceeded) {
                 const bool usable = retainedFilesUsable();
                 return AssetExecutionResult::failed(
                     AssetExecutionFailure::SourceRemovalFailed,
@@ -265,7 +437,9 @@ AssetExecutionResult AssetExecutor::executeTexture(const routing::RoutedAsset& a
         return AssetExecutionResult::success(mutation);
     } catch (const std::filesystem::filesystem_error& error) {
         if (removingSource && !retainedFilesUsable()) mutation = MutationState::PartialOrUnknown;
-        const bool stagingFailure = boundary == "stage_texture";
+        const bool stagingFailure = boundary == "stage_texture" ||
+                                    boundary == "capture_texture_destination" ||
+                                    boundary == "pin_texture_source";
         return AssetExecutionResult::failed(
             stagingFailure ? AssetExecutionFailure::StagingFailed
                            : AssetExecutionFailure::BackendException,
@@ -275,10 +449,14 @@ AssetExecutionResult AssetExecutor::executeTexture(const routing::RoutedAsset& a
     } catch (const std::exception& error) {
         if (removingSource && !retainedFilesUsable()) mutation = MutationState::PartialOrUnknown;
         return AssetExecutionResult::failed(
-            boundary == "stage_texture" ? AssetExecutionFailure::StagingFailed
-                                        : AssetExecutionFailure::BackendException,
-            boundary == "stage_texture" ? "Failed to prepare Texture staging."
-                                        : "Texture backend raised an exception.",
+            boundary == "stage_texture" || boundary == "capture_texture_destination" ||
+                    boundary == "pin_texture_source"
+                ? AssetExecutionFailure::StagingFailed
+                : AssetExecutionFailure::BackendException,
+            boundary == "stage_texture" || boundary == "capture_texture_destination" ||
+                    boundary == "pin_texture_source"
+                ? "Failed to prepare Texture staging."
+                : "Texture backend raised an exception.",
             mutation, false, affectedPath, boundary, error.what());
     } catch (...) {
         if (removingSource && !retainedFilesUsable()) mutation = MutationState::PartialOrUnknown;
@@ -302,6 +480,15 @@ AssetExecutionResult AssetExecutor::executeMesh(const routing::RoutedAsset& asse
     std::string boundary = "load_mesh";
     auto mutation = MutationState::None;
     try {
+        std::optional<run::TemporaryArtifactRegistry::PublicationTarget> target;
+        if (asset.executionMode() == routing::ExecutionMode::Apply) {
+            boundary = "capture_mesh_destination";
+            const auto absolutePath = std::filesystem::absolute(path);
+            target.emplace(artifacts.capturePublicationTarget(
+                modRoot.empty() ? absolutePath.parent_path() : std::filesystem::absolute(modRoot),
+                absolutePath));
+        }
+        boundary = "load_mesh";
         if (!_backend.loadMesh(path, mesh->variant()))
             return AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed,
                                                 "Failed to load Mesh.", mutation, true, path,
@@ -334,9 +521,7 @@ AssetExecutionResult AssetExecutor::executeMesh(const routing::RoutedAsset& asse
 
         boundary = "stage_mesh";
         const auto absolutePath = std::filesystem::absolute(path);
-        auto receipt = artifacts.stageFileForPublication(
-            modRoot.empty() ? absolutePath.parent_path() : std::filesystem::absolute(modRoot),
-            absolutePath);
+        auto receipt = artifacts.stageFileForPublication(std::move(*target));
         const auto staged = receipt.path();
         boundary = "save_mesh";
         if (!_backend.saveMesh(staged) || !assetFingerprint(staged))
@@ -357,7 +542,8 @@ AssetExecutionResult AssetExecutor::executeMesh(const routing::RoutedAsset& asse
         mutation = MutationState::Committed;
         return AssetExecutionResult::success(mutation);
     } catch (const std::filesystem::filesystem_error& error) {
-        const bool stagingFailure = boundary == "stage_mesh";
+        const bool stagingFailure = boundary == "stage_mesh" ||
+                                    boundary == "capture_mesh_destination";
         return AssetExecutionResult::failed(
             stagingFailure ? AssetExecutionFailure::StagingFailed
                            : AssetExecutionFailure::BackendException,
@@ -366,8 +552,9 @@ AssetExecutionResult AssetExecutor::executeMesh(const routing::RoutedAsset& asse
             mutation, stagingFailure, path, boundary, error.what());
     } catch (const std::exception& error) {
         return AssetExecutionResult::failed(
-            boundary == "stage_mesh" ? AssetExecutionFailure::StagingFailed
-                                     : AssetExecutionFailure::BackendException,
+            boundary == "stage_mesh" || boundary == "capture_mesh_destination"
+                ? AssetExecutionFailure::StagingFailed
+                : AssetExecutionFailure::BackendException,
             "Mesh execution raised an exception.", mutation, false, path, boundary, error.what());
     } catch (...) {
         return AssetExecutionResult::failed(AssetExecutionFailure::BackendException,

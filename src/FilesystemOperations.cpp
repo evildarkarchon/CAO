@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "FilesystemOperations.h"
+#include "Run/AssetInitializationCancelled.h"
 #include "PluginsOperations.h"
 #include "Run/StagingPaths.h"
 
@@ -150,13 +151,16 @@ QStringList FilesystemOperations::readFile(QFile& file) {
     return list;
 }
 
-QStringList FilesystemOperations::listPlugins(QDirIterator& it) {
+QStringList FilesystemOperations::listPlugins(QDirIterator& it, std::stop_token stop) {
     QStringList plugins;
     const QRegularExpression pluginsExt("\\.es[plm]$");
-    while (it.hasNext()) {
+    while (true) {
+        cao::run::throwIfAssetInitializationCancelled(stop);
+        if (!it.hasNext()) break;
         it.next();
         if (it.fileName().contains(pluginsExt) && !it.fileInfo().isDir()) plugins << it.filePath();
     }
 
+    cao::run::throwIfAssetInitializationCancelled(stop);
     return plugins;
 }

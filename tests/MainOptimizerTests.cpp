@@ -2,16 +2,19 @@
 #include "BsaOptimizer.h"
 #include "FilesystemOperations.h"
 #include "AssetRouting/AssetRouter.h"
+#include "Run/AssetInitializationCancelled.h"
 
 #include <nifly/BasicTypes.hpp>
 #include <nifly/NifFile.hpp>
 
+#include <QProcess>
 #include <QTemporaryDir>
 #include <QTest>
 
 #include <array>
 #include <chrono>
 #include <filesystem>
+#include <stop_token>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -189,6 +192,9 @@ private slots:
  /// Keeps a replacement after the packed file pin is released for guarded cleanup.
  void packedSourcePinPreservesReplacement();
 
+ /// Rejects a planned source when a parent is swapped for a junction before packing.
+ void packedSourceParentJunctionIsRejected();
+
  /// Covers cancellation before work, between outputs, and after the final output.
  void finalizationFreezesTotalAndCancelsBetweenOutputs_data();
  /// Observes a complete multi-root plan before mutation and commits only attempted outputs.
@@ -243,6 +249,12 @@ private slots:
 
  /// Verifies the referenced-TGA rewrite still applies when no conversion failed.
  void successfulRunStillMaintainsMeshReferences();
+
+ /// Stops a recursive plugin listing before traversing more entries.
+ void pluginListingObservesCancellation();
+
+ /// Aborts lazy backend initialization when the run has been cancelled.
+ void optimizerInitializationObservesCancellation();
 
 private:
     QTemporaryDir _temporaryDirectory;
@@ -402,7 +414,7 @@ void MainOptimizerTests::extractedSourceReplacementIsNotCleaned() {
     archive.set_out_path(source);
     QVERIFY(btu::bsa::write(false, std::move(archive), root / "input").empty());
 
-    cao::run::SourceFilePin pin(source);
+    cao::run::SourceFilePin pin(source, mod);
     cao::run::TemporaryArtifactRegistry artifacts;
     const auto result = cao::run::ArchiveExtractor(artifacts).extract(
         {source, mod, {"fixture.dds"}, {"fixture.dds"}});
@@ -517,12 +529,14 @@ void MainOptimizerTests::packedSourcePinPreservesReplacement() {
     const auto displaced = root / "textures" / "displaced.dds";
     writeFile(source, QByteArrayLiteral("original source bytes"));
 
-    cao::run::SourceFilePin pin(source);
+    cao::run::SourceFilePin pin(source, root);
     // A writer cannot replace the file while the archive reader's pin is open.
     QVERIFY(!MoveFileExW(source.c_str(), displaced.c_str(), 0));
     const auto movedParent = root / "moved-textures";
     QVERIFY(!MoveFileExW(source.parent_path().c_str(), movedParent.c_str(), 0));
     pin.releaseForCleanup();
+    // The cleanup gap releases only the file, not the path leading to that file.
+    QVERIFY(!MoveFileExW(source.parent_path().c_str(), movedParent.c_str(), 0));
     QVERIFY(MoveFileExW(source.c_str(), displaced.c_str(), 0));
     writeFile(source, QByteArrayLiteral("replacement source bytes"));
     QVERIFY_EXCEPTION_THROWN(pin.removeIfUnchanged(), std::runtime_error);
@@ -535,6 +549,65 @@ void MainOptimizerTests::packedSourcePinPreservesReplacement() {
     QCOMPARE(old.readAll(), QByteArrayLiteral("original source bytes"));
 #else
     QSKIP("Windows file handles provide the packed-source identity guard.");
+#endif
+}
+
+void MainOptimizerTests::packedSourceParentJunctionIsRejected() {
+#ifdef _WIN32
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto base = std::filesystem::path(directory.path().toStdWString());
+    writeFile(base / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = base / "mod";
+    const auto sourceParent = mod / "textures";
+    const auto source = sourceParent / "armor" / "asset.dds";
+    const auto outside = base / "outside";
+    const auto outsideSource = outside / "armor" / "asset.dds";
+    writeFile(source, QByteArrayLiteral("planned source bytes"));
+    writeFile(outsideSource, QByteArrayLiteral("outside source bytes"));
+    writeFile(outside / "marker.txt", QByteArrayLiteral("keep target directory"));
+    OptionsCAO options;
+    options.bBsaCreateDummies = false;
+    options.bBsaCompress = false;
+    options.bBsaDeleteSource = true;
+    const BSAOptimizer optimizer;
+    const std::array roots{mod};
+    const auto plan = optimizer.planFinalization(roots, options);
+    QCOMPARE(plan.outputs().size(), std::size_t{1});
+    const auto retainedParent = mod / "retained-textures";
+    std::filesystem::rename(sourceParent, retainedParent);
+    const auto quotedPath = [](const std::filesystem::path& path) {
+        auto value = QString::fromStdWString(path.wstring());
+        value.replace("'", "''");
+        return "'" + value + "'";
+    };
+    QProcess process;
+    process.start("powershell.exe", {"-NoProfile", "-NonInteractive", "-Command",
+        "New-Item -ItemType Junction -Path " + quotedPath(sourceParent) + " -Value " +
+            quotedPath(outside) + " -ErrorAction Stop | Out-Null"});
+    QVERIFY(process.waitForFinished());
+    QCOMPARE(process.exitCode(), 0);
+
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts);
+    std::error_code cleanupError;
+    std::filesystem::remove(sourceParent, cleanupError);
+    QVERIFY2(!cleanupError, cleanupError.message().c_str());
+    QCOMPARE(result.attempts.size(), std::size_t{1});
+    QCOMPARE(result.attempts.front().failure,
+             std::optional{cao::run::ArchiveFinalizationFailure::WriteFailed});
+    QCOMPARE(result.attempts.front().mutation, cao::execution::MutationState::None);
+    QVERIFY(!std::filesystem::exists(plan.outputs().front().archivePath));
+    QVERIFY(std::filesystem::exists(retainedParent / "armor" / "asset.dds"));
+    QFile outsideFile(QString::fromStdWString(outsideSource.wstring()));
+    QVERIFY(outsideFile.open(QIODevice::ReadOnly));
+    QCOMPARE(outsideFile.readAll(), QByteArrayLiteral("outside source bytes"));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+#else
+    QSKIP("Windows junctions provide the parent substitution regression case.");
 #endif
 }
 
@@ -575,6 +648,8 @@ void MainOptimizerTests::finalizationReportsPostOutputException() {
     Profiles::setCurrentProfile("SSE");
     const auto mod = parent / "mod";
     writeFile(mod / "textures" / "asset.dds", QByteArrayLiteral("source bytes"));
+    const auto plugin = mod / "existing.esp";
+    writeFile(plugin, QByteArray(static_cast<int>(btu::bsa::dummy::sse.size()), '\0'));
     OptionsCAO options;
     options.bBsaCreateDummies = false;
     options.bBsaCompress = false;
@@ -584,15 +659,16 @@ void MainOptimizerTests::finalizationReportsPostOutputException() {
     const auto plan = optimizer.planFinalization(roots, options);
     QCOMPARE(plan.outputs().size(), std::size_t{1});
     cao::run::TemporaryArtifactRegistry artifacts;
-    HANDLE heldRoot = INVALID_HANDLE_VALUE;
+    HANDLE heldPlugin = INVALID_HANDLE_VALUE;
     const auto result = optimizer.finalize(
         plan, artifacts, {}, {}, cao::run::availableArchiveCapacity,
         [&](const cao::run::ArchiveFinalizationAttempt&) {
-            heldRoot = CreateFileW(mod.c_str(), FILE_LIST_DIRECTORY, 0, nullptr, OPEN_EXISTING,
-                                   FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+            // The root remains pinned through work; block only the dummy plugin's deletion.
+            heldPlugin = CreateFileW(plugin.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         });
-    QVERIFY(heldRoot != INVALID_HANDLE_VALUE);
-    QVERIFY(CloseHandle(heldRoot));
+    QVERIFY(heldPlugin != INVALID_HANDLE_VALUE);
+    QVERIFY(CloseHandle(heldPlugin));
     QCOMPARE(result.attempts.size(), std::size_t{1});
     QVERIFY(result.attempts.front().succeeded());
     QVERIFY(!result.safeToContinue);
@@ -602,7 +678,7 @@ void MainOptimizerTests::finalizationReportsPostOutputException() {
     QVERIFY(std::filesystem::exists(plan.outputs().front().archivePath));
     QVERIFY(artifacts.performSafetyCleanup().empty());
 #else
-    QSKIP("Windows directory sharing modes provide a deterministic post-output failure.");
+    QSKIP("Windows file sharing modes provide a deterministic post-output failure.");
 #endif
 }
 
@@ -1537,6 +1613,46 @@ void MainOptimizerTests::successfulRunStillMaintainsMeshReferences()
     QCOMPARE(maintenance.mutationState(), cao::execution::MutationState::Committed);
     QVERIFY(maintenance.safeToContinue());
     QCOMPARE(savedTextureSlot(mesh), std::string("textures\\armor\\body.dds"));
+}
+
+void MainOptimizerTests::pluginListingObservesCancellation()
+{
+    QVERIFY(_temporaryDirectory.isValid());
+    const auto root = std::filesystem::path(_temporaryDirectory.path().toStdWString());
+    writeFile(root / "plugins" / "fixture.esp", QByteArrayLiteral("fixture"));
+    QDirIterator entries(_temporaryDirectory.path(), QDirIterator::Subdirectories);
+    std::stop_source stop;
+    stop.request_stop();
+
+    bool cancelled = false;
+    try {
+        static_cast<void>(FilesystemOperations::listPlugins(entries, stop.get_token()));
+    } catch (const cao::run::AssetInitializationCancelled&) {
+        cancelled = true;
+    }
+    QVERIFY(cancelled);
+}
+
+void MainOptimizerTests::optimizerInitializationObservesCancellation()
+{
+    QVERIFY(_temporaryDirectory.isValid());
+    const auto root = std::filesystem::path(_temporaryDirectory.path().toStdWString());
+    const auto plugin = root / "mod-a" / "fixture.esp";
+    writeFile(plugin, QByteArrayLiteral("fixture"));
+    OptionsCAO options;
+    options.mode = OptionsCAO::SeveralMods;
+    options.userPath = _temporaryDirectory.path();
+    std::stop_source stop;
+    stop.request_stop();
+
+    bool cancelled = false;
+    try {
+        MainOptimizer optimizer(options, OptimizerProfileSnapshot::capture(), stop.get_token());
+    } catch (const cao::run::AssetInitializationCancelled&) {
+        cancelled = true;
+    }
+    QVERIFY(cancelled);
+    QVERIFY(std::filesystem::is_regular_file(plugin));
 }
 
 QTEST_APPLESS_MAIN(MainOptimizerTests)

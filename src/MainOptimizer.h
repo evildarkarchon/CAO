@@ -10,6 +10,8 @@
 #include "OptionsCAO.h"
 #include "TexturesOptimizer.h"
 
+#include <stop_token>
+
 /*!
  * \brief Coordinates all the subclasses in order to optimize BSAs, textures, meshes and animations
  */
@@ -20,6 +22,10 @@ class MainOptimizer final : public QObject, private cao::execution::AssetExecuti
     explicit MainOptimizer(const OptionsCAO& optOptions);
     /// Borrows worker-owned options and gives each backend its own immutable profile facts.
     MainOptimizer(const OptionsCAO& optOptions, const OptimizerProfileSnapshot& profile);
+    /// Polls cancellation during read-only plugin scans before the first Asset attempt begins.
+    /// Throws AssetInitializationCancelled if setup is stopped before any Asset mutation.
+    MainOptimizer(const OptionsCAO& optOptions, const OptimizerProfileSnapshot& profile,
+                  std::stop_token stop);
 
     /// Executes one Routed Asset strictly from its carried path, identity, target, operations, and
     /// mode. Temporary ownership uses the configured Mod Root and is cleaned before returning;
@@ -38,8 +44,10 @@ class MainOptimizer final : public QObject, private cao::execution::AssetExecuti
     [[nodiscard]] cao::execution::AssetExecutionResult finishAttempt(
         const cao::routing::RoutedAsset& asset, cao::execution::AssetExecutionResult result);
 
-    void addLandscapeTextures();
-    void addHeadparts();
+    /// Scans the selected roots for plugin-derived headparts, polling before each Mod Root.
+    void addHeadparts(std::stop_token stop);
+    /// Polls the existing second plugin scan before each Mod Root.
+    void addLandscapeTextures(std::stop_token stop);
 
     /// Loads a Texture using the carried Variant rather than its execution-path extension.
     bool loadTexture(const std::filesystem::path& path,
@@ -52,8 +60,10 @@ class MainOptimizer final : public QObject, private cao::execution::AssetExecuti
     /// Saves the loaded Texture to the output path selected by Asset Executor.
     bool saveTexture(const std::filesystem::path& path) override;
 
-    /// Removes a converted source Texture only after its DDS replacement is saved.
-    bool removeTexture(const std::filesystem::path& path) override;
+    /// Delegates converted-source deletion to the executor's verified identity after DDS commit.
+    /// A failed native removal becomes the Texture service diagnostic.
+    bool removeTexture(const std::filesystem::path& path,
+                       const std::function<bool()>& removeVerified) override;
 
     /// Returns the last Texture adapter's service diagnostic, empty when none is available.
     std::string textureFailureDetail() const override;

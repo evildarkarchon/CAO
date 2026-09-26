@@ -100,6 +100,51 @@ bool sameSourceFile(const SourceFileFacts& earlier, const SourceFileFacts& curre
            earlier.file.nFileSizeLow == current.file.nFileSizeLow &&
            earlier.basic.ChangeTime.QuadPart == current.basic.ChangeTime.QuadPart;
 }
+
+/// Pins each directory from the filesystem root through the source parent, rejecting junctions
+/// and other reparse points before a pathname-based Archive reader can follow them.
+void pinSourceDirectories(const std::filesystem::path& source,
+                          const std::filesystem::path& root,
+                          std::map<std::filesystem::path, SourceFileHandle>& pins) {
+    const auto relative = source.lexically_relative(root);
+    if (relative.empty() || relative.is_absolute() || relative == "." ||
+        *relative.begin() == "..")
+        throw std::invalid_argument("A source file is outside its Mod Root.");
+
+    auto directory = source.root_path();
+    if (directory.empty()) throw std::invalid_argument("A source file needs an absolute path.");
+    const auto pinDirectory = [&](const std::filesystem::path& path) {
+        if (pins.contains(path)) return;
+        // Attribute-only opens do not participate in sharing checks; directory read access
+        // makes the missing FILE_SHARE_DELETE actually prevent a parent rename or replacement.
+        const auto handle = CreateFileW(path.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                                        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                                        nullptr);
+        if (handle == INVALID_HANDLE_VALUE)
+            throw std::filesystem::filesystem_error(
+                "Could not pin source parent", path,
+                std::error_code(static_cast<int>(GetLastError()), std::system_category()));
+        SourceFileHandle pin(handle, &CloseHandle);
+        BY_HANDLE_FILE_INFORMATION information{};
+        if (!GetFileInformationByHandle(handle, &information))
+            throw std::filesystem::filesystem_error(
+                "Could not inspect source parent", path,
+                std::error_code(static_cast<int>(GetLastError()), std::system_category()));
+        if (!(information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+            (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+            throw std::runtime_error("A source parent is no longer an ordinary directory.");
+        pins.emplace(path, std::move(pin));
+    };
+    // Start at a drive or UNC root that cannot be renamed, then keep each child stable while
+    // opening the next; checking just the final parent could still follow an earlier junction.
+    pinDirectory(directory);
+    for (const auto& part : source.parent_path().lexically_relative(directory)) {
+        if (part == ".") continue;
+        directory /= part;
+        pinDirectory(directory);
+    }
+}
 #endif
 
 /// Publishes a source backup without replacing any directory entry, including dangling links.
@@ -148,8 +193,17 @@ void backupExtractedArchive(const std::filesystem::path& source) {
 }  // namespace
 
 #ifdef _WIN32
+struct cao::run::SourceFilePin::DirectoryPins final {
+    std::filesystem::path modRoot;
+    std::map<std::filesystem::path, SourceFileHandle> handles;
+
+    /// Keeps the canonical output scope with its reusable native directory handles.
+    explicit DirectoryPins(std::filesystem::path root) : modRoot(std::move(root)) {}
+};
+
 struct cao::run::SourceFilePin::State final {
     std::filesystem::path source;
+    std::shared_ptr<DirectoryPins> directories;
     SourceFileHandle pinned{nullptr, &CloseHandle};
     SourceFileFacts facts;
 
@@ -183,9 +237,23 @@ struct cao::run::SourceFilePin::State final {
     }
 };
 
-cao::run::SourceFilePin::SourceFilePin(std::filesystem::path source)
+std::shared_ptr<cao::run::SourceFilePin::DirectoryPins>
+cao::run::SourceFilePin::sharedDirectoryPins(std::filesystem::path modRoot) {
+    return std::make_shared<DirectoryPins>(
+        std::filesystem::absolute(std::move(modRoot)).lexically_normal());
+}
+
+cao::run::SourceFilePin::SourceFilePin(std::filesystem::path source,
+                                     std::filesystem::path modRoot,
+                                     std::shared_ptr<DirectoryPins> directoryPins)
     : _state(std::make_unique<State>()) {
     _state->source = std::filesystem::absolute(std::move(source)).lexically_normal();
+    const auto root = std::filesystem::absolute(std::move(modRoot)).lexically_normal();
+    if (!directoryPins) directoryPins = sharedDirectoryPins(root);
+    if (directoryPins->modRoot != root)
+        throw std::invalid_argument("Source directory pins belong to another Mod Root.");
+    pinSourceDirectories(_state->source, root, directoryPins->handles);
+    _state->directories = std::move(directoryPins);
     const auto handle = CreateFileW(_state->source.c_str(), GENERIC_READ, FILE_SHARE_READ,
                                     nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (handle == INVALID_HANDLE_VALUE)
@@ -289,7 +357,7 @@ cao::run::ArchiveExtractionResult BSAOptimizer::extract(
     try {
         // ArchiveExtractor reopens this path for inventory and payload reads. Deny replacement
         // across all of those reads and the merge that follows them.
-        sourcePin.emplace(plan.archivePath);
+        sourcePin.emplace(plan.archivePath, plan.modRoot);
     } catch (const std::exception& error) {
         cao::run::ArchiveExtractionResult result{plan.archivePath};
         result.modRoot = plan.modRoot;
@@ -612,7 +680,9 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
             std::vector<SourceFilePin> sourcePins;
             if (plan._deleteSources) {
                 sourcePins.reserve(output.sources.size());
-                for (const auto& source : output.sources) sourcePins.emplace_back(source);
+                const auto directoryPins = SourceFilePin::sharedDirectoryPins(output.modRoot);
+                for (const auto& source : output.sources)
+                    sourcePins.emplace_back(source, output.modRoot, directoryPins);
             }
 #endif
             auto staged = artifacts.stageArchiveFileForPublication(output.modRoot);

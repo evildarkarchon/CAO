@@ -148,6 +148,10 @@ std::variant<std::vector<std::filesystem::path>, RunFailure> resolveModRoots(
             // Sort the selected entry names before resolving links: target names do not define run
             // order.
             auto resolved = std::filesystem::canonical(child.path);
+            if (resolved == resolved.root_path() || containsDirectory(resolved, root))
+                return RunFailure{
+                    RunFailureCode::ModSelectionResolutionFailed, RunPhase::Preparing,
+                    "A child Mod Root cannot resolve to the selected mods directory or its ancestor"};
             for (const auto& existing : roots) {
                 if (containsDirectory(existing, resolved) || containsDirectory(resolved, existing))
                     return RunFailure{RunFailureCode::ConflictingModRoots, RunPhase::Preparing,

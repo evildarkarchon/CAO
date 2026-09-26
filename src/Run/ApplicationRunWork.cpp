@@ -134,7 +134,7 @@ class ApplicationRunWork final : public RunWorkService {
         };
         adapters.executeAssetWithResult = [&](const routing::RoutedAsset& asset,
                                               const std::filesystem::path& modRoot) {
-            if (!optimizer) optimizer = std::make_unique<MainOptimizer>(options, *_profile);
+            if (!optimizer) optimizer = std::make_unique<MainOptimizer>(options, *_profile, stop);
             return optimizer->process(asset, artifacts, modRoot);
         };
         adapters.finalizeArchiveLifecycleWithResult = [&] {

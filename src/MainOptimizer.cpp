@@ -5,6 +5,7 @@
 
 #include "MainOptimizer.h"
 #include "MeshReferenceMaintenance.h"
+#include "Run/AssetInitializationCancelled.h"
 #include "TexturesOptimizer.h"
 
 #include <algorithm>
@@ -66,13 +67,19 @@ MainOptimizer::MainOptimizer(const OptionsCAO& optOptions)
     : MainOptimizer(optOptions, OptimizerProfileSnapshot::capture()) {}
 
 MainOptimizer::MainOptimizer(const OptionsCAO& optOptions, const OptimizerProfileSnapshot& profile)
+    : MainOptimizer(optOptions, profile, {}) {}
+
+MainOptimizer::MainOptimizer(const OptionsCAO& optOptions,
+                             const OptimizerProfileSnapshot& profile, std::stop_token stop)
     : _optOptions(optOptions),
       _meshesOpt(MeshesOptimizer(_optOptions.bMeshesHeadparts, optOptions.iMeshesOptimizationLevel,
                                  optOptions.bMeshesResave, profile)),
       _texturesOpt(profile),
       _assetExecutor(*this) {
-    addHeadparts();
-    addLandscapeTextures();
+    cao::run::throwIfAssetInitializationCancelled(stop);
+    addHeadparts(stop);
+    addLandscapeTextures(stop);
+    cao::run::throwIfAssetInitializationCancelled(stop);
 }
 
 cao::execution::AssetExecutionResult MainOptimizer::process(
@@ -149,21 +156,27 @@ cao::execution::AssetExecutionResult MainOptimizer::finishAttempt(
     return result;
 }
 
-void MainOptimizer::addHeadparts() {
-    _meshesOpt.listHeadparts(_optOptions.userPath);
+void MainOptimizer::addHeadparts(std::stop_token stop) {
+    cao::run::throwIfAssetInitializationCancelled(stop);
+    _meshesOpt.listHeadparts(_optOptions.userPath, stop);
     if (_optOptions.mode == OptionsCAO::SeveralMods) {
         const QDir dir(_optOptions.userPath);
-        for (const auto& directory : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
-            _meshesOpt.listHeadparts(dir.filePath(directory));
+        for (const auto& directory : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+            cao::run::throwIfAssetInitializationCancelled(stop);
+            _meshesOpt.listHeadparts(dir.filePath(directory), stop);
+        }
     }
 }
 
-void MainOptimizer::addLandscapeTextures() {
-    _meshesOpt.listHeadparts(_optOptions.userPath);
+void MainOptimizer::addLandscapeTextures(std::stop_token stop) {
+    cao::run::throwIfAssetInitializationCancelled(stop);
+    _meshesOpt.listHeadparts(_optOptions.userPath, stop);
     if (_optOptions.mode == OptionsCAO::SeveralMods) {
         const QDir dir(_optOptions.userPath);
-        for (const auto& directory : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
-            _meshesOpt.listHeadparts(dir.filePath(directory));
+        for (const auto& directory : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+            cao::run::throwIfAssetInitializationCancelled(stop);
+            _meshesOpt.listHeadparts(dir.filePath(directory), stop);
+        }
     }
 }
 
@@ -208,11 +221,12 @@ bool MainOptimizer::saveTexture(const std::filesystem::path& path) {
     return _texturesOpt.saveToFile(QString::fromStdWString(path.wstring()), &_textureFailureDetail);
 }
 
-bool MainOptimizer::removeTexture(const std::filesystem::path& path) {
+bool MainOptimizer::removeTexture(const std::filesystem::path& path,
+                                  const std::function<bool()>& removeVerified) {
     _textureFailureDetail.clear();
-    QFile source(QString::fromStdWString(path.wstring()));
-    if (source.remove()) return true;
-    _textureFailureDetail = source.errorString();
+    if (removeVerified()) return true;
+    _textureFailureDetail = QStringLiteral("The verified Texture source could not be removed: ") +
+                            QString::fromStdWString(path.wstring());
     return false;
 }
 

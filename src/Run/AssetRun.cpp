@@ -224,6 +224,12 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
                 if (modRoot.empty())
                     throw std::logic_error("Routed Asset is outside prepared Mod Roots");
                 attempt = adapters.executeAssetWithResult(asset.get(), modRoot);
+            } catch (const AssetInitializationCancelled&) {
+                // Initialization is read-only and ended before Asset execution, so recording an
+                // attempted mutation here would invent evidence and block safe cancellation.
+                evidence.recordCancellationObservation();
+                publishDiagnostics();
+                return;
             } catch (const std::exception& error) {
                 // An exception cannot establish whether the adapter committed durable bytes.
                 attempt = execution::AssetExecutionResult::failed(

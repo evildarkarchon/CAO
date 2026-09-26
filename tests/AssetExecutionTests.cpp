@@ -75,6 +75,7 @@ class RecordingBackend final : public AssetExecutionBackend {
         texturePath = path;
         textureVariant = variant;
         ++textureLoads;
+        if (textureLoad) textureLoad(path);
         return loadSucceeds;
     }
 
@@ -95,11 +96,12 @@ class RecordingBackend final : public AssetExecutionBackend {
         return saveSucceeds;
     }
 
-    bool removeTexture(const std::filesystem::path& path) override {
+    bool removeTexture(const std::filesystem::path& path,
+                       const std::function<bool()>& removeVerified) override {
         removedTexturePath = path;
         ++textureRemovals;
-        if (textureRemove) return textureRemove(path);
-        return removeSucceeds;
+        if (textureRemove) return textureRemove(path, removeVerified);
+        return removeSucceeds && removeVerified();
     }
 
     /// Records Mesh loading and injects a standard exception before any output is written.
@@ -158,8 +160,9 @@ class RecordingBackend final : public AssetExecutionBackend {
     bool loadSucceeds{true};
     bool saveSucceeds{true};
     bool removeSucceeds{true};
+    std::function<void(const std::filesystem::path&)> textureLoad;
     std::function<bool(const std::filesystem::path&)> textureSave;
-    std::function<bool(const std::filesystem::path&)> textureRemove;
+    std::function<bool(const std::filesystem::path&, const std::function<bool()>&)> textureRemove;
     std::function<bool(const std::filesystem::path&)> meshSave;
     std::string throwAt;
     OperationResult operationResult{OperationResult::changed()};
@@ -209,9 +212,10 @@ int textureCrashWorker(const std::filesystem::path& root, const std::filesystem:
         if (boundary == "during-save") pauseForTermination();
         return true;
     };
-    backend.textureRemove = [&](const std::filesystem::path& path) {
+    backend.textureRemove = [&](const std::filesystem::path&,
+                                const std::function<bool()>& removeVerified) {
         if (boundary == "before-source-removal") pauseForTermination();
-        const auto removed = std::filesystem::remove(path);
+        const auto removed = removeVerified();
         if (boundary == "after-source-removal") pauseForTermination();
         return removed;
     };
@@ -236,6 +240,10 @@ class AssetExecutionTests final : public QObject {
     void textureSourceRemovalFailure_data();
     /// Reports committed output and permits continuation only while both conversion files survive.
     void textureSourceRemovalFailure();
+    /// A swapped convertible source is preserved after output from the old bytes commits.
+    void convertibleSourceReplacementPreservesNewcomer();
+    /// A native destination changed during load cannot receive output from its predecessor.
+    void nativeDestinationReplacementDuringLoadIsRejected();
     /// Exceptions during staged save are fatal but leave durable inputs untouched.
     void textureSaveException();
 
@@ -397,8 +405,8 @@ void AssetExecutionTests::textureSourceRemovalFailure_data() {
     QTest::newRow("both usable") << 0 << false;
     QTest::newRow("source missing") << 1 << false;
     QTest::newRow("output missing") << 2 << false;
-    QTest::newRow("source empty") << 3 << false;
-    QTest::newRow("source corrupted") << 4 << false;
+    QTest::newRow("source truncation attempt") << 3 << false;
+    QTest::newRow("source overwrite attempt") << 4 << false;
     QTest::newRow("exception after commit") << 0 << true;
     QTest::newRow("exception after source loss") << 1 << true;
 }
@@ -416,12 +424,17 @@ void AssetExecutionTests::textureSourceRemovalFailure() {
         std::ofstream(path) << "converted";
         return true;
     };
-    backend.textureRemove = [&](const std::filesystem::path& path) {
+    bool sourceWriteDenied = false;
+    backend.textureRemove = [&](const std::filesystem::path& path,
+                                const std::function<bool()>&) {
         if (readBytes(output) != "converted") throw std::logic_error("Output not committed");
         if (damage == 1) std::filesystem::remove(path);
         if (damage == 2) std::filesystem::remove(output);
-        if (damage == 3) std::ofstream(path).close();
-        if (damage == 4) std::ofstream(path) << "damaged!";
+        if (damage == 3 || damage == 4) {
+            std::ofstream attemptedWrite(path);
+            sourceWriteDenied = !attemptedWrite;
+            if (damage == 4 && attemptedWrite) attemptedWrite << "damaged!";
+        }
         if (throws) throw std::runtime_error("removal backend threw");
         return false;
     };
@@ -432,14 +445,89 @@ void AssetExecutionTests::textureSourceRemovalFailure() {
     QVERIFY(!result.succeeded());
     QCOMPARE(result.failure().value(), throws ? AssetExecutionFailure::BackendException
                                               : AssetExecutionFailure::SourceRemovalFailed);
+#ifdef _WIN32
+    // The live source pin denies truncation or overwrite, leaving both files usable.
+    const bool usable = damage == 0 || damage == 3 || damage == 4;
+    if (damage == 3 || damage == 4) QVERIFY(sourceWriteDenied);
+#else
+    const bool usable = damage == 0;
+#endif
     QCOMPARE(result.mutationState(),
-             damage == 0 ? MutationState::Committed : MutationState::PartialOrUnknown);
-    QCOMPARE(result.safeToContinue(), damage == 0 && !throws);
+             usable ? MutationState::Committed : MutationState::PartialOrUnknown);
+    QCOMPARE(result.safeToContinue(), usable && !throws);
     QVERIFY(result.affectedPath() == source);
     QCOMPARE(result.operation(), std::string("remove_texture_source"));
     QVERIFY(artifacts.performSafetyCleanup().empty());
     if (damage != 2) QCOMPARE(readBytes(output), std::string("converted"));
-    if (damage == 0) QCOMPARE(readBytes(source), std::string("original"));
+    if (usable) QCOMPARE(readBytes(source), std::string("original"));
+}
+
+void AssetExecutionTests::convertibleSourceReplacementPreservesNewcomer() {
+#ifdef _WIN32
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto source = root / "source.tga";
+    const auto moved = root / "old-source.tga";
+    const auto output = root / "source.dds";
+    std::ofstream(source, std::ios::binary) << "original";
+    RecordingBackend backend;
+    std::string loaded;
+    bool replacementSucceeded = false;
+    backend.textureLoad = [&](const std::filesystem::path& path) {
+        loaded = readBytes(path);
+        std::error_code error;
+        std::filesystem::rename(path, moved, error);
+        if (!error) {
+            replacementSucceeded = true;
+            std::ofstream(path, std::ios::binary) << "newcomer";
+        }
+    };
+    backend.textureSave = [&](const std::filesystem::path& path) {
+        std::ofstream(path, std::ios::binary) << loaded << " converted";
+        return true;
+    };
+
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::ConvertibleTextureConversion}, source),
+        root);
+    QVERIFY(replacementSucceeded);
+    QVERIFY(!result.succeeded());
+    QCOMPARE(result.failure().value(), AssetExecutionFailure::SourceRemovalFailed);
+    QCOMPARE(result.mutationState(), MutationState::Committed);
+    QCOMPARE(readBytes(output), std::string("original converted"));
+    QCOMPARE(readBytes(source), std::string("newcomer"));
+    QCOMPARE(readBytes(moved), std::string("original"));
+#else
+    QSKIP("Pinned source deletion is a Windows runtime contract");
+#endif
+}
+
+void AssetExecutionTests::nativeDestinationReplacementDuringLoadIsRejected() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto source = root / "native.dds";
+    const auto moved = root / "old-native.dds";
+    std::ofstream(source, std::ios::binary) << "original";
+    RecordingBackend backend;
+    std::string loaded;
+    backend.textureLoad = [&](const std::filesystem::path& path) {
+        loaded = readBytes(path);
+        std::filesystem::rename(path, moved);
+        std::ofstream(path, std::ios::binary) << "newcomer";
+    };
+    backend.textureSave = [&](const std::filesystem::path& path) {
+        std::ofstream(path, std::ios::binary) << loaded << " optimized";
+        return true;
+    };
+
+    const auto result = AssetExecutor(backend).execute(
+        routeAsset(ExecutionMode::Apply, {RequestedWork::NativeTextureOptimization}, source), root);
+    QVERIFY(!result.succeeded());
+    QCOMPARE(result.mutationState(), MutationState::None);
+    QCOMPARE(readBytes(source), std::string("newcomer"));
+    QCOMPARE(readBytes(moved), std::string("original"));
 }
 
 void AssetExecutionTests::textureOperationFailureDetails() {
@@ -673,10 +761,11 @@ void AssetExecutionTests::conversionOnlyTextureExecution() {
         std::ofstream(path) << "converted";
         return true;
     };
-    backend.textureRemove = [&](const std::filesystem::path& path) {
+    backend.textureRemove = [&](const std::filesystem::path&,
+                                const std::function<bool()>& removeVerified) {
         if (readBytes(destination) != "converted")
             throw std::runtime_error("Source removal preceded destination commit");
-        return std::filesystem::remove(path);
+        return removeVerified();
     };
     const AssetExecutor executor(backend);
 
@@ -1198,8 +1287,13 @@ void AssetExecutionTests::animationPublicationReleaseFailure() {
 }
 
 void AssetExecutionTests::executionFailurePreservesRoutedDecision() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto mesh = std::filesystem::path(directory.path().toStdWString()) / "Meshes" / "Actor.nif";
+    std::filesystem::create_directories(mesh.parent_path());
+    std::ofstream(mesh) << "original";
     const auto asset = routeAsset(ExecutionMode::Apply, {RequestedWork::StandardMeshOptimization},
-                                  std::filesystem::path(L"Meshes/Actor.nif"));
+                                  mesh);
     const auto originalPath = asset.executionPath();
     const auto originalTarget = asset.target();
     const auto originalMode = asset.executionMode();

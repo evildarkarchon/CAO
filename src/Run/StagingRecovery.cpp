@@ -91,7 +91,8 @@ class NativeLock final {
 #ifdef _WIN32
         const auto access = mode == OpenMode::TemporaryFile
                                 ? DELETE | FILE_READ_ATTRIBUTES
-                                : (directory ? FILE_READ_ATTRIBUTES : GENERIC_READ);
+                                : (directory ? FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES
+                                             : GENERIC_READ);
         _handle = CreateFileW(
             path.c_str(), access,
             directory ? FILE_SHARE_READ | FILE_SHARE_WRITE
@@ -605,6 +606,8 @@ std::optional<RunFailure> StagingRecovery::recover(const std::filesystem::path& 
     try {
         observeCancellation(stop);
         if (_state->areas.contains(modRoot)) return {};
+        // Pin even a clean root: discovery and finalization still address it by pathname.
+        auto rootPin = std::make_unique<NativeLock>(modRoot, OpenMode::DirectoryPin);
         std::vector<fs::path> unknownStagingNames;
         for (const auto& entry : fs::directory_iterator(modRoot)) {
             observeCancellation(stop);
@@ -616,11 +619,11 @@ std::optional<RunFailure> StagingRecovery::recover(const std::filesystem::path& 
             if (!unknownStagingNames.empty())
                 unverified(unknownStagingNames.front(),
                            "An unknown staging-like name collides with the reserved namespace");
+            _state->locks.push_back(std::move(rootPin));
             return {};
         }
         if (!fs::is_directory(status))
             unverified(staging, "The reserved staging name is not a directory");
-        auto rootPin = std::make_unique<NativeLock>(modRoot, OpenMode::DirectoryPin);
         auto stagingPin = std::make_unique<NativeLock>(staging, OpenMode::DirectoryPin);
         const auto lockPath = staging / "owner.lock";
         if (!fs::is_regular_file(inspect(lockPath)))

@@ -4,6 +4,7 @@
 #include "Run/TemporaryArtifactRegistry.h"
 
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -143,9 +144,11 @@ class AssetExecutionBackend {
     /// Closes every output handle before returning so the executor can commit the staged file.
     virtual bool saveTexture(const std::filesystem::path& path) = 0;
 
-    /// Removes a converted source Texture after its replacement was saved successfully.
-    /// May delete only the supplied source; false reports failure and the executor verifies bytes.
-    virtual bool removeTexture(const std::filesystem::path& path) = 0;
+    /// Requests removal of a converted source after its replacement is committed. The backend may
+    /// report a service failure, but must invoke `removeVerified` to delete through the executor's
+    /// pinned source identity; a pathname removal is never authorized by this method.
+    virtual bool removeTexture(const std::filesystem::path& path,
+                               const std::function<bool()>& removeVerified) = 0;
 
     /// Returns service detail from the most recent Texture load, save, or removal failure.
     /// Backends without a service diagnostic may return an empty string.
@@ -197,15 +200,16 @@ class AssetExecutor final {
                                                const std::filesystem::path& modRoot = {}) const;
 
    private:
-    /// Saves and validates a Texture under Temporary Ownership before replace publication in Apply
-    /// mode. Conversion removes its source only after publication and ownership release.
+    /// Captures the destination before loading, then saves and validates a Texture under Temporary
+    /// Ownership before Apply publication. Conversion pins its source before loading and removes
+    /// that identity only after publication and ownership release.
     [[nodiscard]] AssetExecutionResult executeTexture(const routing::RoutedAsset& asset,
                                                       run::TemporaryArtifactRegistry& artifacts,
                                                       const std::filesystem::path& modRoot) const;
 
-    /// Executes independent Mesh operations through one load and at most one staged Apply
-    /// publication. Reports the committed fact even if ownership release fails after replacement.
-    /// Contains backend exceptions at their failed boundary.
+    /// Captures the destination before loading, then executes independent Mesh operations through
+    /// at most one staged Apply publication. Reports the committed fact even if ownership release
+    /// fails after replacement; contains backend exceptions at their failed boundary.
     [[nodiscard]] AssetExecutionResult executeMesh(const routing::RoutedAsset& asset,
                                                    run::TemporaryArtifactRegistry& artifacts,
                                                    const std::filesystem::path& modRoot) const;

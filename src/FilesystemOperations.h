@@ -6,6 +6,8 @@
 
 #include "pch.h"
 
+#include <stop_token>
+
 /*!
  * \brief Manages filesystem operations : moving files, deleting empty dirs...
  */
@@ -44,5 +46,7 @@ class FilesystemOperations final : public QObject {
     static QStringList readFile(QFile& file, std::function<void(QString& line)> function);
     static QStringList readFile(QFile& file);
 
-    static QStringList listPlugins(QDirIterator& it);
+    /// Lists plugin paths while polling cancellation between directory entries.
+    /// Throws AssetInitializationCancelled before returning a partial list.
+    static QStringList listPlugins(QDirIterator& it, std::stop_token stop = {});
 };

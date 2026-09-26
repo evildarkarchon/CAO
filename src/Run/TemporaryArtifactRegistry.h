@@ -45,6 +45,23 @@ class TemporaryArtifactRegistry final : public SafetyCleanupService {
         Registration registration;
     };
 
+    /// Read-only snapshot of an Asset destination before its producer loads the original bytes.
+    /// Moving transfers the expected parent and leaf identities without creating staging state.
+    class PublicationTarget final {
+       public:
+        PublicationTarget(PublicationTarget&&) noexcept;
+        PublicationTarget& operator=(PublicationTarget&&) noexcept;
+        PublicationTarget(const PublicationTarget&) = delete;
+        PublicationTarget& operator=(const PublicationTarget&) = delete;
+        ~PublicationTarget();
+
+       private:
+        friend class TemporaryArtifactRegistry;
+        struct State;
+        explicit PublicationTarget(std::unique_ptr<State> state);
+        std::unique_ptr<State> _state;
+    };
+
     /// One-use authority to publish a durable staged file within its owning registry's lifetime.
     /// Moving transfers authority; destruction leaves any unpublished temporary path owned.
     class PublicationReceipt final {
@@ -85,8 +102,16 @@ class TemporaryArtifactRegistry final : public SafetyCleanupService {
     /// locks, filesystem failures, or closed registration.
     [[nodiscard]] StagedFile stageArchiveFile(const std::filesystem::path& modRoot);
 
-    /// Creates a durable Asset sibling and binds a move-only receipt to its canonical Mod Root,
-    /// intended destination, and ordinary parent identity. Throws on invalid staging or I/O.
+    /// Captures an Asset destination before loading its original bytes, without disk mutation.
+    /// A later stage/publish rejects a changed parent or destination leaf. Throws on invalid
+    /// confinement, link aliases, or identity lookup failures.
+    [[nodiscard]] PublicationTarget capturePublicationTarget(
+        const std::filesystem::path& modRoot, const std::filesystem::path& destination) const;
+    /// Creates a durable Asset sibling from a previously captured destination identity. Throws
+    /// when the destination changed after capture or staging ownership cannot be established.
+    [[nodiscard]] PublicationReceipt stageFileForPublication(PublicationTarget&& target);
+    /// Captures and stages an Asset sibling in one step for producers that have already retained
+    /// their input identity; the resulting receipt still detects later leaf replacement.
     [[nodiscard]] PublicationReceipt stageFileForPublication(
         const std::filesystem::path& modRoot, const std::filesystem::path& destination);
     /// Creates a durable Archive file whose case-resolved destination may be supplied later.

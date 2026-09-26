@@ -84,6 +84,25 @@ class RunSharedState final : public RunObservationSink,
         std::shared_ptr<DeliveryTicket> ticket;
     };
 
+    /// Retires a registration only when its last accepted closure is released uninvoked.
+    struct DeliveryLease {
+        /// Tracks one dispatch across copies of the caller's queued closure.
+        DeliveryLease(std::weak_ptr<RunSharedState> state, DispatchRequest request)
+            : state(std::move(state)), request(std::move(request)) {}
+
+        /// Reports abandonment while the retained run state can still diagnose it.
+        ~DeliveryLease() noexcept {
+            try {
+                if (auto owner = state.lock()) owner->abandonDelivery(request);
+            } catch (...) {
+                // Releasing a caller-owned closure must never throw during destruction.
+            }
+        }
+
+        std::weak_ptr<RunSharedState> state;
+        DispatchRequest request;
+    };
+
    public:
     /// Owns request, provider, and presentation state before scheduling can invoke the worker
     /// inline.
@@ -234,7 +253,12 @@ class RunSharedState final : public RunObservationSink,
         for (const auto& request : observers) {
             const auto index = request.observer;
             try {
-                auto delivery = [state = shared_from_this(), request] {
+                // A dispatcher may accept and then release a queued closure. Sharing this lease
+                // across closure copies diagnoses only the final uninvoked release.
+                auto lease = std::make_shared<DeliveryLease>(weak_from_this(), request);
+                auto delivery = [state = shared_from_this(), request,
+                                 lease = std::move(lease)] {
+                    static_cast<void>(lease);
                     if (state->admitDelivery(request.ticket, true)) state->drain(request.observer);
                 };
                 const auto& dispatcher = _observers[index].observation.dispatcher;
@@ -268,6 +292,16 @@ class RunSharedState final : public RunObservationSink,
         }
         _committed.notify_all();
         return enter;
+    }
+
+    /// Drops pending events after a caller releases an accepted closure without executing it.
+    void abandonDelivery(const DispatchRequest& request) {
+        {
+            const std::lock_guard lock(_mutex);
+            if (request.ticket->invoked || _observers[request.observer].disabled) return;
+        }
+        disableObserver(request.observer, RunDiagnosticCode::DispatcherFailed,
+                        "The Run Event dispatcher released an accepted delivery without invoking it");
     }
 
     /// Disables once, even if a dispatcher invokes an already failing observer and then throws.

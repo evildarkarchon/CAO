@@ -34,6 +34,8 @@ class RunEventDeliveryTests final : public QObject {
     void dispatcherThatQueuesThenThrowsDisablesDelivery();
     /// Verifies a dispatcher failure after successful inline delivery is recorded exactly once.
     void dispatcherThatDeliversThenThrowsIsDiagnosedOnce();
+    /// Verifies releasing an accepted closure retires its observer without retaining later events.
+    void releasedDeliveryDisablesItsObserver();
     /// Runs queued callbacks against an active producer and detects concurrent observer entry.
     void concurrentDispatcherPreservesSerializedSequences();
     /// Verifies terminal delivery observes a released process-wide run slot.
@@ -130,6 +132,43 @@ void RunEventDeliveryTests::dispatcherThatDeliversThenThrowsIsDiagnosedOnce() {
     const auto diagnostics = started.handle()->diagnostics();
     QCOMPARE(diagnostics.size(), std::size_t{1});
     QCOMPARE(diagnostics.front().code(), RunDiagnosticCode::DispatcherFailed);
+}
+
+void RunEventDeliveryTests::releasedDeliveryDisablesItsObserver() {
+    InlineRunScheduler scheduler;
+    OptimizationRunService service{scheduler, testRunConfiguration()};
+    std::function<void()> retained;
+    std::size_t droppedDispatches{}, droppedObserverCalls{};
+    std::vector<RunEvent> healthyEvents;
+    auto started = service.start(noWorkRequest(), std::vector<RunObservation>{
+        {[&](const RunEvent&) { ++droppedObserverCalls; },
+         [&](std::function<void()> delivery) {
+             ++droppedDispatches;
+             retained = std::move(delivery);
+         }},
+        {[&](const RunEvent& event) { healthyEvents.push_back(event); }, {}}});
+
+    QCOMPARE(started.handle()->wait().outcome(), RunOutcome::Succeeded);
+    QVERIFY(static_cast<bool>(retained));
+    QVERIFY(started.handle()->diagnostics().empty());
+    // A cancelled queued task releases the first closure after later events were enqueued.
+    retained = {};
+    QCOMPARE(droppedDispatches, std::size_t{1});
+    QCOMPARE(droppedObserverCalls, std::size_t{0});
+    const auto diagnostics = started.handle()->diagnostics();
+    QCOMPARE(diagnostics.size(), std::size_t{1});
+    QCOMPARE(diagnostics.front().code(), RunDiagnosticCode::DispatcherFailed);
+    std::size_t diagnosticEvents{};
+    for (const auto& event : healthyEvents)
+        if (const auto* diagnostic = std::get_if<RunDiagnostic>(&event.payload())) {
+            QCOMPARE(diagnostic->code(), RunDiagnosticCode::DispatcherFailed);
+            ++diagnosticEvents;
+        }
+    QCOMPARE(diagnosticEvents, std::size_t{1});
+    QVERIFY(healthyEvents.size() >= 2);
+    QVERIFY(std::holds_alternative<std::shared_ptr<const OptimizationRunResult>>(
+        healthyEvents[healthyEvents.size() - 2].payload()));
+    QVERIFY(std::holds_alternative<RunDiagnostic>(healthyEvents.back().payload()));
 }
 
 void RunEventDeliveryTests::concurrentDispatcherPreservesSerializedSequences() {

@@ -23,6 +23,8 @@ class DurableStagingTests final : public QObject {
     void killedAfterPublicationKeepsDestination();
     /// A stale record for a missing temporary file must not block a later producer.
     void recoveryAndProductionShareTheOwnershipLock();
+    /// A clean Apply root stays pinned before the first staging artifact is created.
+    void cleanRootCannotBeRenamedDuringRecoveryScope();
     /// A cancelled preparation leaves its durable sibling registration for a later recovery.
     void cancelledPreparationPreservesDurableSibling();
     /// A malformed sibling record cannot authorize deletion of a similarly named Texture file.
@@ -69,6 +71,8 @@ class DurableStagingTests final : public QObject {
     void archivePublicationRejectsLinkedParent();
     /// Replacing an Asset parent after staging invalidates its publication route.
     void assetPublicationRejectsReplacedParent();
+    /// Replacement refuses a different leaf even when its pathname and parent stay the same.
+    void assetPublicationRejectsReplacedDestination();
     /// A failed durable release retains the published fact and leaves recovery ownership intact.
     void publicationReleaseFailurePreservesCommittedDestination();
     /// Recovery retains an Archive destination and removes abandoned staging after producer death.
@@ -185,6 +189,31 @@ void DurableStagingTests::recoveryAndProductionShareTheOwnershipLock() {
     QVERIFY(second.performSafetyCleanup().empty());
     QVERIFY(!fs::exists(next.path));
     QVERIFY(fs::exists(root));
+}
+
+void DurableStagingTests::cleanRootCannotBeRenamedDuringRecoveryScope() {
+#ifdef _WIN32
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto moved = root.parent_path() / (root.filename().wstring() + L"-moved");
+    {
+        cao::run::StagingRecovery recovery;
+        QVERIFY(!recovery.recover(root).has_value());
+        QVERIFY(!fs::exists(root / ".cao-staging"));
+        std::error_code error;
+        fs::rename(root, moved, error);
+        if (!error) fs::rename(moved, root);
+        QVERIFY(error);
+    }
+    std::error_code error;
+    fs::rename(root, moved, error);
+    QVERIFY(!error);
+    fs::rename(moved, root, error);
+    QVERIFY(!error);
+#else
+    QSKIP("Root pinning against rename is a Windows runtime contract");
+#endif
 }
 
 void DurableStagingTests::cancelledPreparationPreservesDurableSibling() {
@@ -753,6 +782,29 @@ void DurableStagingTests::assetPublicationRejectsReplacedParent() {
     fs::rename(temporary, shiftedParent / temporary.filename());
     QVERIFY(fs::remove(parent));
     fs::rename(shiftedParent, parent);
+    QVERIFY(registry.performSafetyCleanup().empty());
+    QVERIFY(!fs::exists(temporary));
+}
+
+void DurableStagingTests::assetPublicationRejectsReplacedDestination() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
+    const auto destination = root / "texture.dds";
+    const auto oldDestination = root / "old-texture.dds";
+    std::ofstream(destination, std::ios::binary) << "original";
+    cao::run::TemporaryArtifactRegistry registry;
+    auto receipt = registry.stageFileForPublication(root, destination);
+    const auto temporary = receipt.path();
+    std::ofstream(temporary, std::ios::binary) << "optimized original";
+    fs::rename(destination, oldDestination);
+    std::ofstream(destination, std::ios::binary) << "newcomer";
+
+    const auto result = receipt.publish(destination, cao::run::PublicationPolicy::Replace);
+    QCOMPARE(result.state, cao::run::PublicationState::NotPublished);
+    QVERIFY(!result.errorDetail.empty());
+    QCOMPARE(fs::file_size(destination), std::uintmax_t{8});
+    QCOMPARE(fs::file_size(oldDestination), std::uintmax_t{8});
     QVERIFY(registry.performSafetyCleanup().empty());
     QVERIFY(!fs::exists(temporary));
 }

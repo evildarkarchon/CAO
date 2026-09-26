@@ -228,8 +228,12 @@ private slots:
  void aNonDirectorySelectionFailsPreparing();
  /// Covers direct and dot-suffixed selections of a filesystem volume root.
  void filesystemRootSelectionFailsPreparing_data();
- /// Rejects a whole volume before it can become a prepared Mod Root.
- void filesystemRootSelectionFailsPreparing();
+  /// Rejects a whole volume before it can become a prepared Mod Root.
+  void filesystemRootSelectionFailsPreparing();
+  /// Covers child links resolving to the selected container's ancestor or volume root.
+  void broadLinkedChildFailsPreparing_data();
+  /// A Several Mods child must remain narrower than the selected mods directory.
+  void broadLinkedChildFailsPreparing();
  /// Verifies explicit high-to-low Archive intent is owned by both request and prepared result.
  void archivePrecedenceIntentIsRetained();
  /// Verifies both modes leave Asset and Archive bytes and timestamps unchanged during Preparing.
@@ -2584,6 +2588,39 @@ void RunExecutorTests::filesystemRootSelectionFailsPreparing() {
     const auto result =
         RunExecutor{}.execute(request, RunServices{cleanup, nullptr, testRunConfiguration().get()});
 
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(result.finalPhase(), RunPhase::Preparing);
+    QVERIFY(result.preparation() == nullptr);
+    QCOMPARE(result.failures().size(), std::size_t{1});
+    QCOMPARE(result.failures().front().code(),
+             cao::run::RunFailureCode::ModSelectionResolutionFailed);
+    QCOMPARE(cleanup.invocations(), std::size_t{1});
+}
+
+void RunExecutorTests::broadLinkedChildFailsPreparing_data() {
+    QTest::addColumn<bool>("volumeRoot");
+    QTest::newRow("container-ancestor") << false;
+    QTest::newRow("volume-root") << true;
+}
+
+void RunExecutorTests::broadLinkedChildFailsPreparing() {
+    QFETCH(bool, volumeRoot);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto container = std::filesystem::path(directory.path().toStdWString()) / "mods";
+    QVERIFY(std::filesystem::create_directory(container));
+    const auto target = volumeRoot ? container.root_path() : container.parent_path();
+    std::error_code linkError;
+    std::filesystem::create_directory_symlink(target, container / "linked", linkError);
+    if (linkError) QSKIP("This Windows account cannot create directory links");
+
+    CountingSafetyCleanup cleanup;
+    const auto request = RunRequest::create(
+        "profile", ExecutionMode::DryRun, ModSelection::childModRoots(container), {});
+    const auto result =
+        RunExecutor{}.execute(request, RunServices{cleanup, nullptr, testRunConfiguration().get()});
+    std::filesystem::remove(container / "linked", linkError);
+    QVERIFY(!linkError);
     QCOMPARE(result.outcome(), RunOutcome::Failed);
     QCOMPARE(result.finalPhase(), RunPhase::Preparing);
     QVERIFY(result.preparation() == nullptr);

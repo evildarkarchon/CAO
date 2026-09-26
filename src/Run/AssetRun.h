@@ -5,6 +5,7 @@
 #include "ArchiveFirstAssetDiscovery.h"
 #include "ArchiveExtraction.h"
 #include "ArchiveFinalizationResult.h"
+#include "AssetInitializationCancelled.h"
 #include "RunLifecycle.h"
 
 #include <cstddef>
@@ -74,7 +75,8 @@ struct AssetRunAdapters final {
     /// Executes with the canonical Mod Root frozen before source mutation and retained with the
     /// outcome. Borrows both arguments only until return; Assets outside prepared roots never reach
     /// this adapter. An unsafe result stops subsequent Assets and Archive finalization after
-    /// attempt progress.
+    /// attempt progress. AssetInitializationCancelled signals read-only setup cancellation before
+    /// an attempt exists, so Asset Run records cancellation without attempt progress.
     std::function<execution::AssetExecutionResult(const routing::RoutedAsset&,
                                                   const std::filesystem::path&)>
         executeAssetWithResult;
@@ -120,7 +122,8 @@ class AssetRun final {
     /// adapter exceptions to unsafe outcomes. Unsafe continuation stops further work while
     /// retaining concurrent cancellation. Resolves each Asset's canonical Mod Root before invoking
     /// processing and retains that same identity with the outcome, even when processing removes the
-    /// source. Unmatched Assets are rejected.
+    /// source. Unmatched Assets are rejected. Read-only backend initialization cancellation leaves
+    /// no attempted Asset or mutation evidence.
     void execute(std::span<const std::filesystem::path> roots, RunWorkEvidence& evidence,
                  const AssetRunAdapters& adapters, const ArchivePrecedence& precedence,
                  RunWorkMilestones& milestones) const;

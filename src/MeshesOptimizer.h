@@ -10,6 +10,8 @@
 #include "OptimizerProfileSnapshot.h"
 #include "pch.h"
 
+#include <stop_token>
+
 enum ScanResult { doNotProcess = -1, good = 0, lightIssue = 1, criticalIssue = 2 };
 
 class MeshesOptimizer final : public QObject {
@@ -33,7 +35,8 @@ class MeshesOptimizer final : public QObject {
     [[nodiscard]] cao::execution::OperationResult optimize(nifly::NifFile& nif,
                                                            const QString& filepath,
                                                            cao::routing::ExecutionMode mode) const;
-    void listHeadparts(const QString& directory);
+    /// Reads profile and plugin headparts, aborting read-only traversal when setup is cancelled.
+    void listHeadparts(const QString& directory, std::stop_token stop = {});
     /// Loads a Mesh with terrain behavior selected from its carried Mesh Variant.
     std::tuple<bool, nifly::NifFile> loadMesh(const QString& filepath,
                                               cao::routing::MeshVariant variant) const;

@@ -114,7 +114,7 @@ class NativeEntry final {
 /// Opens an ordinary directory; Win32 denies rename, while POSIX retains its identity for checks.
 NativeEntry pinDirectory(const fs::path& path) {
 #ifdef _WIN32
-    const auto handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES | FILE_TRAVERSE,
+    const auto handle = CreateFileW(path.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
                                     FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                                     FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
                                     nullptr);
@@ -175,7 +175,7 @@ struct PinnedDestination {
 
 /// Rechecks confinement and pins every ordinary directory from the recorded root to the leaf.
 PinnedDestination pinDestination(const fs::path& root, const fs::path& destination,
-                                 const std::optional<EntryIdentity>& stagedParent = {}) {
+                                  const std::optional<EntryIdentity>& stagedParent = {}) {
     if (!root.is_absolute() || !destination.is_absolute() ||
         destination != destination.lexically_normal() || destination.filename().empty() ||
         destination.filename() == "." || destination.filename() == "..")
@@ -214,6 +214,41 @@ PinnedDestination pinDestination(const fs::path& root, const fs::path& destinati
     if (stagedParent && pinned.parentIdentity != *stagedParent)
         throw std::invalid_argument("Publication destination parent changed after staging");
     return pinned;
+}
+
+/// Reads an ordinary destination leaf's stable identity, or absence, without following links.
+/// An existing directory remains an invalid publication target but is left for native arbitration.
+std::optional<EntryIdentity> destinationIdentity(const fs::path& path) {
+#ifdef _WIN32
+    const auto handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                    OPEN_EXISTING,
+                                    FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                                    nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        const auto error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND) return std::nullopt;
+        throw std::system_error(static_cast<int>(error), std::system_category());
+    }
+    NativeEntry leaf(handle);
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (!GetFileInformationByHandle(leaf.get(), &info))
+        throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        throw std::invalid_argument("Publication destination is linked");
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) return std::nullopt;
+    return ordinaryIdentity(leaf, false);
+#else
+    struct stat info{};
+    if (::lstat(path.c_str(), &info) != 0) {
+        if (errno == ENOENT) return std::nullopt;
+        throw std::system_error(errno, std::generic_category());
+    }
+    if (S_ISDIR(info.st_mode)) return std::nullopt;
+    const auto handle = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (handle < 0) throw std::system_error(errno, std::generic_category());
+    return ordinaryIdentity(NativeEntry(handle), false);
+#endif
 }
 
 /// Opens the staged identity exclusively and flushes its bytes before any destination mutation.
@@ -287,6 +322,21 @@ void publishNative(const NativeEntry& staged, const fs::path& temporary,
 }
 }  // namespace
 
+struct TemporaryArtifactRegistry::PublicationTarget::State {
+    fs::path root;
+    fs::path destination;
+    EntryIdentity parent;
+    std::optional<EntryIdentity> leaf;
+};
+
+TemporaryArtifactRegistry::PublicationTarget::PublicationTarget(std::unique_ptr<State> state)
+    : _state(std::move(state)) {}
+TemporaryArtifactRegistry::PublicationTarget::PublicationTarget(PublicationTarget&&) noexcept =
+    default;
+TemporaryArtifactRegistry::PublicationTarget&
+TemporaryArtifactRegistry::PublicationTarget::operator=(PublicationTarget&&) noexcept = default;
+TemporaryArtifactRegistry::PublicationTarget::~PublicationTarget() = default;
+
 struct TemporaryArtifactRegistry::PublicationReceipt::State {
     TemporaryArtifactRegistry* owner;
     std::weak_ptr<int> lifetime;
@@ -295,6 +345,7 @@ struct TemporaryArtifactRegistry::PublicationReceipt::State {
     fs::path temporary;
     std::optional<fs::path> intendedDestination;
     std::optional<EntryIdentity> stagedParent;
+    std::optional<EntryIdentity> stagedLeaf;
 };
 
 TemporaryArtifactRegistry::PublicationReceipt::PublicationReceipt(std::unique_ptr<State> state)
@@ -348,23 +399,45 @@ TemporaryArtifactRegistry::StagedFile TemporaryArtifactRegistry::stageArchiveFil
     return {path, Registration(this, _artifacts.size() - 1)};
 }
 
-TemporaryArtifactRegistry::PublicationReceipt TemporaryArtifactRegistry::stageFileForPublication(
-    const fs::path& modRoot, const fs::path& destination) {
+TemporaryArtifactRegistry::PublicationTarget TemporaryArtifactRegistry::capturePublicationTarget(
+    const fs::path& modRoot, const fs::path& destination) const {
     if (_cleaned) throw std::logic_error("Temporary artifact registration is closed");
     if (!modRoot.is_absolute()) throw std::invalid_argument("A Mod Root must be absolute");
     const auto root = fs::canonical(modRoot);
     const auto parent = pinDestination(root, destination);
-    const auto path = _recovery->stageFile(root, destination);
+    auto target = std::make_unique<PublicationTarget::State>();
+    target->root = root;
+    target->destination = destination;
+    target->parent = parent.parentIdentity;
+    target->leaf = destinationIdentity(destination);
+    return PublicationTarget(std::move(target));
+}
+
+TemporaryArtifactRegistry::PublicationReceipt TemporaryArtifactRegistry::stageFileForPublication(
+    PublicationTarget&& target) {
+    if (_cleaned) throw std::logic_error("Temporary artifact registration is closed");
+    auto expected = std::move(target._state);
+    if (!expected) throw std::invalid_argument("The publication target was consumed");
+    (void)pinDestination(expected->root, expected->destination, expected->parent);
+    if (destinationIdentity(expected->destination) != expected->leaf)
+        throw std::invalid_argument("Publication destination changed after input capture");
+    const auto path = _recovery->stageFile(expected->root, expected->destination);
     _artifacts.push_back({path, false, true});
     auto state = std::make_unique<PublicationReceipt::State>();
     state->owner = this;
     state->lifetime = _lifetime;
     state->artifactIndex = _artifacts.size() - 1;
-    state->root = root;
+    state->root = expected->root;
     state->temporary = path;
-    state->intendedDestination = destination;
-    state->stagedParent = parent.parentIdentity;
+    state->intendedDestination = expected->destination;
+    state->stagedParent = expected->parent;
+    state->stagedLeaf = expected->leaf;
     return PublicationReceipt(std::move(state));
+}
+
+TemporaryArtifactRegistry::PublicationReceipt TemporaryArtifactRegistry::stageFileForPublication(
+    const fs::path& modRoot, const fs::path& destination) {
+    return stageFileForPublication(capturePublicationTarget(modRoot, destination));
 }
 
 TemporaryArtifactRegistry::PublicationReceipt
@@ -400,6 +473,10 @@ PublicationResult TemporaryArtifactRegistry::publishReceipt(PublicationReceipt::
         const auto parent = pinDestination(receipt.root, destination, receipt.stagedParent);
         {
             const auto staged = flushStagedFile(receipt.temporary, parent.parentIdentity);
+            // The saved bytes came from the identity captured before loading, not a new leaf
+            // installed at the same pathname while the backend was running.
+            if (receipt.intendedDestination && destinationIdentity(destination) != receipt.stagedLeaf)
+                throw std::invalid_argument("Publication destination changed after input capture");
             publishNative(staged, receipt.temporary, parent, destination, policy, published);
         }
         // The native operation has committed a destination. A failed snapshot release must
