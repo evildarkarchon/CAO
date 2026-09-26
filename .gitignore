@@ -507,3 +507,4 @@ install/
 build-*/
 src/Version.h
 .codegraph/
+*.lock
