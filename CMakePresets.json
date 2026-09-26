@@ -117,8 +117,10 @@
     },
     {
       "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "cl.exe",
         "CMAKE_CXX_FLAGS": "/EHsc /MP /W4 /WX /external:anglebrackets /external:W0"
       },
+      "description": "Run from a VS 2026 x64 Developer Command Prompt so cl.exe and the Windows SDK are available.",
       "generator": "Ninja",
       "inherits": [
         "cmake-dev",

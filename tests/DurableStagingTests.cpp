@@ -10,6 +10,10 @@
 #include <type_traits>
 #include <utility>
 
+#ifdef _WIN32
+#include <Windows.h>
+#endif
+
 namespace fs = std::filesystem;
 
 class DurableStagingTests final : public QObject {
@@ -81,7 +85,7 @@ class DurableStagingTests final : public QObject {
     void assetPublicationRejectsReplacedParent();
     /// Replacement refuses a different leaf even when its pathname and parent stay the same.
     void assetPublicationRejectsReplacedDestination();
-    /// A native Asset edited in place after loading cannot be replaced by stale output.
+    /// A same-size Asset edit with restored timestamps cannot be replaced by stale output.
     void assetPublicationRejectsInPlaceDestinationEdit();
     /// A failed durable release retains the published fact and leaves recovery ownership intact.
     void publicationReleaseFailurePreservesCommittedDestination();
@@ -899,6 +903,16 @@ void DurableStagingTests::assetPublicationRejectsInPlaceDestinationEdit() {
     const auto root = fs::canonical(fs::path(directory.path().toStdWString()));
     const auto destination = root / "texture.dds";
     std::ofstream(destination, std::ios::binary) << "original";
+    const auto originalHandle =
+        CreateFileW(destination.c_str(), FILE_READ_ATTRIBUTES,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                    FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    QVERIFY(originalHandle != INVALID_HANDLE_VALUE);
+    FILE_BASIC_INFO originalBasic{};
+    const auto originalRead = GetFileInformationByHandleEx(originalHandle, FileBasicInfo,
+                                                           &originalBasic, sizeof(originalBasic));
+    CloseHandle(originalHandle);
+    QVERIFY(originalRead);
     cao::run::TemporaryArtifactRegistry registry;
     auto target = registry.capturePublicationTarget(root, destination);
     std::ifstream loaded(destination, std::ios::binary);
@@ -909,9 +923,33 @@ void DurableStagingTests::assetPublicationRejectsInPlaceDestinationEdit() {
     auto receipt = registry.stageFileForPublication(std::move(target));
     const auto temporary = receipt.path();
     std::ofstream(temporary, std::ios::binary) << "optimized original";
-    // Truncation and rewrite keep the leaf's file ID while changing the bytes it contains.
-    // The final size is unchanged, so the timestamp fields must reveal the edit.
+    // Keep every metadata field used by the old snapshot equal while changing the bytes.
     std::ofstream(destination, std::ios::binary | std::ios::trunc) << "revised!";
+    const auto restoreHandle =
+        CreateFileW(destination.c_str(), FILE_WRITE_ATTRIBUTES,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                    FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    QVERIFY(restoreHandle != INVALID_HANDLE_VALUE);
+    FILE_BASIC_INFO restoredBasic{};
+    restoredBasic.LastWriteTime = originalBasic.LastWriteTime;
+    restoredBasic.ChangeTime = originalBasic.ChangeTime;
+    const auto restored = SetFileInformationByHandle(restoreHandle, FileBasicInfo, &restoredBasic,
+                                                     sizeof(restoredBasic));
+    CloseHandle(restoreHandle);
+    QVERIFY(restored);
+    const auto verifiedHandle =
+        CreateFileW(destination.c_str(), FILE_READ_ATTRIBUTES,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                    FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    QVERIFY(verifiedHandle != INVALID_HANDLE_VALUE);
+    FILE_BASIC_INFO verifiedBasic{};
+    const auto verified = GetFileInformationByHandleEx(verifiedHandle, FileBasicInfo,
+                                                       &verifiedBasic, sizeof(verifiedBasic));
+    CloseHandle(verifiedHandle);
+    QVERIFY(verified);
+    QCOMPARE(fs::file_size(destination), std::uintmax_t{8});
+    QCOMPARE(verifiedBasic.LastWriteTime.QuadPart, originalBasic.LastWriteTime.QuadPart);
+    QCOMPARE(verifiedBasic.ChangeTime.QuadPart, originalBasic.ChangeTime.QuadPart);
     const auto result = receipt.publish(destination, cao::run::PublicationPolicy::Replace);
     QCOMPARE(result.state, cao::run::PublicationState::NotPublished);
     QVERIFY(result.errorDetail.find("Publication destination changed after input capture") !=
@@ -922,7 +960,7 @@ void DurableStagingTests::assetPublicationRejectsInPlaceDestinationEdit() {
     QVERIFY(output.open(QIODevice::ReadOnly));
     QCOMPARE(output.readAll(), QByteArray("revised!"));
 #else
-    QSKIP("Windows destination metadata is required for this regression");
+    QSKIP("Windows destination metadata restoration is required for this regression");
 #endif
 }
 

@@ -82,7 +82,7 @@ set(RESOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/styles/qdarkstyle/style.qrc"
     )
 
-#Generate translations
+# Keep translated TS catalogs in source control; normal builds only compile them to QM files.
 set(TS_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/translations/AssetsOpt_de.ts
     ${CMAKE_CURRENT_SOURCE_DIR}/translations/AssetsOpt_en.ts
@@ -96,8 +96,14 @@ set(TS_FILES
     )
 
 if(GUI)
-    message("Updating translations files")
-    qt5_create_translation(QM_FILES ${TS_FILES} ${SOURCES})
+    message("Configuring translation catalogs")
+    qt5_add_translation(QM_FILES ${TS_FILES})
+    # Translators refresh source strings deliberately, without making every build rewrite TS files.
+    add_custom_target(update_translations
+        COMMAND ${Qt5_LUPDATE_EXECUTABLE} ${SOURCES} -ts ${TS_FILES}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Updating translation catalogs"
+        VERBATIM)
 endif()
 
 #plog

@@ -45,6 +45,7 @@ struct DestinationSnapshot {
     std::uint64_t size{};
     std::uint64_t lastWriteTime{};
     std::uint64_t changeTime{};
+    std::uint64_t contentFingerprint{};
     bool operator==(const DestinationSnapshot&) const = default;
 };
 
@@ -118,6 +119,31 @@ class NativeEntry final {
         _handle = invalid();
     }
 };
+
+#ifdef _WIN32
+/// Hashes an opened destination's bytes, rejecting incomplete reads during a snapshot.
+std::uint64_t destinationContentFingerprint(const NativeEntry& leaf, std::uint64_t expectedSize) {
+    std::array<unsigned char, 65536> buffer{};
+    std::uint64_t fingerprint = 14695981039346656037ULL;
+    std::uint64_t bytesRead = 0;
+    DWORD count = 0;
+    for (;;) {
+        if (!ReadFile(leaf.get(), buffer.data(), static_cast<DWORD>(buffer.size()), &count,
+                      nullptr))
+            throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
+                                    "Read publication destination");
+        if (count == 0) break;
+        for (DWORD index = 0; index < count; ++index) {
+            fingerprint ^= buffer[index];
+            fingerprint *= 1099511628211ULL;
+        }
+        bytesRead += count;
+    }
+    if (bytesRead != expectedSize)
+        throw std::invalid_argument("Publication destination changed during snapshot");
+    return fingerprint;
+}
+#endif
 
 /// Opens an ordinary directory; Win32 denies rename, while POSIX retains its identity for checks.
 NativeEntry pinDirectory(const fs::path& path) {
@@ -224,15 +250,14 @@ PinnedDestination pinDestination(const fs::path& root, const fs::path& destinati
     return pinned;
 }
 
-/// Reads a destination leaf's identity and content-relevant metadata without following links.
+/// Reads a destination leaf's identity, metadata, and content fingerprint without following links.
 /// An existing directory remains an invalid publication target but is left for native arbitration.
 std::optional<DestinationSnapshot> destinationIdentity(const fs::path& path) {
 #ifdef _WIN32
-    const auto handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
-                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                                    OPEN_EXISTING,
-                                    FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
-                                    nullptr);
+    // Deny write sharing while reading so one snapshot cannot combine bytes from two revisions.
+    const auto handle = CreateFileW(
+        path.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         const auto error = GetLastError();
         if (error == ERROR_FILE_NOT_FOUND) return std::nullopt;
@@ -248,12 +273,12 @@ std::optional<DestinationSnapshot> destinationIdentity(const fs::path& path) {
     FILE_BASIC_INFO basic{};
     if (!GetFileInformationByHandleEx(leaf.get(), FileBasicInfo, &basic, sizeof(basic)))
         throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
-    // File IDs survive in-place writes; size, last-write, and change time reveal ordinary edits.
-    return DestinationSnapshot{ordinaryIdentity(leaf, false),
-                               (static_cast<std::uint64_t>(info.nFileSizeHigh) << 32) |
-                                   info.nFileSizeLow,
+    const auto size = (static_cast<std::uint64_t>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+    // File IDs and timestamps can survive same-size rewrites on coarse-timestamp file systems.
+    return DestinationSnapshot{ordinaryIdentity(leaf, false), size,
                                static_cast<std::uint64_t>(basic.LastWriteTime.QuadPart),
-                               static_cast<std::uint64_t>(basic.ChangeTime.QuadPart)};
+                               static_cast<std::uint64_t>(basic.ChangeTime.QuadPart),
+                               destinationContentFingerprint(leaf, size)};
 #else
     struct stat info{};
     if (::lstat(path.c_str(), &info) != 0) {
