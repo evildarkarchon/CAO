@@ -36,7 +36,8 @@ class StagingRecovery final {
     // Only Temporary Ownership can create a durable stage or release its claim after publication.
     friend class TemporaryArtifactRegistry;
     /// Registers a unique sibling temporary name durably, then exclusively creates its empty file.
-    /// Reuses recovered ownership locks; throws if ownership or same-root containment fails.
+    /// Reuses recovered ownership locks and pins Windows parent ancestors through cleanup; throws
+    /// if ownership or same-root containment fails.
     [[nodiscard]] std::filesystem::path stageFile(const std::filesystem::path& modRoot,
                                                   const std::filesystem::path& destination);
     /// Durably registers and exclusively creates a unique empty file beneath the owned run child.

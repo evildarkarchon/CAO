@@ -9,6 +9,7 @@ namespace cao::cli {
 [[nodiscard]] int exitCode(run::RunOutcome outcome) noexcept;
 
 /// Writes one ordered service observation without deriving lifecycle state or progress.
+/// Path fields are encoded as UTF-8 independently of the Windows narrow code page.
 void renderEvent(std::ostream& output, const run::RunEvent& event);
 
 /// Starts a run, forwards interrupt intent, and waits through Safety Cleanup and terminal delivery.

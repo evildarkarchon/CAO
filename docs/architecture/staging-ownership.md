@@ -116,8 +116,12 @@ reading it, validates root and run-child identity, checks the entire control tre
 present sibling staging file against the recorded entries before deleting anything. Links,
 junctions, reparse points, hard links, unknown children, type
 mismatches, and inaccessible contents fail closed. Windows handles pin temporary files against
-replacement and delete those file identities; directory removal is nonrecursive. POSIX producers
-must cooperate with `owner.lock`; file identity is checked again immediately before unlinking.
+replacement and delete those file identities. Windows also pins every ordinary ancestor of a
+present sibling before opening its file by name, then holds the ancestor pins through deletion.
+Production keeps sibling parent pins from stage creation through Safety Cleanup; the run child
+stays pinned until its staged Archive files have been removed. Directory removal is nonrecursive.
+POSIX producers must cooperate with `owner.lock`; file identity is checked again immediately
+before unlinking.
 This protects staging from competing CAO processes, without claiming a sandbox against arbitrary
 filesystem changes by the same operating-system user.
 

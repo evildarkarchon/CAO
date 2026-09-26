@@ -138,10 +138,11 @@ class TerminalCliCleanup final : public cao::run::SafetyCleanupService {
 };
 
 /// Requests all work needed to exercise the CLI's focused terminal evidence categories.
-cao::run::RunRequest terminalCliRequest() {
+cao::run::RunRequest terminalCliRequest(
+    const std::filesystem::path& root = testModRoot()) {
     return cao::run::RunRequest::create(
         "SkyrimSE", cao::routing::ExecutionMode::Apply,
-        cao::run::ModSelection::singleModRoot(testModRoot()),
+        cao::run::ModSelection::singleModRoot(root),
         {cao::routing::RequestedWork::ArchiveExtraction,
          cao::routing::RequestedWork::NativeTextureOptimization,
          cao::routing::RequestedWork::ArchiveCreation});
@@ -280,6 +281,49 @@ class CliRunTests final : public QObject {
             if (scenario == TerminalScenario::Cancelled)
                 QVERIFY(text.find("Cancellation Observed|yes") != std::string::npos);
         }
+    }
+    /// Renders native Unicode paths as UTF-8 in live and terminal CLI events.
+    void rendersUnicodePathsAsUtf8() {
+        using namespace cao::run;
+        const auto root = testModRoot() / std::filesystem::path(u8"\u6F22\u5B57");
+        std::filesystem::create_directories(root);
+        const auto rootBytes = root.generic_u8string();
+        const std::string expectedRoot(rootBytes.begin(), rootBytes.end());
+
+        std::ostringstream output;
+        cao::cli::renderEvent(
+            output,
+            RunEvent("unicode", 1,
+                     RunDiagnostic(RunDiagnosticCode::IgnoredModExcluded, RunPhase::Preparing,
+                                   "unicode path", root / "diagnostic.txt")));
+        cao::cli::renderEvent(
+            output,
+            RunEvent("unicode", 2,
+                     RunFailure(RunFailureCode::WorkServiceFailed, RunPhase::ProcessingAssets,
+                                "unicode path", {}, root / "failure.txt")));
+
+        std::stop_source cancellation;
+        TerminalCliWork work(TerminalScenario::ContainedFailure, cancellation);
+        TerminalCliCleanup cleanup(false);
+        const auto result = std::make_shared<const OptimizationRunResult>(RunExecutor().execute(
+            terminalCliRequest(root),
+            RunServices{cleanup, nullptr, testRunConfiguration().get(), &work},
+            cancellation.get_token(), "unicode"));
+        cao::cli::renderEvent(output, RunEvent("unicode", 3, result));
+
+        const auto text = output.str();
+        QVERIFY(text.find("Diagnostic|Preparing|unicode path|" + expectedRoot +
+                          "/diagnostic.txt") != std::string::npos);
+        QVERIFY(text.find("Failure|Processing Assets|") != std::string::npos);
+        QVERIFY(text.find("|unicode path|" + expectedRoot + "/failure.txt") !=
+                std::string::npos);
+        QVERIFY(text.find("Mod Root|" + expectedRoot) != std::string::npos);
+        QVERIFY(text.find("Archive Collision|" + expectedRoot + "|textures/a.dds") !=
+                std::string::npos);
+        QVERIFY(text.find("Asset Failure|" + expectedRoot + "/failed.dds") !=
+                std::string::npos);
+        QVERIFY(text.find("Committed Mutations Retained|" + expectedRoot) !=
+                std::string::npos);
     }
     /// The CLI observer renders the exact immutable result committed to the Run Handle.
     void rendersCommittedTerminalResult() {

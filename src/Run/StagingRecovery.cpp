@@ -179,6 +179,40 @@ class NativeLock final {
 #endif
 };
 
+using DirectoryPinMap = std::map<fs::path, std::unique_ptr<NativeLock>>;
+
+/// Pins each present ordinary descendant from an already pinned Mod Root through a staging parent.
+/// Returns false when a component is absent; unsafe or inaccessible components fail as unverified.
+/// Holding every ancestor denies Windows rename and junction substitution during pathname opens.
+bool pinParentDirectories(const fs::path& root, const fs::path& parent,
+                          DirectoryPinMap& pins) {
+#ifdef _WIN32
+    const auto relative = parent.lexically_relative(root);
+    if (relative.empty() || relative.is_absolute() || *relative.begin() == "..")
+        unverified(parent, "A staging artifact parent left its Mod Root");
+    if (relative == ".") return true;
+    auto current = root;
+    for (const auto& component : relative) {
+        if (component == "." || component == "..")
+            unverified(parent, "A staging artifact parent contains traversal");
+        current /= component;
+        // The root and each previous component are still pinned while this name is opened.
+        if (pins.contains(current)) continue;
+        const auto status = inspect(current);
+        if (!fs::exists(status)) return false;
+        if (!fs::is_directory(status))
+            unverified(current, "A staging artifact parent is not an ordinary directory");
+        pins.emplace(current, std::make_unique<NativeLock>(current, OpenMode::DirectoryPin));
+    }
+    return true;
+#else
+    (void)root;
+    (void)parent;
+    (void)pins;
+    return true;
+#endif
+}
+
 struct Artifact {
     fs::path relative;
     bool directory;
@@ -301,11 +335,13 @@ std::vector<Artifact> readManifest(const fs::path& staging, const fs::path& root
 
 /// Validates every present entry before the first deletion, pinning files and directories.
 /// Missing registrations are legal: a crash may occur after registration but before creation.
+/// The caller retains parentPins until all validated sibling removals have finished.
 std::map<fs::path, std::unique_ptr<NativeLock>> validateTree(const fs::path& staging,
                                                              const fs::path& root,
                                                              const std::vector<Artifact>& artifacts,
                                                              std::stop_token stop,
-                                                             unsigned version) {
+                                                             unsigned version,
+                                                             DirectoryPinMap& parentPins) {
     std::map<fs::path, bool> expected;
     for (const auto& artifact : artifacts) {
         observeCancellation(stop);
@@ -338,6 +374,7 @@ std::map<fs::path, std::unique_ptr<NativeLock>> validateTree(const fs::path& sta
         observeCancellation(stop);
         if (!artifact.rootRelative) continue;
         const auto path = artifactPath(root, artifact);
+        if (!pinParentDirectories(root, path.parent_path(), parentPins)) continue;
         if (fs::weakly_canonical(path.parent_path()) != path.parent_path())
             unverified(path, "A sibling Asset staging parent changed during recovery");
         const auto status = inspect(path);
@@ -428,6 +465,7 @@ struct StagingRecovery::State {
         fs::path child;
         std::vector<Artifact> artifacts;
         std::unique_ptr<NativeLock> childPin;
+        DirectoryPinMap parentPins;
         bool ready{};
     };
     std::vector<std::unique_ptr<NativeLock>> locks;
@@ -467,7 +505,9 @@ fs::path StagingRecovery::stageFile(const fs::path& modRoot, const fs::path& des
         throw std::invalid_argument(
             "Asset staging requires a DDS, NIF, BTR, BTO, or HKX destination");
     prepareArea(root);
-    const auto& area = _state->areas.at(root);
+    auto& area = _state->areas.at(root);
+    if (!pinParentDirectories(root, parent, area.parentPins))
+        unverified(parent, "A staged Asset parent disappeared before creation");
     const auto filename = prefix + area.runId + "-" + nonce() + extension;
     const auto relativeFile =
         destinationParent == "." ? fs::path(filename) : destinationParent / filename;
@@ -568,9 +608,9 @@ std::vector<RunFailure> StagingRecovery::cleanupArtifacts() {
     for (auto& [root, area] : _state->areas) {
         if (area.child.empty()) continue;
         const auto staging = root / ".cao-staging";
-        area.childPin.reset();
         // Durable registrations predate creation, so they also cover native write failures
         // or a registry allocation failure before its in-memory receipt could be returned.
+        // Parent pins acquired at sibling staging stay in area.parentPins across every removal.
         // Unlike stale recovery, current-run cleanup attempts every individually owned artifact.
         for (auto artifact = area.artifacts.rbegin(); artifact != area.artifacts.rend();
              ++artifact) {
@@ -583,6 +623,9 @@ std::vector<RunFailure> StagingRecovery::cleanupArtifacts() {
                 if (fs::is_directory(status) != artifact->directory)
                     unverified(affected, "A staging artifact changed its recorded type");
                 if (artifact->directory) {
+                    // The run child pins Archive staging parents until their file removals end.
+                    if (!artifact->rootRelative && artifact->relative == area.child)
+                        area.childPin.reset();
                     // Non-recursive removal preserves any unregistered contents.
                     fs::remove(affected);
                 } else {
@@ -643,7 +686,8 @@ std::optional<RunFailure> StagingRecovery::recover(const std::filesystem::path& 
                 unverified(path,
                            "An unknown staging-like name collides with the reserved namespace");
         }
-        auto pins = validateTree(staging, modRoot, artifacts, stop, version);
+        DirectoryPinMap parentPins;
+        auto pins = validateTree(staging, modRoot, artifacts, stop, version, parentPins);
         // Retain the same lock through work and Safety Cleanup. Never delete/recreate its path:
         // otherwise another process could own a new lock while this run still uses the old one.
         _state->locks.push_back(std::move(rootPin));
