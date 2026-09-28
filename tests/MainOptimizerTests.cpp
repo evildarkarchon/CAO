@@ -175,6 +175,16 @@ private slots:
  void finalizationRetainsPluginMutations_data();
  /// Derives plugin-only mutation evidence without inventing output attempts.
  void finalizationRetainsPluginMutations();
+ /// Reports an occupied existing-Archive plugin destination without changing it or output progress.
+ void existingArchivePluginCollisionFailsSafely();
+ /// Uses selected-profile Archive suffix and plugin extension rules for existing Archives.
+ void existingArchivePluginNamesFollowProfile_data();
+ /// Publishes the profile's canonical bytes at its suffix-free Loading Plugin name.
+ void existingArchivePluginNamesFollowProfile();
+ /// Covers shared creation, an existing full Loading Plugin, and an exact preexisting Dummy Plugin.
+ void existingArchivesShareLoadingPlugin_data();
+ /// Preserves an existing Loading Plugin identity while recording only new publications.
+ void existingArchivesShareLoadingPlugin();
  /// Exercises backup and delete source choices after successful and failed extraction.
  void archiveSourceCleanupRequiresSuccessfulMerge_data();
  /// Preserves original Archive bytes on failure and never replaces an existing backup.
@@ -802,6 +812,176 @@ void MainOptimizerTests::finalizationRetainsPluginMutations() {
     QCOMPARE(mutation.count, std::size_t{1});
     QCOMPARE(std::filesystem::exists(plugin), createDummies);
     QVERIFY(artifacts.performSafetyCleanup().empty());
+
+    cao::run::MutableRunEvidence evidence;
+    evidence.recordPhase(cao::run::RunPhaseRecord::executed(cao::run::RunPhase::Preparing));
+    evidence.recordPhase(
+        cao::run::RunPhaseRecord::executed(cao::run::RunPhase::ArchiveFinalization));
+    evidence.recordArchiveFinalizationPlan(0);
+    evidence.recordArchiveFinalization(result);
+    evidence.recordPhase(cao::run::RunPhaseRecord::executed(cao::run::RunPhase::SafetyCleanup));
+    const auto terminal = std::move(evidence).consume();
+    QVERIFY(terminal.archiveFinalization() != nullptr);
+    QVERIFY(terminal.archiveFinalization()->attempts.empty());
+    QCOMPARE(terminal.phase(cao::run::RunPhase::ArchiveFinalization)->progress()->total(),
+             std::size_t{0});
+    QCOMPARE(terminal.mutationSummaries().size(), std::size_t{1});
+    QCOMPARE(terminal.mutationSummaries().front().committed, std::size_t{1});
+}
+
+void MainOptimizerTests::existingArchivePluginCollisionFailsSafely() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto parent = std::filesystem::path(directory.path().toStdWString());
+    writeFile(parent / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = parent / "mod";
+    writeFile(mod / "existing.bsa", QByteArrayLiteral("retained archive"));
+    OptionsCAO options;
+    options.bBsaCreateDummies = true;
+    const BSAOptimizer optimizer;
+    const std::array roots{mod};
+    const auto plan = optimizer.planFinalization(roots, options);
+    QVERIFY(plan.outputs().empty());
+    const auto occupied = mod / "existing.esp";
+    QVERIFY(std::filesystem::create_directory(occupied));
+
+    std::vector<cao::run::ArchiveFinalizationProgress> progress;
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts, {},
+                                           [&](const auto& update) { progress.push_back(update); });
+    QVERIFY(result.attempts.empty());
+    QCOMPARE(result.failure,
+             std::optional{cao::run::ArchiveFinalizationFailure::PluginCreationFailed});
+    QVERIFY(result.safeToContinue);
+    QVERIFY(result.mutations.empty());
+    QCOMPARE(progress.size(), std::size_t{1});
+    QCOMPARE(progress.front().completed, std::size_t{0});
+    QCOMPARE(progress.front().total, std::size_t{0});
+    QVERIFY(std::filesystem::is_directory(occupied));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void MainOptimizerTests::existingArchivePluginNamesFollowProfile_data() {
+    QTest::addColumn<int>("game");
+    QTest::addColumn<QString>("profile");
+    QTest::addColumn<QString>("archiveName");
+    QTest::newRow("SLE suffix-free") << 3 << QStringLiteral("SLE") << QStringLiteral("bundle.bsa");
+    QTest::newRow("SSE texture suffix")
+        << 4 << QStringLiteral("SSE") << QStringLiteral("bundle - Textures.bsa");
+    QTest::newRow("FO4 main suffix")
+        << 5 << QStringLiteral("FO4") << QStringLiteral("bundle - Main.ba2");
+    QTest::newRow("FO4 texture suffix")
+        << 5 << QStringLiteral("FO4") << QStringLiteral("bundle - Textures.ba2");
+}
+
+void MainOptimizerTests::existingArchivePluginNamesFollowProfile() {
+    QFETCH(int, game);
+    QFETCH(QString, profile);
+    QFETCH(QString, archiveName);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto parent = std::filesystem::path(directory.path().toStdWString());
+    writeFile(parent / "profiles" / profile.toStdWString() / "profile.ini",
+              QByteArray("[BSA]\nbsaEnabled=true\nbsaGame=") + QByteArray::number(game) + '\n');
+    Profiles::setCurrentProfile(profile);
+    const auto mod = parent / "mod";
+    writeFile(mod / archiveName.toStdWString(), QByteArrayLiteral("retained archive"));
+    OptionsCAO options;
+    options.bBsaCreateDummies = true;
+    const BSAOptimizer optimizer;
+    const std::array roots{mod};
+    const auto plan = optimizer.planFinalization(roots, options);
+    QVERIFY(plan.outputs().empty());
+
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts);
+    QVERIFY(result.attempts.empty());
+    QVERIFY(!result.failure);
+    QCOMPARE(result.mutations.size(), std::size_t{1});
+    const auto plugin = mod / "bundle.esp";
+    QCOMPARE(result.mutations.front().modRoot, std::filesystem::canonical(mod));
+    QCOMPARE(result.mutations.front().path, plugin);
+    QCOMPARE(result.mutations.front().kind,
+             cao::run::ArchiveFinalizationMutationKind::PluginCreation);
+    QCOMPARE(result.mutations.front().mutation, cao::execution::MutationState::Committed);
+    const auto& bytes = *btu::bsa::Settings::get(static_cast<btu::Game>(game)).s_dummy_plugin;
+    QFile published(QString::fromStdWString(plugin.wstring()));
+    QVERIFY(published.open(QIODevice::ReadOnly));
+    QCOMPARE(published.readAll(), QByteArray(reinterpret_cast<const char*>(bytes.data()),
+                                             static_cast<int>(bytes.size())));
+    published.close();
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+    // Durable ownership controls remain; Safety Cleanup removes the owned run child.
+    for (const auto& entry : std::filesystem::directory_iterator(mod / ".cao-staging"))
+        QVERIFY(!entry.is_directory());
+    QVERIFY(std::filesystem::exists(plugin));
+}
+
+void MainOptimizerTests::existingArchivesShareLoadingPlugin_data() {
+    QTest::addColumn<int>("preexisting");
+    QTest::newRow("create-once") << 0;
+    QTest::newRow("preserve-full-plugin") << 1;
+    QTest::newRow("preserve-exact-dummy") << 2;
+}
+
+void MainOptimizerTests::existingArchivesShareLoadingPlugin() {
+    QFETCH(int, preexisting);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto parent = std::filesystem::path(directory.path().toStdWString());
+    writeFile(parent / "profiles" / "FO4" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=5\n"));
+    Profiles::setCurrentProfile("FO4");
+    const auto mod = parent / "mod";
+    writeFile(mod / "bundle - Main.ba2", QByteArrayLiteral("retained main archive"));
+    writeFile(mod / "bundle - Textures.ba2", QByteArrayLiteral("retained texture archive"));
+    const auto dummy = mod / "bundle.esp";
+    const auto full = mod / "bundle.esm";
+    const auto& bytes = *btu::bsa::Settings::get(btu::Game::FO4).s_dummy_plugin;
+    const auto originalBytes = preexisting == 1
+                                   ? QByteArrayLiteral("full loading plugin")
+                                   : QByteArray(reinterpret_cast<const char*>(bytes.data()),
+                                                static_cast<int>(bytes.size()));
+    const auto original = preexisting == 1 ? full : dummy;
+    if (preexisting != 0) writeFile(original, originalBytes);
+    OptionsCAO options;
+    options.bBsaCreateDummies = true;
+    const BSAOptimizer optimizer;
+    const std::array roots{mod};
+    const auto plan = optimizer.planFinalization(roots, options);
+    QVERIFY(plan.outputs().empty());
+
+    std::vector<cao::run::ArchiveFinalizationProgress> progress;
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts, {},
+                                           [&](const auto& update) { progress.push_back(update); });
+    QVERIFY(result.attempts.empty());
+    QVERIFY(!result.failure);
+    QVERIFY(result.safeToContinue);
+    QCOMPARE(progress.size(), std::size_t{1});
+    QCOMPARE(progress.front().completed, std::size_t{0});
+    QCOMPARE(progress.front().total, std::size_t{0});
+    QCOMPARE(result.mutations.size(), preexisting == 0 ? std::size_t{1} : std::size_t{0});
+    if (preexisting == 0) {
+        QCOMPARE(result.mutations.front().path, dummy);
+        QCOMPARE(result.mutations.front().mutation, cao::execution::MutationState::Committed);
+    }
+    const auto expected = preexisting == 0 ? dummy : original;
+    QFile retained(QString::fromStdWString(expected.wstring()));
+    QVERIFY(retained.open(QIODevice::ReadOnly));
+    QCOMPARE(retained.readAll(), preexisting == 0
+                                     ? QByteArray(reinterpret_cast<const char*>(bytes.data()),
+                                                  static_cast<int>(bytes.size()))
+                                     : originalBytes);
+    retained.close();
+    if (preexisting == 1) QVERIFY(!std::filesystem::exists(dummy));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+    QVERIFY(std::filesystem::exists(expected));
 }
 
 void MainOptimizerTests::finalizationFreezesTotalAndCancelsBetweenOutputs_data() {

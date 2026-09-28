@@ -891,11 +891,6 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
     }
     result.cancelled = result.cancelled || stop.stop_requested();
     if (!result.cancelled && result.safeToContinue) {
-        const auto pluginPaths = [](const std::vector<btu::bsa::FilePath>& plugins) {
-            std::set<fs::path> paths;
-            for (const auto& plugin : plugins) paths.insert(plugin.full_path());
-            return paths;
-        };
         try {
             for (auto rootIt = plan._roots.begin(); rootIt != plan._roots.end(); ++rootIt) {
                 if (stop.stop_requested()) {
@@ -917,67 +912,148 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
                     result.cancelled = true;
                     break;
                 }
-                auto plugins =
-                    btu::bsa::list_plugins(fs::directory_iterator(root), {}, plan._settings);
-                if (stop.stop_requested()) {
-                    result.cancelled = true;
-                    break;
-                }
-                // Planned-output plugin publications are recorded before this snapshot. Capture
-                // only later changes to existing Archives so neither file is counted twice.
-                const auto before = pluginPaths(plugins);
-                const auto recordPluginChanges = [&] {
-                    std::set<fs::path> after;
-                    try {
-                        after = pluginPaths(btu::bsa::list_plugins(
-                            fs::directory_iterator(root), {}, plan._settings));
-                    } catch (...) {
-                        // If the post-mutation inventory is unreadable, the effect is unknown.
-                        result.mutations.push_back(
-                            {.modRoot = root,
-                             .path = root,
-                             .kind = plan._createDummies
-                                         ? ArchiveFinalizationMutationKind::PluginCreation
-                                         : ArchiveFinalizationMutationKind::PluginRemoval,
-                             .mutation = MutationState::PartialOrUnknown});
-                        throw;
-                    }
-                    for (const auto& plugin : before) {
-                        if (!after.contains(plugin))
-                            result.mutations.push_back(
-                                {.modRoot = root,
-                                 .path = plugin,
-                                 .kind = ArchiveFinalizationMutationKind::PluginRemoval,
-                                 .mutation = MutationState::Committed});
-                    }
-                    for (const auto& plugin : after) {
-                        if (!before.contains(plugin))
-                            result.mutations.push_back(
-                                {.modRoot = root,
-                                 .path = plugin,
-                                 .kind = ArchiveFinalizationMutationKind::PluginCreation,
-                                 .mutation = MutationState::Committed});
-                    }
-                };
-                try {
-                    // Do not remove loading plugins already committed as part of output attempts.
-                    // When dummy creation is disabled, retain the existing explicit cleanup choice.
-                    if (!plan._createDummies)
-                        btu::bsa::clean_dummy_plugins(plugins, plan._settings);
-                    if (plan._createDummies) {
-                        const auto archives = btu::bsa::list_archive(fs::directory_iterator(root),
-                                                                     {}, plan._settings);
+                if (plan._createDummies && plan._settings.s_dummy_plugin) {
+                    const auto archives =
+                        btu::bsa::list_archive(fs::directory_iterator(root), {}, plan._settings);
+                    for (const auto& archive : archives) {
                         if (stop.stop_requested()) {
                             result.cancelled = true;
                             break;
                         }
-                        btu::bsa::make_dummy_plugins(archives, plan._settings);
+                        auto chosen = archive;
+                        chosen.ext = plan._settings.plugin_extensions.back();
+                        chosen.suffix.clear();
+                        const auto destination = chosen.full_path();
+                        bool publicationStarted = false;
+                        try {
+                            bool loaded = false;
+                            for (const auto& extension : plan._settings.plugin_extensions) {
+                                auto candidate = archive;
+                                candidate.ext = extension;
+                                loaded = loaded || fs::is_regular_file(candidate.full_path());
+                                candidate.suffix.clear();
+                                loaded = loaded || fs::is_regular_file(candidate.full_path());
+                            }
+                            if (loaded) continue;
+                            // A non-plugin entry at the chosen name must survive even if the
+                            // earlier read-only probe did not recognize it as a Loading Plugin.
+                            if (fs::exists(fs::symlink_status(destination)))
+                                throw std::runtime_error("The loading plugin name is occupied.");
+
+                            auto staged = artifacts.stageArchiveFileForPublication(root);
+                            const auto& bytes = *plan._settings.s_dummy_plugin;
+                            std::ofstream file(staged.path(), std::ios::binary | std::ios::trunc);
+                            file.write(reinterpret_cast<const char*>(bytes.data()),
+                                       static_cast<std::streamsize>(bytes.size()));
+                            file.close();
+                            if (!file)
+                                throw std::runtime_error("Could not stage the loading plugin.");
+                            publicationStarted = true;
+                            const auto published =
+                                staged.publish(destination, PublicationPolicy::NoReplace);
+                            publicationStarted = false;
+                            // The receipt, rather than a later directory listing, identifies
+                            // the exact committed path even if ownership release then fails.
+                            if (published.state != PublicationState::NotPublished)
+                                result.mutations.push_back(
+                                    {.modRoot = root,
+                                     .path = destination,
+                                     .kind = ArchiveFinalizationMutationKind::PluginCreation,
+                                     .mutation = MutationState::Committed});
+                            if (published.state != PublicationState::PublishedAndReleased) {
+                                result.failure = ArchiveFinalizationFailure::PluginCreationFailed;
+                                result.safeToContinue =
+                                    published.state == PublicationState::NotPublished;
+                                result.detail = published.errorDetail.empty()
+                                                    ? "Loading plugin publication did not complete."
+                                                    : published.errorDetail;
+                                result.cancelled = stop.stop_requested();
+                                return result;
+                            }
+                        } catch (const std::exception& error) {
+                            result.failure = ArchiveFinalizationFailure::PluginCreationFailed;
+                            result.detail = error.what();
+                            if (publicationStarted) {
+                                // An exception escaping publication gives no receipt, so the
+                                // destination effect cannot be classified by a later listing.
+                                result.mutations.push_back(
+                                    {.modRoot = root,
+                                     .path = destination,
+                                     .kind = ArchiveFinalizationMutationKind::PluginCreation,
+                                     .mutation = MutationState::PartialOrUnknown});
+                                result.safeToContinue = false;
+                            }
+                            result.cancelled = stop.stop_requested();
+                            return result;
+                        } catch (...) {
+                            result.failure = ArchiveFinalizationFailure::PluginCreationFailed;
+                            result.detail = "Unexpected loading plugin creation exception.";
+                            result.mutations.push_back(
+                                {.modRoot = root,
+                                 .path = destination,
+                                 .kind = ArchiveFinalizationMutationKind::PluginCreation,
+                                 .mutation = MutationState::PartialOrUnknown});
+                            result.safeToContinue = false;
+                            result.cancelled = stop.stop_requested();
+                            return result;
+                        }
                     }
-                } catch (...) {
+                    if (result.cancelled) break;
+                } else if (!plan._createDummies) {
+                    auto plugins =
+                        btu::bsa::list_plugins(fs::directory_iterator(root), {}, plan._settings);
+                    if (stop.stop_requested()) {
+                        result.cancelled = true;
+                        break;
+                    }
+                    // Creation is disabled here, so the legacy cleanup cannot remove a plugin
+                    // newly published by a planned output in this run.
+                    const auto pluginPaths = [](const std::vector<btu::bsa::FilePath>& entries) {
+                        std::set<fs::path> paths;
+                        for (const auto& entry : entries) paths.insert(entry.full_path());
+                        return paths;
+                    };
+                    const auto before = pluginPaths(plugins);
+                    const auto recordPluginChanges = [&] {
+                        std::set<fs::path> after;
+                        try {
+                            after = pluginPaths(btu::bsa::list_plugins(fs::directory_iterator(root),
+                                                                       {}, plan._settings));
+                        } catch (...) {
+                            // If the post-mutation inventory is unreadable, the effect is unknown.
+                            result.mutations.push_back(
+                                {.modRoot = root,
+                                 .path = root,
+                                 .kind = ArchiveFinalizationMutationKind::PluginRemoval,
+                                 .mutation = MutationState::PartialOrUnknown});
+                            throw;
+                        }
+                        for (const auto& plugin : before) {
+                            if (!after.contains(plugin))
+                                result.mutations.push_back(
+                                    {.modRoot = root,
+                                     .path = plugin,
+                                     .kind = ArchiveFinalizationMutationKind::PluginRemoval,
+                                     .mutation = MutationState::Committed});
+                        }
+                        for (const auto& plugin : after) {
+                            if (!before.contains(plugin))
+                                result.mutations.push_back(
+                                    {.modRoot = root,
+                                     .path = plugin,
+                                     .kind = ArchiveFinalizationMutationKind::PluginCreation,
+                                     .mutation = MutationState::Committed});
+                        }
+                    };
+                    try {
+                        // When dummy creation is disabled, retain the explicit cleanup choice.
+                        btu::bsa::clean_dummy_plugins(plugins, plan._settings);
+                    } catch (...) {
+                        recordPluginChanges();
+                        throw;
+                    }
                     recordPluginChanges();
-                    throw;
                 }
-                recordPluginChanges();
             }
             // All planned outputs and plugin work must finish before pruning any Mod Root.
             // Recoverable attempts retain their source evidence; cancellation retains all paths.
