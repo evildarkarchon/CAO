@@ -128,6 +128,14 @@ _Avoid_: Duplicate file, overwrite
 The Apply-only Run Phase that commits planned output Archives and then cleans their source sets. It does not run after cancellation or fatal failure.
 _Avoid_: Safety Cleanup, packing callback
 
+**Loading Plugin**:
+A game plugin whose presence makes one or more Archives load under the selected game profile's naming rules.
+_Avoid_: Archive, Dummy Plugin
+
+**Dummy Plugin**:
+A Loading Plugin whose bytes exactly match the selected game profile's canonical dummy content. Matching bytes do not establish which tool created it.
+_Avoid_: Same-size plugin, CAO-owned plugin
+
 **Mod Root**:
 The directory tree of one selected mod, processed independently and defining one Archive Precedence scope.
 _Avoid_: Input directory, filesystem root

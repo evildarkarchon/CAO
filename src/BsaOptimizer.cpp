@@ -24,6 +24,27 @@
 #endif
 
 namespace {
+/// Recognizes only an ordinary plugin whose complete bytes match this profile's canonical dummy.
+/// An unverified file remains a Loading Plugin name during planning, not a proven dummy.
+bool hasExactDummyBytes(const std::filesystem::path& path,
+                        const std::vector<std::uint8_t>& bytes) {
+    namespace fs = std::filesystem;
+    std::error_code error;
+    if (!fs::is_regular_file(fs::symlink_status(path, error)) || error ||
+        fs::file_size(path, error) != bytes.size() || error)
+        return false;
+    std::ifstream input(path, std::ios::binary);
+    std::vector<char> contents(bytes.size());
+    input.read(contents.data(), static_cast<std::streamsize>(contents.size()));
+    if (!input) return false;
+    const auto complete = input.peek() == std::char_traits<char>::eof() && input.eof() &&
+                          !input.bad();
+    return complete && std::equal(contents.begin(), contents.end(), bytes.begin(),
+                                  [](char left, std::uint8_t right) {
+                                      return static_cast<unsigned char>(left) == right;
+                                  });
+}
+
 /// Estimates source content and format overhead; planning can stop between source stats, while
 /// finalization intentionally finishes each atomic output attempt once it starts.
 std::uintmax_t estimatePackedCapacity(const cao::run::ArchiveFinalizationOutput& output,
@@ -444,12 +465,12 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
                                    existing.size(), settings.s_dummy_plugin->size()));
         }
         auto plugins = list_plugins(fs::directory_iterator(root), {}, settings);
-        // Dummy cleanup is a mutation. Ignore their names for planning, but retain them until
-        // all output attempts finish so cancellation cannot strand an existing Archive.
+        // Ignore only proven Dummy Plugin names while planning; retain their files until all
+        // output attempts finish so cancellation cannot strand an existing Archive.
         if (settings.s_dummy_plugin) {
             std::erase_if(plugins, [&](const auto& plugin) {
                 checkCancelled();
-                return fs::file_size(plugin.full_path()) == settings.s_dummy_plugin->size();
+                return hasExactDummyBytes(plugin.full_path(), *settings.s_dummy_plugin);
             });
         }
         std::sort(plugins.begin(), plugins.end());
@@ -548,28 +569,28 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
             const auto destination = selected->full_path();
             reserved.insert(destination);
             std::optional<fs::path> pluginPath;
+            std::vector<fs::path> loadingPluginPaths;
             if (plan._createDummies && settings.s_dummy_plugin) {
                 bool loaded = false;
+                // Loading follows links to regular plugins; exact Dummy Plugin recognition does not.
                 for (const auto& extension : settings.plugin_extensions) {
                     checkCancelled();
                     auto plugin = *selected;
                     plugin.ext = extension;
-                    loaded = loaded || fs::exists(plugin.full_path());
+                    loadingPluginPaths.push_back(plugin.full_path());
+                    loaded = loaded || fs::is_regular_file(loadingPluginPaths.back());
                     plugin.suffix.clear();
-                    loaded = loaded || fs::exists(plugin.full_path());
+                    loadingPluginPaths.push_back(plugin.full_path());
+                    loaded = loaded || fs::is_regular_file(loadingPluginPaths.back());
                 }
-                if (!loaded) {
-                    auto plugin = *selected;
-                    plugin.ext = settings.plugin_extensions.back();
-                    plugin.suffix.clear();
-                    pluginPath = plugin.full_path();
-                }
+                if (!loaded) pluginPath = loadingPluginPaths.back();
             }
-            plan._outputs.push_back(
-                {root, destination, {archive.begin(), archive.end()}, pluginPath});
+            plan._outputs.push_back({root, destination, {archive.begin(), archive.end()},
+                                     pluginPath, 0, std::move(loadingPluginPaths)});
             auto& output = plan._outputs.back();
             output.estimatedCapacityBytes = estimatePackedCapacity(output, stop);
-            if (pluginPath)
+            // A Loading Plugin can disappear before publication, requiring the fallback dummy.
+            if (!output.loadingPluginPaths.empty())
                 output.estimatedCapacityBytes = cao::run::saturatedCapacityAdd(
                     output.estimatedCapacityBytes, settings.s_dummy_plugin->size());
             plan._archives.push_back(std::move(archive));
@@ -668,7 +689,7 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
             // Sources can grow after planning. Re-stat before mutation, retaining the frozen
             // allowance if files shrink; capacity itself is still only a momentary sample.
             auto currentCapacity = estimatePackedCapacity(output);
-            if (output.pluginPath)
+            if (!output.loadingPluginPaths.empty())
                 currentCapacity =
                     saturatedCapacityAdd(currentCapacity, plan._settings.s_dummy_plugin->size());
             if (!hasCapacity(
@@ -701,34 +722,46 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
                                              ? "Archive publication did not complete."
                                              : archivePublication.errorDetail);
             boundary = ArchiveFinalizationFailure::PluginCreationFailed;
-            if (output.pluginPath) {
+            if (!output.loadingPluginPaths.empty()) {
                 const auto& bytes = *plan._settings.s_dummy_plugin;
-                const auto& plugin = *output.pluginPath;
-                // Standard and Texture Archives can share a planned plugin. Reuse only the
-                // exact dummy already committed by a previous output; never truncate a newcomer.
-                if (fs::exists(fs::symlink_status(plugin))) {
-                    std::ifstream existing(plugin, std::ios::binary);
-                    const std::vector<char> contents{std::istreambuf_iterator<char>(existing), {}};
-                    if (!existing || contents.size() != bytes.size() ||
-                        !std::equal(contents.begin(), contents.end(), bytes.begin(),
-                                    [](char left, std::uint8_t right) {
-                                        return static_cast<unsigned char>(left) == right;
-                                    }))
-                        throw std::runtime_error("The planned loading plugin is occupied.");
-                } else {
-                    auto stagedPlugin = artifacts.stageArchiveFileForPublication(output.modRoot);
-                    std::ofstream file(stagedPlugin.path(), std::ios::binary | std::ios::trunc);
-                    file.write(reinterpret_cast<const char*>(bytes.data()),
-                               static_cast<std::streamsize>(bytes.size()));
-                    file.close();
-                    if (!file) throw std::runtime_error("Could not stage the loading plugin.");
-                    // Recheck the leaf natively after the exact-dummy probe: a newcomer wins.
-                    const auto pluginPublication =
-                        stagedPlugin.publish(plugin, PublicationPolicy::NoReplace);
-                    if (pluginPublication.state != PublicationState::PublishedAndReleased)
-                        throw std::runtime_error(pluginPublication.errorDetail.empty()
+                const auto& plugin = output.loadingPluginPaths.back();
+                // A plugin at another profile-recognized name can arrive after planning, or a
+                // planned one can disappear. The chosen dummy destination is checked separately
+                // so a late non-dummy occupant never becomes our successful publication.
+                const auto loadedElsewhere = std::any_of(
+                    output.loadingPluginPaths.begin(), output.loadingPluginPaths.end(),
+                    [&](const fs::path& path) {
+                        return path != plugin && fs::is_regular_file(path);
+                    });
+                if (!loadedElsewhere) {
+                    if (fs::exists(fs::symlink_status(plugin))) {
+                        if (output.pluginPath && !hasExactDummyBytes(plugin, bytes))
+                            throw std::runtime_error("The planned loading plugin is occupied.");
+                        if (!fs::is_regular_file(plugin))
+                            throw std::runtime_error("The planned loading plugin is not a file.");
+                    } else {
+                        auto stagedPlugin = artifacts.stageArchiveFileForPublication(output.modRoot);
+                        std::ofstream file(stagedPlugin.path(), std::ios::binary | std::ios::trunc);
+                        file.write(reinterpret_cast<const char*>(bytes.data()),
+                                   static_cast<std::streamsize>(bytes.size()));
+                        file.close();
+                        if (!file) throw std::runtime_error("Could not stage the loading plugin.");
+                        // Recheck the leaf natively after the exact-dummy probe: a newcomer wins.
+                        const auto pluginPublication =
+                            stagedPlugin.publish(plugin, PublicationPolicy::NoReplace);
+                        // A successful native rename is a separate durable file effect even if
+                        // releasing its temporary ownership subsequently fails.
+                        if (pluginPublication.state != PublicationState::NotPublished)
+                            result.mutations.push_back(
+                                {.modRoot = output.modRoot,
+                                 .path = plugin,
+                                 .kind = ArchiveFinalizationMutationKind::PluginCreation,
+                                 .mutation = MutationState::Committed});
+                        if (pluginPublication.state != PublicationState::PublishedAndReleased)
+                            throw std::runtime_error(pluginPublication.errorDetail.empty()
                                                      ? "Loading plugin publication did not complete."
                                                      : pluginPublication.errorDetail);
+                    }
                 }
             }
             boundary = ArchiveFinalizationFailure::SourceCleanupFailed;
@@ -816,9 +849,8 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
                     result.cancelled = true;
                     break;
                 }
-                // Output-owned plugins are already represented by their Archive attempts.
-                // Snapshot only this cleanup pass so existing-Archive plugin changes remain
-                // authoritative evidence even when a bethutil helper stops partway through.
+                // Planned-output plugin publications are recorded before this snapshot. Capture
+                // only later changes to existing Archives so neither file is counted twice.
                 const auto before = pluginPaths(plugins);
                 const auto recordPluginChanges = [&] {
                     std::set<fs::path> after;
