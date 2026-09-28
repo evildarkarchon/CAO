@@ -125,16 +125,16 @@ The presence of the same canonical game path in more than one Archive within one
 _Avoid_: Duplicate file, overwrite
 
 **Archive Finalization**:
-The Apply-only Run Phase that commits planned output Archives and then cleans their source sets. It does not run after cancellation or fatal failure.
+The Apply-only Run Phase that commits planned output Archives and any required new Loading Plugins, cleans their source sets, and maintains Loading Plugins for existing Archives. It does not run after cancellation or fatal failure.
 _Avoid_: Safety Cleanup, packing callback
 
 **Loading Plugin**:
-A game plugin whose presence makes one or more Archives load under the selected game profile's naming rules.
+A game plugin whose presence makes one or more Archives load under the selected game profile's naming rules. It may be a full plugin or a Dummy Plugin.
 _Avoid_: Archive, Dummy Plugin
 
 **Dummy Plugin**:
 A Loading Plugin whose bytes exactly match the selected game profile's canonical dummy content. Matching bytes do not establish which tool created it.
-_Avoid_: Same-size plugin, CAO-owned plugin
+_Avoid_: Same-size plugin, CAO-owned plugin, generated plugin, empty plugin
 
 **Mod Root**:
 The directory tree of one selected mod, processed independently and defining one Archive Precedence scope.
