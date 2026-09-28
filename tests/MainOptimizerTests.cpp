@@ -161,6 +161,8 @@ private slots:
  void dummyCapacityDecreasesAfterEachRoot();
  /// Reports plugin-only capacity failure without inventing output progress or pruning folders.
  void finalizationCapacityWithoutOutputs();
+ /// Keeps the public output aggregate's positional capacity initializer source-compatible.
+ void finalizationOutputRetainsPositionalCapacity();
  /// Stops finalization planning before traversing a cancelled Mod Root.
  void finalizationPlanningObservesCancellation();
  /// Retains a phase failure if plugin cleanup throws after a completed output.
@@ -225,6 +227,16 @@ private slots:
 
  /// Publishes a Dummy Plugin if the Loading Plugin observed during planning disappears.
  void plannedLoadingPluginDisappearsBeforeCommit();
+
+ /// Checks capacity before either mutation boundary when a planned Loading Plugin disappears.
+ void disappearingLoadingPluginCapacityIsReserved_data();
+ /// Rejects Archive-only capacity when finalization may need a fallback Dummy Plugin.
+ void disappearingLoadingPluginCapacityIsReserved();
+
+ /// Covers a linked Loading Plugin at the chosen or an alternate recognized name.
+ void linkedLoadingPluginRemainsUsable_data();
+ /// Keeps a linked Loading Plugin without publishing a fallback Dummy Plugin.
+ void linkedLoadingPluginRemainsUsable();
 
  /// Exercises retained source recovery with readable and byte-locked files.
  void committedArchiveRetainsLockedSource_data();
@@ -900,6 +912,12 @@ void MainOptimizerTests::finalizationCapacityWithoutOutputs() {
     QVERIFY(!std::filesystem::exists(mod / ".cao-staging"));
 }
 
+void MainOptimizerTests::finalizationOutputRetainsPositionalCapacity() {
+    const cao::run::ArchiveFinalizationOutput output{
+        {}, {}, {}, std::nullopt, std::uintmax_t{42}};
+    QCOMPARE(output.estimatedCapacityBytes, std::uintmax_t{42});
+}
+
 void MainOptimizerTests::finalizationCapacityChecks() {
     QFETCH(int, scenario);
     QTemporaryDir directory;
@@ -1427,6 +1445,114 @@ void MainOptimizerTests::plannedLoadingPluginDisappearsBeforeCommit() {
     }
     QCOMPARE(pluginCreations, std::size_t{1});
     QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void MainOptimizerTests::disappearingLoadingPluginCapacityIsReserved_data() {
+    QTest::addColumn<bool>("shortageAtPreflight");
+    QTest::newRow("phase-preflight") << true;
+    QTest::newRow("attempt-recheck") << false;
+}
+
+void MainOptimizerTests::disappearingLoadingPluginCapacityIsReserved() {
+    QFETCH(bool, shortageAtPreflight);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = root / "mod";
+    const auto source = mod / "textures" / "asset.dds";
+    writeFile(source, QByteArrayLiteral("source bytes"));
+    const auto earlierPlugin = mod / "mod.esm";
+    writeFile(earlierPlugin, QByteArrayLiteral("existing loading plugin"));
+    OptionsCAO options;
+    options.bBsaCreateDummies = false;
+    options.bBsaCompress = false;
+    options.bBsaDeleteSource = true;
+    const BSAOptimizer optimizer;
+    const std::array roots{mod};
+    // The no-dummy plan supplies an Archive-only allowance independent of the fallback branch.
+    const auto archiveOnlyPlan = optimizer.planFinalization(roots, options);
+    QCOMPARE(archiveOnlyPlan.outputs().size(), std::size_t{1});
+    const auto archiveOnlyCapacity = archiveOnlyPlan.outputs().front().estimatedCapacityBytes;
+    options.bBsaCreateDummies = true;
+    const auto plan = optimizer.planFinalization(roots, options);
+    QCOMPARE(plan.outputs().size(), std::size_t{1});
+    const auto& output = plan.outputs().front();
+    QCOMPARE(output.archivePath, archiveOnlyPlan.outputs().front().archivePath);
+    QVERIFY(!output.pluginPath.has_value());
+    QVERIFY(std::filesystem::remove(earlierPlugin));
+
+    std::size_t capacityQueries = 0;
+    const auto capacity = [&](const std::filesystem::path&) -> std::optional<std::uintmax_t> {
+        ++capacityQueries;
+        if (!shortageAtPreflight && capacityQueries == 1)
+            return std::numeric_limits<std::uintmax_t>::max();
+        return archiveOnlyCapacity;
+    };
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts, {}, {}, capacity);
+    QCOMPARE(result.attempts.size(), std::size_t{1});
+    QCOMPARE(result.attempts.front().failure,
+             std::optional{cao::run::ArchiveFinalizationFailure::InsufficientCapacity});
+    QCOMPARE(result.attempts.front().mutation, cao::execution::MutationState::None);
+    QVERIFY(result.mutations.empty());
+    QVERIFY(!std::filesystem::exists(output.archivePath));
+    QVERIFY(!std::filesystem::exists(mod / "mod.esp"));
+    QVERIFY(std::filesystem::exists(source));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void MainOptimizerTests::linkedLoadingPluginRemainsUsable_data() {
+    QTest::addColumn<QString>("linkedName");
+    QTest::newRow("alternate-name") << QStringLiteral("mod.esm");
+    QTest::newRow("dummy-destination") << QStringLiteral("mod.esp");
+}
+
+void MainOptimizerTests::linkedLoadingPluginRemainsUsable() {
+    QFETCH(QString, linkedName);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = root / "mod";
+    const auto source = mod / "textures" / "asset.dds";
+    writeFile(source, QByteArrayLiteral("source bytes"));
+    const auto target = root / "real-plugin.bin";
+    writeFile(target, QByteArrayLiteral("real loading plugin bytes"));
+    const auto link = mod / linkedName.toStdWString();
+    std::error_code linkError;
+    std::filesystem::create_symlink(target, link, linkError);
+    if (linkError) QSKIP("File symlink creation is unavailable on this host");
+
+    OptionsCAO options;
+    options.bBsaCreateDummies = true;
+    options.bBsaCompress = false;
+    options.bBsaDeleteSource = true;
+    const BSAOptimizer optimizer;
+    const std::array roots{mod};
+    const auto plan = optimizer.planFinalization(roots, options);
+    QCOMPARE(plan.outputs().size(), std::size_t{1});
+    const auto& output = plan.outputs().front();
+    QVERIFY(!output.pluginPath.has_value());
+
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts);
+    QCOMPARE(result.attempts.size(), std::size_t{1});
+    QVERIFY2(result.attempts.front().succeeded(), result.attempts.front().detail.c_str());
+    QVERIFY(btu::bsa::read_archive(output.archivePath).has_value());
+    QVERIFY(!std::filesystem::exists(source));
+    QVERIFY(std::filesystem::is_symlink(std::filesystem::symlink_status(link)));
+    if (link != mod / "mod.esp") QVERIFY(!std::filesystem::exists(mod / "mod.esp"));
+    for (const auto& mutation : result.mutations)
+        QVERIFY(mutation.kind != cao::run::ArchiveFinalizationMutationKind::PluginCreation);
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+    QVERIFY(std::filesystem::remove(link));
 }
 
 void MainOptimizerTests::cancellationPreservesCommittedArchiveLoadingPlugin() {

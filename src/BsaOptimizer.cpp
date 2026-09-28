@@ -572,25 +572,25 @@ cao::run::ArchiveFinalizationPlan BSAOptimizer::planFinalization(
             std::vector<fs::path> loadingPluginPaths;
             if (plan._createDummies && settings.s_dummy_plugin) {
                 bool loaded = false;
+                // Loading follows links to regular plugins; exact Dummy Plugin recognition does not.
                 for (const auto& extension : settings.plugin_extensions) {
                     checkCancelled();
                     auto plugin = *selected;
                     plugin.ext = extension;
                     loadingPluginPaths.push_back(plugin.full_path());
-                    loaded = loaded ||
-                             fs::is_regular_file(fs::symlink_status(loadingPluginPaths.back()));
+                    loaded = loaded || fs::is_regular_file(loadingPluginPaths.back());
                     plugin.suffix.clear();
                     loadingPluginPaths.push_back(plugin.full_path());
-                    loaded = loaded ||
-                             fs::is_regular_file(fs::symlink_status(loadingPluginPaths.back()));
+                    loaded = loaded || fs::is_regular_file(loadingPluginPaths.back());
                 }
                 if (!loaded) pluginPath = loadingPluginPaths.back();
             }
             plan._outputs.push_back({root, destination, {archive.begin(), archive.end()},
-                                     pluginPath, std::move(loadingPluginPaths)});
+                                     pluginPath, 0, std::move(loadingPluginPaths)});
             auto& output = plan._outputs.back();
             output.estimatedCapacityBytes = estimatePackedCapacity(output, stop);
-            if (pluginPath)
+            // A Loading Plugin can disappear before publication, requiring the fallback dummy.
+            if (!output.loadingPluginPaths.empty())
                 output.estimatedCapacityBytes = cao::run::saturatedCapacityAdd(
                     output.estimatedCapacityBytes, settings.s_dummy_plugin->size());
             plan._archives.push_back(std::move(archive));
@@ -689,7 +689,7 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
             // Sources can grow after planning. Re-stat before mutation, retaining the frozen
             // allowance if files shrink; capacity itself is still only a momentary sample.
             auto currentCapacity = estimatePackedCapacity(output);
-            if (output.pluginPath)
+            if (!output.loadingPluginPaths.empty())
                 currentCapacity =
                     saturatedCapacityAdd(currentCapacity, plan._settings.s_dummy_plugin->size());
             if (!hasCapacity(
@@ -731,14 +731,13 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
                 const auto loadedElsewhere = std::any_of(
                     output.loadingPluginPaths.begin(), output.loadingPluginPaths.end(),
                     [&](const fs::path& path) {
-                        return path != plugin &&
-                               fs::is_regular_file(fs::symlink_status(path));
+                        return path != plugin && fs::is_regular_file(path);
                     });
                 if (!loadedElsewhere) {
                     if (fs::exists(fs::symlink_status(plugin))) {
                         if (output.pluginPath && !hasExactDummyBytes(plugin, bytes))
                             throw std::runtime_error("The planned loading plugin is occupied.");
-                        if (!fs::is_regular_file(fs::symlink_status(plugin)))
+                        if (!fs::is_regular_file(plugin))
                             throw std::runtime_error("The planned loading plugin is not a file.");
                     } else {
                         auto stagedPlugin = artifacts.stageArchiveFileForPublication(output.modRoot);
