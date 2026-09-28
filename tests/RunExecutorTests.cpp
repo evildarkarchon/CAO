@@ -172,6 +172,8 @@ private slots:
  void mixedWorkEvidenceOutlivesServices();
  /// Retains a committed Archive output when its finalizer cancels before further work.
  void archiveFinalizationCancellationRetainsCommittedOutput();
+ /// Classifies a committed Archive without its required Loading Plugin as a failed run.
+ void missingPlannedLoadingPluginFailsRunWithArchiveCommit();
  /// Covers cancellation at the last protected attempt and concurrent unsafe mutation.
  void cancellationAfterAtomicAssetAttempt_data();
  /// Counts the completed attempt before stopping without reaching Archive finalization.
@@ -1085,6 +1087,50 @@ void RunExecutorTests::archiveFinalizationCancellationRetainsCommittedOutput() {
     QVERIFY(result.evidence().safetyCleanupFailures().empty());
     QVERIFY(!std::filesystem::exists(work.staged));
     QCOMPARE(stagingBytes(output), QByteArray("committed output"));
+}
+
+void RunExecutorTests::missingPlannedLoadingPluginFailsRunWithArchiveCommit() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto root = std::filesystem::canonical(
+        std::filesystem::path(directory.path().toStdWString()));
+    const auto source = root / "textures" / "asset.dds";
+    std::filesystem::create_directories(source.parent_path());
+    std::ofstream(source) << "retained source";
+    const auto output = root / "packed.bsa";
+    ControlledAssetWork work;
+    work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+        std::ofstream(output) << "committed Archive";
+        cao::run::ArchiveFinalizationResult finalization;
+        finalization.attempts.push_back(
+            {output, cao::execution::MutationState::Committed,
+             cao::run::ArchiveFinalizationFailure::PluginCreationFailed, false,
+             "planned Loading Plugin occupied", root});
+        finalization.safeToContinue = false;
+        return finalization;
+    };
+    CountingSafetyCleanup cleanup;
+    const auto configuration = testRunConfiguration();
+    const auto request = RunRequest::create(
+        "SkyrimSE", ExecutionMode::Apply, ModSelection::singleModRoot(root),
+        {RequestedWork::ArchiveCreation});
+
+    const auto result = RunExecutor{}.execute(
+        request, RunServices{cleanup, nullptr, configuration.get(), &work});
+
+    QCOMPARE(result.outcome(), RunOutcome::Failed);
+    QCOMPARE(result.finalPhase(), RunPhase::ArchiveFinalization);
+    const auto* finalization = result.archiveFinalization();
+    QVERIFY(finalization != nullptr);
+    QCOMPARE(finalization->attempts.size(), std::size_t{1});
+    QCOMPARE(finalization->attempts.front().failure,
+             std::optional{cao::run::ArchiveFinalizationFailure::PluginCreationFailed});
+    QCOMPARE(finalization->attempts.front().mutation,
+             cao::execution::MutationState::Committed);
+    QCOMPARE(result.mutationSummaries().size(), std::size_t{1});
+    QCOMPARE(result.mutationSummaries().front().committed, std::size_t{1});
+    QVERIFY(std::filesystem::exists(output));
+    QVERIFY(std::filesystem::exists(source));
 }
 
 void RunExecutorTests::cancellationAfterAtomicAssetAttempt_data() {

@@ -25,8 +25,12 @@ struct ArchiveFinalizationOutput final {
     std::filesystem::path modRoot;
     std::filesystem::path archivePath;
     std::vector<std::filesystem::path> sources;
-    /// A missing loading plugin must commit within this output's attempt before source deletion.
+    /// The fallback Dummy Plugin destination when planning finds no Loading Plugin. The attempt
+    /// rechecks recognized names before creation and source deletion.
     std::optional<std::filesystem::path> pluginPath;
+    /// Profile-recognized Loading Plugin names; the last is the suffix-free dummy destination.
+    /// Finalization rechecks them because a plugin may appear or disappear after planning.
+    std::vector<std::filesystem::path> loadingPluginPaths;
     /// Conservative content and framing allowance, not a reservation or filesystem quota guarantee.
     std::uintmax_t estimatedCapacityBytes{};
 };
