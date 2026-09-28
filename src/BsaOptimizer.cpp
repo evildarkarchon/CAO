@@ -126,7 +126,8 @@ bool sameSourceFile(const SourceFileFacts& earlier, const SourceFileFacts& curre
 /// and other reparse points before a pathname-based Archive reader can follow them.
 void pinSourceDirectories(const std::filesystem::path& source,
                           const std::filesystem::path& root,
-                          std::map<std::filesystem::path, SourceFileHandle>& pins) {
+                          std::map<std::filesystem::path, SourceFileHandle>& pins,
+                          const DWORD shareMode = FILE_SHARE_READ | FILE_SHARE_WRITE) {
     const auto relative = source.lexically_relative(root);
     if (relative.empty() || relative.is_absolute() || relative == "." ||
         *relative.begin() == "..")
@@ -139,7 +140,7 @@ void pinSourceDirectories(const std::filesystem::path& source,
         // Attribute-only opens do not participate in sharing checks; directory read access
         // makes the missing FILE_SHARE_DELETE actually prevent a parent rename or replacement.
         const auto handle = CreateFileW(path.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
-                                        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                        shareMode, nullptr, OPEN_EXISTING,
                                         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
                                         nullptr);
         if (handle == INVALID_HANDLE_VALUE)
@@ -166,6 +167,37 @@ void pinSourceDirectories(const std::filesystem::path& source,
         pinDirectory(directory);
     }
 }
+
+/// Keeps one ordinary Loading Plugin entry usable until its Archive's source cleanup ends.
+class LoadingPluginPin final {
+   public:
+    /// Rejects links, empty files, and unstable paths before any packed source is deleted.
+    LoadingPluginPin(const std::filesystem::path& plugin, const std::filesystem::path& modRoot) {
+        // Keep ordinary ancestors and the entry stable while source cleanup uses pathnames.
+        pinSourceDirectories(plugin, modRoot, _directories, FILE_SHARE_READ);
+        const auto entry = CreateFileW(plugin.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                       OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (entry == INVALID_HANDLE_VALUE)
+            throw std::filesystem::filesystem_error(
+                "Could not pin loading plugin", plugin,
+                std::error_code(static_cast<int>(GetLastError()), std::system_category()));
+        _entry.reset(entry);
+        BY_HANDLE_FILE_INFORMATION information{};
+        if (!GetFileInformationByHandle(entry, &information))
+            throw std::filesystem::filesystem_error(
+                "Could not inspect loading plugin", plugin,
+                std::error_code(static_cast<int>(GetLastError()), std::system_category()));
+        // Attribute-only access can retarget a symlink despite sharing locks. A nonempty
+        // ordinary file cannot become a symlink without a write that this handle excludes.
+        if (information.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY) ||
+            (information.nFileSizeHigh == 0 && information.nFileSizeLow == 0))
+            throw std::runtime_error("The loading plugin is not a nonempty ordinary file.");
+    }
+
+   private:
+    std::map<std::filesystem::path, SourceFileHandle> _directories;
+    SourceFileHandle _entry{nullptr, &CloseHandle};
+};
 #endif
 
 /// Publishes a source backup without replacing any directory entry, including dangling links.
@@ -722,19 +754,52 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
                                              ? "Archive publication did not complete."
                                              : archivePublication.errorDetail);
             boundary = ArchiveFinalizationFailure::PluginCreationFailed;
+#ifdef _WIN32
+            std::optional<LoadingPluginPin> loadingPluginPin;
+#endif
             if (!output.loadingPluginPaths.empty()) {
                 const auto& bytes = *plan._settings.s_dummy_plugin;
                 const auto& plugin = output.loadingPluginPaths.back();
                 // A plugin at another profile-recognized name can arrive after planning, or a
                 // planned one can disappear. The chosen dummy destination is checked separately
                 // so a late non-dummy occupant never becomes our successful publication.
-                const auto loadedElsewhere = std::any_of(
+#ifdef _WIN32
+                // Attribute-only reparse writes can retarget a symlink through a read pin.
+                // Source deletion therefore needs an ordinary, nonempty plugin entry.
+#endif
+                const auto loadedElsewhere = std::find_if(
                     output.loadingPluginPaths.begin(), output.loadingPluginPaths.end(),
                     [&](const fs::path& path) {
-                        return path != plugin && fs::is_regular_file(path);
+                        if (path == plugin) return false;
+#ifdef _WIN32
+                        if (plan._deleteSources) {
+                            const auto status = fs::symlink_status(path);
+                            return fs::is_regular_file(status) && fs::file_size(path) != 0;
+                        }
+#endif
+                        return fs::is_regular_file(path);
                     });
-                if (!loadedElsewhere) {
-                    if (fs::exists(fs::symlink_status(plugin))) {
+                auto destination = plugin;
+                if (loadedElsewhere == output.loadingPluginPaths.end()) {
+#ifdef _WIN32
+                    if (plan._deleteSources) {
+                        const auto status = fs::symlink_status(plugin);
+                        if (fs::exists(status) &&
+                            (!fs::is_regular_file(status) || fs::file_size(plugin) == 0)) {
+                            const auto free = std::find_if(
+                                output.loadingPluginPaths.begin(),
+                                output.loadingPluginPaths.end(),
+                                [&](const fs::path& path) {
+                                    return !fs::exists(fs::symlink_status(path));
+                                });
+                            if (free == output.loadingPluginPaths.end())
+                                throw std::runtime_error(
+                                    "No ordinary loading plugin name is available.");
+                            destination = *free;
+                        }
+                    }
+#endif
+                    if (destination == plugin && fs::exists(fs::symlink_status(plugin))) {
                         if (output.pluginPath && !hasExactDummyBytes(plugin, bytes))
                             throw std::runtime_error("The planned loading plugin is occupied.");
                         if (!fs::is_regular_file(plugin))
@@ -748,13 +813,13 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
                         if (!file) throw std::runtime_error("Could not stage the loading plugin.");
                         // Recheck the leaf natively after the exact-dummy probe: a newcomer wins.
                         const auto pluginPublication =
-                            stagedPlugin.publish(plugin, PublicationPolicy::NoReplace);
+                            stagedPlugin.publish(destination, PublicationPolicy::NoReplace);
                         // A successful native rename is a separate durable file effect even if
                         // releasing its temporary ownership subsequently fails.
                         if (pluginPublication.state != PublicationState::NotPublished)
                             result.mutations.push_back(
                                 {.modRoot = output.modRoot,
-                                 .path = plugin,
+                                 .path = destination,
                                  .kind = ArchiveFinalizationMutationKind::PluginCreation,
                                  .mutation = MutationState::Committed});
                         if (pluginPublication.state != PublicationState::PublishedAndReleased)
@@ -763,6 +828,15 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
                                                      : pluginPublication.errorDetail);
                     }
                 }
+#ifdef _WIN32
+                // Retain the selected entry after discovery or publication; acquiring the pin
+                // must finish before source deletion, and any race during acquisition fails safe.
+                if (plan._deleteSources)
+                    loadingPluginPin.emplace(loadedElsewhere == output.loadingPluginPaths.end()
+                                                 ? destination
+                                                 : *loadedElsewhere,
+                                             output.modRoot);
+#endif
             }
             boundary = ArchiveFinalizationFailure::SourceCleanupFailed;
             if (plan._deleteSources) {

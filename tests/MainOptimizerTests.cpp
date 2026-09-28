@@ -12,12 +12,14 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <filesystem>
 #include <stop_token>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 #ifdef _WIN32
@@ -235,8 +237,16 @@ private slots:
 
  /// Covers a linked Loading Plugin at the chosen or an alternate recognized name.
  void linkedLoadingPluginRemainsUsable_data();
- /// Keeps a linked Loading Plugin without publishing a fallback Dummy Plugin.
+ /// Publishes a Windows fallback so retargeting the linked plugin cannot unload the Archive.
  void linkedLoadingPluginRemainsUsable();
+
+ /// Retains Loose Assets when every recognized Loading Plugin name is occupied by a link.
+ void linkedLoadingPluginsWithoutFallbackRetainSources();
+
+ /// Exercises existing and published Loading Plugins during source cleanup.
+ void loadingPluginRemainsPinnedThroughSourceCleanup_data();
+ /// Prevents deletion of the selected Loading Plugin until all packed sources are removed.
+ void loadingPluginRemainsPinnedThroughSourceCleanup();
 
  /// Exercises retained source recovery with readable and byte-locked files.
  void committedArchiveRetainsLockedSource_data();
@@ -1548,11 +1558,144 @@ void MainOptimizerTests::linkedLoadingPluginRemainsUsable() {
     QVERIFY(btu::bsa::read_archive(output.archivePath).has_value());
     QVERIFY(!std::filesystem::exists(source));
     QVERIFY(std::filesystem::is_symlink(std::filesystem::symlink_status(link)));
+#ifdef _WIN32
+    std::size_t createdPlugins = 0;
+    std::filesystem::path fallback;
+    for (const auto& mutation : result.mutations) {
+        if (mutation.kind != cao::run::ArchiveFinalizationMutationKind::PluginCreation) continue;
+        ++createdPlugins;
+        fallback = mutation.path;
+        QVERIFY(fallback != link);
+        QVERIFY(std::find(output.loadingPluginPaths.begin(), output.loadingPluginPaths.end(),
+                          fallback) != output.loadingPluginPaths.end());
+        QVERIFY(std::filesystem::is_regular_file(std::filesystem::symlink_status(fallback)));
+    }
+    QCOMPARE(createdPlugins, std::size_t{1});
+#else
     if (link != mod / "mod.esp") QVERIFY(!std::filesystem::exists(mod / "mod.esp"));
     for (const auto& mutation : result.mutations)
         QVERIFY(mutation.kind != cao::run::ArchiveFinalizationMutationKind::PluginCreation);
+#endif
     QVERIFY(artifacts.performSafetyCleanup().empty());
     QVERIFY(std::filesystem::remove(link));
+#ifdef _WIN32
+    QVERIFY(std::filesystem::exists(fallback));
+#endif
+}
+
+void MainOptimizerTests::linkedLoadingPluginsWithoutFallbackRetainSources() {
+#ifdef _WIN32
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = root / "mod";
+    const auto source = mod / "textures" / "asset.dds";
+    writeFile(source, QByteArrayLiteral("source bytes"));
+    const auto target = root / "real-plugin.bin";
+    writeFile(target, QByteArrayLiteral("linked loading plugin"));
+
+    OptionsCAO options;
+    options.bBsaCreateDummies = true;
+    options.bBsaCompress = false;
+    options.bBsaDeleteSource = true;
+    const BSAOptimizer optimizer;
+    const std::array roots{mod};
+    const auto plan = optimizer.planFinalization(roots, options);
+    QCOMPARE(plan.outputs().size(), std::size_t{1});
+    const auto& output = plan.outputs().front();
+    for (const auto& path : output.loadingPluginPaths) {
+        std::error_code linkError;
+        std::filesystem::create_symlink(target, path, linkError);
+        if (linkError) QSKIP("File symlink creation is unavailable on this host");
+    }
+
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts);
+    QCOMPARE(result.attempts.size(), std::size_t{1});
+    QCOMPARE(result.attempts.front().failure,
+             std::optional{cao::run::ArchiveFinalizationFailure::PluginCreationFailed});
+    QVERIFY(!result.attempts.front().succeeded());
+    QVERIFY(std::filesystem::exists(source));
+    QVERIFY(btu::bsa::read_archive(output.archivePath).has_value());
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+#else
+    QSKIP("Windows reparse points require an ordinary Loading Plugin fallback.");
+#endif
+}
+
+void MainOptimizerTests::loadingPluginRemainsPinnedThroughSourceCleanup_data() {
+    QTest::addColumn<int>("pluginKind");
+    QTest::newRow("existing-plugin") << 0;
+    QTest::newRow("published-fallback") << 1;
+}
+
+void MainOptimizerTests::loadingPluginRemainsPinnedThroughSourceCleanup() {
+#ifdef _WIN32
+    QFETCH(int, pluginKind);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    writeFile(root / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = root / "mod";
+    // A long cleanup makes the interval after plugin selection observable without a test hook.
+    for (int index = 0; index < 1024; ++index)
+        writeFile(mod / "textures" / ("asset-" + std::to_string(index) + ".dds"),
+                  QByteArrayLiteral("source bytes"));
+
+    const auto plugin = mod / (pluginKind == 1 ? "mod.esp" : "mod.esm");
+    if (pluginKind == 0)
+        writeFile(plugin, QByteArrayLiteral("existing loading plugin"));
+
+    OptionsCAO options;
+    options.bBsaCreateDummies = true;
+    options.bBsaCompress = false;
+    options.bBsaDeleteSource = true;
+    const BSAOptimizer optimizer;
+    const std::array roots{mod};
+    const auto plan = optimizer.planFinalization(roots, options);
+    QCOMPARE(plan.outputs().size(), std::size_t{1});
+    const auto& output = plan.outputs().front();
+    QVERIFY(output.sources.size() == std::size_t{1024});
+
+    bool sawCleanupGap = false;
+    bool removedPlugin = false;
+    std::jthread remover([&](const std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            std::error_code firstError;
+            std::error_code lastError;
+            if (!std::filesystem::exists(output.sources.front(), firstError) && !firstError &&
+                std::filesystem::exists(output.sources.back(), lastError) && !lastError) {
+                sawCleanupGap = true;
+                removedPlugin = DeleteFileW(plugin.c_str()) != 0;
+                break;
+            }
+            std::this_thread::yield();
+        }
+    });
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts);
+    remover.request_stop();
+    remover.join();
+
+    QCOMPARE(result.attempts.size(), std::size_t{1});
+    QVERIFY2(result.attempts.front().succeeded(), result.attempts.front().detail.c_str());
+    QVERIFY2(sawCleanupGap, "The test did not observe source cleanup in progress.");
+    QVERIFY(!removedPlugin);
+    QVERIFY(btu::bsa::read_archive(output.archivePath).has_value());
+    QVERIFY(!std::filesystem::exists(output.sources.back()));
+    QVERIFY(std::filesystem::is_regular_file(plugin));
+    QVERIFY(DeleteFileW(plugin.c_str()));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+#else
+    QSKIP("Windows file sharing pins Loading Plugins during cleanup.");
+#endif
 }
 
 void MainOptimizerTests::cancellationPreservesCommittedArchiveLoadingPlugin() {
