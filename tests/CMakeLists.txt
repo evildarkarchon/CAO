@@ -47,6 +47,13 @@ add_executable(cao_archive_first_asset_discovery_tests
     ArchiveFirstAssetDiscoveryTests.cpp
 )
 
+# Archive staging beneath Qt's long fixture names needs the same Windows path behavior as CAO.
+if(WIN32)
+    target_sources(cao_archive_first_asset_discovery_tests PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/Cathedral_Assets_Optimizer.manifest
+    )
+endif()
+
 target_link_libraries(cao_archive_first_asset_discovery_tests PRIVATE
     Qt5::Test
     cao_run_discovery
