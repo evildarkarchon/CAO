@@ -144,6 +144,12 @@ void writeFile(const std::filesystem::path &path, const QByteArray &contents)
     QVERIFY(file.open(QIODevice::WriteOnly));
     QCOMPARE(file.write(contents), contents.size());
 }
+
+/// Copies a selected game's canonical Dummy Plugin bytes for independent filesystem fixtures.
+QByteArray canonicalDummyBytes(const btu::Game game) {
+    const auto& bytes = *btu::bsa::Settings::get(game).s_dummy_plugin;
+    return QByteArray(reinterpret_cast<const char*>(bytes.data()), static_cast<int>(bytes.size()));
+}
 }
 
 class MainOptimizerTests final : public QObject
@@ -167,14 +173,28 @@ private slots:
  void finalizationOutputRetainsPositionalCapacity();
  /// Stops finalization planning before traversing a cancelled Mod Root.
  void finalizationPlanningObservesCancellation();
- /// Retains a phase failure if plugin cleanup throws after a completed output.
- void finalizationReportsPostOutputException();
+ /// Keeps a completed output and reports a contained guarded plugin removal failure.
+ void finalizationReportsGuardedPluginRemovalFailure();
  /// Stops plugin cleanup when cancellation arrives between Mod Roots.
  void finalizationCancelsPluginCleanupBetweenRoots();
  /// Retains loading-plugin changes for existing Archives even with zero planned outputs.
  void finalizationRetainsPluginMutations_data();
  /// Derives plugin-only mutation evidence without inventing output attempts.
  void finalizationRetainsPluginMutations();
+ /// Exercises exact-byte cleanup and preservation through Archive Finalization on Windows profiles.
+ void finalizationRemovesOnlyExactDummyPlugins_data();
+ /// Records only the removed canonical Dummy Plugin, including one written outside CAO.
+ void finalizationRemovesOnlyExactDummyPlugins();
+ /// Covers native link guards for an exact-byte plugin during Windows cleanup.
+ void finalizationRejectsLinkedDummyPlugins_data();
+ /// Preserves both a linked entry and its canonical-byte target without reporting mutation.
+ void finalizationRejectsLinkedDummyPlugins();
+ /// Rejects a Mod Root replaced by a junction after the finalization plan is frozen.
+ void finalizationRejectsChangedDummyPluginParent();
+ /// Retains a different-content replacement introduced after planning and a completed output.
+ void finalizationPreservesReplacedDummyPlugin();
+ /// Retains earlier root removals when a later native guard fails before deletion.
+ void finalizationRetainsRemovalPrefixOnGuardFailure();
  /// Reports an occupied existing-Archive plugin destination without changing it or output progress.
  void existingArchivePluginCollisionFailsSafely();
  /// Uses selected-profile Archive suffix and plugin extension rules for existing Archives.
@@ -686,7 +706,7 @@ void MainOptimizerTests::finalizationPlanningObservesCancellation() {
     QVERIFY(!std::filesystem::exists(mod / ".cao-staging"));
 }
 
-void MainOptimizerTests::finalizationReportsPostOutputException() {
+void MainOptimizerTests::finalizationReportsGuardedPluginRemovalFailure() {
 #ifdef _WIN32
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -698,7 +718,7 @@ void MainOptimizerTests::finalizationReportsPostOutputException() {
     const auto mod = parent / "mod";
     writeFile(mod / "textures" / "asset.dds", QByteArrayLiteral("source bytes"));
     const auto plugin = mod / "existing.esp";
-    writeFile(plugin, QByteArray(static_cast<int>(btu::bsa::dummy::sse.size()), '\0'));
+    writeFile(plugin, canonicalDummyBytes(btu::Game::SSE));
     OptionsCAO options;
     options.bBsaCreateDummies = false;
     options.bBsaCompress = false;
@@ -720,11 +740,13 @@ void MainOptimizerTests::finalizationReportsPostOutputException() {
     QVERIFY(CloseHandle(heldPlugin));
     QCOMPARE(result.attempts.size(), std::size_t{1});
     QVERIFY(result.attempts.front().succeeded());
-    QVERIFY(!result.safeToContinue);
+    QVERIFY(result.safeToContinue);
     QCOMPARE(result.failure,
-             std::optional{cao::run::ArchiveFinalizationFailure::UnexpectedException});
+             std::optional{cao::run::ArchiveFinalizationFailure::PluginRemovalFailed});
+    QVERIFY(result.mutations.empty());
     QVERIFY(!result.detail.empty());
     QVERIFY(std::filesystem::exists(plan.outputs().front().archivePath));
+    QVERIFY(std::filesystem::exists(plugin));
     QVERIFY(artifacts.performSafetyCleanup().empty());
 #else
     QSKIP("Windows file sharing modes provide a deterministic post-output failure.");
@@ -788,8 +810,7 @@ void MainOptimizerTests::finalizationRetainsPluginMutations() {
     const auto mod = parent / "mod";
     writeFile(mod / "existing.bsa", QByteArrayLiteral("retained archive"));
     const auto plugin = mod / "existing.esp";
-    if (!createDummies)
-        writeFile(plugin, QByteArray(static_cast<int>(btu::bsa::dummy::sse.size()), '\0'));
+    if (!createDummies) writeFile(plugin, canonicalDummyBytes(btu::Game::SSE));
     OptionsCAO options;
     options.bBsaCreateDummies = createDummies;
     const std::array roots{mod};
@@ -827,6 +848,284 @@ void MainOptimizerTests::finalizationRetainsPluginMutations() {
              std::size_t{0});
     QCOMPARE(terminal.mutationSummaries().size(), std::size_t{1});
     QCOMPARE(terminal.mutationSummaries().front().committed, std::size_t{1});
+}
+
+void MainOptimizerTests::finalizationRemovesOnlyExactDummyPlugins_data() {
+    QTest::addColumn<int>("game");
+    QTest::addColumn<QString>("profile");
+    QTest::newRow("SSE") << 4 << QStringLiteral("SSE");
+    QTest::newRow("FO4") << 5 << QStringLiteral("FO4");
+}
+
+void MainOptimizerTests::finalizationRemovesOnlyExactDummyPlugins() {
+    QFETCH(int, game);
+    QFETCH(QString, profile);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto parent = std::filesystem::path(directory.path().toStdWString());
+    writeFile(parent / "profiles" / profile.toStdWString() / "profile.ini",
+              QByteArray("[BSA]\nbsaEnabled=true\nbsaGame=") + QByteArray::number(game) + '\n');
+    Profiles::setCurrentProfile(profile);
+    const auto mod = parent / "mod";
+    writeFile(mod / "existing.bsa", QByteArrayLiteral("retained archive"));
+    const auto dummy = canonicalDummyBytes(static_cast<btu::Game>(game));
+    QByteArray sameSize = dummy;
+    sameSize[0] = static_cast<char>(sameSize[0] ^ 0x5a);
+    const auto exact = mod / "external.esp";
+    const auto different = mod / "different.esp";
+    const auto full = mod / "full.esm";
+    const auto unrelated = parent / "outside.esp";
+    writeFile(exact, dummy);
+    writeFile(different, sameSize);
+    writeFile(full, QByteArrayLiteral("full loading plugin"));
+    writeFile(unrelated, dummy);
+
+    OptionsCAO options;
+    options.bBsaCreateDummies = false;
+    const std::array roots{mod};
+    const BSAOptimizer optimizer;
+    const auto plan = optimizer.planFinalization(roots, options);
+    QVERIFY(plan.outputs().empty());
+    std::vector<cao::run::ArchiveFinalizationProgress> progress;
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts, {},
+                                           [&](const auto& value) { progress.push_back(value); });
+    QVERIFY(result.attempts.empty());
+    QVERIFY(!result.failure);
+    QVERIFY(result.safeToContinue);
+    QCOMPARE(progress.size(), std::size_t{1});
+    QCOMPARE(progress.front().completed, std::size_t{0});
+    QCOMPARE(progress.front().total, std::size_t{0});
+    QCOMPARE(result.mutations.size(), std::size_t{1});
+    QCOMPARE(result.mutations.front().modRoot, std::filesystem::canonical(mod));
+    QCOMPARE(result.mutations.front().path, exact);
+    QCOMPARE(result.mutations.front().kind,
+             cao::run::ArchiveFinalizationMutationKind::PluginRemoval);
+    QCOMPARE(result.mutations.front().mutation, cao::execution::MutationState::Committed);
+    QVERIFY(!std::filesystem::exists(exact));
+    for (const auto& [path, expected] :
+         {std::pair{different, sameSize}, std::pair{full, QByteArrayLiteral("full loading plugin")},
+          std::pair{unrelated, dummy}}) {
+        QFile retained(QString::fromStdWString(path.wstring()));
+        QVERIFY(retained.open(QIODevice::ReadOnly));
+        QCOMPARE(retained.readAll(), expected);
+    }
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void MainOptimizerTests::finalizationRejectsLinkedDummyPlugins_data() {
+    QTest::addColumn<bool>("symlink");
+    QTest::newRow("hard-link") << false;
+    QTest::newRow("file-symlink") << true;
+}
+
+void MainOptimizerTests::finalizationRejectsLinkedDummyPlugins() {
+#ifdef _WIN32
+    QFETCH(bool, symlink);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto parent = std::filesystem::path(directory.path().toStdWString());
+    writeFile(parent / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = parent / "mod";
+    writeFile(mod / "existing.bsa", QByteArrayLiteral("retained archive"));
+    const auto bytes = canonicalDummyBytes(btu::Game::SSE);
+    const auto target = parent / "outside.bin";
+    const auto plugin = mod / "external.esp";
+    writeFile(target, bytes);
+    std::error_code linkError;
+    if (symlink)
+        std::filesystem::create_symlink(target, plugin, linkError);
+    else
+        std::filesystem::create_hard_link(target, plugin, linkError);
+    if (linkError && symlink) QSKIP("File symlink creation is unavailable on this host");
+    QVERIFY2(!linkError, linkError.message().c_str());
+
+    OptionsCAO options;
+    options.bBsaCreateDummies = false;
+    const std::array roots{mod};
+    const BSAOptimizer optimizer;
+    const auto plan = optimizer.planFinalization(roots, options);
+    QVERIFY(plan.outputs().empty());
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts);
+    QVERIFY(result.attempts.empty());
+    QCOMPARE(result.failure,
+             std::optional{cao::run::ArchiveFinalizationFailure::PluginRemovalFailed});
+    QVERIFY(result.safeToContinue);
+    QVERIFY(result.mutations.empty());
+    QCOMPARE(std::filesystem::is_symlink(std::filesystem::symlink_status(plugin)), symlink);
+    QFile outside(QString::fromStdWString(target.wstring()));
+    QVERIFY(outside.open(QIODevice::ReadOnly));
+    QCOMPARE(outside.readAll(), bytes);
+    QVERIFY(std::filesystem::exists(plugin));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+#else
+    QSKIP("Windows native file identity provides the link guard.");
+#endif
+}
+
+void MainOptimizerTests::finalizationRejectsChangedDummyPluginParent() {
+#ifdef _WIN32
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto parent = std::filesystem::path(directory.path().toStdWString());
+    writeFile(parent / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = parent / "mod";
+    const auto outside = parent / "outside";
+    const auto retained = parent / "retained-mod";
+    const auto bytes = canonicalDummyBytes(btu::Game::SSE);
+    writeFile(mod / "existing.bsa", QByteArrayLiteral("retained archive"));
+    writeFile(mod / "original.esp", bytes);
+    writeFile(outside / "external.esp", bytes);
+
+    OptionsCAO options;
+    options.bBsaCreateDummies = false;
+    const std::array roots{mod};
+    const BSAOptimizer optimizer;
+    const auto plan = optimizer.planFinalization(roots, options);
+    QVERIFY(plan.outputs().empty());
+    std::filesystem::rename(mod, retained);
+    const auto quotedPath = [](const std::filesystem::path& path) {
+        auto value = QString::fromStdWString(path.wstring());
+        value.replace("'", "''");
+        return "'" + value + "'";
+    };
+    QProcess process;
+    process.start("powershell.exe",
+                  {"-NoProfile", "-NonInteractive", "-Command",
+                   "New-Item -ItemType Junction -Path " + quotedPath(mod) + " -Value " +
+                       quotedPath(outside) + " -ErrorAction Stop | Out-Null"});
+    QVERIFY(process.waitForFinished());
+    QCOMPARE(process.exitCode(), 0);
+
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts);
+    std::error_code cleanupError;
+    std::filesystem::remove(mod, cleanupError);
+    QVERIFY2(!cleanupError, cleanupError.message().c_str());
+    QVERIFY(result.attempts.empty());
+    QCOMPARE(result.failure,
+             std::optional{cao::run::ArchiveFinalizationFailure::PluginRemovalFailed});
+    QVERIFY(result.safeToContinue);
+    QVERIFY(result.mutations.empty());
+    QVERIFY(std::filesystem::exists(retained / "original.esp"));
+    QFile external(QString::fromStdWString((outside / "external.esp").wstring()));
+    QVERIFY(external.open(QIODevice::ReadOnly));
+    QCOMPARE(external.readAll(), bytes);
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+#else
+    QSKIP("Windows junctions provide the changed-parent regression case.");
+#endif
+}
+
+void MainOptimizerTests::finalizationPreservesReplacedDummyPlugin() {
+#ifdef _WIN32
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto parent = std::filesystem::path(directory.path().toStdWString());
+    writeFile(parent / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const auto mod = parent / "mod";
+    writeFile(mod / "textures" / "asset.dds", QByteArrayLiteral("source bytes"));
+    const auto bytes = canonicalDummyBytes(btu::Game::SSE);
+    QByteArray replacement = bytes;
+    replacement[0] = static_cast<char>(replacement[0] ^ 0x5a);
+    const auto plugin = mod / "external.esp";
+    const auto displaced = parent / "displaced.bin";
+    writeFile(plugin, bytes);
+
+    OptionsCAO options;
+    options.bBsaCreateDummies = false;
+    options.bBsaCompress = false;
+    options.bBsaDeleteSource = false;
+    const std::array roots{mod};
+    const BSAOptimizer optimizer;
+    const auto plan = optimizer.planFinalization(roots, options);
+    QCOMPARE(plan.outputs().size(), std::size_t{1});
+    bool replaced = false;
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result =
+        optimizer.finalize(plan, artifacts, {}, {}, cao::run::availableArchiveCapacity,
+                           [&](const cao::run::ArchiveFinalizationAttempt&) {
+                               std::filesystem::rename(plugin, displaced);
+                               writeFile(plugin, replacement);
+                               replaced = true;
+                           });
+    QVERIFY(replaced);
+    QCOMPARE(result.attempts.size(), std::size_t{1});
+    QVERIFY(result.attempts.front().succeeded());
+    QVERIFY(!result.failure);
+    QVERIFY(result.mutations.empty());
+    QFile current(QString::fromStdWString(plugin.wstring()));
+    QVERIFY(current.open(QIODevice::ReadOnly));
+    QCOMPARE(current.readAll(), replacement);
+    QFile earlier(QString::fromStdWString(displaced.wstring()));
+    QVERIFY(earlier.open(QIODevice::ReadOnly));
+    QCOMPARE(earlier.readAll(), bytes);
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+#else
+    QSKIP("Windows file identity guards provide the replacement regression case.");
+#endif
+}
+
+void MainOptimizerTests::finalizationRetainsRemovalPrefixOnGuardFailure() {
+#ifdef _WIN32
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto parent = std::filesystem::path(directory.path().toStdWString());
+    writeFile(parent / "profiles" / "SSE" / "profile.ini",
+              QByteArrayLiteral("[BSA]\nbsaEnabled=true\nbsaGame=4\n"));
+    Profiles::setCurrentProfile("SSE");
+    const std::array roots{parent / "mod-a", parent / "mod-b"};
+    const auto bytes = canonicalDummyBytes(btu::Game::SSE);
+    for (const auto& root : roots) {
+        writeFile(root / "existing.bsa", QByteArrayLiteral("retained archive"));
+        writeFile(root / "external.esp", bytes);
+    }
+
+    OptionsCAO options;
+    options.bBsaCreateDummies = false;
+    const BSAOptimizer optimizer;
+    const auto plan = optimizer.planFinalization(roots, options);
+    QVERIFY(plan.outputs().empty());
+    const auto blocked = roots.back() / "external.esp";
+    const auto held = CreateFileW(blocked.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    QVERIFY(held != INVALID_HANDLE_VALUE);
+    std::vector<cao::run::ArchiveFinalizationProgress> progress;
+    cao::run::TemporaryArtifactRegistry artifacts;
+    const auto result = optimizer.finalize(plan, artifacts, {},
+                                           [&](const auto& value) { progress.push_back(value); });
+    QVERIFY(CloseHandle(held));
+    QVERIFY(result.attempts.empty());
+    QCOMPARE(result.failure,
+             std::optional{cao::run::ArchiveFinalizationFailure::PluginRemovalFailed});
+    QVERIFY(result.safeToContinue);
+    QCOMPARE(result.mutations.size(), std::size_t{1});
+    QCOMPARE(result.mutations.front().modRoot, std::filesystem::canonical(roots.front()));
+    QCOMPARE(result.mutations.front().path, roots.front() / "external.esp");
+    QCOMPARE(result.mutations.front().kind,
+             cao::run::ArchiveFinalizationMutationKind::PluginRemoval);
+    QCOMPARE(result.mutations.front().mutation, cao::execution::MutationState::Committed);
+    QVERIFY(!std::filesystem::exists(roots.front() / "external.esp"));
+    QVERIFY(std::filesystem::exists(blocked));
+    QCOMPARE(progress.size(), std::size_t{1});
+    QCOMPARE(progress.front().completed, std::size_t{0});
+    QCOMPARE(progress.front().total, std::size_t{0});
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+#else
+    QSKIP("Windows sharing modes provide the guarded deletion failure.");
+#endif
 }
 
 void MainOptimizerTests::existingArchivePluginCollisionFailsSafely() {

@@ -540,7 +540,7 @@ G&apos;k制作
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Dummy plugins are almost always necessary. Keep this checked unless you know what you are doing&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
+        <source>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Dummy plugins are almost always necessary. Disabling creation also removes existing Dummy Plugins whose bytes exactly match the selected game profile's canonical dummy content.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

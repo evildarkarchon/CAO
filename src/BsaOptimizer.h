@@ -115,8 +115,9 @@ class BSAOptimizer final : public QObject {
     /// attempts. onAttempt receives each completed output before presentation progress; it is an
     /// evidence boundary and its exceptions propagate to the Run Executor for mandatory cleanup.
     /// volumeIdentity groups roots for batch capacity checks; unknown identity retains a
-    /// conservative whole-batch estimate. A known no-mutation plugin creation failure is a safe
-    /// phase failure; publication with uncertain effects stops finalization as unsafe.
+    /// conservative whole-batch estimate. A known no-mutation plugin creation or removal failure
+    /// is a safe phase failure; a plugin action with uncertain effects stops finalization as
+    /// unsafe.
     [[nodiscard]] cao::run::ArchiveFinalizationResult finalize(
         const cao::run::ArchiveFinalizationPlan& plan,
         cao::run::TemporaryArtifactRegistry& artifacts, std::stop_token stop = {},

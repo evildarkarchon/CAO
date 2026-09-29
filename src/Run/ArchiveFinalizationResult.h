@@ -8,6 +8,7 @@ enum class ArchiveFinalizationFailure {
     WriteFailed,
     CommitFailed,
     PluginCreationFailed,
+    PluginRemovalFailed,
     SourceCleanupFailed,
     UnexpectedException
 };

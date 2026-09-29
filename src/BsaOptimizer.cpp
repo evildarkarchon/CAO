@@ -82,6 +82,8 @@ bool readablePackedSource(const std::filesystem::path& source) {
     return input.eof() && !input.bad() && bytesRead == expectedSize;
 }
 
+enum class DummyPluginRemoval { NotDummy, Removed, Uncertain };
+
 #ifdef _WIN32
 using SourceFileHandle = std::unique_ptr<void, decltype(&CloseHandle)>;
 
@@ -198,6 +200,71 @@ class LoadingPluginPin final {
     std::map<std::filesystem::path, SourceFileHandle> _directories;
     SourceFileHandle _entry{nullptr, &CloseHandle};
 };
+
+/// Pins ordinary parents and a single-link file while checking canonical bytes and deleting by
+/// that handle. Returns NotDummy for other content and Uncertain only after disposition succeeds;
+/// all exceptions occur before deletion and therefore describe known no-mutation failures.
+DummyPluginRemoval removeExactDummyPlugin(const std::filesystem::path& plugin,
+                                          const std::filesystem::path& modRoot,
+                                          const std::vector<std::uint8_t>& bytes) {
+    namespace fs = std::filesystem;
+    const auto path = fs::absolute(plugin).lexically_normal();
+    const auto root = fs::absolute(modRoot).lexically_normal();
+    std::map<fs::path, SourceFileHandle> directories;
+    // The pathname cannot escape through a junction or switch parents during the native delete.
+    pinSourceDirectories(path, root, directories, FILE_SHARE_READ);
+    const auto entry = CreateFileW(path.c_str(), GENERIC_READ | DELETE, FILE_SHARE_READ, nullptr,
+                                   OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (entry == INVALID_HANDLE_VALUE)
+        throw fs::filesystem_error(
+            "Could not pin Dummy Plugin for removal", path,
+            std::error_code(static_cast<int>(GetLastError()), std::system_category()));
+    SourceFileHandle pinned(entry, &CloseHandle);
+    const auto original = inspectSourceFile(entry, path);
+    // A hard link could make the same file accessible under an unrelated user's pathname.
+    if (original.file.nNumberOfLinks != 1)
+        throw std::runtime_error("A linked Dummy Plugin cannot be removed.");
+    const auto size = (static_cast<std::uint64_t>(original.file.nFileSizeHigh) << 32) |
+                      original.file.nFileSizeLow;
+    if (size != bytes.size()) return DummyPluginRemoval::NotDummy;
+
+    std::array<std::uint8_t, 8192> buffer{};
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        DWORD count = 0;
+        const auto chunk = static_cast<DWORD>(std::min(buffer.size(), bytes.size() - offset));
+        if (!ReadFile(entry, buffer.data(), chunk, &count, nullptr))
+            throw fs::filesystem_error(
+                "Could not read pinned Dummy Plugin", path,
+                std::error_code(static_cast<int>(GetLastError()), std::system_category()));
+        if (count == 0) throw std::runtime_error("A Dummy Plugin changed during verification.");
+        if (!std::equal(buffer.begin(), buffer.begin() + count, bytes.begin() + offset))
+            return DummyPluginRemoval::NotDummy;
+        offset += count;
+    }
+    const auto verified = inspectSourceFile(entry, path);
+    if (verified.file.nNumberOfLinks != 1 || !sameSourceFile(original, verified))
+        throw std::runtime_error("A Dummy Plugin changed during verification.");
+    FILE_DISPOSITION_INFO disposition{TRUE};
+    if (!SetFileInformationByHandle(entry, FileDispositionInfo, &disposition, sizeof(disposition)))
+        throw fs::filesystem_error(
+            "Could not remove pinned Dummy Plugin", path,
+            std::error_code(static_cast<int>(GetLastError()), std::system_category()));
+    // Once disposition succeeds, a failed close leaves the final directory state uncertain.
+    if (!CloseHandle(pinned.release())) return DummyPluginRemoval::Uncertain;
+    return DummyPluginRemoval::Removed;
+}
+#else
+/// Keeps the non-Windows compatibility path on exact bytes while Windows owns the native guard.
+/// Returns NotDummy for other content or Removed after deletion; throws if deletion fails.
+DummyPluginRemoval removeExactDummyPlugin(const std::filesystem::path& plugin,
+                                          const std::filesystem::path&,
+                                          const std::vector<std::uint8_t>& bytes) {
+    if (!hasExactDummyBytes(plugin, bytes)) return DummyPluginRemoval::NotDummy;
+    if (!std::filesystem::remove(plugin))
+        throw std::runtime_error("The Dummy Plugin could not be removed.");
+    return DummyPluginRemoval::Removed;
+}
 #endif
 
 /// Publishes a source backup without replacing any directory entry, including dangling links.
@@ -999,60 +1066,50 @@ cao::run::ArchiveFinalizationResult BSAOptimizer::finalize(
                         }
                     }
                     if (result.cancelled) break;
-                } else if (!plan._createDummies) {
-                    auto plugins =
-                        btu::bsa::list_plugins(fs::directory_iterator(root), {}, plan._settings);
-                    if (stop.stop_requested()) {
-                        result.cancelled = true;
-                        break;
-                    }
-                    // Creation is disabled here, so the legacy cleanup cannot remove a plugin
-                    // newly published by a planned output in this run.
-                    const auto pluginPaths = [](const std::vector<btu::bsa::FilePath>& entries) {
-                        std::set<fs::path> paths;
-                        for (const auto& entry : entries) paths.insert(entry.full_path());
-                        return paths;
-                    };
-                    const auto before = pluginPaths(plugins);
-                    const auto recordPluginChanges = [&] {
-                        std::set<fs::path> after;
-                        try {
-                            after = pluginPaths(btu::bsa::list_plugins(fs::directory_iterator(root),
-                                                                       {}, plan._settings));
-                        } catch (...) {
-                            // If the post-mutation inventory is unreadable, the effect is unknown.
-                            result.mutations.push_back(
-                                {.modRoot = root,
-                                 .path = root,
-                                 .kind = ArchiveFinalizationMutationKind::PluginRemoval,
-                                 .mutation = MutationState::PartialOrUnknown});
-                            throw;
-                        }
-                        for (const auto& plugin : before) {
-                            if (!after.contains(plugin))
-                                result.mutations.push_back(
-                                    {.modRoot = root,
-                                     .path = plugin,
-                                     .kind = ArchiveFinalizationMutationKind::PluginRemoval,
-                                     .mutation = MutationState::Committed});
-                        }
-                        for (const auto& plugin : after) {
-                            if (!before.contains(plugin))
-                                result.mutations.push_back(
-                                    {.modRoot = root,
-                                     .path = plugin,
-                                     .kind = ArchiveFinalizationMutationKind::PluginCreation,
-                                     .mutation = MutationState::Committed});
-                        }
-                    };
+                } else if (!plan._createDummies && plan._settings.s_dummy_plugin) {
                     try {
-                        // When dummy creation is disabled, retain the explicit cleanup choice.
-                        btu::bsa::clean_dummy_plugins(plugins, plan._settings);
+                        const auto plugins = btu::bsa::list_plugins(fs::directory_iterator(root),
+                                                                    {}, plan._settings);
+                        // Reserve evidence before any deletion, so recording a completed action
+                        // cannot allocate after its native disposition succeeds.
+                        result.mutations.reserve(result.mutations.size() + plugins.size());
+                        for (const auto& plugin : plugins) {
+                            if (stop.stop_requested()) {
+                                result.cancelled = true;
+                                break;
+                            }
+                            const auto path = plugin.full_path();
+                            ArchiveFinalizationMutation mutation{
+                                .modRoot = root,
+                                .path = path,
+                                .kind = ArchiveFinalizationMutationKind::PluginRemoval,
+                                .mutation = MutationState::Committed};
+                            const auto removal =
+                                removeExactDummyPlugin(path, root, *plan._settings.s_dummy_plugin);
+                            if (removal == DummyPluginRemoval::NotDummy) continue;
+                            if (removal == DummyPluginRemoval::Uncertain) {
+                                mutation.mutation = MutationState::PartialOrUnknown;
+                                result.mutations.push_back(std::move(mutation));
+                                result.failure = ArchiveFinalizationFailure::PluginRemovalFailed;
+                                result.safeToContinue = false;
+                                result.detail = "Dummy Plugin removal may be incomplete.";
+                                result.cancelled = stop.stop_requested();
+                                return result;
+                            }
+                            result.mutations.push_back(std::move(mutation));
+                        }
+                    } catch (const std::exception& error) {
+                        result.failure = ArchiveFinalizationFailure::PluginRemovalFailed;
+                        result.detail = error.what();
+                        result.cancelled = stop.stop_requested();
+                        return result;
                     } catch (...) {
-                        recordPluginChanges();
-                        throw;
+                        result.failure = ArchiveFinalizationFailure::PluginRemovalFailed;
+                        result.detail = "Unexpected Dummy Plugin removal exception.";
+                        result.cancelled = stop.stop_requested();
+                        return result;
                     }
-                    recordPluginChanges();
+                    if (result.cancelled) break;
                 }
             }
             // All planned outputs and plugin work must finish before pruning any Mod Root.
