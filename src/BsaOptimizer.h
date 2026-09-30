@@ -10,52 +10,12 @@
 #include "TexturesOptimizer.h"
 #include "Run/ArchiveExtraction.h"
 #include "Run/ArchiveFinalization.h"
+#include "Run/NativeFilePins.h"
 #include "pch.h"
 
 #include <memory>
 
 class OptionsCAO;
-
-#ifdef _WIN32
-namespace cao::run {
-/// Holds a source stable while an Archive is read or written, then cleans only that file.
-class SourceFilePin final {
-   public:
-    /// Opaque shared ownership of ordinary ancestor directories for one Mod Root.
-    struct DirectoryPins;
-    /// Creates a Mod Root-scoped set of ancestor handles reusable by one output's source pins.
-    [[nodiscard]] static std::shared_ptr<DirectoryPins> sharedDirectoryPins(
-        std::filesystem::path modRoot);
-    /// Opens an ordinary source for reading while denying concurrent writes and renames.
-    /// Pins its directory chain within modRoot until cleanup so no ancestor can redirect the path.
-    /// Throws when a parent is a reparse point or the source is outside that Mod Root.
-    SourceFilePin(std::filesystem::path source, std::filesystem::path modRoot,
-                  std::shared_ptr<DirectoryPins> directoryPins = {});
-    ~SourceFilePin();
-    SourceFilePin(SourceFilePin&&) noexcept;
-    SourceFilePin& operator=(SourceFilePin&&) noexcept;
-    SourceFilePin(const SourceFilePin&) = delete;
-    SourceFilePin& operator=(const SourceFilePin&) = delete;
-
-    /// Releases the read-period handle so a DELETE-capable handle can be opened.
-    /// Directory pins remain live to prevent a parent substitution during that transition.
-    void releaseForCleanup() noexcept;
-    /// Reopens the source without write/delete sharing and deletes only its recorded identity.
-    /// Throws if file identity or change metadata differs, or Windows rejects deletion.
-    void removeIfUnchanged();
-    /// Renames only the recorded identity to an unoccupied .bak name, retrying occupied names.
-    /// Throws if the source changed or no backup could be published.
-    void backupIfUnchanged();
-    /// Pins the unchanged source again while the caller verifies recoverable Archive bytes.
-    /// Throws if its path no longer names the recorded source.
-    void pinUnchangedForRecovery();
-
-   private:
-    struct State;
-    std::unique_ptr<State> _state;
-};
-}  // namespace cao::run
-#endif
 
 /*!
  * \brief Manages BSA : extract and create them
@@ -70,12 +30,6 @@ class BSAOptimizer final : public QObject {
     BSAOptimizer();
     /// Uses independently owned profile settings on the execution thread.
     explicit BSAOptimizer(OptimizerProfileSnapshot profile);
-    /*!
-     * \brief Extracts a BSA
-     * \param bsaPath The path of the BSA to extract
-     * \param deleteBackup Deletes the backup the existing bsa
-     */
-    void extract(QString bsaPath, const bool deleteBackup) const;
     /// Stages a planned Archive with run-owned artifacts, then backs up or removes its source
     /// only after merge succeeds. On Windows, pins the Archive through extraction and checks
     /// its identity before cleanup. Cleanup failure permits continuation only with committed
@@ -83,12 +37,6 @@ class BSAOptimizer final : public QObject {
     [[nodiscard]] cao::run::ArchiveExtractionResult extract(
         const cao::run::ArchiveExtractionPlan& plan, bool deleteBackup,
         cao::run::TemporaryArtifactRegistry& artifacts) const;
-    /*!
-     * \brief Creates a BSA containing all the files given as argument
-     * \param bsa The BSA to create
-     */
-    int create(btu::bsa::ArchiveData& bsa, bool allowCompression, bool deleteSource) const;
-
     /*!
      * \brief Packs all the loose files in the directory into BSAs
      * \param folderPath The folder to process
@@ -129,8 +77,7 @@ class BSAOptimizer final : public QObject {
    private:
     OptimizerProfileSnapshot _profile;
     /*!
-     * \brief Adds .bak to the bsa name. If a bak file already exist, their sizes are compared. If
-     * the size is the same, the current bsa is removed. Otherwise, the bak file is also renamed.
+     * \brief Renames the bsa to its name with .bak appended.
      * \param bsaPath The BSA to backup
      * \return a QString containing the name of the backup-ed bsa
      */

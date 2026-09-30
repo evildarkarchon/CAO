@@ -145,6 +145,7 @@ add_executable(cao_main_optimizer_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/MeshesOptimizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/PluginsOperations.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Profiles.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Run/NativeFilePins.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/TexturesOptimizer.cpp
 )
 
