@@ -241,8 +241,10 @@ class MutableRunEvidence final {
 
     /// Retains the returned finalization status and any attempts not already streamed.
     /// Previously streamed attempts must match the returned prefix; phase-level failure and
-    /// cancellation remain distinct from Operation Failures on individual attempts. Throws
-    /// RunEvidenceInvariantViolation for a wrong phase, repeated result, or mismatched attempts.
+    /// cancellation remain distinct from Operation Failures on individual attempts. A result
+    /// without a recorded output total may carry no attempts. Throws
+    /// RunEvidenceInvariantViolation for a wrong phase, repeated result, attempts without a
+    /// recorded total, or mismatched attempts.
     void recordArchiveFinalization(ArchiveFinalizationResult result);
 
     /// Retains one final Safety Cleanup failure without publishing it as a Run Failure.

@@ -4,6 +4,7 @@
 #include "Run/TemporaryArtifactRegistry.h"
 #include "Run/StagingRecovery.h"
 #include "RunTestConfiguration.h"
+#include "ArchiveFinalizationTestSupport.h"
 
 #include <QtTest>
 
@@ -15,6 +16,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <sstream>
 #include <optional>
@@ -89,6 +91,8 @@ private:
 class ControlledAssetWork final : public cao::run::RunWorkService {
    public:
     cao::run::AssetRunAdapters adapters;
+    /// Supplies a fake Archive Finalization result, recorded as the real module records it.
+    std::function<cao::run::ArchiveFinalizationResult()> finalization;
     std::filesystem::path staged;
 
     /// Creates temporary evidence under the executor's ownership, then delegates all recording.
@@ -101,7 +105,12 @@ class ControlledAssetWork final : public cao::run::RunWorkService {
                                          preparation.modRoots().front() / "temporary.dds").path;
             std::ofstream(staged) << "temporary";
         }
-        cao::run::executeAssetRun(preparation, evidence, observations, stop, adapters);
+        auto operations = adapters;
+        if (finalization)
+            operations.finalizeArchiveLifecycle = [&] {
+                recordArchiveFinalizationResult(evidence, finalization());
+            };
+        cao::run::executeAssetRun(preparation, evidence, observations, stop, operations);
     }
 };
 
@@ -369,7 +378,7 @@ void RunExecutorTests::discoveryDiagnosticCancellationFollowsAssetAttempt() {
         return cao::execution::AssetExecutionResult::success();
     };
     std::size_t finalizations = 0;
-    work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+    work.finalization = [&] {
         ++finalizations;
         return cao::run::ArchiveFinalizationResult{};
     };
@@ -443,7 +452,7 @@ void RunExecutorTests::throwingWorkObserversRetainEvidence() {
             cao::execution::AssetExecutionFailure::CommitFailed, "controlled recoverable failure",
             cao::execution::MutationState::None, true, asset.executionPath());
     };
-    work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+    work.finalization = [&] {
         ++finalizations;
         return cao::run::ArchiveFinalizationResult{};
     };
@@ -501,7 +510,7 @@ void RunExecutorTests::throwingPreflightFailureObserverRetainsEvidence() {
         ++extractions;
         return cao::run::ArchiveExtractionResult{plan.archivePath};
     };
-    work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+    work.finalization = [&] {
         ++finalizations;
         return cao::run::ArchiveFinalizationResult{};
     };
@@ -562,7 +571,7 @@ void RunExecutorTests::productionWorkApplicability() {
         return cao::run::ArchiveExtractionResult{plan.archivePath};
     };
     if (dryRun || preflight) {
-        work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+        work.finalization = [&] {
             ++finalizations;
             return cao::run::ArchiveFinalizationResult{};
         };
@@ -731,7 +740,7 @@ void RunExecutorTests::assetWorkPhasesPrecedeAttempts() {
             throw std::runtime_error("Asset attempt preceded Processing Assets publication");
         return cao::execution::AssetExecutionResult::success();
     };
-    work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+    work.finalization = [&] {
         if (observation.traversed.empty() ||
             observation.traversed.back() != RunPhase::ArchiveFinalization)
             throw std::runtime_error("Finalization preceded Archive Finalization publication");
@@ -840,7 +849,7 @@ void RunExecutorTests::removedConversionRetainsModRoot() {
             return true;
         };
         std::size_t finalizations = 0;
-        work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+        work.finalization = [&] {
             ++finalizations;
             return cao::run::ArchiveFinalizationResult{};
         };
@@ -957,7 +966,7 @@ void RunExecutorTests::mixedWorkEvidenceOutlivesServices() {
             std::ofstream(asset.executionPath()) << "committed";
             return cao::execution::AssetExecutionResult::success(cao::execution::MutationState::Committed);
         };
-        work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+        work.finalization = [&] {
             ++finalizerCalls;
             std::ofstream(output) << "packed";
             return cao::run::ArchiveFinalizationResult{{
@@ -1048,7 +1057,7 @@ void RunExecutorTests::archiveFinalizationCancellationRetainsCommittedOutput() {
     const auto output = root / "committed.bsa";
     ControlledAssetWork work;
     std::size_t calls{};
-    work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+    work.finalization = [&] {
         ++calls;
         std::ofstream(output) << "committed output";
         cao::run::ArchiveFinalizationResult finalization;
@@ -1099,7 +1108,7 @@ void RunExecutorTests::missingPlannedLoadingPluginFailsRunWithArchiveCommit() {
     std::ofstream(source) << "retained source";
     const auto output = root / "packed.bsa";
     ControlledAssetWork work;
-    work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+    work.finalization = [&] {
         std::ofstream(output) << "committed Archive";
         cao::run::ArchiveFinalizationResult finalization;
         finalization.attempts.push_back(
@@ -1161,7 +1170,7 @@ void RunExecutorTests::cancellationAfterAtomicAssetAttempt() {
                 cao::execution::MutationState::PartialOrUnknown, false, asset.executionPath());
         return cao::execution::AssetExecutionResult::success(cao::execution::MutationState::Committed);
     };
-    work.adapters.finalizeArchiveLifecycleWithResult = [&] {
+    work.finalization = [&] {
         ++finalizerCalls;
         return cao::run::ArchiveFinalizationResult{};
     };
@@ -1659,7 +1668,7 @@ void RunExecutorTests::workArtifactsShareRecoveryAndAreCleanedAfterFailure() {
             throw std::runtime_error("orchestration interrupted after asset commit");
         return false;
     };
-    work.adapters.finalizeArchiveLifecycleWithResult = [] {
+    work.finalization = [] {
         return cao::run::ArchiveFinalizationResult{};
     };
     CountingSafetyCleanup cleanup;

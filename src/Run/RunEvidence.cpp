@@ -459,7 +459,11 @@ void MutableRunEvidence::recordArchiveFinalization(ArchiveFinalizationResult res
         storage.phases.back().status() != RunPhaseStatus::Executed)
         throw RunEvidenceInvariantViolation(
             "Archive Finalization results require the executed work phase exactly once");
-    if (!storage.archiveFinalizationTotal && result.attempts.empty()) {
+    if (!storage.archiveFinalizationTotal) {
+        // Output attempts are only meaningful against a recorded plan total.
+        if (!result.attempts.empty())
+            throw RunEvidenceInvariantViolation(
+                "Archive Finalization attempts require a recorded output total");
         // A finalizer may fail or cancel before planning establishes a trustworthy total.
         // Retain its phase-level status without inventing zero planned outputs.
         storage.archiveFinalization.emplace(std::move(result));
@@ -467,12 +471,8 @@ void MutableRunEvidence::recordArchiveFinalization(ArchiveFinalizationResult res
         if (storage.archiveFinalization->cancelled) storage.cancellationObserved = true;
         return;
     }
-    if (!storage.archiveFinalizationTotal) recordArchiveFinalizationPlan(result.attempts.size());
     const auto total = *storage.archiveFinalizationTotal;
     const auto& streamed = storage.archiveFinalization->attempts;
-    if (result.failure == ArchiveFinalizationFailure::UnexpectedException &&
-        !result.safeToContinue && result.attempts.empty())
-        result.attempts = streamed;
     if (result.attempts.size() > total || streamed.size() > result.attempts.size() ||
         !std::equal(streamed.begin(), streamed.end(), result.attempts.begin(),
                     sameFinalizationAttempt))

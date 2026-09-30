@@ -285,7 +285,7 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
         return;
     }
 
-    const auto hasFinalizer = static_cast<bool>(adapters.finalizeArchiveLifecycleWithResult);
+    const auto hasFinalizer = static_cast<bool>(adapters.finalizeArchiveLifecycle);
     reportWorkPhaseToAdapter(
         milestones.archiveFinalizationAvailable(_policy.executionMode(), hasFinalizer));
     if (adapters.isCancelled && adapters.isCancelled()) {
@@ -297,27 +297,10 @@ void AssetRun::execute(const std::span<const std::filesystem::path> roots,
     // The immutable policy is the run authority, so mismatched CLI or programmatic options cannot
     // re-enable Archive packing, creation, source deletion, or cleanup during Dry Run.
     if (_policy.executionMode() == routing::ExecutionMode::Apply &&
-        adapters.finalizeArchiveLifecycleWithResult) {
-        ArchiveFinalizationResult finalization;
-        try {
-            finalization = adapters.finalizeArchiveLifecycleWithResult();
-        } catch (const RunEvidenceInvariantViolation&) {
-            // A broken evidence contract is a programming defect; the executor still cleans up.
-            throw;
-        } catch (const std::exception& error) {
-            // A thrown finalizer supplies no reliable boundary for its durable mutations.
-            finalization = ArchiveFinalizationResult{
-                {}, ArchiveFinalizationFailure::UnexpectedException, false, false, error.what()};
-        } catch (...) {
-            // Preserve a phase-level failure even when the adapter throws an untyped exception.
-            finalization =
-                ArchiveFinalizationResult{{},
-                                          ArchiveFinalizationFailure::UnexpectedException,
-                                          false,
-                                          false,
-                                          "Unknown Archive finalization exception."};
-        }
-        evidence.recordArchiveFinalization(std::move(finalization));
+        adapters.finalizeArchiveLifecycle) {
+        // Archive Finalization records its own output total, attempts, and result, converting
+        // its own failures; anything it lets escape belongs to the Run Executor.
+        adapters.finalizeArchiveLifecycle();
         if (adapters.isCancelled && adapters.isCancelled())
             evidence.recordCancellationObservation();
     }
