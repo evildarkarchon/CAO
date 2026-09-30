@@ -59,6 +59,10 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Run/ApplicationRunWork.h
     ${CMAKE_CURRENT_SOURCE_DIR}/Run/ArchiveFinalization.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Run/ArchiveFinalization.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/Run/ArchiveFinalizationAttempt.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Run/ArchiveFinalizationInternals.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/Run/ArchiveFinalizationLoadingPlugins.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Run/ArchiveFinalizationPlanning.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Run/NativeFilePins.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Run/NativeFilePins.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesFormats.h

@@ -171,6 +171,9 @@ add_test(NAME cao_main_optimizer_tests COMMAND cao_main_optimizer_tests)
 add_executable(cao_archive_finalization_tests
     ArchiveFinalizationTests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Run/ArchiveFinalization.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Run/ArchiveFinalizationAttempt.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Run/ArchiveFinalizationLoadingPlugins.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Run/ArchiveFinalizationPlanning.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/FilesystemOperations.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Profiles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Run/NativeFilePins.cpp
