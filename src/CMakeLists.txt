@@ -57,6 +57,8 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Run/ApplicationRunSetup.h
     ${CMAKE_CURRENT_SOURCE_DIR}/Run/ApplicationRunWork.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Run/ApplicationRunWork.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/Run/ArchiveFinalization.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Run/ArchiveFinalization.h
     ${CMAKE_CURRENT_SOURCE_DIR}/Run/NativeFilePins.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Run/NativeFilePins.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TexturesFormats.h

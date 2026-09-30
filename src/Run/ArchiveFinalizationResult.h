@@ -28,14 +28,6 @@ struct ArchiveFinalizationAttempt final {
     [[nodiscard]] bool succeeded() const noexcept { return !failure; }
 };
 
-/// Counts complete output attempts; total is immutable, including on cancellation or failure.
-struct ArchiveFinalizationProgress final {
-    std::size_t completed{};
-    std::size_t total{};
-    std::size_t succeeded{};
-    std::size_t failed{};
-};
-
 /// Kinds of finalization effects outside planned Archive output attempts.
 enum class ArchiveFinalizationMutationKind {
     EmptyDirectoryPruning,

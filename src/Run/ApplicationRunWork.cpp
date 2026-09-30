@@ -5,6 +5,7 @@
 #include "BsaOptimizer.h"
 #include "MainOptimizer.h"
 #include "OptimizerProfileSnapshot.h"
+#include "Run/ArchiveFinalization.h"
 #include "Run/AssetRun.h"
 #include "Run/TemporaryArtifactRegistry.h"
 
@@ -123,58 +124,25 @@ class ApplicationRunWork final : public RunWorkService {
         _options.apply(options);
         options.bDryRun = preparation.policy().executionMode() == routing::ExecutionMode::DryRun;
         std::unique_ptr<MainOptimizer> optimizer;
-        std::unique_ptr<BSAOptimizer> archives;
-        const auto archiveBackend = [&]() -> BSAOptimizer& {
-            if (!archives) archives = std::make_unique<BSAOptimizer>(*_profile);
-            return *archives;
-        };
         AssetRunAdapters adapters;
         adapters.extractArchiveWithResult = [&](const ArchiveExtractionPlan& plan) {
-            return archiveBackend().extract(plan, options.bBsaDeleteBackup, artifacts);
+            return BSAOptimizer().extract(plan, options.bBsaDeleteBackup, artifacts);
         };
         adapters.executeAssetWithResult = [&](const routing::RoutedAsset& asset,
                                               const std::filesystem::path& modRoot) {
             if (!optimizer) optimizer = std::make_unique<MainOptimizer>(options, *_profile, stop);
             return optimizer->process(asset, artifacts, modRoot);
         };
-        adapters.finalizeArchiveLifecycleWithResult = [&] {
-            if (options.bBsaCreate) {
-                try {
-                    auto plan = archiveBackend().planFinalization(preparation.modRoots(), options,
-                                                                   stop);
-                    const auto total = plan.outputs().size();
-                    evidence.recordArchiveFinalizationPlan(total);
-                    return archiveBackend().finalize(
-                        plan, artifacts, stop, {}, availableArchiveCapacity,
-                        [&](const ArchiveFinalizationAttempt& attempt) {
-                            // Evidence owns each atomic result before its progress event is published.
-                            evidence.recordArchiveFinalizationAttempt(attempt, total);
-                        });
-                } catch (const ArchiveFinalizationPlanningCancelled&) {
-                    // Planning made no mutations or trustworthy output total before cancellation.
-                    return ArchiveFinalizationResult{.cancelled = true};
-                }
-            }
-            ArchiveFinalizationResult result;
-            evidence.recordArchiveFinalizationPlan(0);
-            // Empty-directory pruning is the legacy Apply finalization even without packing.
-            // It preserves roots and reserved staging, which belongs to executor cleanup.
-            for (const auto& root : preparation.modRoots()) {
-                if (stop.stop_requested()) {
-                    result.cancelled = true;
-                    break;
-                }
-                const auto removed = FilesystemOperations::deleteEmptyDirectories(
-                    QString::fromStdWString(root.wstring()));
-                if (removed != 0)
-                    result.mutations.push_back(ArchiveFinalizationMutation{
-                        .modRoot = root,
-                        .path = root,
-                        .kind = ArchiveFinalizationMutationKind::EmptyDirectoryPruning,
-                        .mutation = execution::MutationState::Committed,
-                        .count = removed});
-            }
-            return result;
+        adapters.finalizeArchiveLifecycle = [&] {
+            // The Routing Policy, not options.bBsaCreate, decides whether packing runs.
+            ArchiveFinalization(*_profile,
+                                ArchiveFinalizationSettings{
+                                    .compress = options.bBsaCompress,
+                                    .deleteSources = options.bBsaDeleteSource,
+                                    .createDummyPlugins = options.bBsaCreateDummies,
+                                    .mergeIncompressible = options.bBsaMergeIncomp,
+                                    .mergeTextures = options.bBsaMergeTexture})
+                .run(preparation, evidence, artifacts, stop);
         };
         executeAssetRun(preparation, evidence, milestones, stop, adapters);
     }

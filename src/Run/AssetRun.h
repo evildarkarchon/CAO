@@ -4,7 +4,6 @@
 #include "AssetExecution/AssetExecutor.h"
 #include "ArchiveFirstAssetDiscovery.h"
 #include "ArchiveExtraction.h"
-#include "ArchiveFinalizationResult.h"
 #include "AssetInitializationCancelled.h"
 #include "RunLifecycle.h"
 
@@ -83,8 +82,10 @@ struct AssetRunAdapters final {
     /// Extracts the completed manifest plan and reports mutation evidence.
     /// Unsafe continuation stops work independently of cancellation.
     std::function<ArchiveExtractionResult(const ArchiveExtractionPlan&)> extractArchiveWithResult;
-    /// Optionally finalizes Archives and retains mutation, failure, and cancellation evidence.
-    std::function<ArchiveFinalizationResult()> finalizeArchiveLifecycleWithResult;
+    /// Optionally runs Archive Finalization, which records its own output total, attempts, and
+    /// result into the same work evidence. Invoked only in Apply once the executed phase is
+    /// recorded; its exceptions propagate to the Run Executor unchanged.
+    std::function<void()> finalizeArchiveLifecycle;
     /// Observes actual lifecycle boundaries, including empty work phases, before work begins.
     std::function<void(const RunPhaseRecord&)> reportPhase;
 };
@@ -114,8 +115,8 @@ class AssetRun final {
     /// is observed between filesystem entries and attempts, and once more after the final attempt.
     /// An adapter is never abandoned mid-operation, and cancellation skips diagnostics and
     /// finalization.
-    /// A finalizer reports cancellation in its result. Filesystem races are skipped during
-    /// discovery. Presentation exceptions become informational ObserverFailed diagnostics without
+    /// A finalizer records its own evidence, including cancellation. Filesystem races are skipped
+    /// during discovery. Presentation exceptions become informational ObserverFailed diagnostics without
     /// discarding attempts. Extraction exceptions retain unknown mutation evidence and stop the
     /// run. Manifest/order failures stop all mutation. Archive precedence is validated before the
     /// first extraction callback. Result-bearing execution retains all attempts and converts

@@ -75,8 +75,12 @@ class RunEvidenceTests final : public QObject {
     void finalizationAndCleanupFailuresRemainSeparate();
     /// Publishes each completed Archive output only after its full attempt is retained.
     void finalizationProgressPublishesRetainedAttempt();
-    /// Preserves streamed outputs when finalization fails before returning its result.
+    /// Preserves streamed outputs in an interrupted phase-level result that carries them.
     void interruptedFinalizationRetainsCompletedAttempts();
+    /// Rejects a phase-level result that drops outputs already streamed into evidence.
+    void finalizationResultCannotDropStreamedAttempts();
+    /// Rejects output attempts in a result when no output total was ever recorded.
+    void finalizationAttemptsRequireRecordedTotal();
     /// Derives committed and uncertain mutation counts from sealed attempts in Mod Root order.
     void sealedMutationSummariesReflectCompletedAttempts();
     /// Seals plugin-only finalization effects even when the output plan contains no attempts.
@@ -315,10 +319,11 @@ void RunEvidenceTests::interruptedFinalizationRetainsCompletedAttempts() {
     evidence.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
     evidence.recordPhase(RunPhaseRecord::executed(RunPhase::ArchiveFinalization));
     evidence.recordArchiveFinalizationPlan(2);
-    evidence.recordArchiveFinalizationAttempt(
-        {"committed.bsa", cao::execution::MutationState::Committed, {}, true, {}, "first-mod"},
-        2);
+    const cao::run::ArchiveFinalizationAttempt committed{
+        "committed.bsa", cao::execution::MutationState::Committed, {}, true, {}, "first-mod"};
+    evidence.recordArchiveFinalizationAttempt(committed, 2);
     ArchiveFinalizationResult interrupted;
+    interrupted.attempts.push_back(committed);
     interrupted.failure = cao::run::ArchiveFinalizationFailure::UnexpectedException;
     interrupted.safeToContinue = false;
     interrupted.detail = "packing interrupted";
@@ -338,6 +343,39 @@ void RunEvidenceTests::interruptedFinalizationRetainsCompletedAttempts() {
              std::size_t{2});
     QCOMPARE(terminal.phase(RunPhase::ArchiveFinalization)->progress()->completed(),
              std::size_t{1});
+}
+
+void RunEvidenceTests::finalizationResultCannotDropStreamedAttempts() {
+    MutableRunEvidence evidence;
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::ArchiveFinalization));
+    evidence.recordArchiveFinalizationPlan(2);
+    evidence.recordArchiveFinalizationAttempt(
+        {"committed.bsa", cao::execution::MutationState::Committed, {}, true, {}, "first-mod"},
+        2);
+    ArchiveFinalizationResult interrupted;
+    interrupted.failure = cao::run::ArchiveFinalizationFailure::UnexpectedException;
+    interrupted.safeToContinue = false;
+    QVERIFY_EXCEPTION_THROWN(evidence.recordArchiveFinalization(std::move(interrupted)),
+                             RunEvidenceInvariantViolation);
+}
+
+void RunEvidenceTests::finalizationAttemptsRequireRecordedTotal() {
+    MutableRunEvidence evidence;
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::Preparing));
+    evidence.recordPhase(RunPhaseRecord::executed(RunPhase::ArchiveFinalization));
+    ArchiveFinalizationResult unplanned;
+    unplanned.attempts.push_back(
+        {"packed.bsa", cao::execution::MutationState::Committed, {}, true, {}, "first-mod"});
+    QVERIFY_EXCEPTION_THROWN(evidence.recordArchiveFinalization(std::move(unplanned)),
+                             RunEvidenceInvariantViolation);
+
+    // A phase-level result with no attempts may still precede any output total.
+    evidence.recordArchiveFinalization(ArchiveFinalizationResult{.cancelled = true});
+    const auto terminal = consumeAfterCleanup(evidence);
+    QVERIFY(terminal.archiveFinalization() != nullptr);
+    QVERIFY(!terminal.phase(RunPhase::ArchiveFinalization)->progress());
+    QVERIFY(terminal.cancellationObserved());
 }
 
 void RunEvidenceTests::sealedMutationSummariesReflectCompletedAttempts() {

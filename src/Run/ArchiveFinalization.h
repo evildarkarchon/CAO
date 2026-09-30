@@ -1,59 +1,63 @@
 #pragma once
 
-#include "Run/ArchiveExtraction.h"
-#include "Run/ArchiveFinalizationResult.h"
+#include "OptimizerProfileSnapshot.h"
 #include "Run/ArchiveCapacity.h"
 
-#include <btu/bsa/archive_data.hpp>
-
-#include <map>
-#include <span>
-#include <stdexcept>
-
-class BSAOptimizer;
+#include <stop_token>
+#include <string>
+#include <vector>
 
 namespace cao::run {
-/// Aborts an incomplete mutation-free plan when cancellation arrives during source traversal.
-class ArchiveFinalizationPlanningCancelled final : public std::runtime_error {
-   public:
-    ArchiveFinalizationPlanningCancelled()
-        : std::runtime_error("Archive finalization planning was cancelled.") {}
+class RunPreparation;
+class RunWorkEvidence;
+class TemporaryArtifactRegistry;
+
+/// Archive Finalization choices captured from the run's option snapshot before scheduling.
+/// Whether packing runs at all is the Routing Policy's Archive creation request, not a setting.
+struct ArchiveFinalizationSettings final {
+    bool compress{};
+    bool deleteSources{};
+    bool createDummyPlugins{};
+    bool mergeIncompressible{};
+    bool mergeTextures{};
 };
 
-/// One frozen output and the complete source set consumed by its atomic attempt.
-struct ArchiveFinalizationOutput final {
-    std::filesystem::path modRoot;
-    std::filesystem::path archivePath;
-    std::vector<std::filesystem::path> sources;
-    /// The fallback Dummy Plugin destination when planning finds no Loading Plugin. The attempt
-    /// rechecks recognized names before creation and source deletion.
-    std::optional<std::filesystem::path> pluginPath;
-    /// Conservative content and framing allowance, not a reservation or filesystem quota guarantee.
-    std::uintmax_t estimatedCapacityBytes{};
-    /// Profile-recognized Loading Plugin names; the last is the suffix-free dummy destination.
-    /// Finalization rechecks them because a plugin may appear or disappear after planning.
-    std::vector<std::filesystem::path> loadingPluginPaths;
-};
-
-/// Owns all output names, partitions, and settings before any finalization mutation.
-/// Callers may inspect the plan but cannot change its total or source sets.
-class ArchiveFinalizationPlan final {
+/// The Apply-only Archive Finalization Run Phase for one Optimization Run.
+///
+/// When the Routing Policy requests Archive creation, it freezes an output plan for every Mod
+/// Root, checks staging capacity, publishes each planned Archive and any required Loading Plugin
+/// through no-replace staging, cleans packed sources, and maintains Loading Plugins for existing
+/// Archives. Empty-directory pruning runs whether or not Archive creation is requested. The phase
+/// records its own output total, each completed attempt before the next output starts, and one
+/// final result into Run Evidence.
+class ArchiveFinalization final {
    public:
-    /// Borrows the immutable ordered outputs; its size is the phase's complete progress total.
-    [[nodiscard]] std::span<const ArchiveFinalizationOutput> outputs() const noexcept {
-        return _outputs;
-    }
+    /// Owns the run's profile snapshot and finalization choices. The capacity and volume probes
+    /// are the phase's only filesystem seams besides the Mod Roots themselves; the defaults
+    /// sample the real volumes. Reads no global Profiles state.
+    ArchiveFinalization(OptimizerProfileSnapshot profile, ArchiveFinalizationSettings settings,
+                        CapacityProbe capacity = availableArchiveCapacity,
+                        VolumeIdentityProbe volumeIdentity = archiveVolumeIdentity);
+
+    /// Runs the phase over the preparation's Mod Roots, borrowing every argument until return.
+    ///
+    /// Evidence must already be in the executed Archive Finalization phase. Cancellation is
+    /// observed between outputs and between Mod Roots, never inside an atomic output attempt;
+    /// cancelled planning records a cancelled result without an output total. Exceptions from
+    /// the phase's own work are recorded once as a phase-level UnexpectedException that keeps
+    /// every attempt already recorded and forbids continuation. Exceptions raised by Run
+    /// Evidence itself, such as RunEvidenceInvariantViolation, propagate unchanged so the Run
+    /// Executor still performs Safety Cleanup. The caller owns artifacts through Safety Cleanup.
+    void run(const RunPreparation& preparation, RunWorkEvidence& evidence,
+             TemporaryArtifactRegistry& artifacts, std::stop_token stop) const;
 
    private:
-    friend class ::BSAOptimizer;
-    std::vector<ArchiveFinalizationOutput> _outputs;
-    std::vector<btu::bsa::ArchiveData> _archives;
-    std::vector<std::filesystem::path> _roots;
-    btu::bsa::Settings _settings;
-    bool _compress{};
-    bool _deleteSources{};
-    bool _createDummies{};
-    std::map<std::filesystem::path, std::uintmax_t> _dummyCapacityByRoot;
+    OptimizerProfileSnapshot _profile;
+    ArchiveFinalizationSettings _settings;
+    CapacityProbe _capacity;
+    VolumeIdentityProbe _volumeIdentity;
+    /// Native-separator substrings from the profile's FilesToNotPack list; a matching path
+    /// is never packed or deleted as a packed source.
+    std::vector<std::u8string> _filesToNotPack;
 };
-
 }  // namespace cao::run

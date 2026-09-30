@@ -1,4 +1,5 @@
 #include "Run/AssetRun.h"
+#include "ArchiveFinalizationTestSupport.h"
 #include "Run/ArchiveFirstAssetDiscovery.h"
 #include "Run/RunEvidence.h"
 #include "Run/RunExecutor.h"
@@ -265,8 +266,8 @@ private slots:
  void completeAttemptEvidenceSurvivesAdapters();
  /// Exceptions preserve uncertain mutation and concurrent cancellation after the attempt.
  void throwingAttemptRetainsCancellation();
- /// A finalizer exception becomes an owned phase failure, independent of cancellation.
- void throwingFinalizerRetainsFailure();
+ /// A finalizer exception reaches the Run Executor without AssetRun inventing a result.
+ void throwingFinalizerPropagates();
  /// Presentation errors cannot discard committed attempt evidence or prevent finalization.
  void throwingObserversPreserveCommittedWork();
  /// Relative selection retains the canonical Mod Root even when execution removes the source.
@@ -370,15 +371,16 @@ void AssetRunTests::archiveFailuresControlContinuation() {
     std::size_t assets = 0;
     bool finalized = false;
     std::vector<AssetRunProgress> progress;
+    AssetRunEvidenceFixture evidence;
     AssetRunAdapters adapters;
     adapters.executeAssetWithResult = [&](const auto&, const std::filesystem::path&) {
         ++assets;
         return cao::execution::AssetExecutionResult::success();
     };
     adapters.reportProgress = [&](const auto& update) { progress.push_back(update); };
-    adapters.finalizeArchiveLifecycleWithResult = [&] {
+    adapters.finalizeArchiveLifecycle = [&] {
         finalized = true;
-        return cao::run::ArchiveFinalizationResult{};
+        recordArchiveFinalizationResult(evidence.workEvidence, {});
     };
     adapters.extractArchiveWithResult = [&](const cao::run::ArchiveExtractionPlan& plan) {
         ++attempts;
@@ -395,7 +397,6 @@ void AssetRunTests::archiveFailuresControlContinuation() {
         }
         return attempt;
     };
-    AssetRunEvidenceFixture evidence;
     AssetRun(archiveAndTexturePolicy())
         .execute(std::array{root}, evidence.workEvidence, adapters,
                  cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);
@@ -435,11 +436,12 @@ void AssetRunTests::mutationAwareFailuresControlContinuation() {
     std::size_t attempts = 0;
     bool finalized = false;
     std::vector<AssetRunProgress> progress;
+    AssetRunEvidenceFixture evidence;
     AssetRunAdapters adapters;
     adapters.reportProgress = [&](const auto& update) { progress.push_back(update); };
-    adapters.finalizeArchiveLifecycleWithResult = [&] {
+    adapters.finalizeArchiveLifecycle = [&] {
         finalized = true;
-        return cao::run::ArchiveFinalizationResult{};
+        recordArchiveFinalizationResult(evidence.workEvidence, {});
     };
     adapters.executeAssetWithResult = [&](const auto& asset, const std::filesystem::path&) {
         ++attempts;
@@ -451,7 +453,6 @@ void AssetRunTests::mutationAwareFailuresControlContinuation() {
                          safe, asset.executionPath(), "save")
                    : cao::execution::AssetExecutionResult::success();
     };
-    AssetRunEvidenceFixture evidence;
     AssetRun(allLooseTargetsPolicy())
         .execute(std::array{root}, evidence.workEvidence, adapters,
                  cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);
@@ -500,11 +501,12 @@ void AssetRunTests::animationFailuresPreserveProgressAndEvidence() {
     bool finalized = false;
     std::filesystem::path failedPath;
     std::vector<AssetRunProgress> progress;
+    AssetRunEvidenceFixture evidence;
     AssetRunAdapters adapters;
     adapters.reportProgress = [&](const auto& update) { progress.push_back(update); };
-    adapters.finalizeArchiveLifecycleWithResult = [&] {
+    adapters.finalizeArchiveLifecycle = [&] {
         finalized = true;
-        return cao::run::ArchiveFinalizationResult{};
+        recordArchiveFinalizationResult(evidence.workEvidence, {});
     };
     adapters.executeAssetWithResult = [&](const auto& asset, const std::filesystem::path&) {
         ++attempts;
@@ -521,7 +523,6 @@ void AssetRunTests::animationFailuresPreserveProgressAndEvidence() {
             safe, failedPath, "optimize_animation", "animation backend diagnostic");
     };
 
-    AssetRunEvidenceFixture evidence;
     AssetRun(allLooseTargetsPolicy())
         .execute(std::array{root}, evidence.workEvidence, adapters,
                  cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);
@@ -586,10 +587,10 @@ void AssetRunTests::unreadableArchiveStopsRunBeforeMutation() {
                                          extracted = true;
                                          return cao::run::ArchiveExtractionResult{};
                                      },
-                                 .finalizeArchiveLifecycleWithResult =
+                                 .finalizeArchiveLifecycle =
                                      [&] {
                                          finalized = true;
-                                         return cao::run::ArchiveFinalizationResult{};
+                                         recordArchiveFinalizationResult(evidence.workEvidence, {});
                                      }},
         cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);
     const auto terminalEvidence = evidence.seal();
@@ -710,10 +711,10 @@ void AssetRunTests::filesystemTraversalPollsCancellation()
                                         armed = true;
                                         return cao::run::ArchiveExtractionResult{};
                                     },
-                                .finalizeArchiveLifecycleWithResult =
+                                .finalizeArchiveLifecycle =
                                     [&] {
                                         finalized = true;
-                                        return cao::run::ArchiveFinalizationResult{};
+                                        recordArchiveFinalizationResult(evidence.workEvidence, {});
                                     }},
         cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);
     const auto terminalEvidence = evidence.seal();
@@ -985,10 +986,10 @@ void AssetRunTests::applyFinalizesArchivesAfterRoutedExecution()
                            qFatal("No Archive should be selected in the finalization-order test");
                            return cao::run::ArchiveExtractionResult{};
                        },
-                   .finalizeArchiveLifecycleWithResult =
+                   .finalizeArchiveLifecycle =
                        [&] {
                            events.push_back(QByteArrayLiteral("finalize"));
-                           return cao::run::ArchiveFinalizationResult{};
+                           recordArchiveFinalizationResult(evidence.workEvidence, {});
                        }},
         cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);
     const auto terminalEvidence = evidence.seal();
@@ -1040,10 +1041,10 @@ void AssetRunTests::linkedAssetsAreReportedBeforeFinalizationWithoutExecution()
                     qFatal("No Archive should be selected in the linked-Asset reporting test");
                     return cao::run::ArchiveExtractionResult{};
                 },
-            .finalizeArchiveLifecycleWithResult =
+            .finalizeArchiveLifecycle =
                 [&] {
                     finalizedAfterReport = !reportedDiagnostics.empty();
-                    return cao::run::ArchiveFinalizationResult{};
+                    recordArchiveFinalizationResult(evidence.workEvidence, {});
                 }},
         cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);
     const auto terminalEvidence = evidence.seal();
@@ -1098,8 +1099,10 @@ void AssetRunTests::cancelledArchiveFinalizationIsReported()
                     qFatal("No Archive should be selected in the finalization-cancellation test");
                     return cao::run::ArchiveExtractionResult{};
                 },
-            .finalizeArchiveLifecycleWithResult =
-                [] { return cao::run::ArchiveFinalizationResult{.cancelled = true}; }},
+            .finalizeArchiveLifecycle =
+                [&] {
+                    recordArchiveFinalizationResult(evidence.workEvidence, {.cancelled = true});
+                }},
         cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);
     const auto terminalEvidence = evidence.seal();
 
@@ -1231,12 +1234,12 @@ void AssetRunTests::dryRunLeavesCompleteModTreeUnchangedWhileEvaluatingLooseAsse
                     writeFile(root / "textures" / "extracted.dds", "extracted bytes");
                     return cao::run::ArchiveExtractionResult{};
                 },
-            .finalizeArchiveLifecycleWithResult =
+            .finalizeArchiveLifecycle =
                 [&] {
                     finalizationAttempted = true;
                     writeFile(root / "packed.bsa", "packed bytes");
                     std::filesystem::remove(emptyDirectory);
-                    return cao::run::ArchiveFinalizationResult{};
+                    recordArchiveFinalizationResult(evidence.workEvidence, {});
                 }},
         cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);
     const auto terminalEvidence = evidence.seal();
@@ -1336,9 +1339,9 @@ void AssetRunTests::initializationCancellationDoesNotInventAttempt()
                          stop.request_stop();
                          throw cao::run::AssetInitializationCancelled{};
                      },
-                     .finalizeArchiveLifecycleWithResult = [&] {
+                     .finalizeArchiveLifecycle = [&] {
                          finalized = true;
-                         return cao::run::ArchiveFinalizationResult{};
+                         recordArchiveFinalizationResult(evidence.workEvidence, {});
                      }},
                  cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);
     const auto terminalEvidence = evidence.seal();
@@ -1466,10 +1469,10 @@ void AssetRunTests::cancellationDuringFinalAssetSkipsFinalization()
                     qFatal("No Archive should be selected in the final-Asset cancellation test");
                     return cao::run::ArchiveExtractionResult{};
                 },
-            .finalizeArchiveLifecycleWithResult =
+            .finalizeArchiveLifecycle =
                 [&] {
                     finalized = true;
-                    return cao::run::ArchiveFinalizationResult{};
+                    recordArchiveFinalizationResult(evidence.workEvidence, {});
                 }},
         cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);
     const auto terminalEvidence = evidence.seal();
@@ -1543,6 +1546,7 @@ void AssetRunTests::completeAttemptEvidenceSurvivesAdapters() {
     const auto root = std::filesystem::path(directory.path().toStdWString());
     writeFile(root / "a.dds");
     writeFile(root / "b.dds");
+    AssetRunEvidenceFixture evidence;
     AssetRunAdapters adapters;
     int calls = 0;
     adapters.executeAssetWithResult = [&](const auto&, const std::filesystem::path&) {
@@ -1550,13 +1554,12 @@ void AssetRunTests::completeAttemptEvidenceSurvivesAdapters() {
         return ++calls == 1 ? AssetExecutionResult::success(MutationState::Committed)
             : AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed, "retained");
     };
-    adapters.finalizeArchiveLifecycleWithResult = [&] {
+    adapters.finalizeArchiveLifecycle = [&] {
         cao::run::ArchiveFinalizationResult finalization;
         finalization.attempts.push_back({root / "output.bsa",
             cao::execution::MutationState::Committed, {}, true, "", root});
-        return finalization;
+        recordArchiveFinalizationResult(evidence.workEvidence, std::move(finalization));
     };
-    AssetRunEvidenceFixture evidence;
     AssetRun(archiveAndTexturePolicy())
         .execute(std::array{root}, evidence.workEvidence, adapters,
                  cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);
@@ -1604,25 +1607,23 @@ void AssetRunTests::throwingAttemptRetainsCancellation() {
     QCOMPARE(terminalEvidence.assetAttempts()[0].result.message(), std::string("adapter failed"));
 }
 
-void AssetRunTests::throwingFinalizerRetainsFailure() {
+void AssetRunTests::throwingFinalizerPropagates() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const auto root = std::filesystem::path(directory.path().toStdWString());
-    AssetRunAdapters adapters;
-    adapters.finalizeArchiveLifecycleWithResult = []() -> cao::run::ArchiveFinalizationResult {
-        throw std::runtime_error("finalizer failed");
-    };
     AssetRunEvidenceFixture evidence;
-    AssetRun(archiveAndTexturePolicy())
-        .execute(std::array{root}, evidence.workEvidence, adapters,
-                 cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);
+    AssetRunAdapters adapters;
+    adapters.finalizeArchiveLifecycle = [] { throw std::runtime_error("finalizer failed"); };
+    const auto execute = [&] {
+        AssetRun(archiveAndTexturePolicy())
+            .execute(std::array{root}, evidence.workEvidence, adapters,
+                     cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);
+    };
+    QVERIFY_EXCEPTION_THROWN(execute(), std::runtime_error);
     const auto terminalEvidence = evidence.seal();
     QVERIFY(!terminalEvidence.cancellationObserved());
-    QVERIFY(terminalEvidence.archiveFinalization() != nullptr);
-    QCOMPARE(terminalEvidence.archiveFinalization()->failure,
-             std::optional{cao::run::ArchiveFinalizationFailure::UnexpectedException});
-    QVERIFY(!terminalEvidence.archiveFinalization()->safeToContinue);
-    QCOMPARE(terminalEvidence.archiveFinalization()->detail, std::string("finalizer failed"));
+    // Archive Finalization owns its own failure evidence; AssetRun invents none.
+    QVERIFY(terminalEvidence.archiveFinalization() == nullptr);
 }
 
 void AssetRunTests::throwingObserversPreserveCommittedWork() {
@@ -1630,6 +1631,7 @@ void AssetRunTests::throwingObserversPreserveCommittedWork() {
     QVERIFY(directory.isValid());
     const auto root = std::filesystem::path(directory.path().toStdWString());
     writeFile(root / "a.dds");
+    AssetRunEvidenceFixture evidence;
     AssetRunAdapters adapters;
     adapters.executeAssetWithResult = [](const auto&, const std::filesystem::path&) {
         return cao::execution::AssetExecutionResult::success(cao::execution::MutationState::Committed);
@@ -1637,11 +1639,10 @@ void AssetRunTests::throwingObserversPreserveCommittedWork() {
     adapters.reportProgress = [](const auto&) { throw std::runtime_error("progress observer"); };
     adapters.reportDiagnostics = [](const auto&) { throw std::runtime_error("diagnostics observer"); };
     bool finalized = false;
-    adapters.finalizeArchiveLifecycleWithResult = [&] {
+    adapters.finalizeArchiveLifecycle = [&] {
         finalized = true;
-        return cao::run::ArchiveFinalizationResult{};
+        recordArchiveFinalizationResult(evidence.workEvidence, {});
     };
-    AssetRunEvidenceFixture evidence;
     AssetRun(archiveAndTexturePolicy())
         .execute(std::array{root}, evidence.workEvidence, adapters,
                  cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);
@@ -1683,6 +1684,7 @@ void AssetRunTests::throwingDiagnosticsCancellationSkipsFinalization() {
     QVERIFY(directory.isValid());
     const auto root = std::filesystem::path(directory.path().toStdWString());
     writeFile(root / "a.dds");
+    AssetRunEvidenceFixture evidence;
     AssetRunAdapters adapters;
     bool cancelled = false;
     bool finalized = false;
@@ -1694,11 +1696,10 @@ void AssetRunTests::throwingDiagnosticsCancellationSkipsFinalization() {
         cancelled = true;
         throw std::runtime_error("diagnostics requested cancellation");
     };
-    adapters.finalizeArchiveLifecycleWithResult = [&] {
+    adapters.finalizeArchiveLifecycle = [&] {
         finalized = true;
-        return cao::run::ArchiveFinalizationResult{};
+        recordArchiveFinalizationResult(evidence.workEvidence, {});
     };
-    AssetRunEvidenceFixture evidence;
     AssetRun(archiveAndTexturePolicy())
         .execute(std::array{root}, evidence.workEvidence, adapters,
                  cao::run::ArchivePrecedence::deterministicDiscovery(), evidence.milestones);

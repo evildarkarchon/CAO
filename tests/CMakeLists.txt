@@ -167,6 +167,39 @@ set_target_properties(cao_main_optimizer_tests PROPERTIES AUTOMOC ON)
 
 add_test(NAME cao_main_optimizer_tests COMMAND cao_main_optimizer_tests)
 
+# Archive Finalization runs against real temporary Mod Roots, real bethutil, and real Run Evidence.
+add_executable(cao_archive_finalization_tests
+    ArchiveFinalizationTests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Run/ArchiveFinalization.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/FilesystemOperations.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Profiles.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Run/NativeFilePins.cpp
+)
+
+# Staging beneath Qt's long fixture names needs the same Windows path behavior as CAO.
+if(WIN32)
+    target_sources(cao_archive_finalization_tests PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/Cathedral_Assets_Optimizer.manifest
+    )
+endif()
+
+target_include_directories(cao_archive_finalization_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+
+target_link_libraries(cao_archive_finalization_tests PRIVATE
+    Qt5::Test
+    Qt5::Widgets
+    cao_run_executor
+    cao_run_discovery
+    nifly
+    Microsoft::DirectXTex
+    btu::bethutil
+    plog::plog
+)
+
+set_target_properties(cao_archive_finalization_tests PROPERTIES AUTOMOC ON)
+
+add_test(NAME cao_archive_finalization_tests COMMAND cao_archive_finalization_tests)
+
 add_executable(cao_application_run_setup_tests
     ApplicationRunSetupTests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Profiles.cpp
