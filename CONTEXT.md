@@ -125,7 +125,7 @@ The presence of the same canonical game path in more than one Archive within one
 _Avoid_: Duplicate file, overwrite
 
 **Archive Finalization**:
-The Apply-only Run Phase that commits planned output Archives and any required new Loading Plugins, cleans their source sets, and maintains Loading Plugins for existing Archives. It does not run after cancellation or fatal failure.
+The Apply-only Run Phase that, when the Routing Policy requests Archive creation, commits planned output Archives and any required new Loading Plugins, cleans their source sets, and maintains Loading Plugins for existing Archives. Whether or not Archive creation is requested, it prunes empty directories left within each Mod Root. It does not run after cancellation or fatal failure.
 _Avoid_: Safety Cleanup, packing callback
 
 **Loading Plugin**:
