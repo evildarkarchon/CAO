@@ -896,13 +896,6 @@ ArchiveFinalization::ArchiveFinalization(OptimizerProfileSnapshot profile,
 
     for (auto&& line : lines)
         _filesToNotPack.emplace_back(btu::common::as_utf8_string(std::move(line).toStdString()));
-
-    if (_filesToNotPack.empty()) {
-        PLOG_ERROR << "FilesToNotPack.txt not found. This can cause a number of issues. For "
-                      "example, for Skyrim, "
-                      "animations will be packed to BSA, preventing them from being detected "
-                      "by FNIS and Nemesis.";
-    }
 }
 
 void ArchiveFinalization::run(const RunPreparation& preparation, RunWorkEvidence& evidence,
@@ -916,6 +909,13 @@ void ArchiveFinalization::run(const RunPreparation& preparation, RunWorkEvidence
             recorder.plan(0);
             pruneEmptyDirectories(preparation.modRoots(), stop, result);
         } else {
+            // The list only filters packing, so its absence matters only when packing runs.
+            if (_filesToNotPack.empty()) {
+                PLOG_ERROR << "FilesToNotPack.txt not found. This can cause a number of issues. "
+                              "For example, for Skyrim, "
+                              "animations will be packed to BSA, preventing them from being "
+                              "detected by FNIS and Nemesis.";
+            }
             std::optional<ArchiveFinalizationPlan> plan;
             try {
                 plan.emplace(planFinalization(preparation.modRoots(), _settings,

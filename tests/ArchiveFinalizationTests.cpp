@@ -61,6 +61,15 @@ void writeFile(const fs::path& path, const QByteArray& contents) {
     QCOMPARE(file.write(contents), contents.size());
 }
 
+/// Writes a minimal valid 4x4 uncompressed DDS Texture, creating its parent directory.
+void writeTexture(const fs::path& path) {
+    QVERIFY(QDir().mkpath(QString::fromStdWString(path.parent_path().wstring())));
+    DirectX::ScratchImage image;
+    QVERIFY(SUCCEEDED(image.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, 4, 4, 1, 1)));
+    QVERIFY(SUCCEEDED(DirectX::SaveToDDSFile(*image.GetImage(0, 0, 0), DirectX::DDS_FLAGS_NONE,
+                                             path.c_str())));
+}
+
 /// Reads a whole fixture file; an unreadable file yields a null array that no fixture matches.
 QByteArray readFile(const fs::path& path) {
     QFile file(QString::fromStdWString(path.wstring()));
@@ -394,7 +403,8 @@ void ArchiveFinalizationTests::finalizationCapacityChecks() {
         const auto& rejected = result.attempts.back();
         QCOMPARE(rejected.failure, std::optional{ArchiveFinalizationFailure::InsufficientCapacity});
         QCOMPARE(rejected.mutation, MutationState::None);
-        QCOMPARE(rejected.modRoot, fs::canonical(roots[committed]));
+        // Every rejecting scenario stops at the later root: in its preflight or its attempt.
+        QCOMPARE(rejected.modRoot, fs::canonical(roots[1]));
         QVERIFY(!rejected.detail.empty());
     }
     QVERIFY(artifacts.performSafetyCleanup().empty());
@@ -703,14 +713,20 @@ void ArchiveFinalizationTests::cancellationPreservesCommittedArchiveLoadingPlugi
     finalizer.settings.compress = false;
     finalizer.stop = stop.get_token();
     std::size_t probes = 0;
+    bool noPluginBeforeAttempts = false;
     finalizer.capacity = [&](const fs::path&) -> std::optional<std::uintmax_t> {
+        // The first probe follows planning, which publishes no Loading Plugin.
+        if (++probes == 1)
+            noPluginBeforeAttempts =
+                !fs::exists(roots[0] / "mod-a.esp") && !fs::exists(roots[1] / "mod-b.esp");
         // The third probe starts the first output attempt, which must finish atomically.
-        if (++probes == 3) stop.request_stop();
+        if (probes == 3) stop.request_stop();
         return unlimitedCapacity;
     };
     ArchiveFinalizationEvidenceFixture evidence;
     TemporaryArtifactRegistry artifacts;
     finalizer.run(roots, evidence.workEvidence, artifacts);
+    QVERIFY(noPluginBeforeAttempts);
     const auto& result = *evidence.finalization();
     QCOMPARE(result.attempts.size(), std::size_t{1});
     QVERIFY(result.cancelled);
@@ -1209,7 +1225,7 @@ void ArchiveFinalizationTests::filesToNotPackAreNeitherPackedNorDeleted() {
     finalizer.settings.createDummyPlugins = false;
     finalizer.settings.compress = false;
     // Profile rules use forward slashes and match native paths as case-insensitive substrings.
-    finalizer.filesToNotPack = {QStringLiteral("TEXTURES/KEEP/")};
+    finalizer.filesToNotPack = QStringList{QStringLiteral("TEXTURES/KEEP/")};
     ArchiveFinalizationEvidenceFixture evidence;
     TemporaryArtifactRegistry artifacts;
     finalizer.run(std::array{mod}, evidence.workEvidence, artifacts);
@@ -1376,7 +1392,8 @@ void ArchiveFinalizationTests::plannedOutputNamesUseExactDummyBytes() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const auto mod = fs::path(directory.path().toStdWString()) / "mod";
-    writeFile(mod / "textures" / "asset.dds", QByteArrayLiteral("source bytes"));
+    // BA2 texture Archives parse their DDS sources, so every profile needs a real Texture.
+    writeTexture(mod / "textures" / "asset.dds");
     const auto dummy = canonicalDummyBytes(static_cast<btu::Game>(game));
     writeFile(mod / "dummy.esp", dummy);
     writeFile(mod / "loader.esm", QByteArray(dummy.size(), '\0'));
@@ -1394,6 +1411,7 @@ void ArchiveFinalizationTests::plannedOutputNamesUseExactDummyBytes() {
     // The same-size full plugin loads the output, so no Dummy Plugin is needed.
     for (const auto& mutation : result.mutations)
         QVERIFY(mutation.kind != ArchiveFinalizationMutationKind::PluginCreation);
+    QVERIFY(!fs::exists(mod / "loader.esp"));
     QVERIFY(artifacts.performSafetyCleanup().empty());
 }
 
