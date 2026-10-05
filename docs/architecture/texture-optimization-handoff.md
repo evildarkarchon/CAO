@@ -43,7 +43,7 @@ Begin with these prerequisite decisions:
 4. Does the module own TGA source deletion, or only produce the replacement?
 5. Is platform initialization run-scoped, process-scoped, or hidden inside the module?
 
-Use the `grilling` skill for the full decision tree. If alternative interfaces need comparison, use the `codebase-design` design-it-twice process. Update `CONTEXT.md` through `domain-modeling` only when project-specific texture terms are resolved.
+Use the `grilling` skill for the full decision tree. If alternative interfaces need comparison, use the `codebase-design` design-it-twice process. Update `GLOSSARY.md` through `domain-modeling` only when project-specific texture terms are resolved.
 
 ## Completion Criterion
 

@@ -103,7 +103,7 @@ The external test seam is Temporary Ownership. Focused producer tests continue t
 
 ## Further Notes
 
-- `CONTEXT.md` defines Temporary Ownership, Committed Mutation, Safety Cleanup, Operation Failure, Mod Root, and Archive Finalization for this work. The staging ownership architecture note records the existing crash and recovery states; its producer list needs updating during implementation.
+- `GLOSSARY.md` defines Temporary Ownership, Committed Mutation, Safety Cleanup, Operation Failure, Mod Root, and Archive Finalization for this work. The staging ownership architecture note records the existing crash and recovery states; its producer list needs updating during implementation.
 - The existing scheduling and lifetime ADR remains in force: the Optimization Run Service owns scheduling and lifetime, and the Run Executor remains the deepest synchronous deterministic seam. This spec changes neither decision.
 - The current implementation explicitly flushes Asset and Archive Finalization staging before publication, while Archive extraction currently relies on a write-through no-replace move. The agreed shared rule adds an explicit flush to Archive extraction.
 - Ownership-release failure can be exercised without a new seam by occupying the ownership scratch name after staging. The destination may then publish while the durable temporary claim remains, which is precisely the `PublishedStillOwned` state.

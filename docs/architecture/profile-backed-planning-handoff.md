@@ -31,7 +31,7 @@ Concentrate profile capabilities, defaults, user choices, and validation in a de
 - Make one owner resolve defaults, capabilities, overrides, and validation.
 - Remove global profile reads from optimization modules through migration, not an additional pass-through interface.
 - Preserve profile fallback behavior until the user deliberately changes it.
-- Keep `CONTEXT.md` about domain language, not configuration implementation.
+- Keep `GLOSSARY.md` about domain language, not configuration implementation.
 
 ## Grilling Start
 

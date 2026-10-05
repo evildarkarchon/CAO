@@ -112,7 +112,7 @@ Preserve the existing Optimization Run behavior, Run Event ordering, cancellatio
 
 ## Further Notes
 
-- `CONTEXT.md` defines Run Evidence, Run Failure, and Run Event for this work. The implementation must use those terms consistently.
+- `GLOSSARY.md` defines Run Evidence, Run Failure, and Run Event for this work. The implementation must use those terms consistently.
 - Run Evidence is factual; Run Outcome is the Run Executor's terminal judgment.
 - Run Event history is a selected live publication view and is not the complete Run Evidence record.
 - One adapter means a hypothetical seam and two adapters mean a real one. Evidence storage has one implementation; observation has production and test adapters.
