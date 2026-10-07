@@ -1,7 +1,7 @@
 #include "ArchiveCapacity.h"
 
 #ifdef _WIN32
-#include <Windows.h>
+#include "NativeVolume.h"
 #else
 #include <sys/stat.h>
 #endif
@@ -9,15 +9,12 @@
 namespace cao::run {
 std::optional<std::string> archiveVolumeIdentity(const std::filesystem::path& root) {
 #ifdef _WIN32
-    wchar_t mount[MAX_PATH]{};
-    wchar_t volume[MAX_PATH]{};
-    if (!GetVolumePathNameW(root.c_str(), mount, MAX_PATH) ||
-        !GetVolumeNameForVolumeMountPointW(mount, volume, MAX_PATH))
-        return std::nullopt;
+    const auto volume = volumeGuidPath(root);
+    if (volume.empty()) return std::nullopt;
     std::string identity;
-    for (const auto* character = volume; *character != L'\0'; ++character)
+    for (const auto character : volume)
         // Volume GUID paths contain only ASCII syntax and hexadecimal digits.
-        identity.push_back(static_cast<char>(*character));
+        identity.push_back(static_cast<char>(character));
     return identity;
 #else
     struct stat status {};

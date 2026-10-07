@@ -5,6 +5,7 @@ add_library(cao_run_discovery
     ArchiveFirstAssetDiscovery.h
     ArchiveExtraction.cpp
     ArchiveExtraction.h
+    NativeVolume.h
 )
 
 find_package(bethutil CONFIG REQUIRED)
@@ -54,6 +55,7 @@ add_library(cao_run_executor
     StagingRecovery.cpp
     StagingRecovery.h
     StagingPaths.h
+    NativeVolume.h
 )
 
 target_link_libraries(cao_run_executor PUBLIC cao_run_lifecycle cao_run_setup)

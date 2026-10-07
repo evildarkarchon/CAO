@@ -11,6 +11,8 @@
 #include <vector>
 
 #ifdef _WIN32
+#include "NativeVolume.h"
+
 #include <Windows.h>
 #else
 #include <fcntl.h>
@@ -484,14 +486,14 @@ fs::path StagingRecovery::stageFile(const fs::path& modRoot, const fs::path& des
         destination.filename().empty())
         throw std::invalid_argument("A staged output must belong to its canonical Mod Root");
 #ifdef _WIN32
-    wchar_t rootMount[MAX_PATH]{}, destinationMount[MAX_PATH]{};
-    wchar_t rootVolume[MAX_PATH]{}, destinationVolume[MAX_PATH]{};
-    if (!GetVolumePathNameW(root.c_str(), rootMount, MAX_PATH) ||
-        !GetVolumePathNameW(parent.c_str(), destinationMount, MAX_PATH) ||
-        !GetVolumeNameForVolumeMountPointW(rootMount, rootVolume, MAX_PATH) ||
-        !GetVolumeNameForVolumeMountPointW(destinationMount, destinationVolume, MAX_PATH))
+    const auto rootVolume = volumeGuidPath(root);
+    if (rootVolume.empty())
         throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
-    if (CompareStringOrdinal(rootVolume, -1, destinationVolume, -1, TRUE) != CSTR_EQUAL)
+    const auto destinationVolume = volumeGuidPath(parent);
+    if (destinationVolume.empty())
+        throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
+    if (CompareStringOrdinal(rootVolume.c_str(), -1, destinationVolume.c_str(), -1, TRUE) !=
+        CSTR_EQUAL)
         throw std::invalid_argument("The staged output and Mod Root must be on the same volume");
 #endif
     auto extension = pathText(destination.extension());
