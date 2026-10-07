@@ -46,8 +46,6 @@ class MainOptimizer final : public QObject, private cao::execution::AssetExecuti
 
     /// Scans the selected roots for plugin-derived headparts, polling before each Mod Root.
     void addHeadparts(std::stop_token stop);
-    /// Polls the existing second plugin scan before each Mod Root.
-    void addLandscapeTextures(std::stop_token stop);
 
     /// Loads a Texture using the carried Variant rather than its execution-path extension.
     bool loadTexture(const std::filesystem::path& path,

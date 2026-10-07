@@ -20,24 +20,6 @@ TexturesOptimizer::TexturesOptimizer(OptimizerProfileSnapshot profile)
         throw std::runtime_error("Failed to initialize COM. Textures processing won't work.");
 }
 
-void TexturesOptimizer::listLandscapeTextures(QDirIterator& it) {
-    _landscapeTextures = _profile.customHeadparts;
-
-    if (_landscapeTextures.isEmpty()) {
-        PLOG_ERROR << "customHeadparts.txt not found. This can cause issue when optimizing meshes, "
-                      "as some headparts "
-                      "won't be detected.";
-    }
-
-    const auto& extensions = btu::bsa::Settings::get(_profile.bsaGame).plugin_extensions;
-    for (const auto& plugin : FilesystemOperations::listPlugins(it, extensions))
-        _landscapeTextures += PluginsOperations::listLandscapeTextures(plugin);
-    for (auto& tex : _landscapeTextures)
-        if (!tex.endsWith("_n.dds")) tex.insert(tex.size() - 4, "_n");
-
-    _landscapeTextures.removeDuplicates();
-}
-
 bool TexturesOptimizer::getDXGIFactory(IDXGIFactory1** pFactory) const {
     if (!pFactory) return false;
 

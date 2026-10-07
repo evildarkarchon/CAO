@@ -20,8 +20,6 @@ class TexturesOptimizer final : public QObject {
 
     enum TextureType { DDS, TGA };
 
-    void listLandscapeTextures(QDirIterator& it);
-
     bool open(const void* pSource, const size_t& size, const TextureType& type,
               const QString& fileName);
     bool open(const QString& filePath, const TextureType& type);
@@ -78,8 +76,6 @@ class TexturesOptimizer final : public QObject {
     bool canHaveMipMaps();
     size_t calculateOptimalMipMapsNumber() const;
 
-    bool convertLandscapeTextures();
-
     DirectX::TexMetadata getInfo() const;
 
     bool isIncompatible() const;
@@ -111,6 +107,4 @@ class TexturesOptimizer final : public QObject {
 
     bool createDevice(int adapter, ID3D11Device** pDevice) const;
     bool getDXGIFactory(IDXGIFactory1** pFactory) const;
-
-    QStringList _landscapeTextures;
 };

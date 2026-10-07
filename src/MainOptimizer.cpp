@@ -78,7 +78,6 @@ MainOptimizer::MainOptimizer(const OptionsCAO& optOptions,
       _assetExecutor(*this) {
     cao::run::throwIfAssetInitializationCancelled(stop);
     addHeadparts(stop);
-    addLandscapeTextures(stop);
     cao::run::throwIfAssetInitializationCancelled(stop);
 }
 
@@ -157,18 +156,6 @@ cao::execution::AssetExecutionResult MainOptimizer::finishAttempt(
 }
 
 void MainOptimizer::addHeadparts(std::stop_token stop) {
-    cao::run::throwIfAssetInitializationCancelled(stop);
-    _meshesOpt.listHeadparts(_optOptions.userPath, stop);
-    if (_optOptions.mode == OptionsCAO::SeveralMods) {
-        const QDir dir(_optOptions.userPath);
-        for (const auto& directory : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-            cao::run::throwIfAssetInitializationCancelled(stop);
-            _meshesOpt.listHeadparts(dir.filePath(directory), stop);
-        }
-    }
-}
-
-void MainOptimizer::addLandscapeTextures(std::stop_token stop) {
     cao::run::throwIfAssetInitializationCancelled(stop);
     _meshesOpt.listHeadparts(_optOptions.userPath, stop);
     if (_optOptions.mode == OptionsCAO::SeveralMods) {

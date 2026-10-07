@@ -163,7 +163,7 @@ QStringList FilesystemOperations::listPlugins(QDirIterator& it,
         suffixes << QString::fromUtf8(ascii.data(), static_cast<int>(ascii.size()));
     }
     // Windows names are case-insensitive and mods do ship "Plugin.ESP", so a case-sensitive
-    // match would silently drop those plugins' headparts and landscape textures.
+    // match would silently drop those plugins' headparts.
     const auto isPlugin = [&suffixes](const QString& fileName) {
         return std::any_of(suffixes.cbegin(), suffixes.cend(), [&fileName](const QString& suffix) {
             return fileName.endsWith(suffix, Qt::CaseInsensitive);
