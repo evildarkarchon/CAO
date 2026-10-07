@@ -9,6 +9,7 @@
 #include <nifly/BasicTypes.hpp>
 #include <nifly/NifFile.hpp>
 
+#include <QDataStream>
 #include <QProcess>
 #include <QTemporaryDir>
 #include <QTest>
@@ -147,6 +148,48 @@ void writeFile(const std::filesystem::path &path, const QByteArray &contents)
     QCOMPARE(file.write(contents), contents.size());
 }
 
+/// Appends a 24-byte record header carrying only the signature and data size the parser reads.
+void appendRecordHeader(QByteArray &plugin, const char (&type)[5], const quint32 dataSize)
+{
+    QDataStream stream(&plugin, QIODevice::Append);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream.writeRawData(type, 4);
+    stream << dataSize << quint32{0} << quint32{0} << quint32{0} << quint32{0};
+}
+
+/// Appends a 24-byte top-level group header whose size includes the header itself.
+void appendGroupHeader(QByteArray &plugin, const char (&label)[5], const quint32 groupSize)
+{
+    QDataStream stream(&plugin, QIODevice::Append);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream.writeRawData("GRUP", 4);
+    stream << groupSize;
+    stream.writeRawData(label, 4);
+    stream << quint32{0} << quint32{0} << quint32{0};
+}
+
+/// Writes a minimal plugin with one HDPT record whose MODL field names `model`, relative to the
+/// meshes directory as real plugins store it. Fields the headpart parser skips are left zeroed.
+void writeHeadpartPlugin(const std::filesystem::path &path, const QByteArray &model)
+{
+    constexpr quint32 headerSize = 24;
+    constexpr quint32 fieldHeaderSize = 6;
+    // MODL is a zero-terminated string and the parser reads it back as a C string.
+    const auto modelSize = static_cast<quint16>(model.size() + 1);
+    const quint32 recordSize = fieldHeaderSize + modelSize;
+
+    QByteArray plugin;
+    appendRecordHeader(plugin, "TES4", 0);
+    appendGroupHeader(plugin, "HDPT", headerSize + headerSize + recordSize);
+    appendRecordHeader(plugin, "HDPT", recordSize);
+    QDataStream stream(&plugin, QIODevice::Append);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream.writeRawData("MODL", 4);
+    stream << modelSize;
+    stream.writeRawData(model.constData(), model.size() + 1);
+    writeFile(path, plugin);
+}
+
 /// Writes an uncompressed square B8G8R8A8 DDS with the requested number of mip levels.
 void writeDds(const std::filesystem::path &path, const size_t size, const size_t mipLevels)
 {
@@ -226,6 +269,9 @@ private slots:
 
  /// Aborts lazy backend initialization when the run has been cancelled.
  void optimizerInitializationObservesCancellation();
+
+ /// Recognizes plugin headparts from every Mod Root in Several Mods mode, not only the last.
+ void severalModsKeepsEveryModRootsHeadparts();
 
 private:
     QTemporaryDir _temporaryDirectory;
@@ -864,6 +910,47 @@ void MainOptimizerTests::optimizerInitializationObservesCancellation()
     }
     QVERIFY(cancelled);
     QVERIFY(std::filesystem::is_regular_file(plugin));
+}
+
+void MainOptimizerTests::severalModsKeepsEveryModRootsHeadparts()
+{
+    // A dedicated directory keeps plugin fixtures from other tests out of the headpart scan.
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto selection = std::filesystem::path(directory.path().toStdWString());
+
+    // Mod Roots are enumerated by name, so mod-a is scanned first and is the one a scan that only
+    // retains the most recent Mod Root's plugins would lose.
+    const auto headA = selection / "mod-a" / "meshes" / "actors" / "mod-a" / "head.nif";
+    const auto headB = selection / "mod-b" / "meshes" / "actors" / "mod-b" / "head.nif";
+    const auto bodyA = selection / "mod-a" / "meshes" / "actors" / "mod-a" / "body.nif";
+    writeHeadpartPlugin(selection / "mod-a" / "mod-a.esp", "Actors\\mod-a\\head.nif");
+    writeHeadpartPlugin(selection / "mod-b" / "mod-b.esp", "Actors\\mod-b\\head.nif");
+    for (const auto &mesh : {headA, headB, bodyA})
+        writeMeshWithTexture(mesh, "textures\\actors\\skin.dds");
+
+    OptionsCAO options;
+    options.mode = OptionsCAO::SeveralMods;
+    options.userPath = directory.path();
+    // Necessary optimization leaves a compatible Mesh untouched unless it is a headpart, so a
+    // committed save is the observable sign that the plugin's headpart was recognized.
+    options.iMeshesOptimizationLevel = 1;
+    options.bMeshesHeadparts = true;
+    MainOptimizer optimizer(options);
+
+    for (const auto &head : {headA, headB}) {
+        const auto result = optimizer.process(routeAsset(head));
+        const auto meshName = head.string();
+        QVERIFY2(result.succeeded(), result.message().c_str());
+        QVERIFY2(result.mutationState() == cao::execution::MutationState::Committed,
+                 ("Headpart was not recognized: " + meshName).c_str());
+    }
+
+    // The control Mesh proves the commits above come from headpart recognition alone.
+    const auto body = optimizer.process(routeAsset(bodyA));
+    QVERIFY2(body.succeeded(), body.message().c_str());
+    QCOMPARE(body.mutationState(), cao::execution::MutationState::None);
 }
 
 QTEST_APPLESS_MAIN(MainOptimizerTests)

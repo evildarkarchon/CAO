@@ -36,6 +36,7 @@ class MeshesOptimizer final : public QObject {
                                                            const QString& filepath,
                                                            cao::routing::ExecutionMode mode) const;
     /// Reads profile and plugin headparts, aborting read-only traversal when setup is cancelled.
+    /// Replaces any previously listed headparts rather than adding to them.
     void listHeadparts(const QString& directory, std::stop_token stop = {});
     /// Loads a Mesh with terrain behavior selected from its carried Mesh Variant.
     std::tuple<bool, nifly::NifFile> loadMesh(const QString& filepath,

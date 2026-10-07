@@ -156,15 +156,10 @@ cao::execution::AssetExecutionResult MainOptimizer::finishAttempt(
 }
 
 void MainOptimizer::addHeadparts(std::stop_token stop) {
-    cao::run::throwIfAssetInitializationCancelled(stop);
+    // One recursive scan of the selection covers every Mod Root in Several Mods mode. Scanning each
+    // Mod Root again would be wrong, not merely redundant: listHeadparts replaces its list on every
+    // call, so only the last Mod Root's plugin headparts would survive.
     _meshesOpt.listHeadparts(_optOptions.userPath, stop);
-    if (_optOptions.mode == OptionsCAO::SeveralMods) {
-        const QDir dir(_optOptions.userPath);
-        for (const auto& directory : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-            cao::run::throwIfAssetInitializationCancelled(stop);
-            _meshesOpt.listHeadparts(dir.filePath(directory), stop);
-        }
-    }
 }
 
 bool MainOptimizer::loadTexture(const std::filesystem::path& path,
