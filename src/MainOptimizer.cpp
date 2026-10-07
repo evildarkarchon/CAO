@@ -78,7 +78,6 @@ MainOptimizer::MainOptimizer(const OptionsCAO& optOptions,
       _assetExecutor(*this) {
     cao::run::throwIfAssetInitializationCancelled(stop);
     addHeadparts(stop);
-    addLandscapeTextures(stop);
     cao::run::throwIfAssetInitializationCancelled(stop);
 }
 
@@ -157,27 +156,10 @@ cao::execution::AssetExecutionResult MainOptimizer::finishAttempt(
 }
 
 void MainOptimizer::addHeadparts(std::stop_token stop) {
-    cao::run::throwIfAssetInitializationCancelled(stop);
+    // One recursive scan of the selection covers every Mod Root in Several Mods mode. Scanning each
+    // Mod Root again would be wrong, not merely redundant: listHeadparts replaces its list on every
+    // call, so only the last Mod Root's plugin headparts would survive.
     _meshesOpt.listHeadparts(_optOptions.userPath, stop);
-    if (_optOptions.mode == OptionsCAO::SeveralMods) {
-        const QDir dir(_optOptions.userPath);
-        for (const auto& directory : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-            cao::run::throwIfAssetInitializationCancelled(stop);
-            _meshesOpt.listHeadparts(dir.filePath(directory), stop);
-        }
-    }
-}
-
-void MainOptimizer::addLandscapeTextures(std::stop_token stop) {
-    cao::run::throwIfAssetInitializationCancelled(stop);
-    _meshesOpt.listHeadparts(_optOptions.userPath, stop);
-    if (_optOptions.mode == OptionsCAO::SeveralMods) {
-        const QDir dir(_optOptions.userPath);
-        for (const auto& directory : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-            cao::run::throwIfAssetInitializationCancelled(stop);
-            _meshesOpt.listHeadparts(dir.filePath(directory), stop);
-        }
-    }
 }
 
 bool MainOptimizer::loadTexture(const std::filesystem::path& path,
@@ -206,8 +188,11 @@ cao::execution::OperationResult MainOptimizer::optimizeTexture(
     const bool compress = optimize && _optOptions.bTexturesCompress;
     const bool mipmaps = optimize && _optOptions.bTexturesMipmaps;
     if (mode == cao::routing::ExecutionMode::DryRun) {
-        _texturesOpt.dryOptimize(necessary, compress, mipmaps, width, height);
-        return cao::execution::OperationResult::changed();
+        // Conversion always produces a new DDS, matching the Apply result below.
+        const bool wouldChange =
+            _texturesOpt.dryOptimize(necessary, compress, mipmaps, width, height) || convert;
+        return wouldChange ? cao::execution::OperationResult::changed()
+                           : cao::execution::OperationResult::unchanged();
     }
 
     if (!_texturesOpt.optimize(necessary, compress, mipmaps, width, height))

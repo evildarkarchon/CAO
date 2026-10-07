@@ -8,6 +8,8 @@
 #include "PluginsOperations.h"
 #include "Run/StagingPaths.h"
 
+#include <algorithm>
+
 std::size_t FilesystemOperations::deleteEmptyDirectories(const QString& folderPath) {
     QDirIterator dirIt(folderPath, QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
                        QDirIterator::Subdirectories);
@@ -151,14 +153,29 @@ QStringList FilesystemOperations::readFile(QFile& file) {
     return list;
 }
 
-QStringList FilesystemOperations::listPlugins(QDirIterator& it, std::stop_token stop) {
+QStringList FilesystemOperations::listPlugins(QDirIterator& it,
+                                              const std::span<const std::u8string> extensions,
+                                              std::stop_token stop) {
+    QStringList suffixes;
+    suffixes.reserve(static_cast<int>(extensions.size()));
+    for (const auto& extension : extensions) {
+        const auto ascii = btu::common::as_ascii(extension);
+        suffixes << QString::fromUtf8(ascii.data(), static_cast<int>(ascii.size()));
+    }
+    // Windows names are case-insensitive and mods do ship "Plugin.ESP", so a case-sensitive
+    // match would silently drop those plugins' headparts.
+    const auto isPlugin = [&suffixes](const QString& fileName) {
+        return std::any_of(suffixes.cbegin(), suffixes.cend(), [&fileName](const QString& suffix) {
+            return fileName.endsWith(suffix, Qt::CaseInsensitive);
+        });
+    };
+
     QStringList plugins;
-    const QRegularExpression pluginsExt("\\.es[plm]$");
     while (true) {
         cao::run::throwIfAssetInitializationCancelled(stop);
         if (!it.hasNext()) break;
         it.next();
-        if (it.fileName().contains(pluginsExt) && !it.fileInfo().isDir()) plugins << it.filePath();
+        if (isPlugin(it.fileName()) && !it.fileInfo().isDir()) plugins << it.filePath();
     }
 
     cao::run::throwIfAssetInitializationCancelled(stop);

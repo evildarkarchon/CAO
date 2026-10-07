@@ -1,6 +1,7 @@
 #include "MainOptimizer.h"
 #include "BsaOptimizer.h"
 #include "FilesystemOperations.h"
+#include "TexturesOptimizer.h"
 #include "AssetRouting/AssetRouter.h"
 #include "Run/AssetInitializationCancelled.h"
 #include "Run/RunEvidence.h"
@@ -8,6 +9,7 @@
 #include <nifly/BasicTypes.hpp>
 #include <nifly/NifFile.hpp>
 
+#include <QDataStream>
 #include <QProcess>
 #include <QTemporaryDir>
 #include <QTest>
@@ -16,6 +18,7 @@
 #include <array>
 #include <chrono>
 #include <filesystem>
+#include <optional>
 #include <stop_token>
 #include <stdexcept>
 #include <string>
@@ -144,6 +147,59 @@ void writeFile(const std::filesystem::path &path, const QByteArray &contents)
     QVERIFY(file.open(QIODevice::WriteOnly));
     QCOMPARE(file.write(contents), contents.size());
 }
+
+/// Appends a 24-byte record header carrying only the signature and data size the parser reads.
+void appendRecordHeader(QByteArray &plugin, const char (&type)[5], const quint32 dataSize)
+{
+    QDataStream stream(&plugin, QIODevice::Append);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream.writeRawData(type, 4);
+    stream << dataSize << quint32{0} << quint32{0} << quint32{0} << quint32{0};
+}
+
+/// Appends a 24-byte top-level group header whose size includes the header itself.
+void appendGroupHeader(QByteArray &plugin, const char (&label)[5], const quint32 groupSize)
+{
+    QDataStream stream(&plugin, QIODevice::Append);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream.writeRawData("GRUP", 4);
+    stream << groupSize;
+    stream.writeRawData(label, 4);
+    stream << quint32{0} << quint32{0} << quint32{0};
+}
+
+/// Writes a minimal plugin with one HDPT record whose MODL field names `model`, relative to the
+/// meshes directory as real plugins store it. Fields the headpart parser skips are left zeroed.
+void writeHeadpartPlugin(const std::filesystem::path &path, const QByteArray &model)
+{
+    constexpr quint32 headerSize = 24;
+    constexpr quint32 fieldHeaderSize = 6;
+    // MODL is a zero-terminated string and the parser reads it back as a C string.
+    const auto modelSize = static_cast<quint16>(model.size() + 1);
+    const quint32 recordSize = fieldHeaderSize + modelSize;
+
+    QByteArray plugin;
+    appendRecordHeader(plugin, "TES4", 0);
+    appendGroupHeader(plugin, "HDPT", headerSize + headerSize + recordSize);
+    appendRecordHeader(plugin, "HDPT", recordSize);
+    QDataStream stream(&plugin, QIODevice::Append);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream.writeRawData("MODL", 4);
+    stream << modelSize;
+    stream.writeRawData(model.constData(), model.size() + 1);
+    writeFile(path, plugin);
+}
+
+/// Writes an uncompressed square B8G8R8A8 DDS with the requested number of mip levels.
+void writeDds(const std::filesystem::path &path, const size_t size, const size_t mipLevels)
+{
+    DirectX::ScratchImage image;
+    QVERIFY(SUCCEEDED(image.Initialize2D(DXGI_FORMAT_B8G8R8A8_UNORM, size, size, 1, mipLevels)));
+    std::fill_n(image.GetPixels(), image.GetPixelsSize(), uint8_t{0x80});
+    QVERIFY(SUCCEEDED(DirectX::SaveToDDSFile(image.GetImages(), image.GetImageCount(),
+                                             image.GetMetadata(), DirectX::DDS_FLAGS_NONE,
+                                             path.c_str())));
+}
 }
 
 class MainOptimizerTests final : public QObject
@@ -185,6 +241,11 @@ private slots:
  /// Verifies reporting a malformed input never mutates a Dry Run tree.
  void dryRunLoadFailureDoesNotQuarantine();
 
+ /// Covers already-optimal, mipmap, and resize-target Textures.
+ void textureDryRunMatchesApply_data();
+ /// Verifies a Dry Run reports a Texture as changed exactly when Apply would modify it.
+ void textureDryRunMatchesApply();
+
  /// Verifies a failed Texture conversion withholds the rewrite of references to that Texture.
  void failedConversionSuppressesMeshReferenceMaintenance();
 
@@ -203,8 +264,14 @@ private slots:
  /// Stops a recursive plugin listing before traversing more entries.
  void pluginListingObservesCancellation();
 
+ /// Lists plugins by the Profile game's extensions, ignoring case, files, and directories.
+ void pluginListingUsesProfileExtensions();
+
  /// Aborts lazy backend initialization when the run has been cancelled.
  void optimizerInitializationObservesCancellation();
+
+ /// Recognizes plugin headparts from every Mod Root in Several Mods mode, not only the last.
+ void severalModsKeepsEveryModRootsHeadparts();
 
 private:
     QTemporaryDir _temporaryDirectory;
@@ -583,6 +650,49 @@ void MainOptimizerTests::dryRunLoadFailureDoesNotQuarantine()
     QVERIFY(!std::filesystem::exists(malformedTexture.wstring() + L".caobad"));
 }
 
+void MainOptimizerTests::textureDryRunMatchesApply_data()
+{
+    QTest::addColumn<int>("size");
+    QTest::addColumn<int>("mipLevels");
+    QTest::addColumn<int>("targetSize");
+    QTest::addColumn<bool>("expectedChange");
+    // A 4x4 Texture's full mip chain is 4x4, 2x2, 1x1. A target size of 0 requests no resize.
+    QTest::newRow("already-optimal") << 4 << 3 << 0 << false;
+    QTest::newRow("missing-mipmaps") << 4 << 1 << 0 << true;
+    // Apply never upscales, so a target larger than the Texture must not predict a resize.
+    QTest::newRow("target-larger-than-texture") << 4 << 3 << 16 << false;
+    QTest::newRow("target-smaller-than-texture") << 8 << 4 << 4 << true;
+}
+
+void MainOptimizerTests::textureDryRunMatchesApply()
+{
+    QFETCH(int, size);
+    QFETCH(int, mipLevels);
+    QFETCH(int, targetSize);
+    QFETCH(bool, expectedChange);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto texture = std::filesystem::path(directory.path().toStdWString()) / "texture.dds";
+    writeDds(texture, static_cast<size_t>(size), static_cast<size_t>(mipLevels));
+
+    // Matching the profile's output format to the fixture isolates resize and mipmap planning
+    // from compression, which this fixture's format would otherwise always request.
+    auto profile = OptimizerProfileSnapshot::captureIntent();
+    profile.texturesFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+    profile.texturesUnwantedFormats.clear();
+    profile.texturesCompressInterface = false;
+    TexturesOptimizer optimizer(profile);
+    const auto target = targetSize > 0 ? std::optional<size_t>(targetSize) : std::nullopt;
+    const auto path = QString::fromStdWString(texture.wstring());
+
+    QVERIFY(optimizer.open(path, TexturesOptimizer::DDS));
+    QCOMPARE(optimizer.dryOptimize(true, true, true, target, target), expectedChange);
+
+    QVERIFY(optimizer.open(path, TexturesOptimizer::DDS));
+    QVERIFY(optimizer.optimize(true, true, true, target, target));
+    QCOMPARE(optimizer.modifiedCurrentTexture, expectedChange);
+}
+
 void MainOptimizerTests::failedConversionSuppressesMeshReferenceMaintenance()
 {
     QVERIFY(_temporaryDirectory.isValid());
@@ -741,11 +851,43 @@ void MainOptimizerTests::pluginListingObservesCancellation()
 
     bool cancelled = false;
     try {
-        static_cast<void>(FilesystemOperations::listPlugins(entries, stop.get_token()));
+        static_cast<void>(FilesystemOperations::listPlugins(
+            entries, btu::bsa::Settings::get(btu::Game::SSE).plugin_extensions,
+            stop.get_token()));
     } catch (const cao::run::AssetInitializationCancelled&) {
         cancelled = true;
     }
     QVERIFY(cancelled);
+}
+
+void MainOptimizerTests::pluginListingUsesProfileExtensions()
+{
+    QVERIFY(_temporaryDirectory.isValid());
+    // A dedicated subtree keeps fixtures from other tests in the shared directory out of the list.
+    const QString directory = QDir(_temporaryDirectory.path()).filePath("plugin-extensions");
+    const auto root = std::filesystem::path(directory.toStdWString());
+    writeFile(root / "Upper.ESP", QByteArrayLiteral("fixture"));
+    writeFile(root / "nested" / "Mixed.EsM", QByteArrayLiteral("fixture"));
+    writeFile(root / "light.esl", QByteArrayLiteral("fixture"));
+    writeFile(root / "readme.txt", QByteArrayLiteral("fixture"));
+    QVERIFY(QDir().mkpath(QDir(directory).filePath("folder.esp")));
+
+    const auto listNames = [&directory](const btu::Game game) {
+        QDirIterator entries(directory, QDirIterator::Subdirectories);
+        QStringList names;
+        for (const auto &path : FilesystemOperations::listPlugins(
+                 entries, btu::bsa::Settings::get(game).plugin_extensions))
+            names << QFileInfo(path).fileName();
+        names.sort(Qt::CaseInsensitive);
+        return names;
+    };
+
+    QCOMPARE(listNames(btu::Game::SSE),
+             QStringList({QStringLiteral("light.esl"), QStringLiteral("Mixed.EsM"),
+                          QStringLiteral("Upper.ESP")}));
+    // FNV has no light plugins, so .esl must not be listed for it.
+    QCOMPARE(listNames(btu::Game::FNV),
+             QStringList({QStringLiteral("Mixed.EsM"), QStringLiteral("Upper.ESP")}));
 }
 
 void MainOptimizerTests::optimizerInitializationObservesCancellation()
@@ -768,6 +910,47 @@ void MainOptimizerTests::optimizerInitializationObservesCancellation()
     }
     QVERIFY(cancelled);
     QVERIFY(std::filesystem::is_regular_file(plugin));
+}
+
+void MainOptimizerTests::severalModsKeepsEveryModRootsHeadparts()
+{
+    // A dedicated directory keeps plugin fixtures from other tests out of the headpart scan.
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ScopedCurrentDirectory isolatedWorkingDirectory(directory.path());
+    const auto selection = std::filesystem::path(directory.path().toStdWString());
+
+    // Mod Roots are enumerated by name, so mod-a is scanned first and is the one a scan that only
+    // retains the most recent Mod Root's plugins would lose.
+    const auto headA = selection / "mod-a" / "meshes" / "actors" / "mod-a" / "head.nif";
+    const auto headB = selection / "mod-b" / "meshes" / "actors" / "mod-b" / "head.nif";
+    const auto bodyA = selection / "mod-a" / "meshes" / "actors" / "mod-a" / "body.nif";
+    writeHeadpartPlugin(selection / "mod-a" / "mod-a.esp", "Actors\\mod-a\\head.nif");
+    writeHeadpartPlugin(selection / "mod-b" / "mod-b.esp", "Actors\\mod-b\\head.nif");
+    for (const auto &mesh : {headA, headB, bodyA})
+        writeMeshWithTexture(mesh, "textures\\actors\\skin.dds");
+
+    OptionsCAO options;
+    options.mode = OptionsCAO::SeveralMods;
+    options.userPath = directory.path();
+    // Necessary optimization leaves a compatible Mesh untouched unless it is a headpart, so a
+    // committed save is the observable sign that the plugin's headpart was recognized.
+    options.iMeshesOptimizationLevel = 1;
+    options.bMeshesHeadparts = true;
+    MainOptimizer optimizer(options);
+
+    for (const auto &head : {headA, headB}) {
+        const auto result = optimizer.process(routeAsset(head));
+        const auto meshName = head.string();
+        QVERIFY2(result.succeeded(), result.message().c_str());
+        QVERIFY2(result.mutationState() == cao::execution::MutationState::Committed,
+                 ("Headpart was not recognized: " + meshName).c_str());
+    }
+
+    // The control Mesh proves the commits above come from headpart recognition alone.
+    const auto body = optimizer.process(routeAsset(bodyA));
+    QVERIFY2(body.succeeded(), body.message().c_str());
+    QCOMPARE(body.mutationState(), cao::execution::MutationState::None);
 }
 
 QTEST_APPLESS_MAIN(MainOptimizerTests)

@@ -6,7 +6,9 @@
 
 #include "pch.h"
 
+#include <span>
 #include <stop_token>
+#include <string>
 
 /*!
  * \brief Manages filesystem operations : moving files, deleting empty dirs...
@@ -47,6 +49,9 @@ class FilesystemOperations final : public QObject {
     static QStringList readFile(QFile& file);
 
     /// Lists plugin paths while polling cancellation between directory entries.
+    /// \param extensions The Profile game's plugin extensions (e.g. btu::bsa::Settings
+    /// plugin_extensions), each with its leading dot; file names match them case-insensitively.
     /// Throws AssetInitializationCancelled before returning a partial list.
-    static QStringList listPlugins(QDirIterator& it, std::stop_token stop = {});
+    static QStringList listPlugins(QDirIterator& it, std::span<const std::u8string> extensions,
+                                   std::stop_token stop = {});
 };

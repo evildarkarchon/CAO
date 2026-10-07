@@ -20,8 +20,6 @@ class TexturesOptimizer final : public QObject {
 
     enum TextureType { DDS, TGA };
 
-    void listLandscapeTextures(QDirIterator& it);
-
     bool open(const void* pSource, const size_t& size, const TextureType& type,
               const QString& fileName);
     bool open(const QString& filePath, const TextureType& type);
@@ -60,8 +58,14 @@ class TexturesOptimizer final : public QObject {
     bool optimize(const bool& bNecessary, const bool& bCompress, const bool& bMipmaps,
                   const std::optional<size_t>& tWidth, const std::optional<size_t>& tHeight);
 
-    void dryOptimize(const bool& bNecessary, const bool& bCompress, const bool& bMipmaps,
-                     const std::optional<size_t>& tWidth, const std::optional<size_t>& tHeight);
+    /*!
+     * \brief Reports, without touching the loaded image, whether optimize() with the same
+     * arguments would transform the current texture.
+     * \return True if the texture would be resized, given mipmaps, or converted
+     */
+    [[nodiscard]] bool dryOptimize(const bool& bNecessary, const bool& bCompress,
+                                   const bool& bMipmaps, const std::optional<size_t>& tWidth,
+                                   const std::optional<size_t>& tHeight);
 
     bool resize(size_t targetWidth, size_t targetHeight);
 
@@ -71,8 +75,6 @@ class TexturesOptimizer final : public QObject {
     bool generateMipMaps();
     bool canHaveMipMaps();
     size_t calculateOptimalMipMapsNumber() const;
-
-    bool convertLandscapeTextures();
 
     DirectX::TexMetadata getInfo() const;
 
@@ -105,6 +107,4 @@ class TexturesOptimizer final : public QObject {
 
     bool createDevice(int adapter, ID3D11Device** pDevice) const;
     bool getDXGIFactory(IDXGIFactory1** pFactory) const;
-
-    QStringList _landscapeTextures;
 };

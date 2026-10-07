@@ -20,23 +20,6 @@ TexturesOptimizer::TexturesOptimizer(OptimizerProfileSnapshot profile)
         throw std::runtime_error("Failed to initialize COM. Textures processing won't work.");
 }
 
-void TexturesOptimizer::listLandscapeTextures(QDirIterator& it) {
-    _landscapeTextures = _profile.customHeadparts;
-
-    if (_landscapeTextures.isEmpty()) {
-        PLOG_ERROR << "customHeadparts.txt not found. This can cause issue when optimizing meshes, "
-                      "as some headparts "
-                      "won't be detected.";
-    }
-
-    for (const auto& plugin : FilesystemOperations::listPlugins(it))
-        _landscapeTextures += PluginsOperations::listLandscapeTextures(plugin);
-    for (auto& tex : _landscapeTextures)
-        if (!tex.endsWith("_n.dds")) tex.insert(tex.size() - 4, "_n");
-
-    _landscapeTextures.removeDuplicates();
-}
-
 bool TexturesOptimizer::getDXGIFactory(IDXGIFactory1** pFactory) const {
     if (!pFactory) return false;
 
@@ -203,41 +186,36 @@ bool TexturesOptimizer::optimize(const bool& bNecessary, const bool& bCompress,
     return true;
 }
 
-void TexturesOptimizer::dryOptimize(const bool& bNecessary, const bool& bCompress,
+bool TexturesOptimizer::dryOptimize(const bool& bNecessary, const bool& bCompress,
                                     const bool& bMipmaps, const std::optional<size_t>& tWidth,
                                     const std::optional<size_t>& tHeight) {
-    const size_t newWidth = tWidth.has_value() ? tWidth.value() : _info.width;
-    const size_t newHeight = tHeight.has_value() ? tHeight.value() : _info.height;
-
-    const bool needsResize = bNecessary && (newHeight != _info.height || newWidth != _info.width);
-
-    const bool needsConversion =
-        (bNecessary && (isIncompatible() || _type == TGA)) ||
-        (bCompress && canBeCompressed() && _info.format != _profile.texturesFormat);
-
-    const bool needsMipMaps =
-        bMipmaps && _info.mipLevels != calculateOptimalMipMapsNumber() && canHaveMipMaps();
+    // Planning through the same processArguments call as optimize() keeps the Dry Run prediction
+    // from drifting away from what Apply would actually do to this Texture.
+    const auto options = processArguments(bNecessary, bCompress, bMipmaps, tWidth, tHeight);
 
     PLOG_INFO << "Analyzing texture: " << _name;
 
-    if (!needsConversion && !needsMipMaps && !needsResize) {
+    if (!options.bNeedsCompress && !options.bNeedsMipmaps && !options.bNeedsResize) {
         PLOG_VERBOSE << "This texture does not need optimization.";
+        return false;
     }
 
     // Fitting to a power of two or resizing
-    if (needsResize) {
-        PLOG_VERBOSE << "This texture would be resized.";
+    if (options.bNeedsResize) {
+        PLOG_VERBOSE << "This texture would be resized to " << options.tWidth << "x"
+                     << options.tHeight << ".";
     }
 
-    if (needsMipMaps) {
+    if (options.bNeedsMipmaps) {
         PLOG_VERBOSE << "This texture would have mipmaps generated.";
     }
 
     // Converting or compressing to the new format
-    if (needsConversion) {
+    if (options.bNeedsCompress) {
         PLOG_VERBOSE << "This texture would be converted to format: "
                      << dxgiFormatToString(_profile.texturesFormat);
     }
+    return true;
 }
 
 bool TexturesOptimizer::canBeCompressed() const {

@@ -1,6 +1,7 @@
 #include "Run/ArchiveFinalization.h"
 #include "ArchiveFinalizationTestSupport.h"
 #include "Run/ArchiveFinalizationResult.h"
+#include "Run/NativeVolume.h"
 #include "Run/RunEvidence.h"
 #include "Run/RunPreparation.h"
 #include "Run/TemporaryArtifactRegistry.h"
@@ -235,6 +236,10 @@ class ArchiveFinalizationTests final : public QObject {
     void finalizationCapacityIsGroupedByVolume();
     /// An idle Mod Root with unknown identity must not inflate other volumes' output estimates.
     void idleUnknownVolumeDoesNotInflateCapacity();
+    /// Resolves volume identity and same-volume staging for a Mod Root deeper than MAX_PATH.
+    void volumeQueriesAcceptLongModRoots();
+    /// Grows the mount point buffer past MAX_PATH and past a separator-dropping near fit.
+    void volumeMountPointGrowsForLongMountedFolders();
     /// Rechecks only the remaining dummy-plugin reserve after each same-volume root completes.
     void dummyCapacityDecreasesAfterEachRoot();
     /// Reports plugin-only capacity failure without inventing output progress or pruning folders.
@@ -492,6 +497,78 @@ void ArchiveFinalizationTests::idleUnknownVolumeDoesNotInflateCapacity() {
     QVERIFY(!result.failure);
     for (const auto& attempt : result.attempts) QVERIFY(attempt.succeeded());
     QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void ArchiveFinalizationTests::volumeQueriesAcceptLongModRoots() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto parent = fs::canonical(fs::path(directory.path().toStdWString()));
+    auto root = parent;
+    // Well past Windows' 260-character MAX_PATH, so both native volume queries receive a long
+    // input even though the drive-letter mount point they resolve is short.
+    while (root.native().size() <= 600) root /= std::wstring(40, L'd');
+    fs::create_directories(root / "textures");
+    const auto expected = cao::run::archiveVolumeIdentity(parent);
+    QVERIFY(expected.has_value());
+    QCOMPARE(cao::run::archiveVolumeIdentity(root), expected);
+    try {
+        TemporaryArtifactRegistry artifacts;
+        const auto staged = artifacts.stageFile(root, root / "textures" / "asset.dds");
+        QVERIFY(fs::is_regular_file(staged.path));
+        QVERIFY(artifacts.performSafetyCleanup().empty());
+    } catch (const std::exception& error) {
+        QFAIL(error.what());
+    }
+}
+
+void ArchiveFinalizationTests::volumeMountPointGrowsForLongMountedFolders() {
+#ifdef _WIN32
+    // Mounting a real volume in a folder needs elevation, so this query reproduces the
+    // documented GetVolumePathNameW buffer contract for a deep mounted folder instead.
+    const auto mount = L"C:\\" + std::wstring(600, L'm') + L"\\";
+    std::vector<DWORD> sizes;
+    std::size_t truncatedFits = 0;
+    const auto query = [&](const wchar_t*, wchar_t* output, const DWORD size) -> BOOL {
+        sizes.push_back(size);
+        if (size < mount.size()) {
+            SetLastError(ERROR_FILENAME_EXCED_RANGE);
+            return FALSE;
+        }
+        // One character short, the real API succeeds without the trailing separator.
+        const auto written = size == mount.size() ? mount.size() - 1 : mount.size();
+        if (written != mount.size()) ++truncatedFits;
+        mount.copy(output, written);
+        output[written] = L'\0';
+        return TRUE;
+    };
+    // A short path through a junction can resolve to a mounted folder longer than itself.
+    const std::wstring junction = L"C:\\junction\\mod";
+    QCOMPARE(cao::run::volumeMountPoint(junction, query), mount);
+    QCOMPARE(sizes, (std::vector<DWORD>{MAX_PATH, 2 * MAX_PATH, 4 * MAX_PATH}));
+    QCOMPARE(truncatedFits, std::size_t{0});
+
+    // The first guess holds the path plus a separator and terminator; for this input it is
+    // exactly one character short, so the separator-dropping result must be retried.
+    sizes.clear();
+    const auto nearFit = mount.substr(0, mount.size() - 2);
+    QCOMPARE(cao::run::volumeMountPoint(nearFit, query), mount);
+    QCOMPARE(sizes, (std::vector<DWORD>{static_cast<DWORD>(mount.size()),
+                                        static_cast<DWORD>(2 * mount.size())}));
+    QCOMPARE(truncatedFits, std::size_t{1});
+
+    // Failures other than an undersized buffer are reported without retrying.
+    sizes.clear();
+    const auto failing = [&](const wchar_t*, wchar_t*, const DWORD size) -> BOOL {
+        sizes.push_back(size);
+        SetLastError(ERROR_INVALID_NAME);
+        return FALSE;
+    };
+    QVERIFY(cao::run::volumeMountPoint(junction, failing).empty());
+    QCOMPARE(GetLastError(), static_cast<DWORD>(ERROR_INVALID_NAME));
+    QCOMPARE(sizes.size(), std::size_t{1});
+#else
+    QSKIP("Volume mount point buffers are a Windows API contract");
+#endif
 }
 
 void ArchiveFinalizationTests::dummyCapacityDecreasesAfterEachRoot() {
