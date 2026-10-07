@@ -1,0 +1,1006 @@
+// PROTOTYPE — throwaway. Structural translation of src/MainWindow.ui and
+// src/TexturesFormatSelectDialog.ui into Slint 1.18, for wayfinder ticket #466.
+// Compiled once per style (fluent / material / cosmic) by build.rs.
+
+import { Button, CheckBox, ComboBox, GroupBox, LineEdit, ListView, SpinBox, TextEdit, RadioGroup, Palette, AboutSlint, StandardButton } from "std-widgets.slint";
+import { TabInfo, CaoTabBar, CheckableGroupBox, HelpCheckBox, HelpLabel, HelpRadio, DoubleSpinBox, CaoProgressBar, HelpTipLayer, PrototypeBar } from "widgets.slint";
+
+export { TabInfo }
+
+// level: 0 debug, 1 info, 2 warning, 3 error, 4 structured run detail
+export struct LogRow {
+    text: string,
+    level: int,
+}
+
+export struct FormatItem {
+    name: string,
+    checked: bool,
+}
+
+export component MainWindow inherits Window {
+    title: @tr("Cathedral Assets Optimizer");
+    preferred-width: 676px;
+    preferred-height: 700px;
+    min-width: 600px;
+    min-height: 520px;
+
+    // ---- Profile and top rows
+    in property <[string]> profiles;
+    in-out property <int> profile-index;
+    in property <bool> base-profile: true;
+    in-out property <string> user-path;
+    in-out property <bool> dry-run;
+    in-out property <bool> show-advanced;
+    in-out property <int> mode-index;
+    in property <[TabInfo]> tabs;
+    in-out property <string> current-tab: "bsa";
+
+    // ---- BSA tab
+    in-out property <bool> bsa-extract;
+    in-out property <bool> bsa-create;
+    in-out property <bool> bsa-delete-backups;
+    in-out property <bool> bsa-delete-source: true;
+    in-out property <bool> bsa-dummies: true;
+    in-out property <bool> bsa-compress: true;
+    in-out property <bool> bsa-sep-textures: true;
+    in-out property <bool> bsa-sep-incompressible: true;
+    in-out property <float> bsa-max-size: 1.96;
+    in-out property <int> bsa-game-index: 1;
+
+    // ---- Meshes tab
+    in-out property <bool> meshes-enabled: true;
+    in-out property <bool> meshes-necessary: true;
+    in-out property <bool> meshes-medium;
+    in-out property <bool> meshes-full;
+    in-out property <bool> meshes-headparts;
+    in-out property <bool> meshes-resave;
+    in-out property <int> meshes-version-index: 1;
+    in-out property <int> meshes-user-index: 1;
+    in-out property <int> meshes-stream-index: 2;
+
+    // ---- Textures tab
+    in-out property <bool> textures-enabled: true;
+    in-out property <bool> tex-necessary: true;
+    in-out property <bool> tex-compress;
+    in-out property <bool> tex-mipmaps;
+    in-out property <bool> resize-enabled;
+    in-out property <int> resize-mode: 0;
+    in-out property <int> ratio-h: 2;
+    in-out property <int> ratio-w: 2;
+    in-out property <int> size-h: 2048;
+    in-out property <int> size-w: 2048;
+    in-out property <bool> tga-conversion;
+    in-out property <int> output-format-index;
+    in-out property <bool> compress-interface;
+    in property <[string]> unwanted;
+
+    // ---- Animations tab
+    in-out property <bool> anim-necessary: true;
+
+    // ---- Run state (driven from Rust)
+    in property <bool> running;
+    in property <bool> cancelling;
+    in property <bool> progress-indeterminate;
+    in property <float> progress;
+    in property <string> progress-text;
+    in property <string> status-text;
+
+    // ---- Log tab
+    in property <[LogRow]> log-rows;
+    in property <string> log-plain;
+
+    // ---- Menu state
+    in-out property <bool> dark: true;
+    in-out property <bool> debug-log;
+    in-out property <bool> show-tutorials: true;
+
+    // ---- OS folder drop hover (winit HoveredFile)
+    in property <bool> drop-hover;
+
+    // ---- Prototype switcher
+    in property <string> proto-style;
+    in property <string> proto-menu;
+    in property <string> proto-log;
+
+    callback profile-selected(int);
+    callback new-profile();
+    callback open-directory();
+    callback run-clicked();
+    callback mode-activated(int);
+    callback advanced-clicked(bool);
+    callback move-tab(int, int);
+    callback edit-unwanted();
+    callback open-log();
+    callback open-docs();
+    callback open-discord();
+    callback about();
+    callback about-slint();
+    callback proto-prev-style();
+    callback proto-next-style();
+    callback proto-toggle-menu();
+    callback proto-toggle-log();
+
+    // Qt's QTabWidget::setEnabled(false) disables every descendant. Slint has no enabled
+    // cascade, so every control in the tab pages ANDs this in by hand.
+    property <bool> ed: !root.running;
+    // Advanced groups are read-only for base profiles (setAdvancedSettingsEnabled).
+    property <bool> adv-ed: root.ed && !root.base-profile;
+
+    init => {
+        Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed dark => {
+        Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    MenuBar {
+        Menu {
+            title: @tr("Tools");
+            MenuItem {
+                title: @tr("Enable dark theme");
+                checkable: true;
+                checked <=> root.dark;
+            }
+
+            MenuItem {
+                title: @tr("Enable debug log");
+                checkable: true;
+                checked <=> root.debug-log;
+            }
+
+            MenuItem {
+                title: @tr("Show tutorials");
+                checkable: true;
+                checked <=> root.show-tutorials;
+            }
+
+            MenuItem {
+                title: @tr("Open log file");
+                activated => {
+                    root.open-log();
+                }
+            }
+        }
+
+        Menu {
+            title: @tr("Help");
+            MenuItem {
+                title: @tr("Documentation");
+                activated => {
+                    root.open-docs();
+                }
+            }
+
+            MenuItem {
+                title: @tr("Discord");
+                activated => {
+                    root.open-discord();
+                }
+            }
+
+            MenuItem {
+                title: @tr("About");
+                activated => {
+                    root.about();
+                }
+            }
+
+            MenuItem {
+                title: @tr("About Slint");
+                activated => {
+                    root.about-slint();
+                }
+            }
+        }
+    }
+
+    VerticalLayout {
+        padding: 9px;
+        padding-bottom: 0px;
+        spacing: 6px;
+
+        // groupBox: Profile | presets | New
+        GroupBox {
+            vertical-stretch: 0;
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: @tr("Profile");
+                    vertical-alignment: center;
+                }
+
+                ComboBox {
+                    horizontal-stretch: 1;
+                    model: root.profiles;
+                    current-index <=> root.profile-index;
+                    enabled: root.ed;
+                    selected => {
+                        root.profile-selected(self.current-index);
+                    }
+                }
+
+                Button {
+                    text: @tr("New");
+                    enabled: root.ed;
+                    clicked => {
+                        root.new-profile();
+                    }
+                }
+            }
+        }
+
+        // userPathTextEdit
+        LineEdit {
+            text <=> root.user-path;
+            placeholder-text: @tr("Mod folder (or drop a folder onto the window)");
+        }
+
+        // mainGroupBox
+        GroupBox {
+            vertical-stretch: 0;
+            GridLayout {
+                spacing: 6px;
+                Row {
+                    Button {
+                        text: @tr("Open Directory");
+                        clicked => {
+                            root.open-directory();
+                        }
+                    }
+
+                    Button {
+                        text: root.running ? @tr("Cancel") : @tr("Run");
+                        primary: !root.running;
+                        enabled: !root.cancelling;
+                        clicked => {
+                            root.run-clicked();
+                        }
+                    }
+
+                    ComboBox {
+                        model: [@tr("One mod"), @tr("Several mods")];
+                        current-index <=> root.mode-index;
+                        selected => {
+                            root.mode-activated(self.current-index);
+                        }
+                    }
+                }
+
+                Row {
+                    HelpCheckBox {
+                        text: @tr("Dry run");
+                        help: @tr("Will list all files that would be modified, without actually processing them. Will ignore files in BSAs.");
+                        checked <=> root.dry-run;
+                        toggled => {
+                            // MainWindow.cpp clears the Base BSA options when Dry Run is ticked.
+                            if root.dry-run {
+                                root.bsa-extract = false;
+                                root.bsa-create = false;
+                                root.bsa-delete-backups = false;
+                            }
+                        }
+                    }
+
+                    Rectangle { }
+
+                    CheckBox {
+                        text: @tr("Show advanced settings");
+                        checked <=> root.show-advanced;
+                        toggled => {
+                            root.advanced-clicked(self.checked);
+                        }
+                    }
+                }
+            }
+        }
+
+        // tabWidget
+        VerticalLayout {
+            vertical-stretch: 1;
+            spacing: 0px;
+            CaoTabBar {
+                tabs: root.tabs;
+                current-id <=> root.current-tab;
+                enabled: root.ed;
+                move-tab(from, to) => {
+                    root.move-tab(from, to);
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+                border-width: 1px;
+                border-color: Palette.border;
+                background: Palette.background;
+                // A layout, not bare `if` children, so the active page's min-height reaches the window.
+                VerticalLayout {
+
+                if root.current-tab == "bsa": VerticalLayout {
+                    padding: 8px;
+                    spacing: 6px;
+                    alignment: start;
+                    GroupBox {
+                        title: @tr("Base");
+                        enabled: root.ed && !root.dry-run;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            HelpCheckBox {
+                                text: @tr("Extract BSA");
+                                help: @tr("Extracts any BSAs present in the mod folder.");
+                                warning: @tr("Warning. If you enable this option, the process will be considerably slowed down.");
+                                enabled: root.ed && !root.dry-run;
+                                checked <=> root.bsa-extract;
+                            }
+
+                            HelpCheckBox {
+                                text: @tr("Create BSA");
+                                help: @tr("Creates a new BSA, packing the existing loose files.");
+                                warning: @tr("Warning. If you enable this option, the process will be considerably slowed down.");
+                                enabled: root.ed && !root.dry-run;
+                                checked <=> root.bsa-create;
+                            }
+
+                            HelpCheckBox {
+                                text: @tr("Delete backups");
+                                help: @tr("By default, a backup of existing bsa is created. Enabling this option will disable those backups.");
+                                enabled: root.ed && !root.dry-run;
+                                checked <=> root.bsa-delete-backups;
+                            }
+                        }
+                    }
+
+                    GroupBox {
+                        title: @tr("Extra");
+                        enabled: root.ed;
+                        GridLayout {
+                            spacing: 6px;
+                            Row {
+                                HelpCheckBox {
+                                    text: @tr("Delete source files");
+                                    help: @tr("Whether CAO will delete the files it packed into BSAs or leave them.");
+                                    enabled: root.ed;
+                                    checked <=> root.bsa-delete-source;
+                                }
+
+                                HelpCheckBox {
+                                    text: @tr("Create dummy plugins");
+                                    help: @tr("Dummy plugins are almost always necessary. Disabling creation also removes existing Dummy Plugins whose bytes exactly match the selected game profile's canonical dummy content.");
+                                    enabled: root.ed;
+                                    checked <=> root.bsa-dummies;
+                                }
+
+                                HelpCheckBox {
+                                    text: @tr("Allow compression");
+                                    help: @tr("Compressed BSAs use less space on disk, but they might perform slightly worse in game");
+                                    enabled: root.ed;
+                                    checked <=> root.bsa-compress;
+                                }
+                            }
+
+                            Row {
+                                HelpCheckBox {
+                                    text: @tr("Separate textures BSA");
+                                    help: @tr("There are three types of BSAs CAO can create : incompressible, textures and standard. If enabled, this option will always separate textures into their own BSAs. Otherwise, they will be merged into the standard one if possible.");
+                                    enabled: root.ed;
+                                    checked <=> root.bsa-sep-textures;
+                                }
+
+                                HelpCheckBox {
+                                    text: @tr("Separate incompressible BSA");
+                                    help: @tr("There are three types of BSAs CAO can create : incompressible, textures and standard. If enabled, this option will always separate incompressible files into their own BSAs. Otherwise, they will be merged into the standard one if possible.");
+                                    enabled: root.ed;
+                                    checked <=> root.bsa-sep-incompressible;
+                                }
+                            }
+                        }
+                    }
+
+                    if root.show-advanced: GroupBox {
+                        title: @tr("Advanced");
+                        enabled: root.adv-ed;
+                        GridLayout {
+                            spacing: 6px;
+                            Row {
+                                HelpLabel {
+                                    text: @tr("Maximum size");
+                                    help: @tr("The maximum uncompressed size of the files in GB. Increasing it will increase the number of files stored per BSA, but you might reach the hard limit of BSA size, causing the game to crash.");
+                                    enabled: root.adv-ed;
+                                }
+
+                                DoubleSpinBox {
+                                    enabled: root.adv-ed;
+                                    value <=> root.bsa-max-size;
+                                    step: 0.1;
+                                }
+                            }
+
+                            Row {
+                                Text {
+                                    text: @tr("Game");
+                                    vertical-alignment: center;
+                                }
+
+                                ComboBox {
+                                    enabled: root.adv-ed;
+                                    model: [@tr("Skyrim LE"), @tr("SSE"), @tr("FO4")];
+                                    current-index <=> root.bsa-game-index;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.current-tab == "meshes": VerticalLayout {
+                    padding: 8px;
+                    spacing: 6px;
+                    alignment: start;
+                    CheckableGroupBox {
+                        title: @tr("Process meshes");
+                        enabled: root.ed;
+                        checked <=> root.meshes-enabled;
+                        // RadioGroup has no settable selection index; programmatic selection
+                        // goes through each button's `checked`, and a plain `checked: expr`
+                        // binding is dropped on the first click. Two-way bindings survive.
+                        RadioGroup {
+                            orientation: horizontal;
+                            enabled: root.ed && root.meshes-enabled;
+                            RadioButton {
+                                text: @tr("Necessary optimization");
+                                checked <=> root.meshes-necessary;
+                                Tooltip {
+                                    text: @markdown("\{@tr("Attempts to repair meshes which are guaranteed to crash the game. Headparts are included.")}");
+                                }
+                            }
+
+                            // Several-mods mode disables the two heavier levels.
+                            RadioButton {
+                                text: @tr("Medium optimization");
+                                enabled: root.mode-index == 0;
+                                checked <=> root.meshes-medium;
+                                Tooltip {
+                                    text: @markdown("\{@tr("Perform necessary optimization, and also lightly optimizes other meshes. This may fix some visual issues, but may also lower quality.")}");
+                                }
+                            }
+
+                            RadioButton {
+                                text: @tr("Full optimization");
+                                enabled: root.mode-index == 0;
+                                checked <=> root.meshes-full;
+                                Tooltip {
+                                    text: @markdown("\{@tr("Fully optimize all meshes. Only apply if standard mesh optimization ignored necessary files. May lower visual quality.")}");
+                                }
+                            }
+                        }
+                    }
+
+                    GroupBox {
+                        title: @tr("Advanced");
+                        enabled: root.ed;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            HelpCheckBox {
+                                text: @tr("Always process headparts");
+                                help: @tr("When this option is disabled, headparts are ignored. It is recommended to keep it disabled when processing several mods.");
+                                enabled: root.ed;
+                                checked <=> root.meshes-headparts;
+                            }
+
+                            HelpCheckBox {
+                                text: @tr("Resave meshes");
+                                help: @tr("Will resave meshes even if optimization is disabled. Will perform the same optimization as opening a mesh in NifSkope.");
+                                enabled: root.ed;
+                                checked <=> root.meshes-resave;
+                            }
+                        }
+                    }
+
+                    if root.show-advanced: GroupBox {
+                        title: @tr("Expert");
+                        enabled: root.adv-ed;
+                        GridLayout {
+                            spacing: 6px;
+                            Row {
+                                Text {
+                                    text: @tr("Version");
+                                    vertical-alignment: center;
+                                }
+
+                                ComboBox {
+                                    enabled: root.adv-ed;
+                                    model: [@tr("Oblivion (V20_0_0_5)"), @tr("Fallout 3 / Skyrim / Skyrim SE / Fallout 4 (V20_2_0_7)")];
+                                    current-index <=> root.meshes-version-index;
+                                }
+                            }
+
+                            Row {
+                                Text {
+                                    text: @tr("User");
+                                    vertical-alignment: center;
+                                }
+
+                                ComboBox {
+                                    enabled: root.adv-ed;
+                                    model: [@tr("Oblivion (11)"), @tr("Fallout 3 / Skyrim / Skyrim SE / Fallout 4 (12)")];
+                                    current-index <=> root.meshes-user-index;
+                                }
+                            }
+
+                            Row {
+                                Text {
+                                    text: @tr("Stream");
+                                    vertical-alignment: center;
+                                }
+
+                                ComboBox {
+                                    enabled: root.adv-ed;
+                                    model: [@tr("Oblivion / Fallout 3 (82)"), @tr("Skyrim (83)"), @tr("Skyrim SE (100)"), @tr("Fallout 4 (130)")];
+                                    current-index <=> root.meshes-stream-index;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.current-tab == "textures": VerticalLayout {
+                    padding: 8px;
+                    spacing: 6px;
+                    alignment: start;
+                    CheckableGroupBox {
+                        title: @tr("Process textures");
+                        enabled: root.ed;
+                        checked <=> root.textures-enabled;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            HelpCheckBox {
+                                text: @tr("Necessary optimization");
+                                help: @tr("Converts any TGA files into DDS, as SSE cannot read these. Attempts to convert and fix any textures that would crash the game, as some older formats are incompatible with SSE.");
+                                enabled: root.ed && root.textures-enabled;
+                                checked <=> root.tex-necessary;
+                            }
+
+                            HelpCheckBox {
+                                text: @tr("Compress textures");
+                                help: @tr("Compresses uncompressed textures to the configured output format. It is recommended for SSE and FO4, but may highly decrease quality for other games.");
+                                enabled: root.ed && root.textures-enabled;
+                                checked <=> root.tex-compress;
+                            }
+
+                            HelpCheckBox {
+                                text: @tr("Generate mipmaps");
+                                help: @tr("Recommended. Mipmaps are smaller copies of textures embedded in the same file which get used when things are small or far away and a pixel on screen covers several pixels in the texture. They improve visual quality with a small performance cost.");
+                                enabled: root.ed && root.textures-enabled;
+                                checked <=> root.tex-mipmaps;
+                            }
+                        }
+                    }
+
+                    CheckableGroupBox {
+                        title: @tr("Downsizing");
+                        enabled: root.ed;
+                        checked <=> root.resize-enabled;
+                        GridLayout {
+                            spacing: 6px;
+                            Row {
+                                HelpRadio {
+                                    text: @tr("By ratio");
+                                    help: @tr("Resizes textures, dividing the current width and height by the values given. Must result in texture dimensions expressed in powers of two, no less than 4x4.");
+                                    enabled: root.ed && root.resize-enabled;
+                                    checked: root.resize-mode == 0;
+                                    clicked => {
+                                        root.resize-mode = 0;
+                                    }
+                                }
+
+                                Text {
+                                    text: @tr("Height:");
+                                    vertical-alignment: center;
+                                }
+
+                                SpinBox {
+                                    enabled: root.ed && root.resize-enabled;
+                                    minimum: 2;
+                                    maximum: 10;
+                                    value <=> root.ratio-h;
+                                }
+
+                                Text {
+                                    text: @tr("Width:");
+                                    vertical-alignment: center;
+                                }
+
+                                SpinBox {
+                                    enabled: root.ed && root.resize-enabled;
+                                    minimum: 2;
+                                    maximum: 10;
+                                    value <=> root.ratio-w;
+                                }
+                            }
+
+                            Row {
+                                HelpRadio {
+                                    text: @tr("By fixed size");
+                                    help: @tr("Resizes texture dimensions to the given sizes. Must result in texture dimensions expressed in powers of two, no less than 4x4.");
+                                    enabled: root.ed && root.resize-enabled;
+                                    checked: root.resize-mode == 1;
+                                    clicked => {
+                                        root.resize-mode = 1;
+                                    }
+                                }
+
+                                Text {
+                                    text: @tr("Height:");
+                                    vertical-alignment: center;
+                                }
+
+                                SpinBox {
+                                    enabled: root.ed && root.resize-enabled;
+                                    minimum: 4;
+                                    maximum: 4096;
+                                    value <=> root.size-h;
+                                }
+
+                                Text {
+                                    text: @tr("Width:");
+                                    vertical-alignment: center;
+                                }
+
+                                SpinBox {
+                                    enabled: root.ed && root.resize-enabled;
+                                    minimum: 4;
+                                    maximum: 4096;
+                                    value <=> root.size-w;
+                                }
+                            }
+                        }
+                    }
+
+                    if root.show-advanced: GroupBox {
+                        title: @tr("Advanced");
+                        enabled: root.adv-ed;
+                        GridLayout {
+                            spacing: 6px;
+                            Row {
+                                HelpLabel {
+                                    text: @tr("TGA");
+                                    help: @tr("Will convert TGAs to a compatible DDS format if option is selected.");
+                                    enabled: root.adv-ed;
+                                }
+
+                                CheckBox {
+                                    colspan: 2;
+                                    text: @tr("Enable TGA conversion");
+                                    enabled: root.adv-ed;
+                                    checked <=> root.tga-conversion;
+                                }
+                            }
+
+                            Row {
+                                HelpLabel {
+                                    text: @tr("Output format");
+                                    help: @tr("Output format for uncompressed textures, modified textures, and converted TGA files. BC7 should only be used for SSE or FO4.");
+                                    enabled: root.adv-ed;
+                                }
+
+                                ComboBox {
+                                    colspan: 2;
+                                    enabled: root.adv-ed;
+                                    model: [@tr("BC7 (BC7_UNORM)"), @tr("BC5 (BC5_UNORM)"), @tr("BC3 (BC3_UNORM)"), @tr("BC1 (BC1_UNORM)"), @tr("Uncompressed (R8G8B8A8_UNORM)")];
+                                    current-index <=> root.output-format-index;
+                                }
+                            }
+
+                            Row {
+                                HelpLabel {
+                                    text: @tr("Interface");
+                                    help: @tr("Some games do not support compressed interface textures.");
+                                    enabled: root.adv-ed;
+                                }
+
+                                CheckBox {
+                                    colspan: 2;
+                                    text: @tr("Compress interface textures");
+                                    enabled: root.adv-ed;
+                                    checked <=> root.compress-interface;
+                                }
+                            }
+
+                            Row {
+                                HelpLabel {
+                                    text: @tr("Unwanted formats");
+                                    help: @tr("Textures using these formats will be converted to a supported format.");
+                                    enabled: root.adv-ed;
+                                }
+
+                                Rectangle {
+                                    height: 84px;
+                                    horizontal-stretch: 1;
+                                    border-width: 1px;
+                                    border-radius: 3px;
+                                    border-color: Palette.border;
+                                    ListView {
+                                        for name in root.unwanted: Text {
+                                            text: name;
+                                            height: 20px;
+                                            x: 6px;
+                                            vertical-alignment: center;
+                                            color: root.adv-ed ? Palette.foreground : Palette.foreground.transparentize(0.55);
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: start;
+                                    Button {
+                                        text: @tr("Edit");
+                                        enabled: root.adv-ed;
+                                        clicked => {
+                                            root.edit-unwanted();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.current-tab == "animations": VerticalLayout {
+                    padding: 8px;
+                    spacing: 6px;
+                    alignment: start;
+                    GroupBox {
+                        title: @tr("Process animations");
+                        enabled: root.ed;
+                        HelpCheckBox {
+                            text: @tr("Necessary optimization");
+                            help: @tr("Converts animations to the appropriate format. If an animation is already compatible, no change will be made.");
+                            enabled: root.ed;
+                            checked <=> root.anim-necessary;
+                        }
+                    }
+
+                    // Empty in MainWindow.ui too; kept for structural parity.
+                    if root.show-advanced: GroupBox {
+                        title: @tr("Advanced");
+                        enabled: root.adv-ed;
+                        Rectangle {
+                            height: 16px;
+                        }
+                    }
+                }
+
+                if root.current-tab == "log": VerticalLayout {
+                    padding: 6px;
+                    if root.proto-log == "rows": log-view := ListView {
+                        property <int> count: root.log-rows.length;
+                        // Tail-follow: stick to the bottom as rows arrive.
+                        changed count => {
+                            self.content-y = min(0px, self.visible-height - self.content-height);
+                        }
+                        for row in root.log-rows: Text {
+                            x: 4px;
+                            height: 18px;
+                            text: row.text;
+                            font-family: "Consolas";
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            color: row.level == 3 ? #e5484d : row.level == 2 ? #f5a524 : row.level == 0 ? Palette.foreground.transparentize(0.5) : row.level == 4 ? Palette.accent-background : Palette.foreground;
+                        }
+                    }
+                    if root.proto-log == "plain": TextEdit {
+                        read-only: true;
+                        wrap: no-wrap;
+                        font-size: 12px;
+                        text: root.log-plain;
+                    }
+                }
+                }
+            }
+        }
+
+        // progressBar: QProgressBar draws its format text inside the bar.
+        CaoProgressBar {
+            indeterminate: root.progress-indeterminate;
+            progress: root.progress;
+            text: root.progress-text;
+        }
+
+        // QMainWindow::statusBar()
+        Rectangle {
+            height: 22px;
+            Text {
+                x: 2px;
+                text: root.status-text;
+                vertical-alignment: center;
+                font-size: 11px;
+                color: Palette.foreground.transparentize(0.25);
+            }
+        }
+    }
+
+    if root.drop-hover: Rectangle {
+        background: Palette.accent-background.with-alpha(0.18);
+        border-width: 3px;
+        border-color: Palette.accent-background;
+        Text {
+            text: @tr("Drop a folder to set the mod path");
+            font-size: 20px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    HelpTipLayer {
+        width: 100%;
+        height: 100%;
+    }
+
+    PrototypeBar {
+        x: parent.width - self.width - 10px;
+        y: parent.height - self.height - 50px;
+        style-name: root.proto-style;
+        menu-mode: root.proto-menu;
+        log-mode: root.proto-log;
+        prev-style => {
+            root.proto-prev-style();
+        }
+        next-style => {
+            root.proto-next-style();
+        }
+        toggle-menu => {
+            root.proto-toggle-menu();
+        }
+        toggle-log => {
+            root.proto-toggle-log();
+        }
+    }
+}
+
+// TexturesFormatSelectDialog. Qt's title is literally "Dialog"; titled here for the reaction.
+export component FormatsDialog inherits Dialog {
+    title: @tr("Unwanted formats");
+    preferred-width: 340px;
+    preferred-height: 460px;
+
+    in property <[FormatItem]> items;
+    in-out property <string> search;
+    callback search-edited(string);
+    callback confirm();
+    callback dismiss();
+
+    VerticalLayout {
+        padding: 9px;
+        spacing: 6px;
+        Text {
+            text: @tr("Search");
+        }
+
+        LineEdit {
+            text <=> root.search;
+            edited(t) => {
+                root.search-edited(t);
+            }
+        }
+
+        ListView {
+            vertical-stretch: 1;
+            for item in root.items: CheckBox {
+                text: item.name;
+                checked <=> item.checked;
+            }
+        }
+    }
+
+    StandardButton {
+        kind: ok;
+        clicked => {
+            root.confirm();
+        }
+    }
+
+    StandardButton {
+        kind: cancel;
+        clicked => {
+            root.dismiss();
+        }
+    }
+}
+
+// QInputDialog::getText
+export component TextInputDialog inherits Dialog {
+    in property <string> dialog-title;
+    title: root.dialog-title;
+    preferred-width: 320px;
+    in property <string> label;
+    in-out property <string> value;
+    callback confirm();
+    callback dismiss();
+
+    init => {
+        le.focus();
+    }
+
+    VerticalLayout {
+        padding: 9px;
+        spacing: 6px;
+        Text {
+            text: root.label;
+        }
+
+        le := LineEdit {
+            text <=> root.value;
+            accepted => {
+                root.confirm();
+            }
+        }
+    }
+
+    StandardButton {
+        kind: ok;
+        clicked => {
+            root.confirm();
+        }
+    }
+
+    StandardButton {
+        kind: cancel;
+        clicked => {
+            root.dismiss();
+        }
+    }
+}
+
+// QInputDialog::getItem
+export component ChoiceDialog inherits Dialog {
+    in property <string> dialog-title;
+    title: root.dialog-title;
+    preferred-width: 320px;
+    in property <string> label;
+    in property <[string]> choices;
+    in-out property <int> current-index;
+    callback confirm();
+    callback dismiss();
+
+    VerticalLayout {
+        padding: 9px;
+        spacing: 6px;
+        Text {
+            text: root.label;
+        }
+
+        ComboBox {
+            model: root.choices;
+            current-index <=> root.current-index;
+        }
+    }
+
+    StandardButton {
+        kind: ok;
+        clicked => {
+            root.confirm();
+        }
+    }
+
+    StandardButton {
+        kind: cancel;
+        clicked => {
+            root.dismiss();
+        }
+    }
+}
+
+// Replaces QMessageBox::aboutQt.
+export component AboutSlintDialog inherits Dialog {
+    title: @tr("About Slint");
+    callback confirm();
+
+    AboutSlint { }
+
+    StandardButton {
+        kind: ok;
+        clicked => {
+            root.confirm();
+        }
+    }
+}

@@ -1,0 +1,576 @@
+// PROTOTYPE — throwaway. Custom widgets that Slint 1.18's std-widgets can't express for CAO.
+// See wayfinder ticket #466 and the hard-parts research (#462) for why each one exists.
+
+import { CheckBox, LineEdit, Palette } from "std-widgets.slint";
+
+export struct TabInfo {
+    id: string,
+    title: string,
+    enabled: bool,
+}
+
+// Replacement for QTabWidget's tab bar: std TabWidget has no per-tab enable and no reordering.
+// Tabs are fixed-width so the drop slot is a simple division; reorder happens on release
+// (with an insertion marker while dragging) because a live reorder would hand the grabbed
+// TouchArea to a different repeater row mid-drag.
+export component CaoTabBar inherits Rectangle {
+    in property <[TabInfo]> tabs;
+    in-out property <string> current-id;
+    in property <bool> enabled: true;
+    callback move-tab(from: int, to: int);
+
+    property <length> tab-width: 104px;
+    property <int> drag-from: -1;
+    property <int> drop-slot: -1;
+
+    height: 32px;
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Palette.border;
+    }
+
+    for tab[i] in root.tabs: Rectangle {
+        property <bool> active: tab.id == root.current-id;
+        property <bool> usable: tab.enabled && root.enabled;
+        x: i * root.tab-width;
+        width: root.tab-width;
+        height: root.height;
+        background: active ? Palette.background : (ta.has-hover && usable ? Palette.control-background : transparent);
+        border-width: active ? 1px : 0px;
+        border-color: Palette.border;
+        opacity: root.drag-from == i ? 0.6 : 1.0;
+
+        // Hides the baseline under the active tab so it reads as attached to the page.
+        if active: Rectangle {
+            y: parent.height - 1px;
+            x: 1px;
+            width: parent.width - 2px;
+            height: 1px;
+            background: Palette.background;
+        }
+
+        Text {
+            text: tab.title;
+            color: usable ? Palette.foreground : Palette.foreground.transparentize(0.6);
+            font-weight: active ? 600 : 400;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        ta := TouchArea {
+            enabled: usable;
+            mouse-cursor: root.drag-from == i ? MouseCursor.grabbing : MouseCursor.default;
+            pointer-event(ev) => {
+                if ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left {
+                    root.current-id = tab.id;
+                } else if ev.kind == PointerEventKind.up && root.drag-from >= 0 {
+                    // Slot s is an insertion point; moving right past yourself shifts by one.
+                    if root.drop-slot != root.drag-from && root.drop-slot != root.drag-from + 1 {
+                        root.move-tab(root.drag-from, root.drop-slot > root.drag-from ? root.drop-slot - 1 : root.drop-slot);
+                    }
+                    root.drag-from = -1;
+                    root.drop-slot = -1;
+                }
+            }
+            moved => {
+                if self.pressed && abs(self.mouse-x - self.pressed-x) > 8px {
+                    root.drag-from = i;
+                    root.drop-slot = max(0, min(root.tabs.length, round((parent.x + self.mouse-x) / root.tab-width)));
+                }
+            }
+        }
+    }
+
+    if root.drag-from >= 0: Rectangle {
+        x: root.drop-slot * root.tab-width - 1px;
+        width: 3px;
+        height: root.height;
+        background: Palette.accent-background;
+    }
+}
+
+// QGroupBox with checkable=true. Slint's GroupBox has no checkable mode and doesn't pass
+// `enabled` down, so children must bind `enabled: group.checked && …` themselves.
+export component CheckableGroupBox {
+    in property <string> title;
+    in property <bool> enabled: true;
+    in-out property <bool> checked;
+    callback toggled;
+
+    VerticalLayout {
+        spacing: 2px;
+        CheckBox {
+            text: root.title;
+            enabled: root.enabled;
+            checked <=> root.checked;
+            toggled => {
+                root.toggled();
+            }
+        }
+
+        Rectangle {
+            border-width: 1px;
+            border-radius: 4px;
+            border-color: Palette.border;
+            VerticalLayout {
+                padding: 8px;
+                spacing: 6px;
+                @children
+            }
+        }
+    }
+}
+
+// ---- Clamped tooltips
+// Slint 1.18's `Tooltip` is an in-window overlay placed at the pointer and deliberately not
+// clamped (i-slint-core window.rs), so tips near the right/bottom edge are cut off (slint#12260;
+// the native-popup fix, slint#11740, waits on winit). Instead, hosts publish their help text
+// and the pointer position to this global, and one HelpTipLayer in the main window draws the
+// tip clamped inside the window, flipping above the pointer near the bottom edge.
+export global HelpTip {
+    in-out property <string> text;
+    in-out property <string> warning;
+    in-out property <bool> visible;
+    // Pointer position in window coordinates when the tip was shown.
+    in-out property <length> px;
+    in-out property <length> py;
+}
+
+// TouchArea with the help cursor that shows HelpTip after a hover delay, like QToolTip:
+// hidden on leave or press, and not re-shown until the pointer leaves and re-enters.
+export component HelpArea inherits TouchArea {
+    in property <string> help;
+    in property <string> warning;
+
+    property <bool> shown;
+    property <bool> dismissed;
+
+    mouse-cursor: MouseCursor.help;
+
+    function hide-tip() {
+        if root.shown {
+            HelpTip.visible = false;
+            root.shown = false;
+        }
+    }
+
+    changed has-hover => {
+        if !self.has-hover {
+            root.hide-tip();
+            root.dismissed = false;
+        }
+    }
+    pointer-event(ev) => {
+        if ev.kind == PointerEventKind.down {
+            root.hide-tip();
+            root.dismissed = true;
+        }
+    }
+
+    Timer {
+        interval: 700ms;
+        running: root.has-hover && !root.shown && !root.dismissed && root.help != "";
+        triggered => {
+            HelpTip.text = root.help;
+            HelpTip.warning = root.warning;
+            HelpTip.px = root.absolute-position.x + root.mouse-x;
+            HelpTip.py = root.absolute-position.y + root.mouse-y;
+            HelpTip.visible = true;
+            root.shown = true;
+        }
+    }
+}
+
+// Draws the active HelpTip. Place once, last, filling the window.
+export component HelpTipLayer {
+    if HelpTip.visible: tip := Rectangle {
+        property <length> cap-width: min(380px, root.width - 16px);
+        property <length> below: HelpTip.py + 20px;
+        width: min(self.cap-width, body.preferred-width + 20px);
+        height: layout.preferred-height;
+        x: max(8px, min(HelpTip.px + 2px, root.width - self.width - 8px));
+        y: self.below + self.height <= root.height - 8px ? self.below : max(8px, HelpTip.py - self.height - 6px);
+        background: Palette.alternate-background;
+        border-radius: 4px;
+        border-width: 1px;
+        border-color: Palette.border;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: #00000060;
+
+        layout := VerticalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            padding-top: 6px;
+            padding-bottom: 6px;
+            spacing: 6px;
+            body := Text {
+                text: HelpTip.text;
+                wrap: word-wrap;
+                color: Palette.foreground;
+            }
+
+            if HelpTip.warning != "": Text {
+                text: HelpTip.warning;
+                wrap: word-wrap;
+                font-weight: 700;
+                color: Palette.foreground;
+            }
+        }
+    }
+}
+
+// CheckBox + WhatsThis-style help cursor + tooltip. The std CheckBox doesn't expose
+// mouse-cursor and the innermost TouchArea wins, so an overlay owns the pointer and forwards
+// clicks. Cost: the CheckBox loses its own hover/pressed visuals.
+export component HelpCheckBox {
+    in property <string> text;
+    in property <string> help;
+    in property <string> warning;
+    in property <bool> enabled: true;
+    in-out property <bool> checked;
+    callback toggled;
+
+    HorizontalLayout {
+        CheckBox {
+            text: root.text;
+            enabled: root.enabled;
+            checked <=> root.checked;
+        }
+    }
+
+    // Stays enabled so disabled options still show their tooltip (as QToolTip does); the click
+    // itself is gated instead.
+    HelpArea {
+        help: root.help;
+        warning: root.warning;
+        clicked => {
+            if root.enabled {
+                root.checked = !root.checked;
+                root.toggled();
+            }
+        }
+    }
+}
+
+// QLabel with a tooltip and the help cursor. Slint Text doesn't grey out when disabled.
+export component HelpLabel {
+    in property <string> text;
+    in property <string> help;
+    in property <bool> enabled: true;
+
+    HorizontalLayout {
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            color: root.enabled ? Palette.foreground : Palette.foreground.transparentize(0.55);
+        }
+    }
+
+    HelpArea {
+        help: root.help;
+    }
+}
+
+// Hand-drawn radio button for the Downsizing grid: a std RadioButton must be a direct child of
+// a RadioGroup that holds only RadioButtons, and those radios sit between spin boxes.
+export component HelpRadio {
+    in property <string> text;
+    in property <string> help;
+    in property <bool> enabled: true;
+    in property <bool> checked;
+    callback clicked;
+
+    min-height: 28px;
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        Rectangle {
+            y: (parent.height - self.height) / 2;
+            width: 18px;
+            height: 18px;
+            border-radius: 9px;
+            border-width: 1px;
+            border-color: root.enabled ? Palette.foreground.transparentize(0.4) : Palette.border;
+            background: Palette.control-background;
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: root.checked ? (root.enabled ? Palette.accent-background : Palette.border) : transparent;
+            }
+        }
+
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            color: root.enabled ? Palette.foreground : Palette.foreground.transparentize(0.55);
+        }
+    }
+
+    HelpArea {
+        help: root.help;
+        clicked => {
+            if root.enabled {
+                root.clicked();
+            }
+        }
+    }
+}
+
+component ArrowButton inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> enabled: true;
+    callback clicked;
+
+    border-width: 1px;
+    border-radius: 3px;
+    border-color: Palette.border;
+    background: ta.pressed ? Palette.accent-background : (ta.has-hover && root.enabled ? Palette.alternate-background : Palette.control-background);
+    Text {
+        text: root.glyph;
+        font-size: 9px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        color: root.enabled ? Palette.foreground : Palette.foreground.transparentize(0.55);
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// QDoubleSpinBox stand-in (Slint's SpinBox is int-only). Commits on Enter or focus loss,
+// clamps to [minimum, maximum], and always shows two decimals like Qt's default.
+export component DoubleSpinBox {
+    in property <bool> enabled: true;
+    in-out property <float> value;
+    in property <float> minimum: 0;
+    in property <float> maximum: 99.99;
+    in property <float> step: 1;
+
+    property <bool> editing: le.has-focus;
+
+    function show-value() {
+        le.text = root.value.to-fixed(2);
+    }
+    function commit(t: string) {
+        if t.is-float() {
+            root.value = max(root.minimum, min(root.maximum, t.to-float()));
+        }
+        root.show-value();
+    }
+    function bump(d: float) {
+        root.value = max(root.minimum, min(root.maximum, root.value + d));
+        root.show-value();
+    }
+
+    init => {
+        root.show-value();
+    }
+    changed value => {
+        if !root.editing {
+            root.show-value();
+        }
+    }
+    changed editing => {
+        if !root.editing {
+            root.commit(le.text);
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 3px;
+        le := LineEdit {
+            enabled: root.enabled;
+            input-type: decimal;
+            accepted(t) => {
+                root.commit(t);
+            }
+        }
+
+        VerticalLayout {
+            width: 22px;
+            spacing: 2px;
+            padding-top: 2px;
+            padding-bottom: 2px;
+            ArrowButton {
+                glyph: "▲";
+                enabled: root.enabled;
+                clicked => {
+                    root.bump(root.step);
+                }
+            }
+
+            ArrowButton {
+                glyph: "▼";
+                enabled: root.enabled;
+                clicked => {
+                    root.bump(-root.step);
+                }
+            }
+        }
+    }
+}
+
+// QProgressBar stand-in. The std ProgressIndicator is a 3px rail (Fluent) with no text, and
+// stretching it to Qt's height turns the track into a full-height block under the label.
+// Draws a bordered trough, an accent chunk, and the label twice: once in the foreground colour
+// and once in accent-foreground clipped to the chunk, so it stays legible on both.
+export component CaoProgressBar {
+    in property <float> progress;
+    in property <bool> indeterminate;
+    in property <string> text;
+
+    min-height: 22px;
+    vertical-stretch: 0;
+    horizontal-stretch: 1;
+    accessible-role: progress-indicator;
+    accessible-label: root.text;
+    accessible-value: !root.indeterminate ? root.progress : "";
+    accessible-value-minimum: 0.0;
+    accessible-value-maximum: 1.0;
+
+    trough := Rectangle {
+        property <length> inner-width: self.width - 2px;
+        property <length> chunk-width: self.inner-width / 4;
+
+        border-width: 1px;
+        border-radius: 3px;
+        border-color: Palette.border;
+        background: Palette.control-background;
+        clip: true;
+
+        chunk := Rectangle {
+            // Indeterminate: a quarter-width chunk sweeping left to right, like Qt's busy bar.
+            x: root.indeterminate
+                ? 1px - trough.chunk-width + (trough.inner-width + trough.chunk-width) * (mod(animation-tick(), 1600ms) / 1600ms)
+                : 1px;
+            y: 1px;
+            width: root.indeterminate ? trough.chunk-width : trough.inner-width * max(0, min(1, root.progress));
+            height: parent.height - 2px;
+            border-radius: 2px;
+            background: Palette.accent-background;
+        }
+
+        Text {
+            text: root.text;
+            font-size: 11px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            color: Palette.foreground;
+        }
+
+        // Same label, visible only where it overlaps the chunk.
+        Rectangle {
+            x: chunk.x;
+            y: chunk.y;
+            width: chunk.width;
+            height: chunk.height;
+            clip: true;
+            Text {
+                x: -chunk.x;
+                y: -chunk.y;
+                width: trough.width;
+                height: trough.height;
+                text: root.text;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                color: Palette.accent-foreground;
+            }
+        }
+    }
+}
+
+component BarButton inherits Rectangle {
+    in property <string> text;
+    callback clicked;
+
+    border-radius: 6px;
+    background: ta.has-hover ? #00000030 : transparent;
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        Text {
+            text: root.text;
+            color: #000;
+            vertical-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Prototype-only variant switcher. Deliberately loud so it's never mistaken for CAO UI.
+// Every switch relaunches the process (style is compile-time; muda is chosen at window creation).
+export component PrototypeBar inherits Rectangle {
+    in property <string> style-name;
+    in property <string> menu-mode;
+    in property <string> log-mode;
+    callback prev-style();
+    callback next-style();
+    callback toggle-menu();
+    callback toggle-log();
+
+    background: #f5c518;
+    border-radius: 14px;
+    drop-shadow-blur: 10px;
+    drop-shadow-color: #00000080;
+    height: 28px;
+    width: row.preferred-width;
+
+    row := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 6px;
+        spacing: 2px;
+        Text {
+            text: "PROTOTYPE";
+            font-weight: 800;
+            color: #000;
+            vertical-alignment: center;
+        }
+
+        BarButton {
+            text: "‹";
+            clicked => {
+                root.prev-style();
+            }
+        }
+
+        Text {
+            text: "style: " + root.style-name;
+            color: #000;
+            vertical-alignment: center;
+        }
+
+        BarButton {
+            text: "›";
+            clicked => {
+                root.next-style();
+            }
+        }
+
+        BarButton {
+            text: "| menu: " + root.menu-mode;
+            clicked => {
+                root.toggle-menu();
+            }
+        }
+
+        BarButton {
+            text: "| log: " + root.log-mode;
+            clicked => {
+                root.toggle-log();
+            }
+        }
+    }
+}
