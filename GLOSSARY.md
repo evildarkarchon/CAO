@@ -116,6 +116,10 @@ _Avoid_: Temporary artifact, partial write
 A structured unsuccessful Archive or Asset operation that records its mutation state and whether the Optimization Run can safely continue.
 _Avoid_: Exception, error log
 
+**Quarantine**:
+The Apply-only renaming of a Texture or Mesh that cannot be loaded, so that later runs and Archive creation leave it alone. A completed Quarantine is a Committed Mutation, and the Asset's attempt is still an Operation Failure. An Asset that cannot be quarantined makes the run unsafe to continue.
+_Avoid_: Delete, backup, skip
+
 **Archive Precedence**:
 The explicit high-to-low ordering used when Archives within one Mod Root contain the same game path. The first Archive wins among Archived Assets, while a Loose Asset always takes precedence.
 _Avoid_: Filesystem order, discovery order
@@ -123,6 +127,14 @@ _Avoid_: Filesystem order, discovery order
 **Archive Collision**:
 The presence of the same canonical game path in more than one Archive within one precedence scope. Archive Precedence selects the winner, and the collision is reported before extraction.
 _Avoid_: Duplicate file, overwrite
+
+**Unsafe Game Path**:
+An Archived Asset path that is empty or absolute, escapes its root, contains characters Windows forbids, or could alias a Windows device or reserved name. An Unsafe Game Path anywhere in a selected Archive, shadowed or not, is a Run Failure found before extraction.
+_Avoid_: Invalid file name, bad entry
+
+**Capacity Check**:
+A comparison of an Optimization Run's estimated Archive work against the free space on each affected volume. A shortage found before any Archive is extracted is a Run Failure. A shortage found later fails only the Archive work it guards and leaves the run safe to continue. Unknown free space never fails a Capacity Check.
+_Avoid_: Disk check, free-space validation
 
 **Archive Finalization**:
 The Apply-only Run Phase that, when the Routing Policy requests Archive creation, commits planned output Archives and any required new Loading Plugins, cleans their source sets, and maintains Loading Plugins for existing Archives. Whether or not Archive creation is requested, it prunes empty directories left within each Mod Root. It does not run after cancellation or fatal failure.
@@ -136,17 +148,29 @@ _Avoid_: Archive, Dummy Plugin
 A Loading Plugin whose bytes exactly match the selected game profile's canonical dummy content. Matching bytes do not establish which tool created it.
 _Avoid_: Same-size plugin, CAO-owned plugin, generated plugin, empty plugin
 
+**Packing Exclusion**:
+A profile rule, matched against an Asset's path within its Mod Root, that keeps matching Loose Assets out of Archives the run creates. Those Assets stay loose and are never deleted as packed sources. It is not a Skip Reason: the Asset may still be optimized.
+_Avoid_: Ignored file, blacklist
+
 **Mod Root**:
-The directory tree of one selected mod, processed independently and defining one Archive Precedence scope.
+The directory tree of one selected mod, processed independently and defining one Archive Precedence scope. Headpart Mesh identification is the one exception: it spans the whole Mod Selection.
 _Avoid_: Input directory, filesystem root
 
 **Mod Selection**:
-The request to process either one Mod Root or the child Mod Roots beneath a selected mods directory. It is resolved into an ordered set of Mod Roots during Preparing.
+The request to process either one Mod Root or the child Mod Roots beneath a selected mods directory. It is resolved into an ordered set of Mod Roots, less any Mod Exclusions, during Preparing.
 _Avoid_: Mode, input path
+
+**Mod Exclusion**:
+A child directory beneath a selected mods directory that Several Mods selection skips: a mod-manager separator, or a mod named in the profile's ignored-mods list. Each Mod Exclusion is reported as a Run Diagnostic and never affects the Run Outcome.
+_Avoid_: Ignored Mod Root, filtered folder
 
 **Mesh Reference Maintenance**:
 Updating a Mesh when a referenced convertible Texture is converted. It is Mesh work even when mesh optimization is otherwise disabled.
 _Avoid_: Mesh optimization, path cleanup
+
+**Headpart Mesh**:
+A Mesh that needs head-part-specific optimization because a plugin anywhere in the Mod Selection, or the profile's headpart list, names it as a character head part, or because it lies under a facegen path.
+_Avoid_: Head mesh, facegen mesh
 
 **Effective Asset Tree**:
 The definitive directory tree discovered after enabled Archives are extracted while preserving Loose Asset precedence. Non-Archive Assets are routed from this tree exactly once.
