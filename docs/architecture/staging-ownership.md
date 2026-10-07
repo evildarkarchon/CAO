@@ -110,10 +110,14 @@ means only that no unknown disk state makes continuing dangerous; a phase may be
 this verdict but never looser.
 
 During manifest publication, the previous complete snapshot remains authoritative. Its v2 or v3
-ownership permits removal of an interrupted scratch snapshot. Archive extraction retains its
-attempt-level `PartialOrUnknown` mutation and unsafe continuation after a merge failure, even
-when an entry destination was committed. The Run Executor retains terminal mutation evidence,
-cancellation, Safety Cleanup, and Run Outcome precedence independently of the receipt state.
+ownership permits removal of an interrupted scratch snapshot. Archive extraction reports an
+attempt-level `PartialOrUnknown` mutation and unsafe continuation only for a merge in which at
+least one entry was committed, including an entry whose release then failed, so a half-merged
+Effective Asset Tree is never optimized as if it were complete. A merge failure before the first
+commit, such as a not-published entry or a containment rejection of a linked parent, reports no
+mutation and is safe to continue; every later Archive attempt repeats its own containment checks.
+The Run Executor retains terminal mutation evidence, cancellation, Safety Cleanup, and Run Outcome
+precedence independently of the receipt state.
 
 Bootstrap claims only a newly created reserved directory. The initial complete manifest is
 published before any run child or staged Asset or Archive bytes are created. An interruption

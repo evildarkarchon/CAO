@@ -70,6 +70,9 @@ ArchiveExtractionResult ArchiveExtractor::extract(const ArchiveExtractionPlan& p
     ArchiveExtractionResult result{plan.archivePath};
     result.modRoot = plan.modRoot;
     bool merging = false;
+    // Only a committed entry makes a merge failure partial; staging and parent creation are not
+    // Asset mutations, so a failure before the first commit stays safe to continue.
+    bool committed = false;
     try {
         const auto root = std::filesystem::canonical(plan.modRoot);
         const auto source = std::filesystem::absolute(plan.archivePath).lexically_normal();
@@ -123,9 +126,12 @@ ArchiveExtractionResult ArchiveExtractor::extract(const ArchiveExtractionPlan& p
             // publication while retaining the native no-replace rule for competing Loose Assets.
             const auto publication =
                 temporary.publish(destination.path, PublicationPolicy::NoReplace);
+            // Record the commit before inspecting the state: a release failure still committed
+            // this entry, so any failure from here on leaves a partially applied merge.
+            if (publication.mutation() == execution::MutationState::Committed) committed = true;
             if (publication.state != PublicationState::PublishedAndReleased) {
-                // The destination may already be committed; the existing attempt-level failure
-                // still reports partial mutation and prevents unsafe continuation.
+                // A committed entry reaches the attempt-level PartialOrUnknown below; a
+                // not-published entry before any commit leaves the Mod Root unchanged.
                 throw std::runtime_error(publication.errorDetail.empty()
                                              ? "Archive publication did not complete."
                                              : publication.errorDetail);
@@ -141,9 +147,10 @@ ArchiveExtractionResult ArchiveExtractor::extract(const ArchiveExtractionPlan& p
     }
     result.failure = merging ? ArchiveExtractionFailure::MergeFailed
                              : ArchiveExtractionFailure::ExtractionFailed;
+    // A half-merged Effective Asset Tree must never be optimized as if it were complete.
     result.mutation =
-        merging ? execution::MutationState::PartialOrUnknown : execution::MutationState::None;
-    result.safeToContinue = !merging;
+        committed ? execution::MutationState::PartialOrUnknown : execution::MutationState::None;
+    result.safeToContinue = !committed;
     return result;
 }
 }  // namespace cao::run

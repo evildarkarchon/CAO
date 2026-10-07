@@ -260,6 +260,9 @@ class ArchiveFirstAssetDiscoveryTests final : public QObject
     void changedManifestFailsBeforeMerge();
     /// A link inserted after preflight cannot redirect a staged commit outside the Mod Root.
     void mergeRejectsLinkedParent();
+    /// A safe pre-commit containment rejection lets later Archives merge, while each later
+    /// attempt still runs its own containment checks against the same post-preflight link.
+    void laterArchivesRepeatContainmentAfterSafeRejection();
     /// A failure after the first merge retains that output and exposes unsafe mutation.
     void partialMergeRetainsCommittedOutput();
     /// Frozen winner decisions survive a failed Archive or a Loose Asset disappearing.
@@ -679,9 +682,10 @@ void ArchiveFirstAssetDiscoveryTests::lateLooseAssetBlocksArchiveMerge() {
     QCOMPARE(plans.size(), std::size_t{1});
     QCOMPARE(plans.front().mergeEntries, std::vector<std::string>{"textures/a.dds"});
     QCOMPARE(attempts.size(), std::size_t{1});
+    // The no-replace race lost before any entry committed, so nothing durable changed.
     QCOMPARE(attempts.front().failure, cao::run::ArchiveExtractionFailure::MergeFailed);
-    QCOMPARE(attempts.front().mutation, cao::execution::MutationState::PartialOrUnknown);
-    QVERIFY(!attempts.front().safeToContinue);
+    QCOMPARE(attempts.front().mutation, cao::execution::MutationState::None);
+    QVERIFY(attempts.front().safeToContinue);
     QCOMPARE(readFile(loose), QByteArray("late loose"));
     QVERIFY(std::filesystem::exists(archive));
     QVERIFY(artifacts.performSafetyCleanup().empty());
@@ -787,11 +791,88 @@ void ArchiveFirstAssetDiscoveryTests::mergeRejectsLinkedParent() {
         {root / "source.bsa", root, {"textures/a.dds"}, {"textures/a.dds"}});
     // Remove only the link so fixture cleanup cannot touch its independent target.
     QVERIFY(std::filesystem::remove(link));
+    // Containment rejected the only entry before its commit, so the attempt changed nothing.
     QCOMPARE(result.failure, cao::run::ArchiveExtractionFailure::MergeFailed);
-    QCOMPARE(result.mutation, cao::execution::MutationState::PartialOrUnknown);
-    QVERIFY(!result.safeToContinue);
+    QCOMPARE(result.mutation, cao::execution::MutationState::None);
+    QVERIFY(result.safeToContinue);
     QVERIFY(!std::filesystem::exists(outside / "a.dds"));
     QVERIFY(std::filesystem::exists(root / "source.bsa"));
+    QVERIFY(artifacts.performSafetyCleanup().empty());
+}
+
+void ArchiveFirstAssetDiscoveryTests::laterArchivesRepeatContainmentAfterSafeRejection() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto base = std::filesystem::path(directory.path().toStdWString());
+    const auto root = base / "mod";
+    const auto outside = base / "outside";
+    std::filesystem::create_directories(outside);
+    createRawArchive(root / "a.bsa", 0, "textures/a.dds");
+    createRawArchive(root / "b.bsa", 0, "textures/b.dds");
+    createRawArchive(root / "c.bsa", 0, "meshes/c.dds");
+    const auto link = root / "textures";
+    std::vector<cao::run::ArchiveExtractionPlan> plans;
+    std::vector<cao::run::ArchiveExtractionResult> attempts;
+    cao::run::TemporaryArtifactRegistry artifacts;
+    // Creates the escaping directory link without failing inside a discovery callback.
+    const auto createLink = [&] {
+#ifdef _WIN32
+        QProcess process;
+        process.start(
+            "powershell.exe",
+            {"-NoProfile", "-NonInteractive", "-Command",
+             "New-Item -ItemType Junction -Path '" + QString::fromStdWString(link.wstring()) +
+                 "' -Value '" + QString::fromStdWString(outside.wstring()) +
+                 "' -ErrorAction Stop | Out-Null"});
+        return process.waitForFinished() && process.exitCode() == 0;
+#else
+        std::error_code error;
+        std::filesystem::create_directory_symlink(outside, link, error);
+        return !error;
+#endif
+    };
+    bool linked = false;
+    const auto discovery =
+        ArchiveFirstAssetDiscovery(archiveEnabledPolicy())
+            .discover(
+                std::array{root},
+                [&](const auto&) {
+                    for (const auto& plan : plans)
+                        attempts.push_back(cao::run::ArchiveExtractor(artifacts).extract(plan));
+                    // Remove only the link so fixture cleanup cannot touch its independent target.
+                    // A removal error must not escape; the outcome is asserted after discovery.
+                    std::error_code ignored;
+                    if (linked) std::filesystem::remove(link, ignored);
+                    return true;
+                },
+                {}, cao::run::ArchivePrecedence::deterministicDiscovery(), {},
+                [&](std::span<const cao::run::ArchiveExtractionPlan> preflight) {
+                    plans.assign(preflight.begin(), preflight.end());
+                    // The link appears after preflight, so only per-attempt containment can reject
+                    // it.
+                    linked = createLink();
+                });
+    QVERIFY(linked);
+    QVERIFY(!std::filesystem::exists(link));
+    QVERIFY(discovery.failures().empty());
+    QCOMPARE(plans.size(), std::size_t{3});
+    QCOMPARE(attempts.size(), std::size_t{3});
+    for (const auto& attempt : attempts) {
+        const auto name = attempt.archivePath.filename();
+        if (name == "c.bsa") {
+            QVERIFY2(attempt.succeeded(), attempt.detail.c_str());
+            QCOMPARE(attempt.mutation, cao::execution::MutationState::Committed);
+            continue;
+        }
+        // Both Archives behind the link are rejected by their own merge-target checks.
+        QCOMPARE(attempt.failure, cao::run::ArchiveExtractionFailure::MergeFailed);
+        QCOMPARE(attempt.mutation, cao::execution::MutationState::None);
+        QVERIFY(attempt.safeToContinue);
+    }
+    QVERIFY(std::filesystem::is_empty(outside));
+    QCOMPARE(readFile(root / "meshes" / "c.dds"), QByteArray("B"));
+    for (const auto* archive : {"a.bsa", "b.bsa", "c.bsa"})
+        QVERIFY(std::filesystem::exists(root / archive));
     QVERIFY(artifacts.performSafetyCleanup().empty());
 }
 
