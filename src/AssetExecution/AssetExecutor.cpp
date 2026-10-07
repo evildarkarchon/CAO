@@ -167,6 +167,19 @@ class PinnedConvertibleSource final {
 };
 #endif
 
+/// Returns the `CommitFailed` result for a publication that did not release its temporary name,
+/// or nothing when publication completed. The mutation and continuation verdict come from the
+/// receipt, the only module that knows whether the native destination commit happened.
+std::optional<AssetExecutionResult> publicationFailure(const run::PublicationResult& publication,
+                                                       const char* message,
+                                                       const std::filesystem::path& path,
+                                                       const std::string& operation) {
+    if (publication.state == run::PublicationState::PublishedAndReleased) return std::nullopt;
+    return AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed, message,
+                                        publication.mutation(), publication.safeToContinue(), path,
+                                        operation, publication.errorDetail);
+}
+
 }  // namespace
 
 OperationResult::OperationResult(const bool succeeded, const bool wouldChange, std::string message)
@@ -391,16 +404,12 @@ AssetExecutionResult AssetExecutor::executeTexture(const routing::RoutedAsset& a
                                                 mutation, true, affectedPath, boundary);
         boundary = "commit_texture";
         const auto publication = receipt.publish(absoluteOutput, run::PublicationPolicy::Replace);
-        if (publication.state != run::PublicationState::PublishedAndReleased) {
-            // Publication commits the destination before durable ownership release. Its result
-            // carries that fact even when the release fails after the native move.
-            const bool published = publication.state == run::PublicationState::PublishedStillOwned;
-            mutation = published ? MutationState::Committed : MutationState::None;
-            return AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed,
-                                                "Failed to publish Texture output.", mutation, !published,
-                                                affectedPath, boundary, publication.errorDetail);
-        }
-        mutation = MutationState::Committed;
+        // Publication commits the destination before durable ownership release. Its result
+        // carries that fact even when the release fails after the native move.
+        mutation = publication.mutation();
+        if (auto failure = publicationFailure(publication, "Failed to publish Texture output.",
+                                              affectedPath, boundary))
+            return std::move(*failure);
         if (asset.operations().contains(routing::AssetOperation::Conversion) &&
             texture->variant() == routing::TextureVariant::Convertible) {
             boundary = "remove_texture_source";
@@ -530,16 +539,12 @@ AssetExecutionResult AssetExecutor::executeMesh(const routing::RoutedAsset& asse
                                                 mutation, true, path, boundary);
         boundary = "commit_mesh";
         const auto publication = receipt.publish(absolutePath, run::PublicationPolicy::Replace);
-        if (publication.state != run::PublicationState::PublishedAndReleased) {
-            // Publication commits the replacement before releasing Temporary Ownership. Retain
-            // that fact when the release fails so Run Evidence reports the committed Mesh.
-            const bool published = publication.state == run::PublicationState::PublishedStillOwned;
-            mutation = published ? MutationState::Committed : MutationState::None;
-            return AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed,
-                                                "Failed to publish Mesh output.", mutation,
-                                                !published, path, boundary, publication.errorDetail);
-        }
-        mutation = MutationState::Committed;
+        // Publication commits the replacement before releasing Temporary Ownership. Retain
+        // that fact when the release fails so Run Evidence reports the committed Mesh.
+        mutation = publication.mutation();
+        if (auto failure =
+                publicationFailure(publication, "Failed to publish Mesh output.", path, boundary))
+            return std::move(*failure);
         return AssetExecutionResult::success(mutation);
     } catch (const std::filesystem::filesystem_error& error) {
         const bool stagingFailure = boundary == "stage_mesh" ||
@@ -606,16 +611,12 @@ AssetExecutionResult AssetExecutor::executeAnimation(const routing::RoutedAsset&
                                                 mutation, true, path, boundary);
         boundary = "commit_animation";
         const auto publication = receipt->publish(destination, run::PublicationPolicy::Replace);
-        if (publication.state != run::PublicationState::PublishedAndReleased) {
-            // The native replacement precedes ownership release; a release failure still leaves a
-            // Committed Mutation and is unsafe for this run to continue.
-            const bool published = publication.state == run::PublicationState::PublishedStillOwned;
-            mutation = published ? MutationState::Committed : MutationState::None;
-            return AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed,
-                                                "Failed to publish Animation output.", mutation,
-                                                !published, path, boundary, publication.errorDetail);
-        }
-        mutation = MutationState::Committed;
+        // The native replacement precedes ownership release; a release failure still leaves a
+        // Committed Mutation and is unsafe for this run to continue.
+        mutation = publication.mutation();
+        if (auto failure = publicationFailure(publication, "Failed to publish Animation output.",
+                                              path, boundary))
+            return std::move(*failure);
         return AssetExecutionResult::success(mutation);
     } catch (const std::filesystem::filesystem_error& error) {
         const bool stagingFailure = boundary == "stage_animation";

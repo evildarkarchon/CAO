@@ -405,12 +405,18 @@ const fs::path& TemporaryArtifactRegistry::PublicationReceipt::path() const {
 }
 
 PublicationResult TemporaryArtifactRegistry::PublicationReceipt::publish(
-    const fs::path& destination, PublicationPolicy policy) {
+    const fs::path& destination, PublicationPolicy policy) noexcept {
     // Clear authority before validation: a failed preflight must not allow a stale retry.
     auto state = std::move(_state);
-    if (!state) return {PublicationState::NotPublished, "The publication receipt was consumed"};
-    if (state->lifetime.expired())
-        return {PublicationState::NotPublished, "The Temporary Ownership scope ended"};
+    try {
+        if (!state) return {PublicationState::NotPublished, "The publication receipt was consumed"};
+        if (state->lifetime.expired())
+            return {PublicationState::NotPublished, "The Temporary Ownership scope ended"};
+    } catch (...) {
+        // Only the detail strings can throw here, before any destination effect; an empty
+        // detail allocates nothing and still reports the truthful NotPublished state.
+        return {PublicationState::NotPublished, {}};
+    }
     return state->owner->publishReceipt(*state, destination, policy);
 }
 
@@ -500,7 +506,7 @@ TemporaryArtifactRegistry::stageArchiveFileForPublication(const fs::path& modRoo
 
 PublicationResult TemporaryArtifactRegistry::publishReceipt(PublicationReceipt::State& receipt,
                                                             const fs::path& destination,
-                                                            PublicationPolicy policy) {
+                                                            PublicationPolicy policy) noexcept {
     auto published = PublicationState::NotPublished;
     try {
         if (_cleaned || receipt.artifactIndex >= _artifacts.size() ||
@@ -527,7 +533,16 @@ PublicationResult TemporaryArtifactRegistry::publishReceipt(PublicationReceipt::
         _artifacts[receipt.artifactIndex].committed = true;
         return {PublicationState::PublishedAndReleased, {}};
     } catch (const std::exception& error) {
-        return {published, error.what()};
+        try {
+            return {published, error.what()};
+        } catch (...) {
+            // Copying the detail can fail to allocate; the empty fallback allocates nothing,
+            // so a committed destination is still reported.
+            return {published, {}};
+        }
+    } catch (...) {
+        // A non-standard exception has no detail to copy; report only the state reached.
+        return {published, {}};
     }
 }
 

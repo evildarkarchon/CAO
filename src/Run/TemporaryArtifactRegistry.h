@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AssetExecution/MutationState.h"
 #include "Run/RunExecutor.h"
 
 #include <filesystem>
@@ -19,6 +20,20 @@ enum class PublicationState { NotPublished, PublishedStillOwned, PublishedAndRel
 struct PublicationResult {
     PublicationState state{PublicationState::NotPublished};
     std::string errorDetail;
+
+    /// Reports the destination's mutation fact: None when nothing was published, Committed for
+    /// both published states, even when the temporary name could not be released.
+    [[nodiscard]] execution::MutationState mutation() const noexcept {
+        return state == PublicationState::NotPublished ? execution::MutationState::None
+                                                       : execution::MutationState::Committed;
+    }
+    /// Reports only that no unknown disk state makes continuing the run dangerous; it does not
+    /// vouch for the environment. A release failure is unsafe because it belongs to the run's
+    /// Temporary Ownership scope, not to the output, and the next staging operation would go
+    /// through the same snapshot path that just failed. Phases may be stricter, never looser.
+    [[nodiscard]] bool safeToContinue() const noexcept {
+        return state != PublicationState::PublishedStillOwned;
+    }
 };
 /// Owns only explicitly registered temporary paths for one run, on its execution thread.
 /// Register each directory before its children; directory cleanup is deliberately non-recursive.
@@ -76,9 +91,11 @@ class TemporaryArtifactRegistry final : public SafetyCleanupService {
         /// unconsumed. Throws `logic_error` after either condition ends.
         [[nodiscard]] const std::filesystem::path& path() const;
         /// Consumes authority on every attempt, returning the committed fact even if release fails.
-        /// An ended owner scope returns NotPublished; callers must serialize with cleanup.
+        /// An ended owner scope returns NotPublished; callers must serialize with cleanup. Never
+        /// throws: a failure while building the error detail returns the state reached so far
+        /// with an empty detail, so a Committed Mutation is never hidden.
         [[nodiscard]] PublicationResult publish(const std::filesystem::path& destination,
-                                                PublicationPolicy policy);
+                                                PublicationPolicy policy) noexcept;
 
        private:
         friend class TemporaryArtifactRegistry;
@@ -136,9 +153,10 @@ class TemporaryArtifactRegistry final : public SafetyCleanupService {
 
    private:
     /// Validates, flushes, publishes natively, then releases only the temporary ownership name.
+    /// Never throws; any failure returns the publication state reached before it.
     [[nodiscard]] PublicationResult publishReceipt(PublicationReceipt::State& receipt,
                                                    const std::filesystem::path& destination,
-                                                   PublicationPolicy policy);
+                                                   PublicationPolicy policy) noexcept;
     struct Artifact {
         std::filesystem::path path;
         bool committed{};

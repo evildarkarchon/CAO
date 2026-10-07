@@ -616,6 +616,8 @@ void DurableStagingTests::publicationPoliciesPreserveDestinationBytes() {
     QVERIFY2(assetResult.state == cao::run::PublicationState::PublishedAndReleased,
              assetResult.errorDetail.c_str());
     QVERIFY(assetResult.errorDetail.empty());
+    QCOMPARE(assetResult.mutation(), cao::execution::MutationState::Committed);
+    QVERIFY(assetResult.safeToContinue());
 
     auto archive = registry.stageArchiveFileForPublication(root);
     const auto archiveTemporary = archive.path();
@@ -624,6 +626,8 @@ void DurableStagingTests::publicationPoliciesPreserveDestinationBytes() {
         archive.publish(archiveDestination, cao::run::PublicationPolicy::NoReplace);
     QCOMPARE(archiveResult.state, cao::run::PublicationState::PublishedAndReleased);
     QVERIFY(archiveResult.errorDetail.empty());
+    QCOMPARE(archiveResult.mutation(), cao::execution::MutationState::Committed);
+    QVERIFY(archiveResult.safeToContinue());
     QVERIFY(registry.performSafetyCleanup().empty());
     QVERIFY(!fs::exists(assetTemporary));
     QVERIFY(!fs::exists(archiveTemporary));
@@ -687,6 +691,9 @@ void DurableStagingTests::publicationReceiptIsMoveOnlyAndOneUse() {
     static_assert(!std::is_copy_constructible_v<Receipt>);
     static_assert(!std::is_copy_assignable_v<Receipt>);
     static_assert(std::is_move_constructible_v<Receipt>);
+    // Producers rely on publication never throwing, so none needs defensive handling around it.
+    static_assert(noexcept(std::declval<Receipt&>().publish(std::declval<const fs::path&>(),
+                                                            cao::run::PublicationPolicy::Replace)));
 
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -744,6 +751,9 @@ void DurableStagingTests::assetPublicationRejectsChangedDestination() {
     const auto result = receipt.publish(redirected, cao::run::PublicationPolicy::Replace);
     QCOMPARE(result.state, cao::run::PublicationState::NotPublished);
     QVERIFY(!result.errorDetail.empty());
+    // A preflight rejection leaves every destination untouched, so the run may continue.
+    QCOMPARE(result.mutation(), cao::execution::MutationState::None);
+    QVERIFY(result.safeToContinue());
     QVERIFY(!fs::exists(intended));
     QVERIFY(!fs::exists(redirected));
     QVERIFY(fs::exists(temporary));
@@ -768,6 +778,8 @@ void DurableStagingTests::archivePublicationRejectsUnsafeDestinations() {
         escapedReceipt.publish(escaped, cao::run::PublicationPolicy::NoReplace);
     QCOMPARE(escapedResult.state, cao::run::PublicationState::NotPublished);
     QVERIFY(!escapedResult.errorDetail.empty());
+    QCOMPARE(escapedResult.mutation(), cao::execution::MutationState::None);
+    QVERIFY(escapedResult.safeToContinue());
     QVERIFY(!fs::exists(escaped));
 
     auto reservedReceipt = registry.stageArchiveFileForPublication(root);
@@ -777,6 +789,8 @@ void DurableStagingTests::archivePublicationRejectsUnsafeDestinations() {
         reservedReceipt.publish(reserved, cao::run::PublicationPolicy::NoReplace);
     QCOMPARE(reservedResult.state, cao::run::PublicationState::NotPublished);
     QVERIFY(!reservedResult.errorDetail.empty());
+    QCOMPARE(reservedResult.mutation(), cao::execution::MutationState::None);
+    QVERIFY(reservedResult.safeToContinue());
     QVERIFY(!fs::exists(reserved));
 
     auto relativeReceipt = registry.stageArchiveFileForPublication(root);
@@ -1016,6 +1030,9 @@ void DurableStagingTests::publicationReleaseFailurePreservesCommittedDestination
         QVERIFY2(result.state == cao::run::PublicationState::PublishedStillOwned,
                  result.errorDetail.c_str());
         QVERIFY(!result.errorDetail.empty());
+        // The destination is committed, but the run's Temporary Ownership scope is degraded.
+        QCOMPARE(result.mutation(), cao::execution::MutationState::Committed);
+        QVERIFY(!result.safeToContinue());
         QVERIFY(!fs::exists(temporary));
         QFile output(QString::fromStdWString(destination.wstring()));
         QVERIFY(output.open(QIODevice::ReadOnly));

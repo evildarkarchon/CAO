@@ -1,6 +1,7 @@
 add_library(cao_asset_execution
     AssetExecutor.cpp
     AssetExecutor.h
+    MutationState.h
 )
 
 target_link_libraries(cao_asset_execution PUBLIC cao_asset_routing)
