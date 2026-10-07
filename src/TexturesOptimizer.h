@@ -60,8 +60,14 @@ class TexturesOptimizer final : public QObject {
     bool optimize(const bool& bNecessary, const bool& bCompress, const bool& bMipmaps,
                   const std::optional<size_t>& tWidth, const std::optional<size_t>& tHeight);
 
-    void dryOptimize(const bool& bNecessary, const bool& bCompress, const bool& bMipmaps,
-                     const std::optional<size_t>& tWidth, const std::optional<size_t>& tHeight);
+    /*!
+     * \brief Reports, without touching the loaded image, whether optimize() with the same
+     * arguments would transform the current texture.
+     * \return True if the texture would be resized, given mipmaps, or converted
+     */
+    [[nodiscard]] bool dryOptimize(const bool& bNecessary, const bool& bCompress,
+                                   const bool& bMipmaps, const std::optional<size_t>& tWidth,
+                                   const std::optional<size_t>& tHeight);
 
     bool resize(size_t targetWidth, size_t targetHeight);
 

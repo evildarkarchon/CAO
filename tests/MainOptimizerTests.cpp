@@ -1,6 +1,7 @@
 #include "MainOptimizer.h"
 #include "BsaOptimizer.h"
 #include "FilesystemOperations.h"
+#include "TexturesOptimizer.h"
 #include "AssetRouting/AssetRouter.h"
 #include "Run/AssetInitializationCancelled.h"
 #include "Run/RunEvidence.h"
@@ -16,6 +17,7 @@
 #include <array>
 #include <chrono>
 #include <filesystem>
+#include <optional>
 #include <stop_token>
 #include <stdexcept>
 #include <string>
@@ -144,6 +146,17 @@ void writeFile(const std::filesystem::path &path, const QByteArray &contents)
     QVERIFY(file.open(QIODevice::WriteOnly));
     QCOMPARE(file.write(contents), contents.size());
 }
+
+/// Writes an uncompressed square B8G8R8A8 DDS with the requested number of mip levels.
+void writeDds(const std::filesystem::path &path, const size_t size, const size_t mipLevels)
+{
+    DirectX::ScratchImage image;
+    QVERIFY(SUCCEEDED(image.Initialize2D(DXGI_FORMAT_B8G8R8A8_UNORM, size, size, 1, mipLevels)));
+    std::fill_n(image.GetPixels(), image.GetPixelsSize(), uint8_t{0x80});
+    QVERIFY(SUCCEEDED(DirectX::SaveToDDSFile(image.GetImages(), image.GetImageCount(),
+                                             image.GetMetadata(), DirectX::DDS_FLAGS_NONE,
+                                             path.c_str())));
+}
 }
 
 class MainOptimizerTests final : public QObject
@@ -184,6 +197,11 @@ private slots:
 
  /// Verifies reporting a malformed input never mutates a Dry Run tree.
  void dryRunLoadFailureDoesNotQuarantine();
+
+ /// Covers already-optimal, mipmap, and resize-target Textures.
+ void textureDryRunMatchesApply_data();
+ /// Verifies a Dry Run reports a Texture as changed exactly when Apply would modify it.
+ void textureDryRunMatchesApply();
 
  /// Verifies a failed Texture conversion withholds the rewrite of references to that Texture.
  void failedConversionSuppressesMeshReferenceMaintenance();
@@ -581,6 +599,49 @@ void MainOptimizerTests::dryRunLoadFailureDoesNotQuarantine()
     QCOMPARE(result.failure().value(), AssetExecutionFailure::LoadFailed);
     QVERIFY(std::filesystem::is_regular_file(malformedTexture));
     QVERIFY(!std::filesystem::exists(malformedTexture.wstring() + L".caobad"));
+}
+
+void MainOptimizerTests::textureDryRunMatchesApply_data()
+{
+    QTest::addColumn<int>("size");
+    QTest::addColumn<int>("mipLevels");
+    QTest::addColumn<int>("targetSize");
+    QTest::addColumn<bool>("expectedChange");
+    // A 4x4 Texture's full mip chain is 4x4, 2x2, 1x1. A target size of 0 requests no resize.
+    QTest::newRow("already-optimal") << 4 << 3 << 0 << false;
+    QTest::newRow("missing-mipmaps") << 4 << 1 << 0 << true;
+    // Apply never upscales, so a target larger than the Texture must not predict a resize.
+    QTest::newRow("target-larger-than-texture") << 4 << 3 << 16 << false;
+    QTest::newRow("target-smaller-than-texture") << 8 << 4 << 4 << true;
+}
+
+void MainOptimizerTests::textureDryRunMatchesApply()
+{
+    QFETCH(int, size);
+    QFETCH(int, mipLevels);
+    QFETCH(int, targetSize);
+    QFETCH(bool, expectedChange);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto texture = std::filesystem::path(directory.path().toStdWString()) / "texture.dds";
+    writeDds(texture, static_cast<size_t>(size), static_cast<size_t>(mipLevels));
+
+    // Matching the profile's output format to the fixture isolates resize and mipmap planning
+    // from compression, which this fixture's format would otherwise always request.
+    auto profile = OptimizerProfileSnapshot::captureIntent();
+    profile.texturesFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+    profile.texturesUnwantedFormats.clear();
+    profile.texturesCompressInterface = false;
+    TexturesOptimizer optimizer(profile);
+    const auto target = targetSize > 0 ? std::optional<size_t>(targetSize) : std::nullopt;
+    const auto path = QString::fromStdWString(texture.wstring());
+
+    QVERIFY(optimizer.open(path, TexturesOptimizer::DDS));
+    QCOMPARE(optimizer.dryOptimize(true, true, true, target, target), expectedChange);
+
+    QVERIFY(optimizer.open(path, TexturesOptimizer::DDS));
+    QVERIFY(optimizer.optimize(true, true, true, target, target));
+    QCOMPARE(optimizer.modifiedCurrentTexture, expectedChange);
 }
 
 void MainOptimizerTests::failedConversionSuppressesMeshReferenceMaintenance()

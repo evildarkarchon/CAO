@@ -206,8 +206,11 @@ cao::execution::OperationResult MainOptimizer::optimizeTexture(
     const bool compress = optimize && _optOptions.bTexturesCompress;
     const bool mipmaps = optimize && _optOptions.bTexturesMipmaps;
     if (mode == cao::routing::ExecutionMode::DryRun) {
-        _texturesOpt.dryOptimize(necessary, compress, mipmaps, width, height);
-        return cao::execution::OperationResult::changed();
+        // Conversion always produces a new DDS, matching the Apply result below.
+        const bool wouldChange =
+            _texturesOpt.dryOptimize(necessary, compress, mipmaps, width, height) || convert;
+        return wouldChange ? cao::execution::OperationResult::changed()
+                           : cao::execution::OperationResult::unchanged();
     }
 
     if (!_texturesOpt.optimize(necessary, compress, mipmaps, width, height))
