@@ -79,7 +79,9 @@ planned dummy is already present.
 The receipt's single publication attempt revalidates an absolute destination beneath its canonical
 Mod Root, outside reserved staging, on the same volume, through an ordinary parent. It flushes
 staged bytes before a native same-volume publication with no copy fallback; `NoReplace` also
-rejects a leaf occupied after preflight. Publication consumes the receipt even on failure. The
+rejects a leaf occupied after preflight. Publication consumes the receipt even on failure, and it
+never throws: it is declared `noexcept`, and a failure while building the error detail returns the
+state reached so far with an empty detail, so no producer needs defensive handling around it. The
 native destination mutation precedes the snapshot that releases the temporary registration.
 Generic `commit` retains only non-durable registrations; it cannot release a durable claim even
 after a separate move. Registrations identify deletion candidates by their temporary paths:
@@ -99,11 +101,23 @@ The receipt returns one of three states, which also describe the crash windows:
   preserves the destination. Texture conversion-source removal follows this state; Archive
   Finalization creates any planned loading plugin and then performs its requested source cleanup.
 
+The publication result also carries the mutation fact, so producers read it instead of translating
+states. Its mutation is None for `NotPublished` and Committed for both published states. It is safe
+to continue except after a release failure: `PublishedStillOwned` is always Committed and unsafe.
+A release failure belongs to the run's Temporary Ownership scope, not to the output, and the next
+staging operation would go through the same snapshot path that just failed. "Safe to continue"
+means only that no unknown disk state makes continuing dangerous; a phase may be stricter than
+this verdict but never looser.
+
 During manifest publication, the previous complete snapshot remains authoritative. Its v2 or v3
-ownership permits removal of an interrupted scratch snapshot. Archive extraction retains its
-attempt-level `PartialOrUnknown` mutation and unsafe continuation after a merge failure, even
-when an entry destination was committed. The Run Executor retains terminal mutation evidence,
-cancellation, Safety Cleanup, and Run Outcome precedence independently of the receipt state.
+ownership permits removal of an interrupted scratch snapshot. Archive extraction reports an
+attempt-level `PartialOrUnknown` mutation and unsafe continuation only for a merge in which at
+least one entry was committed, including an entry whose release then failed, so a half-merged
+Effective Asset Tree is never optimized as if it were complete. A merge failure before the first
+commit, such as a not-published entry or a containment rejection of a linked parent, reports no
+mutation and is safe to continue; every later Archive attempt repeats its own containment checks.
+The Run Executor retains terminal mutation evidence, cancellation, Safety Cleanup, and Run Outcome
+precedence independently of the receipt state.
 
 Bootstrap claims only a newly created reserved directory. The initial complete manifest is
 published before any run child or staged Asset or Archive bytes are created. An interruption

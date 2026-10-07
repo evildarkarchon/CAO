@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AssetExecution/MutationState.h"
 #include "AssetRouting/AssetRouter.h"
 #include "Run/TemporaryArtifactRegistry.h"
 
@@ -24,9 +25,6 @@ enum class AssetExecutionFailure {
     BackendException,
     CleanupFailed
 };
-
-/// Filesystem effects on durable Assets, excluding registry-owned temporary bytes.
-enum class MutationState { None, Committed, PartialOrUnknown };
 
 /// Stable boundary categories; adapters never need to parse backend diagnostics.
 enum class ExecutionFailureCategory { Backend, Filesystem, Contract };

@@ -27,9 +27,10 @@ bool isLoadingPlugin(const fs::path& path, const LoadingPluginStrength strength)
 
 /// The outcome of one Dummy Plugin publication attempt after staging succeeded.
 struct DummyPluginPublication final {
-    /// None when nothing reached the destination, Committed after a native rename, or
-    /// PartialOrUnknown when publication threw without a receipt.
+    /// The publication result's mutation fact (see PublicationResult::mutation).
     MutationState mutation{MutationState::None};
+    /// The publication result's continuation verdict (see PublicationResult::safeToContinue).
+    bool safeToContinue{true};
     /// True only once the plugin is published and its Temporary Ownership released.
     bool completed{};
     /// Why publication did not complete; empty when it did.
@@ -37,9 +38,10 @@ struct DummyPluginPublication final {
 };
 
 /// Stages the profile's canonical Dummy Plugin bytes under Temporary Ownership and publishes them
-/// at destination with NoReplace, so a late occupant always wins. A committed or uncertain
-/// destination effect is appended to mutations as a PluginCreation fact before returning.
-/// Throws only before publication starts, when no destination mutation can have happened.
+/// at destination with NoReplace, so a late occupant always wins. The mutation and continuation
+/// verdict come from the publication result, and a Committed destination is appended to
+/// mutations as a PluginCreation fact before returning. Throws only before publication starts,
+/// when no destination mutation can have happened; nothing after publication can throw.
 DummyPluginPublication publishDummyPlugin(TemporaryArtifactRegistry& artifacts,
                                           const fs::path& modRoot, const fs::path& destination,
                                           const std::vector<std::uint8_t>& bytes,
@@ -51,39 +53,29 @@ DummyPluginPublication publishDummyPlugin(TemporaryArtifactRegistry& artifacts,
     file.close();
     if (!file) throw std::runtime_error("Could not stage the loading plugin.");
 
-    const auto uncertain = [&](std::string detail) {
-        // An exception escaping publication gives no receipt, so the destination effect cannot
-        // be classified by a later listing.
-        mutations.push_back({.modRoot = modRoot,
-                             .path = destination,
-                             .kind = ArchiveFinalizationMutationKind::PluginCreation,
-                             .mutation = MutationState::PartialOrUnknown});
-        return DummyPluginPublication{MutationState::PartialOrUnknown, false, std::move(detail)};
-    };
-    PublicationResult published;
-    try {
-        published = staged.publish(destination, PublicationPolicy::NoReplace);
-    } catch (const std::exception& error) {
-        return uncertain(error.what());
-    } catch (...) {
-        return uncertain("Unexpected loading plugin creation exception.");
-    }
+    // Build and reserve evidence before publishing, so recording a Committed Mutation cannot
+    // allocate after the native rename succeeds and an allocation failure cannot hide it.
+    // Grow geometrically and only when full: reserve(size() + 1) reallocates exactly on MSVC,
+    // which would copy the whole fact list once per plugin across a Several Mods run.
+    ArchiveFinalizationMutation created{.modRoot = modRoot,
+                                        .path = destination,
+                                        .kind = ArchiveFinalizationMutationKind::PluginCreation,
+                                        .mutation = MutationState::Committed};
+    if (mutations.size() == mutations.capacity())
+        mutations.reserve(std::max<std::size_t>(4, mutations.capacity() * 2));
+    std::string incomplete = "Loading plugin publication did not complete.";
+    auto published = staged.publish(destination, PublicationPolicy::NoReplace);
 
     DummyPluginPublication outcome;
+    outcome.mutation = published.mutation();
+    outcome.safeToContinue = published.safeToContinue();
     // The receipt, rather than a later directory listing, identifies the exact committed path.
     // A successful native rename is a separate durable file effect even if releasing its
     // temporary ownership subsequently fails.
-    if (published.state != PublicationState::NotPublished) {
-        mutations.push_back({.modRoot = modRoot,
-                             .path = destination,
-                             .kind = ArchiveFinalizationMutationKind::PluginCreation,
-                             .mutation = MutationState::Committed});
-        outcome.mutation = MutationState::Committed;
-    }
+    if (outcome.mutation == MutationState::Committed) mutations.push_back(std::move(created));
     if (published.state != PublicationState::PublishedAndReleased) {
-        outcome.detail = published.errorDetail.empty()
-                             ? "Loading plugin publication did not complete."
-                             : published.errorDetail;
+        outcome.detail = published.errorDetail.empty() ? std::move(incomplete)
+                                                       : std::move(published.errorDetail);
         return outcome;
     }
     outcome.completed = true;
@@ -175,13 +167,15 @@ bool createMissingDummyPlugins(const ArchiveFinalizationPlan& plan, const fs::pa
             if (fs::exists(fs::symlink_status(destination)))
                 throw std::runtime_error("The loading plugin name is occupied.");
 
-            const auto published = publishDummyPlugin(
-                artifacts, root, destination, *plan.settings.s_dummy_plugin, result.mutations);
+            auto published = publishDummyPlugin(artifacts, root, destination,
+                                                *plan.settings.s_dummy_plugin, result.mutations);
             if (!published.completed) {
                 result.failure = ArchiveFinalizationFailure::PluginCreationFailed;
-                // Only a publication that provably left the destination untouched is safe.
-                result.safeToContinue = published.mutation == MutationState::None;
-                result.detail = published.detail;
+                // Publication's verdict stands (see PublicationResult::safeToContinue).
+                result.safeToContinue = published.safeToContinue;
+                // Moving keeps the post-publication path allocation-free, so the catch below
+                // still only ever sees exceptions from before publication.
+                result.detail = std::move(published.detail);
                 result.cancelled = stop.stop_requested();
                 return false;
             }
@@ -192,12 +186,11 @@ bool createMissingDummyPlugins(const ArchiveFinalizationPlan& plan, const fs::pa
             result.cancelled = stop.stop_requested();
             return false;
         } catch (...) {
+            // Like the branch above, this predates publication, so no mutation fact is recorded.
+            // A non-standard exception's origin cannot be named, though, so this phase stays
+            // stricter than the receipt and conservatively marks the run unsafe.
             result.failure = ArchiveFinalizationFailure::PluginCreationFailed;
             result.detail = "Unexpected loading plugin creation exception.";
-            result.mutations.push_back({.modRoot = root,
-                                        .path = destination,
-                                        .kind = ArchiveFinalizationMutationKind::PluginCreation,
-                                        .mutation = MutationState::PartialOrUnknown});
             result.safeToContinue = false;
             result.cancelled = stop.stop_requested();
             return false;

@@ -110,6 +110,7 @@ void pruneEmptyDirectories(const std::span<const std::filesystem::path> roots,
 /// Publishes each planned Archive and missing loading plugin through one-use no-replace
 /// staging, then cleans its sources without mid-attempt cancellation. A release or later
 /// cleanup failure retains the committed Archive mutation in the completed attempt.
+/// A release failure also stops finalization and keeps that Archive's packed sources.
 /// After all output attempts, maintains Loading Plugins for existing Archives even when the
 /// output total is zero. Each new plugin is a separate mutation fact, never an output attempt.
 /// Prunes empty children per Mod Root only after all outputs finish without cancellation or

@@ -96,6 +96,8 @@ struct ArchiveFinalizationPlan final {
 /// publication, its Loading Plugin, then packed-source cleanup, without mid-attempt
 /// cancellation. Never throws for the attempt's own failures; they are reported in the returned
 /// attempt. A capacity rejection returns an InsufficientCapacity attempt before any mutation.
+/// The Archive's mutation and continuation verdict come from its publication result; a release
+/// failure keeps the packed sources.
 /// dummyReserve is the Loading Plugin allowance still needed on this output's volume. Plugin
 /// publication facts are appended to mutations as they happen, so the caller keeps them even if
 /// the attempt later fails.

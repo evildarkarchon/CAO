@@ -58,9 +58,10 @@ class ArchiveExtractor final {
                               CapacityProbe capacity = availableArchiveCapacity)
         : _artifacts(artifacts), _capacity(std::move(capacity)) {}
 
-    /// Returns contained extraction failures or unsafe merge failures without throwing library
-    /// exceptions. Merge never replaces existing entries; source backup/deletion belongs to
-    /// callers.
+    /// Returns extraction and merge failures without throwing library exceptions. A merge failure
+    /// before the first committed entry reports no mutation and stays safe; one after it reports
+    /// PartialOrUnknown and is unsafe. Merge never replaces existing entries; source
+    /// backup/deletion belongs to callers.
     [[nodiscard]] ArchiveExtractionResult extract(const ArchiveExtractionPlan& plan) const;
 
    private:
