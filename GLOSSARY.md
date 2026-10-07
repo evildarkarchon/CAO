@@ -100,6 +100,10 @@ _Avoid_: Operation Failure, log message
 The owned factual record accumulated by an Optimization Run from Preparing through Safety Cleanup, including successfully established Mod Roots, Routing Policy, and Archive Precedence; the latest account of each traversed Run Phase; Run Diagnostics; Run Failures; Operation Failures; collisions; completed attempts; and cleanup failures. Run Event history is separate: observers may receive multiple progress transitions while Run Evidence retains the terminal account for that Run Phase. Mutation summaries and aggregate counts are derived from authoritative Run Evidence rather than retained as independent facts. Run Evidence becomes immutable after Safety Cleanup and never determines the Run Outcome; the Run Executor classifies the terminal result from the retained facts.
 _Avoid_: Run Outcome, event history, log
 
+**Application Log**:
+The per-profile record, written for people, of what Cathedral Assets Optimizer did across a session's runs. It is never Run Evidence, and no Run Outcome depends on it.
+_Avoid_: Run Evidence, run details
+
 **Safety Cleanup**:
 The terminal Run Phase that releases run resources and removes only temporary artifacts owned by the Optimization Run. It neither rolls back completed mutations nor deletes backups or failed-output evidence.
 _Avoid_: Rollback, finalization
