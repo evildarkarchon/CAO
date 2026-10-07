@@ -1,0 +1,11 @@
+docs(glossary): name the tested behaviours the Rust port keeps
+
+Resolves "Classify undocumented tested behaviours as contract or
+deviation" (#469) on the "Port CAO to Rust and Slint" map (#458).
+
+Add Quarantine, Unsafe Game Path, Capacity Check, Packing Exclusion,
+Mod Exclusion, and Headpart Mesh. Note on Mod Root that Headpart Mesh
+identification spans the whole Mod Selection, and on Mod Selection
+that Mod Exclusions are removed while resolving Mod Roots.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
