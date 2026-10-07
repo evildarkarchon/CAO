@@ -74,11 +74,10 @@ ArchiveFinalizationAttempt attemptOutput(const ArchiveFinalizationPlan& plan,
         const auto archivePublication =
             staged.publish(output.archivePath, PublicationPolicy::NoReplace);
         // Native publication commits the Archive before durable ownership release.
-        // The receipt owns that mutation fact, so no state translation happens here.
         attempt.mutation = archivePublication.mutation();
         if (archivePublication.state != PublicationState::PublishedAndReleased) {
-            // A release failure degrades the run's Temporary Ownership scope rather than this
-            // Archive, so publication's unsafe verdict stands and read-back cannot override it.
+            // Publication's verdict stands; read-back below cannot override a release failure
+            // (see PublicationResult::safeToContinue).
             attempt.safeToContinue = archivePublication.safeToContinue();
             throw std::runtime_error(archivePublication.errorDetail.empty()
                                          ? "Archive publication did not complete."
@@ -118,9 +117,8 @@ ArchiveFinalizationAttempt attemptOutput(const ArchiveFinalizationPlan& plan,
         attempt.detail = error.what();
         // Publication or plugin errors leave sources intact. Once committed, only a usable
         // Archive and surviving sources can justify continuing after later failures, and
-        // verification can only confirm a continuation publication itself allowed: a release
-        // failure stays unsafe without read-back. The publication result's mutation remains
-        // authoritative even when continuation is unsafe.
+        // verification can only confirm a continuation publication itself allowed. The
+        // publication result's mutation remains authoritative even when continuation is unsafe.
         if (attempt.mutation == MutationState::Committed && attempt.safeToContinue) {
             try {
                 attempt.safeToContinue =

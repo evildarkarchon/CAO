@@ -126,12 +126,11 @@ ArchiveExtractionResult ArchiveExtractor::extract(const ArchiveExtractionPlan& p
             // publication while retaining the native no-replace rule for competing Loose Assets.
             const auto publication =
                 temporary.publish(destination.path, PublicationPolicy::NoReplace);
-            // Record the commit before inspecting the state: a release failure still committed
-            // this entry, so any failure from here on leaves a partially applied merge.
+            // Record the commit before inspecting the state, so a release failure on this entry
+            // already counts as a partial merge.
             if (publication.mutation() == execution::MutationState::Committed) committed = true;
             if (publication.state != PublicationState::PublishedAndReleased) {
-                // A committed entry reaches the attempt-level PartialOrUnknown below; a
-                // not-published entry before any commit leaves the Mod Root unchanged.
+                // The attempt-level result below reports this per `committed`.
                 throw std::runtime_error(publication.errorDetail.empty()
                                              ? "Archive publication did not complete."
                                              : publication.errorDetail);

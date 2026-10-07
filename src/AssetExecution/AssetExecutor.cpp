@@ -168,8 +168,8 @@ class PinnedConvertibleSource final {
 #endif
 
 /// Returns the `CommitFailed` result for a publication that did not release its temporary name,
-/// or nothing when publication completed. The mutation and continuation verdict come from the
-/// receipt, the only module that knows whether the native destination commit happened.
+/// or nothing when publication completed. The mutation and continuation verdict are the
+/// receipt's (see PublicationResult).
 std::optional<AssetExecutionResult> publicationFailure(const run::PublicationResult& publication,
                                                        const char* message,
                                                        const std::filesystem::path& path,
