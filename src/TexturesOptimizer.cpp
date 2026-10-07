@@ -29,7 +29,8 @@ void TexturesOptimizer::listLandscapeTextures(QDirIterator& it) {
                       "won't be detected.";
     }
 
-    for (const auto& plugin : FilesystemOperations::listPlugins(it))
+    const auto& extensions = btu::bsa::Settings::get(_profile.bsaGame).plugin_extensions;
+    for (const auto& plugin : FilesystemOperations::listPlugins(it, extensions))
         _landscapeTextures += PluginsOperations::listLandscapeTextures(plugin);
     for (auto& tex : _landscapeTextures)
         if (!tex.endsWith("_n.dds")) tex.insert(tex.size() - 4, "_n");

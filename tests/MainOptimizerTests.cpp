@@ -221,6 +221,9 @@ private slots:
  /// Stops a recursive plugin listing before traversing more entries.
  void pluginListingObservesCancellation();
 
+ /// Lists plugins by the Profile game's extensions, ignoring case, files, and directories.
+ void pluginListingUsesProfileExtensions();
+
  /// Aborts lazy backend initialization when the run has been cancelled.
  void optimizerInitializationObservesCancellation();
 
@@ -802,11 +805,43 @@ void MainOptimizerTests::pluginListingObservesCancellation()
 
     bool cancelled = false;
     try {
-        static_cast<void>(FilesystemOperations::listPlugins(entries, stop.get_token()));
+        static_cast<void>(FilesystemOperations::listPlugins(
+            entries, btu::bsa::Settings::get(btu::Game::SSE).plugin_extensions,
+            stop.get_token()));
     } catch (const cao::run::AssetInitializationCancelled&) {
         cancelled = true;
     }
     QVERIFY(cancelled);
+}
+
+void MainOptimizerTests::pluginListingUsesProfileExtensions()
+{
+    QVERIFY(_temporaryDirectory.isValid());
+    // A dedicated subtree keeps fixtures from other tests in the shared directory out of the list.
+    const QString directory = QDir(_temporaryDirectory.path()).filePath("plugin-extensions");
+    const auto root = std::filesystem::path(directory.toStdWString());
+    writeFile(root / "Upper.ESP", QByteArrayLiteral("fixture"));
+    writeFile(root / "nested" / "Mixed.EsM", QByteArrayLiteral("fixture"));
+    writeFile(root / "light.esl", QByteArrayLiteral("fixture"));
+    writeFile(root / "readme.txt", QByteArrayLiteral("fixture"));
+    QVERIFY(QDir().mkpath(QDir(directory).filePath("folder.esp")));
+
+    const auto listNames = [&directory](const btu::Game game) {
+        QDirIterator entries(directory, QDirIterator::Subdirectories);
+        QStringList names;
+        for (const auto &path : FilesystemOperations::listPlugins(
+                 entries, btu::bsa::Settings::get(game).plugin_extensions))
+            names << QFileInfo(path).fileName();
+        names.sort(Qt::CaseInsensitive);
+        return names;
+    };
+
+    QCOMPARE(listNames(btu::Game::SSE),
+             QStringList({QStringLiteral("light.esl"), QStringLiteral("Mixed.EsM"),
+                          QStringLiteral("Upper.ESP")}));
+    // FNV has no light plugins, so .esl must not be listed for it.
+    QCOMPARE(listNames(btu::Game::FNV),
+             QStringList({QStringLiteral("Mixed.EsM"), QStringLiteral("Upper.ESP")}));
 }
 
 void MainOptimizerTests::optimizerInitializationObservesCancellation()

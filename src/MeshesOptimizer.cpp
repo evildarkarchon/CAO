@@ -60,7 +60,8 @@ void MeshesOptimizer::listHeadparts(const QString& directory, std::stop_token st
     }
 
     QDirIterator it(directory, QDirIterator::Subdirectories);
-    for (const auto& plugin : FilesystemOperations::listPlugins(it, stop)) {
+    const auto& extensions = btu::bsa::Settings::get(_profile.bsaGame).plugin_extensions;
+    for (const auto& plugin : FilesystemOperations::listPlugins(it, extensions, stop)) {
         cao::run::throwIfAssetInitializationCancelled(stop);
         headparts += PluginsOperations::listHeadparts(plugin);
     }
