@@ -1,0 +1,26 @@
+[package]
+name = "nifly-sys"
+description = "nifly mesh operations for CAO: a plain C ABI shim over vendored nifly, and the safe Nif type over it."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+# The shim and the Rust code are CAO's (MPL-2.0); `vendor/nifly` is nifly's own
+# GPL-3.0 source, compiled into this crate's static library.
+license = "MPL-2.0 AND GPL-3.0-only"
+publish.workspace = true
+
+# This crate overrides the workspace's `unsafe_code = "forbid"`, as `cao-winfs`
+# does. Cargo cannot combine `workspace = true` with a local key, so this table
+# replaces `[workspace.lints]` entirely; keep every other lint in step with the root.
+[lints.rust]
+unsafe_code = "allow"
+
+# A leaf: no workspace members, so the mesh backend in `cao-optimizers` adapts
+# `Nif` to core's traits rather than this crate knowing about them (#476).
+[dependencies]
+thiserror.workspace = true
+
+[build-dependencies]
+# nifly is built from source with `cc`, not CMake or vcpkg (#460).
+cc.workspace = true
+embed-resource.workspace = true
