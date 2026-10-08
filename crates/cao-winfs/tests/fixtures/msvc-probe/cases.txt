@@ -1,0 +1,63 @@
+# Cases for canonical_probe.cpp. Run `canonical_probe record` to regenerate expected.txt;
+# see README.md. Fields are separated by one tab.
+dir Mixed\Case
+file Mixed\Case\file.txt
+dir Straße
+dir {deep}
+file {deep}\file.txt
+junction link Mixed
+#
+# Drive-letter paths. C:\Windows exists on every supported host, so these results are
+# literal rather than relative to the scratch root.
+canonical	C:\Windows
+canonical	c:\windows\system32\..\SYSTEM32\.\drivers\
+canonical	C:/Windows/System32
+canonical	\\?\C:\Windows
+canonical	\\?\c:\windows\
+canonical	C:\
+canonical	c:\
+weakly	C:\Windows\cao-winfs-missing\child\
+weakly	c:/windows/./cao-winfs-missing/../System32/
+weakly	\\?\C:\Windows\cao-winfs-missing
+#
+# On-disk case and non-ASCII names.
+canonical	{root}\MIXED\case\FILE.TXT
+canonical	{root}\STRAßE
+weakly	{root}\straße\missing
+#
+# Dot segments and trailing separators.
+canonical	{root}\Mixed\.\Case\..\Case\file.txt
+canonical	{root}\Mixed\Case\
+canonical	{root}\Mixed\Case\\
+canonical	{root}/Mixed//Case/./
+canonical	{root}\Mixed\Case\file.txt\
+weakly	{root}\Mixed\Case\
+weakly	{root}\Mixed\missing\
+weakly	{root}\Mixed\missing\.
+weakly	{root}\Mixed\missing\..
+weakly	{root}\Mixed\missing\..\
+weakly	{root}\Mixed\.\missing\x\..\y\
+weakly	{root}\Mixed\Case\..\..\missing
+weakly	{root}/Mixed//missing//child
+weakly	{root}\Mixed\Case\file.txt\
+weakly	{root}\Mixed\Case\file.txt\child
+#
+# Missing paths.
+canonical	{root}\missing
+canonical	{root}\missing\child
+canonical	{root}\Mixed\Case\file.txt\child
+#
+# Junctions are followed.
+canonical	{root}\link\Case\file.txt
+weakly	{root}\link\Case\missing\
+#
+# Long paths: every input and result through {deep} is longer than MAX_PATH.
+canonical	{root}\{deep}
+canonical	{root}\{deep}\file.txt
+canonical	\\?\{root}\{deep}\file.txt
+canonical	{root}\{deep}\..\..\..\..\..\..\{deep}\file.txt
+canonical	{root}\{deep}\
+canonical	{root}\{deep}\missing
+weakly	{root}\{deep}\missing\child\
+weakly	{root}\{deep}\.\missing\..\file.txt
+weakly	{root}\{deep}\missing\..\..\new

@@ -13,7 +13,6 @@
 //! mutation until Archive discovery and extraction are ported (#496, #497).
 
 use std::collections::{BTreeMap, HashSet};
-use std::os::windows::fs::MetadataExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
@@ -28,10 +27,6 @@ use crate::run::{
     RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunWorkEvidence, RunWorkMilestones,
     panic_message,
 };
-
-/// `FILE_ATTRIBUTE_REPARSE_POINT`: junctions and other reparse points that
-/// `is_symlink` does not report.
-const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
 /// One completed attempt: its routed identity, resolved Mod Root and durable outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,9 +127,7 @@ impl Discovery<'_, '_, '_, '_> {
             return false;
         };
         // Reparse points are rejected by attribute: junctions are not always symlinks.
-        if !metadata.file_type().is_symlink()
-            && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
-        {
+        if !metadata.file_type().is_symlink() && !cao_winfs::is_reparse_point(&metadata) {
             return true;
         }
         if path.is_dir() {
@@ -144,7 +137,7 @@ impl Discovery<'_, '_, '_, '_> {
             );
             return false;
         }
-        let Ok(resolved) = dunce::canonicalize(path) else {
+        let Ok(resolved) = cao_winfs::msvc_canonical(path) else {
             self.exclude(
                 path,
                 "Linked entry could not be resolved within the Mod Root.",

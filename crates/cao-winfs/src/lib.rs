@@ -2,6 +2,48 @@
 //!
 //! Every `unsafe` call and `windows-sys` import that file safety needs lives in
 //! this crate, so the rest of the workspace can keep `unsafe_code = "forbid"`.
+//!
+//! The split follows the #463 research: handles are opened with `std`
+//! ([`Open`], which always states its share mode), and every query or mutation
+//! of an open handle goes through `windows-sys` on its raw handle. The
+//! research note is `docs/research/windows-file-safety-rust.md` on the
+//! `research/windows-file-safety-rust` branch.
+//!
+//! - Opening: [`Open`], [`Access`], [`Share`], [`is_sharing_violation`], and
+//!   the staging [`OwnerLock`].
+//! - Facts: [`FileFacts`] (link count, change time, change detection),
+//!   [`FileIdentity`] (`FileIdInfo` with a 64-bit fallback), and
+//!   [`is_reparse_point`].
+//! - Mutation: [`rename_by_handle`], [`delete_by_handle`] and
+//!   [`move_file_write_through`]. Flushing is `File::sync_all`, which is
+//!   exactly `FlushFileBuffers`.
+//! - Paths: [`msvc_canonical`], [`msvc_weakly_canonical`] and
+//!   [`generic_utf8`], which reproduce the text C++ wrote into `CAO-STAGING`
+//!   manifests; [`exe_directory`]; [`compare_ordinal_ignore_case`] and
+//!   [`OrdinalIgnoreCase`].
+//! - Volumes: [`volume_mount_point`], [`volume_guid_path`] and
+//!   [`available_space`].
+//! - [`random_nonce`] for staging nonces.
+
+mod canonical;
+mod compare;
+mod exe_dir;
+mod facts;
+mod mutate;
+mod nonce;
+mod open;
+mod owner_lock;
+mod volume;
+
+pub use canonical::{generic_utf8, msvc_canonical, msvc_weakly_canonical};
+pub use compare::{OrdinalIgnoreCase, compare_ordinal_ignore_case};
+pub use exe_dir::exe_directory;
+pub use facts::{FileFacts, FileIdentity, is_reparse_point};
+pub use mutate::{RenameMode, delete_by_handle, move_file_write_through, rename_by_handle};
+pub use nonce::random_nonce;
+pub use open::{Access, Open, Share, is_sharing_violation};
+pub use owner_lock::{OwnerLock, OwnerLockError};
+pub use volume::{available_space, volume_guid_path, volume_mount_point};
 
 #[cfg(test)]
 mod tests {

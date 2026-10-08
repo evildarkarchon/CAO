@@ -212,7 +212,9 @@ fn resolve_mod_roots(selection: &ModSelection) -> Result<Vec<PathBuf>, RunFailur
     };
     match selection {
         ModSelection::SingleModRoot(directory) => {
-            let root = dunce::canonicalize(directory)
+            // MSVC's canonical text, so a Mod Root compares equal to the one a
+            // C++ run recorded in its staging manifest.
+            let root = cao_winfs::msvc_canonical(directory)
                 .ok()
                 .filter(|root| root.is_dir())
                 .ok_or_else(|| {

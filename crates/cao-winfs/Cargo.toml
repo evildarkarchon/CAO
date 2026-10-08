@@ -13,8 +13,21 @@ publish.workspace = true
 [lints.rust]
 unsafe_code = "allow"
 
+# The #463 crate set. `same-file`, `fs4` and the `windows` crate are rejected for
+# this layer: `same-file` has 64-bit identities only and follows reparse points,
+# `fs4` locks with `LockFileEx` and reads volume paths into a fixed 261-unit
+# buffer, and `windows` adds nothing for flat Win32 calls.
+[dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Globalization"] }
+# `std` converts its error into `io::Error`.
+getrandom = { workspace = true, features = ["std"] }
+# The exe directory only; never a substitute for `msvc_canonical`.
+dunce.workspace = true
+thiserror.workspace = true
+
 [dev-dependencies]
-windows-sys = { workspace = true, features = ["Win32_Globalization", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
+# Manifest checks, plus a custom reparse tag and volume enumeration in the tests.
+windows-sys = { workspace = true, features = ["Win32_Globalization", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_System_IO", "Win32_System_Ioctl"] }
 
 [build-dependencies]
 embed-resource.workspace = true
