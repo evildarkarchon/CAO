@@ -3,7 +3,8 @@
 
 use crate::ini::IniFile;
 
-/// How the selected folder is read (`mode`).
+/// How the selected folder becomes the Mod Selection (`mode`). The name is C++'s
+/// `OptionsCAO::OptimizationMode`, kept so the INI key and the code line up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OptimizationMode {
     /// The folder is one mod, `mode=0`.
@@ -39,22 +40,26 @@ impl OptimizationMode {
 
 /// A profile's `settings.ini`: the options C++ held in `OptionsCAO`.
 ///
-/// [`Options::default`] is C++'s member defaults, which apply only when the file does
-/// not exist. Otherwise every field reads with `QVariant`'s conversions, so a missing
+/// [`Options::default`] is C++'s member defaults, which apply only when the first
+/// profile loaded has no file. Otherwise every field reads with `QVariant`'s conversions, so a missing
 /// key is `false` or `0`: the shipped files have no `bBsaMergeIncomp`, so it loads as
 /// `false`. Keys this model does not hold, such as the dead `[BSA] bBsaLeastBSA`
 /// (deviation 10), are never read and survive a save.
 ///
 /// The model holds what the file holds; whether the values make a valid run is
-/// decided when a run starts, not here.
+/// decided when a run starts, not here. It is not a Run Request: the composition root
+/// builds one from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     /// Dry Run (`bDryRun`).
     pub dry_run: bool,
     /// Debug logging (`bDebugLog`).
     pub debug_log: bool,
+    /// Whether the selected folder is one Mod Root or a mods directory for Several
+    /// Mods selection (`mode`).
     pub mode: OptimizationMode,
-    /// The folder the user selected (`userPath`).
+    /// The folder the user selected, from which the Mod Selection is made
+    /// (`userPath`).
     pub user_path: String,
 
     /// `[BSA] bBsaExtract`.
@@ -143,17 +148,27 @@ impl Default for Options {
 }
 
 impl Options {
-    /// Reads the model from an existing `settings.ini` as C++'s
-    /// `OptionsCAO::readFromIni` does. Every key is read; for a file that does not
-    /// exist, use [`Options::default`] instead, as C++ does.
-    pub fn read(ini: &IniFile) -> Self {
+    /// Reads the model from an existing `settings.ini` over `current`, as C++'s
+    /// `OptionsCAO::readFromIni` reads into the GUI's one live `OptionsCAO`.
+    ///
+    /// Every key is read and replaces `current`'s value, except an empty `userPath`,
+    /// which keeps `current.user_path`. That is how the selected folder follows the
+    /// user between profiles: every shipped `settings.ini` has `userPath=`. When the
+    /// file does not exist, C++ keeps all of `current` instead; see
+    /// [`crate::Profile::load_options`].
+    pub fn read(ini: &IniFile, current: &Self) -> Self {
         let flag = |key| ini.value(key).to_bool();
         let number = |key| ini.value(key).to_u32();
+        let user_path = ini.value("userPath").to_qstring();
         Self {
             dry_run: flag("bDryRun"),
             debug_log: flag("bDebugLog"),
             mode: OptimizationMode::from_number(ini.value("mode").to_i32()),
-            user_path: ini.value("userPath").to_qstring(),
+            user_path: if user_path.is_empty() {
+                current.user_path.clone()
+            } else {
+                user_path
+            },
             bsa_extract: flag("BSA/bBsaExtract"),
             bsa_create: flag("BSA/bBsaCreate"),
             bsa_delete_backup: flag("BSA/bBsaDeleteBackup"),

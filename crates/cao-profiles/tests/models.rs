@@ -7,11 +7,11 @@ use cao_profiles::{
     BsaGame, CommonSettings, FormatErrorKind, IniFile, OptimizationMode, Options, ProfileError,
     ProfileSettings, Profiles,
 };
-use common::shipped_profiles;
+use common::shipped_app_dir;
 
 /// The shipped profiles, with the repository root as their app directory.
 fn shipped() -> Profiles {
-    Profiles::new(shipped_profiles().parent().unwrap())
+    Profiles::new(&shipped_app_dir())
 }
 
 #[test]
@@ -88,7 +88,10 @@ fn deviation_11_a_missing_bsa_game_makes_the_profile_unreadable() {
 
 #[test]
 fn the_shipped_sse_settings_load_into_the_options_model() {
-    let options = shipped().open("SSE").load_options().unwrap();
+    let options = shipped()
+        .open("SSE")
+        .load_options(&Options::default())
+        .unwrap();
 
     assert_eq!(
         options,
@@ -126,15 +129,75 @@ fn the_shipped_sse_settings_load_into_the_options_model() {
 }
 
 #[test]
-fn a_profile_without_settings_ini_has_the_default_options() {
+fn a_first_load_without_settings_ini_has_the_default_options() {
     // C++ keeps its member defaults only when the file does not exist at all.
     let app_dir = common::scratch_dir("options-without-settings-ini");
-    let options = Profiles::new(&app_dir).open("Bare").load_options().unwrap();
+    let options = Profiles::new(&app_dir)
+        .open("Bare")
+        .load_options(&Options::default())
+        .unwrap();
 
     assert_eq!(options, Options::default());
     assert!(options.bsa_merge_incompressible);
     assert_eq!(options.textures_target_width_ratio, 1);
     assert_eq!(options.mode, OptimizationMode::SingleMod);
+}
+
+#[test]
+fn switching_to_a_profile_without_settings_ini_keeps_the_current_options() {
+    // C++ read settings.ini into the GUI's one live OptionsCAO and returned early
+    // when the file was missing, so the previous profile's options carried over.
+    let app_dir = common::scratch_dir("options-switch-without-settings-ini");
+    let current = Options {
+        dry_run: true,
+        user_path: "D:/Mods".to_owned(),
+        meshes_optimization_level: 3,
+        ..Options::default()
+    };
+
+    let options = Profiles::new(&app_dir)
+        .open("Bare")
+        .load_options(&current)
+        .unwrap();
+
+    assert_eq!(options, current);
+}
+
+#[test]
+fn an_empty_user_path_keeps_the_current_one_when_switching_profiles() {
+    // Every shipped settings.ini has `userPath=`, so in C++ the selected folder
+    // follows the user from one profile to the next. Every other key is replaced.
+    let current = Options {
+        user_path: "D:/Mods".to_owned(),
+        dry_run: true,
+        ..Options::default()
+    };
+
+    let options = shipped().open("FO4").load_options(&current).unwrap();
+
+    assert_eq!(options.user_path, "D:/Mods");
+    assert!(!options.dry_run);
+    assert!(!options.meshes_headparts);
+}
+
+#[test]
+fn a_saved_user_path_replaces_the_current_one() {
+    let app_dir = common::copy_of_shipped("options-saved-user-path");
+    let profile = Profiles::new(&app_dir).open("TES5");
+    let saved = Options {
+        user_path: "E:/Other".to_owned(),
+        ..Options::default()
+    };
+    profile.save_options(&saved).unwrap();
+    let current = Options {
+        user_path: "D:/Mods".to_owned(),
+        ..Options::default()
+    };
+
+    assert_eq!(
+        profile.load_options(&current).unwrap().user_path,
+        "E:/Other"
+    );
 }
 
 #[test]
@@ -161,7 +224,7 @@ fn saving_options_writes_what_qt_writes_and_keeps_dead_keys() {
     // leaves `bBsaLeastBSA`, which nothing reads, where it was (deviation 10).
     let app_dir = common::copy_of_shipped("save-options-sse");
     let profile = Profiles::new(&app_dir).open("SSE");
-    let mut options = profile.load_options().unwrap();
+    let mut options = profile.load_options(&Options::default()).unwrap();
     options.mode = OptimizationMode::SeveralMods;
     options.user_path = "D:/Mods/Café; v2".to_owned();
     options.meshes_optimization_level = 2;
@@ -209,7 +272,7 @@ fn saving_options_writes_what_qt_writes_and_keeps_dead_keys() {
     );
     let saved = common::read(&profile.settings_ini());
     assert!(saved == expected.as_bytes(), "{}", common::show(&saved));
-    assert_eq!(profile.load_options().unwrap(), options);
+    assert_eq!(profile.load_options(&Options::default()).unwrap(), options);
 }
 
 #[test]
@@ -244,7 +307,10 @@ fn saving_options_creates_a_missing_settings_ini() {
 
     profile.save_options(&Options::default()).unwrap();
 
-    assert_eq!(profile.load_options().unwrap(), Options::default());
+    assert_eq!(
+        profile.load_options(&Options::default()).unwrap(),
+        Options::default()
+    );
 }
 
 #[test]
@@ -288,12 +354,15 @@ fn a_format_error_makes_the_profile_unreadable_only_for_the_checked_load() {
 #[test]
 fn every_shipped_profile_loads_cleanly() {
     let profiles = shipped();
-    let sse_options = profiles.open("SSE").load_options().unwrap();
+    let sse_options = profiles
+        .open("SSE")
+        .load_options(&Options::default())
+        .unwrap();
 
     for name in profiles.list() {
         let profile = profiles.open(&name);
         profile.load_settings_checked().unwrap();
-        let options = profile.load_options().unwrap();
+        let options = profile.load_options(&Options::default()).unwrap();
         // The shipped settings.ini files differ only in FO4's headpart choice.
         let expected = Options {
             meshes_headparts: name != "FO4",

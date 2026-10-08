@@ -4,15 +4,10 @@
 mod common;
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use cao_profiles::{ProfileError, Profiles};
-use common::shipped_profiles;
-
-/// The repository root, which holds the shipped `profiles/` as an app directory would.
-fn shipped_app_dir() -> PathBuf {
-    shipped_profiles().parent().unwrap().to_owned()
-}
+use cao_profiles::{Options, ProfileError, Profiles};
+use common::shipped_app_dir;
 
 #[test]
 fn discovers_the_shipped_fo4_sse_and_tes5_profiles() {
@@ -72,6 +67,7 @@ fn a_new_profile_copies_subdirectories() {
     let nested = profiles.root().join("FO4/extra/deeper");
     fs::create_dir_all(&nested).unwrap();
     fs::write(nested.join("note.txt"), "kept").unwrap();
+    fs::create_dir(profiles.root().join("FO4/empty")).unwrap();
 
     let mine = profiles.create("Mine", "FO4").unwrap();
 
@@ -79,6 +75,8 @@ fn a_new_profile_copies_subdirectories() {
         common::read(&mine.directory().join("extra/deeper/note.txt")),
         b"kept"
     );
+    // As in C++, a directory is created only to hold a file.
+    assert!(!mine.directory().join("empty").exists());
 }
 
 #[test]
@@ -107,7 +105,10 @@ fn deviation_10_dead_data_files_are_left_alone() {
     let dummy = common::read(&sse.directory().join("DummyPlugin.esp"));
 
     sse.save_settings(&sse.load_settings().unwrap()).unwrap();
-    sse.save_options(&sse.load_options().unwrap()).unwrap();
+    sse.save_options(&sse.load_options(&Options::default()).unwrap())
+        .unwrap();
+    // Only the reads matter here, to show they leave the dead files alone; the lists
+    // themselves are pinned by the auxiliary-file tests below.
     let _ = (
         sse.custom_headparts(),
         sse.files_to_not_pack(),

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 pub(crate) const CUSTOM_HEADPARTS: &str = "customHeadparts.txt";
 /// `FilesToNotPack.txt`: the profile's Packing Exclusion rules.
 pub(crate) const FILES_TO_NOT_PACK: &str = "FilesToNotPack.txt";
-/// `ignoredMods.txt`: Mod Root names Several Mods excludes.
+/// `ignoredMods.txt`: the names of the profile's Mod Exclusions.
 pub(crate) const IGNORED_MODS: &str = "ignoredMods.txt";
 
 /// The path a profile reads `name` from: its own file when anything exists at that

@@ -48,6 +48,9 @@ impl Profiles {
         let Ok(entries) = fs::read_dir(&self.root) else {
             return Vec::new();
         };
+        // An entry that cannot be read is skipped, as `QDir::entryList` skips it. So is
+        // a name that is not valid Unicode (an unpaired surrogate), which no profile
+        // name CAO writes or matches can be.
         let mut names: Vec<String> = entries
             .filter_map(Result::ok)
             .filter(|entry| entry.path().is_dir() && entry.path().join("profile.ini").exists())
@@ -111,18 +114,14 @@ impl Profiles {
     /// [`ProfileError::Create`] when a directory or file cannot be created or copied,
     /// or `isBase` cannot be removed. Files copied before the failure stay.
     pub fn create(&self, name: &str, base: &str) -> Result<Profile, ProfileError> {
-        let base = if self.exists(base) {
-            base
-        } else {
-            DEFAULT_PROFILE
-        };
         let profile = self.open(name);
-        copy_missing(&self.root.join(base), &profile.directory)?;
+        copy_missing(&self.root.join(self.resolve(base)), &profile.directory)?;
         let flag = profile.directory.join("isBase");
         match fs::remove_file(&flag) {
             Err(source) if source.kind() != io::ErrorKind::NotFound => {
                 return Err(ProfileError::Create { path: flag, source });
             }
+            // Removed, or the base had none: either way the new profile is editable.
             _ => {}
         }
         Ok(profile)
@@ -180,7 +179,7 @@ impl Profile {
         self.optional_list(auxiliary::FILES_TO_NOT_PACK)
     }
 
-    /// The Mod Root names in `ignoredMods.txt`, from this profile or else from
+    /// The Mod Exclusion names in `ignoredMods.txt`, from this profile or else from
     /// `profiles/SSE`. A missing file gives an empty list.
     ///
     /// # Errors
@@ -217,17 +216,23 @@ impl Profile {
         self.directory.join("settings.ini")
     }
 
-    /// Loads `settings.ini` into the options model, or C++'s defaults when the file
-    /// does not exist.
+    /// Loads `settings.ini` into the options model over `current`, the options in use
+    /// before this profile was selected, as C++'s GUI reloads its one live
+    /// `OptionsCAO` on every profile switch. Pass [`Options::default`] for the first
+    /// load.
+    ///
+    /// When the file does not exist, `current` is returned unchanged; otherwise
+    /// [`Options::read`] replaces it, keeping only `current`'s folder when the file's
+    /// `userPath` is empty.
     ///
     /// # Errors
     /// [`ProfileError::Ini`] when the file exists but cannot be read.
-    pub fn load_options(&self) -> Result<Options, ProfileError> {
+    pub fn load_options(&self, current: &Options) -> Result<Options, ProfileError> {
         let path = self.settings_ini();
         if !path.exists() {
-            return Ok(Options::default());
+            return Ok(current.clone());
         }
-        Ok(Options::read(&IniFile::load(&path)?))
+        Ok(Options::read(&IniFile::load(&path)?, current))
     }
 
     /// Saves the options model to `settings.ini`. The file is read again and only the
@@ -292,22 +297,24 @@ impl Profile {
     }
 }
 
-/// Copies every file under `from` to the same relative path under `to`, creating
-/// directories as needed and keeping any file already at the destination, as C++'s
-/// `FilesystemOperations::copyDir` with `overwriteExisting = false` does.
+/// Copies every file under `from` to the same relative path under `to`, keeping any
+/// file already at the destination, as C++'s `FilesystemOperations::copyDir` with
+/// `overwriteExisting = false` does. As there, a directory is created only to hold a
+/// file, so empty directories are not copied.
 fn copy_missing(from: &Path, to: &Path) -> Result<(), ProfileError> {
-    let create = |path: &Path| {
+    let create_error = |path: &Path| {
         let path = path.to_owned();
         move |source| ProfileError::Create { path, source }
     };
-    fs::create_dir_all(to).map_err(create(to))?;
-    for entry in fs::read_dir(from).map_err(create(from))? {
-        let source = entry.map_err(create(from))?.path();
+    for entry in fs::read_dir(from).map_err(create_error(from))? {
+        let source = entry.map_err(create_error(from))?.path();
+        // `read_dir` never yields `..` or a path without a final component.
         let target = to.join(source.file_name().unwrap_or_default());
         if source.is_dir() {
             copy_missing(&source, &target)?;
         } else if !target.exists() {
-            fs::copy(&source, &target).map_err(create(&target))?;
+            fs::create_dir_all(to).map_err(create_error(to))?;
+            fs::copy(&source, &target).map_err(create_error(&target))?;
         }
     }
     Ok(())

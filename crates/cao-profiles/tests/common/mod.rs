@@ -14,6 +14,11 @@ pub fn shipped_profiles() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles")
 }
 
+/// The repository root, which holds the shipped `profiles/` as an app directory would.
+pub fn shipped_app_dir() -> PathBuf {
+    shipped_profiles().parent().unwrap().to_owned()
+}
+
 /// Reads a file, panicking with its path on failure.
 pub fn read(path: &Path) -> Vec<u8> {
     std::fs::read(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))

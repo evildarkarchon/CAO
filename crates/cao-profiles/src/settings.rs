@@ -50,22 +50,29 @@ impl BsaGame {
 /// `[Animations] animationFormat` (deviation 10), are never read and survive a save.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProfileSettings {
-    /// Whether the Archives tab is enabled (`[BSA] bsaEnabled`).
+    /// The Profile Capability for Archive extraction and creation
+    /// (`[BSA] bsaEnabled`); the GUI enables its Archives tab from it.
     pub bsa_enabled: bool,
     /// The largest uncompressed Archive to create, in bytes. C++ raised it to the
     /// game's archive-table maximum when that is larger; those tables live in
     /// `cao-archive`, so the composition root applies that floor.
     pub max_bsa_uncompressed_size: f64,
+    /// The game whose archive naming, versions and Loading Plugin rules apply
+    /// (`[BSA] bsaGame`).
     pub bsa_game: BsaGame,
-    /// Whether the Meshes tab is enabled.
+    /// The Profile Capability for Mesh optimization (`[Meshes] meshesEnabled`).
     pub meshes_enabled: bool,
     /// The NIF file version Meshes are written as (`nifly::NiFileVersion`).
     pub meshes_file_version: u32,
+    /// The NIF stream version Meshes are written with (`[Meshes] meshesStream`).
     pub meshes_stream: u32,
+    /// The NIF user version Meshes are written with (`[Meshes] meshesUser`).
     pub meshes_user: u32,
-    /// Whether the Animations tab is enabled.
+    /// The Profile Capability for Animation optimization
+    /// (`[Animations] animationsEnabled`).
     pub animations_enabled: bool,
-    /// Whether the Textures tab is enabled.
+    /// The Profile Capability for Texture optimization and conversion
+    /// (`[Textures] texturesEnabled`).
     pub textures_enabled: bool,
     /// The `DXGI_FORMAT` Textures are compressed to.
     pub textures_format: u32,

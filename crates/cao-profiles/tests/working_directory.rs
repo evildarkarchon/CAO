@@ -9,10 +9,10 @@ mod common;
 
 use std::fs;
 
-use cao_profiles::{BsaGame, Profiles};
+use cao_profiles::{BsaGame, Options, Profiles};
 
 #[test]
-fn profiles_resolve_against_the_app_directory_from_another_working_directory() {
+fn deviation_1_profiles_resolve_against_the_app_directory_from_another_working_directory() {
     let app_dir = common::copy_of_shipped("working-directory-app");
     // A decoy install in the working directory, which C++ would have read instead.
     let decoy = common::scratch_dir("working-directory-decoy");
@@ -30,7 +30,11 @@ fn profiles_resolve_against_the_app_directory_from_another_working_directory() {
     assert_eq!(profiles.list(), ["FO4", "SSE", "TES5"]);
     assert_eq!(profiles.load_common().unwrap().profile, "TES5");
     assert_eq!(sse.load_settings().unwrap().bsa_game, BsaGame::Sse);
-    assert!(sse.load_options().unwrap().bsa_create_dummies);
+    assert!(
+        sse.load_options(&Options::default())
+            .unwrap()
+            .bsa_create_dummies
+    );
     // FO4 has no ignoredMods.txt, so it falls back to the app directory's SSE.
     assert_eq!(
         fo4.ignored_mods().unwrap(),
@@ -38,7 +42,8 @@ fn profiles_resolve_against_the_app_directory_from_another_working_directory() {
     );
 
     let mine = profiles.create("Mine", "SSE").unwrap();
-    mine.save_options(&mine.load_options().unwrap()).unwrap();
+    mine.save_options(&mine.load_options(&Options::default()).unwrap())
+        .unwrap();
     assert!(app_dir.join("profiles/Mine/settings.ini").exists());
     assert!(!decoy.join("profiles/Mine").exists());
 }
