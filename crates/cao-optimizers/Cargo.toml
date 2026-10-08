@@ -1,0 +1,18 @@
+[package]
+name = "cao-optimizers"
+description = "CAO's texture, mesh, animation and archive backends, plus the composition root."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Inherits `unsafe_code = "forbid"` for now. The D3D11 device module (#495) is
+# the one place here allowed `unsafe`; when it lands, this crate swaps to its own
+# `[lints]` table as `cao-winfs` does.
+[lints]
+workspace = true
+
+[dependencies]
+# Resolves to CAO's fork through the root `[patch.crates-io]` (#479).
+directxtex.workspace = true
