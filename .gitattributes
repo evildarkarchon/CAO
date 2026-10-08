@@ -5,3 +5,6 @@ crates/cao-parity/tests/transcripts/** -text
 # included). The cao-profiles tests compare them byte for byte.
 crates/cao-profiles/tests/fixtures/qt-written/** -text
 crates/cao-profiles/tests/fixtures/qt-read/** -text
+# nifly's own NIF fixtures, vendored at the pin. The nifly-sys tests compare each
+# saved Mesh with its `_expected.nif` byte for byte.
+crates/nifly-sys/vendor/nifly/tests/*.nif binary
