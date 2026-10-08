@@ -1,0 +1,15 @@
+status=0
+BSA/bsaGame	string	s=4	b=1	i=4	u=4	d=4	l=
+BSA/huge	string	s=3e+12	b=1	i=0	u=0	d=3e+12	l=
+BSA/maxBsaUncompressedSize	string	s=2147483648	b=1	i=-2147483648	u=2147483648	d=2147483648	l=
+BSA/tiny	string	s=1.5e-07	b=1	i=0	u=0	d=1.5e-07	l=
+General/real	string	s=true	b=1	i=0	u=0	d=0	l=
+Meshes/meshesStream	string	s=100	b=1	i=100	u=100	d=100	l=
+profile	string	s=SSE	b=1	i=0	u=0	d=0	l=
+Textures/none	invalid	s=	b=0	i=0	u=0	d=0	l=
+Textures/one98	list	s=	b=0	i=0	u=0	d=0	l=98
+Textures/oneNegative	list	s=	b=0	i=0	u=0	d=0	l=-1
+Textures/oneZero	list	s=	b=0	i=0	u=0	d=0	l=0
+Textures/texturesUnwantedFormats	list	s=	b=0	i=0	u=0	d=0	l=85
+Textures/three	list	s=	b=0	i=0	u=0	d=0	l=86,85,115
+userPath	string	s=D:/Mods/Caf\u{00e9}; Stuff, "\u{00dc}n\u{00ef}c\u{00f6}d\u{00e9}" \u{6f22} \u{d83d}\u{de00} 	b=1	i=0	u=0	d=0	l=

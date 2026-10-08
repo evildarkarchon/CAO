@@ -1,0 +1,2 @@
+status=2
+BSA/bsaGame	string	s=4	b=1	i=4	u=4	d=4	l=

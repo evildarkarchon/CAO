@@ -86,6 +86,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cao-profiles"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "cao-winfs"
 version = "0.1.0"
 dependencies = [

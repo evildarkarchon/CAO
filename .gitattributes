@@ -1,3 +1,7 @@
 # Oracle transcripts are captured stdout, CRLF line endings included. The
 # cao-parity parser tests read them byte for byte, so git must never convert them.
 crates/cao-parity/tests/transcripts/** -text
+# INI fixtures are bytes Qt 5.15 wrote or read (CRLF, Latin-1 and trailing spaces
+# included). The cao-profiles tests compare them byte for byte.
+crates/cao-profiles/tests/fixtures/qt-written/** -text
+crates/cao-profiles/tests/fixtures/qt-read/** -text
