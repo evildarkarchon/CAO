@@ -38,8 +38,8 @@ unsafe_code = "forbid"
 [workspace.dependencies]
 # Archives (#461). Exact pin: bsa-rs#14 proposes dropping its directxtex dependency.
 ba2 = "=3.0.1"
-# Textures (#459). The `[patch.crates-io]` entry pointing at CAO's fork arrives
-# with #479, so `ba2` and CAO share one DirectXTex build.
+# Textures (#459). `[patch.crates-io]` below replaces this with CAO's fork, so
+# `ba2` and CAO share one DirectXTex build.
 directxtex = "1.3.0"
 # The D3D11 device for GPU BC7 (#459).
 windows = "0.62"
@@ -62,3 +62,11 @@ rayon = "1"
 # Build scripts (#460, #471).
 cc = "1"
 embed-resource = "3"
+
+# CAO's fork of directxtex-rs (#479), on its 1.x line so it still satisfies
+# `ba2`'s `directxtex = "1.1.0"`. A patch replaces the crate for the whole
+# graph, so CAO and `ba2` link one copy of DirectXTex, the `may2026` release the
+# C++ parity oracle also builds. The fork's FORK.md records its upstream base and
+# delta. Pinned by `rev`: move it together with `cargo update -p directxtex`.
+[patch.crates-io]
+directxtex = { git = "https://github.com/evildarkarchon/directxtex-rs", rev = "1676a88ac58900ed98fb23c12d096194f4dc0b19" }

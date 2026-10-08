@@ -1,0 +1,16 @@
+[package]
+name = "cao-archive"
+description = "The bethutil archive layer ported onto the ba2 crate for CAO."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# `ba2` depends on `directxtex` itself; the root `[patch.crates-io]` makes it link
+# the same fork as `cao-optimizers` (#479).
+ba2.workspace = true
