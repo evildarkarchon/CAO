@@ -14,5 +14,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+cao-core.workspace = true
+cao-profiles.workspace = true
 # Resolves to CAO's fork through the root `[patch.crates-io]` (#479).
 directxtex.workspace = true
+log.workspace = true
+thiserror.workspace = true

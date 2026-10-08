@@ -56,6 +56,11 @@ pub enum HarnessError {
     #[error("the Rust driver exited with code {code}")]
     DriverFailed { code: i32 },
 
+    /// The Rust driver could not turn the case into a run, such as options the
+    /// composition root rejects.
+    #[error("the Rust driver could not set up the run: {0}")]
+    Driver(String),
+
     /// A filesystem or process operation failed.
     #[error("{context}: {source}")]
     Io {
