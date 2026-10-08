@@ -6,6 +6,7 @@
 #include "Run/ArchiveFinalizationResult.h"
 #include "AssetRouting/AssetRouter.h"
 #include <QTest>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <future>
@@ -48,9 +49,13 @@ enum class TerminalScenario { ContainedFailure, Cancelled, Unsafe, CleanupFailur
 /// Submits terminal facts through the executor's evidence owner.
 class TerminalCliWork final : public cao::run::RunWorkService {
    public:
-    /// Borrows cancellation only until the synchronous work call completes.
-    TerminalCliWork(TerminalScenario scenario, std::stop_source& cancellation)
-        : _scenario(scenario), _cancellation(cancellation) {}
+    /// Borrows cancellation only until the synchronous work call completes. serviceDetail lets a
+    /// test put free text with event-stream separators into the terminal Asset Failure line.
+    TerminalCliWork(TerminalScenario scenario, std::stop_source& cancellation,
+                    std::string serviceDetail = "backend detail")
+        : _scenario(scenario),
+          _cancellation(cancellation),
+          _serviceDetail(std::move(serviceDetail)) {}
 
     /// Records completed Archive and Asset attempts before their terminal classification.
     void execute(const cao::run::RunPreparation& preparation,
@@ -90,8 +95,8 @@ class TerminalCliWork final : public cao::run::RunWorkService {
                       cao::execution::AssetExecutionFailure::SaveFailed, "asset save failed",
                       _scenario == TerminalScenario::Unsafe ? MutationState::PartialOrUnknown
                                                             : MutationState::Committed,
-                      _scenario != TerminalScenario::Unsafe, root / "staged-output.dds", "save_texture",
-                      "backend detail");
+                      _scenario != TerminalScenario::Unsafe, root / "staged-output.dds",
+                      "save_texture", _serviceDetail);
         evidence.recordAssetAttempt({root, asset, result}, 1);
         if (_scenario == TerminalScenario::Unsafe) {
             evidence.recordFailure(RunFailure(RunFailureCode::WorkServiceFailed,
@@ -117,6 +122,7 @@ class TerminalCliWork final : public cao::run::RunWorkService {
    private:
     TerminalScenario _scenario;
     std::stop_source& _cancellation;
+    std::string _serviceDetail;
 };
 
 /// Adds a final Safety Cleanup failure only to the cleanup scenario.
@@ -146,6 +152,58 @@ cao::run::RunRequest terminalCliRequest(
         {cao::routing::RequestedWork::ArchiveExtraction,
          cao::routing::RequestedWork::NativeTextureOptimization,
          cao::routing::RequestedWork::ArchiveCreation});
+}
+
+/// Free text carrying every character the event grammar reserves, plus a lone trailing escape.
+const std::string reservedText = "a|b\\c\r\nd\\";
+
+/// Splits one rendered line on every raw separator, as the parity harness's parser does.
+std::vector<std::string> splitFields(const std::string& line) {
+    std::vector<std::string> fields;
+    std::string::size_type start = 0;
+    for (auto end = line.find('|'); end != std::string::npos; end = line.find('|', start)) {
+        fields.push_back(line.substr(start, end - start));
+        start = end + 1;
+    }
+    fields.push_back(line.substr(start));
+    return fields;
+}
+
+/// Reverses the documented field escaping; an unknown or dangling escape fails the test.
+std::string unescapeField(const std::string& field) {
+    std::string text;
+    for (std::string::size_type index = 0; index < field.size(); ++index) {
+        if (field[index] != '\\') {
+            text += field[index];
+            continue;
+        }
+        if (++index == field.size()) throw std::runtime_error("dangling escape");
+        switch (field[index]) {
+            case '\\':
+                text += '\\';
+                break;
+            case 'p':
+                text += '|';
+                break;
+            case 'r':
+                text += '\r';
+                break;
+            case 'n':
+                text += '\n';
+                break;
+            default:
+                throw std::runtime_error("unknown escape");
+        }
+    }
+    return text;
+}
+
+/// Splits rendered output into lines; a raw CR inside a line would show up as a stray byte.
+std::vector<std::string> outputLines(const std::string& text) {
+    std::vector<std::string> lines;
+    std::istringstream stream(text);
+    for (std::string line; std::getline(stream, line);) lines.push_back(line);
+    return lines;
 }
 }  // namespace
 
@@ -324,6 +382,57 @@ class CliRunTests final : public QObject {
                 std::string::npos);
         QVERIFY(text.find("Committed Mutations Retained|" + expectedRoot) !=
                 std::string::npos);
+    }
+    /// Free text holding separators, escapes, CR and LF round-trips without changing line or
+    /// field boundaries, in both live events and the terminal event's detail lines.
+    void escapesFreeTextFields() {
+        using namespace cao::run;
+        std::ostringstream output;
+        cao::cli::renderEvent(output, RunEvent("escape", 1,
+                                               RunDiagnostic(RunDiagnosticCode::IgnoredModExcluded,
+                                                             RunPhase::Preparing, reservedText,
+                                                             testModRoot() / "diagnostic.txt")));
+        cao::cli::renderEvent(output, RunEvent("escape", 2,
+                                               RunFailure(RunFailureCode::WorkServiceFailed,
+                                                          RunPhase::ProcessingAssets, reservedText,
+                                                          {}, testModRoot() / "failure.txt")));
+        std::stop_source cancellation;
+        TerminalCliWork work(TerminalScenario::ContainedFailure, cancellation, reservedText);
+        TerminalCliCleanup cleanup(false);
+        const auto result = std::make_shared<const OptimizationRunResult>(RunExecutor().execute(
+            terminalCliRequest(),
+            RunServices{cleanup, nullptr, testRunConfiguration().get(), &work},
+            cancellation.get_token(), "escape"));
+        cao::cli::renderEvent(output, RunEvent("escape", 3, result));
+
+        const auto text = output.str();
+        QVERIFY(text.find('\r') == std::string::npos);
+        const auto lines = outputLines(text);
+        QVERIFY(lines.size() > 3);
+
+        const auto diagnostic = splitFields(lines[0]);
+        QCOMPARE(diagnostic.size(), size_t(7));
+        QCOMPARE(diagnostic[3], std::string("Diagnostic"));
+        QCOMPARE(unescapeField(diagnostic[5]), reservedText);
+        QVERIFY(diagnostic[6].ends_with("/diagnostic.txt"));
+
+        const auto failure = splitFields(lines[1]);
+        QCOMPARE(failure.size(), size_t(8));
+        QCOMPARE(failure[3], std::string("Failure"));
+        QCOMPARE(unescapeField(failure[6]), reservedText);
+        QVERIFY(failure[7].ends_with("/failure.txt"));
+
+        QVERIFY(lines[2].starts_with("EVENT:|escape|3|Outcome|"));
+        const auto assetFailure = std::find_if(
+            lines.begin(), lines.end(),
+            [](const std::string& line) { return line.starts_with("Asset Failure|"); });
+        QVERIFY(assetFailure != lines.end());
+        const auto fields = splitFields(*assetFailure);
+        QCOMPARE(fields.size(), size_t(6));
+        QVERIFY(fields[1].ends_with("/failed.dds"));
+        QCOMPARE(fields[2], std::string("save_texture"));
+        QVERIFY(fields[4].ends_with("/staged-output.dds"));
+        QCOMPARE(unescapeField(fields[5]), reservedText);
     }
     /// The CLI observer renders the exact immutable result committed to the Run Handle.
     void rendersCommittedTerminalResult() {

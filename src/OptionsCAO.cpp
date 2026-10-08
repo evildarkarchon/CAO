@@ -245,6 +245,20 @@ int readInteger(const QCommandLineParser& parser, const QString& name) {
     }
     return value;
 }
+
+/// Reads one explicit 0/1 archive switch, keeping the current value when the flag is absent.
+/// Only the exact strings are accepted: toInt would read "true" or "2" as a silent value.
+void readArchiveSwitch(const QCommandLineParser& parser, const QString& name, bool& target) {
+    if (!parser.isSet(name)) return;
+    const auto value = parser.value(name);
+    if (value == QLatin1String("0"))
+        target = false;
+    else if (value == QLatin1String("1"))
+        target = true;
+    else
+        throw std::runtime_error("Invalid value for -" + name.toStdString() + ": '" +
+                                 value.toStdString() + "' (expected 0 or 1)");
+}
 }  // namespace
 
 void OptionsCAO::parseArguments(const QStringList& args) {
@@ -286,6 +300,14 @@ void OptionsCAO::parseArguments(const QStringList& args) {
         {"be", "Enables BSA extraction."},
         {"bc", "Enables BSA creation."},
         {"bd", "Enables deletion of BSA backups."},
+        // Parity-oracle archive options. The GUI reads these from settings.ini, which the CLI
+        // never loads, so without them the oracle could only ever run the defaults. Each takes
+        // an explicit 0 or 1 so a harness can state every value instead of relying on toggles.
+        {"bcomp", "Compresses created BSAs: 1 (default) or 0.", "0|1"},
+        {"bdum", "Creates dummy plugins to load created BSAs: 1 (default) or 0.", "0|1"},
+        {"bmi", "Merges incompressible files into the main BSA: 1 (default) or 0.", "0|1"},
+        {"bmt", "Merges textures into the main BSA: 0 (default) or 1.", "0|1"},
+        {"bds", "Deletes loose files after packing them: 1 (default) or 0.", "0|1"},
         /*{"bo",
          "NOT WORKING. Enables BSA optimization. The files inside the "
          "BSA will be extracted to memory and processed according to the provided
@@ -347,6 +369,13 @@ void OptionsCAO::parseArguments(const QStringList& args) {
     bBsaCreate = parser.isSet("bc");
     bBsaDeleteBackup = parser.isSet("bd");
     bBsaProcessContent = parser.isSet("bo");
+
+    // Absent flags keep the member defaults in OptionsCAO.h, the CLI's long-standing behaviour.
+    readArchiveSwitch(parser, "bcomp", bBsaCompress);
+    readArchiveSwitch(parser, "bdum", bBsaCreateDummies);
+    readArchiveSwitch(parser, "bmi", bBsaMergeIncomp);
+    readArchiveSwitch(parser, "bmt", bBsaMergeTexture);
+    readArchiveSwitch(parser, "bds", bBsaDeleteSource);
 }
 
 QString OptionsCAO::isValid() const {

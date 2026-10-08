@@ -5,6 +5,8 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include <array>
+
 // Profiles::create is not exercised here; this satisfies its otherwise unrelated link dependency.
 void FilesystemOperations::copyDir(const QString &, const QString &, bool)
 {
@@ -42,6 +44,14 @@ private slots:
     void rejectsZeroResizeDimensions();
     /// Verifies a nonnumeric mesh level is reported instead of silently disabling optimization.
     void rejectsNonNumericMeshOptimizationLevel();
+    /// Verifies omitting the parity oracle's archive flags keeps the long-standing CLI defaults.
+    void omittedArchiveOptionsKeepDefaults();
+    /// Supplies each archive flag with the index of the option it sets.
+    void archiveOptionsAcceptExplicitValues_data();
+    /// Verifies each archive flag sets its option to both values, independently of the others.
+    void archiveOptionsAcceptExplicitValues();
+    /// Verifies an archive flag rejects anything but 0 or 1 instead of coercing it.
+    void rejectsInvalidArchiveOptionValues();
 
 private:
     QString _originalCurrentPath;
@@ -193,6 +203,80 @@ void OptionsCAOTests::rejectsNonNumericMeshOptimizationLevel()
 
     QCOMPARE(validOptions.iMeshesOptimizationLevel, 3);
     QCOMPARE(validOptions.isValid(), QString());
+}
+
+namespace
+{
+/// Snapshots the five archive options so one comparison covers every flag's side effects.
+std::array<bool, 5> archiveOptions(const OptionsCAO &options)
+{
+    return {options.bBsaCompress,
+            options.bBsaCreateDummies,
+            options.bBsaMergeIncomp,
+            options.bBsaMergeTexture,
+            options.bBsaDeleteSource};
+}
+}
+
+void OptionsCAOTests::omittedArchiveOptionsKeepDefaults()
+{
+    // Not const: OptionsCAO::mode has no initializer, so a const default instance is ill-formed.
+    OptionsCAO defaults;
+    OptionsCAO options;
+    options.parseArguments(commandLine({_workingDirectory.path(),
+                                        QStringLiteral("om"),
+                                        QStringLiteral("SSE"),
+                                        QStringLiteral("--bc")}));
+
+    QCOMPARE(archiveOptions(options), archiveOptions(defaults));
+    // The defaults are pinned too: the parity harness relies on them when a case omits a flag.
+    QCOMPARE(archiveOptions(options), (std::array{true, true, true, false, true}));
+}
+
+void OptionsCAOTests::archiveOptionsAcceptExplicitValues_data()
+{
+    QTest::addColumn<QString>("flag");
+    QTest::addColumn<int>("index");
+
+    QTest::newRow("compress") << QStringLiteral("--bcomp") << 0;
+    QTest::newRow("dummies") << QStringLiteral("--bdum") << 1;
+    QTest::newRow("merge-incompressible") << QStringLiteral("--bmi") << 2;
+    QTest::newRow("merge-textures") << QStringLiteral("--bmt") << 3;
+    QTest::newRow("delete-sources") << QStringLiteral("--bds") << 4;
+}
+
+void OptionsCAOTests::archiveOptionsAcceptExplicitValues()
+{
+    QFETCH(QString, flag);
+    QFETCH(int, index);
+
+    for (const bool value : {false, true}) {
+        OptionsCAO options;
+        options.parseArguments(commandLine({_workingDirectory.path(),
+                                            QStringLiteral("om"),
+                                            QStringLiteral("SSE"),
+                                            flag,
+                                            value ? QStringLiteral("1") : QStringLiteral("0")}));
+
+        auto expected = archiveOptions(OptionsCAO());
+        expected[static_cast<size_t>(index)] = value;
+        QCOMPARE(archiveOptions(options), expected);
+    }
+}
+
+void OptionsCAOTests::rejectsInvalidArchiveOptionValues()
+{
+    // QString::toInt reads "true" and "" as 0 and "2" as non-zero, so a lax parser would silently
+    // pick a value the caller never wrote.
+    for (const auto &value : {QStringLiteral("true"), QStringLiteral("2"), QStringLiteral("")}) {
+        OptionsCAO options;
+        QVERIFY_EXCEPTION_THROWN(options.parseArguments(commandLine({_workingDirectory.path(),
+                                                                     QStringLiteral("om"),
+                                                                     QStringLiteral("SSE"),
+                                                                     QStringLiteral("--bcomp"),
+                                                                     value})),
+                                 std::runtime_error);
+    }
 }
 
 QTEST_MAIN(OptionsCAOTests)

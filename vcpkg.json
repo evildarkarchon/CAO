@@ -10,5 +10,11 @@
     "qt5-base",
     "qt5-tools",
     "utf8proc"
+  ],
+  "overrides": [
+    {
+      "name": "directxtex",
+      "version-date": "2026-05-07"
+    }
   ]
 }
