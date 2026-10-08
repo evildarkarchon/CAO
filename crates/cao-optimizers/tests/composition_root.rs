@@ -5,8 +5,10 @@
 mod common;
 
 use cao_core::execution::AssetExecutionFailure;
-use cao_core::routing::{ExecutionMode, RequestedWork, SkipReason};
-use cao_core::run::{ModSelection, RunConfigurationProvider, RunFailureCode, RunOutcome, RunPhase};
+use cao_core::routing::{ExecutionMode, PolicyValidationError, RequestedWork, SkipReason};
+use cao_core::run::{
+    ModSelection, RunConfigurationProvider, RunDiagnosticCode, RunFailureCode, RunOutcome, RunPhase,
+};
 use cao_optimizers::composition::{
     ApplicationRun, ProfileConfigurationProvider, RunSetupError, run_request,
 };
@@ -138,6 +140,134 @@ fn work_this_build_cannot_do_is_refused_up_front() {
     ));
 }
 
+/// Origin: ApplicationRunSetupTests::archiveCreationRequiresProfileArchiveSupport
+/// and the FO4 Profile Capabilities. A request the selected profile cannot
+/// honour is refused before any service exists, so no run starts and nothing
+/// holds the one active-run slot.
+#[test]
+fn a_request_contradicting_the_profile_capabilities_never_starts_a_run() {
+    let _serial = serial();
+    let app = app_dir("capability-conflict");
+    let mod_root = app.join("mods").join("Mod");
+    std::fs::create_dir_all(&mod_root).unwrap();
+
+    // FO4 has no Mesh support: any Mesh work contradicts it.
+    let mut options = dry_run_textures(&app, &mod_root);
+    options.meshes_resave = true;
+    let Err(RunSetupError::PolicyConflict(conflicts)) = ApplicationRun::new(&app, "FO4", &options)
+    else {
+        panic!("Mesh work under FO4 must be a policy conflict");
+    };
+    assert!(!conflicts.is_empty());
+    assert!(conflicts.iter().all(|conflict| matches!(
+        conflict,
+        PolicyValidationError::UnsupportedRequestedAssetKind {
+            request: RequestedWork::StandardMeshOptimization
+                | RequestedWork::TerrainMeshOptimization,
+            ..
+        } | PolicyValidationError::UnsupportedRequestedAssetVariant {
+            request: RequestedWork::StandardMeshOptimization
+                | RequestedWork::TerrainMeshOptimization,
+            ..
+        }
+    )));
+
+    // A profile with no Archive support cannot create Archives, even in a
+    // Dry Run that would never pack them.
+    edit_profile(&app, "SSE", "bsaEnabled", "false");
+    let mut options = dry_run_textures(&app, &mod_root);
+    options.bsa_create = true;
+    let error = ApplicationRun::new(&app, "SSE", &options).err().unwrap();
+    assert!(
+        matches!(error, RunSetupError::PolicyConflict(_)),
+        "{error:?}"
+    );
+    assert!(!error.to_string().is_empty());
+
+    // Neither refusal left a run behind: the next valid request starts.
+    let run = ApplicationRun::new(&app, "FO4", &dry_run_textures(&app, &mod_root)).unwrap();
+    assert_eq!(
+        run.start(None).unwrap().wait().outcome(),
+        RunOutcome::Succeeded
+    );
+}
+
+/// Origin: ApplicationRunSetupTests::fo4ConversionCompilesWithoutMeshOptimization.
+/// TGA conversion derives Mesh Reference Maintenance, which FO4 supports
+/// through its Texture capability even though it has no Mesh optimization.
+#[test]
+fn fo4_texture_conversion_needs_no_mesh_optimization_capability() {
+    let app = app_dir("fo4-conversion");
+    let options = dry_run_textures(&app, &app.join("mods/Mod"));
+    let run = ApplicationRun::new(&app, "FO4", &options).unwrap();
+    assert!(
+        run.request()
+            .requests(RequestedWork::ConvertibleTextureConversion)
+    );
+    assert!(
+        !run.request()
+            .requests(RequestedWork::StandardMeshOptimization)
+    );
+}
+
+/// Several Mods through the production wiring: the shipped SSE profile's
+/// `ignoredMods.txt` and MO2's separator suffix exclude children with a Run
+/// Diagnostic each, and the run's outcome is unaffected.
+#[test]
+fn several_mods_excludes_separators_and_ignored_mods_from_the_shipped_profile() {
+    let _serial = serial();
+    let app = app_dir("several-mods");
+    let mods = app.join("mods");
+    for name in [
+        "Alpha",
+        "Beta separator pack",
+        "Group_separator",
+        "Nemesis",
+        ".cao-staging-old",
+    ] {
+        write_dds(
+            &mods.join(name).join("textures/plain.dds"),
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            16,
+        );
+    }
+    let mut options = dry_run_textures(&app, &mods);
+    options.mode = OptimizationMode::SeveralMods;
+    let before = snapshot_tree(&app);
+
+    let result = ApplicationRun::new(&app, "SSE", &options)
+        .unwrap()
+        .start(None)
+        .unwrap()
+        .wait();
+
+    assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    let root = cao_winfs::msvc_canonical(&mods).unwrap();
+    // Deviation 20: "separator" inside a name is not a separator. Deviation
+    // 19: the staging-named child is neither a Mod Root nor diagnosed.
+    assert_eq!(
+        result.mod_roots(),
+        [root.join("Alpha"), root.join("Beta separator pack")]
+    );
+    let diagnostics: Vec<_> = result
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| (diagnostic.code, diagnostic.path.clone()))
+        .collect();
+    assert_eq!(
+        diagnostics,
+        [
+            (
+                RunDiagnosticCode::SeparatorModExcluded,
+                root.join("Group_separator")
+            ),
+            (RunDiagnosticCode::IgnoredModExcluded, root.join("Nemesis")),
+        ]
+    );
+    assert_eq!(result.asset_attempts().len(), 2);
+    assert_eq!(snapshot_tree(&app), before, "Dry Run never mutates");
+}
+
 #[test]
 fn the_provider_loads_owned_configuration() {
     let app = app_dir("provider-owned");
@@ -155,9 +285,10 @@ fn the_provider_loads_owned_configuration() {
         Some(".ba2")
     );
     assert_eq!(configuration.ignored_mods, vec!["Tool Mod".to_owned()]);
+    // Deviation 20: MO2's separator suffix, not C++'s "separator" substring.
     assert_eq!(
-        configuration.separator_markers,
-        vec!["separator".to_owned()]
+        configuration.separator_suffixes,
+        vec!["_separator".to_owned()]
     );
     assert_eq!(
         provider.prepared_settings().unwrap().textures_format,
@@ -284,6 +415,20 @@ fn an_unreadable_profile_fails_preparing_rather_than_the_start() {
     let result = run.start(None).unwrap().wait();
 
     assert_eq!(result.outcome(), RunOutcome::Failed);
+    assert_eq!(
+        result.failures()[0].code,
+        RunFailureCode::ConfigurationLoadingFailed
+    );
+
+    // Unreadable before setup too: the capability check leaves it to Preparing.
+    let mut options = Options {
+        user_path: mod_root.to_string_lossy().into_owned(),
+        textures_necessary: false,
+        ..Options::default()
+    };
+    options.dry_run = true;
+    let run = ApplicationRun::new(&app, "MissingProfile", &options).unwrap();
+    let result = run.start(None).unwrap().wait();
     assert_eq!(
         result.failures()[0].code,
         RunFailureCode::ConfigurationLoadingFailed

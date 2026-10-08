@@ -20,3 +20,7 @@ cao-profiles.workspace = true
 directxtex.workspace = true
 log.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# The scenarios predict Mod Roots in the MSVC-canonical form Preparing gives them.
+cao-winfs.workspace = true

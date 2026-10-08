@@ -15,7 +15,7 @@
 //! - The Preparing scenarios (`severalMods…`, `linkedModRoots…`,
 //!   `configurationLoads…`, `policyConflicts…`, `missingModRoots…`) are not Run
 //!   Handle scenarios; the single-root ones are ported against the Run Executor
-//!   in `run_executor.rs`, and the Several Mods ones belong to #486.
+//!   in `run_executor.rs`, and the Several Mods ones in `several_mods.rs`.
 
 mod common;
 

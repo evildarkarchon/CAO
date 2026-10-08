@@ -1,0 +1,20 @@
+EVENT:|863121083-1666952384-0|1|Preparing|Indeterminate
+EVENT:|863121083-1666952384-0|2|Diagnostic|Preparing|The child Mod Root matches a configured separator marker|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_dry_run/mods/Group_separator
+EVENT:|863121083-1666952384-0|3|Diagnostic|Preparing|The child Mod Root matches an ignored-mod name|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_dry_run/mods/Nemesis
+EVENT:|863121083-1666952384-0|4|Discovering Archives|Indeterminate
+EVENT:|863121083-1666952384-0|5|Extracting Archives|Skipped|Dry Run
+EVENT:|863121083-1666952384-0|6|Building the Effective Asset Tree|Indeterminate
+EVENT:|863121083-1666952384-0|7|PROGRESS:|Processing Assets|0|5|succeeded=0|failed=0
+EVENT:|863121083-1666952384-0|8|PROGRESS:|Processing Assets|1|5|succeeded=0|failed=1
+EVENT:|863121083-1666952384-0|9|PROGRESS:|Processing Assets|2|5|succeeded=1|failed=1
+EVENT:|863121083-1666952384-0|10|PROGRESS:|Processing Assets|3|5|succeeded=2|failed=1
+EVENT:|863121083-1666952384-0|11|PROGRESS:|Processing Assets|4|5|succeeded=3|failed=1
+EVENT:|863121083-1666952384-0|12|PROGRESS:|Processing Assets|5|5|succeeded=3|failed=2
+EVENT:|863121083-1666952384-0|13|Archive Finalization|Skipped|Dry Run
+EVENT:|863121083-1666952384-0|14|Safety Cleanup|Indeterminate
+EVENT:|863121083-1666952384-0|15|Outcome|Completed With Failures|Final Phase|Archive Finalization
+Cancellation Observed|no
+Mod Root|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_dry_run/mods/Alpha
+Mod Root|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_dry_run/mods/Beta
+Asset Failure|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_dry_run/mods/Alpha/textures/broken.dds|load_texture|Failed to load Texture.|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_dry_run/mods/Alpha/textures/broken.dds|
+Asset Failure|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_dry_run/mods/Beta/meshes/thing.nif|load_mesh|Failed to load Mesh.|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_dry_run/mods/Beta/meshes/thing.nif|

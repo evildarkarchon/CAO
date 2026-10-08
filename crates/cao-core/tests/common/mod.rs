@@ -76,6 +76,26 @@ pub fn snapshot_tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     files
 }
 
+/// The canonical form of a directory, as Preparing resolves it.
+pub fn canonical(path: &Path) -> PathBuf {
+    cao_winfs::msvc_canonical(path).unwrap()
+}
+
+/// Creates the directory junction `link` pointing at `target`.
+pub fn junction(link: &Path, target: &Path) {
+    let created = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("cmd runs");
+    assert!(
+        created.status.success(),
+        "mklink /J failed: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+}
+
 /// An SSE-like profile that supports every kind of work, with `.bsa` Archives.
 pub fn sse_profile() -> SelectedProfileFacts {
     SelectedProfileFacts {

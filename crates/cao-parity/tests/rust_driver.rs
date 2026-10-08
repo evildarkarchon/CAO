@@ -12,12 +12,14 @@ use cao_parity::case::ModSelection;
 use cao_parity::cases::hand_written;
 use cao_parity::compare::{Verdict, compare_facts};
 use cao_parity::driver::{drive, options};
+use cao_parity::facts::{RunEventPayload, RunFacts, RunOutcome, RunPhase};
 use cao_parity::normalise::normalise;
 use cao_parity::oracle;
 use cao_profiles::OptimizationMode;
-use common::{CAPTURE, TempDir, transcript, write};
+use common::{CAPTURE, TempDir, serial, transcript, write};
 
 const TRACER: &str = "tracer-dry-run-textures";
+const SEVERAL_MODS: &str = "several-mods-dry-run";
 
 /// Copies the repository's shipped `profiles/` into `app/profiles`.
 fn copy_profiles(app: &Path) {
@@ -104,6 +106,7 @@ fn a_selection_the_builds_cannot_express_is_an_invalid_case() {
 
 #[test]
 fn the_tracer_case_reports_what_the_oracle_reported_and_changes_nothing() {
+    let _serial = serial();
     let temp = TempDir::new("driver-tracer");
     let app = temp.path().join("rust");
     let case = hand_written(TRACER).unwrap();
@@ -124,4 +127,60 @@ fn the_tracer_case_reports_what_the_oracle_reported_and_changes_nothing() {
     // failures in the service detail, where C++ left it empty.
     assert!(verdict.passed(), "{verdict:?}");
     assert_ne!(verdict, Verdict::Identical);
+}
+
+/// Several Mods (#486): a separator and an ignored mod are Mod Exclusions in
+/// both builds, reported as Run Diagnostics during Preparing, and the run ends
+/// as the oracle's did.
+#[test]
+fn the_several_mods_case_excludes_what_the_oracle_excluded() {
+    let _serial = serial();
+    let temp = TempDir::new("driver-several-mods");
+    let app = temp.path().join("rust");
+    let case = hand_written(SEVERAL_MODS).unwrap();
+    (case.materialise)(&app).unwrap();
+    copy_profiles(&app);
+    let before = snapshot(&app);
+
+    let rust = drive(&(case.spec)(), &app).unwrap();
+
+    assert_eq!(snapshot(&app), before, "a Dry Run never mutates");
+    let RunFacts::Started(started) = &rust else {
+        panic!("the run starts: {rust:?}");
+    };
+    assert_eq!(started.terminal.outcome, RunOutcome::CompletedWithFailures);
+    // Paths are canonical here and made relative only by the normaliser, so
+    // compare their trailing components.
+    let excluded: Vec<_> = started
+        .events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            RunEventPayload::Diagnostic { phase, path, .. } => Some((*phase, path.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(excluded.len(), 2, "{excluded:?}");
+    for ((phase, path), name) in excluded.iter().zip(["Group_separator", "Nemesis"]) {
+        assert_eq!(*phase, RunPhase::Preparing);
+        assert!(
+            Path::new(path).ends_with(Path::new("mods").join(name)),
+            "{path}"
+        );
+    }
+    let roots = &started.terminal.mod_roots;
+    assert_eq!(roots.len(), 2, "{roots:?}");
+    for (root, name) in roots.iter().zip(["Alpha", "Beta"]) {
+        assert!(
+            Path::new(root).ends_with(Path::new("mods").join(name)),
+            "{root}"
+        );
+    }
+
+    let oracle_root = format!("{CAPTURE}/several_mods_dry_run");
+    let oracle_facts = oracle::parse(transcript("several_mods_dry_run").as_bytes(), 1).unwrap();
+    let verdict = compare_facts(
+        &normalise(&oracle_facts, Path::new(&oracle_root)).unwrap(),
+        &normalise(&rust, &app).unwrap(),
+    );
+    assert!(verdict.passed(), "{verdict:?}");
 }

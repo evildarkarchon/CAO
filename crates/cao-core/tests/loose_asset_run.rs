@@ -8,7 +8,6 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use cao_core::Error;
@@ -21,8 +20,8 @@ use cao_core::run::{
     RunPreparation, RunProgress, RunWorkEvidence, RunWorkMilestones, RunWorkService,
 };
 use common::{
-    BackendWork, EventLog, GatedScheduler, HandleSlot, ScriptedWork, reclaim, request, scratch_dir,
-    serial, snapshot_tree, test_configuration, write_tree,
+    BackendWork, EventLog, GatedScheduler, HandleSlot, ScriptedWork, canonical, junction, reclaim,
+    request, scratch_dir, serial, snapshot_tree, test_configuration, write_tree,
 };
 
 /// Runs one request to its terminal result on the inline scheduler.
@@ -40,11 +39,6 @@ fn run(
         .start(request, Some(events.dispatcher()))
         .expect("the run starts");
     (handle.wait(), events)
-}
-
-/// The canonical form of a scenario's Mod Root, as Preparing resolves it.
-fn canonical(root: &Path) -> PathBuf {
-    cao_winfs::msvc_canonical(root).unwrap()
 }
 
 /// The file names of the completed attempts, in execution order.
@@ -293,17 +287,7 @@ fn a_directory_junction_is_excluded_and_diagnosed_without_changing_the_outcome()
     let root = scratch_dir("loose-junction-root");
     write_tree(&root, &["textures/inside.dds"]);
     let link = root.join("linked");
-    let created = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(&link)
-        .arg(&outside)
-        .output()
-        .expect("cmd runs");
-    assert!(
-        created.status.success(),
-        "mklink /J failed: {}",
-        String::from_utf8_lossy(&created.stderr)
-    );
+    junction(&link, &outside);
 
     let (result, events) = run(
         Arc::new(BackendWork::new()),
