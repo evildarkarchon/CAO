@@ -508,3 +508,4 @@ build-*/
 src/Version.h
 .codegraph/
 /vcpkg_installed/vcpkg/vcpkg-running.lock
+tests/local
