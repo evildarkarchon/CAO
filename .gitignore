@@ -511,3 +511,6 @@ src/Version.h
 tests/local
 # Cargo build output of the Rust workspace
 /target/
+# Claude Code agent worktrees: each is a separate checkout, so tracking them
+# records gitlinks (no .gitmodules) that make every fetch recurse into them
+/.claude/worktrees/
