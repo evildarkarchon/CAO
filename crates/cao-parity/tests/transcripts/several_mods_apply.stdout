@@ -1,0 +1,26 @@
+EVENT:|194956152-2851893266-0|1|Preparing|Indeterminate
+EVENT:|194956152-2851893266-0|2|Diagnostic|Preparing|The child Mod Root matches a configured separator marker|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_apply/mods/Group_separator
+EVENT:|194956152-2851893266-0|3|Diagnostic|Preparing|The child Mod Root matches an ignored-mod name|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_apply/mods/Nemesis
+EVENT:|194956152-2851893266-0|4|Discovering Archives|Indeterminate
+EVENT:|194956152-2851893266-0|5|PROGRESS:|Extracting Archives|0|0|succeeded=0|failed=0
+EVENT:|194956152-2851893266-0|6|Building the Effective Asset Tree|Indeterminate
+EVENT:|194956152-2851893266-0|7|PROGRESS:|Processing Assets|0|4|succeeded=0|failed=0
+EVENT:|194956152-2851893266-0|8|PROGRESS:|Processing Assets|1|4|succeeded=0|failed=1
+EVENT:|194956152-2851893266-0|9|PROGRESS:|Processing Assets|2|4|succeeded=1|failed=1
+EVENT:|194956152-2851893266-0|10|PROGRESS:|Processing Assets|3|4|succeeded=2|failed=1
+EVENT:|194956152-2851893266-0|11|PROGRESS:|Processing Assets|4|4|succeeded=2|failed=2
+EVENT:|194956152-2851893266-0|12|Archive Finalization|Indeterminate
+EVENT:|194956152-2851893266-0|13|PROGRESS:|Archive Finalization|0|2|succeeded=0|failed=0
+EVENT:|194956152-2851893266-0|14|PROGRESS:|Archive Finalization|1|2|succeeded=1|failed=0
+EVENT:|194956152-2851893266-0|15|PROGRESS:|Archive Finalization|2|2|succeeded=2|failed=0
+EVENT:|194956152-2851893266-0|16|Safety Cleanup|Indeterminate
+EVENT:|194956152-2851893266-0|17|Outcome|Completed With Failures|Final Phase|Archive Finalization
+Cancellation Observed|no
+Mod Root|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_apply/mods/Alpha
+Mod Root|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_apply/mods/Beta
+Asset Failure|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_apply/mods/Alpha/textures/broken.dds|load_texture|Failed to load Texture.|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_apply/mods/Alpha/textures/broken.dds|
+Asset Failure|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_apply/mods/Beta/meshes/model.nif|load_mesh|Failed to load Mesh.|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_apply/mods/Beta/meshes/model.nif|
+Committed Mutations Retained|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_apply/mods/Alpha|Asset Processing|2|partial-or-unknown=0
+Committed Mutations Retained|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_apply/mods/Alpha|Archive Finalization|2|partial-or-unknown=0
+Committed Mutations Retained|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_apply/mods/Beta|Asset Processing|2|partial-or-unknown=0
+Committed Mutations Retained|C:/Users/evild/AppData/Local/Temp/cao480/work/several_mods_apply/mods/Beta|Archive Finalization|2|partial-or-unknown=0
