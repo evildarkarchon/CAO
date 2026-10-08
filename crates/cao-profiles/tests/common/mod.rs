@@ -14,6 +14,11 @@ pub fn shipped_profiles() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles")
 }
 
+/// The repository root, which holds the shipped `profiles/` as an app directory would.
+pub fn shipped_app_dir() -> PathBuf {
+    shipped_profiles().parent().unwrap().to_owned()
+}
+
 /// Reads a file, panicking with its path on failure.
 pub fn read(path: &Path) -> Vec<u8> {
     std::fs::read(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
@@ -48,4 +53,28 @@ pub fn show(bytes: &[u8]) -> String {
             _ => format!("<{b:02X}>"),
         })
         .collect()
+}
+
+/// A fresh app directory for one test holding a copy of the shipped `profiles/`.
+/// INI files are copied with CRLF, as Qt wrote them; every other file byte for byte.
+pub fn copy_of_shipped(name: &str) -> PathBuf {
+    let app_dir = scratch_dir(name);
+    copy_tree(&shipped_profiles(), &app_dir.join("profiles"));
+    app_dir
+}
+
+/// Copies `from` into a new directory `to`, recursively.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let path = entry.unwrap().path();
+        let target = to.join(path.file_name().unwrap());
+        if path.is_dir() {
+            copy_tree(&path, &target);
+        } else if path.extension().is_some_and(|extension| extension == "ini") {
+            std::fs::write(&target, read_as_crlf(&path)).unwrap();
+        } else {
+            std::fs::copy(&path, &target).unwrap();
+        }
+    }
 }
