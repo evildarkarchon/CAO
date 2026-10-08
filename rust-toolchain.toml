@@ -1,0 +1,6 @@
+# Exact pin so parallel sessions share one compiler and one set of clippy lints.
+# `rust-version` in the workspace `Cargo.toml` equals this pin; raise both, and the
+# README's build section, together.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
