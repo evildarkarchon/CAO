@@ -36,9 +36,7 @@ pub enum ArchiveVersion {
 }
 
 /// A file kind `file_type` sorts a path into (`btu::bsa::FileTypes`).
-///
-/// The variant order is bethutil's; [`crate::FilePath`]'s ordering depends on it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FileType {
     /// Packed into a compressed Standard Archive.
     Standard,
@@ -46,8 +44,9 @@ pub enum FileType {
     Texture,
     /// Packed into an Incompressible Archive, which is never compressed.
     Incompressible,
-    /// Never packed: stays loose.
-    Blacklist,
+    /// Matches no rule, so it is never packed and stays loose (bethutil's
+    /// `Blacklist`, renamed because the glossary avoids that word).
+    Unpackable,
     /// A plugin of the game (`.esp` and friends); never packed.
     Plugin,
     /// An Archive of the game (`btu::bsa::FileTypes::BSA`); never packed.
@@ -106,7 +105,7 @@ impl AllowedPath {
 ///
 /// Rules are tried in bethutil's order: Standard, Texture, Incompressible, then a
 /// plugin extension, then the Archive extension; anything else is
-/// [`FileType::Blacklist`] and stays loose. The plugin and Archive checks compare
+/// [`FileType::Unpackable`] and stays loose. The plugin and Archive checks compare
 /// the extension without regard to ASCII case, and ignore the directory.
 pub fn file_type(path: &Path, root: &Path, settings: &Settings) -> FileType {
     let matches = |rules: &[AllowedPath]| rules.iter().any(|rule| rule.check(path, root));
@@ -130,7 +129,7 @@ pub fn file_type(path: &Path, root: &Path, settings: &Settings) -> FileType {
     if extension.eq_ignore_ascii_case(settings.extension) {
         return FileType::Archive;
     }
-    FileType::Blacklist
+    FileType::Unpackable
 }
 
 /// The extension of `path`'s file name with its dot, as `std::filesystem::path::
@@ -190,7 +189,9 @@ const STANDARD_SSE: &[AllowedPath] = &[
 ];
 
 /// FO4's Standard files: SSE's, plus `.png` textures (FO4 has no PNG texture rule)
-/// and `.uvd` visibility data.
+/// and `.uvd` visibility data, appended in bethutil's order. Spelled out in full
+/// because `const` slices cannot be concatenated; keep it in step with
+/// [`STANDARD_SSE`].
 const STANDARD_FO4: &[AllowedPath] = &[
     AllowedPath::new(".bgem", &["materials"]),
     AllowedPath::new(".bgsm", &["materials"]),
@@ -202,6 +203,7 @@ const STANDARD_FO4: &[AllowedPath] = &[
     AllowedPath::new(".dtl", &["meshes"]),
     AllowedPath::new(".egm", &["meshes"]),
     AllowedPath::new(".jpg", &["root"]),
+    // bethutil lists `.hkb` twice; the duplicate is harmless and kept.
     AllowedPath::new(".hkb", &["meshes"]),
     AllowedPath::new(".hkb", &["meshes"]),
     AllowedPath::new(".hkx", &["meshes"]),

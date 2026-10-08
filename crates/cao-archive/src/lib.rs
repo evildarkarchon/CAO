@@ -14,7 +14,7 @@ mod write;
 
 pub use data::{ArchiveData, ArchiveType, MergeSettings, PackSource, SplitArchives};
 pub use error::ArchiveError;
-pub use name::{FilePath, list_archives, list_plugins};
-pub use read::{ArchiveEntry, ReadArchive};
+pub use name::{FilePath, NameKind, list_archives, list_plugins};
+pub use read::{ArchivedAsset, ReadArchive};
 pub use settings::{AllowedPath, ArchiveVersion, FileType, Game, Settings, file_type};
 pub use write::write_archive;

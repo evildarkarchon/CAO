@@ -41,9 +41,11 @@ use crate::settings::ArchiveVersion;
 /// - [`ArchiveError::OutsideRoot`] or [`ArchiveError::NonUnicodeName`] when a file
 ///   has no usable key.
 /// - [`ArchiveError::Tes4`] or [`ArchiveError::Fo4`] when a file cannot be read
-///   or compressed (for example, a DDS that DirectXTex cannot load).
-/// - [`ArchiveError::ArchiveTooLarge`] (**deviation 8**) when the Archive would not
-///   fit its format's 32-bit sizes and offsets, which `rsm-bsa` silently wrapped.
+///   or compressed (for example, a DDS that DirectXTex cannot load), or the
+///   Archive cannot be written.
+/// - [`ArchiveError::ArchiveTooLarge`] (**deviation 8**) when a BSA would not fit
+///   its 32-bit sizes and offsets, which `rsm-bsa` silently wrapped. BA2s have
+///   64-bit offsets and no such limit.
 pub fn write_archive(
     compress: bool,
     data: &ArchiveData,
@@ -140,18 +142,16 @@ pub fn write_archive(
                 .strings(true)
                 .compression_format(fo4::CompressionFormat::Zip)
                 .build();
+            // BA2 data offsets are 64-bit, so a BA2 past 4 GiB is valid (C++ wrote
+            // one too) and deviation 8 does not apply; any `ba2` error is reported
+            // as it is.
             write_new_file(out_path, |out| {
-                archive.write(out, &options).map_err(|source| match source {
-                    fo4::Error::IntegralOverflow | fo4::Error::IntegralTruncation => {
-                        ArchiveError::ArchiveTooLarge {
-                            path: out_path.to_path_buf(),
-                        }
-                    }
-                    source => ArchiveError::Fo4 {
+                archive
+                    .write(out, &options)
+                    .map_err(|source| ArchiveError::Fo4 {
                         path: out_path.to_path_buf(),
                         source,
-                    },
-                })
+                    })
             })
         }
     }
@@ -261,33 +261,35 @@ mod tests {
         path
     }
 
-    /// **Deviation 8:** a BSA that would pass 4 GiB fails with an error and leaves
-    /// no file, where C++ wrote a corrupt one. Driven with borrowed in-memory files,
-    /// since `ba2` fails before writing any data: 65 views of one 64 MiB buffer
-    /// make 4160 MiB.
-    #[test]
-    fn deviation_8_a_bsa_over_4_gib_is_an_error_and_leaves_no_file() {
-        const BLOCK: usize = 64 << 20;
-        let block = vec![0u8; BLOCK];
-        let directory: tes4::Directory = (0..65)
+    /// 64 MiB: 65 of these pass 4 GiB, 63 do not.
+    const BLOCK: usize = 64 << 20;
+
+    /// A v105 BSA of `count` uncompressed files that all borrow `block`, so a
+    /// multi-GiB layout costs one buffer. `vec!` zeroes lazily, so even a large
+    /// `block` is never touched while `ba2` lays the archive out.
+    fn borrowed_bsa(block: &[u8], count: usize) -> (tes4::Archive<'_>, tes4::ArchiveOptions) {
+        let directory: tes4::Directory = (0..count)
             .map(|index| {
                 (
                     tes4::DirectoryKey::from(format!("{index}.nif")),
-                    tes4::File::from_decompressed(block.as_slice()),
+                    tes4::File::from_decompressed(block),
                 )
             })
             .collect();
-        let archive: tes4::Archive = [(tes4::ArchiveKey::from("meshes"), directory)]
+        let archive = [(tes4::ArchiveKey::from("meshes"), directory)]
             .into_iter()
             .collect();
         let options = tes4::ArchiveOptions::builder()
             .version(tes4::Version::v105)
             .flags(tes4::ArchiveFlags::DIRECTORY_STRINGS | tes4::ArchiveFlags::FILE_STRINGS)
             .build();
-        let out = scratch_output("deviation-8.bsa");
+        (archive, options)
+    }
 
-        let error = write_tes4(&archive, &options, &out).unwrap_err();
-
+    /// Asserts writing `archive` to a new file fails as too large and leaves no file.
+    fn assert_too_large(archive: &tes4::Archive<'_>, options: &tes4::ArchiveOptions, name: &str) {
+        let out = scratch_output(name);
+        let error = write_tes4(archive, options, &out).unwrap_err();
         assert!(
             matches!(&error, ArchiveError::ArchiveTooLarge { path } if *path == out),
             "{error:?}"
@@ -295,27 +297,32 @@ mod tests {
         assert!(!out.exists());
     }
 
-    /// The same files, one fewer, fit: the error is the 4 GiB limit, not the files.
+    /// **Deviation 8:** a BSA that would pass 4 GiB fails with an error and leaves
+    /// no file, where C++ wrote a corrupt one. Driven with borrowed in-memory files,
+    /// since `ba2` fails before writing any data: 65 views of one 64 MiB buffer
+    /// make 4160 MiB.
+    #[test]
+    fn deviation_8_a_bsa_over_4_gib_is_an_error_and_leaves_no_file() {
+        let block = vec![0u8; BLOCK];
+        let (archive, options) = borrowed_bsa(&block, 65);
+        assert_too_large(&archive, &options, "deviation-8.bsa");
+    }
+
+    /// The same files, two fewer, fit: the error is the 4 GiB limit, not the files.
     #[test]
     fn a_bsa_just_under_4_gib_lays_out_without_error() {
-        const BLOCK: usize = 64 << 20;
         let block = vec![0u8; BLOCK];
-        let directory: tes4::Directory = (0..63)
-            .map(|index| {
-                (
-                    tes4::DirectoryKey::from(format!("{index}.nif")),
-                    tes4::File::from_decompressed(block.as_slice()),
-                )
-            })
-            .collect();
-        let archive: tes4::Archive = [(tes4::ArchiveKey::from("meshes"), directory)]
-            .into_iter()
-            .collect();
-        let options = tes4::ArchiveOptions::builder()
-            .version(tes4::Version::v105)
-            .flags(tes4::ArchiveFlags::DIRECTORY_STRINGS | tes4::ArchiveFlags::FILE_STRINGS)
-            .build();
+        let (archive, options) = borrowed_bsa(&block, 63);
         // 4032 MiB to a sink: nothing reaches the disk.
         archive.write(&mut std::io::sink(), &options).unwrap();
+    }
+
+    /// **Deviation 8:** one file of 1 GiB would set the size's flag bits, which
+    /// `rsm-bsa` also wrapped silently.
+    #[test]
+    fn deviation_8_a_bsa_file_of_1_gib_is_an_error() {
+        let block = vec![0u8; 1 << 30];
+        let (archive, options) = borrowed_bsa(&block, 1);
+        assert_too_large(&archive, &options, "deviation-8-file.bsa");
     }
 }

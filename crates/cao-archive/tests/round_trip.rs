@@ -82,7 +82,7 @@ fn assert_round_trips(archive: &Path, root: &Path) -> Vec<String> {
     let read = ReadArchive::open(archive)
         .unwrap()
         .expect("a known archive format");
-    let entries = read.entries().unwrap();
+    let entries = read.archived_assets().unwrap();
     for entry in &entries {
         let mut extracted = Vec::new();
         read.extract(&entry.name, &mut extracted).unwrap();
@@ -172,7 +172,7 @@ fn sse_archives_are_v105_bsas_that_round_trip() {
 
     let read = ReadArchive::open(&written[0]).unwrap().unwrap();
     assert_eq!(read.version(), Some(ArchiveVersion::Sse));
-    let entries = read.entries().unwrap();
+    let entries = read.archived_assets().unwrap();
     assert!(entries.iter().all(|entry| entry.compressed));
     // Inventory sizes are the decompressed sizes.
     let mesh = entries
@@ -191,7 +191,7 @@ fn uncompressed_bsas_leave_the_compressed_flag_off() {
         assert_eq!(tes4_header(archive), (ba2::tes4::Version::v105, 0x3));
         let read = ReadArchive::open(archive).unwrap().unwrap();
         assert!(
-            read.entries()
+            read.archived_assets()
                 .unwrap()
                 .iter()
                 .all(|entry| !entry.compressed)
@@ -241,7 +241,7 @@ fn an_fo4_dx10_textures_ba2_is_always_compressed() {
     let main = ReadArchive::open(&written[0]).unwrap().unwrap();
     assert_eq!(main.version(), Some(ArchiveVersion::Fo4));
     assert!(
-        main.entries()
+        main.archived_assets()
             .unwrap()
             .iter()
             .all(|entry| !entry.compressed)
@@ -249,7 +249,7 @@ fn an_fo4_dx10_textures_ba2_is_always_compressed() {
 
     let textures = ReadArchive::open(&written[2]).unwrap().unwrap();
     assert_eq!(textures.version(), Some(ArchiveVersion::Fo4Dx));
-    let entries = textures.entries().unwrap();
+    let entries = textures.archived_assets().unwrap();
     assert_eq!(entries.len(), 1);
     assert!(entries[0].compressed);
     // 1024x1024 BC1 mips 0 and 1 each fill a 512x512 chunk; the rest share one.

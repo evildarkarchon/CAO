@@ -33,18 +33,19 @@ pub enum ArchiveError {
     #[error("`{}` is not inside `{}`", path.display(), root.display())]
     OutsideRoot { path: PathBuf, root: PathBuf },
     /// **Deviation 8:** the Archive would not fit its format's 32-bit sizes and
-    /// offsets (a BSA past 4 GiB). C++ wrote it corrupt; nothing is left behind.
+    /// offsets (a BSA past 4 GiB, or holding one file of 1 GiB or more). C++ wrote
+    /// it corrupt; nothing is left behind.
     #[error(
-        "`{}` would be too large for its format: a BSA cannot exceed 4 GiB",
+        "`{}` would be too large for a BSA, which cannot exceed 4 GiB or hold a file of 1 GiB or more",
         path.display()
     )]
     ArchiveTooLarge { path: PathBuf },
-    /// An entry name in an Archive is not UTF-8. `name` is its lossy decoding.
-    #[error("`{}` has an entry name that is not UTF-8: `{name}`", archive.display())]
-    InvalidEntryName { archive: PathBuf, name: String },
-    /// No entry of the Archive has the requested name.
-    #[error("`{}` has no entry `{name}`", archive.display())]
-    MissingEntry { archive: PathBuf, name: String },
+    /// An Archived Asset's name is not UTF-8. `name` is its lossy decoding.
+    #[error("`{}` holds an asset whose name is not UTF-8: `{name}`", archive.display())]
+    InvalidArchivedAssetName { archive: PathBuf, name: String },
+    /// No Archived Asset of the Archive has the requested name.
+    #[error("`{}` holds no asset named `{name}`", archive.display())]
+    MissingArchivedAsset { archive: PathBuf, name: String },
     /// `ba2` failed on a Morrowind BSA.
     #[error("`{}`: {source}", path.display())]
     Tes3 {

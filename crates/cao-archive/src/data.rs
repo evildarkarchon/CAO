@@ -184,7 +184,7 @@ impl SplitArchives {
                 FileType::Standard => &mut split.standard,
                 FileType::Incompressible => &mut split.incompressible,
                 FileType::Texture => &mut split.textures,
-                FileType::Blacklist | FileType::Plugin | FileType::Archive => continue,
+                FileType::Unpackable | FileType::Plugin | FileType::Archive => continue,
             };
             if partition.add_file(path.clone(), size) {
                 continue;

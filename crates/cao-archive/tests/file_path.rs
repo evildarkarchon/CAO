@@ -5,14 +5,14 @@ mod common;
 
 use std::path::Path;
 
-use cao_archive::{FilePath, FileType, Game, Settings, list_archives, list_plugins};
+use cao_archive::{FilePath, Game, NameKind, Settings, list_archives, list_plugins};
 
 fn plugin(game: Game, path: &str) -> Option<FilePath> {
-    FilePath::make(Path::new(path), &Settings::get(game), FileType::Plugin)
+    FilePath::make(Path::new(path), &Settings::get(game), NameKind::Plugin)
 }
 
 fn archive(game: Game, path: &str) -> Option<FilePath> {
-    FilePath::make(Path::new(path), &Settings::get(game), FileType::Archive)
+    FilePath::make(Path::new(path), &Settings::get(game), NameKind::Archive)
 }
 
 #[test]
@@ -23,7 +23,7 @@ fn a_simple_plugin_name_has_no_suffix_or_counter() {
     assert_eq!(plug.suffix, "");
     assert_eq!(plug.ext, ".esp");
     assert_eq!(plug.counter, None);
-    assert_eq!(plug.kind, FileType::Plugin);
+    assert_eq!(plug.kind, NameKind::Plugin);
     assert!(plugin(Game::Sse, "").is_none());
 }
 
@@ -115,18 +115,33 @@ fn names_re_render_with_the_counter_before_the_suffix() {
 }
 
 /// **Deviation 9:** bethutil's `eat_digits` walks off the front of an all-digit
-/// stem, which is undefined behaviour. The port takes the whole stem as the counter.
+/// stem, which is undefined behaviour. The port keeps an all-digit stem as the
+/// name, with no counter, so it renders back unchanged: leading zeros included,
+/// so `01.esp`'s Archive is `01.bsa`, which that plugin loads.
 #[test]
-fn deviation_9_an_all_digit_stem_is_all_counter() {
+fn deviation_9_an_all_digit_stem_stays_the_name() {
     let plug = plugin(Game::Sse, "C:/Mods/2.esp").unwrap();
-    assert_eq!(plug.name, "");
-    assert_eq!(plug.counter, Some(2));
+    assert_eq!(plug.name, "2");
+    assert_eq!(plug.counter, None);
     assert_eq!(plug.full_path(), Path::new("C:/Mods/2.esp"));
 
+    let plug = plugin(Game::Sse, "C:/Mods/01.esp").unwrap();
+    assert_eq!(plug.name, "01");
+    assert_eq!(plug.counter, None);
+    let mut archive_name = plug.clone();
+    archive_name.ext = ".bsa".to_owned();
+    assert_eq!(archive_name.full_path(), Path::new("C:/Mods/01.bsa"));
+
     let plug = archive(Game::Sse, "C:/Mods/2 - Textures.bsa").unwrap();
-    assert_eq!(plug.name, "");
+    assert_eq!(plug.name, "2");
     assert_eq!(plug.suffix, "Textures");
-    assert_eq!(plug.counter, Some(2));
+    assert_eq!(plug.counter, None);
+    assert_eq!(plug.full_path(), Path::new("C:/Mods/2 - Textures.bsa"));
+
+    // Planning's fallback names append a counter to the stem.
+    let mut numbered = plug;
+    numbered.counter = Some(0);
+    assert_eq!(numbered.full_path(), Path::new("C:/Mods/20 - Textures.bsa"));
 
     // A stem that is only a suffix leaves an empty name with no digits, the
     // other way bethutil indexed before the string.
@@ -176,5 +191,5 @@ fn listing_skips_directories_and_names_of_other_kinds() {
     let archives = list_archives(&dir, &sets).unwrap();
     assert_eq!(archives.len(), 1);
     assert_eq!(archives[0].full_path(), dir.join("Mod - Textures.bsa"));
-    assert_eq!(archives[0].kind, FileType::Archive);
+    assert_eq!(archives[0].kind, NameKind::Archive);
 }

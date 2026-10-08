@@ -7,10 +7,21 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::ArchiveError;
-use crate::settings::{FileType, Settings};
+use crate::settings::Settings;
 
 /// What separates a name from its suffix: `Name - Textures`.
 const SUFFIX_SEPARATOR: &str = " - ";
+
+/// Which names a [`FilePath`] parses: bethutil's `FileTypes::Plugin` or
+/// `FileTypes::BSA`. The variant order is bethutil's, which [`FilePath`]'s
+/// ordering compares last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NameKind {
+    /// A plugin, matched against the game's plugin extensions.
+    Plugin,
+    /// An Archive, matched against the game's Archive extension.
+    Archive,
+}
 
 /// A plugin or Archive name split into its parts (`btu::bsa::FilePath`).
 ///
@@ -21,7 +32,7 @@ const SUFFIX_SEPARATOR: &str = " - ";
 pub struct FilePath {
     /// The directory holding the file.
     pub dir: PathBuf,
-    /// The stem without its counter and suffix. Empty for an all-digit stem.
+    /// The stem without its counter and suffix. An all-digit stem is all name.
     pub name: String,
     /// The game's suffix the stem ended with, or empty.
     pub suffix: String,
@@ -29,8 +40,8 @@ pub struct FilePath {
     pub ext: String,
     /// The trailing number of the stem, if any.
     pub counter: Option<u32>,
-    /// [`FileType::Plugin`] or [`FileType::Archive`].
-    pub kind: FileType,
+    /// Whether this names a plugin or an Archive.
+    pub kind: NameKind,
 }
 
 impl FilePath {
@@ -43,13 +54,12 @@ impl FilePath {
     /// of the game's suffixes, then, if no counter was found, trailing digits are
     /// tried again. Unlike bethutil's `make`, this never touches the filesystem;
     /// [`list_plugins`] and [`list_archives`] skip directories.
-    pub fn make(path: &Path, settings: &Settings, kind: FileType) -> Option<Self> {
+    pub fn make(path: &Path, settings: &Settings, kind: NameKind) -> Option<Self> {
         let file_name = path.file_name()?.to_str()?;
         let (stem, ext) = split_file_name(file_name);
         let known = match kind {
-            FileType::Plugin => settings.plugin_extensions.contains(&ext),
-            FileType::Archive => ext == settings.extension,
-            _ => false,
+            NameKind::Plugin => settings.plugin_extensions.contains(&ext),
+            NameKind::Archive => ext == settings.extension,
         };
         if !known {
             return None;
@@ -101,7 +111,7 @@ impl FilePath {
 /// [`ArchiveError::NonUnicodeName`] for any entry whose name is not Unicode, where
 /// C++ threw converting it.
 pub fn list_plugins(dir: &Path, settings: &Settings) -> Result<Vec<FilePath>, ArchiveError> {
-    list(dir, settings, FileType::Plugin)
+    list(dir, settings, NameKind::Plugin)
 }
 
 /// Lists the Archives directly in `dir` (not recursively) under `settings`' rules
@@ -111,11 +121,11 @@ pub fn list_plugins(dir: &Path, settings: &Settings) -> Result<Vec<FilePath>, Ar
 ///
 /// As [`list_plugins`].
 pub fn list_archives(dir: &Path, settings: &Settings) -> Result<Vec<FilePath>, ArchiveError> {
-    list(dir, settings, FileType::Archive)
+    list(dir, settings, NameKind::Archive)
 }
 
 /// Lists the non-directory entries of `dir` that parse as names of `kind`.
-fn list(dir: &Path, settings: &Settings, kind: FileType) -> Result<Vec<FilePath>, ArchiveError> {
+fn list(dir: &Path, settings: &Settings, kind: NameKind) -> Result<Vec<FilePath>, ArchiveError> {
     let io_error = |source| ArchiveError::Io {
         path: dir.to_path_buf(),
         source,
@@ -123,13 +133,15 @@ fn list(dir: &Path, settings: &Settings, kind: FileType) -> Result<Vec<FilePath>
     let mut names = Vec::new();
     for entry in std::fs::read_dir(dir).map_err(io_error)? {
         let path = entry.map_err(io_error)?.path();
-        if path.file_name().and_then(|name| name.to_str()).is_none() {
-            return Err(ArchiveError::NonUnicodeName { path });
-        }
         // `is_dir` follows links, as bethutil's `fs::is_directory` does; a broken
-        // link is not a directory and is parsed like a file.
+        // link is not a directory and is parsed like a file. bethutil skipped
+        // directories before converting any name, so a non-Unicode directory is
+        // skipped too.
         if path.is_dir() {
             continue;
+        }
+        if path.file_name().and_then(|name| name.to_str()).is_none() {
+            return Err(ArchiveError::NonUnicodeName { path });
         }
         if let Some(name) = FilePath::make(&path, settings, kind) {
             names.push(name);
@@ -141,12 +153,14 @@ fn list(dir: &Path, settings: &Settings, kind: FileType) -> Result<Vec<FilePath>
 /// Moves the trailing ASCII digits of `name` into the returned counter.
 ///
 /// **Deviation 9:** bethutil's `eat_digits` walks off the front of an all-digit
-/// (or empty) string, which is undefined behaviour; here an all-digit name becomes
-/// all counter and leaves `name` empty. Digits too large for `u32` stay in the
-/// name, as C++ `stoul` throwing `out_of_range` left them.
+/// (or empty) string, which is undefined behaviour. Here an all-digit name is left
+/// alone and has no counter, so it renders back exactly, leading zeros included:
+/// taking `01` as counter 1 would name `01.esp`'s Archive `1.bsa`, which that
+/// plugin does not load. Digits too large for `u32` also stay in the name, as C++
+/// `stoul` throwing `out_of_range` left them.
 fn eat_digits(name: &mut String) -> Option<u32> {
     let digits = name.bytes().rev().take_while(u8::is_ascii_digit).count();
-    if digits == 0 {
+    if digits == 0 || digits == name.len() {
         return None;
     }
     let start = name.len() - digits;

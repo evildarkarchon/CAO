@@ -1,6 +1,6 @@
 //! Reading an existing Archive: its inventory and the decompressed bytes of each
-//! entry (bethutil's `read_archive` and `File::write(path)`, and C++ CAO's
-//! `inspectArchiveInventory`).
+//! Archived Asset (bethutil's `read_archive` and `File::write(path)`, and C++
+//! CAO's `inspectArchiveInventory`).
 
 use std::fs::File as FsFile;
 use std::io::Write;
@@ -12,15 +12,15 @@ use ba2::{FileFormat, fo4, tes3, tes4};
 use crate::error::ArchiveError;
 use crate::settings::ArchiveVersion;
 
-/// The bytes a DX10 entry's rebuilt DDS header takes: the magic, the 124-byte
+/// The bytes a DX10 texture's rebuilt DDS header takes: the magic, the 124-byte
 /// header and the 20-byte DX10 extension. C++ CAO's inventory adds them.
 const DX10_HEADER_LEN: u64 = 4 + 124 + 20;
 
-/// One entry of an Archive, as [`ReadArchive::entries`] lists it.
+/// One Archived Asset, as [`ReadArchive::archived_assets`] lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArchiveEntry {
-    /// The entry's name as stored. TES4 names join directory and file with a
-    /// backslash and map any `/` to `\`; FO4 and TES3 names are kept as stored.
+pub struct ArchivedAsset {
+    /// The name as stored. TES4 names join directory and file with a backslash
+    /// and map any `/` to `\`; FO4 and TES3 names are kept as stored.
     pub name: String,
     /// The bytes it extracts to, as C++ CAO's inventory counts them: the
     /// decompressed size, plus [`DX10_HEADER_LEN`] for a DX10 texture.
@@ -33,13 +33,16 @@ pub struct ArchiveEntry {
 
 /// An Archive opened for reading.
 ///
-/// `ba2` memory-maps the file and every entry borrows that mapping, so the
-/// Archive file cannot be deleted or renamed on Windows until this is dropped.
+/// `ba2` memory-maps the file and every Archived Asset borrows that mapping, so
+/// the Archive file cannot be deleted or renamed on Windows until this is dropped.
 pub struct ReadArchive {
     path: PathBuf,
     inner: Inner,
 }
 
+/// The parsed Archive, by format. TES4 and FO4 keep the header options they were
+/// read with: extraction needs the TES4 version's codec, the FO4 compression
+/// format, and the FO4 container kind (`GNRL` or `DX10`) to rebuild DDS headers.
 enum Inner {
     Tes3(tes3::Archive<'static>),
     Tes4(tes4::Archive<'static>, tes4::ArchiveOptions),
@@ -110,18 +113,18 @@ impl ReadArchive {
         }
     }
 
-    /// Lists every entry, in the Archive's own (hash) order.
+    /// Lists every Archived Asset, in the Archive's own (hash) order.
     ///
     /// # Errors
     ///
-    /// [`ArchiveError::InvalidEntryName`] for a name that is not UTF-8. C++ CAO's
+    /// [`ArchiveError::InvalidArchivedAssetName`] for a name that is not UTF-8. C++ CAO's
     /// discovery failed such an Archive the same way (`ArchiveEntryInvalid`).
-    pub fn entries(&self) -> Result<Vec<ArchiveEntry>, ArchiveError> {
-        let mut entries = Vec::new();
+    pub fn archived_assets(&self) -> Result<Vec<ArchivedAsset>, ArchiveError> {
+        let mut assets = Vec::new();
         match &self.inner {
             Inner::Tes3(archive) => {
                 for (key, file) in archive {
-                    entries.push(ArchiveEntry {
+                    assets.push(ArchivedAsset {
                         name: self.decode(key.name())?.to_owned(),
                         size: file.len() as u64,
                         compressed: false,
@@ -139,7 +142,7 @@ impl ReadArchive {
                         } else {
                             format!("{directory_name}\\{file_name}")
                         };
-                        entries.push(ArchiveEntry {
+                        assets.push(ArchivedAsset {
                             name: name.replace('/', "\\"),
                             size: file.decompressed_len().unwrap_or(file.len()) as u64,
                             compressed: file.is_compressed(),
@@ -159,7 +162,7 @@ impl ReadArchive {
                         .iter()
                         .map(|chunk| chunk.decompressed_len().unwrap_or(chunk.len()) as u64)
                         .sum();
-                    entries.push(ArchiveEntry {
+                    assets.push(ArchivedAsset {
                         name: self.decode(key.name())?.to_owned(),
                         size: data + header,
                         compressed: !file.is_empty()
@@ -169,10 +172,10 @@ impl ReadArchive {
                 }
             }
         }
-        Ok(entries)
+        Ok(assets)
     }
 
-    /// Writes the decompressed bytes of the entry `name` to `out`. A DX10 texture
+    /// Writes the decompressed bytes of the Archived Asset `name` to `out`. A DX10 texture
     /// gets a rebuilt DDS header; a cubemap's lists all six faces, so DX10-only
     /// formats extract where `rsm-bsa` failed (deviation 7).
     ///
@@ -180,11 +183,11 @@ impl ReadArchive {
     ///
     /// # Errors
     ///
-    /// [`ArchiveError::MissingEntry`] when no entry has that name, and
+    /// [`ArchiveError::MissingArchivedAsset`] when nothing has that name, and
     /// [`ArchiveError::Tes3`], [`ArchiveError::Tes4`] or [`ArchiveError::Fo4`]
     /// when it cannot be decompressed or written.
     pub fn extract(&self, name: &str, out: &mut dyn Write) -> Result<(), ArchiveError> {
-        let missing = || ArchiveError::MissingEntry {
+        let missing = || ArchiveError::MissingArchivedAsset {
             archive: self.path.clone(),
             name: name.to_owned(),
         };
@@ -226,7 +229,7 @@ impl ReadArchive {
 
     /// Decodes a stored name as strict UTF-8.
     fn decode<'name>(&self, name: &'name ba2::BStr) -> Result<&'name str, ArchiveError> {
-        std::str::from_utf8(name).map_err(|_| ArchiveError::InvalidEntryName {
+        std::str::from_utf8(name).map_err(|_| ArchiveError::InvalidArchivedAssetName {
             archive: self.path.clone(),
             name: String::from_utf8_lossy(name).into_owned(),
         })
