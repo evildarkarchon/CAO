@@ -46,8 +46,9 @@ private slots:
     void rejectsNonNumericMeshOptimizationLevel();
     /// Verifies omitting the parity oracle's archive flags keeps the long-standing CLI defaults.
     void omittedArchiveOptionsKeepDefaults();
-    /// Verifies each archive flag sets its option to both values, independently of the others.
+    /// Supplies each archive flag with the index of the option it sets.
     void archiveOptionsAcceptExplicitValues_data();
+    /// Verifies each archive flag sets its option to both values, independently of the others.
     void archiveOptionsAcceptExplicitValues();
     /// Verifies an archive flag rejects anything but 0 or 1 instead of coercing it.
     void rejectsInvalidArchiveOptionValues();
@@ -265,7 +266,8 @@ void OptionsCAOTests::archiveOptionsAcceptExplicitValues()
 
 void OptionsCAOTests::rejectsInvalidArchiveOptionValues()
 {
-    // "true" and "2" would both read as false through QString::toInt, silently flipping a default.
+    // QString::toInt reads "true" and "" as 0 and "2" as non-zero, so a lax parser would silently
+    // pick a value the caller never wrote.
     for (const auto &value : {QStringLiteral("true"), QStringLiteral("2"), QStringLiteral("")}) {
         OptionsCAO options;
         QVERIFY_EXCEPTION_THROWN(options.parseArguments(commandLine({_workingDirectory.path(),

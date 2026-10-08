@@ -41,8 +41,9 @@ namespace {
 /// Writes non-empty bytes to a file under root; SSE BSA packing never parses the content.
 bool writeFixture(const QDir& root, const QString& path) {
     if (!root.mkpath(QFileInfo(root.filePath(path)).path())) return false;
+    const QByteArray content("fixture bytes");
     QFile file(root.filePath(path));
-    return file.open(QIODevice::WriteOnly) && file.write("fixture bytes") == 13;
+    return file.open(QIODevice::WriteOnly) && file.write(content) == content.size();
 }
 
 /// Reads the archive-flags byte of a TES4/SSE BSA header; -1 when the header cannot be read.
