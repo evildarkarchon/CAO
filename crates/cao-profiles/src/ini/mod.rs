@@ -16,6 +16,12 @@
 //! - a line starting with `#` is a comment;
 //! - a file without a BOM decodes as UTF-8 when the whole file is valid UTF-8, and
 //!   as Latin-1 otherwise.
+//!
+//! One more difference is not on that list yet: a file that starts with a UTF-8 BOM
+//! reads as UTF-8 with the BOM skipped, as the spec's "BOM-UTF-8 reading" describes.
+//! Qt 5.15 itself leaves the BOM bytes in its root section, so it reports
+//! `FormatError` for such a file and can read its first key as `ï»¿key`. Qt never
+//! writes a BOM, so only hand-edited files can tell the difference.
 
 mod read;
 mod value;
@@ -167,6 +173,10 @@ impl IniFile {
         self.insert(key.to_owned(), value.into());
     }
 
+    /// Stores `value` under `key`, matching an existing key ignoring case. A match
+    /// keeps its first spelling and its place and takes the new value, which is how
+    /// the reader gets Qt's "last duplicate wins, in the first one's place"; a new key
+    /// goes at the end.
     fn insert(&mut self, key: String, value: Value) {
         match self.index.get(&key.to_lowercase()) {
             Some(&i) => self.entries[i].value = value,

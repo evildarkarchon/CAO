@@ -38,8 +38,10 @@ fn escape(text: &str) -> String {
         .collect()
 }
 
-/// Qt's `QString::number(d, 'g', QLocale::FloatingPointShortest)`. The writer formats
-/// doubles that way, so a one-key file reads it back.
+/// Formats `d` with the Rust writer's double formatting, read back from a one-key
+/// file. The probe prints doubles with Qt's `QString::number(d, 'g',
+/// QLocale::FloatingPointShortest)`, which the writer ports and `qt_written.rs`
+/// checks against Qt byte for byte.
 fn qt_number(d: f64) -> String {
     let mut ini = IniFile::new();
     ini.set("d", d);
