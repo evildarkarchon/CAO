@@ -28,11 +28,18 @@ pub struct HandWrittenCase {
 }
 
 /// Every hand-written case.
-pub const HAND_WRITTEN: &[HandWrittenCase] = &[HandWrittenCase {
-    id: "tracer-dry-run-textures",
-    spec: tracer_spec,
-    materialise: tracer_tree,
-}];
+pub const HAND_WRITTEN: &[HandWrittenCase] = &[
+    HandWrittenCase {
+        id: "tracer-dry-run-textures",
+        spec: tracer_spec,
+        materialise: tracer_tree,
+    },
+    HandWrittenCase {
+        id: "several-mods-dry-run",
+        spec: several_mods_spec,
+        materialise: several_mods_tree,
+    },
+];
 
 /// The hand-written case named `id`, if there is one.
 pub fn hand_written(id: &str) -> Option<&'static HandWrittenCase> {
@@ -144,6 +151,56 @@ fn tracer_tree(input: &Path) -> Result<(), HarnessError> {
     write(&mod_root.join("meshes/actors/idle.hkx"), b"not requested")?;
     // Not an Asset.
     write(&mod_root.join("readme.txt"), b"Tracer bullet mod\r\n")?;
+    Ok(())
+}
+
+/// Several Mods (#486): a Dry Run over the Textures of a mods directory, with
+/// the tracer's Texture options. Two children are Mod Roots; a separator and a
+/// mod named in SSE's shipped `ignoredMods.txt` are Mod Exclusions.
+///
+/// It triggers no deviation: the separator's name ends in `_separator`, so the
+/// C++ substring rule and deviation 20's suffix rule agree, no other name
+/// contains "separator", no child is in the `.cao-staging` namespace
+/// (deviation 19), and resizing by size uses an even size (deviation 18).
+fn several_mods_spec() -> CaseSpec {
+    CaseSpec {
+        mod_selection: ModSelection::SeveralMods {
+            folder: "mods".into(),
+        },
+        ..tracer_spec()
+    }
+}
+
+/// The Several Mods tree. Every excluded child holds Textures the run would
+/// otherwise evaluate, so an exclusion that failed would change the facts.
+fn several_mods_tree(input: &Path) -> Result<(), HarnessError> {
+    let mods = input.join("mods");
+    let plain = gradient(DXGI_FORMAT_R8G8B8A8_UNORM, 64)?;
+    write_dds(&mods.join("Alpha/textures/plain.dds"), &plain)?;
+    write(&mods.join("Alpha/textures/broken.dds"), b"not a texture")?;
+    write_dds(
+        &mods.join("Beta/textures/unwanted.dds"),
+        &gradient(DXGI_FORMAT_B5G6R5_UNORM, 16)?,
+    )?;
+    let tga = gradient(DXGI_FORMAT_R8G8B8A8_UNORM, 16)?;
+    let tga = tga.images()[0]
+        .save_tga(TGA_FLAGS_NONE, Some(tga.metadata()))
+        .map_err(synthesis_error)?;
+    write(&mods.join("Beta/textures/source.tga"), tga.buffer())?;
+    // TGA conversion routes every Mesh for Mesh Reference Maintenance; this
+    // one fails to load in both builds.
+    write(&mods.join("Beta/meshes/thing.nif"), b"not a mesh")?;
+    // An MO2 separator.
+    write_dds(&mods.join("Group_separator/textures/plain.dds"), &plain)?;
+    write(
+        &mods.join("Group_separator/textures/broken.dds"),
+        b"not a texture",
+    )?;
+    // Named in SSE's shipped `ignoredMods.txt`.
+    write_dds(&mods.join("Nemesis/textures/plain.dds"), &plain)?;
+    write(&mods.join("Nemesis/textures/broken.dds"), b"not a texture")?;
+    // A file beside the mods is not a mod.
+    write(&mods.join("readme.txt"), b"Several Mods case\r\n")?;
     Ok(())
 }
 

@@ -8,6 +8,7 @@ mod asset_run;
 mod evidence;
 mod executor;
 mod lifecycle;
+mod mod_selection;
 mod preparation;
 mod probes;
 mod scheduler;

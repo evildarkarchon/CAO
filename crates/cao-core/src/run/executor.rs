@@ -13,13 +13,13 @@
 
 use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
 
 use crate::Error;
 use crate::execution::MutationState;
 use crate::routing::{ExecutionMode, RoutingPolicyRequest};
+use crate::run::mod_selection::resolve_mod_roots;
 use crate::run::{
-    CancellationToken, ModSelection, MutableRunEvidence, OptimizationRunResult, PhaseSkipReason,
+    CancellationToken, MutableRunEvidence, OptimizationRunResult, PhaseSkipReason,
     RunConfiguration, RunConfigurationProvider, RunEvidence, RunFailure, RunFailureCode, RunId,
     RunObservationSink, RunOutcome, RunPhase, RunPhaseRecord, RunPreparation, RunRequest,
     RunWorkEvidence, panic_message,
@@ -198,41 +198,6 @@ impl RunWorkMilestones for ExecutorMilestones<'_, '_> {
     }
 }
 
-/// Resolves the Mod Selection into canonical Mod Roots without mutation.
-///
-/// A filesystem root cannot bound one mod safely, so it is rejected. Several
-/// Mods resolution, with its Mod Exclusions, arrives with #486.
-fn resolve_mod_roots(selection: &ModSelection) -> Result<Vec<PathBuf>, RunFailure> {
-    let failure = |detail: &str| {
-        RunFailure::new(
-            RunFailureCode::ModSelectionResolutionFailed,
-            RunPhase::Preparing,
-            detail,
-        )
-    };
-    match selection {
-        ModSelection::SingleModRoot(directory) => {
-            // MSVC's canonical text, so a Mod Root compares equal to the one a
-            // C++ run recorded in its staging manifest.
-            let root = cao_winfs::msvc_canonical(directory)
-                .ok()
-                .filter(|root| root.is_dir())
-                .ok_or_else(|| {
-                    failure("The selected Mod Root could not be resolved to an existing directory")
-                })?;
-            if root.parent().is_none() {
-                return Err(failure(
-                    "A filesystem root cannot be selected as a Mod Root or mods directory",
-                ));
-            }
-            Ok(vec![root])
-        }
-        ModSelection::ChildModRoots(_) => Err(failure(
-            "Several Mods selection is not available in this build",
-        )),
-    }
-}
-
 /// Loads configuration, converting a missing, failing or panicking provider into a failure.
 fn load_configuration(
     request: &RunRequest,
@@ -260,9 +225,13 @@ fn load_configuration(
 }
 
 /// Prepares immutable facts without mutation; `Ok(None)` means cancellation was observed.
+///
+/// Mod Exclusions found while resolving the Mod Selection are recorded in
+/// `evidence` and published as they are found.
 fn prepare_run(
     request: &RunRequest,
     provider: Option<&dyn RunConfigurationProvider>,
+    evidence: &RefCell<MutableRunEvidence<'_>>,
     stop: &CancellationToken,
 ) -> Result<Option<RunPreparation>, RunFailure> {
     let configuration = load_configuration(request, provider)?;
@@ -285,7 +254,7 @@ fn prepare_run(
             )
             .with_policy_conflicts(conflicts)
         })?;
-    let mod_roots = resolve_mod_roots(request.mod_selection())?;
+    let mod_roots = resolve_mod_roots(request.mod_selection(), &configuration, evidence, stop)?;
     if stop.is_cancelled() {
         return Ok(None);
     }
@@ -404,7 +373,7 @@ impl RunExecutor {
 
         let mut preparation = None;
         if !stop.is_cancelled() {
-            match prepare_run(request, configuration, stop) {
+            match prepare_run(request, configuration, &evidence, stop) {
                 Ok(prepared) => preparation = prepared,
                 Err(failure) => {
                     failed = true;

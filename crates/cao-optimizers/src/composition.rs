@@ -2,7 +2,8 @@
 //!
 //! Ported from C++ `ApplicationRunSetup` and `ApplicationRunWork`. Given the app
 //! directory, the selected profile and the options model, [`ApplicationRun::new`]
-//! validates the options, builds the Run Request, and wires a profile-backed Run
+//! validates the options, builds the Run Request, refuses one that contradicts
+//! the profile's Profile Capabilities, and wires a profile-backed Run
 //! Configuration Provider and the production Run Work Service into an
 //! Optimization Run Service. Both binaries go through it, so the parity driver
 //! exercises the wiring users run.
@@ -16,7 +17,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use cao_core::Error;
 use cao_core::execution::AssetExecutor;
-use cao_core::routing::{ExecutionMode, RequestedWork};
+use cao_core::routing::{
+    ExecutionMode, PolicyValidationError, RequestedWork, RoutingPolicyRequest,
+};
 use cao_core::run::{
     AssetRunAdapters, CancellationToken, ModSelection, OptimizationRunService, RunConfiguration,
     RunConfigurationProvider, RunEventDispatcher, RunHandle, RunPreparation, RunRequest,
@@ -54,9 +57,22 @@ pub enum RunSetupError {
     /// never silently skips work the user asked for.
     #[error("{0} is not available in this build.")]
     Unavailable(&'static str),
+    /// The request contradicts the selected profile's Profile Capabilities,
+    /// such as Mesh work under FO4. Every conflict is kept, in compiler order.
+    #[error("{}", conflict_messages(.0))]
+    PolicyConflict(Vec<PolicyValidationError>),
     /// The selected profile's `profile.ini` could not be read.
     #[error(transparent)]
     Profile(#[from] ProfileError),
+}
+
+/// One line per conflict, worded as C++ `policyValidationErrorMessages` did.
+fn conflict_messages(conflicts: &[PolicyValidationError]) -> String {
+    conflicts
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// One run, set up and ready to start: its Run Request and the service that
@@ -78,11 +94,17 @@ impl ApplicationRun {
     /// again by its Run Configuration Provider during Preparing, so an edit made
     /// before the run starts is honoured.
     ///
+    /// The request is also checked against the profile's Profile Capabilities
+    /// now, so a request the profile cannot honour never starts a run. That
+    /// check is repeated against the profile Preparing reads.
+    ///
     /// # Errors
-    /// [`RunSetupError`] when the options are invalid, ask for work this build
-    /// cannot do, or the profile cannot be read.
+    /// [`RunSetupError`] when the options are invalid, contradict the
+    /// profile's capabilities, ask for work this build cannot do, or the
+    /// profile cannot be read.
     pub fn new(app_dir: &Path, profile: &str, options: &Options) -> Result<Self, RunSetupError> {
         let request = run_request(app_dir, profile, options)?;
+        check_profile_capabilities(app_dir, profile, &request)?;
         let settings = OptimizerSettings::from_options(options)?;
         let configuration = Arc::new(ProfileConfigurationProvider::new(app_dir));
         let work = Arc::new(ApplicationRunWork {
@@ -179,6 +201,32 @@ pub fn run_request(
         ExecutionMode::Apply
     };
     Ok(RunRequest::new(profile, mode, mod_selection, work))
+}
+
+/// Compiles `request`'s Routing Policy against the profile's current Profile
+/// Capabilities, as C++ `prepareApplicationRun` does.
+///
+/// The C++ adapters never called that check before starting, so a
+/// contradicting request started and then failed Preparing with a Policy
+/// Conflict. Here it is refused before any run exists.
+///
+/// # Errors
+/// [`RunSetupError::PolicyConflict`] with every conflict, or
+/// [`RunSetupError::Profile`] when `profile.ini` cannot be read.
+fn check_profile_capabilities(
+    app_dir: &Path,
+    profile: &str,
+    request: &RunRequest,
+) -> Result<(), RunSetupError> {
+    // Lenient, as the C++ GUI's profile reads were; Preparing reads strictly.
+    let settings = Profiles::new(app_dir).open(profile).load_settings()?;
+    profile_facts(&settings)
+        .compile_policy(RoutingPolicyRequest::for_work(
+            request.execution_mode(),
+            request.requested_work(),
+        ))
+        .map(|_| ())
+        .map_err(RunSetupError::PolicyConflict)
 }
 
 /// Whether the options ask for Mesh work: a level above 0, or resaving, which
@@ -300,31 +348,40 @@ impl RunConfigurationProvider for ProfileConfigurationProvider {
         // Strict, as C++ run setup rejected any QSettings status but NoError.
         let settings = profile.load_settings_checked().map_err(failed)?;
         let ignored_mods = profile.ignored_mods().map_err(failed)?;
-        let textures = settings.textures_enabled;
-        let meshes = settings.meshes_enabled;
-        let archives = settings.bsa_enabled;
-        let facts = SelectedProfileFacts {
-            archive_extension: Some(archive_extension(settings.bsa_game).to_owned()),
-            supports_native_texture_optimization: textures,
-            supports_texture_conversion: textures,
-            supports_standard_mesh_optimization: meshes,
-            supports_terrain_mesh_optimization: meshes,
-            supports_animation_optimization: settings.animations_enabled,
-            supports_archive_extraction: archives,
-            // Reference maintenance belongs to Texture conversion.
-            supports_mesh_reference_maintenance: textures,
-            supports_archive_creation: archives,
-        };
+        let facts = profile_facts(&settings);
         // Published only after every read succeeded, so work never sees a
         // partial profile.
         *lock(&self.prepared) = Some(Arc::new(settings));
         Ok(RunConfiguration {
             profile: facts,
             ignored_mods,
-            // C++'s marker. Deviation 20 replaces it with the `_separator`
-            // suffix when Several Mods selection is ported (#486).
-            separator_markers: vec!["separator".to_owned()],
+            // Deviation 20: MO2 names its separators `<name>_separator`. C++
+            // passed the marker "separator" and excluded any child containing it.
+            separator_suffixes: vec![SEPARATOR_SUFFIX.to_owned()],
         })
+    }
+}
+
+/// The suffix Mod Organizer 2 gives its separator folders.
+const SEPARATOR_SUFFIX: &str = "_separator";
+
+/// The Profile Capabilities a profile's settings declare, as C++
+/// `ApplicationRunConfigurationProvider` and `factsFromSelectedProfile` map them.
+fn profile_facts(settings: &ProfileSettings) -> SelectedProfileFacts {
+    let textures = settings.textures_enabled;
+    let meshes = settings.meshes_enabled;
+    let archives = settings.bsa_enabled;
+    SelectedProfileFacts {
+        archive_extension: Some(archive_extension(settings.bsa_game).to_owned()),
+        supports_native_texture_optimization: textures,
+        supports_texture_conversion: textures,
+        supports_standard_mesh_optimization: meshes,
+        supports_terrain_mesh_optimization: meshes,
+        supports_animation_optimization: settings.animations_enabled,
+        supports_archive_extraction: archives,
+        // Reference maintenance belongs to Texture conversion.
+        supports_mesh_reference_maintenance: textures,
+        supports_archive_creation: archives,
     }
 }
 

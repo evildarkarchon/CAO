@@ -83,6 +83,7 @@ version = "0.1.0"
 dependencies = [
  "cao-core",
  "cao-profiles",
+ "cao-winfs",
  "directxtex",
  "log",
  "thiserror 2.0.21",

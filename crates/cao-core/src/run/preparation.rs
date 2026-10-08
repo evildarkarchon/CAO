@@ -100,8 +100,10 @@ pub struct RunConfiguration {
     pub profile: SelectedProfileFacts,
     /// Child names matched case-insensitively during Several Mods Preparing.
     pub ignored_mods: Vec<String>,
-    /// Case-sensitive substrings marking mod-manager separators among child names.
-    pub separator_markers: Vec<String>,
+    /// Case-sensitive suffixes marking mod-manager separators among child
+    /// names. C++ matched them anywhere in the name; deviation 20 matches only
+    /// the end. An empty suffix never matches.
+    pub separator_suffixes: Vec<String>,
 }
 
 /// Loads a run's configuration during Preparing, on the Run Worker.

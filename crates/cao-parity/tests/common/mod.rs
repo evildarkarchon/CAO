@@ -18,6 +18,15 @@ pub fn transcript(name: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{path}: {error}"))
 }
 
+/// Serializes tests that start a run: one run may be active per process, and
+/// a test binary runs its tests on parallel threads.
+pub fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// A fresh directory under the system temp dir, removed on drop.
 pub struct TempDir(PathBuf);
 
