@@ -1,0 +1,4 @@
+status=0
+Textures/continued	string	s=ab	b=1	i=0	u=0	d=0	l=
+Textures/texturesFormat	string	s=98	b=1	i=98	u=98	d=98	l=
+Textures/texturesUnwantedFormats	list	s=	b=0	i=0	u=0	d=0	l=86,85

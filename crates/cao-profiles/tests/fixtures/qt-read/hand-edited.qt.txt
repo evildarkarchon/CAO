@@ -1,0 +1,63 @@
+status=0
+Bools/empty	string	s=	b=0	i=0	u=0	d=0	l=
+Bools/mixed	string	s=False	b=0	i=0	u=0	d=0	l=
+Bools/no	string	s=no	b=1	i=0	u=0	d=0	l=
+Bools/one	string	s=1	b=1	i=1	u=1	d=1	l=
+Bools/spaceFalse	string	s=false	b=0	i=0	u=0	d=0	l=
+Bools/upper	string	s=TRUE	b=1	i=0	u=0	d=0	l=
+Bools/zero	string	s=0	b=0	i=0	u=0	d=0	l=
+BSA/first	string	s=1	b=1	i=1	u=1	d=1	l=
+BSA/second	string	s=2	b=1	i=2	u=2	d=2	l=
+general/realGeneral	string	s=3	b=1	i=3	u=3	d=3	l=
+Lists/atAtElement	list	s=	b=0	i=0	u=0	d=0	l=0,0
+Lists/ints	list	s=	b=0	i=0	u=0	d=0	l=85,86,115
+Lists/quotedElement	list	s=	b=0	i=0	u=0	d=0	l=0,0,0
+Lists/spacesAround	list	s=	b=0	i=0	u=0	d=0	l=0,0
+Lists/trailingComma	list	s=	b=0	i=0	u=0	d=0	l=0,0
+Lists/variant85	list	s=	b=0	i=0	u=0	d=0	l=85
+Lists/variantPath	list	s=	b=0	i=0	u=0	d=0	l=0,5
+Lists/variantString	list	s=	b=0	i=0	u=0	d=0	l=98
+Lists/variantTruncated	list	s=	b=0	i=0	u=0	d=0	l=
+Lists/variantTwo	list	s=	b=0	i=0	u=0	d=0	l=85,86
+Lists/variantUInt	list	s=	b=0	i=0	u=0	d=0	l=98
+Numbers/double	string	s=2e+09	b=1	i=0	u=0	d=2e+09	l=
+Numbers/fraction	string	s=1.5	b=1	i=0	u=0	d=1.5	l=
+Numbers/negativeInt	string	s=-7	b=1	i=-7	u=0	d=-7	l=
+Numbers/negativeUInt	string	s=-1	b=1	i=-1	u=0	d=-1	l=
+Numbers/plusInt	string	s=+7	b=1	i=7	u=7	d=7	l=
+Numbers/spacedDouble	string	s=3.5	b=1	i=0	u=0	d=3.5	l=
+Numbers/spacedInt	string	s=42	b=1	i=42	u=42	d=42	l=
+Numbers/word	string	s=abc	b=1	i=0	u=0	d=0	l=
+Numbers/wrapInt	string	s=4294967296	b=1	i=0	u=0	d=4294967296	l=
+Numbers/wrapUInt	string	s=4294967297	b=1	i=1	u=1	d=4294967297	l=
+rootAfter	string	s=2	b=1	i=2	u=2	d=2	l=
+rootBefore	string	s=1	b=1	i=1	u=1	d=1	l=
+Sub/a/b	string	s=1	b=1	i=1	u=1	d=1	l=
+Sub/Akey	string	s=2	b=1	i=2	u=2	d=2	l=
+Sub/bad%zz	string	s=4	b=1	i=4	u=4	d=4	l=
+Sub/key with spaces	string	s=6	b=1	i=6	u=6	d=6	l=
+Sub/trailing%	string	s=5	b=1	i=5	u=5	d=5	l=
+Sub/\u{00e9}	string	s=3	b=1	i=3	u=3	d=3	l=
+Values/atAt	string	s=@literal	b=1	i=0	u=0	d=0	l=
+Values/atString	string	s=inner	b=1	i=0	u=0	d=0	l=
+Values/atUnknown	string	s=@Foo(bar)	b=1	i=0	u=0	d=0	l=
+Values/continued	string	s=onetwo	b=1	i=0	u=0	d=0	l=
+Values/dup	string	s=second	b=1	i=0	u=0	d=0	l=
+Values/escapes	string	s=\u{0007}\u{0008}\u{000c}\u{000a}\u{000d}\u{0009}\u{000b}"?'\u{005c}	b=1	i=0	u=0	d=0	l=
+Values/hexGreedy	string	s=Ag	b=1	i=0	u=0	d=0	l=
+Values/hexLong	string	s=A	b=1	i=0	u=0	d=0	l=
+Values/hexNoDigits	string	s=ag	b=1	i=0	u=0	d=0	l=
+Values/hexOverflow	string	s=\u{2345}	b=1	i=0	u=0	d=0	l=
+Values/inlineComment	string	s=before	b=1	i=0	u=0	d=0	l=
+Values/invalid	invalid	s=	b=0	i=0	u=0	d=0	l=
+Values/latin1	string	s=caf\u{00e9}	b=1	i=0	u=0	d=0	l=
+Values/multiLineQuoted	string	s=line1\u{000d}\u{000a}line2	b=1	i=0	u=0	d=0	l=
+Values/octal	string	s=A\u{0000}end	b=1	i=0	u=0	d=0	l=
+Values/octalStop	string	s=\u{0001}8	b=1	i=0	u=0	d=0	l=
+Values/plain	string	s=hello	b=1	i=0	u=0	d=0	l=
+Values/quotedComma	string	s=1,2	b=1	i=0	u=0	d=0	l=
+Values/quotedConcat	string	s=ab c	b=1	i=0	u=0	d=0	l=
+Values/quotedSemicolon	string	s=x;y	b=1	i=0	u=0	d=0	l=
+Values/quotedSpaces	string	s=  keep  	b=1	i=0	u=0	d=0	l=
+Values/spaced	string	s=padded value	b=1	i=0	u=0	d=0	l=
+Values/unknownEscape	string	s=ab	b=1	i=0	u=0	d=0	l=
