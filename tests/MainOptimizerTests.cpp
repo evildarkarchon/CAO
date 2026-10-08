@@ -273,6 +273,9 @@ private slots:
  /// Recognizes plugin headparts from every Mod Root in Several Mods mode, not only the last.
  void severalModsKeepsEveryModRootsHeadparts();
 
+ /// Verifies the parity oracle's override withholds the D3D11 device, so BC6H/BC7 use the CPU.
+ void forcedCpuBlockCompressionSkipsDevice();
+
 private:
     QTemporaryDir _temporaryDirectory;
 };
@@ -951,6 +954,20 @@ void MainOptimizerTests::severalModsKeepsEveryModRootsHeadparts()
     const auto body = optimizer.process(routeAsset(bodyA));
     QVERIFY2(body.succeeded(), body.message().c_str());
     QCOMPARE(body.mutationState(), cao::execution::MutationState::None);
+}
+
+void MainOptimizerTests::forcedCpuBlockCompressionSkipsDevice()
+{
+    // The name is the harness's external contract, so it is spelled out rather than shared.
+    constexpr auto variable = "CAO_ORACLE_FORCE_CPU_BC";
+    const auto hadValue = qEnvironmentVariableIsSet(variable);
+    const auto previous = qgetenv(variable);
+    QVERIFY(qputenv(variable, QByteArrayLiteral("1")));
+    const TexturesOptimizer forced(OptimizerProfileSnapshot::captureIntent());
+    // Restore before asserting so a failure cannot leak the override into later tests.
+    QVERIFY(hadValue ? qputenv(variable, previous) : qunsetenv(variable));
+
+    QVERIFY(!forced.usesGpuBlockCompression());
 }
 
 QTEST_APPLESS_MAIN(MainOptimizerTests)

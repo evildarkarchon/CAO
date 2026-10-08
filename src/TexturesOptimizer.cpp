@@ -46,6 +46,11 @@ bool TexturesOptimizer::createDevice(const int adapter, ID3D11Device** pDevice) 
 
     *pDevice = nullptr;
 
+    // Parity-oracle override: failing device creation sends BC6H/BC7 down the CPU codec, which
+    // threshold calibration compares against the GPU encoder. Any non-empty value forces it.
+    // Oracle-only; deleted with the C++ tree.
+    if (!qEnvironmentVariableIsEmpty("CAO_ORACLE_FORCE_CPU_BC")) return false;
+
     static PFN_D3D11_CREATE_DEVICE s_DynamicD3D11CreateDevice = nullptr;
 
     if (!s_DynamicD3D11CreateDevice) {

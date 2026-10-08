@@ -1,5 +1,6 @@
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QProcess>
 #include <QTemporaryDir>
 #include <QTest>
@@ -29,7 +30,31 @@ class CliExecutionTests final : public QObject {
     void reportsAssetExecutionStatus();
     /// Reports pruned empty directories as retained Archive Finalization mutations.
     void reportsDirectoryPruningMutation();
+
+    /// Supplies one row per value of each parity-oracle archive flag and the fact it decides.
+    void archiveOptionFlagsChangeOutput_data();
+    /// Runs the real CLI with archive creation and checks each archive flag's on-disk effect.
+    void archiveOptionFlagsChangeOutput();
 };
+
+namespace {
+/// Writes non-empty bytes to a file under root; SSE BSA packing never parses the content.
+bool writeFixture(const QDir& root, const QString& path) {
+    if (!root.mkpath(QFileInfo(root.filePath(path)).path())) return false;
+    QFile file(root.filePath(path));
+    return file.open(QIODevice::WriteOnly) && file.write("fixture bytes") == 13;
+}
+
+/// Reads the archive-flags byte of a TES4/SSE BSA header; -1 when the header cannot be read.
+int bsaArchiveFlags(const QString& path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return -1;
+    const auto header = file.read(16);
+    // Bytes 0-3 are the "BSA\0" magic and bytes 12-15 the little-endian archive flags.
+    if (header.size() != 16 || !header.startsWith(QByteArrayLiteral("BSA\0"))) return -1;
+    return static_cast<unsigned char>(header.at(12));
+}
+}  // namespace
 
 void CliExecutionTests::refusesUnknownStagingBeforeAssetTraversal() {
     const QTemporaryDir directory;
@@ -138,6 +163,77 @@ void CliExecutionTests::reportsDirectoryPruningMutation() {
     QVERIFY(!QFile::exists(root.filePath("mod/empty")));
     const auto standardOutput = process.readAllStandardOutput();
     QVERIFY(standardOutput.contains("Archive Finalization|1|partial-or-unknown=0"));
+}
+
+void CliExecutionTests::archiveOptionFlagsChangeOutput_data() {
+    QTest::addColumn<QStringList>("flags");
+    QTest::addColumn<QString>("fact");
+    QTest::addColumn<bool>("expected");
+
+    // An archive holding incompressible files is never compressed, and merging them is the
+    // default, so the compression rows keep the sound in its own archive to leave mod.bsa
+    // compressible.
+    QTest::newRow("compress-on") << QStringList{"--bmi", "0", "--bcomp", "1"} << "compressed"
+                                 << true;
+    QTest::newRow("compress-off") << QStringList{"--bmi", "0", "--bcomp", "0"} << "compressed"
+                                  << false;
+    QTest::newRow("dummies-on") << QStringList{"--bdum", "1"} << "dummy plugin" << true;
+    QTest::newRow("dummies-off") << QStringList{"--bdum", "0"} << "dummy plugin" << false;
+    QTest::newRow("merge-incompressible-on")
+        << QStringList{"--bmi", "1"} << "incompressible archive" << false;
+    QTest::newRow("merge-incompressible-off")
+        << QStringList{"--bmi", "0"} << "incompressible archive" << true;
+    QTest::newRow("merge-textures-on") << QStringList{"--bmt", "1"} << "textures archive" << false;
+    QTest::newRow("merge-textures-off") << QStringList{"--bmt", "0"} << "textures archive" << true;
+    QTest::newRow("delete-sources-on") << QStringList{"--bds", "1"} << "loose source" << false;
+    QTest::newRow("delete-sources-off") << QStringList{"--bds", "0"} << "loose source" << true;
+}
+
+void CliExecutionTests::archiveOptionFlagsChangeOutput() {
+    QFETCH(QStringList, flags);
+    QFETCH(QString, fact);
+    QFETCH(bool, expected);
+
+    const QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QDir root(directory.path());
+    QVERIFY(root.mkpath("profiles/SSE"));
+    QVERIFY(QFile::copy(QStringLiteral(CAO_SOURCE_DIR "/profiles/SSE/profile.ini"),
+                        root.filePath("profiles/SSE/profile.ini")));
+    // One Standard, one Texture and one Incompressible file, so every split and merge is visible.
+    for (const auto& path : {"mod/meshes/a.nif", "mod/textures/a.dds", "mod/sound/a.wav"})
+        QVERIFY2(writeFixture(root, path), path);
+
+    QProcess process;
+    process.setWorkingDirectory(directory.path());
+    process.start(QStringLiteral(CAO_CLI_PATH),
+                  QStringList{root.filePath("mod"), "om", "SSE", "--bc"} + flags);
+    QVERIFY2(process.waitForStarted(), qPrintable(process.errorString()));
+    QVERIFY2(process.waitForFinished(30000), qPrintable(process.errorString()));
+    QCOMPARE(process.exitStatus(), QProcess::NormalExit);
+    const auto standardOutput = process.readAllStandardOutput();
+    QVERIFY2(process.exitCode() == 0, standardOutput.constData());
+    QVERIFY(QFile::exists(root.filePath("mod/mod.bsa")));
+
+    // Archive names follow the Mod Root: the unmerged Incompressible archive takes the next
+    // free counter name after the Standard archive's mod.bsa.
+    bool actual = false;
+    if (fact == "compressed") {
+        const auto archiveFlags = bsaArchiveFlags(root.filePath("mod/mod.bsa"));
+        QVERIFY(archiveFlags >= 0);
+        actual = (archiveFlags & 0x04) != 0;
+    } else if (fact == "dummy plugin") {
+        actual = QFile::exists(root.filePath("mod/mod.esp"));
+    } else if (fact == "incompressible archive") {
+        actual = QFile::exists(root.filePath("mod/mod0.bsa"));
+    } else if (fact == "textures archive") {
+        actual = QFile::exists(root.filePath("mod/mod - Textures.bsa"));
+    } else if (fact == "loose source") {
+        actual = QFile::exists(root.filePath("mod/meshes/a.nif"));
+    } else {
+        QFAIL(qPrintable("Unknown fact: " + fact));
+    }
+    QCOMPARE(actual, expected);
 }
 
 QTEST_GUILESS_MAIN(CliExecutionTests)

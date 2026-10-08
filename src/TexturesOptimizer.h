@@ -90,6 +90,10 @@ class TexturesOptimizer final : public QObject {
         size_t tHeight;
     };
 
+    /// Reports whether BC6H/BC7 compression will use the D3D11 GPU encoder rather than the CPU
+    /// codec. False when no device was available or CAO_ORACLE_FORCE_CPU_BC withheld it.
+    [[nodiscard]] bool usesGpuBlockCompression() const noexcept { return _pDevice != nullptr; }
+
     TexOptOptionsResult processArguments(const bool& bNecessary, const bool& bCompress,
                                          const bool& bMipmaps, const std::optional<size_t>& tWidth,
                                          const std::optional<size_t>& tHeight);

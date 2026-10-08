@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #ifdef _WIN32
 #define NOMINMAX
@@ -16,10 +17,40 @@
 
 namespace cao::cli {
 namespace {
+/// Escapes one text field so `|` only ever separates fields and a newline only ends a record.
+/// `\` becomes `\\`, `|` becomes `\p`, CR becomes `\r` and LF becomes `\n`. `\p` is used instead
+/// of `\|` so a parser can split on every raw `|` first and unescape each field afterwards.
+/// Oracle-only: the parity harness depends on it, and it is deleted with the C++ tree.
+std::string escapeField(const std::string_view text) {
+    std::string escaped;
+    escaped.reserve(text.size());
+    for (const char character : text) {
+        switch (character) {
+            case '\\':
+                escaped += "\\\\";
+                break;
+            case '|':
+                escaped += "\\p";
+                break;
+            case '\r':
+                escaped += "\\r";
+                break;
+            case '\n':
+                escaped += "\\n";
+                break;
+            default:
+                escaped += character;
+        }
+    }
+    return escaped;
+}
+
 /// Preserves a path's recorded spelling while encoding it independently of the Windows code page.
+/// Escaped like free text; Windows paths never hold the reserved characters, so this is a no-op
+/// there, but it keeps every text field in the grammar under one rule.
 std::string genericPathUtf8(const std::filesystem::path& path) {
     const auto utf8 = path.generic_u8string();
-    return std::string(utf8.begin(), utf8.end());
+    return escapeField(std::string_view(reinterpret_cast<const char*>(utf8.data()), utf8.size()));
 }
 
 #ifdef _WIN32
@@ -87,26 +118,30 @@ void renderDetails(std::ostream& text, const run::OptimizationRunResult& result)
     text << "\nCancellation Observed|" << (result.cancellationObserved() ? "yes" : "no");
     for (const auto& root : result.modRoots()) text << "\nMod Root|" << genericPathUtf8(root);
     for (const auto& failure : result.failures())
-        text << "\nRun Failure|" << failure.detail() << '|' << genericPathUtf8(failure.path());
+        text << "\nRun Failure|" << escapeField(failure.detail()) << '|'
+             << genericPathUtf8(failure.path());
     for (const auto& failure : result.cleanupFailures())
-        text << "\nCleanup Failure|" << failure.detail() << '|' << genericPathUtf8(failure.path());
+        text << "\nCleanup Failure|" << escapeField(failure.detail()) << '|'
+             << genericPathUtf8(failure.path());
     for (const auto& attempt : result.assetAttempts()) {
         if (!attempt.result.succeeded())
             text << "\nAsset Failure|" << genericPathUtf8(attempt.asset.executionPath()) << '|'
-                 << attempt.result.operation() << '|' << attempt.result.message() << '|'
+                 << escapeField(attempt.result.operation()) << '|'
+                 << escapeField(attempt.result.message()) << '|'
                  << genericPathUtf8(attempt.result.affectedPath()) << '|'
-                 << attempt.result.serviceDetail();
+                 << escapeField(attempt.result.serviceDetail());
     }
     for (const auto& attempt : result.archiveExtractionAttempts())
         if (!attempt.succeeded())
             text << "\nArchive Failure|" << genericPathUtf8(attempt.archivePath) << '|'
-                 << attempt.detail;
+                 << escapeField(attempt.detail);
     if (const auto* finalization = result.archiveFinalization()) {
-        if (finalization->failure) text << "\nFinalization Failure|" << finalization->detail;
+        if (finalization->failure)
+            text << "\nFinalization Failure|" << escapeField(finalization->detail);
         for (const auto& attempt : finalization->attempts)
             if (!attempt.succeeded())
                 text << "\nArchive Failure|" << genericPathUtf8(attempt.archivePath) << '|'
-                     << attempt.detail;
+                     << escapeField(attempt.detail);
     }
     for (const auto& mutation : result.mutationSummaries()) {
         // These are completed effects retained by the service, never estimates of remaining work.
@@ -149,11 +184,11 @@ void renderEvent(std::ostream& output, const run::RunEvent& event) {
                 text << "|Indeterminate";
         }
     } else if (const auto* diagnostic = std::get_if<run::RunDiagnostic>(&event.payload())) {
-        text << "Diagnostic|" << phaseName(diagnostic->phase()) << '|' << diagnostic->detail()
-             << '|' << genericPathUtf8(diagnostic->path());
+        text << "Diagnostic|" << phaseName(diagnostic->phase()) << '|'
+             << escapeField(diagnostic->detail()) << '|' << genericPathUtf8(diagnostic->path());
     } else if (const auto* failure = std::get_if<run::RunFailure>(&event.payload())) {
         text << "Failure|" << phaseName(failure->phase()) << '|'
-             << static_cast<int>(failure->code()) << '|' << failure->detail() << '|'
+             << static_cast<int>(failure->code()) << '|' << escapeField(failure->detail()) << '|'
              << genericPathUtf8(failure->path());
     } else {
         const auto& result =
