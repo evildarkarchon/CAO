@@ -1,0 +1,20 @@
+[package]
+name = "cao-core"
+description = "CAO's Optimization Run core: Asset Routing, asset execution, the Run lifecycle, Run Evidence, the Run Executor and the Optimization Run Service."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# No C++ toolchain is needed to build or test this crate (#476, user story 76).
+# `dunce` stands in for the MSVC-canonical path helper until `cao-winfs` has it
+# (#484); Preparing then switches to that helper so C++-written staging recovers.
+[dependencies]
+dunce.workspace = true
+getrandom.workspace = true
+log.workspace = true
+thiserror.workspace = true
