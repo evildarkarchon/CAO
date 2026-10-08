@@ -14,7 +14,7 @@ workspace = true
 # Mod Roots resolve through `cao-winfs`'s MSVC-canonical helper, so the text
 # matches what C++ wrote into `CAO-STAGING` manifests.
 [dependencies]
-cao-winfs = { path = "../cao-winfs" }
+cao-winfs.workspace = true
 getrandom.workspace = true
 log.workspace = true
 thiserror.workspace = true

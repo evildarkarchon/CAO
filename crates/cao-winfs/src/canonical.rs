@@ -68,6 +68,7 @@ pub fn msvc_weakly_canonical(path: &Path) -> io::Result<PathBuf> {
     match canonical_units(&text) {
         Ok(result) => return Ok(path_from_units(result)),
         Err(error) if !is_file_not_found(&error) => return Err(error),
+        // Part of the path is missing: fall through to the lexical walk below.
         Err(_) => {}
     }
 
@@ -152,14 +153,14 @@ fn canonical_units(text: &[u16]) -> io::Result<Vec<u16>> {
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(OsString::from_wide(text))?;
-    let (name, kind) = final_path_name(&file)?;
-    Ok(rewrite_final_path(name, kind))
+    let (name, volume_name) = final_path_name(&file)?;
+    Ok(rewrite_final_path(name, volume_name))
 }
 
 /// Calls `GetFinalPathNameByHandleW` with a growing buffer, retrying with the
 /// NT name when the volume has no DOS name, exactly as `_Canonical` does.
 fn final_path_name(file: &File) -> io::Result<(Vec<u16>, GETFINALPATHNAMEBYHANDLE_FLAGS)> {
-    let mut kind = VOLUME_NAME_DOS;
+    let mut volume_name = VOLUME_NAME_DOS;
     let mut buffer = vec![0u16; MAX_PATH as usize];
     loop {
         let requested = u32::try_from(buffer.len()).expect("final path buffer fits in u32");
@@ -170,15 +171,16 @@ fn final_path_name(file: &File) -> io::Result<(Vec<u16>, GETFINALPATHNAMEBYHANDL
                 file.as_raw_handle(),
                 buffer.as_mut_ptr(),
                 requested,
-                FILE_NAME_NORMALIZED | kind,
+                FILE_NAME_NORMALIZED | volume_name,
             )
         };
         if size == 0 {
             let error = io::Error::last_os_error();
-            if kind == VOLUME_NAME_DOS && error.raw_os_error() == Some(ERROR_PATH_NOT_FOUND as i32)
+            if volume_name == VOLUME_NAME_DOS
+                && error.raw_os_error() == Some(ERROR_PATH_NOT_FOUND as i32)
             {
                 // Maybe there is no DOS name for this volume; retry with the NT path.
-                kind = VOLUME_NAME_NT;
+                volume_name = VOLUME_NAME_NT;
                 continue;
             }
             return Err(error);
@@ -187,17 +189,17 @@ fn final_path_name(file: &File) -> io::Result<(Vec<u16>, GETFINALPATHNAMEBYHANDL
         // small it is the required size including it, so the loop retries.
         buffer.resize(size as usize, 0);
         if size < requested {
-            return Ok((buffer, kind));
+            return Ok((buffer, volume_name));
         }
     }
 }
 
 /// `_Canonical`'s prefix rewrites of a final path name.
-fn rewrite_final_path(mut name: Vec<u16>, kind: GETFINALPATHNAMEBYHANDLE_FLAGS) -> Vec<u16> {
+fn rewrite_final_path(mut name: Vec<u16>, volume_name: GETFINALPATHNAMEBYHANDLE_FLAGS) -> Vec<u16> {
     const VERBATIM: &[u16] = &[0x5C, 0x5C, 0x3F, 0x5C]; // \\?\
     const VERBATIM_UNC: &[u16] = &[0x5C, 0x5C, 0x3F, 0x5C, 0x55, 0x4E, 0x43, 0x5C]; // \\?\UNC\
     const GLOBALROOT: &str = r"\\?\GLOBALROOT";
-    if kind == VOLUME_NAME_DOS {
+    if volume_name == VOLUME_NAME_DOS {
         if name.len() >= 6 && name.starts_with(VERBATIM) && is_drive_prefix(&name[4..]) {
             // A drive letter: strip the \\?\ prefix, whatever the length.
             name.drain(..4);
@@ -440,8 +442,8 @@ mod tests {
         String::from_utf16(&lexically_normal(&wide(text))).unwrap()
     }
 
-    fn rewritten(text: &str, kind: GETFINALPATHNAMEBYHANDLE_FLAGS) -> String {
-        String::from_utf16(&rewrite_final_path(wide(text), kind)).unwrap()
+    fn rewritten(text: &str, volume_name: GETFINALPATHNAMEBYHANDLE_FLAGS) -> String {
+        String::from_utf16(&rewrite_final_path(wide(text), volume_name)).unwrap()
     }
 
     /// The live fixture only reaches drive-letter results; UNC and NT results

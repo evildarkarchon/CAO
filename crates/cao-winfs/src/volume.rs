@@ -18,7 +18,7 @@ use crate::mutate::terminated;
 
 /// `UNICODE_STRING` lengths cap native paths at 32,767 characters plus the
 /// terminator.
-const LIMIT: usize = 32_768;
+const NATIVE_PATH_LIMIT: usize = 32_768;
 
 /// Returns the mount point of the volume containing `path`, such as `C:\` or a
 /// mounted folder, with its trailing separator.
@@ -30,7 +30,8 @@ const LIMIT: usize = 32_768;
 pub fn volume_mount_point(path: &Path) -> io::Result<PathBuf> {
     let path = terminated(path.as_os_str())?;
     let mount = mount_point_with(&path, |buffer| {
-        let size = u32::try_from(buffer.len()).expect("mount buffer is capped at LIMIT");
+        let size =
+            u32::try_from(buffer.len()).expect("mount buffer is capped at NATIVE_PATH_LIMIT");
         // SAFETY: `path` is NUL-terminated and `buffer` holds `size` units.
         if unsafe { GetVolumePathNameW(path.as_ptr(), buffer.as_mut_ptr(), size) } == 0 {
             return Err(io::Error::last_os_error());
@@ -102,14 +103,16 @@ fn mount_point_with(
     // traversed junction can resolve to another volume's mounted folder, so
     // this is only a first guess.
     let length = path.len() - 1;
-    let mut size = (length + 2).max(MAX_PATH as usize).min(LIMIT);
+    let mut size = (length + 2).max(MAX_PATH as usize).min(NATIVE_PATH_LIMIT);
     loop {
         let mut mount = vec![0u16; size];
         if let Err(error) = query(&mut mount) {
-            if error.raw_os_error() != Some(ERROR_FILENAME_EXCED_RANGE as i32) || size == LIMIT {
+            if error.raw_os_error() != Some(ERROR_FILENAME_EXCED_RANGE as i32)
+                || size == NATIVE_PATH_LIMIT
+            {
                 return Err(error);
             }
-            size = (size * 2).min(LIMIT);
+            size = (size * 2).min(NATIVE_PATH_LIMIT);
             continue;
         }
         let written = mount.iter().position(|&unit| unit == 0).unwrap_or(size);
@@ -117,15 +120,20 @@ fn mount_point_with(
         // One character short, the query succeeds but drops the trailing
         // separator (`C:` for `C:\`), which GetVolumeNameForVolumeMountPointW
         // then rejects.
-        if written + 1 < size || mount.last() == Some(&u16::from(b'\\')) || size == LIMIT {
+        if written + 1 < size
+            || mount.last() == Some(&u16::from(b'\\'))
+            || size == NATIVE_PATH_LIMIT
+        {
             return Ok(mount);
         }
-        size = (size * 2).min(LIMIT);
+        size = (size * 2).min(NATIVE_PATH_LIMIT);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
+
     use super::*;
 
     fn wide(text: &str) -> Vec<u16> {
@@ -197,9 +205,12 @@ mod tests {
         let mut calls = 0;
         let result = mount_point_with(&terminated_wide(r"C:\x"), |_| {
             calls += 1;
-            Err(io::Error::from_raw_os_error(5))
+            Err(io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32))
         });
-        assert_eq!(result.unwrap_err().raw_os_error(), Some(5));
+        assert_eq!(
+            result.unwrap_err().raw_os_error(),
+            Some(ERROR_ACCESS_DENIED as i32)
+        );
         assert_eq!(calls, 1);
     }
 }

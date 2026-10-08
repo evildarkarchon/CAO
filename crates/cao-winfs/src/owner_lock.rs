@@ -61,6 +61,9 @@ impl OwnerLock {
     /// `GENERIC_READ` with no sharing, never following a link.
     const OPEN: Open = Open::new(Access::READ, Share::NONE);
 
+    /// Opens `path` with `open`, then requires an ordinary single-link file,
+    /// as C++'s `NativeLock` does: a hard link would let another name share
+    /// the lock's identity.
     fn claim(path: &Path, open: Open) -> Result<Self, OwnerLockError> {
         let file = open.open(path).map_err(|error| {
             if is_sharing_violation(&error) {

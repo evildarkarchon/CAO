@@ -39,7 +39,7 @@ fn available_space_reads_the_volume() {
 
 /// Each volume's GUID path with its DOS mount points.
 fn volumes() -> Vec<(PathBuf, Vec<String>)> {
-    use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, MAX_PATH};
+    use windows_sys::Win32::Foundation::{ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE, MAX_PATH};
     use windows_sys::Win32::Storage::FileSystem::{
         FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetVolumePathNamesForVolumeNameW,
     };
@@ -73,6 +73,12 @@ fn volumes() -> Vec<(PathBuf, Vec<String>)> {
             };
             volumes.push((volume, mounts));
             if FindNextVolumeW(find, name.as_mut_ptr(), MAX_PATH) == 0 {
+                let error = std::io::Error::last_os_error();
+                assert_eq!(
+                    error.raw_os_error(),
+                    Some(ERROR_NO_MORE_FILES as i32),
+                    "FindNextVolumeW failed: {error}"
+                );
                 break;
             }
         }
@@ -87,12 +93,17 @@ fn volumes() -> Vec<(PathBuf, Vec<String>)> {
 /// whose every volume has a drive letter only exercises the lettered form.
 #[test]
 fn volume_roots_canonicalize_as_msvc_does() {
+    // The volume holding the target directory can always be opened, so the
+    // test can never pass by skipping every volume.
+    let own_volume = volume_guid_path(&scratch_dir("volume-roots")).unwrap();
+    let mut checked_own_volume = false;
     let mut checked_without_letter = 0;
     for (volume, mounts) in volumes() {
         let Ok(canonical) = msvc_canonical(&volume) else {
             // Removable drives with no media, for example, cannot be opened.
             continue;
         };
+        checked_own_volume |= volume == own_volume;
         let text = canonical.to_str().unwrap().to_owned();
         if mounts.is_empty() {
             assert!(
@@ -109,5 +120,10 @@ fn volume_roots_canonicalize_as_msvc_does() {
             );
         }
     }
+    assert!(
+        checked_own_volume,
+        "{} was not checked",
+        own_volume.display()
+    );
     eprintln!("checked {checked_without_letter} volume(s) with no mount point");
 }

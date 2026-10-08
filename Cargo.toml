@@ -36,6 +36,8 @@ unsafe_code = "forbid"
 # Version pins decided by the port's research tickets (#459-#473). Members take
 # them with `dep.workspace = true` and add their own features.
 [workspace.dependencies]
+# Workspace members other members depend on.
+cao-winfs = { path = "crates/cao-winfs" }
 # Archives (#461). Exact pin: bsa-rs#14 proposes dropping its directxtex dependency.
 ba2 = "=3.0.1"
 # Textures (#459). `[patch.crates-io]` below replaces this with CAO's fork, so

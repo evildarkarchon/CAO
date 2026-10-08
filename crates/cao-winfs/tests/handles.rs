@@ -13,7 +13,7 @@ use cao_winfs::{
 };
 use common::{scratch_dir, write};
 
-const ERROR_FILE_EXISTS: i32 = 80;
+const ERROR_FILE_EXISTS: i32 = windows_sys::Win32::Foundation::ERROR_FILE_EXISTS as i32;
 
 /// An ordinary writer, as another process would open the file.
 fn open_for_write(path: &Path) -> std::io::Result<std::fs::File> {

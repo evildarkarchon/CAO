@@ -11,8 +11,8 @@ use cao_winfs::{
 };
 use common::{scratch_dir, write};
 
-const ERROR_FILE_NOT_FOUND: i32 = 2;
-const ERROR_ALREADY_EXISTS: i32 = 183;
+const ERROR_FILE_NOT_FOUND: i32 = windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND as i32;
+const ERROR_ALREADY_EXISTS: i32 = windows_sys::Win32::Foundation::ERROR_ALREADY_EXISTS as i32;
 
 /// The staged-publication handle: exclusive, with the rights to flush and
 /// rename.

@@ -32,9 +32,12 @@ pub fn compare_ordinal_ignore_case(left: impl AsRef<OsStr>, right: impl AsRef<Os
             length(&left),
             right.as_ptr(),
             length(&right),
+            // bIgnoreCase: the docs reject any non-zero value other than TRUE.
             1,
         )
     };
+    // 0 is failure; CSTR_LESS_THAN, CSTR_EQUAL and CSTR_GREATER_THAN are 1, 2
+    // and 3, so subtracting CSTR_EQUAL leaves the ordering's sign.
     assert!(
         result != 0,
         "CompareStringOrdinal failed: {}",
