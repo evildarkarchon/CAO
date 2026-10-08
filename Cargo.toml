@@ -1,0 +1,64 @@
+# Rust port of Cathedral Assets Optimizer (ADR 0003).
+#
+# This virtual workspace grows beside the C++ tree: its members live under
+# `crates/`, CMake never looks there, and Cargo never looks at `src/` or `tests/`,
+# so nothing has to move when the C++ tree is deleted.
+#
+# Minimum native toolchain (documented, not enforced): Visual Studio 2026 (v145)
+# Build Tools and Windows SDK 10.0.26100. That is the same install the C++
+# `vs2026-windows` preset needs, so one setup builds both trees. Rust cannot pin
+# MSVC; `cc` and `embed-resource` find the installed Visual Studio or use a
+# Developer Command Prompt's environment.
+#
+# The Rust toolchain itself is pinned exactly in `rust-toolchain.toml`; raise it,
+# `rust-version` below and the README's build section together in one commit.
+
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+license = "MPL-2.0"
+publish = false
+
+# `unsafe` is forbidden everywhere except `cao-winfs`, `nifly-sys` and the D3D11
+# device module of `cao-optimizers`. Members opt in with `lints.workspace = true`.
+# Cargo cannot mix `workspace = true` with local lint keys, and `forbid` cannot be
+# lowered by an `#[allow]` in source (E0453), so an overriding crate declares its
+# own `[lints]` table instead and must copy every other lint from here. The same
+# rule means the D3D11 module cannot opt out by attribute while its crate
+# inherits `forbid`.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+# Version pins decided by the port's research tickets (#459-#473). Members take
+# them with `dep.workspace = true` and add their own features.
+[workspace.dependencies]
+# Archives (#461). Exact pin: bsa-rs#14 proposes dropping its directxtex dependency.
+ba2 = "=3.0.1"
+# Textures (#459). The `[patch.crates-io]` entry pointing at CAO's fork arrives
+# with #479, so `ba2` and CAO share one DirectXTex build.
+directxtex = "1.3.0"
+# The D3D11 device for GPU BC7 (#459).
+windows = "0.62"
+# File safety (#463).
+windows-sys = "0.61"
+getrandom = "0.3"
+dunce = "1"
+# GUI (#462, #466). `~1.18` because `unstable-winit-030` and the undocumented
+# `SLINT_NO_MUDA` may change in any minor release.
+slint = { version = "~1.18", features = ["unstable-winit-030", "raw-window-handle-06"] }
+# `common-controls-v6` stays off; the manifest carries no ComCtl32 v6 entry (#471).
+rfd = "0.17"
+raw-window-handle = "0.6"
+# Errors, logging and parallelism (#468, #470). `anyhow` is for the two binaries only.
+thiserror = "2"
+anyhow = "1"
+log = "0.4"
+chrono = "0.4"
+rayon = "1"
+# Build scripts (#460, #471).
+cc = "1"
+embed-resource = "3"

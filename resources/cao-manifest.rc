@@ -1,0 +1,4 @@
+// Manifest-only resource script shared by the Rust workspace (#471).
+// 1 = CREATEPROCESS_MANIFEST_RESOURCE_ID, 24 = RT_MANIFEST. The manifest is the
+// same file the C++ build links, embedded byte for byte.
+1 24 "Cathedral_Assets_Optimizer.manifest"

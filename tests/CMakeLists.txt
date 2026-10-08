@@ -50,7 +50,7 @@ add_executable(cao_archive_first_asset_discovery_tests
 # Archive staging beneath Qt's long fixture names needs the same Windows path behavior as CAO.
 if(WIN32)
     target_sources(cao_archive_first_asset_discovery_tests PRIVATE
-        ${PROJECT_SOURCE_DIR}/src/Cathedral_Assets_Optimizer.manifest
+        ${PROJECT_SOURCE_DIR}/resources/Cathedral_Assets_Optimizer.manifest
     )
 endif()
 
@@ -182,7 +182,7 @@ add_executable(cao_archive_finalization_tests
 # Staging beneath Qt's long fixture names needs the same Windows path behavior as CAO.
 if(WIN32)
     target_sources(cao_archive_finalization_tests PRIVATE
-        ${PROJECT_SOURCE_DIR}/src/Cathedral_Assets_Optimizer.manifest
+        ${PROJECT_SOURCE_DIR}/resources/Cathedral_Assets_Optimizer.manifest
     )
 endif()
 

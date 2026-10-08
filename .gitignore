@@ -509,3 +509,5 @@ src/Version.h
 .codegraph/
 /vcpkg_installed/vcpkg/vcpkg-running.lock
 tests/local
+# Cargo build output of the Rust workspace
+/target/

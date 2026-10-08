@@ -1,0 +1,20 @@
+[package]
+name = "cao-winfs"
+description = "Windows file-safety primitives for CAO: the only home of file-safety unsafe code and windows-sys imports."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# This crate overrides the workspace's `unsafe_code = "forbid"`. Cargo cannot
+# combine `workspace = true` with a local key, so this table replaces
+# `[workspace.lints]` entirely; keep every other lint in step with the root.
+[lints.rust]
+unsafe_code = "allow"
+
+[dev-dependencies]
+windows-sys = { workspace = true, features = ["Win32_Globalization", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
+
+[build-dependencies]
+embed-resource.workspace = true

@@ -86,7 +86,7 @@ endif()
 #Icon and qrc
 set(RESOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/Cathedral_Assets_Optimizer.rc"
-    "${CMAKE_CURRENT_SOURCE_DIR}/Cathedral_Assets_Optimizer.manifest"
+    "${PROJECT_SOURCE_DIR}/resources/Cathedral_Assets_Optimizer.manifest"
     "${CMAKE_CURRENT_SOURCE_DIR}/styles/qdarkstyle/style.qrc"
     )
 
