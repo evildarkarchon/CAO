@@ -1,0 +1,24 @@
+EVENT:|558517886-1119414094-0|1|Preparing|Indeterminate
+EVENT:|558517886-1119414094-0|2|Discovering Archives|Indeterminate
+EVENT:|558517886-1119414094-0|3|Extracting Archives|Skipped|Dry Run
+EVENT:|558517886-1119414094-0|4|Building the Effective Asset Tree|Indeterminate
+EVENT:|558517886-1119414094-0|5|PROGRESS:|Processing Assets|0|10|succeeded=0|failed=0
+EVENT:|558517886-1119414094-0|6|PROGRESS:|Processing Assets|1|10|succeeded=0|failed=1
+EVENT:|558517886-1119414094-0|7|PROGRESS:|Processing Assets|2|10|succeeded=1|failed=1
+EVENT:|558517886-1119414094-0|8|PROGRESS:|Processing Assets|3|10|succeeded=1|failed=2
+EVENT:|558517886-1119414094-0|9|PROGRESS:|Processing Assets|4|10|succeeded=2|failed=2
+EVENT:|558517886-1119414094-0|10|PROGRESS:|Processing Assets|5|10|succeeded=3|failed=2
+EVENT:|558517886-1119414094-0|11|PROGRESS:|Processing Assets|6|10|succeeded=4|failed=2
+EVENT:|558517886-1119414094-0|12|PROGRESS:|Processing Assets|7|10|succeeded=5|failed=2
+EVENT:|558517886-1119414094-0|13|PROGRESS:|Processing Assets|8|10|succeeded=6|failed=2
+EVENT:|558517886-1119414094-0|14|PROGRESS:|Processing Assets|9|10|succeeded=7|failed=2
+EVENT:|558517886-1119414094-0|15|PROGRESS:|Processing Assets|10|10|succeeded=7|failed=3
+EVENT:|558517886-1119414094-0|16|Archive Finalization|Skipped|Dry Run
+EVENT:|558517886-1119414094-0|17|Safety Cleanup|Indeterminate
+EVENT:|558517886-1119414094-0|18|Outcome|Completed With Failures|Final Phase|Archive Finalization
+Cancellation Observed|no
+Mod Root|C:/Users/evild/AppData/Local/Temp/cao480/work/tracer_dry_run_textures/mods/TracerMod
+Asset Failure|C:/Users/evild/AppData/Local/Temp/cao480/work/tracer_dry_run_textures/mods/TracerMod/textures/broken.dds|load_texture|Failed to load Texture.|C:/Users/evild/AppData/Local/Temp/cao480/work/tracer_dry_run_textures/mods/TracerMod/textures/broken.dds|
+Asset Failure|C:/Users/evild/AppData/Local/Temp/cao480/work/tracer_dry_run_textures/mods/TracerMod/textures/float_typeless.dds|load_texture|Failed to load Texture.|C:/Users/evild/AppData/Local/Temp/cao480/work/tracer_dry_run_textures/mods/TracerMod/textures/float_typeless.dds|
+Asset Failure|C:/Users/evild/AppData/Local/Temp/cao480/work/tracer_dry_run_textures/mods/TracerMod/meshes/thing.nif|load_mesh|Failed to load Mesh.|C:/Users/evild/AppData/Local/Temp/cao480/work/tracer_dry_run_textures/mods/TracerMod/meshes/thing.nif|
+Skipped Assets|1|1

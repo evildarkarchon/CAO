@@ -12,6 +12,14 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+# `run` drives the same composition root as the GUI; it fills the options model
+# from `case.json` and reads the run's typed events and evidence back.
+cao-core.workspace = true
+cao-optimizers.workspace = true
+cao-profiles.workspace = true
+# Hand-written cases build their Textures synthetically (#473).
+directxtex.workspace = true
+log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -81,7 +81,11 @@ dependencies = [
 name = "cao-optimizers"
 version = "0.1.0"
 dependencies = [
+ "cao-core",
+ "cao-profiles",
  "directxtex",
+ "log",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -89,7 +93,12 @@ name = "cao-parity"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cao-core",
+ "cao-optimizers",
+ "cao-profiles",
+ "directxtex",
  "embed-resource",
+ "log",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

@@ -33,7 +33,9 @@ use crate::compare::{FactDifference, Verdict, compare_facts};
 use crate::facts::RunFacts;
 use crate::normalise::normalise;
 use crate::oracle;
-use crate::tree::{ArtifactDifference, TreeRules, TreeSide, compare_trees};
+use crate::tree::{
+    ArtifactDifference, ArtifactVerdict, DefaultRules, TreeRules, TreeSide, compare_trees,
+};
 
 /// The top-level folders of a side that the harness provisions. They are not
 /// part of the case tree and never part of its output.
@@ -357,35 +359,7 @@ pub fn oracle_arguments(
     spec: &CaseSpec,
     oracle_root: &Path,
 ) -> Result<Vec<OsString>, HarnessError> {
-    let invalid = |message: String| Err(HarnessError::InvalidCase(message));
-    let folder = spec.mod_selection.folder();
-    let components: Vec<&str> = folder.split('/').collect();
-    let plain = |component: &str| {
-        !component.is_empty()
-            && component != "."
-            && component != ".."
-            && !component.contains(['\\', ':'])
-    };
-    if !components.iter().all(|component| plain(component)) || is_harness_owned(components[0]) {
-        return invalid(format!(
-            "Mod Selection folder `{folder}` is not a folder of the case tree"
-        ));
-    }
-    if !plain(&spec.profile) || spec.profile.contains('/') {
-        return invalid(format!(
-            "profile `{}` is not a profile folder name",
-            spec.profile
-        ));
-    }
-    if spec.meshes.level > 3 {
-        return invalid(format!("mesh level {} is outside 0-3", spec.meshes.level));
-    }
-
-    let selected = components
-        .iter()
-        .fold(oracle_root.to_path_buf(), |path, component| {
-            path.join(component)
-        });
+    let selected = selected_folder(spec, oracle_root)?;
     let mode = match spec.mod_selection {
         ModSelection::OneMod { .. } => "om",
         ModSelection::SeveralMods { .. } => "sm",
@@ -421,6 +395,46 @@ pub fn oracle_arguments(
     arguments.value("--bmt", u8::from(archives.merge_textures));
     arguments.value("--bds", u8::from(archives.delete_sources));
     Ok(arguments.0)
+}
+
+/// Checks that both builds can express a spec, and returns its selected folder
+/// under a side's case root.
+///
+/// The oracle's argv and the Rust driver's options model are both built from
+/// this, so the two sides always select the same folder. A selection outside the
+/// case tree or inside a harness-owned folder, a profile that is not one folder
+/// name, or a mesh level the GUI cannot produce is a
+/// [`HarnessError::InvalidCase`].
+pub fn selected_folder(spec: &CaseSpec, side_root: &Path) -> Result<PathBuf, HarnessError> {
+    let invalid = |message: String| Err(HarnessError::InvalidCase(message));
+    let folder = spec.mod_selection.folder();
+    let components: Vec<&str> = folder.split('/').collect();
+    let plain = |component: &str| {
+        !component.is_empty()
+            && component != "."
+            && component != ".."
+            && !component.contains(['\\', ':'])
+    };
+    if !components.iter().all(|component| plain(component)) || is_harness_owned(components[0]) {
+        return invalid(format!(
+            "Mod Selection folder `{folder}` is not a folder of the case tree"
+        ));
+    }
+    if !plain(&spec.profile) || spec.profile.contains('/') {
+        return invalid(format!(
+            "profile `{}` is not a profile folder name",
+            spec.profile
+        ));
+    }
+    if spec.meshes.level > 3 {
+        return invalid(format!("mesh level {} is outside 0-3", spec.meshes.level));
+    }
+
+    Ok(components
+        .iter()
+        .fold(side_root.to_path_buf(), |path, component| {
+            path.join(component)
+        }))
 }
 
 /// An oracle command line under construction.
@@ -572,7 +586,7 @@ fn evaluate(
         &normalise(&oracle_facts, &oracle_root)?,
         &normalise(&rust_facts, &rust_root)?,
     );
-    let tree = compare_trees(
+    let mut tree = compare_trees(
         TreeSide {
             root: &oracle_root,
             run_id: run_id(&oracle_facts),
@@ -584,7 +598,70 @@ fn evaluate(
         rules,
     )?
     .verdict();
+    if spec.dry_run {
+        let changed = dry_run_changes(layout, &oracle_facts, &rust_facts)?;
+        if !changed.is_empty() {
+            let mut differences = match tree {
+                Verdict::Different(differences) => differences,
+                _ => Vec::new(),
+            };
+            differences.extend(changed);
+            tree = Verdict::Different(differences);
+        }
+    }
     Ok(CaseResult { facts, tree })
+}
+
+/// The rule a Dry Run breaks when it leaves its side's tree different from the input.
+pub const DRY_RUN_UNCHANGED: &str = "Dry Run Leaves The Input Unchanged";
+
+/// Compares each side's tree with the pristine input, byte for byte.
+///
+/// Comparing the two sides with each other cannot catch a Dry Run that both
+/// builds wrongly mutate the same way, so a Dry Run case also checks each side
+/// against `input/`. Every path that is not Identical is a difference, reported
+/// under its side's folder name.
+fn dry_run_changes(
+    layout: &CaseLayout,
+    oracle_facts: &RunFacts,
+    rust_facts: &RunFacts,
+) -> Result<Vec<ArtifactDifference>, HarnessError> {
+    let input = layout.input();
+    let mut changes = Vec::new();
+    for (side, facts) in [(Side::Oracle, oracle_facts), (Side::Rust, rust_facts)] {
+        let root = layout.side(side);
+        let comparison = compare_trees(
+            TreeSide {
+                root: &input,
+                run_id: None,
+            },
+            TreeSide {
+                root: &root,
+                run_id: run_id(facts),
+            },
+            &DefaultRules,
+        )?;
+        for artifact in comparison.artifacts {
+            let detail = match artifact.verdict {
+                ArtifactVerdict::Identical => continue,
+                ArtifactVerdict::Equivalent { rule } => {
+                    format!("changed, though {rule} accepts it")
+                }
+                // The comparator's own wording names its two trees "oracle" and
+                // "Rust"; here those are `input/` and this side.
+                ArtifactVerdict::Different(difference) => format!(
+                    "{} (oracle side = input/, Rust side = {side}/)",
+                    difference.detail
+                ),
+            };
+            changes.push(ArtifactDifference {
+                path: format!("{side}/{}", artifact.path),
+                rule: DRY_RUN_UNCHANGED,
+                detail,
+            });
+        }
+    }
+    Ok(changes)
 }
 
 /// The Run ID a side's staging names carry, if it started a run.

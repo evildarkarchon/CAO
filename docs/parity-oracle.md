@@ -35,6 +35,30 @@ The harness runs the oracle with each case's `oracle/` folder as its working dir
 the exe's folder. `profiles/`, `logs/` and `bin/hkxcmd.exe` resolve against the working
 directory.
 
+## Running one case
+
+```
+cargo run -p cao-parity -- case tracer-dry-run-textures --oracle <exe>
+```
+
+`case <id>` materialises a hand-written case afresh, or replays a case kept in the work
+directory from its `input/`. It runs the oracle, then `cao-parity run` as the Rust driver,
+and prints the run-fact and output-tree verdicts. A Dry Run case also checks that each side's
+tree still matches `input/` byte for byte. A passing case's folder is deleted; any other is
+kept with a `report.md` holding the fact diff and the replay command.
+
+- **Work directory.** `--work <dir>`, by default `target/parity/`.
+- **Other flags.** `--profiles <dir>` (default: the repository's `profiles/`),
+  `--hkxcmd <exe>` (or `CAO_HKXCMD`, then `bin/hkxcmd.exe`), `--timeout <seconds>`
+  (default 600).
+- **Exit code.** 0 when both verdicts pass, 1 for Different, 2 for a harness error, 3 when
+  the case cannot run here (it needs `hkxcmd.exe` and none was found).
+- **Paths.** Pass Windows-style paths (`C:\...` or `C:/...`). From Git Bash, a `/c/...` path
+  reaches the harness unconverted, and Windows reads it as `C:\c\...`.
+
+The hand-written cases live in `crates/cao-parity/src/cases.rs` until the corpus generator
+lands.
+
 ## Oracle-only behaviour
 
 - **Archive options.** `--bcomp`, `--bdum`, `--bmi`, `--bmt` and `--bds` set the archive

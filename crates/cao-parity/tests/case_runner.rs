@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use cao_parity::HarnessError;
 use cao_parity::case::{
-    ArchiveOptions, CaseDrivers, CaseFile, CaseLayout, CaseSpec, MeshOptions, ModSelection, Side,
-    SideResources, TextureOptions, oracle_arguments, run_case,
+    ArchiveOptions, CaseDrivers, CaseFile, CaseLayout, CaseSpec, DRY_RUN_UNCHANGED, MeshOptions,
+    ModSelection, Side, SideResources, TextureOptions, oracle_arguments, run_case,
 };
 use cao_parity::compare::Verdict;
 use cao_parity::oracle;
@@ -406,4 +406,58 @@ fn a_side_past_the_timeout_is_killed_and_is_a_harness_error() {
         "the oracle was killed, not awaited"
     );
     assert!(layout.report().exists());
+}
+
+#[test]
+fn a_dry_run_that_both_builds_mutate_alike_is_still_different() {
+    let temp = TempDir::new("run-dry-run-mutated");
+    let (layout, drivers) = prepared_case(&temp, |text| text);
+    // The same change on both sides: comparing the sides alone would pass.
+    for side in [Side::Oracle, Side::Rust] {
+        std::fs::write(
+            layout.side(side).join("mods/DryMod/textures/broken.dds"),
+            b"rewritten",
+        )
+        .unwrap();
+    }
+
+    let result = run_case(&layout, &drivers, &DefaultRules, Duration::from_secs(60)).unwrap();
+
+    assert_eq!(result.facts, Verdict::Identical);
+    let Verdict::Different(differences) = &result.tree else {
+        panic!("expected Different, got {:?}", result.tree);
+    };
+    let paths: Vec<_> = differences
+        .iter()
+        .map(|difference| (difference.path.as_str(), difference.rule))
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            ("oracle/mods/DryMod/textures/broken.dds", DRY_RUN_UNCHANGED),
+            ("rust/mods/DryMod/textures/broken.dds", DRY_RUN_UNCHANGED),
+        ]
+    );
+    let report = std::fs::read_to_string(layout.report()).unwrap();
+    assert!(report.contains(DRY_RUN_UNCHANGED), "{report}");
+}
+
+#[test]
+fn an_apply_case_may_change_the_input_when_both_builds_agree() {
+    let temp = TempDir::new("run-apply-mutated");
+    let (layout, drivers) = prepared_case(&temp, |text| text);
+    let mut apply = spec();
+    apply.dry_run = false;
+    layout.write_case(&CaseFile { spec: apply }).unwrap();
+    for side in [Side::Oracle, Side::Rust] {
+        std::fs::write(
+            layout.side(side).join("mods/DryMod/textures/broken.dds"),
+            b"rewritten",
+        )
+        .unwrap();
+    }
+
+    let result = run_case(&layout, &drivers, &DefaultRules, Duration::from_secs(60)).unwrap();
+
+    assert!(result.passed(), "{result:?}");
 }
