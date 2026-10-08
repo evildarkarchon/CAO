@@ -101,7 +101,7 @@ impl ApplicationRun {
     /// # Errors
     /// [`RunSetupError`] when the options are invalid, contradict the
     /// profile's capabilities, ask for work this build cannot do, or the
-    /// profile cannot be read.
+    /// profile's TGA choice cannot be read.
     pub fn new(app_dir: &Path, profile: &str, options: &Options) -> Result<Self, RunSetupError> {
         let request = run_request(app_dir, profile, options)?;
         check_profile_capabilities(app_dir, profile, &request)?;
@@ -210,16 +210,20 @@ pub fn run_request(
 /// contradicting request started and then failed Preparing with a Policy
 /// Conflict. Here it is refused before any run exists.
 ///
+/// A profile that cannot be read is not judged here: the run starts and its
+/// Preparing reports the failure, as it did before this check existed.
+///
 /// # Errors
-/// [`RunSetupError::PolicyConflict`] with every conflict, or
-/// [`RunSetupError::Profile`] when `profile.ini` cannot be read.
+/// [`RunSetupError::PolicyConflict`] with every conflict.
 fn check_profile_capabilities(
     app_dir: &Path,
     profile: &str,
     request: &RunRequest,
 ) -> Result<(), RunSetupError> {
     // Lenient, as the C++ GUI's profile reads were; Preparing reads strictly.
-    let settings = Profiles::new(app_dir).open(profile).load_settings()?;
+    let Ok(settings) = Profiles::new(app_dir).open(profile).load_settings() else {
+        return Ok(());
+    };
     profile_facts(&settings)
         .compile_policy(RoutingPolicyRequest::for_work(
             request.execution_mode(),

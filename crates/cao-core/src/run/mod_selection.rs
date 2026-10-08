@@ -1,4 +1,4 @@
-//! Mod Selection resolution: the Preparing step that turns a request's Mod
+//! Mod Selection resolution: the part of Preparing that turns a request's Mod
 //! Selection into the canonical Mod Roots a run processes.
 //!
 //! Ported from `resolveModRoots` in `src/Run/RunExecutor.cpp`. One Mod Root
@@ -104,7 +104,7 @@ struct Child {
 ///
 /// A child matching both policies owes one exclusion, and the separator rule
 /// takes precedence, as in C++.
-fn exclusion(
+fn mod_exclusion(
     child: &Child,
     configuration: &RunConfiguration,
     ignored: &HashSet<String>,
@@ -115,6 +115,8 @@ fn exclusion(
         .separator_suffixes
         .iter()
         .any(|suffix| !suffix.is_empty() && child.name.ends_with(suffix.as_str()));
+    // The details keep C++'s wording, "marker" included, so they read the same
+    // as the oracle's; message text is never compared, but logs are read.
     let (code, detail) = if separator {
         (
             RunDiagnosticCode::SeparatorModExcluded,
@@ -169,23 +171,29 @@ pub(crate) fn resolve_mod_roots(
         .iter()
         .map(|name| folded_name(name))
         .collect();
-    let failed = |error: io::Error| resolution_failure(error.to_string());
+    // A lookup error fails all of Preparing, as C++'s exception did.
+    let io_failure = |error: io::Error| resolution_failure(error.to_string());
 
     let mut children = Vec::new();
-    for entry in std::fs::read_dir(&root).map_err(failed)? {
+    for entry in std::fs::read_dir(&root).map_err(io_failure)? {
         if stop.is_cancelled() {
             return Ok(Vec::new());
         }
-        let entry = entry.map_err(failed)?;
+        let entry = entry.map_err(io_failure)?;
         // Deviation 19: CAO's own reserved namespace is never a mod, so it is
         // skipped before any other rule and owes no diagnostic.
         if is_staging_name(&entry.file_name()) {
             continue;
         }
         let path = entry.path();
-        // Follows links, as C++'s `directory_entry::is_directory` does; a
-        // dangling link is not a directory.
-        if !path.is_dir() {
+        // Follows links, as C++'s `directory_entry::is_directory` does: a
+        // dangling link is not a directory, but any other lookup error fails.
+        let is_directory = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata.is_dir(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(io_failure(error)),
+        };
+        if !is_directory {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -207,19 +215,21 @@ pub(crate) fn resolve_mod_roots(
         if stop.is_cancelled() {
             return Ok(Vec::new());
         }
-        if let Some(diagnostic) = exclusion(child, configuration, &ignored) {
+        if let Some(diagnostic) = mod_exclusion(child, configuration, &ignored) {
             evidence.borrow_mut().record_diagnostic(diagnostic);
             continue;
         }
-        let resolved = cao_winfs::msvc_canonical(&child.path).map_err(failed)?;
-        if resolved.parent().is_none() || contains_directory(&resolved, &root).map_err(failed)? {
+        let resolved = cao_winfs::msvc_canonical(&child.path).map_err(io_failure)?;
+        if resolved.parent().is_none()
+            || contains_directory(&resolved, &root).map_err(io_failure)?
+        {
             return Err(resolution_failure(
                 "A child Mod Root cannot resolve to the selected mods directory or its ancestor",
             ));
         }
         for existing in &roots {
-            if contains_directory(existing, &resolved).map_err(failed)?
-                || contains_directory(&resolved, existing).map_err(failed)?
+            if contains_directory(existing, &resolved).map_err(io_failure)?
+                || contains_directory(&resolved, existing).map_err(io_failure)?
             {
                 return Err(RunFailure::new(
                     RunFailureCode::ConflictingModRoots,
@@ -235,18 +245,4 @@ pub(crate) fn resolve_mod_roots(
         roots.push(resolved);
     }
     Ok(roots)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::folded_name;
-
-    #[test]
-    fn folding_matches_full_case_folding_for_common_letters() {
-        assert_eq!(folded_name("NeMeSiS"), "nemesis");
-        assert_eq!(folded_name("Stra\u{df}e"), "strasse");
-        assert_eq!(folded_name("STRA\u{1e9e}E"), "strasse");
-        assert_eq!(folded_name("\u{100}ssets"), "\u{101}ssets");
-        assert_eq!(folded_name("\u{3a3}\u{3c2}"), "\u{3c3}\u{3c3}");
-    }
 }

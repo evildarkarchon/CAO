@@ -18,8 +18,8 @@ use cao_core::run::{
     RunPhase, RunRequest, RunSnapshot, RunWorkService,
 };
 use common::{
-    BackendWork, EventLog, FixedConfiguration, GatedScheduler, HandleSlot, reclaim, scratch_dir,
-    serial, sse_profile, write_tree,
+    BackendWork, EventLog, FixedConfiguration, GatedScheduler, HandleSlot, canonical, junction,
+    reclaim, scratch_dir, serial, sse_profile, write_tree,
 };
 
 /// A provider for the SSE-like profile with the given Mod Exclusion lists.
@@ -63,26 +63,6 @@ fn run(
         .start(request, Some(events.dispatcher()))
         .expect("the run starts");
     (handle.wait(), handle, events)
-}
-
-/// The canonical form of a directory, as Preparing resolves it.
-fn canonical(path: &Path) -> PathBuf {
-    cao_winfs::msvc_canonical(path).unwrap()
-}
-
-/// Creates the directory junction `link` pointing at `target`.
-fn junction(link: &Path, target: &Path) {
-    let created = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(link)
-        .arg(target)
-        .output()
-        .expect("cmd runs");
-    assert!(
-        created.status.success(),
-        "mklink /J failed: {}",
-        String::from_utf8_lossy(&created.stderr)
-    );
 }
 
 /// Creates each named child directory of `mods`.

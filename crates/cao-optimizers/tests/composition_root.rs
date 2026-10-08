@@ -419,4 +419,18 @@ fn an_unreadable_profile_fails_preparing_rather_than_the_start() {
         result.failures()[0].code,
         RunFailureCode::ConfigurationLoadingFailed
     );
+
+    // Unreadable before setup too: the capability check leaves it to Preparing.
+    let mut options = Options {
+        user_path: mod_root.to_string_lossy().into_owned(),
+        textures_necessary: false,
+        ..Options::default()
+    };
+    options.dry_run = true;
+    let run = ApplicationRun::new(&app, "MissingProfile", &options).unwrap();
+    let result = run.start(None).unwrap().wait();
+    assert_eq!(
+        result.failures()[0].code,
+        RunFailureCode::ConfigurationLoadingFailed
+    );
 }
