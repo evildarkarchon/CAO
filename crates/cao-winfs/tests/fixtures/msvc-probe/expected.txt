@@ -1,0 +1,63 @@
+# Cases for canonical_probe.cpp. Run `canonical_probe record` to regenerate expected.txt;
+# see README.md. Fields are separated by one tab.
+dir Mixed\Case
+file Mixed\Case\file.txt
+dir Straße
+dir {deep}
+file {deep}\file.txt
+junction link Mixed
+#
+# Drive-letter paths. C:\Windows exists on every supported host, so these results are
+# literal rather than relative to the scratch root.
+canonical	C:\Windows	C:\Windows
+canonical	c:\windows\system32\..\SYSTEM32\.\drivers\	C:\Windows\System32\drivers
+canonical	C:/Windows/System32	C:\Windows\System32
+canonical	\\?\C:\Windows	C:\Windows
+canonical	\\?\c:\windows\	C:\Windows
+canonical	C:\	C:\
+canonical	c:\	C:\
+weakly	C:\Windows\cao-winfs-missing\child\	C:\Windows\cao-winfs-missing\child\
+weakly	c:/windows/./cao-winfs-missing/../System32/	C:\Windows\System32
+weakly	\\?\C:\Windows\cao-winfs-missing	C:\Windows\cao-winfs-missing
+#
+# On-disk case and non-ASCII names.
+canonical	{root}\MIXED\case\FILE.TXT	{root}\Mixed\Case\file.txt
+canonical	{root}\STRAßE	{root}\Straße
+weakly	{root}\straße\missing	{root}\Straße\missing
+#
+# Dot segments and trailing separators.
+canonical	{root}\Mixed\.\Case\..\Case\file.txt	{root}\Mixed\Case\file.txt
+canonical	{root}\Mixed\Case\	{root}\Mixed\Case
+canonical	{root}\Mixed\Case\\	{root}\Mixed\Case
+canonical	{root}/Mixed//Case/./	{root}\Mixed\Case
+canonical	{root}\Mixed\Case\file.txt\	!error 267
+weakly	{root}\Mixed\Case\	{root}\Mixed\Case
+weakly	{root}\Mixed\missing\	{root}\Mixed\missing\
+weakly	{root}\Mixed\missing\.	{root}\Mixed\missing\
+weakly	{root}\Mixed\missing\..	{root}\Mixed
+weakly	{root}\Mixed\missing\..\	{root}\Mixed
+weakly	{root}\Mixed\.\missing\x\..\y\	{root}\Mixed\missing\y\
+weakly	{root}\Mixed\Case\..\..\missing	{root}\missing
+weakly	{root}/Mixed//missing//child	{root}\Mixed\missing\child
+weakly	{root}\Mixed\Case\file.txt\	{root}\Mixed\Case\file.txt\
+weakly	{root}\Mixed\Case\file.txt\child	{root}\Mixed\Case\file.txt\child
+#
+# Missing paths.
+canonical	{root}\missing	!error 2
+canonical	{root}\missing\child	!error 3
+canonical	{root}\Mixed\Case\file.txt\child	!error 3
+#
+# Junctions are followed.
+canonical	{root}\link\Case\file.txt	{root}\Mixed\Case\file.txt
+weakly	{root}\link\Case\missing\	{root}\Mixed\Case\missing\
+#
+# Long paths: every input and result through {deep} is longer than MAX_PATH.
+canonical	{root}\{deep}	{root}\{deep}
+canonical	{root}\{deep}\file.txt	{root}\{deep}\file.txt
+canonical	\\?\{root}\{deep}\file.txt	{root}\{deep}\file.txt
+canonical	{root}\{deep}\..\..\..\..\..\..\{deep}\file.txt	{root}\{deep}\file.txt
+canonical	{root}\{deep}\	{root}\{deep}
+canonical	{root}\{deep}\missing	!error 2
+weakly	{root}\{deep}\missing\child\	{root}\{deep}\missing\child\
+weakly	{root}\{deep}\.\missing\..\file.txt	{root}\{deep}\file.txt
+weakly	{root}\{deep}\missing\..\..\new	{root}\deep0-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\deep1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\deep2-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\deep3-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\deep4-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\new

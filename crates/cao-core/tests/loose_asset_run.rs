@@ -44,7 +44,7 @@ fn run(
 
 /// The canonical form of a scenario's Mod Root, as Preparing resolves it.
 fn canonical(root: &Path) -> PathBuf {
-    dunce::canonicalize(root).unwrap()
+    cao_winfs::msvc_canonical(root).unwrap()
 }
 
 /// The file names of the completed attempts, in execution order.

@@ -11,10 +11,10 @@ publish.workspace = true
 workspace = true
 
 # No C++ toolchain is needed to build or test this crate (#476, user story 76).
-# `dunce` stands in for the MSVC-canonical path helper until `cao-winfs` has it
-# (#484); Preparing then switches to that helper so C++-written staging recovers.
+# Mod Roots resolve through `cao-winfs`'s MSVC-canonical helper, so the text
+# matches what C++ wrote into `CAO-STAGING` manifests.
 [dependencies]
-dunce.workspace = true
+cao-winfs = { path = "../cao-winfs" }
 getrandom.workspace = true
 log.workspace = true
 thiserror.workspace = true
