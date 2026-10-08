@@ -1,6 +1,20 @@
 //! Archive reading and writing for Cathedral Assets Optimizer.
 //!
-//! This crate will hold the bethutil port over `ba2` (#488): per-game tables,
-//! Dummy Plugins, file-type classification, and splitting and merging archive data.
-//! It is a leaf crate with no workspace dependencies. For now it only declares
-//! `ba2`, so the workspace resolves `ba2`'s `directxtex` against CAO's fork.
+//! This is the bethutil port over `ba2` (#488): per-game tables, Dummy Plugins,
+//! file-type classification, splitting and merging archive data, output naming,
+//! and writing and reading Archives. It is a leaf crate with no workspace
+//! dependencies; `cao-optimizers` adapts it to core's archive-reader trait.
+
+mod data;
+mod error;
+mod name;
+mod read;
+mod settings;
+mod write;
+
+pub use data::{ArchiveData, ArchiveType, MergeSettings, PackSource, SplitArchives};
+pub use error::ArchiveError;
+pub use name::{FilePath, NameKind, list_archives, list_plugins};
+pub use read::{ArchivedAsset, ReadArchive};
+pub use settings::{AllowedPath, ArchiveVersion, FileType, Game, Settings, file_type};
+pub use write::write_archive;

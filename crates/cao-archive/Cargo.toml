@@ -10,7 +10,20 @@ publish.workspace = true
 [lints]
 workspace = true
 
+# A leaf: no workspace members (#476). `cao-optimizers` adapts this crate to
+# core's archive-reader trait.
 [dependencies]
 # `ba2` depends on `directxtex` itself; the root `[patch.crates-io]` makes it link
 # the same fork as `cao-optimizers` (#479).
 ba2.workspace = true
+# Parallel read and compress of an Archive's files, as bethutil's
+# `std::execution::par` did (#461). The only place the port uses `rayon`.
+rayon.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Builds the DDS fixtures for the DX10 round trips.
+directxtex.workspace = true
+
+[build-dependencies]
+embed-resource.workspace = true
