@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::HarnessError;
-use crate::case::HARNESS_OWNED;
+use crate::case::{is_harness_owned, list_dir, read_file};
 use crate::compare::Verdict;
 use crate::normalise::staging_placeholders;
 
@@ -51,15 +51,13 @@ pub trait ArtifactRule {
 pub trait TreeRules {
     /// The leftovers hook: `.caobad` and `.bak` files, staging residue,
     /// `ownership.manifest` and `owner.lock`. Consulted first.
-    fn leftover_rule(&self, path: &str) -> Option<&dyn ArtifactRule> {
-        let _ = path;
+    fn leftover_rule(&self, _path: &str) -> Option<&dyn ArtifactRule> {
         None
     }
 
     /// The per-Asset-Kind hook: Textures, Meshes, Animations, Archives and
     /// Loading Plugins.
-    fn asset_rule(&self, path: &str) -> Option<&dyn ArtifactRule> {
-        let _ = path;
+    fn asset_rule(&self, _path: &str) -> Option<&dyn ArtifactRule> {
         None
     }
 }
@@ -134,7 +132,10 @@ const SAME_PATHS: &str = "Same Relative Paths";
 const SAME_KIND: &str = "Same Entry Kind";
 const BYTE_EQUALITY: &str = "Byte Equality";
 
-/// What a tree entry is. Links (symlinks and junctions) are never followed.
+/// What a tree entry is. Links (symlinks and junctions) are never followed,
+/// and for now only their presence and kind are compared; their targets point
+/// into each side's own tree, so comparing them needs the per-side
+/// filesystem-shape operations the corpus generator adds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EntryKind {
     File,
@@ -185,28 +186,37 @@ pub fn compare_trees(
             ("Rust", &rust_side[paired..]),
         ] {
             for _ in extra {
-                artifacts.push(different(
-                    &path,
-                    SAME_PATHS,
-                    format!("present only on the {side} side"),
-                ));
+                artifacts.push(ArtifactComparison {
+                    path: path.clone(),
+                    verdict: different(
+                        &path,
+                        SAME_PATHS,
+                        format!("present only on the {side} side"),
+                    ),
+                });
             }
         }
     }
     Ok(TreeComparison { artifacts })
 }
 
-fn different(path: &str, rule: &'static str, detail: String) -> ArtifactComparison {
-    ArtifactComparison {
+/// A Different verdict for the artifact at `path`.
+fn different(path: &str, rule: &'static str, detail: String) -> ArtifactVerdict {
+    ArtifactVerdict::Different(ArtifactDifference {
         path: path.to_owned(),
-        verdict: ArtifactVerdict::Different(ArtifactDifference {
-            path: path.to_owned(),
-            rule,
-            detail,
-        }),
-    }
+        rule,
+        detail,
+    })
 }
 
+/// Compares one entry present on both sides at the normalised `path`.
+///
+/// Entries of different kinds differ. Directories and links of one kind are
+/// Identical, since their children are compared as artifacts of their own.
+/// Files with equal bytes are Identical without consulting any rule; only a
+/// byte difference reaches the leftovers hook, then the per-Asset-Kind hook,
+/// then the byte-equality default. Errors only when a file cannot be read or a
+/// rule fails to run.
 fn compare_entry(
     path: &str,
     oracle: &Entry,
@@ -214,25 +224,16 @@ fn compare_entry(
     rules: &dyn TreeRules,
 ) -> Result<ArtifactVerdict, HarnessError> {
     if oracle.kind != rust.kind {
-        return Ok(different(
-            path,
-            SAME_KIND,
-            format!(
-                "{:?} on the oracle side, {:?} on the Rust side",
-                oracle.kind, rust.kind
-            ),
-        )
-        .verdict);
+        let detail = format!(
+            "{:?} on the oracle side, {:?} on the Rust side",
+            oracle.kind, rust.kind
+        );
+        return Ok(different(path, SAME_KIND, detail));
     }
     if oracle.kind != EntryKind::File {
         return Ok(ArtifactVerdict::Identical);
     }
-    let read = |entry: &Entry| {
-        std::fs::read(&entry.absolute).map_err(|error| {
-            HarnessError::io(format!("reading {}", entry.absolute.display()), error)
-        })
-    };
-    let (oracle_bytes, rust_bytes) = (read(oracle)?, read(rust)?);
+    let (oracle_bytes, rust_bytes) = (read_file(&oracle.absolute)?, read_file(&rust.absolute)?);
     if oracle_bytes == rust_bytes {
         return Ok(ArtifactVerdict::Identical);
     }
@@ -241,12 +242,11 @@ fn compare_entry(
             path,
             BYTE_EQUALITY,
             byte_difference(&oracle_bytes, &rust_bytes),
-        )
-        .verdict);
+        ));
     };
     Ok(match rule.compare(&oracle.absolute, &rust.absolute)? {
         RuleOutcome::Equivalent => ArtifactVerdict::Equivalent { rule: rule.name() },
-        RuleOutcome::Different(detail) => different(path, rule.name(), detail).verdict,
+        RuleOutcome::Different(detail) => different(path, rule.name(), detail),
     })
 }
 
@@ -285,21 +285,21 @@ fn entries(side: &TreeSide<'_>) -> Result<BTreeMap<String, Vec<Entry>>, HarnessE
     Ok(entries)
 }
 
+/// Collects every entry beneath `directory` into `found`, depth first, with
+/// `/`-joined paths relative to the side's root (`relative` is `directory`'s
+/// own, empty at the root). Names must be UTF-8, as the corpus's game paths
+/// are ASCII; anything else is an invalid case.
 fn walk(
     directory: &Path,
     relative: &str,
     found: &mut Vec<(String, Entry)>,
 ) -> Result<(), HarnessError> {
-    let listing = std::fs::read_dir(directory)
-        .map_err(|error| HarnessError::io(format!("listing {}", directory.display()), error))?;
-    for item in listing {
-        let item = item
-            .map_err(|error| HarnessError::io(format!("listing {}", directory.display()), error))?;
+    for item in list_dir(directory)? {
         let name = item.file_name();
         let name = name.to_str().ok_or_else(|| {
             HarnessError::InvalidCase(format!("{} holds a non-UTF-8 name", directory.display()))
         })?;
-        if relative.is_empty() && HARNESS_OWNED.contains(&name) {
+        if relative.is_empty() && is_harness_owned(name) {
             continue;
         }
         let child = if relative.is_empty() {

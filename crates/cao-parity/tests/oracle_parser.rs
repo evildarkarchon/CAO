@@ -5,20 +5,12 @@
 //! (CRLF included), from runs over small generated mod trees. Their absolute
 //! paths are the capture machine's; the parser keeps them verbatim.
 
+mod common;
+
 use cao_parity::HarnessError;
 use cao_parity::facts::*;
 use cao_parity::oracle;
-
-/// The capture directory every transcript's paths start with.
-const CAPTURE: &str = "C:/Users/evild/AppData/Local/Temp/cao480/work";
-
-fn transcript(name: &str) -> Vec<u8> {
-    let path = format!(
-        "{}/tests/transcripts/{name}.stdout",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    std::fs::read(&path).unwrap_or_else(|error| panic!("{path}: {error}"))
-}
+use common::{CAPTURE, transcript};
 
 fn path(case: &str, rest: &str) -> String {
     format!("{CAPTURE}/{case}/{rest}")
@@ -71,7 +63,7 @@ fn with(records: &[&str], extra: &[&str]) -> Vec<u8> {
 
 #[test]
 fn dry_run_transcript_parses_into_its_events_and_terminal_details() {
-    let run = started(oracle::parse(&transcript("dry_run_textures"), 1).unwrap());
+    let run = started(oracle::parse(transcript("dry_run_textures").as_bytes(), 1).unwrap());
     let case = "dry_run_textures";
 
     assert_eq!(run.run_id, "4164818643-1268160434-0");
@@ -129,7 +121,7 @@ fn dry_run_transcript_parses_into_its_events_and_terminal_details() {
 
 #[test]
 fn several_mods_transcript_keeps_diagnostics_and_committed_mutations() {
-    let run = started(oracle::parse(&transcript("several_mods_apply"), 1).unwrap());
+    let run = started(oracle::parse(transcript("several_mods_apply").as_bytes(), 1).unwrap());
     let case = "several_mods_apply";
 
     let diagnostics: Vec<_> = run
@@ -183,7 +175,7 @@ fn several_mods_transcript_keeps_diagnostics_and_committed_mutations() {
 
 #[test]
 fn failed_run_transcripts_map_their_failure_codes() {
-    let run = started(oracle::parse(&transcript("unreadable_archive"), 2).unwrap());
+    let run = started(oracle::parse(transcript("unreadable_archive").as_bytes(), 2).unwrap());
     let archive = path("unreadable_archive", "mods/ArcMod/ArcMod.bsa");
     assert_eq!(
         run.events[2].payload,
@@ -204,7 +196,7 @@ fn failed_run_transcripts_map_their_failure_codes() {
         }]
     );
 
-    let run = started(oracle::parse(&transcript("fo4_mesh_conflict"), 2).unwrap());
+    let run = started(oracle::parse(transcript("fo4_mesh_conflict").as_bytes(), 2).unwrap());
     assert_eq!(
         run.events[1].payload,
         RunEventPayload::Failure {
@@ -219,7 +211,7 @@ fn failed_run_transcripts_map_their_failure_codes() {
 
 #[test]
 fn skip_records_map_through_their_tables() {
-    let run = started(oracle::parse(&transcript("no_requested_work"), 0).unwrap());
+    let run = started(oracle::parse(transcript("no_requested_work").as_bytes(), 0).unwrap());
     let skipped: Vec<_> = run
         .events
         .iter()
@@ -245,7 +237,7 @@ fn skip_records_map_through_their_tables() {
     );
 
     // Meshes were present but not requested: Skip Reason 1.
-    let run = started(oracle::parse(&transcript("apply_archive_creation"), 0).unwrap());
+    let run = started(oracle::parse(transcript("apply_archive_creation").as_bytes(), 0).unwrap());
     assert_eq!(
         run.terminal.skipped_assets,
         vec![SkippedAssets {
@@ -258,7 +250,7 @@ fn skip_records_map_through_their_tables() {
 
 #[test]
 fn an_exit_code_that_contradicts_the_outcome_is_a_harness_error() {
-    let error = oracle::parse(&transcript("dry_run_textures"), 0).unwrap_err();
+    let error = oracle::parse(transcript("dry_run_textures").as_bytes(), 0).unwrap_err();
     assert!(
         matches!(
             error,
@@ -300,7 +292,7 @@ fn an_unknown_enum_name_or_code_is_a_harness_error_not_a_verdict() {
                 "Cancellation Observed|no",
                 "Committed Mutations Retained|C:/m|Unknown Mutation|1|partial-or-unknown=0",
             ],
-            "mutation kind",
+            "Mutation Kind",
         ),
         (
             &[
@@ -312,7 +304,7 @@ fn an_unknown_enum_name_or_code_is_a_harness_error_not_a_verdict() {
         ),
         (
             &["EVENT:|7-7-0|1|Failure|Preparing|19|detail|"],
-            "RunFailureCode",
+            "Run Failure Code",
         ),
         (
             &[
@@ -320,7 +312,7 @@ fn an_unknown_enum_name_or_code_is_a_harness_error_not_a_verdict() {
                 "Cancellation Observed|no",
                 "Skipped Assets|3|1",
             ],
-            "SkipReason",
+            "Skip Reason",
         ),
     ];
     for (records, table) in cases {
@@ -337,7 +329,7 @@ fn an_unknown_enum_name_or_code_is_a_harness_error_not_a_verdict() {
     assert!(matches!(
         error,
         HarnessError::UnknownCode {
-            table: "StartError",
+            table: "Start Error",
             code: 3,
             ..
         }
@@ -412,10 +404,10 @@ fn cancellation_and_collisions_parse_from_terminal_details() {
                 "EVENT:|a-b|1|Preparing|Indeterminate",
                 "EVENT:|a-b|2|Outcome|Cancelled|Final Phase|Processing Assets",
                 "Cancellation Observed|yes",
-                "Archive Collision|C:/m|textures/a.dds|winner=C:/m/b.bsa|loose-asset-wins=no|shadowed=C:/m/a.bsa|shadowed=C:/m/c.bsa",
                 "Cleanup Failure|denied|C:/m/.cao-staging/run-a-b-0123/x",
                 "Finalization Failure|plan failed",
                 "Archive Failure|C:/m/m.bsa|write failed",
+                "Archive Collision|C:/m|textures/a.dds|winner=C:/m/b.bsa|loose-asset-wins=no|shadowed=C:/m/a.bsa|shadowed=C:/m/c.bsa",
             ]),
             130,
         )
@@ -484,4 +476,49 @@ fn malformed_streams_are_harness_errors() {
             "{what}: {error}"
         );
     }
+}
+
+#[test]
+fn terminal_details_must_keep_their_rendering_order() {
+    // C++ prints Cancellation Observed first, then each category in a fixed order.
+    let out_of_order: [&[&str]; 3] = [
+        &["Mod Root|C:/m", "Cancellation Observed|no"],
+        &[
+            "Cancellation Observed|no",
+            "Skipped Assets|1|2",
+            "Mod Root|C:/m",
+        ],
+        &[
+            "Cancellation Observed|no",
+            "Asset Failure|C:/m/a|op|msg|C:/m/a|",
+            "Run Failure|d|",
+        ],
+    ];
+    for details in out_of_order {
+        let mut records = vec!["EVENT:|7-7-0|1|Outcome|Succeeded|Final Phase|Preparing"];
+        records.extend_from_slice(details);
+        let error = oracle::parse(&synthetic(&records), 0).unwrap_err();
+        assert!(
+            matches!(error, HarnessError::Transcript { .. }),
+            "{details:?}: {error}"
+        );
+    }
+
+    // Extraction failures, the Finalization Failure and finalization's own
+    // Archive Failures interleave as C++ prints them.
+    let in_order = with(
+        &SUCCEEDED,
+        &[
+            "Archive Failure|C:/m/a.bsa|extract",
+            "Finalization Failure|plan",
+            "Archive Failure|C:/m/b.bsa|write",
+        ],
+    );
+    assert_eq!(
+        started(oracle::parse(&in_order, 0).unwrap())
+            .terminal
+            .archive_failures
+            .len(),
+        2
+    );
 }

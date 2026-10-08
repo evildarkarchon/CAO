@@ -270,11 +270,13 @@ struct CaseRoot {
 }
 
 impl CaseRoot {
+    /// Spells `root` generically, without trailing separators. A non-UTF-8
+    /// root is an invalid case, since every reported path is UTF-8.
     fn new(root: &Path) -> Result<Self, HarnessError> {
         let text = root
             .to_str()
             .ok_or_else(|| HarnessError::InvalidCase(format!("case root {root:?} is not UTF-8")))?;
-        let mut generic = generic(text);
+        let mut generic = generic_spelling(text);
         while generic.ends_with('/') {
             generic.pop();
         }
@@ -291,7 +293,7 @@ impl CaseRoot {
         if path.is_empty() {
             return Ok(String::new());
         }
-        let path = generic(path);
+        let path = generic_spelling(path);
         let length = self.generic.len();
         let prefix_matches = path.is_char_boundary(length)
             && path.as_bytes()[..length].eq_ignore_ascii_case(self.generic.as_bytes());
@@ -311,7 +313,7 @@ impl CaseRoot {
 }
 
 /// `/`-separated, without a `\\?\` verbatim prefix.
-fn generic(path: &str) -> String {
+fn generic_spelling(path: &str) -> String {
     let path = path.replace('\\', "/");
     if let Some(unc) = path.strip_prefix("//?/UNC/") {
         format!("//{unc}")
@@ -342,6 +344,10 @@ const RUN_ID_PLACEHOLDER: &str = "{run-id}";
 const NONCE_PLACEHOLDER: &str = "{nonce}";
 const NONCE_LENGTH: usize = 32;
 
+/// Applies [`staging_placeholders`] to one path component. The Run ID is only
+/// replaced where it sits between dashes (`-<Run ID>-`), so a Run ID that is a
+/// substring of a longer token is left alone, and a nonce only directly after
+/// the replaced Run ID or `archive-entry-`.
 fn staging_component(component: &str, run_id: &str) -> String {
     if let Some(nonce) = component.strip_prefix("archive-entry-")
         && is_nonce(nonce)

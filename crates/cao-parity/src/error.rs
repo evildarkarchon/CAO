@@ -6,6 +6,8 @@
 
 use std::path::PathBuf;
 
+use crate::case::Side;
+
 /// Why the harness could not produce a verdict for a case.
 #[derive(Debug, thiserror::Error)]
 pub enum HarnessError {
@@ -46,9 +48,9 @@ pub enum HarnessError {
     #[error("invalid case: {0}")]
     InvalidCase(String),
 
-    /// A side ran past the per-case timeout and was killed.
-    #[error("the {side} side did not finish within {seconds} s")]
-    Timeout { side: &'static str, seconds: u64 },
+    /// A side was still running when the case's timeout ran out, and was killed.
+    #[error("the {side} side did not finish within the case's {seconds} s timeout")]
+    Timeout { side: Side, seconds: u64 },
 
     /// The Rust driver exited without producing facts.
     #[error("the Rust driver exited with code {code}")]

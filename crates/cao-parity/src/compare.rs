@@ -10,8 +10,9 @@
 //!   Retained, cleanup failures and Run Diagnostics.
 //!
 //! Message text is never compared. Each multiset item is reduced to a key that
-//! leaves it out, and the keys are what the diff shows. A Finalization Failure
-//! is compared for presence only, for the same reason.
+//! leaves it out, and the keys are what the diff shows. A phase-level
+//! Finalization Failure is not a rule of its own: its effect shows in the Run
+//! Outcome, and it only separates Identical from Equivalent.
 
 use std::fmt;
 
@@ -36,6 +37,15 @@ impl<D> Verdict<D> {
     pub fn passed(&self) -> bool {
         !matches!(self, Verdict::Different(_))
     }
+
+    /// The verdict's name, as reports and summaries print it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Verdict::Identical => "Identical",
+            Verdict::Equivalent => "Equivalent",
+            Verdict::Different(_) => "Different",
+        }
+    }
 }
 
 /// A run-fact comparison rule, named in every difference it reports.
@@ -52,7 +62,6 @@ pub enum FactRule {
     RunFailures,
     AssetFailures,
     ArchiveFailures,
-    FinalizationFailure,
     ArchiveCollisions,
     SkipReasonCounts,
     CommittedMutationsRetained,
@@ -73,7 +82,6 @@ impl fmt::Display for FactRule {
             FactRule::RunFailures => "Run Failures",
             FactRule::AssetFailures => "Asset Failures",
             FactRule::ArchiveFailures => "Archive Failures",
-            FactRule::FinalizationFailure => "Finalization Failure",
             FactRule::ArchiveCollisions => "Archive Collisions",
             FactRule::SkipReasonCounts => "Skip Reason Counts",
             FactRule::CommittedMutationsRetained => "Committed Mutations Retained",
@@ -145,23 +153,33 @@ pub fn compare_facts(oracle: &NormalisedFacts, rust: &NormalisedFacts) -> Verdic
 /// Applies every rule to two started runs, in the documented order.
 fn compare_runs(oracle: &NormalisedRun, rust: &NormalisedRun) -> Vec<FactDifference> {
     let mut differences = Vec::new();
-    let mut ordered = |rule, oracle: Vec<String>, rust: Vec<String>| {
-        if oracle != rust {
-            differences.push(FactDifference { rule, oracle, rust });
+    // Each rule reduces both runs to keys with `key`; an ordered rule compares
+    // the key lists as they are, a multiset rule ignores their order.
+    let mut ordered = |rule, key: &dyn Fn(&NormalisedRun) -> Vec<String>| {
+        let (oracle_keys, rust_keys) = (key(oracle), key(rust));
+        if oracle_keys != rust_keys {
+            differences.push(FactDifference {
+                rule,
+                oracle: oracle_keys,
+                rust: rust_keys,
+            });
         }
     };
-    let both = |key: &dyn Fn(&NormalisedRun) -> Vec<String>| (key(oracle), key(rust));
-
-    let (a, b) = both(&|run| vec![format!("{:?}", run.outcome)]);
-    ordered(FactRule::RunOutcome, a, b);
-    let (a, b) = both(&|run| vec![format!("{:?}", run.final_phase)]);
-    ordered(FactRule::FinalRunPhase, a, b);
-    let (a, b) = both(&|run| vec![yes_no(run.cancellation_observed).into()]);
-    ordered(FactRule::CancellationObserved, a, b);
-    let (a, b) = both(&|run| run.phases.iter().map(phase_key).collect());
-    ordered(FactRule::PhaseSequence, a, b);
-    let (a, b) = both(&|run| run.phases.iter().map(progress_key).collect());
-    ordered(FactRule::FinalProgress, a, b);
+    ordered(FactRule::RunOutcome, &|run| {
+        vec![format!("{:?}", run.outcome)]
+    });
+    ordered(FactRule::FinalRunPhase, &|run| {
+        vec![format!("{:?}", run.final_phase)]
+    });
+    ordered(FactRule::CancellationObserved, &|run| {
+        vec![yes_no(run.cancellation_observed).into()]
+    });
+    ordered(FactRule::PhaseSequence, &|run| {
+        run.phases.iter().map(phase_key).collect()
+    });
+    ordered(FactRule::FinalProgress, &|run| {
+        run.phases.iter().map(progress_key).collect()
+    });
 
     let mut multiset = |rule, key: &dyn Fn(&NormalisedRun) -> Vec<String>| {
         let (only_oracle, only_rust) = multiset_difference(key(oracle), key(rust));
@@ -192,12 +210,6 @@ fn compare_runs(oracle: &NormalisedRun, rust: &NormalisedRun) -> Vec<FactDiffere
     multiset(FactRule::ArchiveFailures, &|run| {
         let key = |f: &crate::facts::ArchiveFailure| format!("archive={}", f.archive_path);
         run.archive_failures.iter().map(key).collect()
-    });
-    multiset(FactRule::FinalizationFailure, &|run| {
-        run.finalization_failure
-            .iter()
-            .map(|_| "present".to_owned())
-            .collect()
     });
     multiset(FactRule::ArchiveCollisions, &|run| {
         let key = |c: &crate::facts::ArchiveCollision| {

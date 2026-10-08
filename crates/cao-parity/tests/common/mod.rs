@@ -4,6 +4,20 @@
 
 use std::path::{Path, PathBuf};
 
+/// The directory the transcripts under `tests/transcripts/` were captured in.
+/// Each scenario ran with `CAPTURE/<scenario>` as the oracle's working
+/// directory, so every absolute path in a transcript starts with it.
+pub const CAPTURE: &str = "C:/Users/evild/AppData/Local/Temp/cao480/work";
+
+/// Reads a captured oracle transcript: its stdout, byte for byte, CRLF included.
+pub fn transcript(name: &str) -> String {
+    let path = format!(
+        "{}/tests/transcripts/{name}.stdout",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{path}: {error}"))
+}
+
 /// A fresh directory under the system temp dir, removed on drop.
 pub struct TempDir(PathBuf);
 

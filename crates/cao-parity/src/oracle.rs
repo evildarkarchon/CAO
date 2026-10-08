@@ -7,8 +7,9 @@
 //! and each text field is unescaped afterwards.
 //!
 //! The parser is strict. Anything outside the grammar, including a name or
-//! code the [`tables`] do not know, is a [`HarnessError`]: the harness must
-//! never turn a transcript it does not understand into a verdict.
+//! code the [`tables`] do not know or terminal details out of their rendering
+//! order, is a [`HarnessError`]: the harness must never turn a transcript it
+//! does not understand into a verdict.
 
 pub mod tables;
 
@@ -42,12 +43,7 @@ pub fn parse(stdout: &[u8], exit_code: i32) -> Result<RunFacts, HarnessError> {
         if let Some(&(line, _)) = lines.get(1) {
             return Err(transcript(line, "a Start Error must be the only record"));
         }
-        let code = number(code, first_line)?;
-        let error = tables::start_error(code as i64).ok_or(HarnessError::UnknownCode {
-            line: first_line,
-            table: "StartError",
-            code: code as i64,
-        })?;
+        let error = known_code(first_line, "Start Error", code, tables::start_error)?;
         check_exit_code(2, exit_code)?;
         return Ok(RunFacts::StartError(error));
     }
@@ -72,6 +68,8 @@ fn exit_code_for(outcome: RunOutcome) -> i32 {
     }
 }
 
+/// Fails with [`HarnessError::ExitCodeMismatch`] unless the oracle exited
+/// with the code its reported result requires.
 fn check_exit_code(expected: i32, actual: i32) -> Result<(), HarnessError> {
     if expected == actual {
         Ok(())
@@ -138,7 +136,8 @@ enum Stage {
 struct Parser {
     stage: Stage,
     run_id: Option<String>,
-    next_sequence: u64,
+    /// The sequence number of the last event read; 0 before the first.
+    last_sequence: u64,
     events: Vec<RunEventFact>,
     terminal: Option<TerminalBuilder>,
 }
@@ -146,10 +145,14 @@ struct Parser {
 /// The terminal event's facts while its detail records are still arriving.
 struct TerminalBuilder {
     cancellation_observed: Option<bool>,
+    /// The [`detail_rank`] of the last detail record read.
+    last_rank: u8,
     facts: TerminalFacts,
 }
 
 impl Parser {
+    /// Reads one record: an `EVENT:` record, or a detail record of the
+    /// terminal event, which may only directly follow that event.
     fn record(&mut self, line: usize, record: &str) -> Result<(), HarnessError> {
         let fields: Vec<&str> = record.split('|').collect();
         if fields[0] == "EVENT:" {
@@ -168,6 +171,10 @@ impl Parser {
         terminal.detail(line, &fields)
     }
 
+    /// Reads one `EVENT:` record, after checking its Run ID and sequence.
+    ///
+    /// Only a Diagnostic may follow the terminal event; it ends the terminal
+    /// details, since C++ prints them in the same write as the terminal event.
     fn event(&mut self, line: usize, fields: &[&str]) -> Result<(), HarnessError> {
         if fields.len() < 4 {
             return Err(transcript(
@@ -193,14 +200,9 @@ impl Parser {
             }
             "Failure" => {
                 expect_fields(line, body, 5, "a Failure event")?;
-                let code = number(body[2], line)? as i64;
                 RunEventPayload::Failure {
                     phase: phase(line, body[1])?,
-                    code: tables::run_failure_code(code).ok_or(HarnessError::UnknownCode {
-                        line,
-                        table: "RunFailureCode",
-                        code,
-                    })?,
+                    code: known_code(line, "Run Failure Code", body[2], tables::run_failure_code)?,
                     detail: unescape(line, body[3])?,
                     path: unescape(line, body[4])?,
                 }
@@ -211,7 +213,6 @@ impl Parser {
 
         match (&self.stage, &payload) {
             (Stage::Events, _) => {}
-            // Only presentation diagnostics can be published after terminal commit.
             (_, RunEventPayload::Diagnostic { .. }) => self.stage = Stage::LateEvents,
             _ => {
                 return Err(transcript(
@@ -220,8 +221,10 @@ impl Parser {
                 ));
             }
         }
-        let sequence = self.next_sequence;
-        self.events.push(RunEventFact { sequence, payload });
+        self.events.push(RunEventFact {
+            sequence: self.last_sequence,
+            payload,
+        });
         Ok(())
     }
 
@@ -250,18 +253,20 @@ impl Parser {
                 ));
             }
         }
-        let sequence = number(sequence, line)?;
-        let expected = self.next_sequence + 1;
+        let sequence = number(line, sequence)?;
+        let expected = self.last_sequence + 1;
         if sequence != expected {
             return Err(transcript(
                 line,
                 format!("sequence {sequence} where {expected} was expected"),
             ));
         }
-        self.next_sequence = sequence;
+        self.last_sequence = sequence;
         Ok(())
     }
 
+    /// Reads the terminal event, `Outcome|<outcome>|Final Phase|<phase>`, and
+    /// starts collecting its detail records.
     fn outcome(&mut self, line: usize, body: &[&str]) -> Result<(), HarnessError> {
         if self.stage != Stage::Events {
             return Err(transcript(line, "a second terminal event"));
@@ -270,15 +275,11 @@ impl Parser {
         if body[2] != "Final Phase" {
             return Err(transcript(line, "the terminal event lacks `Final Phase`"));
         }
-        let outcome = tables::run_outcome(body[1]).ok_or_else(|| HarnessError::UnknownName {
-            line,
-            table: "Run Outcome",
-            name: body[1].to_owned(),
-        })?;
         self.terminal = Some(TerminalBuilder {
             cancellation_observed: None,
+            last_rank: 0,
             facts: TerminalFacts {
-                outcome,
+                outcome: known_name(line, "Run Outcome", body[1], tables::run_outcome)?,
                 final_phase: phase(line, body[3])?,
                 // Set from the `Cancellation Observed` record in `finish`.
                 cancellation_observed: false,
@@ -297,6 +298,8 @@ impl Parser {
         Ok(())
     }
 
+    /// Completes the run once stdout is exhausted. Fails if the stream had no
+    /// terminal event or its details lacked `Cancellation Observed`.
     fn finish(self, last_line: usize) -> Result<StartedRun, HarnessError> {
         let Some(terminal) = self.terminal else {
             return Err(transcript(
@@ -321,9 +324,39 @@ impl Parser {
     }
 }
 
+/// The position of each terminal detail label in `renderDetails`'s output.
+///
+/// Records must arrive in non-decreasing rank. Archive Failures share a rank
+/// with the Finalization Failure because C++ prints extraction failures, then
+/// the Finalization Failure, then finalization's own Archive Failures.
+fn detail_rank(label: &str) -> Option<u8> {
+    Some(match label {
+        "Cancellation Observed" => 0,
+        "Mod Root" => 1,
+        "Run Failure" => 2,
+        "Cleanup Failure" => 3,
+        "Asset Failure" => 4,
+        "Archive Failure" | "Finalization Failure" => 5,
+        "Committed Mutations Retained" => 6,
+        "Archive Collision" => 7,
+        "Skipped Assets" => 8,
+        _ => return None,
+    })
+}
+
 impl TerminalBuilder {
-    /// Parses one terminal detail record into the matching fact list.
+    /// Parses one terminal detail record into the matching fact list,
+    /// rejecting a record that arrives out of rendering order.
     fn detail(&mut self, line: usize, fields: &[&str]) -> Result<(), HarnessError> {
+        let rank = known_name(line, "terminal detail", fields[0], detail_rank)?;
+        if rank < self.last_rank {
+            return Err(transcript(
+                line,
+                format!("`{}` arrives out of the rendering order", fields[0]),
+            ));
+        }
+        self.last_rank = rank;
+
         let facts = &mut self.facts;
         match fields[0] {
             "Cancellation Observed" => {
@@ -373,17 +406,11 @@ impl TerminalBuilder {
                 expect_fields(line, fields, 5, "Committed Mutations Retained")?;
                 facts.committed_mutations.push(CommittedMutations {
                     mod_root: unescape(line, fields[1])?,
-                    kind: tables::mutation_kind(fields[2]).ok_or_else(|| {
-                        HarnessError::UnknownName {
-                            line,
-                            table: "mutation kind",
-                            name: fields[2].to_owned(),
-                        }
-                    })?,
-                    committed: number(fields[3], line)?,
+                    kind: known_name(line, "Mutation Kind", fields[2], tables::mutation_kind)?,
+                    committed: number(line, fields[3])?,
                     partial_or_unknown: number(
-                        prefixed(line, fields[4], "partial-or-unknown=")?,
                         line,
+                        prefixed(line, fields[4], "partial-or-unknown=")?,
                     )?,
                 });
             }
@@ -411,12 +438,7 @@ impl TerminalBuilder {
             }
             "Skipped Assets" => {
                 expect_fields(line, fields, 3, "Skipped Assets")?;
-                let code = number(fields[1], line)? as i64;
-                let reason = tables::skip_reason(code).ok_or(HarnessError::UnknownCode {
-                    line,
-                    table: "SkipReason",
-                    code,
-                })?;
+                let reason = known_code(line, "Skip Reason", fields[1], tables::skip_reason)?;
                 if facts
                     .skipped_assets
                     .iter()
@@ -425,19 +447,13 @@ impl TerminalBuilder {
                     return Err(transcript(line, "a second count for one Skip Reason"));
                 }
                 // The oracle prints only non-zero counts.
-                let count = number(fields[2], line)?;
+                let count = number(line, fields[2])?;
                 if count == 0 {
                     return Err(transcript(line, "a zero Skipped Assets count"));
                 }
                 facts.skipped_assets.push(SkippedAssets { reason, count });
             }
-            label => {
-                return Err(HarnessError::UnknownName {
-                    line,
-                    table: "terminal detail",
-                    name: label.to_owned(),
-                });
-            }
+            _ => unreachable!("detail_rank accepted only the labels matched above"),
         }
         Ok(())
     }
@@ -449,10 +465,10 @@ fn progress_event(line: usize, body: &[&str]) -> Result<RunEventPayload, Harness
     Ok(RunEventPayload::Phase {
         phase: phase(line, body[1])?,
         status: PhaseStatus::Progress(Progress {
-            completed: number(body[2], line)?,
-            total: number(body[3], line)?,
-            succeeded: number(prefixed(line, body[4], "succeeded=")?, line)?,
-            failed: number(prefixed(line, body[5], "failed=")?, line)?,
+            completed: number(line, body[2])?,
+            total: number(line, body[3])?,
+            succeeded: number(line, prefixed(line, body[4], "succeeded=")?)?,
+            failed: number(line, prefixed(line, body[5], "failed=")?)?,
         }),
     })
 }
@@ -462,15 +478,12 @@ fn phase_event(line: usize, body: &[&str]) -> Result<RunEventPayload, HarnessErr
     let phase = phase(line, body[0])?;
     let status = match body.get(1..) {
         Some(["Indeterminate"]) => PhaseStatus::Indeterminate,
-        Some(["Skipped", reason]) => {
-            PhaseStatus::Skipped(tables::phase_skip_reason(reason).ok_or_else(|| {
-                HarnessError::UnknownName {
-                    line,
-                    table: "Phase Skip Reason",
-                    name: (*reason).to_owned(),
-                }
-            })?)
-        }
+        Some(["Skipped", reason]) => PhaseStatus::Skipped(known_name(
+            line,
+            "Phase Skip Reason",
+            reason,
+            tables::phase_skip_reason,
+        )?),
         _ => {
             return Err(transcript(
                 line,
@@ -482,11 +495,35 @@ fn phase_event(line: usize, body: &[&str]) -> Result<RunEventPayload, HarnessErr
 }
 
 fn phase(line: usize, name: &str) -> Result<RunPhase, HarnessError> {
-    tables::run_phase(name).ok_or_else(|| HarnessError::UnknownName {
+    known_name(line, "Run Phase", name, tables::run_phase)
+}
+
+/// Looks `name` up in a name table; a miss is [`HarnessError::UnknownName`].
+fn known_name<T>(
+    line: usize,
+    table: &'static str,
+    name: &str,
+    lookup: fn(&str) -> Option<T>,
+) -> Result<T, HarnessError> {
+    lookup(name).ok_or_else(|| HarnessError::UnknownName {
         line,
-        table: "Run Phase",
+        table,
         name: name.to_owned(),
     })
+}
+
+/// Parses an integer code field and looks it up in a code table; a code the
+/// table lacks is [`HarnessError::UnknownCode`], a field that is not a code
+/// at all is a transcript error.
+fn known_code<T>(
+    line: usize,
+    table: &'static str,
+    field: &str,
+    lookup: fn(i64) -> Option<T>,
+) -> Result<T, HarnessError> {
+    let code = i64::try_from(number(line, field)?)
+        .map_err(|_| transcript(line, format!("code `{field}` is out of range")))?;
+    lookup(code).ok_or(HarnessError::UnknownCode { line, table, code })
 }
 
 fn detailed_path(line: usize, fields: &[&str]) -> Result<DetailedPath, HarnessError> {
@@ -496,6 +533,7 @@ fn detailed_path(line: usize, fields: &[&str]) -> Result<DetailedPath, HarnessEr
     })
 }
 
+/// Fails unless a record has exactly `count` fields; `what` names the record.
 fn expect_fields(
     line: usize,
     fields: &[&str],
@@ -516,7 +554,7 @@ fn expect_fields(
 }
 
 /// An unsigned decimal counter: ASCII digits only, so `+1` or ` 1` are rejected.
-fn number(field: &str, line: usize) -> Result<u64, HarnessError> {
+fn number(line: usize, field: &str) -> Result<u64, HarnessError> {
     if field.is_empty() || !field.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(transcript(
             line,

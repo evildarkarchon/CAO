@@ -39,6 +39,15 @@ use crate::tree::{ArtifactDifference, TreeRules, TreeSide, compare_trees};
 /// part of the case tree and never part of its output.
 pub const HARNESS_OWNED: [&str; 3] = ["profiles", "bin", "logs"];
 
+/// Whether a top-level name is one of the [`HARNESS_OWNED`] folders. Matched
+/// ASCII case-insensitively, as Windows matches names: `Logs` is `logs/`.
+pub fn is_harness_owned(name: impl AsRef<std::ffi::OsStr>) -> bool {
+    let name = name.as_ref();
+    HARNESS_OWNED
+        .iter()
+        .any(|owned| name.eq_ignore_ascii_case(owned))
+}
+
 /// The contents of `case.json`.
 ///
 /// The corpus generator adds the GUI-reachable profile overrides and the tree
@@ -60,10 +69,7 @@ pub struct CaseFile {
 pub struct CaseSpec {
     /// A profile folder name under `profiles/`, such as `SSE`.
     pub profile: String,
-    pub mode: SelectionMode,
-    /// The selected folder, relative to the side's case root and
-    /// `/`-separated: the Mod Root for one mod, or its parent for several.
-    pub selection: String,
+    pub mod_selection: ModSelection,
     pub dry_run: bool,
     pub textures: TextureOptions,
     pub meshes: MeshOptions,
@@ -71,12 +77,24 @@ pub struct CaseSpec {
     pub archives: ArchiveOptions,
 }
 
-/// One mod (`om`) or several mods (`sm`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SelectionMode {
-    OneMod,
-    SeveralMods,
+/// The Mod Selection: one Mod Root (`om`), or the child Mod Roots of a mods
+/// directory (`sm`). In JSON: `{"kind": "one_mod", "folder": "mods/Mod"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ModSelection {
+    /// `folder` is the Mod Root.
+    OneMod { folder: String },
+    /// `folder` is the mods directory whose children are the Mod Roots.
+    SeveralMods { folder: String },
+}
+
+impl ModSelection {
+    /// The selected folder, relative to the side's case root and `/`-separated.
+    pub fn folder(&self) -> &str {
+        match self {
+            ModSelection::OneMod { folder } | ModSelection::SeveralMods { folder } => folder,
+        }
+    }
 }
 
 /// The Textures tab. The ratio and size values exist whether or not their
@@ -133,6 +151,12 @@ impl Side {
             Side::Oracle => "oracle",
             Side::Rust => "rust",
         }
+    }
+}
+
+impl std::fmt::Display for Side {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
     }
 }
 
@@ -229,9 +253,8 @@ impl CaseLayout {
     /// Reads `case.json`.
     pub fn read_case(&self) -> Result<CaseFile, HarnessError> {
         let path = self.case_file();
-        let bytes = std::fs::read(&path)
-            .map_err(|error| HarnessError::io(format!("reading {}", path.display()), error))?;
-        serde_json::from_slice(&bytes).map_err(|source| HarnessError::Json { path, source })
+        serde_json::from_slice(&read_file(&path)?)
+            .map_err(|source| HarnessError::Json { path, source })
     }
 
     /// Creates both sides from the materialised `input/` tree.
@@ -244,17 +267,9 @@ impl CaseLayout {
     /// so the input must contain only plain files and directories.
     pub fn provision(&self, resources: &SideResources<'_>) -> Result<(), HarnessError> {
         let input = self.input();
-        let listing = std::fs::read_dir(&input)
-            .map_err(|error| HarnessError::io(format!("listing {}", input.display()), error))?;
-        for item in listing {
-            let item = item
-                .map_err(|error| HarnessError::io(format!("listing {}", input.display()), error))?;
+        for item in list_dir(&input)? {
             let name = item.file_name();
-            // Windows names are case-insensitive, so `Logs` would land in `logs/`.
-            if HARNESS_OWNED
-                .iter()
-                .any(|owned| name.eq_ignore_ascii_case(owned))
-            {
+            if is_harness_owned(&name) {
                 return Err(HarnessError::InvalidCase(format!(
                     "the case tree uses the harness-owned name {name:?}"
                 )));
@@ -280,6 +295,21 @@ impl CaseLayout {
     }
 }
 
+/// Lists a directory's entries, reporting any failure with the directory's path.
+pub(crate) fn list_dir(directory: &Path) -> Result<Vec<std::fs::DirEntry>, HarnessError> {
+    let listing_error = |error| HarnessError::io(format!("listing {}", directory.display()), error);
+    std::fs::read_dir(directory)
+        .map_err(listing_error)?
+        .map(|item| item.map_err(listing_error))
+        .collect()
+}
+
+/// Reads a whole file, reporting any failure with its path.
+pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>, HarnessError> {
+    std::fs::read(path)
+        .map_err(|error| HarnessError::io(format!("reading {}", path.display()), error))
+}
+
 fn create_dir(path: &Path) -> Result<(), HarnessError> {
     std::fs::create_dir(path)
         .map_err(|error| HarnessError::io(format!("creating {}", path.display()), error))
@@ -297,11 +327,7 @@ fn copy_file(from: &Path, to: &Path) -> Result<(), HarnessError> {
 /// Copies a tree of plain files and directories; a link is an invalid case.
 fn copy_tree(from: &Path, to: &Path) -> Result<(), HarnessError> {
     create_dir(to)?;
-    let listing = std::fs::read_dir(from)
-        .map_err(|error| HarnessError::io(format!("listing {}", from.display()), error))?;
-    for item in listing {
-        let item =
-            item.map_err(|error| HarnessError::io(format!("listing {}", from.display()), error))?;
+    for item in list_dir(from)? {
         let file_type = item.file_type().map_err(|error| {
             HarnessError::io(format!("reading {}", item.path().display()), error)
         })?;
@@ -332,21 +358,17 @@ pub fn oracle_arguments(
     oracle_root: &Path,
 ) -> Result<Vec<OsString>, HarnessError> {
     let invalid = |message: String| Err(HarnessError::InvalidCase(message));
-    let components: Vec<&str> = spec.selection.split('/').collect();
+    let folder = spec.mod_selection.folder();
+    let components: Vec<&str> = folder.split('/').collect();
     let plain = |component: &str| {
         !component.is_empty()
             && component != "."
             && component != ".."
             && !component.contains(['\\', ':'])
     };
-    if !components.iter().all(|component| plain(component))
-        || HARNESS_OWNED
-            .iter()
-            .any(|owned| components[0].eq_ignore_ascii_case(owned))
-    {
+    if !components.iter().all(|component| plain(component)) || is_harness_owned(components[0]) {
         return invalid(format!(
-            "selection `{}` is not a folder of the case tree",
-            spec.selection
+            "Mod Selection folder `{folder}` is not a folder of the case tree"
         ));
     }
     if !plain(&spec.profile) || spec.profile.contains('/') {
@@ -359,17 +381,17 @@ pub fn oracle_arguments(
         return invalid(format!("mesh level {} is outside 0-3", spec.meshes.level));
     }
 
-    let selection = components
+    let selected = components
         .iter()
         .fold(oracle_root.to_path_buf(), |path, component| {
             path.join(component)
         });
-    let mode = match spec.mode {
-        SelectionMode::OneMod => "om",
-        SelectionMode::SeveralMods => "sm",
+    let mode = match spec.mod_selection {
+        ModSelection::OneMod { .. } => "om",
+        ModSelection::SeveralMods { .. } => "sm",
     };
     let mut arguments = Arguments(vec![
-        selection.into_os_string(),
+        selected.into_os_string(),
         mode.into(),
         spec.profile.as_str().into(),
     ]);
@@ -510,6 +532,10 @@ pub fn run_case(
     }
 }
 
+/// Runs both sides and compares them, without deciding the case directory's fate.
+///
+/// `timeout` is the whole case's budget: the Rust side gets whatever time the
+/// oracle left, so a case never takes longer than the timeout in total.
 fn evaluate(
     layout: &CaseLayout,
     drivers: &dyn CaseDrivers,
@@ -517,27 +543,26 @@ fn evaluate(
     timeout: Duration,
 ) -> Result<CaseResult, HarnessError> {
     let spec = layout.read_case()?.spec;
+    let deadline = Deadline {
+        at: Instant::now() + timeout,
+        budget: timeout,
+    };
     // The oracle always runs first, so a Rust driver crash cannot disturb it.
     let oracle_exit = run_side(
         layout,
         Side::Oracle,
         drivers.oracle(layout, &spec)?,
-        timeout,
+        deadline,
     )?;
-    let rust_exit = run_side(layout, Side::Rust, drivers.rust(layout)?, timeout)?;
+    let rust_exit = run_side(layout, Side::Rust, drivers.rust(layout)?, deadline)?;
     if rust_exit != 0 {
         return Err(HarnessError::DriverFailed { code: rust_exit });
     }
 
-    let stdout_path = layout.stdout(Side::Oracle);
-    let stdout = std::fs::read(&stdout_path)
-        .map_err(|error| HarnessError::io(format!("reading {}", stdout_path.display()), error))?;
-    let oracle_facts = oracle::parse(&stdout, oracle_exit)?;
+    let oracle_facts = oracle::parse(&read_file(&layout.stdout(Side::Oracle))?, oracle_exit)?;
     let facts_path = layout.rust_facts();
-    let facts_bytes = std::fs::read(&facts_path)
-        .map_err(|error| HarnessError::io(format!("reading {}", facts_path.display()), error))?;
     let rust_facts: RunFacts =
-        serde_json::from_slice(&facts_bytes).map_err(|source| HarnessError::Json {
+        serde_json::from_slice(&read_file(&facts_path)?).map_err(|source| HarnessError::Json {
             path: facts_path,
             source,
         })?;
@@ -562,6 +587,7 @@ fn evaluate(
     Ok(CaseResult { facts, tree })
 }
 
+/// The Run ID a side's staging names carry, if it started a run.
 fn run_id(facts: &RunFacts) -> Option<&str> {
     match facts {
         RunFacts::Started(run) => Some(&run.run_id),
@@ -569,19 +595,27 @@ fn run_id(facts: &RunFacts) -> Option<&str> {
     }
 }
 
-/// How often a running side is checked against the timeout.
+/// The instant a case's time runs out, and the budget it was given.
+#[derive(Clone, Copy)]
+struct Deadline {
+    at: Instant,
+    budget: Duration,
+}
+
+/// How often a running side is checked against the deadline.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Runs one side to completion, capturing its output into the case directory.
 ///
 /// Output goes straight to files rather than pipes: a pipe would need reader
 /// threads, and a grandchild that inherited it (`hkxcmd.exe`) could keep those
-/// threads blocked after the side itself was killed. Returns the exit code.
+/// threads blocked after the side itself was killed. Returns the exit code, or
+/// [`HarnessError::Timeout`] after killing a side still running at the deadline.
 fn run_side(
     layout: &CaseLayout,
     side: Side,
     mut command: Command,
-    timeout: Duration,
+    deadline: Deadline,
 ) -> Result<i32, HarnessError> {
     let capture = |path: PathBuf| {
         std::fs::File::create(&path)
@@ -593,34 +627,25 @@ fn run_side(
         .stderr(capture(layout.stderr(side))?);
     let mut child = command
         .spawn()
-        .map_err(|error| HarnessError::io(format!("starting the {} side", side.name()), error))?;
-    let deadline = Instant::now() + timeout;
+        .map_err(|error| HarnessError::io(format!("starting the {side} side"), error))?;
     loop {
-        let status = child.try_wait().map_err(|error| {
-            HarnessError::io(format!("waiting for the {} side", side.name()), error)
-        })?;
+        let status = child
+            .try_wait()
+            .map_err(|error| HarnessError::io(format!("waiting for the {side} side"), error))?;
         if let Some(status) = status {
             // Windows always reports an exit code; `None` would mean a signal.
             return Ok(status.code().unwrap_or(-1));
         }
-        if Instant::now() >= deadline {
+        if Instant::now() >= deadline.at {
             // Kill and reap; the side may have exited in between, which is fine.
             let _ = child.kill();
             let _ = child.wait();
             return Err(HarnessError::Timeout {
-                side: side.name(),
-                seconds: timeout.as_secs(),
+                side,
+                seconds: deadline.budget.as_secs(),
             });
         }
         std::thread::sleep(POLL_INTERVAL);
-    }
-}
-
-fn verdict_name<D>(verdict: &Verdict<D>) -> &'static str {
-    match verdict {
-        Verdict::Identical => "Identical",
-        Verdict::Equivalent => "Equivalent",
-        Verdict::Different(_) => "Different",
     }
 }
 
@@ -628,8 +653,8 @@ fn verdict_name<D>(verdict: &Verdict<D>) -> &'static str {
 fn different_report(result: &CaseResult) -> String {
     let mut text = format!(
         "## Verdicts\n\n- Run facts: {}\n- Output tree: {}\n",
-        verdict_name(&result.facts),
-        verdict_name(&result.tree)
+        result.facts.name(),
+        result.tree.name()
     );
     if let Verdict::Different(differences) = &result.facts {
         text.push_str("\n## Run fact differences\n\n```text\n");
@@ -653,17 +678,16 @@ fn different_report(result: &CaseResult) -> String {
 /// Writes `report.md`: the body, then the captures and the replay command.
 fn write_report(layout: &CaseLayout, body: &str) -> Result<(), HarnessError> {
     let mut text = format!("# Parity case `{}`\n\n{body}\n## Captures\n\n", layout.id());
-    for side in [Side::Oracle, Side::Rust] {
-        for path in [layout.stdout(side), layout.stderr(side)] {
-            let name = path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            text.push_str(&format!("- `{name}`\n"));
-        }
+    let captures = [Side::Oracle, Side::Rust]
+        .into_iter()
+        .flat_map(|side| [layout.stdout(side), layout.stderr(side)])
+        .chain([layout.rust_facts()]);
+    for path in captures {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        text.push_str(&format!("- `{name}`\n"));
     }
     text.push_str(&format!(
-        "- `rust.facts.json`\n\n## Replay\n\n```text\ncao-parity case {}\n```\n",
+        "\n## Replay\n\n```text\ncao-parity case {}\n```\n",
         layout.id()
     ));
     std::fs::write(layout.report(), text)

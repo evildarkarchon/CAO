@@ -3,6 +3,8 @@
 //! another build would report it: its own case root, its own Run ID, and
 //! whatever variation the test is about.
 
+mod common;
+
 use std::path::Path;
 
 use cao_parity::HarnessError;
@@ -10,20 +12,10 @@ use cao_parity::compare::{FactRule, Verdict, compare_facts};
 use cao_parity::facts::RunFacts;
 use cao_parity::normalise::{NormalisedFacts, normalise};
 use cao_parity::oracle;
-
-/// The capture directory every transcript's paths start with.
-const CAPTURE: &str = "C:/Users/evild/AppData/Local/Temp/cao480/work";
+use common::{CAPTURE, transcript};
 
 /// Where the "Rust side" of each comparison pretends its case tree lives.
 const OTHER_ROOT: &str = "D:/parity/work/case-0001/rust";
-
-fn transcript(name: &str) -> String {
-    let path = format!(
-        "{}/tests/transcripts/{name}.stdout",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{path}: {error}"))
-}
 
 /// Normalises a transcript captured under `CAPTURE/<case>`.
 fn oracle_side(case: &str, text: &str, exit_code: i32) -> NormalisedFacts {

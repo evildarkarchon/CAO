@@ -13,19 +13,20 @@ use std::time::Duration;
 
 use cao_parity::HarnessError;
 use cao_parity::case::{
-    ArchiveOptions, CaseDrivers, CaseFile, CaseLayout, CaseSpec, MeshOptions, SelectionMode, Side,
+    ArchiveOptions, CaseDrivers, CaseFile, CaseLayout, CaseSpec, MeshOptions, ModSelection, Side,
     SideResources, TextureOptions, oracle_arguments, run_case,
 };
 use cao_parity::compare::Verdict;
 use cao_parity::oracle;
 use cao_parity::tree::DefaultRules;
-use common::{TempDir, write};
+use common::{CAPTURE, TempDir, transcript, write};
 
 fn spec() -> CaseSpec {
     CaseSpec {
         profile: "SSE".into(),
-        mode: SelectionMode::OneMod,
-        selection: "mods/DryMod".into(),
+        mod_selection: ModSelection::OneMod {
+            folder: "mods/DryMod".into(),
+        },
         dry_run: true,
         textures: TextureOptions {
             necessary: true,
@@ -176,8 +177,9 @@ fn a_spec_renders_into_the_oracle_command_line() {
     assert_eq!(arguments, expected);
 
     let mut several = spec();
-    several.mode = SelectionMode::SeveralMods;
-    several.selection = "mods".into();
+    several.mod_selection = ModSelection::SeveralMods {
+        folder: "mods".into(),
+    };
     several.dry_run = false;
     let arguments = oracle_arguments(&several, root).unwrap();
     assert_eq!(arguments[1], "sm");
@@ -199,7 +201,9 @@ fn a_spec_the_oracle_cannot_express_is_a_harness_error_at_render_time() {
         "logs",
     ] {
         let mut spec = spec();
-        spec.selection = selection.into();
+        spec.mod_selection = ModSelection::OneMod {
+            folder: selection.into(),
+        };
         cases.push(("selection", spec));
     }
     for profile in ["", "../SSE", "a/b"] {
@@ -225,7 +229,7 @@ fn case_json_holds_the_spec_and_rejects_unknown_fields() {
     let file = CaseFile { spec: spec() };
     let json = serde_json::to_string_pretty(&file).unwrap();
     assert_eq!(serde_json::from_str::<CaseFile>(&json).unwrap(), file);
-    assert!(json.contains("\"mode\": \"one_mod\""), "{json}");
+    assert!(json.contains("\"kind\": \"one_mod\""), "{json}");
 
     let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
     value["spec"]["textures"]["sharpen"] = serde_json::Value::Bool(true);
@@ -235,12 +239,8 @@ fn case_json_holds_the_spec_and_rejects_unknown_fields() {
 /// The oracle transcript used by the runner tests, as the oracle would print
 /// it from `root`.
 fn transcript_at(root: &Path) -> String {
-    let captured = format!(
-        "{}/tests/transcripts/dry_run_textures.stdout",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    std::fs::read_to_string(captured).unwrap().replace(
-        "C:/Users/evild/AppData/Local/Temp/cao480/work/dry_run_textures",
+    transcript("dry_run_textures").replace(
+        &format!("{CAPTURE}/dry_run_textures"),
         &root.to_str().unwrap().replace('\\', "/"),
     )
 }
@@ -392,7 +392,13 @@ fn a_side_past_the_timeout_is_killed_and_is_a_harness_error() {
     )
     .unwrap_err();
     assert!(
-        matches!(error, HarnessError::Timeout { side: "oracle", .. }),
+        matches!(
+            error,
+            HarnessError::Timeout {
+                side: Side::Oracle,
+                ..
+            }
+        ),
         "{error}"
     );
     assert!(
