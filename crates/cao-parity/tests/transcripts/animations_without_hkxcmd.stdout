@@ -1,0 +1,13 @@
+EVENT:|2673758453-861189294-0|1|Preparing|Indeterminate
+EVENT:|2673758453-861189294-0|2|Discovering Archives|Indeterminate
+EVENT:|2673758453-861189294-0|3|PROGRESS:|Extracting Archives|0|0|succeeded=0|failed=0
+EVENT:|2673758453-861189294-0|4|Building the Effective Asset Tree|Indeterminate
+EVENT:|2673758453-861189294-0|5|PROGRESS:|Processing Assets|0|1|succeeded=0|failed=0
+EVENT:|2673758453-861189294-0|6|PROGRESS:|Processing Assets|1|1|succeeded=0|failed=1
+EVENT:|2673758453-861189294-0|7|Archive Finalization|Indeterminate
+EVENT:|2673758453-861189294-0|8|PROGRESS:|Archive Finalization|0|0|succeeded=0|failed=0
+EVENT:|2673758453-861189294-0|9|Safety Cleanup|Indeterminate
+EVENT:|2673758453-861189294-0|10|Outcome|Completed With Failures|Final Phase|Archive Finalization
+Cancellation Observed|no
+Mod Root|C:/Users/evild/AppData/Local/Temp/cao480/work/animations_without_hkxcmd/mods/AnimMod
+Asset Failure|C:/Users/evild/AppData/Local/Temp/cao480/work/animations_without_hkxcmd/mods/AnimMod/meshes/actors/character/animations/walk.hkx|optimize_animation|Failed to optimize Animation.|C:/Users/evild/AppData/Local/Temp/cao480/work/animations_without_hkxcmd/mods/AnimMod/meshes/actors/character/animations/walk.hkx|Failed to optimize Animation.

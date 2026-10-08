@@ -1,0 +1,3 @@
+# Oracle transcripts are captured stdout, CRLF line endings included. The
+# cao-parity parser tests read them byte for byte, so git must never convert them.
+crates/cao-parity/tests/transcripts/** -text

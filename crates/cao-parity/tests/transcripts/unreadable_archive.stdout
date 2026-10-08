@@ -1,0 +1,8 @@
+EVENT:|1760899533-637675942-0|1|Preparing|Indeterminate
+EVENT:|1760899533-637675942-0|2|Discovering Archives|Indeterminate
+EVENT:|1760899533-637675942-0|3|Failure|Discovering Archives|15|unsupported version|C:/Users/evild/AppData/Local/Temp/cao480/work/unreadable_archive/mods/ArcMod/ArcMod.bsa
+EVENT:|1760899533-637675942-0|4|Safety Cleanup|Indeterminate
+EVENT:|1760899533-637675942-0|5|Outcome|Failed|Final Phase|Discovering Archives
+Cancellation Observed|no
+Mod Root|C:/Users/evild/AppData/Local/Temp/cao480/work/unreadable_archive/mods/ArcMod
+Run Failure|unsupported version|C:/Users/evild/AppData/Local/Temp/cao480/work/unreadable_archive/mods/ArcMod/ArcMod.bsa

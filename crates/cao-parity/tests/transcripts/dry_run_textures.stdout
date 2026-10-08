@@ -1,0 +1,16 @@
+EVENT:|4164818643-1268160434-0|1|Preparing|Indeterminate
+EVENT:|4164818643-1268160434-0|2|Discovering Archives|Indeterminate
+EVENT:|4164818643-1268160434-0|3|Extracting Archives|Skipped|Dry Run
+EVENT:|4164818643-1268160434-0|4|Building the Effective Asset Tree|Indeterminate
+EVENT:|4164818643-1268160434-0|5|PROGRESS:|Processing Assets|0|4|succeeded=0|failed=0
+EVENT:|4164818643-1268160434-0|6|PROGRESS:|Processing Assets|1|4|succeeded=0|failed=1
+EVENT:|4164818643-1268160434-0|7|PROGRESS:|Processing Assets|2|4|succeeded=1|failed=1
+EVENT:|4164818643-1268160434-0|8|PROGRESS:|Processing Assets|3|4|succeeded=2|failed=1
+EVENT:|4164818643-1268160434-0|9|PROGRESS:|Processing Assets|4|4|succeeded=2|failed=2
+EVENT:|4164818643-1268160434-0|10|Archive Finalization|Skipped|Dry Run
+EVENT:|4164818643-1268160434-0|11|Safety Cleanup|Indeterminate
+EVENT:|4164818643-1268160434-0|12|Outcome|Completed With Failures|Final Phase|Archive Finalization
+Cancellation Observed|no
+Mod Root|C:/Users/evild/AppData/Local/Temp/cao480/work/dry_run_textures/mods/DryMod
+Asset Failure|C:/Users/evild/AppData/Local/Temp/cao480/work/dry_run_textures/mods/DryMod/textures/broken.dds|load_texture|Failed to load Texture.|C:/Users/evild/AppData/Local/Temp/cao480/work/dry_run_textures/mods/DryMod/textures/broken.dds|
+Asset Failure|C:/Users/evild/AppData/Local/Temp/cao480/work/dry_run_textures/mods/DryMod/meshes/thing.nif|load_mesh|Failed to load Mesh.|C:/Users/evild/AppData/Local/Temp/cao480/work/dry_run_textures/mods/DryMod/meshes/thing.nif|

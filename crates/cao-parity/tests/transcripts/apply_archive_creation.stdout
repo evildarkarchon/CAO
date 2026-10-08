@@ -1,0 +1,15 @@
+EVENT:|2177538132-3104784366-0|1|Preparing|Indeterminate
+EVENT:|2177538132-3104784366-0|2|Discovering Archives|Indeterminate
+EVENT:|2177538132-3104784366-0|3|PROGRESS:|Extracting Archives|0|0|succeeded=0|failed=0
+EVENT:|2177538132-3104784366-0|4|Building the Effective Asset Tree|Indeterminate
+EVENT:|2177538132-3104784366-0|5|PROGRESS:|Processing Assets|0|0|succeeded=0|failed=0
+EVENT:|2177538132-3104784366-0|6|Archive Finalization|Indeterminate
+EVENT:|2177538132-3104784366-0|7|PROGRESS:|Archive Finalization|0|2|succeeded=0|failed=0
+EVENT:|2177538132-3104784366-0|8|PROGRESS:|Archive Finalization|1|2|succeeded=1|failed=0
+EVENT:|2177538132-3104784366-0|9|PROGRESS:|Archive Finalization|2|2|succeeded=2|failed=0
+EVENT:|2177538132-3104784366-0|10|Safety Cleanup|Indeterminate
+EVENT:|2177538132-3104784366-0|11|Outcome|Succeeded|Final Phase|Archive Finalization
+Cancellation Observed|no
+Mod Root|C:/Users/evild/AppData/Local/Temp/cao480/work/dry_run_apply_archives/mods/PackMod
+Committed Mutations Retained|C:/Users/evild/AppData/Local/Temp/cao480/work/dry_run_apply_archives/mods/PackMod|Archive Finalization|5|partial-or-unknown=0
+Skipped Assets|1|2

@@ -1,0 +1,10 @@
+EVENT:|2889977874-983425870-0|1|Preparing|Indeterminate
+EVENT:|2889977874-983425870-0|2|Discovering Archives|Skipped|No Requested Work
+EVENT:|2889977874-983425870-0|3|Extracting Archives|Skipped|No Requested Work
+EVENT:|2889977874-983425870-0|4|Building the Effective Asset Tree|Skipped|No Requested Work
+EVENT:|2889977874-983425870-0|5|Processing Assets|Skipped|No Requested Work
+EVENT:|2889977874-983425870-0|6|Archive Finalization|Skipped|No Requested Work
+EVENT:|2889977874-983425870-0|7|Safety Cleanup|Indeterminate
+EVENT:|2889977874-983425870-0|8|Outcome|Succeeded|Final Phase|Archive Finalization
+Cancellation Observed|no
+Mod Root|C:/Users/evild/AppData/Local/Temp/cao480/work/no_requested_work/mods/IdleMod
