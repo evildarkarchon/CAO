@@ -22,7 +22,7 @@ use crate::run::{
     CancellationToken, MutableRunEvidence, OptimizationRunResult, PhaseSkipReason,
     RunConfiguration, RunConfigurationProvider, RunEvidence, RunFailure, RunFailureCode, RunId,
     RunObservationSink, RunOutcome, RunPhase, RunPhaseRecord, RunPreparation, RunRequest,
-    RunWorkEvidence, panic_message,
+    RunWorkEvidence, TemporaryArtifactRegistry, panic_message,
 };
 
 /// The typed work milestones through which a Run Work Service moves the lifecycle.
@@ -65,10 +65,15 @@ pub trait RunWorkService: Send + Sync {
     /// lifecycle through `milestones`, and checking `stop` between atomic
     /// attempts. An error, or a panic, becomes a fatal `WorkServiceFailed` Run
     /// Failure without discarding earlier evidence.
+    ///
+    /// Every temporary artifact goes through `artifacts`, the run's Temporary
+    /// Ownership scope. The executor owns it and performs its Safety Cleanup;
+    /// work never cleans the registry itself.
     fn execute(
         &self,
         preparation: &RunPreparation,
         evidence: &RunWorkEvidence<'_, '_>,
+        artifacts: &mut TemporaryArtifactRegistry,
         milestones: &dyn RunWorkMilestones,
         stop: &CancellationToken,
     ) -> Result<(), Error>;
@@ -108,7 +113,8 @@ pub fn collect_safety_cleanup_failures(service: &mut dyn SafetyCleanupService) -
 /// The services the Run Executor borrows for one synchronous run.
 pub struct RunServices<'a> {
     /// Mandatory: every terminal path owes exactly one cleanup pass, even over
-    /// an empty set, so an absent service would hide whether it happened.
+    /// an empty set, so an absent service would hide whether it happened. It
+    /// runs after the executor's own Temporary Ownership registry.
     pub safety_cleanup: &'a mut dyn SafetyCleanupService,
     pub observations: Option<&'a dyn RunObservationSink>,
     /// A missing provider fails Preparing, including for requests with no work.
@@ -362,6 +368,9 @@ impl RunExecutor {
         let evidence = RefCell::new(MutableRunEvidence::new(observations));
         let mut invariant = DeferredInvariant::default();
         let mut failed = false;
+        // The run's Temporary Ownership scope. It lives for the whole run so
+        // its root pins and staging lock are held through Safety Cleanup.
+        let mut artifacts = TemporaryArtifactRegistry::new(run_id.clone());
 
         // Preparing always executes: it is where the request becomes run-scoped
         // state. It is indeterminate work, so it reports no progress.
@@ -404,8 +413,31 @@ impl RunExecutor {
             }
         }
 
-        // Apply Preparing recovers verified stale staging here once recovery
-        // is ported (#492).
+        // Apply Preparing checks each Mod Root's staging before any work, and
+        // pins the root; recovering verified stale staging is #492. Dry Run
+        // never inspects, creates or cleans staging.
+        if let Some(prepared) = &preparation
+            && !failed
+            && request.execution_mode() == ExecutionMode::Apply
+        {
+            for root in prepared.mod_roots() {
+                if stop.is_cancelled() {
+                    break;
+                }
+                let failure = artifacts.prepare_root(root, stop).unwrap_or_else(|error| {
+                    Some(RunFailure::new(
+                        RunFailureCode::StagingOwnershipUnverified,
+                        RunPhase::Preparing,
+                        error.to_string(),
+                    ))
+                });
+                if let Some(failure) = failure {
+                    failed = true;
+                    evidence.borrow_mut().record_failure(failure);
+                    break;
+                }
+            }
+        }
 
         if preparation.is_some()
             && !failed
@@ -441,7 +473,7 @@ impl RunExecutor {
             };
             let work_evidence = RunWorkEvidence::new(&evidence);
             let outcome = catch_unwind(AssertUnwindSafe(|| {
-                work.execute(prepared, &work_evidence, &milestones, stop)
+                work.execute(prepared, &work_evidence, &mut artifacts, &milestones, stop)
             }));
             let detail = match outcome {
                 Ok(Ok(())) => None,
@@ -494,7 +526,9 @@ impl RunExecutor {
             .map_or(RunPhase::Preparing, RunPhaseRecord::phase);
         invariant
             .note(evidence.record_phase(RunPhaseRecord::executed(RunPhase::SafetyCleanup, None)));
-        for failure in collect_safety_cleanup_failures(safety_cleanup) {
+        let mut cleanup_failures = collect_safety_cleanup_failures(&mut artifacts);
+        cleanup_failures.extend(collect_safety_cleanup_failures(safety_cleanup));
+        for failure in cleanup_failures {
             invariant.note(evidence.record_safety_cleanup_failure(failure));
         }
         if stop.is_cancelled() {

@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime};
 
 use cao_parity::HarnessError;
 use cao_parity::compare::Verdict;
+use cao_parity::leftovers::ParityRules;
 use cao_parity::tree::{
     ArtifactRule, ArtifactVerdict, DefaultRules, RuleOutcome, TreeRules, TreeSide, compare_trees,
 };
@@ -320,4 +321,192 @@ fn staging_leftovers_match_after_placeholder_normalisation() {
             == "mods/A/.cao-staging/run-{run-id}-{nonce}/archive-entry-{nonce}"),
         "artifacts are reported under their normalised paths"
     );
+}
+
+/// The oracle's staging names carry a random 32-hex token where the Rust
+/// side's carry its Run ID; both normalise to the same placeholders by shape.
+#[test]
+fn cpp_staging_tokens_normalise_like_rust_run_ids() {
+    let sides = sides("staging-shape");
+    let token = "00112233445566778899aabbccddeeff";
+    let (oracle_nonce, rust_nonce) = (
+        "0123456789abcdef0123456789abcdef",
+        "fedcba9876543210fedcba9876543210",
+    );
+    write(
+        &sides.oracle,
+        &format!("mods/A/textures/.cao-staging-texture-{token}-{oracle_nonce}.dds"),
+        b"partial",
+    );
+    write(
+        &sides.rust,
+        &format!("mods/A/textures/.cao-staging-texture-rust-1-{rust_nonce}.dds"),
+        b"partial",
+    );
+    write(
+        &sides.oracle,
+        &format!("mods/A/.cao-staging/run-{token}-{oracle_nonce}/archive-entry-{oracle_nonce}"),
+        b"entry",
+    );
+    write(
+        &sides.rust,
+        &format!("mods/A/.cao-staging/run-rust-1-{rust_nonce}/archive-entry-{rust_nonce}"),
+        b"entry",
+    );
+    // A mod's own `run-…` folder outside staging keeps its name.
+    both(
+        &sides,
+        &format!("mods/A/run-{token}-{oracle_nonce}/a.txt"),
+        b"mod",
+    );
+
+    let comparison = compare_trees(
+        TreeSide {
+            root: &sides.oracle,
+            run_id: Some("12-34-0"),
+        },
+        TreeSide {
+            root: &sides.rust,
+            run_id: Some("rust-1"),
+        },
+        &ParityRules,
+    )
+    .unwrap();
+
+    assert_eq!(
+        comparison.verdict(),
+        Verdict::Identical,
+        "{:?}",
+        broken(&comparison)
+    );
+    let paths: Vec<&str> = comparison
+        .artifacts
+        .iter()
+        .map(|a| a.path.as_str())
+        .collect();
+    assert!(paths.contains(&"mods/A/textures/.cao-staging-texture-{run-id}-{nonce}.dds"));
+    assert!(paths.contains(&"mods/A/.cao-staging/run-{run-id}-{nonce}"));
+    assert!(paths.contains(&format!("mods/A/run-{token}-{oracle_nonce}/a.txt").as_str()));
+}
+
+/// Writes a v3 manifest for the Mod Root `mods/A` of `side`.
+fn write_manifest(side: &Path, run_id: &str, nonce: &str, records: &[(char, String)]) {
+    let root = side.join("mods/A").to_string_lossy().replace('\\', "/");
+    let mut text = format!(
+        "CAO-STAGING 3\n\"{root}\"\n\"{run_id}\" \"run-{run_id}-{nonce}\"\n{}\n",
+        records.len()
+    );
+    for (kind, name) in records {
+        text.push_str(&format!("{kind} \"{name}\"\n"));
+    }
+    write(
+        side,
+        "mods/A/.cao-staging/ownership.manifest",
+        text.as_bytes(),
+    );
+}
+
+/// Both builds' manifests are Equivalent when they record the same things,
+/// whatever their roots, Run IDs and nonces; a different record set is not.
+#[test]
+fn ownership_manifests_compare_semantically() {
+    let token = "00112233445566778899aabbccddeeff";
+    let (oracle_nonce, rust_nonce) = (
+        "0123456789abcdef0123456789abcdef",
+        "fedcba9876543210fedcba9876543210",
+    );
+    let records = |run_id: &str, nonce: &str| {
+        vec![
+            ('D', format!("run-{run_id}-{nonce}")),
+            (
+                'S',
+                format!("textures/.cao-staging-texture-{run_id}-{nonce}.dds"),
+            ),
+        ]
+    };
+
+    let same = sides("manifest-same");
+    write_manifest(
+        &same.oracle,
+        token,
+        oracle_nonce,
+        &records(token, oracle_nonce),
+    );
+    write_manifest(
+        &same.rust,
+        "rust-1",
+        rust_nonce,
+        &records("rust-1", rust_nonce),
+    );
+    both(&same, "mods/A/.cao-staging/owner.lock", b"");
+    let comparison = compare(&same, &ParityRules);
+    assert_eq!(
+        comparison.verdict(),
+        Verdict::Equivalent,
+        "{:?}",
+        broken(&comparison)
+    );
+
+    let differing = sides("manifest-different");
+    write_manifest(
+        &differing.oracle,
+        token,
+        oracle_nonce,
+        &records(token, oracle_nonce),
+    );
+    write_manifest(
+        &differing.rust,
+        "rust-1",
+        rust_nonce,
+        &records("rust-1", rust_nonce)[..1],
+    );
+    assert_eq!(
+        broken(&compare(&differing, &ParityRules)),
+        vec![(
+            "mods/A/.cao-staging/ownership.manifest".to_owned(),
+            "Ownership Manifest Semantics"
+        )]
+    );
+
+    // A manifest naming another Mod Root is never Equivalent.
+    let moved = sides("manifest-moved");
+    write_manifest(
+        &moved.oracle,
+        token,
+        oracle_nonce,
+        &records(token, oracle_nonce),
+    );
+    write_manifest(
+        &moved.rust,
+        "rust-1",
+        rust_nonce,
+        &records("rust-1", rust_nonce),
+    );
+    let text = std::fs::read_to_string(moved.rust.join("mods/A/.cao-staging/ownership.manifest"))
+        .unwrap()
+        .replace("/mods/A\"", "/mods/B\"");
+    write(
+        &moved.rust,
+        "mods/A/.cao-staging/ownership.manifest",
+        text.as_bytes(),
+    );
+    assert_eq!(broken(&compare(&moved, &ParityRules)).len(), 1);
+}
+
+/// `owner.lock` is compared for presence only.
+#[test]
+fn owner_locks_compare_for_presence_only() {
+    let sides = sides("owner-lock");
+    write(&sides.oracle, "mods/A/.cao-staging/owner.lock", b"");
+    write(&sides.rust, "mods/A/.cao-staging/owner.lock", b"anything");
+    assert_eq!(compare(&sides, &ParityRules).verdict(), Verdict::Equivalent);
+
+    // Presence is the rule: a lock on one side only is Different (and so are
+    // the folders that exist only on that side).
+    let missing = self::sides("owner-lock-missing");
+    write(&missing.oracle, "mods/A/.cao-staging/owner.lock", b"");
+    assert!(broken(&compare(&missing, &ParityRules)).contains(&(
+        "mods/A/.cao-staging/owner.lock".to_owned(),
+        "Same Relative Paths"
+    )));
 }

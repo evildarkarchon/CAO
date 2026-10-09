@@ -75,7 +75,17 @@ pub struct AssetRunAdapters<'a> {
     pub report_phase: Option<ReportPhase<'a>>,
     /// An extra cancellation source, combined with the run's token.
     pub is_cancelled: Option<Box<dyn Fn() -> bool + 'a>>,
+    /// Runs Archive Finalization, which records its own output total,
+    /// attempts and result into the same evidence. It is called only in
+    /// Apply, once the executed phase is recorded; its errors reach the Run
+    /// Executor unchanged. Without one, Apply reports the phase as having no
+    /// requested work.
+    pub finalize_archive_lifecycle: Option<FinalizeArchiveLifecycle<'a>>,
 }
+
+/// Runs Archive Finalization against the run's evidence.
+pub type FinalizeArchiveLifecycle<'a> =
+    Box<dyn FnMut(&RunWorkEvidence<'_, '_>) -> Result<(), Error> + 'a>;
 
 impl<'a> AssetRunAdapters<'a> {
     /// Adapters that only execute Assets.
@@ -85,6 +95,7 @@ impl<'a> AssetRunAdapters<'a> {
             report_progress: None,
             report_phase: None,
             is_cancelled: None,
+            finalize_archive_lifecycle: None,
         }
     }
 }
@@ -439,10 +450,18 @@ pub fn execute_asset_run(
     }
     evidence.publish_diagnostics();
 
-    // No finalizer exists until Archive Finalization records its evidence
-    // (#498), so Apply reports the phase as having no requested work, as C++
-    // did for a run without a finalizer.
-    report(milestones.archive_finalization_available(mode, false)?);
+    let finalizer = adapters.finalize_archive_lifecycle.as_mut();
+    report(milestones.archive_finalization_available(mode, finalizer.is_some())?);
+    // Archive Finalization is a separate mutation boundary: observe cancellation before it.
+    if cancelled() {
+        return finish(true);
+    }
+    // The immutable policy decides: Dry Run never finalizes, whatever the adapters.
+    if mode == ExecutionMode::Apply
+        && let Some(finalize) = finalizer
+    {
+        finalize(evidence)?;
+    }
     finish(cancelled())
 }
 

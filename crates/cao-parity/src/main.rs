@@ -24,8 +24,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use cao_parity::case::{CaseFile, CaseLayout, ProductionDrivers, Side, SideResources, run_case};
 use cao_parity::cases::{fixtures_dir, seed};
 use cao_parity::driver::drive;
+use cao_parity::leftovers::ParityRules;
 use cao_parity::materialise::{Environment, Readiness, can_create_symlinks, materialise};
-use cao_parity::tree::DefaultRules;
 
 const USAGE: &str = "usage: cao-parity <run|corpus|case <id>|calibrate> [options]";
 
@@ -160,7 +160,7 @@ fn case(arguments: &[String]) -> Result<ExitCode> {
         oracle_exe,
         parity_exe: std::env::current_exe().context("locating cao-parity itself")?,
     };
-    match run_case(&layout, &drivers, &DefaultRules, timeout) {
+    match run_case(&layout, &drivers, &ParityRules, timeout) {
         Ok(result) => {
             println!("Case `{id}`");
             println!("  Run facts:   {}", result.facts.name());

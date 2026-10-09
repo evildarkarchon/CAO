@@ -127,10 +127,10 @@ impl SafetyCleanupService for TrackedCleanup {
     }
 }
 
-/// The Safety Cleanup of a run that registers no temporary artifacts.
+/// The injected Safety Cleanup Service of a production run.
 ///
-/// Temporary Ownership arrives with staged publication (#491); its registry
-/// then replaces this as each run's Safety Cleanup Service.
+/// The Run Executor owns each run's Temporary Ownership registry and cleans it
+/// up itself, as C++ did, so nothing else is registered here.
 struct NoTemporaryArtifacts;
 
 impl SafetyCleanupService for NoTemporaryArtifacts {

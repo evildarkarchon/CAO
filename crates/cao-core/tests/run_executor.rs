@@ -13,7 +13,7 @@ use cao_core::run::{
     CancellationToken, ModSelection, PhaseSkipReason, RunConfiguration, RunConfigurationProvider,
     RunEvidenceInvariantPanic, RunExecutor, RunFailure, RunFailureCode, RunOutcome, RunPhase,
     RunPhaseStatus, RunPreparation, RunRequest, RunServices, RunWorkEvidence, RunWorkMilestones,
-    RunWorkService, SelectedProfileFacts, create_run_id,
+    RunWorkService, SelectedProfileFacts, TemporaryArtifactRegistry, create_run_id,
 };
 use common::{
     CallbackConfiguration, CountingCleanup, ScriptedWork, no_work_request, request, scratch_dir,
@@ -466,6 +466,7 @@ impl RunWorkService for FaultyWork {
         &self,
         _preparation: &RunPreparation,
         _evidence: &RunWorkEvidence<'_, '_>,
+        _artifacts: &mut TemporaryArtifactRegistry,
         milestones: &dyn RunWorkMilestones,
         _stop: &CancellationToken,
     ) -> Result<(), Error> {
@@ -541,6 +542,7 @@ fn an_evidence_invariant_violation_panics_only_after_safety_cleanup() {
             &self,
             _preparation: &RunPreparation,
             _evidence: &RunWorkEvidence<'_, '_>,
+            _artifacts: &mut TemporaryArtifactRegistry,
             milestones: &dyn RunWorkMilestones,
             _stop: &CancellationToken,
         ) -> Result<(), Error> {

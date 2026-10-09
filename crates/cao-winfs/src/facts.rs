@@ -179,6 +179,16 @@ impl FileIdentity {
     pub fn is_full_file_id(&self) -> bool {
         self.full_file_id
     }
+
+    /// Whether both objects live on the same volume, as C++ staged publication
+    /// checks before a rename that must never fall back to a copy.
+    ///
+    /// Compares the recorded volume serials. Like C++, it assumes both
+    /// identities came from the same source; a full ID's 64-bit serial and the
+    /// fallback's 32-bit one are not comparable.
+    pub fn same_volume(&self, other: &Self) -> bool {
+        self.volume == other.volume
+    }
 }
 
 fn handle_information(file: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
