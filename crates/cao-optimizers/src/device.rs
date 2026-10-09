@@ -173,13 +173,28 @@ impl GpuDevice {
         })
     }
 
+    /// Whether the DirectCompute encoder takes `format`: the BC6H and BC7
+    /// formats, typeless ones included, which C++ `convertWithCompression`
+    /// sends to it when it has a device.
+    pub fn encodes(format: DXGI_FORMAT) -> bool {
+        matches!(
+            format,
+            DXGI_FORMAT::DXGI_FORMAT_BC6H_TYPELESS
+                | DXGI_FORMAT::DXGI_FORMAT_BC6H_UF16
+                | DXGI_FORMAT::DXGI_FORMAT_BC6H_SF16
+                | DXGI_FORMAT::DXGI_FORMAT_BC7_TYPELESS
+                | DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM
+                | DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM_SRGB
+        )
+    }
+
     /// Encodes `image` to BC6H or BC7 with DirectXTex's DirectCompute encoder,
     /// with the options C++ passes: three-subset BC7 modes and the default
     /// alpha weight.
     ///
     /// # Errors
-    /// The DirectXTex error, for example for any target other than BC6H or
-    /// BC7, which only the CPU encoder handles.
+    /// The DirectXTex error, for example for any target [`GpuDevice::encodes`]
+    /// rejects, which only the CPU encoder handles.
     pub fn compress(
         &self,
         image: &ScratchImage,

@@ -74,10 +74,12 @@ impl OptimizerBackend {
         textures: TextureSettings,
         texture_profile: TextureProfile,
     ) -> Result<Self, ComUnavailable> {
+        // C++ always asks for the first adapter.
         let gpu = GpuDevice::create(0)
             .inspect_err(|error| {
                 log::warn!(
-                    "DirectCompute is not available, using BC6H / BC7 CPU codec.                      Textures compression will be slower ({error})"
+                    "DirectCompute is not available, using BC6H / BC7 CPU codec. \
+                     Textures compression will be slower ({error})"
                 );
             })
             .ok();

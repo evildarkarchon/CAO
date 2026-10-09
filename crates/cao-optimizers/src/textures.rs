@@ -156,20 +156,6 @@ fn is_power_of_two(info: &TexMetadata) -> bool {
     info.width.is_power_of_two() && info.height.is_power_of_two()
 }
 
-/// The formats C++ `convertWithCompression` sends to the GPU encoder when it
-/// has a device, typeless ones included.
-fn is_bc6h_or_bc7(format: DXGI_FORMAT) -> bool {
-    matches!(
-        format,
-        DXGI_FORMAT::DXGI_FORMAT_BC6H_TYPELESS
-            | DXGI_FORMAT::DXGI_FORMAT_BC6H_UF16
-            | DXGI_FORMAT::DXGI_FORMAT_BC6H_SF16
-            | DXGI_FORMAT::DXGI_FORMAT_BC7_TYPELESS
-            | DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM
-            | DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM_SRGB
-    )
-}
-
 /// Why a Texture could not be loaded.
 #[derive(Debug, thiserror::Error)]
 pub enum TextureError {
@@ -504,7 +490,7 @@ impl Texture {
             if self.info.format.is_compressed() || self.image.metadata().format == format {
                 return Ok(false);
             }
-            let image = match gpu.filter(|_| is_bc6h_or_bc7(format)) {
+            let image = match gpu.filter(|_| GpuDevice::encodes(format)) {
                 Some(gpu) => gpu.compress(&self.image, format),
                 // C++ also passed TEX_FILTER_SEPARATE_ALPHA, which Compress ignores.
                 None => self

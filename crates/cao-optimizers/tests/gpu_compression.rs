@@ -8,7 +8,7 @@
 
 mod common;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use cao_core::routing::TextureVariant;
 use cao_optimizers::device::{DeviceUnavailable, GpuDevice};
@@ -116,6 +116,23 @@ fn compress_only() -> TextureRequest {
     }
 }
 
+/// Writes a fresh 64×64 RGBA8 `plain.dds` in a scratch directory named `name`.
+fn plain_texture(name: &str) -> PathBuf {
+    let path = scratch_dir(name).join("plain.dds");
+    write_dds(&path, DXGI_FORMAT_R8G8B8A8_UNORM, 64);
+    path
+}
+
+/// The DDS at `path` encoded to `format` by the CPU encoder, with the flags
+/// CAO passes it: the reference a CPU-encoded Texture must match.
+fn cpu_encoded(path: &Path, format: DXGI_FORMAT) -> ScratchImage {
+    Texture::load(path, TextureVariant::Native)
+        .unwrap()
+        .image()
+        .compress(format, TEX_COMPRESS_DEFAULT, TEX_THRESHOLD_DEFAULT)
+        .unwrap()
+}
+
 /// Loads the DDS at `path`, optimizes it with `gpu`, and returns its pixels.
 fn optimized_pixels(path: &Path, gpu: Option<&GpuDevice>) -> (DXGI_FORMAT, Vec<u8>) {
     let mut texture = Texture::load(path, TextureVariant::Native).unwrap();
@@ -145,9 +162,9 @@ fn an_adapter_the_host_does_not_have_gives_no_device() {
     );
 }
 
-/// The DirectCompute encoder produces BC7 that decodes close to its source,
-/// and it is a different encoder from the CPU one: C++ asks it for three-subset
-/// modes, which the CPU encoder only tries when told to.
+/// The DirectCompute encoder produces BC7 that decodes close to its source.
+/// That it is a different encoder from the CPU one is pinned by
+/// `a_texture_with_a_device_is_compressed_to_bc7_on_the_gpu`.
 #[test]
 fn bc7_is_encoded_on_the_gpu() {
     let gpu = GpuDevice::create(0).unwrap();
@@ -193,20 +210,13 @@ fn the_gpu_encoder_refuses_other_block_formats() {
 /// encoder's bytes, not the CPU encoder's.
 #[test]
 fn a_texture_with_a_device_is_compressed_to_bc7_on_the_gpu() {
-    let dir = scratch_dir("gpu-bc7-texture");
-    let path = dir.join("plain.dds");
-    write_dds(&path, DXGI_FORMAT_R8G8B8A8_UNORM, 64);
+    let path = plain_texture("gpu-bc7-texture");
     let gpu = GpuDevice::create(0).unwrap();
     let source = Texture::load(&path, TextureVariant::Native).unwrap();
     let on_gpu = gpu.compress(source.image(), DXGI_FORMAT_BC7_UNORM).unwrap();
-    let on_cpu = source
-        .image()
-        .compress(
-            DXGI_FORMAT_BC7_UNORM,
-            TEX_COMPRESS_DEFAULT,
-            TEX_THRESHOLD_DEFAULT,
-        )
-        .unwrap();
+    let on_cpu = cpu_encoded(&path, DXGI_FORMAT_BC7_UNORM);
+    // C++ asks the GPU encoder for three-subset modes, which the CPU encoder
+    // only tries when told to, so the two encoders' bytes differ.
     assert_ne!(on_gpu.pixels(), on_cpu.pixels(), "the encoders must differ");
 
     let (format, pixels) = optimized_pixels(&path, Some(&gpu));
@@ -221,20 +231,10 @@ fn a_texture_with_a_device_is_compressed_to_bc7_on_the_gpu() {
 /// are byte-identical (#494).
 #[test]
 fn a_texture_without_a_device_is_compressed_to_bc7_on_the_cpu() {
-    let dir = scratch_dir("cpu-bc7-texture");
-    let path = dir.join("plain.dds");
-    write_dds(&path, DXGI_FORMAT_R8G8B8A8_UNORM, 64);
+    let path = plain_texture("cpu-bc7-texture");
     let gpu = GpuDevice::create(MISSING_ADAPTER).ok();
     assert!(gpu.is_none());
-    let on_cpu = Texture::load(&path, TextureVariant::Native)
-        .unwrap()
-        .image()
-        .compress(
-            DXGI_FORMAT_BC7_UNORM,
-            TEX_COMPRESS_DEFAULT,
-            TEX_THRESHOLD_DEFAULT,
-        )
-        .unwrap();
+    let on_cpu = cpu_encoded(&path, DXGI_FORMAT_BC7_UNORM);
 
     let (format, pixels) = optimized_pixels(&path, gpu.as_ref());
 
@@ -246,19 +246,9 @@ fn a_texture_without_a_device_is_compressed_to_bc7_on_the_cpu() {
 /// C++, so their output stays byte-identical to the oracle's.
 #[test]
 fn other_block_formats_stay_on_the_cpu_with_a_device() {
-    let dir = scratch_dir("gpu-bc1-texture");
-    let path = dir.join("plain.dds");
-    write_dds(&path, DXGI_FORMAT_R8G8B8A8_UNORM, 64);
+    let path = plain_texture("gpu-bc1-texture");
     let gpu = GpuDevice::create(0).unwrap();
-    let on_cpu = Texture::load(&path, TextureVariant::Native)
-        .unwrap()
-        .image()
-        .compress(
-            DXGI_FORMAT_BC1_UNORM,
-            TEX_COMPRESS_DEFAULT,
-            TEX_THRESHOLD_DEFAULT,
-        )
-        .unwrap();
+    let on_cpu = cpu_encoded(&path, DXGI_FORMAT_BC1_UNORM);
     let mut texture = Texture::load(&path, TextureVariant::Native).unwrap();
     let profile = TextureProfile {
         format: DXGI_FORMAT_BC1_UNORM,
