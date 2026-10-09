@@ -69,8 +69,7 @@ fn local_now() -> NaiveDateTime {
 #[derive(Debug, thiserror::Error)]
 pub enum LogError {
     /// The file or its `logs/<profile>/` folder could not be created or opened.
-    /// Worded as C++ `prepareLogFile`'s message, which the GUI shows.
-    #[error("Cannot open log file `{}`: {source}", path.display())]
+    #[error("cannot open the log file at `{}`: {source}", path.display())]
     Open {
         path: PathBuf,
         #[source]
