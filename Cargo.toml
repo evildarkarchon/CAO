@@ -62,7 +62,10 @@ raw-window-handle = "0.6"
 thiserror = "2"
 anyhow = "1"
 log = "0.4"
-chrono = "0.4"
+# The Application Log's timestamps and `cao-gui`'s log-file stamp (#470). Only
+# the local clock is needed; defaults are off here because a member cannot turn
+# off the default features of a workspace dependency.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 rayon = "1"
 # `case.json` and the Rust driver's `RunFacts` JSON (#472).
 serde = { version = "1", features = ["derive"] }

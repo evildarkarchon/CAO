@@ -15,6 +15,8 @@ workspace = true
 
 [dependencies]
 cao-core.workspace = true
+# The Application Log sink's timestamps (#470).
+chrono.workspace = true
 cao-profiles.workspace = true
 # Resolves to CAO's fork through the root `[patch.crates-io]` (#479).
 directxtex.workspace = true
