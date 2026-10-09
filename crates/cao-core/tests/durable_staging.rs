@@ -1,26 +1,12 @@
-//! The producer half of C++ `DurableStagingTests`, ported against
-//! [`TemporaryArtifactRegistry`] and real temporary directories.
+//! C++ `DurableStagingTests`, ported against [`TemporaryArtifactRegistry`] and
+//! real temporary directories: the producer half (#491) and the recovery of
+//! leftover staging (#492). C++ `StagingRecovery::recover` is
+//! [`TemporaryArtifactRegistry::prepare_root`] here, which recovers as it
+//! prepares a Mod Root.
 //!
-//! The scenarios that recover leftover staging belong to #492. Where a C++
-//! scenario ended by recovering, this port instead asserts what recovery
-//! would find: the leftover bytes and the manifest that still owns them.
-//! Left for #492 entirely: `abandonedArchiveEntryIsRecovered`,
-//! `abandonedOutputIsRecovered`, `killedAfterPublicationKeepsDestination` and
-//! `archivePublicationSurvivesProducerTermination` (their recovery halves),
-//! `recoveryAndProductionShareTheOwnershipLock`,
-//! `recoverySkipsMissingSiblingParent`,
-//! `cancelledPreparationPreservesDurableSibling`,
-//! `malformedSiblingOwnershipIsPreserved`,
-//! `uppercaseDdsDestinationUsesRecoverableSibling` (its recovery half),
-//! `meshSiblingRecoveryPreservesOriginal`,
-//! `malformedMeshSiblingOwnershipIsPreserved`,
-//! `animationSiblingRecoveryPreservesOriginal`,
-//! `malformedAnimationSiblingOwnershipIsPreserved` and
-//! `partialScratchIsRecoveredButCorruptOwnershipIsPreserved`.
-//!
-//! Two crash scenarios run a real producer in a child process (this test
-//! binary, re-entered through `CAO_STAGING_CHILD`) and kill it between
-//! publication steps.
+//! Three crash scenarios run a real producer in a child process (this test
+//! binary, re-entered through `CAO_STAGING_CHILD`), kill it between
+//! publication steps, and recover what it left.
 
 mod common;
 
@@ -31,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use cao_core::execution::MutationState;
 use cao_core::run::{
-    CancellationToken, PublicationPolicy, PublicationReceipt, PublicationState, RunFailureCode,
-    TemporaryArtifactRegistry, create_run_id,
+    CancellationToken, PublicationPolicy, PublicationReceipt, PublicationState, RunFailure,
+    RunFailureCode, TemporaryArtifactRegistry, create_run_id,
 };
 use cao_winfs::{Access, Open, Share};
 use common::{canonical, scratch_dir};
@@ -77,6 +63,35 @@ fn renaming_denied(directory: &Path) -> bool {
         }
         Err(_) => true,
     }
+}
+
+/// Recovers `root` with a fresh registry, which is then dropped, returning
+/// any failure.
+fn recover(root: &Path) -> Option<RunFailure> {
+    registry()
+        .prepare_root(root, &CancellationToken::new())
+        .unwrap()
+}
+
+/// Asserts that `root`'s leftover staging recovers.
+fn assert_recovered(root: &Path) {
+    let failure = recover(root);
+    assert!(failure.is_none(), "{failure:?}");
+}
+
+/// Rewrites the manifest record of `temporary`, a staged sibling, to name
+/// `replacement` instead, as someone editing the manifest would.
+fn forge_sibling_record(root: &Path, temporary: &Path, replacement: &str) {
+    let manifest = staging(root).join("ownership.manifest");
+    let relative = temporary
+        .strip_prefix(root)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .replace('\\', "/");
+    let text = read(&manifest);
+    assert!(text.contains(&relative), "{text}");
+    std::fs::write(&manifest, text.replace(&relative, replacement)).unwrap();
 }
 
 /// Safety Cleanup removes partial Archive entries and the run child, keeps a
@@ -219,10 +234,6 @@ fn siblings_use_their_asset_namespace_and_a_lowercase_extension() {
         assert!(registry.cleanup().is_empty());
         assert!(!sibling.exists());
         assert_eq!(read(&destination), "original");
-        // Each registry's leftover staging blocks the next until #492; clear
-        // it once the registry has released its pins and lock.
-        drop(registry);
-        std::fs::remove_dir_all(staging(&root)).unwrap();
     }
 }
 
@@ -507,7 +518,7 @@ fn a_receipt_moves_and_publishes_once() {
 }
 
 /// A receipt cannot act for a registry that has been dropped; its staged
-/// file stays owned by the manifest for recovery.
+/// file stays owned by the manifest, and recovery removes it.
 #[test]
 fn an_ended_scope_cannot_publish() {
     let root = mod_root("ended-scope");
@@ -530,6 +541,9 @@ fn an_ended_scope_cannot_publish() {
     let relative = temporary.strip_prefix(staging(&root)).unwrap();
     let record = format!("F \"{}\"", relative.to_str().unwrap().replace('\\', "/"));
     assert!(manifest(&root).contains(&record), "{}", manifest(&root));
+
+    assert_recovered(&root);
+    assert!(!temporary.exists());
 }
 
 /// Asset publication cannot redirect its staged bytes to another destination.
@@ -728,7 +742,7 @@ fn asset_publication_rejects_an_in_place_destination_edit() {
 
 /// A failed release after publication keeps the committed destination,
 /// reports it as Committed but unsafe, and leaves ownership with the manifest
-/// while the run still holds the lock.
+/// while the run still holds the lock. A later recovery keeps the destination.
 #[test]
 fn a_release_failure_preserves_the_committed_destination() {
     let root = mod_root("release-failure");
@@ -763,42 +777,317 @@ fn a_release_failure_preserves_the_committed_destination() {
         .expect("the owning run still holds the lock");
     assert_eq!(active.code, RunFailureCode::StagingActive);
     assert_eq!(active.path, staging(&root).join("owner.lock"));
+
+    // Once the run ends, recovery skips the moved temporary and never follows
+    // it to the committed destination.
+    drop(registry);
+    assert_recovered(&root);
+    assert!(!scratch.exists());
+    assert!(!temporary.exists());
+    assert_eq!(read(&destination), "committed entry");
 }
 
-/// Preparing fails closed on staging it cannot yet recover (#492), and on
-/// unknown names in the reserved namespace, without touching either.
+/// An unknown name in the reserved namespace fails closed, with or without
+/// staging beside it, unless the manifest owns it; nothing is touched.
 #[test]
-fn preparing_fails_closed_on_existing_or_unknown_staging() {
-    let root = mod_root("existing-staging");
+fn an_unknown_staging_like_name_fails_closed() {
+    let root = mod_root("unknown-staging");
+    let unknown = root.join(".CAO-STAGING-old");
+    std::fs::create_dir(&unknown).unwrap();
+    let failure = recover(&root).expect("an unknown staging-like name fails closed");
+    assert_eq!(failure.code, RunFailureCode::StagingOwnershipUnverified);
+    assert_eq!(failure.path, unknown);
+
+    // Recoverable staging beside it does not make the name owned.
     {
         let mut producer = registry();
+        std::fs::remove_dir(&unknown).unwrap();
         let sibling = producer
             .stage_file(&root, &root.join("texture.dds"))
             .unwrap();
         std::fs::write(&sibling.path, "partial").unwrap();
     }
+    std::fs::create_dir(&unknown).unwrap();
     let before = common::snapshot_tree(&root);
-    let mut next = registry();
-    let failure = next
-        .prepare_root(&root, &CancellationToken::new())
-        .unwrap()
-        .expect("existing staging is not adopted");
+    let failure = recover(&root).expect("an unowned staging-like name fails closed");
     assert_eq!(failure.code, RunFailureCode::StagingOwnershipUnverified);
+    assert_eq!(failure.path, unknown);
     assert!(
         failure.detail.contains("Inspect ownership.manifest"),
         "{}",
         failure.detail
     );
     assert_eq!(common::snapshot_tree(&root), before);
+}
 
-    let unknown_root = mod_root("unknown-staging");
-    std::fs::create_dir(unknown_root.join(".CAO-STAGING-old")).unwrap();
-    let failure = registry()
-        .prepare_root(&unknown_root, &CancellationToken::new())
+/// Arbitrary extracted Archive bytes remain recoverable after their producer
+/// ends without cleanup: the entry and its run child go.
+#[test]
+fn an_abandoned_archive_entry_is_recovered() {
+    let root = mod_root("abandoned-archive-entry");
+    let temporary = {
+        let mut registry = registry();
+        let temporary = registry.stage_archive_file(&root).unwrap().path;
+        assert!(temporary.is_file());
+        assert_eq!(std::fs::metadata(&temporary).unwrap().len(), 0);
+        let child = temporary.parent().unwrap();
+        assert_eq!(child.parent().unwrap(), staging(&root));
+        assert!(
+            child
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("run-")
+        );
+        std::fs::write(&temporary, "arbitrary Archive script bytes").unwrap();
+        temporary
+    };
+
+    assert_recovered(&root);
+
+    assert!(!temporary.exists());
+    assert!(!temporary.parent().unwrap().exists());
+}
+
+/// An interrupted Texture's sibling is owned durably, so recovery removes it
+/// and keeps the original.
+#[test]
+fn abandoned_output_is_recovered() {
+    let root = mod_root("abandoned-output");
+    let destination = root.join("texture.dds");
+    std::fs::write(&destination, "original").unwrap();
+    let temporary = {
+        let mut registry = registry();
+        let temporary = registry.stage_file(&root, &destination).unwrap().path;
+        assert!(temporary.is_file());
+        assert_eq!(temporary.parent(), destination.parent());
+        std::fs::write(&temporary, "partial").unwrap();
+        temporary
+    };
+
+    assert_recovered(&root);
+
+    assert!(!temporary.exists());
+    assert_eq!(read(&destination), "original");
+}
+
+/// A stale record of a missing temporary does not block a later producer,
+/// which keeps the recovered lock and stages in the recovered area.
+#[test]
+fn recovery_and_production_share_the_ownership_lock() {
+    let root = mod_root("shared-lock");
+    {
+        let mut first = registry();
+        let staged = first.stage_file(&root, &root.join("texture.dds")).unwrap();
+        // This disk state also stands for a registration flushed before the
+        // exclusive creation of its file.
+        std::fs::remove_file(&staged.path).unwrap();
+    }
+    let mut second = registry();
+    let failure = second
+        .prepare_root(&root, &CancellationToken::new())
+        .unwrap();
+    assert!(failure.is_none(), "{failure:?}");
+    let contender = recover(&root).expect("the recovering run holds the lock");
+    assert_eq!(contender.code, RunFailureCode::StagingActive);
+
+    let next = second.stage_file(&root, &root.join("texture.dds")).unwrap();
+    assert!(next.path.exists());
+    assert!(second.cleanup().is_empty());
+    assert!(!next.path.exists());
+    assert!(root.exists());
+}
+
+/// A cancelled preparation recovers nothing: the durable sibling stays for a
+/// later run, and cancellation is not a failure.
+#[test]
+fn a_cancelled_preparation_preserves_the_durable_sibling() {
+    let root = mod_root("cancelled-recovery");
+    let temporary = {
+        let mut producer = registry();
+        let temporary = producer
+            .stage_file(&root, &root.join("texture.dds"))
+            .unwrap()
+            .path;
+        std::fs::write(&temporary, "partial").unwrap();
+        temporary
+    };
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+
+    let failure = registry().prepare_root(&root, &cancellation).unwrap();
+
+    assert!(failure.is_none(), "{failure:?}");
+    assert!(temporary.exists());
+}
+
+/// A missing sibling, and even its removed parent, do not invalidate the
+/// manifest's ownership.
+#[test]
+fn recovery_skips_a_missing_sibling_parent() {
+    let root = mod_root("missing-sibling-parent");
+    let parent = root.join("textures").join("nested");
+    std::fs::create_dir_all(&parent).unwrap();
+    let temporary = registry()
+        .stage_file(&root, &parent.join("texture.dds"))
         .unwrap()
-        .expect("an unknown staging-like name fails closed");
+        .path;
+    std::fs::remove_file(&temporary).unwrap();
+    std::fs::remove_dir(&parent).unwrap();
+
+    assert_recovered(&root);
+
+    assert!(!temporary.exists());
+}
+
+/// A malformed sibling record cannot authorize deleting a similarly named
+/// Texture file: the whole manifest is untrusted, so even the real sibling
+/// stays.
+#[test]
+fn malformed_sibling_ownership_is_preserved() {
+    let root = mod_root("malformed-sibling");
+    std::fs::create_dir(root.join("textures")).unwrap();
+    let temporary = {
+        let mut producer = registry();
+        let temporary = producer
+            .stage_file(&root, &root.join("textures").join("texture.dds"))
+            .unwrap()
+            .path;
+        std::fs::write(&temporary, "partial").unwrap();
+        temporary
+    };
+    forge_sibling_record(
+        &root,
+        &temporary,
+        "textures/.cao-staging-texture-wrong-short.dds",
+    );
+
+    let failure = recover(&root).expect("a malformed sibling record is untrusted");
+
     assert_eq!(failure.code, RunFailureCode::StagingOwnershipUnverified);
-    assert_eq!(failure.path, unknown_root.join(".CAO-STAGING-old"));
+    assert!(temporary.exists());
+}
+
+/// An uppercase native Texture destination still stages a sibling in the
+/// canonical lowercase form that recovery accepts.
+#[test]
+fn an_uppercase_dds_destination_uses_a_recoverable_sibling() {
+    let root = mod_root("uppercase-dds");
+    let temporary = {
+        let mut producer = registry();
+        let temporary = producer
+            .stage_file(&root, &root.join("Texture.DDS"))
+            .unwrap()
+            .path;
+        assert_eq!(temporary.extension().unwrap(), "dds");
+        std::fs::write(&temporary, "partial").unwrap();
+        temporary
+    };
+
+    assert_recovered(&root);
+
+    assert!(!temporary.exists());
+}
+
+/// Abandoned Mesh and Animation siblings, for every Mesh extension, are
+/// recovered beside their untouched originals.
+#[test]
+fn mesh_and_animation_sibling_recovery_preserves_the_original() {
+    for (relative, prefix) in [
+        ("meshes/Mesh.NIF", ".cao-staging-mesh-"),
+        ("meshes/Terrain.BTR", ".cao-staging-mesh-"),
+        ("meshes/Terrain.BTO", ".cao-staging-mesh-"),
+        ("animations/Walk.HKX", ".cao-staging-animation-"),
+    ] {
+        let root = mod_root(&format!("sibling-recovery-{}", relative.replace('/', "-")));
+        let destination = root.join(relative);
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::write(&destination, "original").unwrap();
+        let temporary = {
+            let mut producer = registry();
+            let temporary = producer.stage_file(&root, &destination).unwrap().path;
+            assert_eq!(temporary.parent(), destination.parent());
+            assert!(
+                temporary
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(prefix)
+            );
+            std::fs::write(&temporary, "partial").unwrap();
+            temporary
+        };
+
+        assert_recovered(&root);
+
+        assert!(!temporary.exists(), "{relative}");
+        assert_eq!(read(&destination), "original", "{relative}");
+    }
+}
+
+/// A sibling record whose extension does not belong to its Asset prefix
+/// cannot authorize deleting a real file of that name: a `.dds` under the
+/// Mesh prefix, and a Mesh extension under the Animation prefix.
+#[test]
+fn a_mismatched_sibling_extension_cannot_authorize_deletion() {
+    for (destination, extension) in [("mesh.nif", "dds"), ("walk.hkx", "nif")] {
+        let root = mod_root(&format!("mismatched-sibling-{destination}"));
+        let temporary = {
+            let mut producer = registry();
+            let temporary = producer
+                .stage_file(&root, &root.join(destination))
+                .unwrap()
+                .path;
+            std::fs::write(&temporary, "partial").unwrap();
+            temporary
+        };
+        let invalid = temporary.with_extension(extension);
+        // A real, similarly named file proves recovery refuses the record
+        // before deleting anything.
+        std::fs::write(&invalid, "unowned evidence").unwrap();
+        forge_sibling_record(
+            &root,
+            &temporary,
+            invalid.file_name().unwrap().to_str().unwrap(),
+        );
+
+        let failure = recover(&root).expect("a mismatched sibling record is untrusted");
+
+        assert_eq!(failure.code, RunFailureCode::StagingOwnershipUnverified);
+        assert_eq!(read(&temporary), "partial");
+        assert_eq!(read(&invalid), "unowned evidence");
+    }
+}
+
+/// An interrupted scratch snapshot is disposable under a valid manifest, but
+/// a corrupt manifest leaves both it and the owned entries in place.
+#[test]
+fn partial_scratch_is_recovered_but_corrupt_ownership_is_preserved() {
+    let root = mod_root("partial-scratch");
+    let scratch = staging(&root).join("ownership.manifest.next");
+    let temporary = registry()
+        .stage_file(&root, &root.join("texture.dds"))
+        .unwrap()
+        .path;
+    std::fs::write(&scratch, "partial replacement").unwrap();
+
+    assert_recovered(&root);
+
+    assert!(!temporary.exists());
+    assert!(!scratch.exists());
+
+    let temporary = registry()
+        .stage_file(&root, &root.join("texture.dds"))
+        .unwrap()
+        .path;
+    std::fs::write(staging(&root).join("ownership.manifest"), "corrupt").unwrap();
+    std::fs::write(&scratch, "must stay").unwrap();
+
+    let failure = recover(&root).expect("a corrupt manifest is untrusted");
+
+    assert_eq!(failure.code, RunFailureCode::StagingOwnershipUnverified);
+    assert!(temporary.exists());
+    assert_eq!(read(&scratch), "must stay");
 }
 
 /// The child-process producer: what it does is chosen by
@@ -814,23 +1103,43 @@ fn staging_crash_child() {
     };
     let root = PathBuf::from(root);
     let destination = root.join("texture.dds");
+    let scratch = staging(&root).join("ownership.manifest.next");
+    // The registry, and with it the ownership lock, lives until the kill.
     let mut registry = registry();
-    let receipt = registry
-        .capture_and_stage_file(&root, &destination)
-        .unwrap();
     let message = match mode.as_str() {
         // Killed with half-written output in its staged sibling.
         "before-publication" => {
+            let receipt = registry
+                .capture_and_stage_file(&root, &destination)
+                .unwrap();
             std::fs::write(staged(&receipt), "half-writ").unwrap();
             staged(&receipt).display().to_string()
         }
         // Killed after the destination was published but before the
         // manifest released the temporary name.
         "after-publication" => {
+            let receipt = registry
+                .capture_and_stage_file(&root, &destination)
+                .unwrap();
             std::fs::write(staged(&receipt), "converted").unwrap();
-            let scratch = staging(&root).join("ownership.manifest.next");
-            std::fs::write(scratch, "occupied scratch").unwrap();
+            std::fs::write(&scratch, "occupied scratch").unwrap();
             let result = receipt.publish(&destination, PublicationPolicy::Replace);
+            assert_eq!(result.state, PublicationState::PublishedStillOwned);
+            "published-still-owned".to_owned()
+        }
+        // Killed after one Archive entry was published but not released,
+        // with a second entry abandoned in the run child.
+        "archive-after-publication" => {
+            let published = registry.stage_archive_file_for_publication(&root).unwrap();
+            let abandoned = registry.stage_archive_file_for_publication(&root).unwrap();
+            std::fs::write(staged(&published), "committed entry").unwrap();
+            std::fs::write(staged(&abandoned), "abandoned entry").unwrap();
+            // Occupied after both stages, so only the release fails.
+            std::fs::write(&scratch, "occupied scratch").unwrap();
+            let result = published.publish(
+                &root.join("scripts").join("entry.pex"),
+                PublicationPolicy::NoReplace,
+            );
             assert_eq!(result.state, PublicationState::PublishedStillOwned);
             "published-still-owned".to_owned()
         }
@@ -905,7 +1214,7 @@ fn crash_child(mode: &str, root: &Path) -> (CrashChild, String) {
 
 /// Spec (#491): a producer killed after writing its staged output but before
 /// publication leaves the original Texture whole; the partial bytes stay in
-/// a sibling the manifest owns.
+/// a sibling the manifest owns, and the next run recovers them (#492).
 #[test]
 fn a_crash_before_publication_leaves_the_texture_untouched() {
     let root = mod_root("crash-before-publication");
@@ -914,10 +1223,7 @@ fn a_crash_before_publication_leaves_the_texture_untouched() {
 
     let (mut child, report) = crash_child("before-publication", &root);
     let sibling = PathBuf::from(report);
-    let active = registry()
-        .prepare_root(&root, &CancellationToken::new())
-        .unwrap()
-        .expect("the live producer owns staging");
+    let active = recover(&root).expect("the live producer owns staging");
     assert_eq!(active.code, RunFailureCode::StagingActive);
     child.kill();
 
@@ -925,11 +1231,16 @@ fn a_crash_before_publication_leaves_the_texture_untouched() {
     assert_eq!(read(&sibling), "half-writ");
     let name = sibling.file_name().unwrap().to_string_lossy();
     assert!(manifest(&root).contains(&format!("S \"{name}\"")));
+
+    assert_recovered(&root);
+    assert!(!sibling.exists());
+    assert_eq!(read(&destination), "original");
 }
 
 /// Spec (#491): a producer killed between publication and the ownership
 /// release leaves the complete Texture in place, never a half-written one;
-/// the manifest still names the moved temporary for recovery to skip.
+/// the manifest still names the moved temporary, and recovery skips it
+/// rather than following it to the destination (#492).
 #[test]
 fn a_crash_after_publication_keeps_the_complete_texture() {
     let root = mod_root("crash-after-publication");
@@ -937,10 +1248,7 @@ fn a_crash_after_publication_keeps_the_complete_texture() {
     std::fs::write(&destination, "original").unwrap();
 
     let (mut child, _) = crash_child("after-publication", &root);
-    let active = registry()
-        .prepare_root(&root, &CancellationToken::new())
-        .unwrap()
-        .expect("the live producer owns staging");
+    let active = recover(&root).expect("the live producer owns staging");
     assert_eq!(active.code, RunFailureCode::StagingActive);
     child.kill();
 
@@ -952,4 +1260,34 @@ fn a_crash_after_publication_keeps_the_complete_texture() {
         .collect();
     assert!(siblings.is_empty(), "{siblings:?}");
     assert!(manifest(&root).contains("S \".cao-staging-texture-"));
+
+    assert_recovered(&root);
+    assert_eq!(read(&destination), "converted");
+    assert!(!staging(&root).join("ownership.manifest.next").exists());
+}
+
+/// A killed producer's published Archive entry survives recovery, which
+/// removes its abandoned sibling entry, the run child and the scratch
+/// snapshot, and touches nothing else.
+#[test]
+fn an_archive_publication_survives_producer_termination() {
+    let root = mod_root("crash-archive-publication");
+    let destination = root.join("scripts").join("entry.pex");
+    std::fs::create_dir(destination.parent().unwrap()).unwrap();
+    let unrelated = root.join("unrelated.txt");
+    std::fs::write(&unrelated, "keep this").unwrap();
+
+    let (mut child, _) = crash_child("archive-after-publication", &root);
+    let active = recover(&root).expect("the live producer owns staging");
+    assert_eq!(active.code, RunFailureCode::StagingActive);
+    child.kill();
+
+    assert_recovered(&root);
+
+    assert_eq!(read(&destination), "committed entry");
+    assert_eq!(read(&unrelated), "keep this");
+    for entry in std::fs::read_dir(staging(&root)).unwrap() {
+        assert!(!entry.unwrap().file_type().unwrap().is_dir());
+    }
+    assert!(!staging(&root).join("ownership.manifest.next").exists());
 }

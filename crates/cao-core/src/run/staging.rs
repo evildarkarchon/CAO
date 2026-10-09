@@ -10,13 +10,18 @@
 //! entry, so a crash at any point leaves every temporary path named in the
 //! manifest that owns it.
 //!
-//! Recovery of existing staging is #492. Until it lands, [`StagingScope::prepare_root`]
-//! fails closed on any existing `.cao-staging`: it reports `StagingActive`
-//! when another process holds the lock, and `StagingOwnershipUnverified`
-//! otherwise, and never touches the contents.
+//! [`StagingScope::prepare_root`] recovers a crashed run's leftover staging
+//! (#492), v1 to v3 and C++-written alike; see the `recovery` module. It
+//! reports `StagingActive` while another process holds the lock, and fails
+//! closed with `StagingOwnershipUnverified` on staging it cannot prove it
+//! owns, before deleting anything. Once deletion has begun, an entry whose
+//! parent changed is still `StagingOwnershipUnverified`, and any other
+//! removal failure is `StagingRecoveryFailed`.
 //!
 //! This scope belongs to one run on its Run Worker. Dropping it releases its
 //! pins and the ownership lock without deleting either control file.
+
+mod recovery;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -31,6 +36,7 @@ use cao_winfs::{
 };
 
 use crate::run::{CancellationToken, RunFailure, RunFailureCode, RunId, RunPhase, is_staging_name};
+use recovery::Halt;
 
 /// The reserved staging directory beneath every Mod Root.
 pub(crate) const STAGING_DIRECTORY: &str = ".cao-staging";
@@ -168,22 +174,30 @@ impl StagingScope {
         }
     }
 
-    /// Checks a canonical Mod Root before any work, during Apply Preparing,
+    /// Prepares a canonical Mod Root before any work, during Apply Preparing,
     /// and keeps it pinned against rename until this scope is dropped.
     ///
-    /// Absent staging is not created. Any existing `.cao-staging`, and any
-    /// other name in the reserved namespace, fails closed until recovery is
-    /// ported (#492). Cancellation returns no failure; the executor observes
-    /// the same token.
+    /// Absent staging is not created. Existing staging is recovered: once its
+    /// ownership is proven, every recorded entry still present is removed,
+    /// and this scope keeps the recovered `owner.lock` and reuses the area.
+    /// A failure names the affected path and says what to do:
+    /// `StagingActive` while another process owns the area, and
+    /// `StagingOwnershipUnverified` when ownership cannot be proven, which
+    /// deletes nothing. After deletion began, the remaining entries stay
+    /// owned: an entry whose parent changed is `StagingOwnershipUnverified`,
+    /// and any other removal failure `StagingRecoveryFailed`. Cancellation
+    /// returns no failure; the executor observes the same token.
     pub(crate) fn prepare_root(
         &mut self,
         mod_root: &Path,
         stop: &CancellationToken,
     ) -> Option<RunFailure> {
+        const REMAINING: &str = " Leave remaining staging in place; check permissions and \
+                                 ownership before retrying recovery.";
         let staging = mod_root.join(STAGING_DIRECTORY);
-        match self.check_root(mod_root, &staging, stop) {
-            Ok(()) => None,
-            Err(StagingError::Ownership { code, path, detail }) => {
+        match self.recover(mod_root, &staging, stop) {
+            Ok(()) | Err(Halt::Cancelled) => None,
+            Err(Halt::Failed(StagingError::Ownership { code, path, detail })) => {
                 let guidance = if code == RunFailureCode::StagingActive {
                     " Wait for the owning CAO run to finish, then retry."
                 } else {
@@ -195,75 +209,24 @@ impl StagingScope {
                         .with_path(path),
                 )
             }
-            Err(error) => Some(
+            // A filesystem error before deletion began still leaves ownership unproven.
+            Err(Halt::Failed(error)) => Some(
                 RunFailure::new(
                     RunFailureCode::StagingOwnershipUnverified,
                     RunPhase::Preparing,
-                    format!(
-                        "{error} Leave remaining staging in place; check permissions and \
-                         ownership before retrying recovery."
-                    ),
+                    format!("{error}{REMAINING}"),
                 )
                 .with_path(staging),
             ),
+            Err(Halt::RecoveryFailed { path, error }) => Some(
+                RunFailure::new(
+                    RunFailureCode::StagingRecoveryFailed,
+                    RunPhase::Preparing,
+                    format!("{error}{REMAINING}"),
+                )
+                .with_path(path),
+            ),
         }
-    }
-
-    /// [`Self::prepare_root`]'s checks, as C++ `recover` runs them before its
-    /// manifest pass.
-    fn check_root(
-        &mut self,
-        mod_root: &Path,
-        staging: &Path,
-        stop: &CancellationToken,
-    ) -> Result<(), StagingError> {
-        if stop.is_cancelled() || self.areas.contains_key(mod_root) {
-            return Ok(());
-        }
-        // Pin even a clean root: discovery and publication still address it by pathname.
-        let root_pin = pin_directory(mod_root)?;
-        let mut unknown = Vec::new();
-        let entries = std::fs::read_dir(mod_root).map_err(StagingError::io("Read", mod_root))?;
-        for entry in entries {
-            if stop.is_cancelled() {
-                return Ok(());
-            }
-            let entry = entry.map_err(StagingError::io("Read", mod_root))?;
-            let name = entry.file_name();
-            if is_staging_name(&name) && name != STAGING_DIRECTORY {
-                unknown.push(entry.path());
-            }
-        }
-        let Some(metadata) = inspect(staging)? else {
-            if let Some(path) = unknown.first() {
-                return Err(StagingError::unverified(
-                    path,
-                    "An unknown staging-like name collides with the reserved namespace.",
-                ));
-            }
-            self.pins.push(root_pin);
-            return Ok(());
-        };
-        if !metadata.is_dir() {
-            return Err(StagingError::unverified(
-                staging,
-                "The reserved staging name is not a directory.",
-            ));
-        }
-        let _staging_pin = pin_directory(staging)?;
-        let lock = staging.join(OWNER_LOCK);
-        if !inspect(&lock)?.is_some_and(|metadata| metadata.is_file()) {
-            return Err(StagingError::unverified(
-                staging,
-                "The staging ownership lock is missing.",
-            ));
-        }
-        // Proves whether a live run owns the area before saying anything else.
-        let _lock = claim_lock(&lock, OwnerLock::open_existing)?;
-        Err(StagingError::unverified(
-            staging,
-            "Existing staging needs recovery, which this build cannot perform yet.",
-        ))
     }
 
     /// Registers a unique sibling of `destination` durably, then exclusively

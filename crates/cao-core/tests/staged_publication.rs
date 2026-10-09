@@ -2,6 +2,7 @@
 //! is staged and published atomically, its mutation fact reaches Run
 //! Evidence, Safety Cleanup always runs, Quarantine renames Textures that
 //! fail to load (and only Textures), and Dry Run never touches staging.
+//! Apply Preparing also recovers a crashed run's leftover staging (#492).
 //!
 //! These run the production shape of the work service ([`BackendWork`]) over
 //! real temporary directories; the fake backend's file-name markers choose
@@ -16,7 +17,8 @@ use cao_core::execution::{AssetExecutionFailure, MutationState};
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     InlineRunScheduler, MutationKind, OptimizationRunResult, OptimizationRunService,
-    RunFailureCode, RunOutcome, RunPhase, RunRequest, RunWorkService,
+    RunFailureCode, RunOutcome, RunPhase, RunRequest, RunWorkService, TemporaryArtifactRegistry,
+    create_run_id,
 };
 use cao_winfs::OwnerLock;
 use common::{BackendWork, canonical, scratch_dir, snapshot_tree, test_configuration, write_tree};
@@ -384,10 +386,79 @@ fn apply_preparing_fails_on_active_staging() {
     assert_eq!(snapshot_tree(&root), before);
 }
 
-/// Until recovery lands (#492), Apply Preparing fails closed on leftover
-/// staging it cannot verify, naming the path and leaving it untouched.
+/// Leaves the staging of a run that crashed while staging `destination`: a
+/// partial sibling that the manifest still owns. Returns the sibling.
+fn crashed_run_leftover(root: &Path, destination: &str) -> PathBuf {
+    let mut crashed = TemporaryArtifactRegistry::new(create_run_id());
+    let sibling = crashed.stage_file(root, &root.join(destination)).unwrap();
+    std::fs::write(&sibling.path, "partial output").unwrap();
+    // Dropping the registry without Safety Cleanup is what a crash leaves.
+    sibling.path
+}
+
+/// Spec (#492): Apply Preparing recovers a crashed run's leftover staging
+/// before any work, then stages this run's output in the same area.
 #[test]
-fn apply_preparing_fails_closed_on_leftover_staging() {
+fn apply_recovers_leftover_staging_before_any_work() {
+    let root = mod_root("leftover-recovered", &["textures/a_changes.dds"]);
+    let abandoned = crashed_run_leftover(&root, "textures/a_changes.dds");
+
+    let result = run(
+        Arc::new(BackendWork::new()),
+        apply(&root, &[RequestedWork::NativeTextureOptimization]),
+    );
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.failures()
+    );
+    assert!(!abandoned.exists());
+    assert_eq!(result.asset_attempts().len(), 1);
+    assert_eq!(names(&root.join("textures")), ["a_changes.dds"]);
+    assert_eq!(
+        read(&root.join("textures/a_changes.dds")),
+        "optimized a_changes.dds"
+    );
+    let staging = root.join(".cao-staging");
+    assert_eq!(names(&staging), ["owner.lock", "ownership.manifest"]);
+    let manifest = read(&staging.join("ownership.manifest"));
+    assert!(manifest.contains(&format!("\"run-{}-", result.run_id())));
+}
+
+/// Spec (#492, story 45): a Dry Run never recovers leftover staging, even
+/// staging an Apply run would recover.
+#[test]
+fn a_dry_run_never_recovers_leftover_staging() {
+    let root = mod_root("dry-run-leftover", &["textures/a_changes.dds"]);
+    let abandoned = crashed_run_leftover(&root, "textures/a_changes.dds");
+    let before = snapshot_tree(&root);
+
+    let result = run(
+        Arc::new(BackendWork::new()),
+        common::request(
+            ExecutionMode::DryRun,
+            &root,
+            &[RequestedWork::NativeTextureOptimization],
+        ),
+    );
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.failures()
+    );
+    assert_eq!(read(&abandoned), "partial output");
+    assert_eq!(snapshot_tree(&root), before);
+}
+
+/// Spec (#492): Apply Preparing fails closed on leftover staging whose
+/// manifest it cannot verify, naming the manifest, saying what to do, and
+/// leaving everything untouched.
+#[test]
+fn apply_preparing_fails_closed_on_unverifiable_staging() {
     let root = mod_root(
         "leftover-staging",
         &[
@@ -406,7 +477,13 @@ fn apply_preparing_fails_closed_on_leftover_staging() {
     assert_eq!(result.outcome(), RunOutcome::Failed);
     let failure = &result.failures()[0];
     assert_eq!(failure.code, RunFailureCode::StagingOwnershipUnverified);
-    assert_eq!(failure.path, root.join(".cao-staging"));
+    assert_eq!(failure.phase, RunPhase::Preparing);
+    assert_eq!(failure.path, root.join(".cao-staging/ownership.manifest"));
+    assert!(
+        failure.detail.contains("Inspect ownership.manifest"),
+        "{}",
+        failure.detail
+    );
     assert!(result.asset_attempts().is_empty());
     assert_eq!(snapshot_tree(&root), before);
 }

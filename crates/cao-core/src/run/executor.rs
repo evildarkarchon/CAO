@@ -413,9 +413,9 @@ impl RunExecutor {
             }
         }
 
-        // Apply Preparing checks each Mod Root's staging before any work, and
-        // pins the root; recovering verified stale staging is #492. Dry Run
-        // never inspects, creates or cleans staging.
+        // Apply Preparing recovers each Mod Root's leftover staging before any
+        // work, and pins the root. Dry Run never inspects, creates, recovers or
+        // cleans staging.
         if let Some(prepared) = &preparation
             && !failed
             && request.execution_mode() == ExecutionMode::Apply

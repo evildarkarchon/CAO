@@ -278,12 +278,17 @@ impl TemporaryArtifactRegistry {
         }
     }
 
-    /// Checks a canonical Mod Root during Apply Preparing and keeps it pinned.
+    /// Prepares a canonical Mod Root during Apply Preparing, recovering its
+    /// leftover staging, and keeps it pinned.
     ///
-    /// Absent staging is not created. Existing staging fails closed until
-    /// recovery is ported (#492): `StagingActive` while another process owns
-    /// it, `StagingOwnershipUnverified` otherwise. Cancellation stops the
-    /// check without a failure.
+    /// Absent staging is not created. Leftover staging from a crashed run, v1
+    /// to v3 and C++-written alike, is recovered, and the run keeps its lock.
+    /// The returned failure names the affected path: `StagingActive` while
+    /// another process owns it, `StagingOwnershipUnverified` when ownership
+    /// cannot be proven, and `StagingRecoveryFailed` when a removal fails
+    /// after deletion began. Proving ownership deletes nothing; see
+    /// `StagingScope::prepare_root` for failures during deletion.
+    /// Cancellation stops preparation without a failure.
     ///
     /// # Errors
     /// [`StagingError::Invalid`] after Safety Cleanup closed registration.
