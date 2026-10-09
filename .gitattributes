@@ -8,3 +8,6 @@ crates/cao-profiles/tests/fixtures/qt-read/** -text
 # nifly's own NIF fixtures, vendored at the pin. The nifly-sys tests compare each
 # saved Mesh with its `_expected.nif` byte for byte.
 crates/nifly-sys/vendor/nifly/tests/*.nif binary
+# CAO-STAGING manifests, two of them written by the C++ oracle. The staging recovery
+# tests reuse every byte but the Mod Root line, so git must never convert them.
+crates/cao-core/tests/fixtures/staging/*.manifest -text
