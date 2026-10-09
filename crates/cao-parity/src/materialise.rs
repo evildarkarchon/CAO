@@ -310,6 +310,19 @@ fn validate(case: &CaseFile, roots: &[&Path]) -> Result<(), HarnessError> {
         .into_iter()
         .flatten()
     });
+    for operation in &case.tree.fs_shape {
+        if let FsShape::Junction { path, target, .. } = operation
+            && let Some(unsafe_path) = [path, target]
+                .into_iter()
+                .find(|path| path.contains(CMD_METACHARACTERS))
+        {
+            return Err(invalid_entry(
+                unsafe_path,
+                "a junction path may not hold `&`, `^`, `|`, `%`, `<`, `>` or `\"`, \
+                 which `cmd` would interpret",
+            ));
+        }
+    }
     let mut written: Vec<String> = Vec::new();
     for (index, (path, reserved)) in content.chain(shaped).enumerate() {
         let components = components(path)?;
@@ -359,13 +372,11 @@ fn validate(case: &CaseFile, roots: &[&Path]) -> Result<(), HarnessError> {
 /// Splits a recipe path into its components, which must all be plain names.
 fn components(path: &str) -> Result<Vec<&str>, HarnessError> {
     let components: Vec<&str> = path.split('/').collect();
-    let plain = |component: &&str| {
-        !component.is_empty()
-            && *component != "."
-            && *component != ".."
-            && !component.contains(['\\', ':'])
-    };
-    if !components.iter().all(plain) || is_harness_owned(components[0]) {
+    if !components
+        .iter()
+        .all(|component| is_plain_component(component))
+        || is_harness_owned(components[0])
+    {
         return Err(invalid_entry(
             path,
             "not a `/`-separated path inside the case tree",
@@ -373,6 +384,21 @@ fn components(path: &str) -> Result<Vec<&str>, HarnessError> {
     }
     Ok(components)
 }
+
+/// Whether one `/`-separated component names a single entry: not empty, not
+/// `.` or `..`, and free of the separators `\` and `:` that would let it leave
+/// its folder.
+fn is_plain_component(component: &str) -> bool {
+    !component.is_empty()
+        && component != "."
+        && component != ".."
+        && !component.contains(['\\', ':'])
+}
+
+/// Characters `cmd` interprets even inside an argument Rust leaves unquoted,
+/// so a junction's paths, which reach `mklink` through `cmd /C`, may not hold
+/// them.
+const CMD_METACHARACTERS: [char; 7] = ['&', '^', '|', '%', '<', '>', '"'];
 
 /// Whether a file name is a Windows device name, such as `NUL`, `com1.dds` or
 /// `AUX .txt`: its stem before the first dot, with trailing spaces and dots
@@ -422,7 +448,7 @@ fn check_game_path(
         ModSelection::OneMod { .. } => &components[selected.len()..],
         ModSelection::SeveralMods { .. } => &components[selected.len() + 1..],
     };
-    let named_after_mod_root = |name: &str| {
+    let is_plugin_or_archive = |name: &str| {
         name.rsplit_once('.').is_some_and(|(_, extension)| {
             ["esp", "esm", "esl", "bsa", "ba2"]
                 .iter()
@@ -431,7 +457,7 @@ fn check_game_path(
     };
     let ascii = match game_path {
         [] => true,
-        [name] if named_after_mod_root(name) => true,
+        [name] if is_plugin_or_archive(name) => true,
         names => names.iter().all(|name| name.is_ascii()),
     };
     if ascii {
@@ -626,10 +652,7 @@ fn raw_bytes(
     match (base64, fixture) {
         (Some(text), None) => decode_base64(text),
         (None, Some(name)) => {
-            let plain = name.split('/').all(|part| {
-                !part.is_empty() && part != "." && part != ".." && !part.contains(['\\', ':'])
-            });
-            if !plain {
+            if !name.split('/').all(is_plain_component) {
                 return Err(format!(
                     "fixture `{name}` is not a path inside the fixtures folder"
                 ));

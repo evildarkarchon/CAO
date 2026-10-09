@@ -33,8 +33,13 @@ pub fn fixtures_dir() -> PathBuf {
 pub fn seeds() -> Result<Vec<(String, CaseFile)>, HarnessError> {
     let mut found = Vec::new();
     collect(&seeds_dir(), &mut found)?;
-    found.sort_by(|a, b| a.0.cmp(&b.0));
-    if let Some(pair) = found.windows(2).find(|pair| pair[0].0 == pair[1].0) {
+    // Ids are compared ignoring ASCII case, as Windows compares the case
+    // folders they name: `Foo` and `foo` would share one work directory.
+    found.sort_by_key(|(id, _)| id.to_ascii_lowercase());
+    if let Some(pair) = found
+        .windows(2)
+        .find(|pair| pair[0].0.eq_ignore_ascii_case(&pair[1].0))
+    {
         return Err(HarnessError::InvalidCase(format!(
             "two seeds have the case id `{}`",
             pair[0].0

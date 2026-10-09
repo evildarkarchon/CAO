@@ -10,7 +10,7 @@ use cao_parity::HarnessError;
 use cao_parity::case::{CaseFile, CaseLayout, CaseSpec, Side, SideResources};
 use cao_parity::cases::{fixtures_dir, seed, seeds};
 use cao_parity::materialise::{Environment, PATH_CAP_UTF16, Readiness, materialise, write_input};
-use cao_parity::recipe::TreeRecipe;
+use cao_parity::recipe::{TextureFormat, TreeRecipe};
 use common::TempDir;
 use directxtex::{DDS_FLAGS_NONE, DXGI_FORMAT, ScratchImage, TexMetadata};
 
@@ -170,6 +170,43 @@ fn a_raw_entry_takes_exactly_one_source_inside_the_fixtures_folder() {
             "{invalid}: {error}"
         );
     }
+}
+
+#[test]
+fn every_named_format_round_trips_through_its_json_name() {
+    let bc7: TextureFormat = serde_json::from_value(serde_json::json!("BC7_UNORM")).unwrap();
+    assert_eq!(bc7.0, DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM);
+    assert_eq!(serde_json::to_value(bc7).unwrap(), "BC7_UNORM");
+    // Every format DirectXTex names, vendor formats included.
+    for value in 1..=191u32 {
+        let format = TextureFormat(DXGI_FORMAT::from(value));
+        if format!("{:?}", format.0).starts_with("0x") {
+            continue;
+        }
+        let json = serde_json::to_value(format).unwrap();
+        assert_eq!(
+            serde_json::from_value::<TextureFormat>(json.clone()).unwrap(),
+            format,
+            "{json}"
+        );
+    }
+    assert!(serde_json::from_value::<TextureFormat>(serde_json::json!("BC8_UNORM")).is_err());
+}
+
+#[test]
+fn a_junction_path_may_not_hold_what_cmd_would_interpret() {
+    let temp = TempDir::new("materialise-junction-cmd");
+    let case = shaped(
+        serde_json::json!([{"kind": "directory", "path": "mods/Mod/real"}]),
+        serde_json::json!([{"op": "junction", "path": "mods/Mod/a&b", "target": "mods/Mod/real"}]),
+    );
+    let (layout, readiness) = materialised(&temp, "junction-cmd", &case, false);
+    let error = readiness.unwrap_err();
+    assert!(
+        matches!(&error, HarnessError::InvalidCase(message) if message.contains("a&b")),
+        "{error}"
+    );
+    assert!(!layout.input().exists());
 }
 
 #[test]
@@ -416,7 +453,10 @@ fn path_of_length(length: usize) -> String {
 #[test]
 fn the_path_cap_is_enforced_on_every_copy() {
     let temp = TempDir::new("materialise-cap");
-    let layout = CaseLayout::new(temp.path(), "cap").unwrap();
+    // Both cases use ids of one length, so one prefix length serves both and
+    // the second case lands exactly one unit over the cap.
+    let (fits, over) = ("cap-a", "cap-b");
+    let layout = CaseLayout::new(temp.path(), fits).unwrap();
     // `oracle` is the longest of the three root names, so it meets the cap first.
     let oracle = std::path::absolute(layout.side(Side::Oracle)).unwrap();
     let prefix = oracle.as_os_str().len() + 1;
@@ -428,17 +468,18 @@ fn the_path_cap_is_enforced_on_every_copy() {
     };
 
     let at_cap = path_of_length(PATH_CAP_UTF16 - prefix);
-    let (layout, readiness) = materialised(&temp, "cap", &text(at_cap.clone()), false);
+    let (layout, readiness) = materialised(&temp, fits, &text(at_cap.clone()), false);
     assert_eq!(readiness.unwrap(), Readiness::Ready);
     let written = layout.side(Side::Oracle).join(&at_cap);
     assert_eq!(written.as_os_str().len(), PATH_CAP_UTF16);
     assert!(written.is_file());
 
-    let over = path_of_length(PATH_CAP_UTF16 - prefix + 1);
-    let (layout, readiness) = materialised(&temp, "cap-over", &text(over), false);
+    let one_over = path_of_length(PATH_CAP_UTF16 - prefix + 1);
+    let (layout, readiness) = materialised(&temp, over, &text(one_over), false);
     let error = readiness.unwrap_err();
     assert!(
-        matches!(&error, HarnessError::InvalidCase(message) if message.contains("400")),
+        matches!(&error, HarnessError::InvalidCase(message)
+            if message.contains("is 401 UTF-16 units long, over the 400-unit cap")),
         "{error}"
     );
     assert!(

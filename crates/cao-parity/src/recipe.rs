@@ -102,7 +102,8 @@ impl MeshTarget {
 }
 
 /// A `DXGI_FORMAT`, named in JSON without its `DXGI_FORMAT_` prefix, such as
-/// `"BC7_UNORM"` or `"R8G8B8A8_TYPELESS"`.
+/// `"BC7_UNORM"` or `"R8G8B8A8_TYPELESS"`. The vendor formats keep their whole
+/// name, such as `"XBOX_DXGI_FORMAT_R4G4_UNORM"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct TextureFormat(pub DXGI_FORMAT);
@@ -110,13 +111,17 @@ pub struct TextureFormat(pub DXGI_FORMAT);
 impl TryFrom<String> for TextureFormat {
     type Error = String;
 
-    /// Finds the format whose DirectXTex name is `DXGI_FORMAT_<name>`. The
-    /// crate's `Debug` impl is its name table, so no second table can drift.
+    /// Finds the format whose DirectXTex name is `DXGI_FORMAT_<name>`, or
+    /// exactly `<name>` for a vendor format. The crate's `Debug` impl is its
+    /// name table, so no second table can drift.
     fn try_from(name: String) -> Result<Self, Self::Error> {
-        let wanted = format!("DXGI_FORMAT_{name}");
+        let prefixed = format!("DXGI_FORMAT_{name}");
         (1..=u32::from(DXGI_FORMAT::WIN11_DXGI_FORMAT_A4B4G4R4_UNORM))
             .map(DXGI_FORMAT::from)
-            .find(|format| format!("{format:?}") == wanted)
+            .find(|format| {
+                let full = format!("{format:?}");
+                full == prefixed || (!full.starts_with("DXGI_FORMAT_") && full == name)
+            })
             .map(Self)
             .ok_or_else(|| format!("`{name}` is not a DXGI_FORMAT name"))
     }
