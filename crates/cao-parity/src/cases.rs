@@ -1,236 +1,85 @@
-//! Hand-written cases that `cao-parity case <id>` can materialise by name.
+//! Committed seed cases, which `cao-parity case <id>` can materialise by name.
 //!
-//! Until the corpus generator's recipe format and materialiser land (#473), a
-//! hand-written case is a spec plus a function that writes its input tree.
-//! Textures are synthetic, built with `directxtex`, and every byte is a pure
-//! function of the case, so a replay writes the same tree.
+//! A seed is a whole `case.json` (spec, profile overrides and tree recipe)
+//! committed under `crates/cao-parity/seeds/`, in any subfolder. Its case id is
+//! its file stem, so ids must be unique across the folder. The hand-written
+//! tracer and Several Mods cases live in `seeds/hand-written/`; transcribed C++
+//! scenarios join them (#507).
+//!
+//! The harness only ever runs from a checkout, so seeds and fixtures are read
+//! from the source tree rather than embedded.
 
-use std::path::Path;
-
-use directxtex::{
-    CP_FLAGS_NONE, DDS_FLAGS_NONE, DXGI_FORMAT, DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_BC1_UNORM,
-    DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R32G32B32A32_TYPELESS,
-    ScratchImage, TEX_COMPRESS_DEFAULT, TEX_FILTER_DEFAULT, TEX_FILTER_FORCE_NON_WIC,
-    TEX_THRESHOLD_DEFAULT, TGA_FLAGS_NONE,
-};
+use std::path::{Path, PathBuf};
 
 use crate::HarnessError;
-use crate::case::{ArchiveOptions, CaseSpec, MeshOptions, ModSelection, TextureOptions};
+use crate::case::{CaseFile, list_dir, read_file};
 
-/// One hand-written case.
-pub struct HandWrittenCase {
-    /// The case id, which is also its folder name under the work directory.
-    pub id: &'static str,
-    /// What the case asks both builds to do.
-    pub spec: fn() -> CaseSpec,
-    /// Writes the pristine input tree into the given `input/` folder.
-    pub materialise: fn(&Path) -> Result<(), HarnessError>,
+/// `crates/cao-parity/seeds`.
+pub fn seeds_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("seeds")
 }
 
-/// Every hand-written case.
-pub const HAND_WRITTEN: &[HandWrittenCase] = &[
-    HandWrittenCase {
-        id: "tracer-dry-run-textures",
-        spec: tracer_spec,
-        materialise: tracer_tree,
-    },
-    HandWrittenCase {
-        id: "several-mods-dry-run",
-        spec: several_mods_spec,
-        materialise: several_mods_tree,
-    },
-];
-
-/// The hand-written case named `id`, if there is one.
-pub fn hand_written(id: &str) -> Option<&'static HandWrittenCase> {
-    HAND_WRITTEN.iter().find(|case| case.id == id)
+/// `crates/cao-parity/fixtures`, where a recipe's `raw` entries find their
+/// committed fixture files.
+pub fn fixtures_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
 }
 
-/// The tracer bullet (#485): a Dry Run over the Loose Textures of one SSE Mod
-/// Root, with every Texture decision enabled and nothing else.
-fn tracer_spec() -> CaseSpec {
-    CaseSpec {
-        profile: "SSE".into(),
-        mod_selection: ModSelection::OneMod {
-            folder: "mods/TracerMod".into(),
-        },
-        dry_run: true,
-        textures: TextureOptions {
-            necessary: true,
-            compress: true,
-            mipmaps: true,
-            resize_by_ratio: false,
-            ratio_width: 1,
-            ratio_height: 1,
-            resize_by_size: true,
-            target_width: 32,
-            target_height: 32,
-        },
-        meshes: MeshOptions {
-            level: 0,
-            headparts: false,
-            resave: false,
-        },
-        animations: false,
-        archives: ArchiveOptions {
-            extract: false,
-            create: false,
-            delete_backup: false,
-            compress: true,
-            create_dummies: true,
-            merge_incompressible: true,
-            merge_textures: false,
-            delete_sources: true,
-        },
-    }
-}
-
-/// The tracer's tree: one Texture per decision the Dry Run evaluates, and the
-/// load failures both builds must agree on.
-fn tracer_tree(input: &Path) -> Result<(), HarnessError> {
-    let textures = input.join("mods/TracerMod/textures");
-    // Resized to 32x32, compressed to BC7 and mipmapped.
-    write_dds(
-        &textures.join("plain.dds"),
-        &gradient(DXGI_FORMAT_R8G8B8A8_UNORM, 64)?,
-    )?;
-    // An unwanted format under SSE: necessary optimization converts it.
-    write_dds(
-        &textures.join("unwanted.dds"),
-        &gradient(DXGI_FORMAT_B5G6R5_UNORM, 16)?,
-    )?;
-    // Already compressed with its full chain and within the target: no work.
-    let full_chain = gradient(DXGI_FORMAT_R8G8B8A8_UNORM, 16)?
-        .generate_mip_maps(TEX_FILTER_DEFAULT | TEX_FILTER_FORCE_NON_WIC, 0)
-        .map_err(synthesis_error)?
-        .compress(
-            DXGI_FORMAT_BC1_UNORM,
-            TEX_COMPRESS_DEFAULT,
-            TEX_THRESHOLD_DEFAULT,
-        )
-        .map_err(synthesis_error)?;
-    write_dds(&textures.join("done.dds"), &full_chain)?;
-    // Compressed but not a power of two: incompatible.
-    let odd = gradient(DXGI_FORMAT_R8G8B8A8_UNORM, 12)?
-        .compress(
-            DXGI_FORMAT_BC1_UNORM,
-            TEX_COMPRESS_DEFAULT,
-            TEX_THRESHOLD_DEFAULT,
-        )
-        .map_err(synthesis_error)?;
-    write_dds(&textures.join("odd.dds"), &odd)?;
-    // Typeless with a UNORM equivalent, which loading reinterprets.
-    write_dds(
-        &textures.join("typeless.dds"),
-        &gradient(DXGI_FORMAT_R8G8B8A8_TYPELESS, 32)?,
-    )?;
-    // Typeless with no UNORM equivalent, which fails to load.
-    write_dds(
-        &textures.join("float_typeless.dds"),
-        &gradient(DXGI_FORMAT_R32G32B32A32_TYPELESS, 8)?,
-    )?;
-    // An interface Texture, which SSE compresses too.
-    write_dds(
-        &textures.join("interface/map.dds"),
-        &gradient(DXGI_FORMAT_R8G8B8A8_UNORM, 32)?,
-    )?;
-    // A TGA, converted to DDS.
-    let tga = gradient(DXGI_FORMAT_R8G8B8A8_UNORM, 16)?;
-    let tga = tga.images()[0]
-        .save_tga(TGA_FLAGS_NONE, Some(tga.metadata()))
-        .map_err(synthesis_error)?;
-    write(&textures.join("source.tga"), tga.buffer())?;
-    // Not a Texture at all, so loading fails.
-    write(&textures.join("broken.dds"), b"not a texture")?;
-
-    let mod_root = input.join("mods/TracerMod");
-    // TGA conversion routes every Mesh for Mesh Reference Maintenance; this one
-    // fails to load in both builds.
-    write(&mod_root.join("meshes/thing.nif"), b"not a mesh")?;
-    // Animations are not requested: a Skip Reason count.
-    write(&mod_root.join("meshes/actors/idle.hkx"), b"not requested")?;
-    // Not an Asset.
-    write(&mod_root.join("readme.txt"), b"Tracer bullet mod\r\n")?;
-    Ok(())
-}
-
-/// Several Mods (#486): a Dry Run over the Textures of a mods directory, with
-/// the tracer's Texture options. Two children are Mod Roots; a separator and a
-/// mod named in SSE's shipped `ignoredMods.txt` are Mod Exclusions.
+/// Every seed, by case id, sorted by id.
 ///
-/// It triggers no deviation: the separator's name ends in `_separator`, so the
-/// C++ substring rule and deviation 20's suffix rule agree, no other name
-/// contains "separator", no child is in the `.cao-staging` namespace
-/// (deviation 19), and resizing by size uses an even size (deviation 18).
-fn several_mods_spec() -> CaseSpec {
-    CaseSpec {
-        mod_selection: ModSelection::SeveralMods {
-            folder: "mods".into(),
-        },
-        ..tracer_spec()
+/// # Errors
+/// [`HarnessError::InvalidCase`] when two seeds share an id or a seed is not a
+/// valid `case.json`; [`HarnessError::Io`] when the folder cannot be read.
+pub fn seeds() -> Result<Vec<(String, CaseFile)>, HarnessError> {
+    let mut found = Vec::new();
+    collect(&seeds_dir(), &mut found)?;
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    if let Some(pair) = found.windows(2).find(|pair| pair[0].0 == pair[1].0) {
+        return Err(HarnessError::InvalidCase(format!(
+            "two seeds have the case id `{}`",
+            pair[0].0
+        )));
     }
+    found
+        .into_iter()
+        .map(|(id, path)| {
+            let case = serde_json::from_slice(&read_file(&path)?)
+                .map_err(|source| HarnessError::Json { path, source })?;
+            Ok((id, case))
+        })
+        .collect()
 }
 
-/// The Several Mods tree. Every excluded child holds Textures the run would
-/// otherwise evaluate, so an exclusion that failed would change the facts.
-fn several_mods_tree(input: &Path) -> Result<(), HarnessError> {
-    let mods = input.join("mods");
-    let plain = gradient(DXGI_FORMAT_R8G8B8A8_UNORM, 64)?;
-    write_dds(&mods.join("Alpha/textures/plain.dds"), &plain)?;
-    write(&mods.join("Alpha/textures/broken.dds"), b"not a texture")?;
-    write_dds(
-        &mods.join("Beta/textures/unwanted.dds"),
-        &gradient(DXGI_FORMAT_B5G6R5_UNORM, 16)?,
-    )?;
-    let tga = gradient(DXGI_FORMAT_R8G8B8A8_UNORM, 16)?;
-    let tga = tga.images()[0]
-        .save_tga(TGA_FLAGS_NONE, Some(tga.metadata()))
-        .map_err(synthesis_error)?;
-    write(&mods.join("Beta/textures/source.tga"), tga.buffer())?;
-    // TGA conversion routes every Mesh for Mesh Reference Maintenance; this
-    // one fails to load in both builds.
-    write(&mods.join("Beta/meshes/thing.nif"), b"not a mesh")?;
-    // An MO2 separator.
-    write_dds(&mods.join("Group_separator/textures/plain.dds"), &plain)?;
-    write(
-        &mods.join("Group_separator/textures/broken.dds"),
-        b"not a texture",
-    )?;
-    // Named in SSE's shipped `ignoredMods.txt`.
-    write_dds(&mods.join("Nemesis/textures/plain.dds"), &plain)?;
-    write(&mods.join("Nemesis/textures/broken.dds"), b"not a texture")?;
-    // A file beside the mods is not a mod.
-    write(&mods.join("readme.txt"), b"Several Mods case\r\n")?;
+/// The seed whose case id is `id`, if there is one.
+///
+/// # Errors
+/// Those of [`seeds`]: every seed is read, so a broken seed is never hidden.
+pub fn seed(id: &str) -> Result<Option<CaseFile>, HarnessError> {
+    Ok(seeds()?
+        .into_iter()
+        .find(|(seed_id, _)| seed_id == id)
+        .map(|(_, case)| case))
+}
+
+/// Collects every `*.json` beneath `directory` with its file stem.
+fn collect(directory: &Path, found: &mut Vec<(String, PathBuf)>) -> Result<(), HarnessError> {
+    for item in list_dir(directory)? {
+        let path = item.path();
+        if path.is_dir() {
+            collect(&path, found)?;
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            let id = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .ok_or_else(|| {
+                    HarnessError::InvalidCase(format!("{} has no usable case id", path.display()))
+                })?
+                .to_owned();
+            found.push((id, path));
+        }
+    }
     Ok(())
-}
-
-/// A `size`x`size` single-mip Texture in `format`, whose
-/// bytes follow a fixed pattern.
-fn gradient(format: DXGI_FORMAT, size: usize) -> Result<ScratchImage, HarnessError> {
-    let mut scratch = ScratchImage::default();
-    scratch
-        .initialize_2d(format, size, size, 1, 1, CP_FLAGS_NONE)
-        .map_err(synthesis_error)?;
-    for (index, byte) in scratch.pixels_mut().iter_mut().enumerate() {
-        *byte = (index.wrapping_mul(37) ^ (index >> 3)) as u8;
-    }
-    Ok(scratch)
-}
-
-fn synthesis_error(error: directxtex::HResultError) -> HarnessError {
-    HarnessError::InvalidCase(format!("cannot build a synthetic Texture: {error}"))
-}
-
-fn write_dds(path: &Path, scratch: &ScratchImage) -> Result<(), HarnessError> {
-    let blob = scratch.save_dds(DDS_FLAGS_NONE).map_err(synthesis_error)?;
-    write(path, blob.buffer())
-}
-
-fn write(path: &Path, bytes: &[u8]) -> Result<(), HarnessError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| HarnessError::io(format!("creating {}", parent.display()), error))?;
-    }
-    std::fs::write(path, bytes)
-        .map_err(|error| HarnessError::io(format!("writing {}", path.display()), error))
 }

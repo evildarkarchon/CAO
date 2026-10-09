@@ -33,6 +33,7 @@ use crate::compare::{FactDifference, Verdict, compare_facts};
 use crate::facts::RunFacts;
 use crate::normalise::normalise;
 use crate::oracle;
+use crate::recipe::{ProfileOverrides, TreeRecipe};
 use crate::tree::{
     ArtifactDifference, ArtifactVerdict, DefaultRules, TreeRules, TreeSide, compare_trees,
 };
@@ -50,14 +51,30 @@ pub fn is_harness_owned(name: impl AsRef<std::ffi::OsStr>) -> bool {
         .any(|owned| name.eq_ignore_ascii_case(owned))
 }
 
-/// The contents of `case.json`.
+/// The contents of `case.json`: the whole case (#473).
 ///
-/// The corpus generator adds the GUI-reachable profile overrides and the tree
-/// recipe beside the spec; until then the spec is the whole file.
+/// The spec says what both builds are asked to do; the profile overrides and
+/// the tree recipe say what they are run on. A case directory can always be
+/// rebuilt from this file alone, so `case <id>` replays the same bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CaseFile {
     pub spec: CaseSpec,
+    #[serde(default, skip_serializing_if = "ProfileOverrides::is_empty")]
+    pub profile_overrides: ProfileOverrides,
+    #[serde(default)]
+    pub tree: TreeRecipe,
+}
+
+impl CaseFile {
+    /// A case with no profile overrides and an empty tree.
+    pub fn new(spec: CaseSpec) -> Self {
+        Self {
+            spec,
+            profile_overrides: ProfileOverrides::default(),
+            tree: TreeRecipe::default(),
+        }
+    }
 }
 
 /// What a case asks both builds to do: the options a user sets in the GUI.
@@ -265,8 +282,9 @@ impl CaseLayout {
     /// plus private `profiles/`, `logs/` and, when given, `bin/hkxcmd.exe`.
     /// The input may not use a harness-owned top-level name, since the side's
     /// own folder would shadow it. Filesystem-shape operations (links,
-    /// read-only files) are applied to each side afterwards by the generator,
-    /// so the input must contain only plain files and directories.
+    /// read-only files) are applied to each copy afterwards by
+    /// [`crate::materialise`], so the input must contain only plain files and
+    /// directories.
     pub fn provision(&self, resources: &SideResources<'_>) -> Result<(), HarnessError> {
         let input = self.input();
         for item in list_dir(&input)? {

@@ -4,8 +4,9 @@
 //! case, turns each side into raw [`facts::RunFacts`], normalises both with one
 //! [`normalise`] pass, and compares them with one comparator. Output trees are
 //! compared by [`tree`]. [`case`] owns the per-case layout and runs the sides.
-//! [`driver`] is the Rust side, over the shared composition root, and
-//! [`cases`] holds the hand-written cases `cao-parity case` can materialise.
+//! [`driver`] is the Rust side, over the shared composition root. A case's
+//! tree is a declarative [`recipe`] that [`materialise`] turns into files, and
+//! [`cases`] loads the committed seed cases `cao-parity case` can run by name.
 //!
 //! The library exists so the `cao-parity` binary and its tests share one
 //! implementation; it is never shipped.
@@ -16,8 +17,11 @@ pub mod compare;
 pub mod driver;
 pub mod error;
 pub mod facts;
+pub mod materialise;
+pub mod names;
 pub mod normalise;
 pub mod oracle;
+pub mod recipe;
 pub mod tree;
 
 pub use error::HarnessError;

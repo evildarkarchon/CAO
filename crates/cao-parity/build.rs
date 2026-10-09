@@ -19,4 +19,25 @@ fn main() {
     embed_resource::compile_for_everything(RESOURCE_SCRIPT, embed_resource::NONE)
         .manifest_required()
         .unwrap();
+
+    probe_symlink_privilege();
+}
+
+/// Sets `cfg(symlink_privilege)` when this host can create file symlinks, as
+/// cao-winfs's build script does: the materialiser's `file_symlink` test is
+/// `ignore`d without it, so it is reported as skipped rather than passing.
+/// After enabling Developer Mode, run `cargo clean -p cao-parity`.
+fn probe_symlink_privilege() {
+    println!("cargo::rustc-check-cfg=cfg(symlink_privilege)");
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    let target = out.join("symlink-probe-target");
+    let link = out.join("symlink-probe-link");
+    // A link left by an earlier probe would make the creation below fail.
+    let _ = std::fs::remove_file(&link);
+    std::fs::write(&target, b"").unwrap();
+    if std::os::windows::fs::symlink_file(&target, &link).is_ok() {
+        println!("cargo::rustc-cfg=symlink_privilege");
+        // Leaving the probe link behind is harmless; the next probe removes it.
+        let _ = std::fs::remove_file(&link);
+    }
 }
