@@ -1,0 +1,106 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": true,
+    "textures": {
+      "necessary": true,
+      "compress": true,
+      "mipmaps": true,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": true,
+      "target_width": 32,
+      "target_height": 32
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "texture",
+        "path": "mods/Alpha/textures/plain.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "Several Mods (#486): a Dry Run over the Textures of a mods directory, with the tracer's Texture options. Alpha and Beta are Mod Roots."
+      },
+      {
+        "kind": "text",
+        "path": "mods/Alpha/textures/broken.dds",
+        "text": "not a texture"
+      },
+      {
+        "kind": "texture",
+        "path": "mods/Beta/textures/unwanted.dds",
+        "format": "B5G6R5_UNORM",
+        "width": 16,
+        "height": 16
+      },
+      {
+        "kind": "texture",
+        "path": "mods/Beta/textures/source.tga",
+        "format": "R8G8B8A8_UNORM",
+        "width": 16,
+        "height": 16
+      },
+      {
+        "kind": "text",
+        "path": "mods/Beta/meshes/thing.nif",
+        "text": "not a mesh",
+        "note": "TGA conversion routes every Mesh for Mesh Reference Maintenance; this one fails to load in both builds."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/Group_separator/textures/plain.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "An MO2 separator, a Mod Exclusion. Every excluded child holds Textures the run would otherwise evaluate, so an exclusion that failed would change the facts. Its name ends in `_separator`, so the C++ substring rule and deviation 20's suffix rule agree, and no other name contains \"separator\"."
+      },
+      {
+        "kind": "text",
+        "path": "mods/Group_separator/textures/broken.dds",
+        "text": "not a texture"
+      },
+      {
+        "kind": "texture",
+        "path": "mods/Nemesis/textures/plain.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "Named in SSE's shipped `ignoredMods.txt`: a Mod Exclusion."
+      },
+      {
+        "kind": "text",
+        "path": "mods/Nemesis/textures/broken.dds",
+        "text": "not a texture"
+      },
+      {
+        "kind": "text",
+        "path": "mods/readme.txt",
+        "text": "Several Mods case\r\n",
+        "note": "A file beside the mods is not a mod. No child is in the `.cao-staging` namespace (deviation 19), and resizing by size uses an even size (deviation 18)."
+      }
+    ]
+  }
+}

@@ -41,8 +41,8 @@ directory.
 cargo run -p cao-parity -- case tracer-dry-run-textures --oracle <exe>
 ```
 
-`case <id>` materialises a hand-written case afresh, or replays a case kept in the work
-directory from its `input/`. It runs the oracle, then `cao-parity run` as the Rust driver,
+`case <id>` materialises a committed seed, or rebuilds a case kept in the work directory
+from its own `case.json`. It runs the oracle, then `cao-parity run` as the Rust driver,
 and prints the run-fact and output-tree verdicts. A Dry Run case also checks that each side's
 tree still matches `input/` byte for byte. A passing case's folder is deleted; any other is
 kept with a `report.md` holding the fact diff and the replay command.
@@ -52,12 +52,25 @@ kept with a `report.md` holding the fact diff and the replay command.
   `--hkxcmd <exe>` (or `CAO_HKXCMD`, then `bin/hkxcmd.exe`), `--timeout <seconds>`
   (default 600).
 - **Exit code.** 0 when both verdicts pass, 1 for Different, 2 for a harness error, 3 when
-  the case cannot run here (it needs `hkxcmd.exe` and none was found).
+  the case cannot run here (it needs `hkxcmd.exe` and none was found, or a file symlink and
+  the process lacks symlink rights).
 - **Paths.** Pass Windows-style paths (`C:\...` or `C:/...`). From Git Bash, a `/c/...` path
   reaches the harness unconverted, and Windows reads it as `C:\c\...`.
 
-The hand-written cases live in `crates/cao-parity/src/cases.rs` until the corpus generator
-lands.
+## Cases and recipes
+
+A case is one `case.json` with three parts: the `spec` (what both builds are asked to do),
+optional `profile_overrides` (GUI-reachable `profile.ini` values), and a `tree` recipe. The
+recipe's `content` entries (`texture`, `text`, `raw`, `directory`) are written once into
+`input/`, seeded by the case id, and copied byte for byte to `oracle/` and `rust/`. Its
+`fs_shape` operations (`hardlink`, `junction`, `file_symlink`, `readonly`, `reserved_name`)
+are then applied to all three copies. Recipe paths must keep game paths ASCII and every
+absolute path within 400 UTF-16 units. `crates/cao-parity/src/recipe.rs` documents each
+field.
+
+Committed seeds live under `crates/cao-parity/seeds/`, in any subfolder; a seed's case id
+is its file stem. `raw` entries may name a fixture file under
+`crates/cao-parity/fixtures/`.
 
 ## Oracle-only behaviour
 

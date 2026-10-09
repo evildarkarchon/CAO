@@ -1,6 +1,6 @@
 //! The Rust driver behind `cao-parity run`: the options model it fills from a
 //! case spec, and the facts it reports through the composition root, compared
-//! with a captured oracle transcript of the same hand-written case. No oracle,
+//! with a captured oracle transcript of the same seed case. No oracle,
 //! GPU or harness process is needed.
 
 mod common;
@@ -8,11 +8,13 @@ mod common;
 use std::path::Path;
 
 use cao_parity::HarnessError;
+use cao_parity::case::CaseFile;
 use cao_parity::case::ModSelection;
-use cao_parity::cases::hand_written;
+use cao_parity::cases::{fixtures_dir, seed};
 use cao_parity::compare::{Verdict, compare_facts};
 use cao_parity::driver::{drive, options};
 use cao_parity::facts::{RunEventPayload, RunFacts, RunOutcome, RunPhase};
+use cao_parity::materialise::write_input;
 use cao_parity::normalise::normalise;
 use cao_parity::oracle;
 use cao_profiles::OptimizationMode;
@@ -20,6 +22,13 @@ use common::{CAPTURE, TempDir, serial, transcript, write};
 
 const TRACER: &str = "tracer-dry-run-textures";
 const SEVERAL_MODS: &str = "several-mods-dry-run";
+
+/// The committed seed case `id`.
+fn seed_case(id: &str) -> CaseFile {
+    seed(id)
+        .unwrap()
+        .unwrap_or_else(|| panic!("no seed `{id}`"))
+}
 
 /// Copies the repository's shipped `profiles/` into `app/profiles`.
 fn copy_profiles(app: &Path) {
@@ -70,7 +79,7 @@ fn the_options_model_is_filled_as_the_gui_fills_it_from_its_widgets() {
         "profiles/SSE/settings.ini",
         b"[General]\r\nbDebugLog=true\r\nmode=1\r\n",
     );
-    let mut spec = (hand_written(TRACER).unwrap().spec)();
+    let mut spec = seed_case(TRACER).spec;
     spec.archives.merge_textures = true;
 
     let filled = options(&spec, app).unwrap();
@@ -96,7 +105,7 @@ fn the_options_model_is_filled_as_the_gui_fills_it_from_its_widgets() {
 fn a_selection_the_builds_cannot_express_is_an_invalid_case() {
     let temp = TempDir::new("driver-invalid");
     copy_profiles(temp.path());
-    let mut spec = (hand_written(TRACER).unwrap().spec)();
+    let mut spec = seed_case(TRACER).spec;
     spec.mod_selection = ModSelection::OneMod {
         folder: "../outside".into(),
     };
@@ -109,12 +118,12 @@ fn the_tracer_case_reports_what_the_oracle_reported_and_changes_nothing() {
     let _serial = serial();
     let temp = TempDir::new("driver-tracer");
     let app = temp.path().join("rust");
-    let case = hand_written(TRACER).unwrap();
-    (case.materialise)(&app).unwrap();
+    let case = seed_case(TRACER);
+    write_input(&case, TRACER, &app, &fixtures_dir()).unwrap();
     copy_profiles(&app);
     let before = snapshot(&app);
 
-    let rust = drive(&(case.spec)(), &app).unwrap();
+    let rust = drive(&case.spec, &app).unwrap();
 
     assert_eq!(snapshot(&app), before, "a Dry Run never mutates");
     let oracle_root = format!("{CAPTURE}/tracer_dry_run_textures");
@@ -137,12 +146,12 @@ fn the_several_mods_case_excludes_what_the_oracle_excluded() {
     let _serial = serial();
     let temp = TempDir::new("driver-several-mods");
     let app = temp.path().join("rust");
-    let case = hand_written(SEVERAL_MODS).unwrap();
-    (case.materialise)(&app).unwrap();
+    let case = seed_case(SEVERAL_MODS);
+    write_input(&case, SEVERAL_MODS, &app, &fixtures_dir()).unwrap();
     copy_profiles(&app);
     let before = snapshot(&app);
 
-    let rust = drive(&(case.spec)(), &app).unwrap();
+    let rust = drive(&case.spec, &app).unwrap();
 
     assert_eq!(snapshot(&app), before, "a Dry Run never mutates");
     let RunFacts::Started(started) = &rust else {

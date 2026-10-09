@@ -8,11 +8,11 @@
 //!   produced facts, whatever the Run Outcome.
 //! - `case <id> [--work <dir>] [--oracle <exe>] [--profiles <dir>]
 //!   [--hkxcmd <exe>] [--timeout <seconds>]`: runs the oracle and then the Rust
-//!   driver on one case and compares them. `<id>` names a hand-written case,
-//!   which is materialised afresh, or a case kept in the work directory, which
-//!   is replayed from its `input/`. Exits 0 when both verdicts pass, 1 for a
+//!   driver on one case and compares them. `<id>` names a committed seed, or a
+//!   case kept in the work directory; either way the case is materialised
+//!   afresh from its `case.json`. Exits 0 when both verdicts pass, 1 for a
 //!   Different verdict, 2 for a harness error and 3 when the case cannot run
-//!   here.
+//!   here (it needs `hkxcmd.exe` or symlink rights this host lacks).
 //! - `corpus` and `calibrate` need the corpus generator, which lands in a later
 //!   slice, so they report that they are not available yet.
 
@@ -22,8 +22,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use cao_parity::case::{CaseFile, CaseLayout, ProductionDrivers, Side, SideResources, run_case};
-use cao_parity::cases::hand_written;
+use cao_parity::cases::{fixtures_dir, seed};
 use cao_parity::driver::drive;
+use cao_parity::materialise::{Environment, Readiness, can_create_symlinks, materialise};
 use cao_parity::tree::DefaultRules;
 
 const USAGE: &str = "usage: cao-parity <run|corpus|case <id>|calibrate> [options]";
@@ -141,18 +142,19 @@ fn case(arguments: &[String]) -> Result<ExitCode> {
     };
 
     let layout = CaseLayout::new(&work, id)?;
-    prepare_case(&layout)?;
-    let spec = layout.read_case()?.spec;
-    if spec.animations && hkxcmd.is_none() {
-        println!(
-            "Case `{id}`: not run, because it requests Animations and no hkxcmd.exe was found"
-        );
+    let case = prepare_case(&layout)?;
+    let environment = Environment {
+        resources: SideResources {
+            profiles: &profiles,
+            hkxcmd: hkxcmd.as_deref(),
+        },
+        fixtures: &fixtures_dir(),
+        symlink_rights: can_create_symlinks(layout.root()),
+    };
+    if let Readiness::NotRun(reason) = materialise(&layout, &case, &environment)? {
+        println!("Case `{id}`: not run, because {reason}");
         return Ok(ExitCode::from(3));
     }
-    layout.provision(&SideResources {
-        profiles: &profiles,
-        hkxcmd: hkxcmd.as_deref(),
-    })?;
 
     let drivers = ProductionDrivers {
         oracle_exe,
@@ -178,35 +180,35 @@ fn case(arguments: &[String]) -> Result<ExitCode> {
     }
 }
 
-/// Leaves the case directory holding only `case.json` and a pristine `input/`.
+/// Leaves the case directory holding only `case.json`, and returns the case.
 ///
-/// A hand-written case is written afresh. Any other id must be a case kept in
-/// the work directory; its previous sides, captures and report are removed so
-/// it replays from its own `input/`.
-fn prepare_case(layout: &CaseLayout) -> Result<()> {
-    if let Some(case) = hand_written(layout.id()) {
+/// A seed is written afresh from its committed recipe. Any other id must be a
+/// case kept in the work directory; everything but its `case.json` is removed,
+/// so it is rebuilt from that recipe. The recipe is seeded by the case id, so
+/// the rebuild has the same bytes, and a shaped `input/` (links, read-only
+/// files) never has to be copied.
+fn prepare_case(layout: &CaseLayout) -> Result<CaseFile> {
+    if let Some(case) = seed(layout.id())? {
         remove_if_present(layout.root())?;
-        layout.write_case(&CaseFile {
-            spec: (case.spec)(),
-        })?;
-        (case.materialise)(&layout.input())?;
-        return Ok(());
+        layout.write_case(&case)?;
+        return Ok(case);
     }
-    if !layout.case_file().is_file() || !layout.input().is_dir() {
+    if !layout.case_file().is_file() {
         bail!(
-            "`{}` is neither a hand-written case nor a case kept in {}",
+            "`{}` is neither a seed nor a case kept in {}",
             layout.id(),
             layout.root().display()
         );
     }
+    let case = layout.read_case()?;
     let leftovers = [Side::Oracle, Side::Rust]
         .into_iter()
         .flat_map(|side| [layout.side(side), layout.stdout(side), layout.stderr(side)])
-        .chain([layout.rust_facts(), layout.report()]);
+        .chain([layout.input(), layout.rust_facts(), layout.report()]);
     for path in leftovers {
         remove_if_present(&path)?;
     }
-    Ok(())
+    Ok(case)
 }
 
 /// Removes a file or a whole directory tree, if anything is at `path`.

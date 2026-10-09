@@ -226,7 +226,7 @@ fn a_spec_the_oracle_cannot_express_is_a_harness_error_at_render_time() {
 
 #[test]
 fn case_json_holds_the_spec_and_rejects_unknown_fields() {
-    let file = CaseFile { spec: spec() };
+    let file = CaseFile::new(spec());
     let json = serde_json::to_string_pretty(&file).unwrap();
     assert_eq!(serde_json::from_str::<CaseFile>(&json).unwrap(), file);
     assert!(json.contains("\"kind\": \"one_mod\""), "{json}");
@@ -291,7 +291,7 @@ fn prepared_case(temp: &TempDir, edit_rust: fn(String) -> String) -> (CaseLayout
     );
     let profiles = temp.path().join("profiles-source");
     write(&profiles, "common.ini", b"");
-    layout.write_case(&CaseFile { spec: spec() }).unwrap();
+    layout.write_case(&CaseFile::new(spec())).unwrap();
     layout
         .provision(&SideResources {
             profiles: &profiles,
@@ -448,7 +448,7 @@ fn an_apply_case_may_change_the_input_when_both_builds_agree() {
     let (layout, drivers) = prepared_case(&temp, |text| text);
     let mut apply = spec();
     apply.dry_run = false;
-    layout.write_case(&CaseFile { spec: apply }).unwrap();
+    layout.write_case(&CaseFile::new(apply)).unwrap();
     for side in [Side::Oracle, Side::Rust] {
         std::fs::write(
             layout.side(side).join("mods/DryMod/textures/broken.dds"),

@@ -1,0 +1,134 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/TracerMod"
+    },
+    "dry_run": true,
+    "textures": {
+      "necessary": true,
+      "compress": true,
+      "mipmaps": true,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": true,
+      "target_width": 32,
+      "target_height": 32
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "texture",
+        "path": "mods/TracerMod/textures/plain.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "Resized to 32x32, compressed to BC7 and mipmapped."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/TracerMod/textures/unwanted.dds",
+        "format": "B5G6R5_UNORM",
+        "width": 16,
+        "height": 16,
+        "note": "An unwanted format under SSE: necessary optimization converts it."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/TracerMod/textures/done.dds",
+        "format": "BC1_UNORM",
+        "width": 16,
+        "height": 16,
+        "mip_levels": 0,
+        "note": "Already compressed with its full chain and within the target: no work."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/TracerMod/textures/odd.dds",
+        "format": "BC1_UNORM",
+        "width": 12,
+        "height": 12,
+        "note": "Compressed but not a power of two: incompatible."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/TracerMod/textures/typeless.dds",
+        "format": "R8G8B8A8_TYPELESS",
+        "width": 32,
+        "height": 32,
+        "header": "dx10",
+        "pattern": "bytes",
+        "note": "Typeless with a UNORM equivalent, which loading reinterprets."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/TracerMod/textures/float_typeless.dds",
+        "format": "R32G32B32A32_TYPELESS",
+        "width": 8,
+        "height": 8,
+        "header": "dx10",
+        "pattern": "bytes",
+        "note": "Typeless with no UNORM equivalent, which fails to load."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/TracerMod/textures/interface/map.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 32,
+        "height": 32,
+        "note": "An interface Texture, which SSE compresses too."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/TracerMod/textures/source.tga",
+        "format": "R8G8B8A8_UNORM",
+        "width": 16,
+        "height": 16,
+        "note": "A TGA, converted to DDS."
+      },
+      {
+        "kind": "text",
+        "path": "mods/TracerMod/textures/broken.dds",
+        "text": "not a texture",
+        "note": "Not a Texture at all, so loading fails."
+      },
+      {
+        "kind": "text",
+        "path": "mods/TracerMod/meshes/thing.nif",
+        "text": "not a mesh",
+        "note": "TGA conversion routes every Mesh for Mesh Reference Maintenance; this one fails to load in both builds."
+      },
+      {
+        "kind": "text",
+        "path": "mods/TracerMod/meshes/actors/idle.hkx",
+        "text": "not requested",
+        "note": "Animations are not requested: a Skip Reason count."
+      },
+      {
+        "kind": "text",
+        "path": "mods/TracerMod/readme.txt",
+        "text": "Tracer bullet mod\r\n",
+        "note": "Not an Asset."
+      }
+    ]
+  }
+}
