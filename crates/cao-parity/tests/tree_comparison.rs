@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime};
 
 use cao_parity::HarnessError;
 use cao_parity::compare::Verdict;
-use cao_parity::leftovers::ParityRules;
+use cao_parity::rules::ParityRules;
 use cao_parity::tree::{
     ArtifactRule, ArtifactVerdict, DefaultRules, RuleOutcome, TreeRules, TreeSide, compare_trees,
 };

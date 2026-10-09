@@ -1,0 +1,94 @@
+{
+  "spec": {
+    "profile": "TES5",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/ResizeMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": false,
+      "mipmaps": true,
+      "resize_by_ratio": true,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 2048,
+      "target_height": 2048
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "texture",
+        "path": "mods/ResizeMod/textures/big.dds",
+        "format": "BC3_UNORM",
+        "width": 128,
+        "height": 128,
+        "mip_levels": 0,
+        "pattern": "alpha_ramp",
+        "note": "Resize by ratio (#494): decompressed, halved without WIC, mipmapped, and compressed back to BC3."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/ResizeMod/textures/wide.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 128,
+        "height": 32,
+        "note": "Halved to 64x16 and mipmapped; compression is off, so it stays RGBA8."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/ResizeMod/textures/odd.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 48,
+        "height": 48,
+        "pattern": "edges",
+        "note": "Not a power of two: the 24x24 target is rounded up to 32x32 before resizing."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/ResizeMod/textures/unwanted.dds",
+        "format": "BC7_UNORM",
+        "width": 64,
+        "height": 64,
+        "header": "dx10",
+        "note": "BC7 is unwanted under TES5: necessary optimization decompresses it, halves and mipmaps it, and compresses it to BC3. Decoding BC7 and encoding BC3 are both CPU work, so the bytes match."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/ResizeMod/textures/small.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 4,
+        "height": 4,
+        "note": "Halved to 2x2, which can neither be mipmapped nor compressed, so C++ converts it to B8G8R8A8_UNORM."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/ResizeMod/textures/interface/hud.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "pattern": "mask",
+        "note": "An interface Texture, which TES5 also resizes and mipmaps."
+      }
+    ]
+  }
+}

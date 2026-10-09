@@ -24,8 +24,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use cao_parity::case::{CaseFile, CaseLayout, ProductionDrivers, Side, SideResources, run_case};
 use cao_parity::cases::{fixtures_dir, seed};
 use cao_parity::driver::drive;
-use cao_parity::leftovers::ParityRules;
 use cao_parity::materialise::{Environment, Readiness, can_create_symlinks, materialise};
+use cao_parity::rules::ParityRules;
 
 const USAGE: &str = "usage: cao-parity <run|corpus|case <id>|calibrate> [options]";
 

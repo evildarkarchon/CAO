@@ -5,20 +5,24 @@
 //! compressed and given mipmaps. Dry Run reports that decision and Apply acts on
 //! it, so both share this one function, as they share `processArguments` in C++.
 //!
-//! [`Texture::optimize`] is C++ `optimize` on the CPU path the Texture decisions
-//! already need (#491): decompress, resize without WIC, and convert or compress
-//! to the target format. Mipmap generation may use WIC, which needs COM on the
-//! Run Worker, so it arrives with the rest of the Texture behaviour (#494) and
-//! fails cleanly until then. GPU BC7/BC6H encoding is a later slice; until then
+//! [`Texture::optimize`] is C++ `optimize` on the CPU path (#491, #494):
+//! decompress, resize without WIC, generate mipmaps, and convert or compress to
+//! the target format. Mipmap generation may use WIC, so the calling thread must
+//! have joined COM ([`crate::device::initialize_com`]); the backend does that on
+//! the Run Worker. GPU BC7/BC6H encoding is a later slice (#495); until then
 //! every format is compressed on the CPU, as C++ does without a device.
+//!
+//! After each step the metadata C++ maintains is checked against the step's
+//! result. C++ `compareInfo` joined its comparisons with `||`, so it passed
+//! whenever any one field matched; here every field must match (deviation 6).
 
 use std::path::Path;
 
 use cao_core::routing::TextureVariant;
 use directxtex::{
-    DDS_FLAGS_NONE, DXGI_FORMAT, HResultError, ScratchImage, TEX_ALPHA_MODE_OPAQUE,
-    TEX_COMPRESS_DEFAULT, TEX_FILTER_DEFAULT, TEX_FILTER_FORCE_NON_WIC, TEX_FILTER_SEPARATE_ALPHA,
-    TEX_THRESHOLD_DEFAULT, TGA_FLAGS_NONE, TexMetadata,
+    CP_FLAGS_NONE, DDS_FLAGS_NONE, DXGI_FORMAT, HResultError, Image, Rect, ScratchImage,
+    TEX_ALPHA_MODE_OPAQUE, TEX_COMPRESS_DEFAULT, TEX_FILTER_DEFAULT, TEX_FILTER_FORCE_NON_WIC,
+    TEX_FILTER_SEPARATE_ALPHA, TEX_THRESHOLD_DEFAULT, TGA_FLAGS_NONE, TexMetadata,
 };
 
 /// The profile's Texture settings a decision depends on, from `profile.ini`.
@@ -172,14 +176,60 @@ pub enum TextureError {
         requested: DXGI_FORMAT,
         produced: DXGI_FORMAT,
     },
-    /// A step this build cannot perform yet.
-    #[error("{0} is not available in this build")]
-    Unavailable(&'static str),
+    /// A step's result does not have the metadata the Texture should have
+    /// after it (deviation 6).
+    #[error("the result of the {step} step does not match the Texture: {detail}")]
+    MetadataMismatch { step: &'static str, detail: String },
 }
 
 /// Wraps a DirectXTex error with the step that raised it.
 fn step(step: &'static str) -> impl FnOnce(HResultError) -> TextureError {
     move |source| TextureError::Process { step, source }
+}
+
+/// C++ `compareInfo`: checks that a step's `produced` metadata has every
+/// field C++ compares equal to the `expected` metadata the Texture carries
+/// after the step. The mip count and `misc_flags2` are not compared, as in C++.
+///
+/// C++ joined these comparisons with `||`, so any single matching field
+/// passed; here they are joined with `&&`, as intended (deviation 6).
+///
+/// # Errors
+/// [`TextureError::MetadataMismatch`] naming `step` and the first field that
+/// differs.
+fn check_metadata(
+    step: &'static str,
+    expected: &TexMetadata,
+    produced: &TexMetadata,
+) -> Result<(), TextureError> {
+    let mismatch = |field: &str, expected: &dyn std::fmt::Debug, produced: &dyn std::fmt::Debug| {
+        Err(TextureError::MetadataMismatch {
+            step,
+            detail: format!("its {field} is {produced:?}, not {expected:?}"),
+        })
+    };
+    if expected.width != produced.width {
+        return mismatch("width", &expected.width, &produced.width);
+    }
+    if expected.height != produced.height {
+        return mismatch("height", &expected.height, &produced.height);
+    }
+    if expected.depth != produced.depth {
+        return mismatch("depth", &expected.depth, &produced.depth);
+    }
+    if expected.array_size != produced.array_size {
+        return mismatch("array size", &expected.array_size, &produced.array_size);
+    }
+    if expected.misc_flags != produced.misc_flags {
+        return mismatch("misc flags", &expected.misc_flags, &produced.misc_flags);
+    }
+    if expected.format != produced.format {
+        return mismatch("format", &expected.format, &produced.format);
+    }
+    if expected.dimension != produced.dimension {
+        return mismatch("dimension", &expected.dimension, &produced.dimension);
+    }
+    Ok(())
 }
 
 /// One loaded Texture: its pixels, its metadata and the path it came from.
@@ -259,10 +309,13 @@ impl Texture {
     /// updates `_info`, rather than replaced by each step's result, so the DDS
     /// header matches the oracle's.
     ///
+    /// Mipmap generation may go through WIC, so the calling thread must have
+    /// joined COM ([`crate::device::initialize_com`]).
+    ///
     /// # Errors
-    /// [`TextureError`] when a DirectXTex step fails, or when the decision
-    /// needs mipmaps, which this build cannot generate yet (#494). The loaded
-    /// pixels may then be partly processed; nothing on disk has changed.
+    /// [`TextureError`] when a DirectXTex step fails or its result's metadata
+    /// does not match the Texture's. The loaded pixels may then be partly
+    /// processed; nothing on disk has changed.
     pub fn optimize(
         &mut self,
         profile: &TextureProfile,
@@ -273,6 +326,9 @@ impl Texture {
             log::debug!("This texture does not need optimization.");
             return Ok(false);
         }
+        // C++ picks the target before decompressing, so a compressed Texture
+        // that is only resized or mipmapped is compressed back to its format.
+        let mut target = self.info.format;
         let mut modified = false;
         if self.info.format.is_compressed() {
             log::debug!("Decompressing this texture.");
@@ -281,6 +337,7 @@ impl Texture {
                 .decompress(DXGI_FORMAT::DXGI_FORMAT_UNKNOWN)
                 .map_err(step("decompress"))?;
             self.info.format = image.metadata().format;
+            check_metadata("decompress", &self.info, image.metadata())?;
             self.image = image;
             modified = true;
         }
@@ -293,9 +350,10 @@ impl Texture {
                 && can_have_mipmaps(&self.info, self.is_interface(), profile);
         }
         if mipmaps {
-            return Err(TextureError::Unavailable("Mipmap generation"));
+            log::debug!("Generating mipmaps for this texture.");
+            self.generate_mipmaps()?;
+            modified = true;
         }
-        let mut target = self.info.format;
         if plan.compress {
             target = profile.format;
             log::debug!("Converting this texture to format: {target:?}");
@@ -345,8 +403,70 @@ impl Texture {
         self.info.width = resized.width;
         self.info.height = resized.height;
         self.info.mip_levels = 1;
+        check_metadata("resize", &self.info, resized)?;
         self.image = image;
         Ok(true)
+    }
+
+    /// Generates the full mip chain as C++ `generateMipMaps` does, filtering
+    /// alpha separately.
+    ///
+    /// A partial chain is first cut back to its top level, because DirectXTex
+    /// generates mips from a single base image. The filter does not force the
+    /// non-WIC path, so DirectXTex uses WIC for most 8-bit formats; the
+    /// calling thread must have joined COM.
+    fn generate_mipmaps(&mut self) -> Result<(), TextureError> {
+        let levels = optimal_mip_count(self.info.width, self.info.height);
+        if self.info.mip_levels != 1 && self.info.mip_levels != levels {
+            let mut top = ScratchImage::default();
+            let mut top_info = self.info;
+            top_info.mip_levels = 1;
+            top.initialize(&top_info, CP_FLAGS_NONE)
+                .map_err(step("copy the top mip level of"))?;
+            let whole = Rect {
+                x: 0,
+                y: 0,
+                w: self.info.width,
+                h: self.info.height,
+            };
+            for item in 0..self.info.array_size {
+                let (Some(source), Some(destination)) =
+                    (self.image.image(0, item, 0), top.image(0, item, 0))
+                else {
+                    return Err(TextureError::MetadataMismatch {
+                        step: "copy the top mip level",
+                        detail: format!("it has no image for item {item}"),
+                    });
+                };
+                // `ScratchImage` lends its images only by shared reference, so
+                // the destination is described by a copy of its fields; the
+                // pixels pointer still points into `top`, which nothing else
+                // borrows while DirectXTex writes through it (#459).
+                let mut destination = Image {
+                    width: destination.width,
+                    height: destination.height,
+                    format: destination.format,
+                    row_pitch: destination.row_pitch,
+                    slice_pitch: destination.slice_pitch,
+                    pixels: destination.pixels,
+                };
+                destination
+                    .copy_rectangle(source, &whole, TEX_FILTER_SEPARATE_ALPHA, 0, 0)
+                    .map_err(step("copy the top mip level of"))?;
+            }
+            self.info.mip_levels = top.metadata().mip_levels;
+            self.image = top;
+        }
+        if self.info.width > 1 || self.info.height > 1 || self.info.depth > 1 {
+            let image = self
+                .image
+                .generate_mip_maps(TEX_FILTER_SEPARATE_ALPHA, levels)
+                .map_err(step("generate mipmaps for"))?;
+            self.info.mip_levels = image.metadata().mip_levels;
+            check_metadata("mipmap", &self.info, image.metadata())?;
+            self.image = image;
+        }
+        Ok(())
     }
 
     /// Converts to `format`, compressing when it is a block format, as C++
@@ -362,6 +482,7 @@ impl Texture {
                 .compress(format, TEX_COMPRESS_DEFAULT, TEX_THRESHOLD_DEFAULT)
                 .map_err(step("compress"))?;
             self.info.format = image.metadata().format;
+            check_metadata("compress", &self.info, image.metadata())?;
             self.image = image;
             return Ok(true);
         }
@@ -380,7 +501,73 @@ impl Texture {
             });
         }
         self.info.format = produced;
+        check_metadata("convert", &self.info, image.metadata())?;
         self.image = image;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use directxtex::{TEX_DIMENSION_TEXTURE2D, TEX_DIMENSION_TEXTURE3D, TEX_MISC_TEXTURECUBE};
+
+    use super::*;
+
+    fn metadata() -> TexMetadata {
+        TexMetadata {
+            width: 64,
+            height: 32,
+            depth: 1,
+            array_size: 1,
+            mip_levels: 7,
+            misc_flags: 0,
+            misc_flags2: 0,
+            format: DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM,
+            dimension: TEX_DIMENSION_TEXTURE2D,
+        }
+    }
+
+    /// Deviation 6: C++ `compareInfo` passed when any one field matched. A
+    /// result that differs in any compared field now fails the step, even when
+    /// every other field matches.
+    #[test]
+    fn a_step_result_differing_in_any_compared_field_is_a_mismatch() {
+        /// A compared field's name and a change to just that field.
+        type Change = (&'static str, fn(&mut TexMetadata));
+        let expected = metadata();
+        let changes: [Change; 7] = [
+            ("width", |info| info.width = 32),
+            ("height", |info| info.height = 64),
+            ("depth", |info| info.depth = 2),
+            ("array size", |info| info.array_size = 6),
+            ("misc flags", |info| {
+                info.misc_flags = TEX_MISC_TEXTURECUBE.bits()
+            }),
+            ("format", |info| {
+                info.format = DXGI_FORMAT::DXGI_FORMAT_B8G8R8A8_UNORM;
+            }),
+            ("dimension", |info| info.dimension = TEX_DIMENSION_TEXTURE3D),
+        ];
+        for (field, change) in changes {
+            let mut produced = expected;
+            change(&mut produced);
+            let error = check_metadata("resize", &expected, &produced).unwrap_err();
+            let TextureError::MetadataMismatch { step, detail } = &error else {
+                panic!("{field}: {error}");
+            };
+            assert_eq!(*step, "resize");
+            assert!(detail.starts_with(&format!("its {field} is")), "{detail}");
+        }
+    }
+
+    /// The fields C++ never compared still pass: the mip count, which a step
+    /// is expected to change, and `misc_flags2`'s alpha mode.
+    #[test]
+    fn the_mip_count_and_alpha_mode_are_not_compared() {
+        let expected = metadata();
+        let mut produced = expected;
+        produced.mip_levels = 1;
+        produced.misc_flags2 = TEX_ALPHA_MODE_OPAQUE.bits();
+        check_metadata("mipmap", &expected, &produced).unwrap();
     }
 }

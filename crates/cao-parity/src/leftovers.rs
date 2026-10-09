@@ -11,33 +11,15 @@
 //!
 //! `.caobad` and `.bak` files need no rule: they must be byte-identical, which
 //! the comparator's default already demands. Staging paths are normalised by
-//! the comparator itself before pairing.
+//! the comparator itself before pairing. [`crate::rules::ParityRules`] routes
+//! files to these rules.
 
 use std::path::Path;
 
 use crate::HarnessError;
 use crate::case::read_file;
 use crate::normalise::staging_placeholders;
-use crate::tree::{ArtifactRule, RuleOutcome, TreeRules};
-
-/// The comparator rules every parity case uses.
-pub struct ParityRules;
-
-impl TreeRules for ParityRules {
-    fn leftover_rule(&self, path: &str) -> Option<&dyn ArtifactRule> {
-        let in_staging = |name: &str| {
-            path == format!(".cao-staging/{name}")
-                || path.ends_with(&format!("/.cao-staging/{name}"))
-        };
-        if in_staging("ownership.manifest") {
-            Some(&ManifestRule)
-        } else if in_staging("owner.lock") {
-            Some(&PresenceRule)
-        } else {
-            None
-        }
-    }
-}
+use crate::tree::{ArtifactRule, RuleOutcome};
 
 /// `owner.lock` carries no content: being present on both sides is enough.
 pub struct PresenceRule;
