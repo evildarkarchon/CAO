@@ -1,0 +1,70 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/BcSixMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": true,
+      "mipmaps": true,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": true,
+      "target_width": 64,
+      "target_height": 64
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "texture",
+        "path": "mods/BcSixMod/textures/sky_hdr.dds",
+        "format": "BC6H_UF16",
+        "width": 128,
+        "height": 128,
+        "header": "dx10",
+        "note": "BC6H on the GPU (#495). The GUI cannot target BC6H, so BC6H reaches the encoder only as a BC6H source that is changed: resized to 64x64 and mipmapped, then compressed back to its own format, which C++ picks before decompressing. Both builds encode it with DirectCompute on a host with a GPU."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/BcSixMod/textures/env_hdr.dds",
+        "format": "BC6H_UF16",
+        "width": 32,
+        "height": 32,
+        "cubemap": true,
+        "header": "dx10",
+        "note": "A BC6H cubemap below the target size: only mipmapped, every face re-encoded."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/BcSixMod/textures/worn.dds",
+        "format": "BC7_UNORM",
+        "width": 128,
+        "height": 128,
+        "header": "dx10",
+        "pattern": "alpha_ramp",
+        "note": "A BC7 source resized and mipmapped, compressed back to BC7 on the GPU."
+      }
+    ]
+  }
+}

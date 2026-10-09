@@ -10,8 +10,9 @@
 //! work before a run touches anything, but Texture conversion still routes every
 //! Mesh for Mesh Reference Maintenance, so Meshes do reach this backend. Until
 //! `nifly-sys` lands they fail to load, which a parity case with a real Mesh
-//! reports as Different rather than hiding. Apply runs a Texture decision on the
-//! CPU path (see [`crate::textures`]); GPU BC7 and BC6H encoding is #495.
+//! reports as Different rather than hiding. Apply runs a Texture decision (see
+//! [`crate::textures`]), encoding BC6H and BC7 on the Run Worker's D3D11 device
+//! when it has one (#495).
 
 use std::path::Path;
 
@@ -20,7 +21,7 @@ use cao_core::routing::{
     AssetOperation, AssetOperations, ExecutionMode, MeshVariant, TextureVariant,
 };
 
-use crate::device::{ComUnavailable, initialize_com};
+use crate::device::{ComUnavailable, GpuDevice, initialize_com};
 use crate::textures::{Texture, TextureProfile, TextureRequest};
 
 /// How the user asked Textures to be resized, from the Textures tab.
@@ -45,10 +46,12 @@ pub struct TextureSettings {
 
 /// The Asset Execution Backend of one run, owned by its Run Worker.
 ///
-/// It holds at most one loaded Texture at a time, as the C++ optimizers do.
+/// It holds at most one loaded Texture at a time, as the C++ optimizers do,
+/// and the Run Worker's D3D11 device for BC6H and BC7, if it got one.
 pub struct OptimizerBackend {
     textures: TextureSettings,
     texture_profile: TextureProfile,
+    gpu: Option<GpuDevice>,
     loaded: Option<Texture>,
     texture_failure_detail: String,
 }
@@ -56,9 +59,14 @@ pub struct OptimizerBackend {
 impl OptimizerBackend {
     /// A backend applying `textures` under the profile's `texture_profile`.
     ///
-    /// Joins the calling thread to COM's multithreaded apartment, as C++
-    /// `TexturesOptimizer`'s constructor does, so call it on the Run Worker
-    /// that will use the backend: mipmap generation may go through WIC.
+    /// Creates a D3D11 device on the first adapter and joins the calling
+    /// thread to COM's multithreaded apartment, as C++ `TexturesOptimizer`'s
+    /// constructor does. Call it on the Run Worker that will use the backend:
+    /// mipmap generation may go through WIC, and the device belongs to the
+    /// thread that created it (spec #476).
+    ///
+    /// Without a device, BC6H and BC7 are encoded on the CPU, with C++'s
+    /// warning.
     ///
     /// # Errors
     /// [`ComUnavailable`] when the thread cannot join the apartment.
@@ -66,10 +74,20 @@ impl OptimizerBackend {
         textures: TextureSettings,
         texture_profile: TextureProfile,
     ) -> Result<Self, ComUnavailable> {
+        // C++ always asks for the first adapter.
+        let gpu = GpuDevice::create(0)
+            .inspect_err(|error| {
+                log::warn!(
+                    "DirectCompute is not available, using BC6H / BC7 CPU codec. \
+                     Textures compression will be slower ({error})"
+                );
+            })
+            .ok();
         initialize_com()?;
         Ok(Self {
             textures,
             texture_profile,
+            gpu,
             loaded: None,
             texture_failure_detail: String::new(),
         })
@@ -168,7 +186,7 @@ impl AssetExecutionBackend for OptimizerBackend {
 
         let texture = self.loaded.as_mut().expect("a Texture is loaded");
         log::debug!("Processing texture: {}", texture.name());
-        match texture.optimize(&self.texture_profile, &request) {
+        match texture.optimize(&self.texture_profile, &request, self.gpu.as_ref()) {
             // Conversion always produces a new DDS, even from unchanged pixels.
             Ok(modified) if modified || convert => OperationResult::changed(),
             Ok(_) => OperationResult::unchanged(),

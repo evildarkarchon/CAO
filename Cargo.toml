@@ -80,7 +80,7 @@ embed-resource = "3"
 # C++ parity oracle also builds. The fork's FORK.md records its upstream base and
 # delta. Pinned by `rev`: move it together with `cargo update -p directxtex`.
 [patch.crates-io]
-directxtex = { git = "https://github.com/evildarkarchon/directxtex-rs", rev = "76a4e9bf7aa43e55ff6851226ee9b37255a1c268" }
+directxtex = { git = "https://github.com/evildarkarchon/directxtex-rs", rev = "0862d750e78a0eaf5bb0817570f0eb9ca6900c50" }
 
 # DirectXTex's encoded bytes depend on how its C++ is optimized, not only on
 # `/fp:fast` (which the fork sets): an unoptimized build orients some BC3 blocks

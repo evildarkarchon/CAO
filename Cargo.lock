@@ -222,8 +222,8 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "directxtex"
-version = "1.3.0+cao.2"
-source = "git+https://github.com/evildarkarchon/directxtex-rs?rev=76a4e9bf7aa43e55ff6851226ee9b37255a1c268#76a4e9bf7aa43e55ff6851226ee9b37255a1c268"
+version = "1.3.0+cao.3"
+source = "git+https://github.com/evildarkarchon/directxtex-rs?rev=0862d750e78a0eaf5bb0817570f0eb9ca6900c50#0862d750e78a0eaf5bb0817570f0eb9ca6900c50"
 dependencies = [
  "bitflags",
  "cc",
