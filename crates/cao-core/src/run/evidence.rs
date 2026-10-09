@@ -375,6 +375,28 @@ impl<'a> MutableRunEvidence<'a> {
         ))
     }
 
+    /// Records Archive Finalization's output total as its determinate progress.
+    ///
+    /// The phase must be the current, executed phase with no progress yet, so
+    /// the plan is recorded once and never changed (C++
+    /// `recordArchiveFinalizationPlan`).
+    pub fn record_archive_finalization_plan(&mut self, total: usize) -> Result<(), Error> {
+        let planned = self.storage.phases.last().is_some_and(|record| {
+            record.phase() == RunPhase::ArchiveFinalization
+                && record.status() == super::RunPhaseStatus::Executed
+                && record.progress().is_none()
+        });
+        if !planned {
+            return Err(Error::EvidenceInvariant(
+                "Archive Finalization needs an executed phase and one immutable plan",
+            ));
+        }
+        self.record_phase(RunPhaseRecord::executed(
+            RunPhase::ArchiveFinalization,
+            Some(RunProgress::determinate(total, 0, 0)),
+        ))
+    }
+
     /// Accepts that Dry Run made Archive extraction inapplicable.
     pub fn record_dry_run_archive_extraction(&mut self) -> Result<(), Error> {
         self.record_phase(RunPhaseRecord::skipped(
@@ -667,6 +689,14 @@ impl<'e, 'a> RunWorkEvidence<'e, 'a> {
         self.evidence
             .borrow_mut()
             .record_asset_attempt(attempt, total)
+    }
+
+    /// Records Archive Finalization's immutable output total, once, after the
+    /// executor accepted the executed phase.
+    pub fn record_archive_finalization_plan(&self, total: usize) -> Result<(), Error> {
+        self.evidence
+            .borrow_mut()
+            .record_archive_finalization_plan(total)
     }
 
     /// Retains and publishes a Run Failure.

@@ -332,13 +332,30 @@ fn generic_spelling(path: &str) -> String {
 /// `run-<Run ID>-<nonce>`, siblings named `.cao-staging…-<Run ID>-<nonce>…`,
 /// and `archive-entry-<nonce>` files. A mod's own file names never change,
 /// even if they happen to contain the Run ID.
+///
+/// C++ CAO writes a random 32-hex token where the protocol names the Run ID,
+/// not the run's own Run ID, so a staging name that does not carry `run_id`
+/// is also recognised by its shape: a sibling `.cao-staging-<kind>-<id>-<nonce>…`
+/// of a known Asset kind, or a run child directly in `.cao-staging`.
 pub fn staging_placeholders(relative: &str, run_id: &str) -> String {
+    let mut in_reserved = false;
     relative
         .split('/')
-        .map(|component| staging_component(component, run_id))
+        .map(|component| {
+            let normalised = staging_component(component, run_id, in_reserved);
+            in_reserved = component.eq_ignore_ascii_case(".cao-staging");
+            normalised
+        })
         .collect::<Vec<_>>()
         .join("/")
 }
+
+/// The sibling prefixes the staging protocol defines, one per Asset kind.
+const SIBLING_PREFIXES: [&str; 3] = [
+    ".cao-staging-texture-",
+    ".cao-staging-mesh-",
+    ".cao-staging-animation-",
+];
 
 const RUN_ID_PLACEHOLDER: &str = "{run-id}";
 const NONCE_PLACEHOLDER: &str = "{nonce}";
@@ -347,8 +364,9 @@ const NONCE_LENGTH: usize = 32;
 /// Applies [`staging_placeholders`] to one path component. The Run ID is only
 /// replaced where it sits between dashes (`-<Run ID>-`), so a Run ID that is a
 /// substring of a longer token is left alone, and a nonce only directly after
-/// the replaced Run ID or `archive-entry-`.
-fn staging_component(component: &str, run_id: &str) -> String {
+/// the replaced Run ID or `archive-entry-`. `in_reserved` says the component
+/// sits directly in `.cao-staging`, where a run child lives.
+fn staging_component(component: &str, run_id: &str, in_reserved: bool) -> String {
     if let Some(nonce) = component.strip_prefix("archive-entry-")
         && is_nonce(nonce)
     {
@@ -362,7 +380,7 @@ fn staging_component(component: &str, run_id: &str) -> String {
     let marked = format!("-{RUN_ID_PLACEHOLDER}-");
     let replaced = component.replace(&format!("-{run_id}-"), &marked);
     let Some(position) = replaced.find(&marked) else {
-        return replaced;
+        return staging_shape(component, in_reserved).unwrap_or(replaced);
     };
     let nonce_start = position + marked.len();
     let tail = &replaced[nonce_start..];
@@ -377,6 +395,30 @@ fn staging_component(component: &str, run_id: &str) -> String {
     } else {
         replaced
     }
+}
+
+/// Normalises a staging name by its shape alone: `<prefix><id>-<nonce>` plus
+/// any extension, where the prefix is a sibling kind's, or `run-` for a run
+/// child directly in `.cao-staging`, and `<id>` is a valid staging Run ID
+/// (1–128 ASCII letters, digits or hyphens). `None` for any other name.
+fn staging_shape(component: &str, in_reserved: bool) -> Option<String> {
+    let prefix = SIBLING_PREFIXES
+        .into_iter()
+        .find(|prefix| component.starts_with(prefix))
+        .or_else(|| (in_reserved && component.starts_with("run-")).then_some("run-"))?;
+    let rest = &component[prefix.len()..];
+    let (stem, extension) = rest.split_at(rest.find('.').unwrap_or(rest.len()));
+    let split = stem
+        .len()
+        .checked_sub(NONCE_LENGTH + 1)
+        .filter(|split| stem.is_char_boundary(*split))?;
+    let (id, nonce) = (&stem[..split], &stem[split + 1..]);
+    let valid_id = (1..=128).contains(&id.len())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
+    (stem.as_bytes()[split] == b'-' && valid_id && is_nonce(nonce))
+        .then(|| format!("{prefix}{RUN_ID_PLACEHOLDER}-{NONCE_PLACEHOLDER}{extension}"))
 }
 
 /// 32 lowercase hexadecimal characters, the staging nonce's only spelling.

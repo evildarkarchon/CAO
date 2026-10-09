@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use cao_core::Error;
 use cao_core::execution::{
     AssetExecutionBackend, AssetExecutionResult, AssetExecutor, MutationState, OperationResult,
+    quarantine_failed_load,
 };
 use cao_core::routing::{
     AssetOperations, ExecutionMode, MeshVariant, RequestedWork, RoutedAsset, TextureVariant,
@@ -24,7 +25,7 @@ use cao_core::run::{
     RunConfiguration, RunConfigurationProvider, RunEvent, RunEventDispatcher, RunEventPayload,
     RunFailure, RunHandle, RunPhase, RunPreparation, RunRequest, RunScheduler, RunWork,
     RunWorkEvidence, RunWorkMilestones, RunWorkService, SafetyCleanupService, ScheduledRunWorker,
-    SelectedProfileFacts, StandardRunScheduler, execute_asset_run,
+    SelectedProfileFacts, StandardRunScheduler, TemporaryArtifactRegistry, execute_asset_run,
 };
 
 /// Serializes scenarios that start runs: one active run is allowed per
@@ -371,7 +372,9 @@ impl SafetyCleanupService for CountingCleanup {
 /// How the fake backend treats one Asset, chosen by a marker in its file name.
 ///
 /// `unloadable` fails to load, `panics` panics while optimizing, `changes`
-/// reports a change to persist; anything else is evaluated as unchanged.
+/// reports a change to persist; anything else is evaluated as unchanged. In
+/// Apply a change is saved as `optimized <name>` (an Animation's output as
+/// `converted <name>`), unless the name also contains `unsaveable`.
 pub struct FakeBackend {
     pub calls: Arc<Mutex<Vec<String>>>,
     loaded: Option<PathBuf>,
@@ -414,6 +417,24 @@ impl FakeBackend {
         self.loaded = Some(path.to_path_buf());
         !path.to_string_lossy().contains("unloadable")
     }
+
+    /// The loaded Asset's file name.
+    fn loaded_name(&self) -> String {
+        let loaded = self.loaded.as_ref().unwrap();
+        loaded.file_name().unwrap().to_string_lossy().into_owned()
+    }
+
+    /// Writes `optimized <name>` to the staged `path`, unless the loaded
+    /// Asset's name contains `unsaveable`.
+    fn save(&mut self, call: &str, path: &Path) -> bool {
+        self.record(call, path);
+        let name = self.loaded_name();
+        if name.contains("unsaveable") {
+            return false;
+        }
+        std::fs::write(path, format!("optimized {name}")).unwrap();
+        true
+    }
 }
 
 impl AssetExecutionBackend for FakeBackend {
@@ -431,17 +452,12 @@ impl AssetExecutionBackend for FakeBackend {
     }
 
     fn save_texture(&mut self, path: &Path) -> bool {
-        panic!(
-            "a fake backend never saves, but was asked to save {}",
-            path.display()
-        );
+        self.save("save_texture", path)
     }
 
-    fn remove_texture(&mut self, path: &Path, _remove_verified: &mut dyn FnMut() -> bool) -> bool {
-        panic!(
-            "a fake backend never removes, but was asked to remove {}",
-            path.display()
-        );
+    fn remove_texture(&mut self, path: &Path, remove_verified: &mut dyn FnMut() -> bool) -> bool {
+        self.record("remove_texture", path);
+        remove_verified()
     }
 
     fn load_mesh(&mut self, path: &Path, _variant: MeshVariant) -> bool {
@@ -459,25 +475,29 @@ impl AssetExecutionBackend for FakeBackend {
     }
 
     fn save_mesh(&mut self, path: &Path) -> bool {
-        panic!(
-            "a fake backend never saves, but was asked to save {}",
-            path.display()
-        );
+        self.save("save_mesh", path)
     }
 
     fn optimize_animation(
         &mut self,
         path: &Path,
         output_path: Option<&Path>,
-        _mode: ExecutionMode,
+        mode: ExecutionMode,
     ) -> OperationResult {
-        assert!(
-            output_path.is_none(),
-            "a Dry Run Animation gets no output path"
+        assert_eq!(
+            output_path.is_some(),
+            mode == ExecutionMode::Apply,
+            "only Apply gets an Animation output path"
         );
         self.loaded = Some(path.to_path_buf());
         self.record("optimize_animation", path);
-        self.evaluate()
+        let result = self.evaluate();
+        if let Some(output) = output_path
+            && result.would_change()
+        {
+            std::fs::write(output, format!("converted {}", self.loaded_name())).unwrap();
+        }
+        result
     }
 }
 
@@ -508,6 +528,7 @@ impl RunWorkService for BackendWork {
         &self,
         preparation: &RunPreparation,
         evidence: &RunWorkEvidence<'_, '_>,
+        artifacts: &mut TemporaryArtifactRegistry,
         milestones: &dyn RunWorkMilestones,
         stop: &CancellationToken,
     ) -> Result<(), Error> {
@@ -522,7 +543,8 @@ impl RunWorkService for BackendWork {
                 {
                     token.cancel();
                 }
-                Ok(AssetExecutor::new(&mut backend).execute(asset, mod_root))
+                let result = AssetExecutor::new(&mut backend).execute(asset, artifacts, mod_root);
+                Ok(quarantine_failed_load(asset, result))
             }));
         if let Some((_, token)) = self.cancel_after.clone() {
             adapters.is_cancelled = Some(Box::new(move || token.is_cancelled()));
@@ -570,6 +592,7 @@ impl RunWorkService for ScriptedWork {
         &self,
         preparation: &RunPreparation,
         evidence: &RunWorkEvidence<'_, '_>,
+        _artifacts: &mut TemporaryArtifactRegistry,
         milestones: &dyn RunWorkMilestones,
         stop: &CancellationToken,
     ) -> Result<(), Error> {

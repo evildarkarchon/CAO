@@ -1,0 +1,80 @@
+{
+  "spec": {
+    "profile": "TES5",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/ApplyMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": true,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": true,
+      "target_width": 32,
+      "target_height": 32
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "texture",
+        "path": "mods/ApplyMod/textures/plain.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "Apply over loose Textures (#491): resized to 32x32 and compressed to BC3, staged beside the original and published over it. TES5 targets BC3, which both builds encode on the CPU, so the output is byte-identical; SSE's BC7 needs the GPU encoder and the PSNR rule (#494, #495). Mipmaps are off because generating them needs COM on the Run Worker (#494)."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/ApplyMod/textures/small.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 16,
+        "height": 16,
+        "note": "Within the target size: compressed to BC3 only."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/ApplyMod/textures/interface/map.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 32,
+        "height": 32,
+        "note": "An interface Texture, which TES5 compresses too."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/ApplyMod/textures/done.dds",
+        "format": "BC1_UNORM",
+        "width": 16,
+        "height": 16,
+        "mip_levels": 0,
+        "note": "Already compressed and within the target: no work, so nothing is staged for it."
+      },
+      {
+        "kind": "text",
+        "path": "mods/ApplyMod/readme.txt",
+        "text": "Apply mod\r\n",
+        "note": "Not an Asset; untouched."
+      }
+    ]
+  }
+}

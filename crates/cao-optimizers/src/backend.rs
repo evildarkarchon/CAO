@@ -6,13 +6,13 @@
 //! turns a Routed Asset's operations into one optimizer's request, as
 //! `MainOptimizer::optimizeTexture` does.
 //!
-//! Only Texture evaluation is ported. The composition root refuses Mesh and
-//! Animation work before a run touches anything, but Texture conversion still
-//! routes every Mesh for Mesh Reference Maintenance, so Meshes do reach this
-//! backend. Until `nifly-sys` lands they fail to load, which a parity case with a
-//! real Mesh reports as Different rather than hiding. Applying a Texture decision
-//! fails without mutating anything until the remaining Texture behaviour lands
-//! (#494).
+//! Only Textures are ported. The composition root refuses Mesh and Animation
+//! work before a run touches anything, but Texture conversion still routes every
+//! Mesh for Mesh Reference Maintenance, so Meshes do reach this backend. Until
+//! `nifly-sys` lands they fail to load, which a parity case with a real Mesh
+//! reports as Different rather than hiding. Apply runs a Texture decision on the
+//! CPU path ported so far (see [`crate::textures`]); a decision that needs
+//! mipmaps fails without mutating anything until the rest lands (#494).
 
 use std::path::Path;
 
@@ -155,21 +155,48 @@ impl AssetExecutionBackend for OptimizerBackend {
             };
         }
 
-        if would_change {
-            // Reporting `changed` here would let a later staging slice persist the
-            // untouched pixels as if they were optimized, so fail without mutating.
-            return OperationResult::failed(unavailable("Applying Texture optimizations"));
+        let texture = self.loaded.as_mut().expect("a Texture is loaded");
+        log::debug!("Processing texture: {}", texture.name());
+        match texture.optimize(&self.texture_profile, &request) {
+            // Conversion always produces a new DDS, even from unchanged pixels.
+            Ok(modified) if modified || convert => OperationResult::changed(),
+            Ok(_) => OperationResult::unchanged(),
+            Err(error) => {
+                log::error!("Failed to optimize {}: {error}", texture.name());
+                OperationResult::failed(format!("Failed to optimize Texture: {error}"))
+            }
         }
-        OperationResult::unchanged()
     }
 
-    fn save_texture(&mut self, _path: &Path) -> bool {
-        self.texture_failure_detail = unavailable("Saving Textures");
-        false
+    fn save_texture(&mut self, path: &Path) -> bool {
+        self.texture_failure_detail.clear();
+        let Some(texture) = self.loaded.as_ref() else {
+            self.texture_failure_detail = "No loaded image is available for DDS saving.".to_owned();
+            return false;
+        };
+        // The staged path already exists, empty; it is overwritten in place.
+        let saved = texture
+            .save_dds()
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| std::fs::write(path, bytes).map_err(|error| error.to_string()));
+        match saved {
+            Ok(()) => true,
+            Err(detail) => {
+                self.texture_failure_detail = detail;
+                false
+            }
+        }
     }
 
-    fn remove_texture(&mut self, _path: &Path, _remove_verified: &mut dyn FnMut() -> bool) -> bool {
-        self.texture_failure_detail = unavailable("Removing converted Texture sources");
+    fn remove_texture(&mut self, path: &Path, remove_verified: &mut dyn FnMut() -> bool) -> bool {
+        self.texture_failure_detail.clear();
+        if remove_verified() {
+            return true;
+        }
+        self.texture_failure_detail = format!(
+            "The verified Texture source could not be removed: {}",
+            path.display()
+        );
         false
     }
 

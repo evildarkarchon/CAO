@@ -4,19 +4,32 @@
 //! executor carries a Routed Asset's facts to one backend without reclassifying
 //! it, and reports one Operation Failure shape for every unsuccessful attempt.
 //!
-//! Apply-mode persistence goes through staged publication under Temporary
-//! Ownership, which arrives with #491. Until then an Apply attempt that would
-//! change an Asset stops at the staging boundary with an unsafe
-//! [`AssetExecutionFailure::StagingFailed`] and mutates nothing; Dry Run is
-//! complete.
+//! Apply-mode persistence goes through staged publication under the run's
+//! Temporary Ownership: the executor captures each destination before the
+//! backend loads the original bytes, has the backend save into a durable
+//! staged sibling, and publishes it with `Replace`. The publication result's
+//! mutation fact becomes the attempt's. Dry Run never stages anything.
+//!
+//! [`quarantine_failed_load`] is the adapter step C++ `MainOptimizer` ran after
+//! each attempt: in Apply, a Texture that failed to load becomes `.caobad`.
 
+use std::fs::File;
+use std::io::{Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+
+use cao_winfs::{
+    Access, FileFacts, FileIdentity, Open, RenameMode, Share, delete_by_handle, rename_by_handle,
+};
 
 use crate::routing::{
     AssetIdentity, AssetOperation, AssetOperations, ExecutionMode, MeshVariant, OptimizerTarget,
     RoutedAsset, TextureVariant,
 };
-use crate::run::{RunFailure, RunPhase};
+use crate::run::fingerprint;
+use crate::run::{
+    PublicationPolicy, PublicationResult, PublicationState, RunFailure, RunPhase, StagingError,
+    TemporaryArtifactRegistry,
+};
 
 /// Filesystem effects on durable Assets, excluding registry-owned temporary bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -305,21 +318,175 @@ pub trait AssetExecutionBackend {
     ) -> OperationResult;
 }
 
-/// The failure every Apply attempt that must persist reports until staged
-/// publication is ported (#491). It mutates nothing, but persisting outside
-/// Temporary Ownership would be unsafe, so the run stops.
-fn staging_unavailable(asset: &RoutedAsset, path: &Path, operation: &str) -> AssetExecutionResult {
-    log::warn!(
-        "Apply output for {} needs staged publication, which is not ported yet",
-        asset.execution_path().display()
-    );
+/// The `StagingFailed` result of a producer whose staging boundary failed.
+///
+/// C++ treated only a `filesystem_error` here as safe to continue; every other
+/// staging exception stopped the run. [`StagingError::is_lookup`] marks the
+/// same split.
+fn staging_failed(
+    kind: &str,
+    boundary: &str,
+    path: &Path,
+    mutation: MutationState,
+    error: &StagingError,
+) -> AssetExecutionResult {
     AssetExecutionResult::failed(
         AssetExecutionFailure::StagingFailed,
-        "Staged publication is not available in this build.",
+        format!("Failed to prepare {kind} staging."),
     )
-    .with_safe_to_continue(false)
+    .with_mutation(mutation)
+    .with_safe_to_continue(error.is_lookup())
     .with_path(path)
-    .with_operation(operation)
+    .with_operation(boundary)
+    .with_service_detail(error.to_string())
+}
+
+/// The `CommitFailed` result of a publication that did not release its
+/// temporary name, or `None` when it completed. The mutation and the
+/// continuation verdict are the receipt's.
+fn publication_failure(
+    publication: &PublicationResult,
+    message: &str,
+    path: &Path,
+    boundary: &str,
+) -> Option<AssetExecutionResult> {
+    if publication.state == PublicationState::PublishedAndReleased {
+        return None;
+    }
+    Some(
+        AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed, message)
+            .with_mutation(publication.mutation())
+            .with_safe_to_continue(publication.safe_to_continue())
+            .with_path(path)
+            .with_operation(boundary)
+            .with_service_detail(publication.error_detail.clone()),
+    )
+}
+
+/// The absolute form of an execution path; discovery already yields absolute
+/// paths, so this only guards a relative one from a test or adapter.
+fn absolute(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The Mod Root a publication is confined to: the attributed root, or the
+/// Asset's own folder for a standalone call without one.
+fn publication_root(mod_root: &Path, destination: &Path) -> PathBuf {
+    if mod_root.as_os_str().is_empty() {
+        destination.parent().unwrap_or(destination).to_path_buf()
+    } else {
+        absolute(mod_root)
+    }
+}
+
+/// The size and FNV-1a hash of a readable, non-empty regular file, without
+/// following a link. `None` when it is anything else.
+fn asset_fingerprint(path: &Path) -> Option<(u64, u64)> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let mut file = File::open(path).ok()?;
+    let (size, hash) = fingerprint(&mut file).ok()?;
+    (size != 0).then_some((size, hash))
+}
+
+/// A converted Texture's source, pinned before loading so that only that
+/// file object can be deleted once its replacement is published.
+///
+/// Write sharing is denied, so the loaded bytes cannot change underneath it;
+/// delete sharing is granted, so readers, renames and the later delete-access
+/// open still work.
+struct PinnedSource {
+    path: PathBuf,
+    file: Option<File>,
+    identity: FileIdentity,
+    bytes: (u64, u64),
+}
+
+impl PinnedSource {
+    /// Pins an ordinary, single-link, readable source and records its bytes.
+    fn open(path: &Path) -> Result<Self, StagingError> {
+        let io = |context: &'static str| StagingError::io(context, path);
+        let file = Open::new(
+            Access::READ_DATA | Access::READ_ATTRIBUTES,
+            Share::READ | Share::DELETE,
+        )
+        .open(path)
+        .map_err(io("Pin Texture source"))?;
+        let facts = FileFacts::of(&file).map_err(io("Inspect"))?;
+        let identity = FileIdentity::of(&file).map_err(io("Identify"))?;
+        let bytes = Self::hash(&file);
+        match bytes {
+            Some(bytes) if facts.is_ordinary_file() && facts.link_count() == 1 => Ok(Self {
+                path: path.to_path_buf(),
+                file: Some(file),
+                identity,
+                bytes,
+            }),
+            _ => Err(StagingError::Invalid(
+                "Convertible Texture source is not an ordinary readable file.".to_owned(),
+            )),
+        }
+    }
+
+    /// Hashes the pinned file object, so a replacement at its path cannot
+    /// supply the comparison bytes. `None` for an empty or unreadable file.
+    fn hash(mut file: &File) -> Option<(u64, u64)> {
+        file.seek(SeekFrom::Start(0)).ok()?;
+        let (size, hash) = fingerprint(&mut file).ok()?;
+        (size != 0).then_some((size, hash))
+    }
+
+    /// The identity of the ordinary single-link file `path` names now.
+    fn identity_at(path: &Path, access: Access, share: Share) -> Option<(File, FileIdentity)> {
+        let file = Open::new(access, share).open(path).ok()?;
+        let facts = FileFacts::of(&file).ok()?;
+        if !facts.is_ordinary_file() || facts.link_count() != 1 {
+            return None;
+        }
+        let identity = FileIdentity::of(&file).ok()?;
+        Some((file, identity))
+    }
+
+    /// Whether the original path still names the pinned, unmodified file.
+    fn unchanged_at_path(&self) -> bool {
+        let Some(file) = &self.file else {
+            return false;
+        };
+        let current = Self::identity_at(
+            &self.path,
+            Access::READ_ATTRIBUTES,
+            Share::READ | Share::WRITE | Share::DELETE,
+        );
+        current.is_some_and(|(_, identity)| identity == self.identity)
+            && Self::hash(file) == Some(self.bytes)
+    }
+
+    /// Deletes the pinned file object, never whatever replaced it at its
+    /// path, and releases the pin. Returns whether the delete was set.
+    fn remove_verified(&mut self) -> bool {
+        if !self.unchanged_at_path() {
+            return false;
+        }
+        let Some((deletion, identity)) = Self::identity_at(
+            &self.path,
+            Access::DELETE | Access::READ_ATTRIBUTES,
+            Share::READ | Share::DELETE,
+        ) else {
+            return false;
+        };
+        if identity != self.identity || !self.unchanged_at_path() {
+            return false;
+        }
+        if delete_by_handle(&deletion).is_err() {
+            return false;
+        }
+        // Closing both handles lets the disposition take effect.
+        drop(deletion);
+        self.file = None;
+        true
+    }
 }
 
 /// Executes carried Routed Asset facts through one backend, without reclassification.
@@ -333,14 +500,21 @@ impl<'b> AssetExecutor<'b> {
         Self { backend }
     }
 
-    /// Executes one attempt. `mod_root` is the canonical Mod Root the attempt is
-    /// attributed to; the run freezes it before any source can change.
-    pub fn execute(&mut self, asset: &RoutedAsset, mod_root: &Path) -> AssetExecutionResult {
-        let _ = mod_root; // Scopes publication targets once staging lands (#491).
+    /// Executes one attempt under the run's Temporary Ownership.
+    ///
+    /// `mod_root` is the canonical Mod Root the attempt is attributed to; the
+    /// run freezes it before any source can change, and every publication is
+    /// confined to it. Only Apply stages anything in `artifacts`.
+    pub fn execute(
+        &mut self,
+        asset: &RoutedAsset,
+        artifacts: &mut TemporaryArtifactRegistry,
+        mod_root: &Path,
+    ) -> AssetExecutionResult {
         match asset.target() {
-            OptimizerTarget::Texture => self.execute_texture(asset),
-            OptimizerTarget::Mesh => self.execute_mesh(asset),
-            OptimizerTarget::Animation => self.execute_animation(asset),
+            OptimizerTarget::Texture => self.execute_texture(asset, artifacts, mod_root),
+            OptimizerTarget::Mesh => self.execute_mesh(asset, artifacts, mod_root),
+            OptimizerTarget::Animation => self.execute_animation(asset, artifacts, mod_root),
             OptimizerTarget::Archive => AssetExecutionResult::failed(
                 AssetExecutionFailure::UnsupportedTarget,
                 "Archive extraction and packing are owned by run orchestration.",
@@ -348,8 +522,14 @@ impl<'b> AssetExecutor<'b> {
         }
     }
 
-    /// Loads, optimizes and, in Apply, would stage one Texture.
-    fn execute_texture(&mut self, asset: &RoutedAsset) -> AssetExecutionResult {
+    /// Loads and optimizes one Texture and, in Apply, publishes its changed
+    /// output. A conversion also removes its verified source afterwards.
+    fn execute_texture(
+        &mut self,
+        asset: &RoutedAsset,
+        artifacts: &mut TemporaryArtifactRegistry,
+        mod_root: &Path,
+    ) -> AssetExecutionResult {
         let path = asset.execution_path();
         let AssetIdentity::Texture(variant) = asset.identity() else {
             return AssetExecutionResult::failed(
@@ -359,6 +539,50 @@ impl<'b> AssetExecutor<'b> {
             .with_safe_to_continue(false)
             .with_path(path);
         };
+        let apply = asset.execution_mode() == ExecutionMode::Apply;
+        let converting = variant == TextureVariant::Convertible
+            && asset.operations().contains(AssetOperation::Conversion);
+        let output = absolute(&if variant == TextureVariant::Convertible {
+            path.with_extension("dds")
+        } else {
+            path.to_path_buf()
+        });
+
+        // A removal may fail after changing either path, so the source's
+        // opened identity and the saved output's bytes are both pinned down
+        // before anything is published.
+        let mut source_pin = None;
+        let mut target = None;
+        if apply {
+            if converting {
+                match PinnedSource::open(path) {
+                    Ok(pin) => source_pin = Some(pin),
+                    Err(error) => {
+                        return staging_failed(
+                            "Texture",
+                            "pin_texture_source",
+                            path,
+                            MutationState::None,
+                            &error,
+                        );
+                    }
+                }
+            }
+            let root = publication_root(mod_root, &output);
+            match artifacts.capture_publication_target(&root, &output) {
+                Ok(captured) => target = Some(captured),
+                Err(error) => {
+                    return staging_failed(
+                        "Texture",
+                        "capture_texture_destination",
+                        path,
+                        MutationState::None,
+                        &error,
+                    );
+                }
+            }
+        }
+
         if !self.backend.load_texture(path, variant) {
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::LoadFailed,
@@ -380,19 +604,117 @@ impl<'b> AssetExecutor<'b> {
             .with_operation("optimize_texture")
             .with_service_detail(operation.message());
         }
-        if asset.execution_mode() == ExecutionMode::DryRun || !operation.would_change() {
+        let Some(target) = target.filter(|_| operation.would_change()) else {
             return AssetExecutionResult::success(MutationState::None);
-        }
-        let output = if variant == TextureVariant::Convertible {
-            path.with_extension("dds")
-        } else {
-            path.to_path_buf()
         };
-        staging_unavailable(asset, &output, "stage_texture")
+
+        let receipt = match artifacts.stage_file_for_publication(target) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                return staging_failed(
+                    "Texture",
+                    "stage_texture",
+                    &output,
+                    MutationState::None,
+                    &error,
+                );
+            }
+        };
+        let staged = receipt
+            .path()
+            .expect("the registry outlives this attempt")
+            .to_path_buf();
+        if !self.backend.save_texture(&staged) {
+            return AssetExecutionResult::failed(
+                AssetExecutionFailure::SaveFailed,
+                "Failed to save Texture.",
+            )
+            .with_path(&output)
+            .with_operation("save_texture")
+            .with_service_detail(self.backend.texture_failure_detail());
+        }
+        let Some(output_before) = asset_fingerprint(&staged) else {
+            return AssetExecutionResult::failed(
+                AssetExecutionFailure::SaveFailed,
+                "Saved Texture is not a usable regular file.",
+            )
+            .with_path(&output)
+            .with_operation("save_texture");
+        };
+
+        // Publication commits the destination before releasing ownership, and
+        // its result carries that fact even when the release fails.
+        let publication = receipt.publish(&output, PublicationPolicy::Replace);
+        let mutation = publication.mutation();
+        if let Some(failure) = publication_failure(
+            &publication,
+            "Failed to publish Texture output.",
+            &output,
+            "commit_texture",
+        ) {
+            return failure;
+        }
+        if !converting {
+            return AssetExecutionResult::success(mutation);
+        }
+
+        let retained_usable = |pin: &Option<PinnedSource>| {
+            asset_fingerprint(&output) == Some(output_before)
+                && pin.as_ref().is_some_and(PinnedSource::unchanged_at_path)
+        };
+        let removal_failed = |message: &str, mutation, safe| {
+            AssetExecutionResult::failed(AssetExecutionFailure::SourceRemovalFailed, message)
+                .with_mutation(mutation)
+                .with_safe_to_continue(safe)
+                .with_path(path)
+                .with_operation("remove_texture_source")
+        };
+        if !retained_usable(&source_pin) {
+            return removal_failed(
+                "Cannot verify conversion files before removal.",
+                mutation,
+                false,
+            );
+        }
+        let mut attempted = false;
+        let mut removed = false;
+        // A backend's success alone never authorizes deleting by pathname or
+        // claiming the removal: only the pinned identity can be removed, once.
+        let reported = self.backend.remove_texture(path, &mut || {
+            if attempted {
+                return false;
+            }
+            attempted = true;
+            removed = source_pin
+                .as_mut()
+                .is_some_and(PinnedSource::remove_verified);
+            removed
+        });
+        if !reported || !removed {
+            let usable = retained_usable(&source_pin);
+            let mutation = if usable {
+                mutation
+            } else {
+                MutationState::PartialOrUnknown
+            };
+            return removal_failed(
+                "Failed to remove converted Texture source.",
+                mutation,
+                usable,
+            )
+            .with_service_detail(self.backend.texture_failure_detail());
+        }
+        AssetExecutionResult::success(mutation)
     }
 
-    /// Loads a Mesh and runs its independent operations; Apply would stage once.
-    fn execute_mesh(&mut self, asset: &RoutedAsset) -> AssetExecutionResult {
+    /// Loads a Mesh, runs its independent operations, and in Apply publishes
+    /// the result once.
+    fn execute_mesh(
+        &mut self,
+        asset: &RoutedAsset,
+        artifacts: &mut TemporaryArtifactRegistry,
+        mod_root: &Path,
+    ) -> AssetExecutionResult {
         let path = asset.execution_path();
         let AssetIdentity::Mesh(variant) = asset.identity() else {
             return AssetExecutionResult::failed(
@@ -402,6 +724,23 @@ impl<'b> AssetExecutor<'b> {
             .with_safe_to_continue(false)
             .with_path(path);
         };
+        let destination = absolute(path);
+        let mut target = None;
+        if asset.execution_mode() == ExecutionMode::Apply {
+            let root = publication_root(mod_root, &destination);
+            match artifacts.capture_publication_target(&root, &destination) {
+                Ok(captured) => target = Some(captured),
+                Err(error) => {
+                    return staging_failed(
+                        "Mesh",
+                        "capture_mesh_destination",
+                        path,
+                        MutationState::None,
+                        &error,
+                    );
+                }
+            }
+        }
         if !self.backend.load_mesh(path, variant) {
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::LoadFailed,
@@ -443,15 +782,50 @@ impl<'b> AssetExecutor<'b> {
             would_change = would_change || maintenance.would_change();
         }
         // Dry Run evaluates both operations against the loaded Mesh but never
-        // persists their results.
-        if asset.execution_mode() == ExecutionMode::DryRun || !would_change {
+        // persists their results; it captured no target.
+        let Some(target) = target.filter(|_| would_change) else {
             return AssetExecutionResult::success(MutationState::None);
+        };
+        let receipt = match artifacts.stage_file_for_publication(target) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                return staging_failed("Mesh", "stage_mesh", path, MutationState::None, &error);
+            }
+        };
+        let staged = receipt
+            .path()
+            .expect("the registry outlives this attempt")
+            .to_path_buf();
+        if !self.backend.save_mesh(&staged) || asset_fingerprint(&staged).is_none() {
+            return AssetExecutionResult::failed(
+                AssetExecutionFailure::SaveFailed,
+                "Failed to save a usable Mesh staging file.",
+            )
+            .with_path(path)
+            .with_operation("save_mesh");
         }
-        staging_unavailable(asset, path, "stage_mesh")
+        // Publication commits the replacement before releasing Temporary
+        // Ownership; that fact is kept when the release fails.
+        let publication = receipt.publish(&destination, PublicationPolicy::Replace);
+        if let Some(failure) = publication_failure(
+            &publication,
+            "Failed to publish Mesh output.",
+            path,
+            "commit_mesh",
+        ) {
+            return failure;
+        }
+        AssetExecutionResult::success(publication.mutation())
     }
 
-    /// Evaluates an Animation in Dry Run; Apply needs a staged output path first.
-    fn execute_animation(&mut self, asset: &RoutedAsset) -> AssetExecutionResult {
+    /// Optimizes an Animation. Apply stages its output before the backend
+    /// runs, because `hkxcmd` writes straight to the path it is given.
+    fn execute_animation(
+        &mut self,
+        asset: &RoutedAsset,
+        artifacts: &mut TemporaryArtifactRegistry,
+        mod_root: &Path,
+    ) -> AssetExecutionResult {
         let path = asset.execution_path();
         if asset.identity() != AssetIdentity::Animation {
             return AssetExecutionResult::failed(
@@ -471,14 +845,32 @@ impl<'b> AssetExecutor<'b> {
             .with_path(path)
             .with_operation("execute_animation");
         }
-        // Apply stages its output before the backend runs, so the staging
-        // boundary comes first.
+        let destination = absolute(path);
+        let mut receipt = None;
         if asset.execution_mode() == ExecutionMode::Apply {
-            return staging_unavailable(asset, path, "stage_animation");
+            let root = publication_root(mod_root, &destination);
+            match artifacts.capture_and_stage_file(&root, &destination) {
+                Ok(staged) => receipt = Some(staged),
+                Err(error) => {
+                    return staging_failed(
+                        "Animation",
+                        "stage_animation",
+                        path,
+                        MutationState::None,
+                        &error,
+                    );
+                }
+            }
         }
-        let operation = self
-            .backend
-            .optimize_animation(path, None, asset.execution_mode());
+        let staged = receipt.as_ref().map(|receipt| {
+            receipt
+                .path()
+                .expect("the registry outlives this attempt")
+                .to_path_buf()
+        });
+        let operation =
+            self.backend
+                .optimize_animation(path, staged.as_deref(), asset.execution_mode());
         if !operation.succeeded() {
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::OperationFailed,
@@ -488,6 +880,125 @@ impl<'b> AssetExecutor<'b> {
             .with_operation("optimize_animation")
             .with_service_detail(operation.message());
         }
-        AssetExecutionResult::success(MutationState::None)
+        // An unpublished receipt leaves its empty sibling to Safety Cleanup.
+        let (Some(receipt), Some(staged)) = (receipt, staged) else {
+            return AssetExecutionResult::success(MutationState::None);
+        };
+        if !operation.would_change() {
+            return AssetExecutionResult::success(MutationState::None);
+        }
+        if asset_fingerprint(&staged).is_none() {
+            return AssetExecutionResult::failed(
+                AssetExecutionFailure::SaveFailed,
+                "Animation output is not a usable regular file.",
+            )
+            .with_path(path)
+            .with_operation("save_animation");
+        }
+        // The native replacement precedes the ownership release; a release
+        // failure still leaves a Committed Mutation, unsafe to continue.
+        let publication = receipt.publish(&destination, PublicationPolicy::Replace);
+        if let Some(failure) = publication_failure(
+            &publication,
+            "Failed to publish Animation output.",
+            path,
+            "commit_animation",
+        ) {
+            return failure;
+        }
+        AssetExecutionResult::success(publication.mutation())
     }
+}
+
+/// Finishes one attempt as C++ `MainOptimizer::finishAttempt` did: logs a
+/// failure and, in Apply, quarantines a Texture that failed to load.
+///
+/// Quarantine renames the Texture to `<name>.caobad` (or `.caobad.1`, `.2`,
+/// …) with a no-replace rename, so a later run and Archive creation leave it
+/// alone, and records the rename as a Committed Mutation. A Texture that
+/// cannot be renamed is still packable, so the run must not continue to
+/// Archive Finalization: the attempt becomes unsafe. Dry Run only reports the
+/// failure.
+///
+/// C++ quarantined Meshes too. Here Meshes are left alone until they load
+/// through `nifly-sys`: until then every Mesh fails to load, and Texture
+/// conversion routes every Mesh, so quarantining them would rename every Mesh
+/// of an SSE or FO4 mod.
+pub fn quarantine_failed_load(
+    asset: &RoutedAsset,
+    result: AssetExecutionResult,
+) -> AssetExecutionResult {
+    if result.succeeded() {
+        return result;
+    }
+    let path = asset.execution_path();
+    log::error!(
+        "Cannot process Routed Asset: {}\n{}",
+        path.display(),
+        result.message()
+    );
+    if !result.service_detail().is_empty() {
+        log::error!("{}", result.service_detail());
+    }
+    if asset.execution_mode() != ExecutionMode::Apply
+        || asset.target() != OptimizerTarget::Texture
+        || result.failure() != Some(AssetExecutionFailure::LoadFailed)
+    {
+        return result;
+    }
+    match quarantine(path) {
+        Some(quarantined) => {
+            log::error!(
+                "{} was renamed to {}",
+                path.display(),
+                quarantined.display()
+            );
+            result.with_mutation(MutationState::Committed)
+        }
+        None => {
+            log::error!("Please remove {}", path.display());
+            result.with_safe_to_continue(false)
+        }
+    }
+}
+
+/// Renames `path` to the first free `.caobad` name, returning it.
+///
+/// Each candidate is tried with a no-replace rename of the opened file, so an
+/// entry that appears at the candidate is never overwritten and the check
+/// cannot race the rename (C++ checked, then renamed).
+fn quarantine(path: &Path) -> Option<PathBuf> {
+    const ERROR_FILE_EXISTS: i32 = 80;
+    const ERROR_ALREADY_EXISTS: i32 = 183;
+    let path = absolute(path);
+    let file = Open::new(
+        Access::DELETE | Access::READ_ATTRIBUTES,
+        Share::READ | Share::WRITE | Share::DELETE,
+    )
+    .open(&path)
+    .inspect_err(|error| log::error!("Cannot open {} to quarantine it: {error}", path.display()))
+    .ok()?;
+    let mut name = path.clone().into_os_string();
+    name.push(".caobad");
+    let mut candidate = PathBuf::from(name);
+    for suffix in 1u64.. {
+        match rename_by_handle(&file, &candidate, RenameMode::NoReplace) {
+            Ok(()) => return Some(candidate),
+            Err(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(ERROR_FILE_EXISTS | ERROR_ALREADY_EXISTS)
+                ) =>
+            {
+                let mut name = path.clone().into_os_string();
+                name.push(format!(".caobad.{suffix}"));
+                candidate = PathBuf::from(name);
+            }
+            Err(error) => {
+                log::error!("Cannot quarantine {}: {error}", path.display());
+                return None;
+            }
+        }
+    }
+    None
 }

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use cao_core::Error;
-use cao_core::execution::AssetExecutor;
+use cao_core::execution::{AssetExecutor, quarantine_failed_load};
 use cao_core::routing::{
     ExecutionMode, PolicyValidationError, RequestedWork, RoutingPolicyRequest,
 };
@@ -24,7 +24,7 @@ use cao_core::run::{
     AssetRunAdapters, CancellationToken, ModSelection, OptimizationRunService, RunConfiguration,
     RunConfigurationProvider, RunEventDispatcher, RunHandle, RunPreparation, RunRequest,
     RunWorkEvidence, RunWorkMilestones, RunWorkService, SelectedProfileFacts, StartError,
-    execute_asset_run,
+    TemporaryArtifactRegistry, execute_asset_run,
 };
 use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
 use directxtex::DXGI_FORMAT;
@@ -432,6 +432,7 @@ impl RunWorkService for ApplicationRunWork {
         &self,
         preparation: &RunPreparation,
         evidence: &RunWorkEvidence<'_, '_>,
+        artifacts: &mut TemporaryArtifactRegistry,
         milestones: &dyn RunWorkMilestones,
         stop: &CancellationToken,
     ) -> Result<(), Error> {
@@ -446,7 +447,15 @@ impl RunWorkService for ApplicationRunWork {
             let backend = backend.get_or_insert_with(|| {
                 OptimizerBackend::new(self.settings.textures, texture_profile.clone())
             });
-            Ok(AssetExecutor::new(backend).execute(asset, mod_root))
+            let result = AssetExecutor::new(backend).execute(asset, artifacts, mod_root);
+            Ok(quarantine_failed_load(asset, result))
+        }));
+        // C++ always wires Archive Finalization, so Apply executes the phase.
+        // Archive creation is refused up front until it is ported (#498), so
+        // the plan is always empty here; C++ then pruned empty directories,
+        // which also lands with #498.
+        adapters.finalize_archive_lifecycle = Some(Box::new(|evidence| {
+            evidence.record_archive_finalization_plan(0)
         }));
         execute_asset_run(preparation, evidence, milestones, stop, &mut adapters)
     }

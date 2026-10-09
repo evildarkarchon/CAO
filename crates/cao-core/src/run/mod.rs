@@ -4,6 +4,7 @@
 //! [`OptimizationRunService`]; beneath it, [`RunExecutor`] is the synchronous,
 //! deterministic seam (ADR-0001).
 
+mod artifacts;
 mod asset_run;
 mod evidence;
 mod executor;
@@ -13,10 +14,15 @@ mod preparation;
 mod probes;
 mod scheduler;
 mod service;
+mod staging;
 
+pub use artifacts::{
+    PublicationPolicy, PublicationReceipt, PublicationResult, PublicationState, PublicationTarget,
+    Registration, StagedFile, TemporaryArtifactRegistry,
+};
 pub use asset_run::{
-    AssetInitializationCancelled, AssetRunAdapters, AssetRunProgress, ExecuteAsset, ReportPhase,
-    RoutedAssetAttempt, execute_asset_run, is_staging_name,
+    AssetInitializationCancelled, AssetRunAdapters, AssetRunProgress, ExecuteAsset,
+    FinalizeArchiveLifecycle, ReportPhase, RoutedAssetAttempt, execute_asset_run, is_staging_name,
 };
 pub use evidence::{
     ArchiveDiscoveryEvidence, MutableRunEvidence, RunEvidence, RunObservationSink, RunWorkEvidence,
@@ -40,6 +46,9 @@ pub use scheduler::{
     InlineRunScheduler, RunScheduler, RunWork, ScheduledRunWorker, StandardRunScheduler,
 };
 pub use service::{OptimizationRunService, RunEventDispatcher, RunHandle, StartError};
+pub use staging::StagingError;
+
+pub(crate) use artifacts::fingerprint;
 
 /// Extracts the human-readable message from a caught panic payload.
 pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {

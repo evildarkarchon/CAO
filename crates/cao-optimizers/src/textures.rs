@@ -5,17 +5,20 @@
 //! compressed and given mipmaps. Dry Run reports that decision and Apply acts on
 //! it, so both share this one function, as they share `processArguments` in C++.
 //!
-//! Only loading and deciding are ported so far. Applying the decision (decompress,
-//! resize, mipmaps, convert and GPU BC7 encoding) arrives with the remaining
-//! Texture behaviour (#494), together with the per-thread COM and D3D11 setup it
-//! needs; Dry Run never calls WIC, so it needs neither.
+//! [`Texture::optimize`] is C++ `optimize` on the CPU path the Texture decisions
+//! already need (#491): decompress, resize without WIC, and convert or compress
+//! to the target format. Mipmap generation may use WIC, which needs COM on the
+//! Run Worker, so it arrives with the rest of the Texture behaviour (#494) and
+//! fails cleanly until then. GPU BC7/BC6H encoding is a later slice; until then
+//! every format is compressed on the CPU, as C++ does without a device.
 
 use std::path::Path;
 
 use cao_core::routing::TextureVariant;
 use directxtex::{
-    DDS_FLAGS_NONE, DXGI_FORMAT, HResultError, ScratchImage, TEX_ALPHA_MODE_OPAQUE, TGA_FLAGS_NONE,
-    TexMetadata,
+    DDS_FLAGS_NONE, DXGI_FORMAT, HResultError, ScratchImage, TEX_ALPHA_MODE_OPAQUE,
+    TEX_COMPRESS_DEFAULT, TEX_FILTER_DEFAULT, TEX_FILTER_FORCE_NON_WIC, TEX_FILTER_SEPARATE_ALPHA,
+    TEX_THRESHOLD_DEFAULT, TGA_FLAGS_NONE, TexMetadata,
 };
 
 /// The profile's Texture settings a decision depends on, from `profile.ini`.
@@ -156,6 +159,27 @@ pub enum TextureError {
     /// A typeless DDS format with no UNORM equivalent, which C++ refused to load.
     #[error("the typeless format {0:?} has no UNORM equivalent")]
     Typeless(DXGI_FORMAT),
+    /// One DirectXTex step of applying a decision failed.
+    #[error("DirectXTex could not {step} the Texture: {source}")]
+    Process {
+        step: &'static str,
+        #[source]
+        source: HResultError,
+    },
+    /// A conversion produced a format other than the one asked for.
+    #[error("the conversion produced {produced:?} instead of {requested:?}")]
+    UnexpectedFormat {
+        requested: DXGI_FORMAT,
+        produced: DXGI_FORMAT,
+    },
+    /// A step this build cannot perform yet.
+    #[error("{0} is not available in this build")]
+    Unavailable(&'static str),
+}
+
+/// Wraps a DirectXTex error with the step that raised it.
+fn step(step: &'static str) -> impl FnOnce(HResultError) -> TextureError {
+    move |source| TextureError::Process { step, source }
 }
 
 /// One loaded Texture: its pixels, its metadata and the path it came from.
@@ -225,5 +249,138 @@ impl Texture {
     /// Decides what to do with this Texture; see [`plan`].
     pub fn plan(&self, profile: &TextureProfile, request: &TextureRequest) -> TexturePlan {
         plan(&self.info, &self.name, self.variant, profile, request)
+    }
+
+    /// Applies the decision for `request` to the loaded pixels, as C++
+    /// `optimize` does, and reports whether they changed
+    /// (`modifiedCurrentTexture`).
+    ///
+    /// The metadata saved with the Texture is updated field by field, as C++
+    /// updates `_info`, rather than replaced by each step's result, so the DDS
+    /// header matches the oracle's.
+    ///
+    /// # Errors
+    /// [`TextureError`] when a DirectXTex step fails, or when the decision
+    /// needs mipmaps, which this build cannot generate yet (#494). The loaded
+    /// pixels may then be partly processed; nothing on disk has changed.
+    pub fn optimize(
+        &mut self,
+        profile: &TextureProfile,
+        request: &TextureRequest,
+    ) -> Result<bool, TextureError> {
+        let plan = self.plan(profile, request);
+        if !plan.would_change() {
+            log::debug!("This texture does not need optimization.");
+            return Ok(false);
+        }
+        let mut modified = false;
+        if self.info.format.is_compressed() {
+            log::debug!("Decompressing this texture.");
+            let image = self
+                .image
+                .decompress(DXGI_FORMAT::DXGI_FORMAT_UNKNOWN)
+                .map_err(step("decompress"))?;
+            self.info.format = image.metadata().format;
+            self.image = image;
+            modified = true;
+        }
+        let mut mipmaps = plan.mipmaps;
+        if plan.resize {
+            log::debug!("Resizing this texture.");
+            modified |= self.resize(plan.width, plan.height)?;
+            mipmaps = request.mipmaps
+                && self.info.mip_levels != optimal_mip_count(self.info.width, self.info.height)
+                && can_have_mipmaps(&self.info, self.is_interface(), profile);
+        }
+        if mipmaps {
+            return Err(TextureError::Unavailable("Mipmap generation"));
+        }
+        let mut target = self.info.format;
+        if plan.compress {
+            target = profile.format;
+            log::debug!("Converting this texture to format: {target:?}");
+        }
+        // Cannot compress once the Texture is smaller than 4x4.
+        if !can_be_compressed(&self.info, self.is_interface(), profile) {
+            target = DXGI_FORMAT::DXGI_FORMAT_B8G8R8A8_UNORM;
+        }
+        modified |= self.convert(target)?;
+        log::info!("Successfully processed texture: {}", self.name);
+        Ok(modified)
+    }
+
+    /// The Texture as DDS file bytes, written with the C++-maintained metadata.
+    ///
+    /// # Errors
+    /// [`TextureError::Process`] when DirectXTex cannot encode it.
+    pub fn save_dds(&self) -> Result<Vec<u8>, TextureError> {
+        let blob = directxtex::save_dds(self.image.images(), &self.info, DDS_FLAGS_NONE)
+            .map_err(step("save"))?;
+        Ok(blob.buffer().to_vec())
+    }
+
+    /// C++ looks for `interface` anywhere in the loaded path, ignoring case.
+    fn is_interface(&self) -> bool {
+        self.name.to_lowercase().contains("interface")
+    }
+
+    /// Halves towards the target as C++ `resize` does: the target is rounded
+    /// up to powers of two, and WIC is never used, so a large Texture is not
+    /// expanded to 128-bit floats.
+    fn resize(&mut self, mut width: usize, mut height: usize) -> Result<bool, TextureError> {
+        if self.info.width <= width && self.info.height <= height {
+            return Ok(false);
+        }
+        width = width.next_power_of_two();
+        height = height.next_power_of_two();
+        let image = self
+            .image
+            .resize(
+                width,
+                height,
+                TEX_FILTER_SEPARATE_ALPHA | TEX_FILTER_FORCE_NON_WIC,
+            )
+            .map_err(step("resize"))?;
+        let resized = image.metadata();
+        self.info.width = resized.width;
+        self.info.height = resized.height;
+        self.info.mip_levels = 1;
+        self.image = image;
+        Ok(true)
+    }
+
+    /// Converts to `format`, compressing when it is a block format, as C++
+    /// `convert` does. Returns whether the pixels changed.
+    fn convert(&mut self, format: DXGI_FORMAT) -> Result<bool, TextureError> {
+        if format.is_compressed() {
+            if self.info.format.is_compressed() || self.image.metadata().format == format {
+                return Ok(false);
+            }
+            // C++ also passed TEX_FILTER_SEPARATE_ALPHA, which Compress ignores.
+            let image = self
+                .image
+                .compress(format, TEX_COMPRESS_DEFAULT, TEX_THRESHOLD_DEFAULT)
+                .map_err(step("compress"))?;
+            self.info.format = image.metadata().format;
+            self.image = image;
+            return Ok(true);
+        }
+        if self.info.format == format {
+            return Ok(false);
+        }
+        let image = self
+            .image
+            .convert(format, TEX_FILTER_DEFAULT, TEX_THRESHOLD_DEFAULT)
+            .map_err(step("convert"))?;
+        let produced = image.metadata().format;
+        if produced != format {
+            return Err(TextureError::UnexpectedFormat {
+                requested: format,
+                produced,
+            });
+        }
+        self.info.format = produced;
+        self.image = image;
+        Ok(true)
     }
 }

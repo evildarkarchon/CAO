@@ -18,6 +18,7 @@ use cao_core::run::{
     OptimizationRunResult, OptimizationRunService, PhaseSkipReason, RunDiagnosticCode, RunEvent,
     RunEventPayload, RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord, RunPhaseStatus,
     RunPreparation, RunProgress, RunWorkEvidence, RunWorkMilestones, RunWorkService,
+    TemporaryArtifactRegistry,
 };
 use common::{
     BackendWork, EventLog, GatedScheduler, HandleSlot, ScriptedWork, canonical, junction, reclaim,
@@ -571,6 +572,7 @@ fn a_run_worker_panic_ends_the_run_in_one_failed_outcome() {
             &self,
             _preparation: &RunPreparation,
             _evidence: &RunWorkEvidence<'_, '_>,
+            _artifacts: &mut TemporaryArtifactRegistry,
             milestones: &dyn RunWorkMilestones,
             _stop: &CancellationToken,
         ) -> Result<(), Error> {
@@ -625,36 +627,6 @@ fn a_run_worker_panic_ends_the_run_in_one_failed_outcome() {
         &events[events.len() - 2].payload,
         RunEventPayload::Phase(record) if record.phase() == RunPhase::SafetyCleanup
     ));
-}
-
-/// Rust-only, interim until staged publication (#491): an Apply attempt that
-/// would persist a change stops at the staging boundary and mutates nothing.
-#[test]
-fn an_apply_change_stops_at_the_staging_boundary_without_mutating() {
-    let _serial = serial();
-    let root = scratch_dir("loose-apply-staging-unavailable");
-    write_tree(&root, &["textures/a_changes.dds", "textures/b.dds"]);
-    let before = snapshot_tree(&root);
-
-    let (result, _) = run(
-        Arc::new(BackendWork::new()),
-        request(
-            ExecutionMode::Apply,
-            &root,
-            &[RequestedWork::NativeTextureOptimization],
-        ),
-    );
-
-    assert_eq!(result.outcome(), RunOutcome::Failed);
-    let attempt = &result.asset_attempts()[0].result;
-    assert_eq!(
-        attempt.failure(),
-        Some(AssetExecutionFailure::StagingFailed)
-    );
-    assert_eq!(attempt.mutation_state(), MutationState::None);
-    assert!(!attempt.safe_to_continue());
-    assert_eq!(result.asset_attempts().len(), 1);
-    assert_eq!(snapshot_tree(&root), before);
 }
 
 /// Rust-only, interim until Archive extraction (#496, #497): an Apply run that

@@ -17,6 +17,7 @@ pub mod compare;
 pub mod driver;
 pub mod error;
 pub mod facts;
+pub mod leftovers;
 pub mod materialise;
 pub mod names;
 pub mod normalise;
