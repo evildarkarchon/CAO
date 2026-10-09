@@ -10,8 +10,7 @@
 //! [`Error::EvidenceInvariant`], which the Run Executor turns into a panic only
 //! after Safety Cleanup.
 //!
-//! Archive Collisions, extraction attempts and Archive Finalization results
-//! join this record with their slices (#496, #497, #498).
+//! Archive Finalization results join this record with their slice (#498).
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -22,9 +21,9 @@ use crate::Error;
 use crate::execution::MutationState;
 use crate::routing::{RoutingLedger, SkipReason};
 use crate::run::{
-    MutationKind, MutationSummary, RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode,
-    RunFailure, RunFailureCode, RunPhase, RunPhaseRecord, RunPhaseStatus, RunPreparation,
-    RunProgress, take_panic_message,
+    ArchiveCollision, ArchiveExtractionResult, MutationKind, MutationSummary, RoutedAssetAttempt,
+    RunDiagnostic, RunDiagnosticCode, RunFailure, RunFailureCode, RunPhase, RunPhaseRecord,
+    RunPhaseStatus, RunPreparation, RunProgress, take_panic_message,
 };
 
 /// Receives live facts only after Run Evidence has retained them.
@@ -67,6 +66,9 @@ struct Storage {
     phases: Vec<RunPhaseRecord>,
     diagnostics: Vec<RunDiagnostic>,
     failures: Vec<RunFailure>,
+    archive_collisions: Vec<ArchiveCollision>,
+    archive_collisions_recorded: bool,
+    archive_extraction_attempts: Vec<ArchiveExtractionResult>,
     archive_discovery: Option<ArchiveDiscoveryEvidence>,
     routing_ledger: Option<RoutingLedger>,
     asset_attempts: Vec<RoutedAssetAttempt>,
@@ -136,6 +138,17 @@ impl RunEvidence {
     /// Archive discovery facts, or `None` when discovery did not return.
     pub fn archive_discovery(&self) -> Option<&ArchiveDiscoveryEvidence> {
         self.storage.archive_discovery.as_ref()
+    }
+
+    /// The preflight Archive Collisions, in Mod Root and game-path order.
+    /// Empty when there were none or the preflight never completed.
+    pub fn archive_collisions(&self) -> &[ArchiveCollision] {
+        &self.storage.archive_collisions
+    }
+
+    /// Completed Archive extraction attempts, in attempt order.
+    pub fn archive_extraction_attempts(&self) -> &[ArchiveExtractionResult] {
+        &self.storage.archive_extraction_attempts
     }
 
     /// The definitive routing, or `None` when it did not complete. An empty
@@ -413,6 +426,67 @@ impl<'a> MutableRunEvidence<'a> {
         ))
     }
 
+    /// Retains the complete preflight collision plan, once, while Discovering
+    /// Archives is current, so the evidence holds it before any extraction.
+    pub fn record_archive_collisions(
+        &mut self,
+        collisions: &[ArchiveCollision],
+    ) -> Result<(), Error> {
+        if self.storage.current_phase() != Some(RunPhase::DiscoveringArchives) {
+            return Err(Error::EvidenceInvariant(
+                "Archive Collisions must be recorded during Discovering Archives",
+            ));
+        }
+        if self.storage.archive_collisions_recorded {
+            return Err(Error::EvidenceInvariant(
+                "Archive Collisions can only be recorded once",
+            ));
+        }
+        self.storage.archive_collisions = collisions.to_vec();
+        self.storage.archive_collisions_recorded = true;
+        Ok(())
+    }
+
+    /// Retains one completed extraction attempt, then advances progress
+    /// against the immutable planned total.
+    pub fn record_archive_extraction_attempt(
+        &mut self,
+        attempt: ArchiveExtractionResult,
+        total: usize,
+    ) -> Result<(), Error> {
+        let Some(progress) = self
+            .storage
+            .phases
+            .last()
+            .filter(|record| record.phase() == RunPhase::ExtractingArchives)
+            .and_then(RunPhaseRecord::progress)
+        else {
+            return Err(Error::EvidenceInvariant(
+                "Archive extraction attempts must be recorded during Extracting Archives",
+            ));
+        };
+        if progress.total() != total {
+            return Err(Error::EvidenceInvariant(
+                "Archive extraction attempts must use the immutable planned total",
+            ));
+        }
+        if self.storage.archive_extraction_attempts.len() >= total {
+            return Err(Error::EvidenceInvariant(
+                "Archive extraction attempts cannot exceed the planned total",
+            ));
+        }
+        let succeeded = attempt.succeeded();
+        self.storage.archive_extraction_attempts.push(attempt);
+        self.record_phase(RunPhaseRecord::executed(
+            RunPhase::ExtractingArchives,
+            Some(RunProgress::determinate(
+                total,
+                progress.succeeded() + usize::from(succeeded),
+                progress.failed() + usize::from(!succeeded),
+            )),
+        ))
+    }
+
     /// Retains the Archive discovery facts of one returned discovery call.
     pub fn record_archive_discovery(
         &mut self,
@@ -606,7 +680,10 @@ impl<'a> MutableRunEvidence<'a> {
             ));
         }
         let storage = &mut self.storage;
-        storage.mutation_summaries = derive_mutation_summaries(&storage.asset_attempts);
+        storage.mutation_summaries = derive_mutation_summaries(
+            &storage.archive_extraction_attempts,
+            &storage.asset_attempts,
+        );
         storage.cleanup_failures = storage
             .asset_attempts
             .iter()
@@ -625,18 +702,35 @@ impl<'a> MutableRunEvidence<'a> {
 }
 
 /// Groups durable effects of completed attempts by Mod Root and kind.
-fn derive_mutation_summaries(attempts: &[RoutedAssetAttempt]) -> Vec<MutationSummary> {
+fn derive_mutation_summaries(
+    extractions: &[ArchiveExtractionResult],
+    attempts: &[RoutedAssetAttempt],
+) -> Vec<MutationSummary> {
     let mut grouped: BTreeMap<(PathBuf, MutationKind), MutationSummary> = BTreeMap::new();
-    for attempt in attempts {
-        let mutation = attempt.result.mutation_state();
+    let effects = extractions
+        .iter()
+        .map(|attempt| {
+            (
+                &attempt.mod_root,
+                MutationKind::ArchiveExtraction,
+                attempt.mutation,
+            )
+        })
+        .chain(attempts.iter().map(|attempt| {
+            (
+                &attempt.mod_root,
+                MutationKind::AssetProcessing,
+                attempt.result.mutation_state(),
+            )
+        }));
+    for (mod_root, kind, mutation) in effects {
         if mutation == MutationState::None {
             continue;
         }
-        let kind = MutationKind::AssetProcessing;
         let summary = grouped
-            .entry((attempt.mod_root.clone(), kind))
+            .entry((mod_root.clone(), kind))
             .or_insert_with(|| MutationSummary {
-                mod_root: attempt.mod_root.clone(),
+                mod_root: mod_root.clone(),
                 kind,
                 committed: 0,
                 partial_or_unknown: 0,
@@ -673,6 +767,24 @@ impl<'e, 'a> RunWorkEvidence<'e, 'a> {
         self.evidence
             .borrow_mut()
             .record_archive_discovery(discovery)
+    }
+
+    /// Retains the preflight collision plan before any extraction.
+    pub fn record_archive_collisions(&self, collisions: &[ArchiveCollision]) -> Result<(), Error> {
+        self.evidence
+            .borrow_mut()
+            .record_archive_collisions(collisions)
+    }
+
+    /// Retains one completed extraction attempt and advances its planned progress.
+    pub fn record_archive_extraction_attempt(
+        &self,
+        attempt: ArchiveExtractionResult,
+        total: usize,
+    ) -> Result<(), Error> {
+        self.evidence
+            .borrow_mut()
+            .record_archive_extraction_attempt(attempt, total)
     }
 
     /// Retains definitive routing before Asset processing starts.

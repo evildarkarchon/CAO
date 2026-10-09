@@ -12,7 +12,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::routing::{
     ExecutionMode, PolicyValidationError, RequestedWork, RoutingLedger, SkipReason,
 };
-use crate::run::{ArchivePrecedence, RoutedAssetAttempt, RunEvidence, RunPreparation};
+use crate::run::{
+    ArchiveCollision, ArchiveExtractionResult, ArchivePrecedence, RoutedAssetAttempt, RunEvidence,
+    RunPreparation,
+};
 
 /// The unique identity of one Optimization Run, carried by its events and terminal result.
 pub type RunId = String;
@@ -526,6 +529,16 @@ impl OptimizationRunResult {
     /// Completed Asset attempts in execution order.
     pub fn asset_attempts(&self) -> &[RoutedAssetAttempt] {
         self.evidence.asset_attempts()
+    }
+
+    /// Preflight Archive Collisions, in Mod Root and game-path order.
+    pub fn archive_collisions(&self) -> &[ArchiveCollision] {
+        self.evidence.archive_collisions()
+    }
+
+    /// Completed Archive extraction attempts, in attempt order.
+    pub fn archive_extraction_attempts(&self) -> &[ArchiveExtractionResult] {
+        self.evidence.archive_extraction_attempts()
     }
 
     /// Recognized-Asset exclusions, including discovery's skipped Archives.

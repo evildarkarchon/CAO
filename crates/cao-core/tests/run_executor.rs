@@ -19,16 +19,15 @@
 //!   (`apply_preparing_fails_closed_on_unverifiable_staging`).
 //! - `dryRunLeavesStagingUntouched`: `staged_publication.rs`,
 //!   `a_dry_run_never_recovers_leftover_staging`.
+//! - `productionWorkRetainsArchiveCollisions`,
+//!   `throwingPreflightFailureObserverRetainsEvidence`, the fatal Archive
+//!   preflight row of `productionWorkApplicability`,
+//!   `mixedExtractionAttemptsAdvanceProgress`,
+//!   `committedExtractionSurvivesDiscoveryInterruption`, and the Archive half
+//!   of `discoveryDiagnosticsSurviveInterruption`: `archive_discovery.rs`,
+//!   each naming its origin.
 //!
 //! Not ported, with reasons:
-//! - `productionWorkRetainsArchiveCollisions`,
-//!   `throwingPreflightFailureObserverRetainsEvidence` and the fatal Archive
-//!   preflight row of `productionWorkApplicability`: Archive discovery does not
-//!   read Archive manifests or detect Archive Collisions yet (#496).
-//! - `mixedExtractionAttemptsAdvanceProgress`,
-//!   `committedExtractionSurvivesDiscoveryInterruption`, and the Archive half
-//!   of `discoveryDiagnosticsSurviveInterruption`: Archive extraction is not
-//!   ported yet (#497).
 //! - `archiveFinalizationCancellationRetainsCommittedOutput`,
 //!   `missingPlannedLoadingPluginFailsRunWithArchiveCommit`, and the Archive
 //!   Finalization half of `mixedWorkEvidenceOutlivesServices`: Archive

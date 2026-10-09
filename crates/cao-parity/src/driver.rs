@@ -24,9 +24,10 @@ use cao_profiles::{OptimizationMode, Options, Profiles};
 use crate::HarnessError;
 use crate::case::{CaseSpec, ModSelection, selected_folder};
 use crate::facts::{
-    AssetFailure, CommittedMutations, DetailedPath, MutationKind, PhaseSkipReason, PhaseStatus,
-    Progress, RunEventFact, RunEventPayload, RunFacts, RunFailureCode, RunOutcome, RunPhase,
-    SkipReason, SkippedAssets, StartError, StartedRun, TerminalFacts,
+    ArchiveCollision, ArchiveFailure, AssetFailure, CommittedMutations, DetailedPath, MutationKind,
+    PhaseSkipReason, PhaseStatus, Progress, RunEventFact, RunEventPayload, RunFacts,
+    RunFailureCode, RunOutcome, RunPhase, SkipReason, SkippedAssets, StartError, StartedRun,
+    TerminalFacts,
 };
 
 /// Fills the options model for `spec` in the install at `app_dir`.
@@ -181,9 +182,17 @@ fn terminal(result: &OptimizationRunResult) -> TerminalFacts {
                 service_detail: attempt.result.service_detail().to_owned(),
             })
             .collect(),
-        // Archive extraction, collisions and finalization are not ported yet,
-        // so a Rust run has none of their facts.
-        archive_failures: Vec::new(),
+        // Failed extraction attempts, as the oracle prints them. Archive
+        // Finalization is not ported yet (#498), so it adds none.
+        archive_failures: result
+            .archive_extraction_attempts()
+            .iter()
+            .filter(|attempt| !attempt.succeeded())
+            .map(|attempt| ArchiveFailure {
+                archive_path: text(&attempt.archive_path),
+                detail: attempt.detail.clone(),
+            })
+            .collect(),
         finalization_failure: None,
         committed_mutations: result
             .mutation_summaries()
@@ -195,7 +204,21 @@ fn terminal(result: &OptimizationRunResult) -> TerminalFacts {
                 partial_or_unknown: summary.partial_or_unknown as u64,
             })
             .collect(),
-        archive_collisions: Vec::new(),
+        archive_collisions: result
+            .archive_collisions()
+            .iter()
+            .map(|collision| ArchiveCollision {
+                mod_root: text(&collision.mod_root),
+                game_path: text(&collision.game_path),
+                winning_archive: text(&collision.winning_archive),
+                loose_asset_wins: collision.loose_asset_wins,
+                shadowed_archives: collision
+                    .shadowed_archives
+                    .iter()
+                    .map(|archive| text(archive))
+                    .collect(),
+            })
+            .collect(),
         // Only non-zero counts, as the oracle prints them.
         skipped_assets: CoreSkipReason::ALL
             .into_iter()

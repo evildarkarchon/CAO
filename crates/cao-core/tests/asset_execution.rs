@@ -333,10 +333,17 @@ impl RunWorkService for BackendRun {
         milestones: &dyn RunWorkMilestones,
         stop: &CancellationToken,
     ) -> Result<(), Error> {
-        let mut adapters = AssetRunAdapters::new(Box::new(|asset, mod_root| {
+        let mut adapters = AssetRunAdapters::new(Box::new(|asset, mod_root, artifacts| {
             Ok(AssetExecutor::new(&mut *self.backend()).execute(asset, artifacts, mod_root))
         }));
-        execute_asset_run(preparation, evidence, milestones, stop, &mut adapters)
+        execute_asset_run(
+            preparation,
+            evidence,
+            artifacts,
+            milestones,
+            stop,
+            &mut adapters,
+        )
     }
 }
 
