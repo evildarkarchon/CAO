@@ -180,6 +180,10 @@ pub enum TextureError {
     /// after it (deviation 6).
     #[error("the result of the {step} step does not match the Texture: {detail}")]
     MetadataMismatch { step: &'static str, detail: String },
+    /// An array item or cubemap face has no top-level image to copy when a
+    /// partial mip chain is cut back; C++ asserted this never happens.
+    #[error("the Texture has no top-level image for item {0}")]
+    MissingImage(usize),
 }
 
 /// Wraps a DirectXTex error with the step that raised it.
@@ -433,10 +437,7 @@ impl Texture {
                 let (Some(source), Some(destination)) =
                     (self.image.image(0, item, 0), top.image(0, item, 0))
                 else {
-                    return Err(TextureError::MetadataMismatch {
-                        step: "copy the top mip level",
-                        detail: format!("it has no image for item {item}"),
-                    });
+                    return Err(TextureError::MissingImage(item));
                 };
                 // `ScratchImage` lends its images only by shared reference, so
                 // the destination is described by a copy of its fields; the
@@ -530,6 +531,11 @@ mod tests {
     /// Deviation 6: C++ `compareInfo` passed when any one field matched. A
     /// result that differs in any compared field now fails the step, even when
     /// every other field matches.
+    ///
+    /// This pins the check itself rather than a run, because no DirectXTex
+    /// step CAO calls returns metadata that differs from what C++ expects, so
+    /// no Texture can reach the mismatch through the backend. The Apply
+    /// scenarios and parity seeds show the check never rejects a real step.
     #[test]
     fn a_step_result_differing_in_any_compared_field_is_a_mismatch() {
         /// A compared field's name and a change to just that field.

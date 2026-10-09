@@ -43,6 +43,9 @@ use crate::tree::{ArtifactRule, RuleOutcome};
 /// that floor is below 40 dB.
 pub const MIN_BC7_BC6H_PSNR_DB: f64 = 40.0;
 
+/// The format PSNR is measured in.
+const FLOAT: DXGI_FORMAT = DXGI_FORMAT::DXGI_FORMAT_R32G32B32A32_FLOAT;
+
 /// The comparator rule for `.dds` files.
 pub struct TextureRule;
 
@@ -189,7 +192,6 @@ fn first_difference(oracle: &[u8], rust: &[u8]) -> String {
 /// # Errors
 /// The DirectXTex error when the format cannot be decoded.
 pub fn decode_to_float(image: &ScratchImage) -> Result<ScratchImage, HResultError> {
-    const FLOAT: DXGI_FORMAT = DXGI_FORMAT::DXGI_FORMAT_R32G32B32A32_FLOAT;
     if image.metadata().format.is_compressed() {
         image.decompress(FLOAT)
     } else {
@@ -231,7 +233,6 @@ pub fn psnr_per_image(
     oracle: &ScratchImage,
     rust: &ScratchImage,
 ) -> Result<Vec<ImagePsnr>, String> {
-    const FLOAT: DXGI_FORMAT = DXGI_FORMAT::DXGI_FORMAT_R32G32B32A32_FLOAT;
     let info = *oracle.metadata();
     let rust_info = rust.metadata();
     if info.format != FLOAT || rust_info.format != FLOAT {
