@@ -443,7 +443,7 @@ impl RunWorkService for ApplicationRunWork {
         // Created on the first Asset, as C++ creates its MainOptimizer, so a run
         // with nothing to process never sets up an optimizer.
         let mut backend: Option<OptimizerBackend> = None;
-        let mut adapters = AssetRunAdapters::new(Box::new(|asset, mod_root| {
+        let mut adapters = AssetRunAdapters::new(Box::new(|asset, mod_root, artifacts| {
             let backend = backend.get_or_insert_with(|| {
                 // This closure runs on the Run Worker, the thread that must
                 // join COM. C++'s texture optimizer threw when it could not,
@@ -462,6 +462,16 @@ impl RunWorkService for ApplicationRunWork {
         adapters.finalize_archive_lifecycle = Some(Box::new(|evidence| {
             evidence.record_archive_finalization_plan(0)
         }));
-        execute_asset_run(preparation, evidence, milestones, stop, &mut adapters)
+        // Archive extraction is not wired yet (#497): without Archive
+        // adapters, an Apply run that selects an Archive fails before any
+        // extraction.
+        execute_asset_run(
+            preparation,
+            evidence,
+            artifacts,
+            milestones,
+            stop,
+            &mut adapters,
+        )
     }
 }

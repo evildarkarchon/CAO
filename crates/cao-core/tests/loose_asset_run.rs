@@ -4,25 +4,26 @@
 //! Scenarios that port a C++ test name its origin, mostly from
 //! `tests/AssetRunTests.cpp`; the rest pin Rust-side contracts from the spec
 //! (#476): panic containment, and the interim behaviour of Apply work whose
-//! Archive extraction (#496) is not ported yet.
+//! production work service wires no Archive extraction yet (#497).
 //!
 //! Ported elsewhere:
 //! - `throwingDiagnosticsCancellationSkipsFinalization`: `run_executor.rs`,
 //!   the "cancel then panic" row of
 //!   `a_discovery_diagnostic_follows_the_attempt_and_can_cancel_finalization`.
-//!
-//! Not ported, with reasons:
 //! - `archiveFailuresControlContinuation`,
 //!   `archiveExtractionPrecedesDefinitiveRoutedExecution`,
 //!   `realExtractionPreservesLooseAssetPrecedence`,
 //!   `archiveCancellationSkipsDefinitiveDiscovery`,
 //!   `finalArchiveCancellationSkipsDefinitiveDiscovery`,
-//!   `nestedArchivesAreReportedWithoutInflatingTheWorkTotal`, and the
-//!   definitive-mod-tree row of `filesystemTraversalPollsCancellation`: Archive
-//!   extraction is not ported yet (#497).
-//! - `unreadableArchiveStopsRunBeforeMutation` and
-//!   `reportsCollisionsBeforeOrderedExtraction`: Archive discovery does not
-//!   read Archive manifests or detect Archive Collisions yet (#496).
+//!   `nestedArchivesAreReportedWithoutInflatingTheWorkTotal`, the
+//!   definitive-mod-tree row of `filesystemTraversalPollsCancellation`,
+//!   `unreadableArchiveStopsRunBeforeMutation` and
+//!   `reportsCollisionsBeforeOrderedExtraction`: `archive_discovery.rs`, each
+//!   naming its origin. C++'s `reportDiscoveryFailure` adapter has no Rust
+//!   counterpart: a failing failure observer is the Run Observation Sink's,
+//!   in `a_failing_preflight_observer_cannot_lose_the_failure`.
+//!
+//! Not ported, with reasons:
 //! - `cancelledArchiveFinalizationIsReported`, and the Archive Finalization
 //!   half of `completeAttemptEvidenceSurvivesAdapters`: Archive Finalization
 //!   results are not Run Evidence yet (#498).
@@ -677,8 +678,9 @@ fn a_run_worker_panic_ends_the_run_in_one_failed_outcome() {
     ));
 }
 
-/// Rust-only, interim until Archive extraction (#496, #497): an Apply run that
-/// selects an Archive fails before extraction and routes nothing.
+/// Rust-only, interim until the production work service wires Archive
+/// extraction (#497): an Apply run whose work supplies no Archive adapters
+/// fails when it selects an Archive, before extraction, and routes nothing.
 #[test]
 fn an_apply_run_selecting_an_archive_fails_before_any_extraction() {
     let _serial = serial();

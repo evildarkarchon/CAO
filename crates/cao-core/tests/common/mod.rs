@@ -21,12 +21,14 @@ use cao_core::routing::{
     AssetOperations, ExecutionMode, MeshVariant, RequestedWork, RoutedAsset, TextureVariant,
 };
 use cao_core::run::{
-    AssetInitializationCancelled, AssetRunAdapters, AssetRunProgress, CancellationToken,
-    ModSelection, RunConfiguration, RunConfigurationProvider, RunDiagnostic, RunEvent,
-    RunEventDispatcher, RunEventPayload, RunFailure, RunHandle, RunObservationSink, RunPhase,
-    RunPhaseRecord, RunPreparation, RunRequest, RunScheduler, RunWork, RunWorkEvidence,
-    RunWorkMilestones, RunWorkService, SafetyCleanupService, ScheduledRunWorker,
-    SelectedProfileFacts, StandardRunScheduler, TemporaryArtifactRegistry, execute_asset_run,
+    ArchiveAdapters, ArchiveCollision, ArchiveEntry, ArchiveExtractionPlan,
+    ArchiveExtractionResult, ArchiveExtractor, ArchiveReader, AssetInitializationCancelled,
+    AssetRunAdapters, AssetRunProgress, CancellationToken, CapacityProbe, ModSelection,
+    RunConfiguration, RunConfigurationProvider, RunDiagnostic, RunEvent, RunEventDispatcher,
+    RunEventPayload, RunFailure, RunHandle, RunObservationSink, RunPhase, RunPhaseRecord,
+    RunPreparation, RunRequest, RunScheduler, RunWork, RunWorkEvidence, RunWorkMilestones,
+    RunWorkService, SafetyCleanupService, ScheduledRunWorker, SelectedProfileFacts,
+    StandardRunScheduler, TemporaryArtifactRegistry, VolumeIdentityProbe, execute_asset_run,
 };
 
 /// Serializes scenarios that start runs: one active run is allowed per
@@ -536,8 +538,8 @@ impl RunWorkService for BackendWork {
         let mut backend = FakeBackend::new(Arc::clone(&self.calls));
         let mut attempts = 0;
         let cancel_after = self.cancel_after.clone();
-        let mut adapters =
-            AssetRunAdapters::new(Box::new(move |asset: &RoutedAsset, mod_root: &Path| {
+        let mut adapters = AssetRunAdapters::new(Box::new(
+            move |asset: &RoutedAsset, mod_root: &Path, artifacts| {
                 attempts += 1;
                 if let Some((after, token)) = &cancel_after
                     && attempts == *after
@@ -546,11 +548,19 @@ impl RunWorkService for BackendWork {
                 }
                 let result = AssetExecutor::new(&mut backend).execute(asset, artifacts, mod_root);
                 Ok(quarantine_failed_load(asset, result))
-            }));
+            },
+        ));
         if let Some((_, token)) = self.cancel_after.clone() {
             adapters.is_cancelled = Some(Box::new(move || token.is_cancelled()));
         }
-        execute_asset_run(preparation, evidence, milestones, stop, &mut adapters)
+        execute_asset_run(
+            preparation,
+            evidence,
+            artifacts,
+            milestones,
+            stop,
+            &mut adapters,
+        )
     }
 }
 
@@ -569,6 +579,9 @@ pub type PhaseHook = Box<dyn Fn(&RunPhaseRecord) + Send + Sync>;
 
 /// A hook observing one Asset Run progress update.
 pub type ProgressHook = Box<dyn Fn(AssetRunProgress) + Send + Sync>;
+
+/// A hook observing the Archive Collision plan.
+pub type CollisionHook = Box<dyn Fn(&[ArchiveCollision]) + Send + Sync>;
 
 /// A hook a [`RecordingSink`] runs on each observation.
 pub type ObservationHook = Box<dyn Fn(&Observed)>;
@@ -595,6 +608,12 @@ pub struct ControlledWork {
     /// Work-specific configuration loaded during Preparing.
     pub prepare: Option<Hook<Result<(), Error>>>,
     pub stage_temporary: bool,
+    /// The Archive seams; without them an Apply run selecting an Archive fails.
+    pub archives: Option<ArchiveFakes>,
+    /// Observes the collision plan; it may panic or cancel.
+    pub report_collisions: Option<CollisionHook>,
+    /// Each extraction plan handed to the extraction adapter, in order.
+    pub extracted: Mutex<Vec<ArchiveExtractionPlan>>,
     /// Each attempt's execution path and the Mod Root it was handed.
     pub attempts: Mutex<Vec<(PathBuf, PathBuf)>>,
     pub executions: AtomicUsize,
@@ -639,7 +658,7 @@ impl RunWorkService for ControlledWork {
             *self.staged.lock().unwrap() = Some(staged.path);
         }
         let mut adapters =
-            AssetRunAdapters::new(Box::new(|asset: &RoutedAsset, mod_root: &Path| {
+            AssetRunAdapters::new(Box::new(|asset: &RoutedAsset, mod_root: &Path, _| {
                 self.attempts
                     .lock()
                     .unwrap()
@@ -665,7 +684,33 @@ impl RunWorkService for ControlledWork {
                 finalize()
             }));
         }
-        execute_asset_run(preparation, evidence, milestones, stop, &mut adapters)
+        if let Some(fakes) = &self.archives {
+            let extractor = ArchiveExtractor::new(&fakes.reader, &fakes.capacity);
+            adapters.archives = Some(ArchiveAdapters {
+                reader: &fakes.reader,
+                capacity: &fakes.capacity,
+                volume_identity: &fakes.volumes,
+                extract: Box::new(move |plan, artifacts| {
+                    self.extracted.lock().unwrap().push(plan.clone());
+                    match &fakes.extract {
+                        Some(script) => script(plan),
+                        None => extractor.extract(plan, artifacts),
+                    }
+                }),
+            });
+        }
+        if let Some(report_collisions) = &self.report_collisions {
+            adapters.report_archive_collisions =
+                Some(Box::new(move |collisions| report_collisions(collisions)));
+        }
+        execute_asset_run(
+            preparation,
+            evidence,
+            artifacts,
+            milestones,
+            stop,
+            &mut adapters,
+        )
     }
 }
 
@@ -828,12 +873,12 @@ impl RunWorkService for ScriptedWork {
         &self,
         preparation: &RunPreparation,
         evidence: &RunWorkEvidence<'_, '_>,
-        _artifacts: &mut TemporaryArtifactRegistry,
+        artifacts: &mut TemporaryArtifactRegistry,
         milestones: &dyn RunWorkMilestones,
         stop: &CancellationToken,
     ) -> Result<(), Error> {
         let mut adapters =
-            AssetRunAdapters::new(Box::new(|asset: &RoutedAsset, _mod_root: &Path| {
+            AssetRunAdapters::new(Box::new(|asset: &RoutedAsset, _mod_root: &Path, _| {
                 let mut attempted = self.attempted.lock().unwrap();
                 attempted.push(asset.execution_path().to_path_buf());
                 if let Some((during, token)) = &self.cancel_during
@@ -847,6 +892,164 @@ impl RunWorkService for ScriptedWork {
         if let Some((_, token)) = self.cancel_during.clone() {
             adapters.is_cancelled = Some(Box::new(move || token.is_cancelled()));
         }
-        execute_asset_run(preparation, evidence, milestones, stop, &mut adapters)
+        execute_asset_run(
+            preparation,
+            evidence,
+            artifacts,
+            milestones,
+            stop,
+            &mut adapters,
+        )
+    }
+}
+
+/// The magic opening every fake Archive file.
+const FAKE_ARCHIVE_MAGIC: &[u8] = b"CAO-FAKE-ARCHIVE";
+
+/// One entry of a fake Archive: its raw manifest name, its payload, and the
+/// decompressed size the manifest declares (a compressed entry declares more
+/// than its stored payload).
+pub struct FakeEntry<'a> {
+    pub name: &'a str,
+    pub payload: &'a [u8],
+    pub declared_size: u64,
+}
+
+/// An entry whose declared size is its payload's length.
+pub fn entry<'a>(name: &'a str, payload: &'a [u8]) -> FakeEntry<'a> {
+    FakeEntry {
+        name,
+        payload,
+        declared_size: payload.len() as u64,
+    }
+}
+
+/// Writes a fake Archive [`FakeArchiveReader`] can read. Names are stored
+/// raw, so a manifest can hold any unsafe or aliased name.
+pub fn write_archive(path: &Path, entries: &[FakeEntry<'_>]) {
+    let mut bytes = FAKE_ARCHIVE_MAGIC.to_vec();
+    bytes.extend((entries.len() as u32).to_le_bytes());
+    for entry in entries {
+        bytes.extend((entry.name.len() as u32).to_le_bytes());
+        bytes.extend(entry.name.as_bytes());
+        bytes.extend(entry.declared_size.to_le_bytes());
+        bytes.extend((entry.payload.len() as u32).to_le_bytes());
+        bytes.extend(entry.payload);
+    }
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
+/// Reads a fake Archive's entries with their payloads, or `None` when the
+/// file is not one.
+fn read_fake_archive(path: &Path) -> Option<Vec<(ArchiveEntry, Vec<u8>)>> {
+    let bytes = std::fs::read(path).ok()?;
+    let mut rest = bytes.strip_prefix(FAKE_ARCHIVE_MAGIC)?;
+    let mut take = |count: usize| -> Option<&[u8]> {
+        let (head, tail) = rest.split_at_checked(count)?;
+        rest = tail;
+        Some(head)
+    };
+    let u32_at = |bytes: &[u8]| u32::from_le_bytes(bytes.try_into().unwrap()) as usize;
+    let count = u32_at(take(4)?);
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        let name_length = u32_at(take(4)?);
+        let name = String::from_utf8(take(name_length)?.to_vec()).ok()?;
+        let declared_size = u64::from_le_bytes(take(8)?.try_into().unwrap());
+        let payload_length = u32_at(take(4)?);
+        let payload = take(payload_length)?.to_vec();
+        entries.push((
+            ArchiveEntry {
+                name,
+                decompressed_size: declared_size,
+            },
+            payload,
+        ));
+    }
+    Some(entries)
+}
+
+/// A hook a fake reader runs as it extracts one entry, given the Archive and
+/// the raw entry name, before writing the payload.
+pub type ExtractHook = Box<dyn Fn(&Path, &str) + Send + Sync>;
+
+/// The archive reader over fake Archive files on disk.
+///
+/// Reading a file each time means a scenario can corrupt or change an
+/// Archive between preflight and extraction just by rewriting it.
+#[derive(Default)]
+pub struct FakeArchiveReader {
+    pub on_extract: Option<ExtractHook>,
+    /// Every Archive whose manifest was listed, in order.
+    pub listed: Mutex<Vec<PathBuf>>,
+}
+
+impl ArchiveReader for FakeArchiveReader {
+    fn list_entries(&self, archive: &Path) -> Result<Vec<ArchiveEntry>, Error> {
+        self.listed.lock().unwrap().push(archive.to_path_buf());
+        read_fake_archive(archive)
+            .map(|entries| entries.into_iter().map(|(entry, _)| entry).collect())
+            .ok_or_else(|| Error::Archive("Unrecognized Archive format.".to_owned()))
+    }
+
+    fn extract_entry(&self, archive: &Path, entry: &str, destination: &Path) -> Result<(), Error> {
+        if let Some(hook) = &self.on_extract {
+            hook(archive, entry);
+        }
+        let entries = read_fake_archive(archive)
+            .ok_or_else(|| Error::Archive("Unrecognized Archive format.".to_owned()))?;
+        let (_, payload) = entries
+            .into_iter()
+            .find(|(listed, _)| listed.name == entry)
+            .ok_or_else(|| Error::Archive(format!("The Archive has no entry {entry}.")))?;
+        std::fs::write(destination, payload).map_err(|error| Error::Archive(error.to_string()))
+    }
+}
+
+/// A closure answering a probe for one Mod Root.
+pub type RootProbe<T> = Box<dyn Fn(&Path) -> Option<T> + Send + Sync>;
+
+/// A capacity probe; without a closure, capacity is unknown everywhere.
+#[derive(Default)]
+pub struct FakeCapacity(pub Option<RootProbe<u64>>);
+
+impl CapacityProbe for FakeCapacity {
+    fn available_bytes(&self, root: &Path) -> Option<u64> {
+        self.0.as_ref().and_then(|probe| probe(root))
+    }
+}
+
+/// A volume-identity probe; without a closure, every volume is unknown.
+#[derive(Default)]
+pub struct FakeVolumes(pub Option<RootProbe<String>>);
+
+impl VolumeIdentityProbe for FakeVolumes {
+    fn volume_identity(&self, root: &Path) -> Option<String> {
+        self.0.as_ref().and_then(|probe| probe(root))
+    }
+}
+
+/// Replaces real extraction with a scripted result for one plan.
+pub type ExtractScript =
+    Box<dyn Fn(&ArchiveExtractionPlan) -> ArchiveExtractionResult + Send + Sync>;
+
+/// The Archive seams a [`ControlledWork`] wires into its Asset Run. By
+/// default extraction is the real [`ArchiveExtractor`] over these fakes.
+#[derive(Default)]
+pub struct ArchiveFakes {
+    pub reader: FakeArchiveReader,
+    pub capacity: FakeCapacity,
+    pub volumes: FakeVolumes,
+    pub extract: Option<ExtractScript>,
+}
+
+impl ArchiveFakes {
+    /// Fakes whose capacity probe answers `capacity` for every Mod Root.
+    pub fn with_capacity(capacity: impl Fn(&Path) -> Option<u64> + Send + Sync + 'static) -> Self {
+        Self {
+            capacity: FakeCapacity(Some(Box::new(capacity))),
+            ..Self::default()
+        }
     }
 }

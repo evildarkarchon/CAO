@@ -1,18 +1,22 @@
 //! The Asset Run: Archive-first discovery, definitive routing and Asset attempts.
 //!
-//! Ported from `src/Run/AssetRun.h` and the Loose Asset half of
-//! `src/Run/ArchiveFirstAssetDiscovery.h`. A Run Work Service calls
-//! [`execute_asset_run`] with its adapters; the function walks each Mod Root,
-//! routes the Effective Asset Tree once, and offers every Routed Asset to the
-//! adapters in Texture, Mesh, Animation order, recording each completed attempt
-//! before reporting it.
+//! Ported from `src/Run/AssetRun.h` and `src/Run/ArchiveFirstAssetDiscovery.h`.
+//! A Run Work Service calls [`execute_asset_run`] with its adapters; the
+//! function walks each Mod Root for Archives, extracts the enabled ones in
+//! Apply, routes the Effective Asset Tree once, and offers every Routed Asset
+//! to the adapters in Texture, Mesh, Animation order, recording each completed
+//! attempt before reporting it.
+//!
+//! Loose Assets take precedence over Archived Assets, and Archive Precedence
+//! decides between Archives in one Mod Root. Before the first extraction, a
+//! preflight reads every selected manifest, rejects any Unsafe Game Path,
+//! records the Archive Collisions in Run Evidence and runs the Capacity
+//! Check; any failure stops the run with nothing extracted.
 //!
 //! The run passes through every lifecycle phase the C++ run does, so run facts
-//! compare in order with the parity oracle. Archives are recognized and counted
-//! here; selecting one for extraction in Apply fails the run before any
-//! mutation until Archive discovery and extraction are ported (#496, #497).
+//! compare in order with the parity oracle.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
@@ -22,10 +26,14 @@ use crate::routing::{
     AssetKind, AssetRouter, ExecutionMode, OptimizerTarget, RoutedAsset, RoutedAssetPhase,
     RoutingDecision, SkipReason,
 };
+use crate::run::archives::{
+    Preflight, RootArchives, archive_order_key, preflight, relative_game_path,
+};
 use crate::run::{
-    ArchiveDiscoveryEvidence, CancellationToken, RunDiagnostic, RunDiagnosticCode, RunFailure,
-    RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunWorkEvidence, RunWorkMilestones,
-    take_panic_message,
+    ArchiveCollision, ArchiveDiscoveryEvidence, ArchiveExtractionFailure, ArchiveExtractionPlan,
+    ArchiveExtractionResult, ArchiveReader, CancellationToken, CapacityProbe, RunDiagnostic,
+    RunDiagnosticCode, RunPhase, RunPhaseRecord, RunPreparation, RunWorkEvidence,
+    RunWorkMilestones, TemporaryArtifactRegistry, VolumeIdentityProbe, take_panic_message,
 };
 
 /// One completed attempt: its routed identity, resolved Mod Root and durable outcome.
@@ -52,11 +60,42 @@ pub struct AssetRunProgress {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AssetInitializationCancelled;
 
-/// Executes one Routed Asset against its frozen canonical Mod Root.
+/// Executes one Routed Asset against its frozen canonical Mod Root, staging
+/// any output through the run's Temporary Ownership scope.
+///
+/// The registry is lent per call rather than captured: Archive extraction
+/// needs the same `&mut` registry, and two adapters cannot both hold it.
 pub type ExecuteAsset<'a> = Box<
-    dyn FnMut(&RoutedAsset, &Path) -> Result<AssetExecutionResult, AssetInitializationCancelled>
+    dyn FnMut(
+            &RoutedAsset,
+            &Path,
+            &mut TemporaryArtifactRegistry,
+        ) -> Result<AssetExecutionResult, AssetInitializationCancelled>
         + 'a,
 >;
+
+/// Extracts one Archive by its frozen preflight plan, staging every entry
+/// through the run's Temporary Ownership scope.
+///
+/// A production adapter wraps [`ArchiveExtractor`] with source pinning and
+/// backup or removal, as C++ `BSAOptimizer::extract` did; that lands with the
+/// real reader (#497). The result carries its own mutation fact; a panic is
+/// contained as unknown mutation, unsafe to continue.
+pub type ExtractArchive<'a> = Box<
+    dyn FnMut(&ArchiveExtractionPlan, &mut TemporaryArtifactRegistry) -> ArchiveExtractionResult
+        + 'a,
+>;
+
+/// The Archive seams an Apply run needs once it selects an Archive.
+///
+/// Discovery reads manifests through `reader` and checks capacity through the
+/// two probes before any extraction; `extract` then performs each attempt.
+pub struct ArchiveAdapters<'a> {
+    pub reader: &'a dyn ArchiveReader,
+    pub capacity: &'a dyn CapacityProbe,
+    pub volume_identity: &'a dyn VolumeIdentityProbe,
+    pub extract: ExtractArchive<'a>,
+}
 
 /// Observes one lifecycle boundary of an Asset Run.
 pub type ReportPhase<'a> = Box<dyn FnMut(&RunPhaseRecord) + 'a>;
@@ -81,7 +120,16 @@ pub struct AssetRunAdapters<'a> {
     /// Executor unchanged. Without one, Apply reports the phase as having no
     /// requested work.
     pub finalize_archive_lifecycle: Option<FinalizeArchiveLifecycle<'a>>,
+    /// The Archive seams. Without them, an Apply run that selects an Archive
+    /// fails before extraction; Dry Run never needs them.
+    pub archives: Option<ArchiveAdapters<'a>>,
+    /// Observes the complete Archive Collision plan once Run Evidence has
+    /// retained it, before the first extraction. Apply only.
+    pub report_archive_collisions: Option<ReportArchiveCollisions<'a>>,
 }
+
+/// Observes the complete Archive Collision plan, in Mod Root and game-path order.
+pub type ReportArchiveCollisions<'a> = Box<dyn FnMut(&[ArchiveCollision]) + 'a>;
 
 /// Runs Archive Finalization against the run's evidence.
 pub type FinalizeArchiveLifecycle<'a> =
@@ -96,6 +144,8 @@ impl<'a> AssetRunAdapters<'a> {
             report_phase: None,
             is_cancelled: None,
             finalize_archive_lifecycle: None,
+            archives: None,
+            report_archive_collisions: None,
         }
     }
 }
@@ -237,6 +287,7 @@ fn attributed_mod_root<'p>(path: &Path, mod_roots: &'p [PathBuf]) -> Option<&'p 
 pub fn execute_asset_run(
     preparation: &RunPreparation,
     evidence: &RunWorkEvidence<'_, '_>,
+    artifacts: &mut TemporaryArtifactRegistry,
     milestones: &dyn RunWorkMilestones,
     stop: &CancellationToken,
     adapters: &mut AssetRunAdapters<'_>,
@@ -285,16 +336,23 @@ pub fn execute_asset_run(
     };
     let mut skipped_archive_counts: BTreeMap<SkipReason, usize> = BTreeMap::new();
     let mut recognized_archives: HashSet<PathBuf> = HashSet::new();
-    let mut selected_archives: Vec<PathBuf> = Vec::new();
+    let mut root_archives: Vec<RootArchives> = Vec::new();
 
-    // The Archive pass: recognize every Archive before any extraction.
+    // The Archive pass: recognize every Archive, and every Loose Asset an
+    // Archived Asset must not replace, before any extraction.
     for root in preparation.mod_roots() {
+        let mut selected: Vec<PathBuf> = Vec::new();
+        let mut loose = BTreeSet::new();
         let complete = discovery.visit(root, &mut |path| {
-            if !names_an_archive(&router, path) || !recognized_archives.insert(path.to_path_buf()) {
+            if !names_an_archive(&router, path) {
+                loose.insert(cao_winfs::OrdinalIgnoreCase(relative_game_path(root, path)));
+                return;
+            }
+            if !recognized_archives.insert(path.to_path_buf()) {
                 return;
             }
             match router.route(path) {
-                RoutingDecision::Routed(_) => selected_archives.push(path.to_path_buf()),
+                RoutingDecision::Routed(_) => selected.push(path.to_path_buf()),
                 RoutingDecision::Skipped(asset) => {
                     *skipped_archive_counts.entry(asset.reason()).or_default() += 1
                 }
@@ -305,24 +363,52 @@ pub fn execute_asset_run(
         if !complete {
             return interrupted(skipped_archive_counts);
         }
+        // Root order belongs to the caller; only this root's batch is sorted,
+        // by its relative names rather than filesystem enumeration order.
+        selected.sort_by_cached_key(|path| archive_order_key(&relative_game_path(root, path)));
+        root_archives.push(RootArchives {
+            root: root.clone(),
+            archives: selected,
+            loose,
+        });
     }
 
-    if mode == ExecutionMode::Apply && !selected_archives.is_empty() {
-        // A selected Archive cannot be extracted in this build. Failing before
-        // extraction keeps the tree untouched, as any discovery failure does.
-        evidence.record_archive_discovery(ArchiveDiscoveryEvidence {
-            skipped_archive_counts,
-            ..ArchiveDiscoveryEvidence::default()
-        })?;
-        evidence.record_failure(
-            RunFailure::new(
-                RunFailureCode::RequestedWorkUnavailable,
-                RunPhase::DiscoveringArchives,
-                "Archive extraction is not available in this build",
-            )
-            .with_path(&selected_archives[0]),
-        );
-        return finish(false);
+    // Dry Run ignores Archive Precedence and never reads a manifest,
+    // calculates a collision or extracts.
+    let mut plans: Vec<ArchiveExtractionPlan> = Vec::new();
+    if mode == ExecutionMode::Apply {
+        match preflight(
+            root_archives,
+            preparation.archive_precedence(),
+            adapters.archives.as_ref(),
+            &cancelled,
+        ) {
+            Preflight::Failed(failure) => {
+                // A failed preflight has no trustworthy tree, so the run stops
+                // before any extraction, routing or finalization.
+                evidence.record_archive_discovery(ArchiveDiscoveryEvidence {
+                    skipped_archive_counts,
+                    ..ArchiveDiscoveryEvidence::default()
+                })?;
+                evidence.record_failure(failure);
+                return finish(false);
+            }
+            Preflight::Cancelled => return interrupted(skipped_archive_counts),
+            Preflight::Planned {
+                plans: planned,
+                collisions,
+            } => {
+                // Retained before presentation, so a failing observer or a
+                // later unwind cannot lose the plan.
+                evidence.record_archive_collisions(&collisions)?;
+                if let Some(report_collisions) = adapters.report_archive_collisions.as_mut() {
+                    evidence.report_safely(RunPhase::DiscoveringArchives, || {
+                        report_collisions(&collisions)
+                    });
+                }
+                plans = planned;
+            }
+        }
     }
 
     if cancelled() {
@@ -330,10 +416,32 @@ pub fn execute_asset_run(
     }
     report(match mode {
         ExecutionMode::DryRun => milestones.dry_run_archive_extraction()?,
-        ExecutionMode::Apply => milestones.archive_extraction_planned(selected_archives.len())?,
+        ExecutionMode::Apply => milestones.archive_extraction_planned(plans.len())?,
     });
     if cancelled() {
         return interrupted(skipped_archive_counts);
+    }
+
+    if let Some(stop) = extract_archives(
+        &plans,
+        adapters,
+        evidence,
+        artifacts,
+        &cancelled,
+        &mut report,
+    )? {
+        return match stop {
+            ExtractionStop::Cancelled => interrupted(skipped_archive_counts),
+            // An unsafe attempt never reaches routing or finalization; only
+            // separately observed cancellation is retained alongside it.
+            ExtractionStop::Unsafe { cancellation } => {
+                evidence.record_archive_discovery(ArchiveDiscoveryEvidence {
+                    skipped_archive_counts,
+                    ..ArchiveDiscoveryEvidence::default()
+                })?;
+                finish(cancellation)
+            }
+        };
     }
 
     report(milestones.effective_asset_tree_started()?);
@@ -402,7 +510,7 @@ pub fn execute_asset_run(
                 ),
                 Some(mod_root) => {
                     match catch_unwind(AssertUnwindSafe(|| {
-                        (adapters.execute_asset)(asset, mod_root)
+                        (adapters.execute_asset)(asset, mod_root, artifacts)
                     })) {
                         Ok(Ok(result)) => (mod_root.clone(), result),
                         Ok(Err(AssetInitializationCancelled)) => return finish(true),
@@ -475,6 +583,80 @@ pub fn execute_asset_run(
         finalize(evidence)?;
     }
     finish(cancelled())
+}
+
+/// Why Archive extraction stopped short of the definitive pass.
+enum ExtractionStop {
+    /// Cancellation was observed between attempts.
+    Cancelled,
+    /// An attempt left unknown mutation or claimed it was unsafe to continue;
+    /// `cancellation` records whether cancellation was also observed.
+    Unsafe { cancellation: bool },
+}
+
+/// Extracts each planned Archive in order, retaining every completed attempt
+/// before it is reported.
+///
+/// An attempt in flight always finishes, so cancellation never leaves a
+/// partial Archive. `PartialOrUnknown` mutation is unsafe even when the
+/// adapter claims otherwise, and a panicking adapter is contained as unknown
+/// mutation; either stops extraction. Returns `None` when every plan was
+/// attempted and the run may continue.
+fn extract_archives(
+    plans: &[ArchiveExtractionPlan],
+    adapters: &mut AssetRunAdapters<'_>,
+    evidence: &RunWorkEvidence<'_, '_>,
+    artifacts: &mut TemporaryArtifactRegistry,
+    cancelled: &dyn Fn() -> bool,
+    report: &mut dyn FnMut(RunPhaseRecord),
+) -> Result<Option<ExtractionStop>, Error> {
+    let Some(archives) = adapters.archives.as_mut().filter(|_| !plans.is_empty()) else {
+        // The preflight only plans Archives when the Archive adapters exist.
+        return Ok(None);
+    };
+    let total = plans.len();
+    for (index, plan) in plans.iter().enumerate() {
+        if cancelled() {
+            return Ok(Some(ExtractionStop::Cancelled));
+        }
+        let mut attempt =
+            match catch_unwind(AssertUnwindSafe(|| (archives.extract)(plan, artifacts))) {
+                Ok(attempt) => attempt,
+                // A panic carries no trustworthy evidence of what was published.
+                Err(payload) => ArchiveExtractionResult {
+                    mutation: MutationState::PartialOrUnknown,
+                    failure: Some(ArchiveExtractionFailure::ExtractionFailed),
+                    safe_to_continue: false,
+                    detail: take_panic_message(payload),
+                    ..ArchiveExtractionResult::new(plan)
+                },
+            };
+        // The adapter's own claim is retained for diagnosis, but partial
+        // mutation stops the run regardless.
+        let unsafe_attempt = attempt.is_unsafe();
+        attempt.mod_root = plan.mod_root.clone();
+        evidence.record_archive_extraction_attempt(attempt, total)?;
+        if let Some(current) = evidence.current_phase() {
+            report(current);
+        }
+        if let Some(report_progress) = adapters.report_progress.as_mut() {
+            evidence.report_safely(RunPhase::ExtractingArchives, || {
+                report_progress(AssetRunProgress {
+                    phase: RoutedAssetPhase::ArchiveExtraction,
+                    completed: index + 1,
+                    total,
+                })
+            });
+        }
+        if unsafe_attempt {
+            return Ok(Some(ExtractionStop::Unsafe {
+                cancellation: cancelled(),
+            }));
+        }
+    }
+    // Re-sampled after the final attempt and its progress callback, so
+    // cancellation during the last Archive still skips the definitive pass.
+    Ok(cancelled().then_some(ExtractionStop::Cancelled))
 }
 
 /// Reports whether routing recognizes the path as an Archive, enabled or not.

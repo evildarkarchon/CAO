@@ -281,11 +281,32 @@ fn prepare_run(
 fn classify_terminal_outcome(evidence: &RunEvidence) -> RunOutcome {
     let mut unsafe_work = !evidence.failures().is_empty();
     let mut contained_failure = false;
-    for attempt in evidence.asset_attempts() {
-        let result = &attempt.result;
-        unsafe_work |= !result.safe_to_continue()
-            || result.mutation_state() == MutationState::PartialOrUnknown;
-        contained_failure |= !result.succeeded();
+    let attempts = evidence
+        .asset_attempts()
+        .iter()
+        .map(|attempt| {
+            let result = &attempt.result;
+            (
+                result.mutation_state(),
+                result.succeeded(),
+                result.safe_to_continue(),
+            )
+        })
+        .chain(
+            evidence
+                .archive_extraction_attempts()
+                .iter()
+                .map(|attempt| {
+                    (
+                        attempt.mutation,
+                        attempt.succeeded(),
+                        attempt.safe_to_continue,
+                    )
+                }),
+        );
+    for (mutation, succeeded, safe_to_continue) in attempts {
+        unsafe_work |= !safe_to_continue || mutation == MutationState::PartialOrUnknown;
+        contained_failure |= !succeeded;
     }
     if unsafe_work {
         return RunOutcome::Failed;

@@ -4,6 +4,7 @@
 //! [`OptimizationRunService`]; beneath it, [`RunExecutor`] is the synchronous,
 //! deterministic seam (ADR-0001).
 
+mod archives;
 mod artifacts;
 mod asset_run;
 mod evidence;
@@ -16,13 +17,18 @@ mod scheduler;
 mod service;
 mod staging;
 
+pub use archives::{
+    ArchiveCollision, ArchiveExtractionFailure, ArchiveExtractionPlan, ArchiveExtractionResult,
+    ArchiveExtractor,
+};
 pub use artifacts::{
     PublicationPolicy, PublicationReceipt, PublicationResult, PublicationState, PublicationTarget,
     Registration, StagedFile, TemporaryArtifactRegistry,
 };
 pub use asset_run::{
-    AssetInitializationCancelled, AssetRunAdapters, AssetRunProgress, ExecuteAsset,
-    FinalizeArchiveLifecycle, ReportPhase, RoutedAssetAttempt, execute_asset_run, is_staging_name,
+    ArchiveAdapters, AssetInitializationCancelled, AssetRunAdapters, AssetRunProgress,
+    ExecuteAsset, ExtractArchive, FinalizeArchiveLifecycle, ReportArchiveCollisions, ReportPhase,
+    RoutedAssetAttempt, execute_asset_run, is_staging_name,
 };
 pub use evidence::{
     ArchiveDiscoveryEvidence, MutableRunEvidence, RunEvidence, RunObservationSink, RunWorkEvidence,
