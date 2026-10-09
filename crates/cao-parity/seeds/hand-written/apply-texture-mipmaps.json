@@ -1,0 +1,122 @@
+{
+  "spec": {
+    "profile": "TES5",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/MipMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": true,
+      "mipmaps": true,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": false,
+      "target_width": 2048,
+      "target_height": 2048
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "texture",
+        "path": "mods/MipMod/textures/plain.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "Mipmap generation (#494) on the Run Worker: an 8-bit format goes through WIC, which needs COM there. Then compressed to TES5's BC3 on the CPU, so both builds' bytes match."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/MipMod/textures/partial.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "mip_levels": 3,
+        "pattern": "noise",
+        "note": "A partial chain: cut back to its top level with CopyRectangle, then regenerated whole."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/MipMod/textures/worn.dds",
+        "format": "BC1_UNORM",
+        "width": 64,
+        "height": 64,
+        "pattern": "edges",
+        "note": "Already compressed, so only mipmapped: decompressed, mipmapped, and compressed back to BC1, the format C++ picks before decompressing."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/MipMod/textures/sky.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 32,
+        "height": 32,
+        "cubemap": true,
+        "note": "A cubemap: every face gets its chain."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/MipMod/textures/foliage.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 16,
+        "pattern": "alpha_ramp",
+        "note": "Not square, with alpha that is filtered separately."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/MipMod/textures/decal.dds",
+        "format": "B8G8R8A8_UNORM",
+        "width": 32,
+        "height": 32,
+        "pattern": "mask",
+        "note": "BGRA with a binary alpha mask."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/MipMod/textures/linear.dds",
+        "format": "R8G8B8A8_UNORM_SRGB",
+        "width": 32,
+        "height": 32,
+        "header": "dx10",
+        "note": "sRGB: DirectXTex filters it without WIC."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/MipMod/textures/done.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 32,
+        "height": 32,
+        "mip_levels": 0,
+        "pattern": "normal",
+        "note": "A full chain already: compressed only."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/MipMod/textures/tiny.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 2,
+        "height": 2,
+        "note": "Too small to mipmap or compress: no work, so nothing is staged."
+      }
+    ]
+  }
+}

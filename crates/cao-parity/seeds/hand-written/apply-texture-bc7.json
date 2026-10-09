@@ -1,0 +1,84 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/BcSevenMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": true,
+      "mipmaps": true,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": true,
+      "target_width": 64,
+      "target_height": 64
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "texture",
+        "path": "mods/BcSevenMod/textures/plain.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 128,
+        "height": 128,
+        "note": "SSE's BC7 (#494): resized to 64x64, mipmapped and compressed. The Rust side encodes BC7 on the CPU until #495, so on a host with a GPU run this case with CAO_ORACLE_FORCE_CPU_BC=1: CPU against CPU, every output is byte-identical. Against the oracle's GPU encoder these synthetic Textures reached only 31-35 dB on the #494 host, below the provisional 40 dB floor that #513 calibrates."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/BcSevenMod/textures/foliage.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 32,
+        "height": 32,
+        "pattern": "alpha_ramp",
+        "note": "BC7 with alpha."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/BcSevenMod/textures/sky.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 16,
+        "height": 16,
+        "cubemap": true,
+        "note": "A BC7 cubemap: the floor applies to every face."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/BcSevenMod/textures/normal_n.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 32,
+        "height": 32,
+        "pattern": "normal",
+        "note": "Normal-map-like content."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/BcSevenMod/textures/rgb565.dds",
+        "format": "B5G6R5_UNORM",
+        "width": 32,
+        "height": 32,
+        "note": "Unwanted under SSE: converted to BC7 by necessary optimization."
+      }
+    ]
+  }
+}

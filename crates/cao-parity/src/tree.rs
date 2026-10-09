@@ -7,7 +7,7 @@
 //! bytes must be equal. Timestamps and attributes are never read.
 //!
 //! The engine slices fill the hooks: texture PSNR, archive parsing, the
-//! staging manifest's semantic comparison. [`crate::leftovers::ParityRules`]
+//! staging manifest's semantic comparison. [`crate::rules::ParityRules`]
 //! holds the rules filled so far; [`DefaultRules`] requires every file to be
 //! byte-identical.
 

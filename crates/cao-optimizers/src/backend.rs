@@ -11,8 +11,7 @@
 //! Mesh for Mesh Reference Maintenance, so Meshes do reach this backend. Until
 //! `nifly-sys` lands they fail to load, which a parity case with a real Mesh
 //! reports as Different rather than hiding. Apply runs a Texture decision on the
-//! CPU path ported so far (see [`crate::textures`]); a decision that needs
-//! mipmaps fails without mutating anything until the rest lands (#494).
+//! CPU path (see [`crate::textures`]); GPU BC7 and BC6H encoding is #495.
 
 use std::path::Path;
 
@@ -21,6 +20,7 @@ use cao_core::routing::{
     AssetOperation, AssetOperations, ExecutionMode, MeshVariant, TextureVariant,
 };
 
+use crate::device::{ComUnavailable, initialize_com};
 use crate::textures::{Texture, TextureProfile, TextureRequest};
 
 /// How the user asked Textures to be resized, from the Textures tab.
@@ -55,13 +55,24 @@ pub struct OptimizerBackend {
 
 impl OptimizerBackend {
     /// A backend applying `textures` under the profile's `texture_profile`.
-    pub fn new(textures: TextureSettings, texture_profile: TextureProfile) -> Self {
-        Self {
+    ///
+    /// Joins the calling thread to COM's multithreaded apartment, as C++
+    /// `TexturesOptimizer`'s constructor does, so call it on the Run Worker
+    /// that will use the backend: mipmap generation may go through WIC.
+    ///
+    /// # Errors
+    /// [`ComUnavailable`] when the thread cannot join the apartment.
+    pub fn new(
+        textures: TextureSettings,
+        texture_profile: TextureProfile,
+    ) -> Result<Self, ComUnavailable> {
+        initialize_com()?;
+        Ok(Self {
             textures,
             texture_profile,
             loaded: None,
             texture_failure_detail: String::new(),
-        }
+        })
     }
 
     /// The Texture request one Routed Asset's operations make of the loaded

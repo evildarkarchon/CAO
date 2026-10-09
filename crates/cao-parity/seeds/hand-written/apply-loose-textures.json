@@ -42,7 +42,7 @@
         "format": "R8G8B8A8_UNORM",
         "width": 64,
         "height": 64,
-        "note": "Apply over loose Textures (#491): resized to 32x32 and compressed to BC3, staged beside the original and published over it. TES5 targets BC3, which both builds encode on the CPU, so the output is byte-identical; SSE's BC7 needs the GPU encoder and the PSNR rule (#494, #495). Mipmaps are off because generating them needs COM on the Run Worker (#494)."
+        "note": "Apply over loose Textures (#491): resized to 32x32 and compressed to BC3, staged beside the original and published over it. TES5 targets BC3, which both builds encode on the CPU, so the output is byte-identical; SSE's BC7 needs the GPU encoder and the PSNR rule (#494, #495). Mipmaps are off here; apply-texture-mipmaps covers them (#494)."
       },
       {
         "kind": "texture",

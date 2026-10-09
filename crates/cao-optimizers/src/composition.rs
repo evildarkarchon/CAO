@@ -445,7 +445,12 @@ impl RunWorkService for ApplicationRunWork {
         let mut backend: Option<OptimizerBackend> = None;
         let mut adapters = AssetRunAdapters::new(Box::new(|asset, mod_root| {
             let backend = backend.get_or_insert_with(|| {
+                // This closure runs on the Run Worker, the thread that must
+                // join COM. C++'s texture optimizer threw when it could not,
+                // and the Asset Run contained the exception as an unsafe
+                // Operation Failure; it contains this panic the same way.
                 OptimizerBackend::new(self.settings.textures, texture_profile.clone())
+                    .unwrap_or_else(|error| panic!("{error}"))
             });
             let result = AssetExecutor::new(backend).execute(asset, artifacts, mod_root);
             Ok(quarantine_failed_load(asset, result))

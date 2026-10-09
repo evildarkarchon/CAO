@@ -79,6 +79,9 @@ is its file stem. `raw` entries may name a fixture file under
 - **Event escaping.** Text fields in the `EVENT:` stream are escaped, so the stream parses
   strictly ([cli.md](cli.md)).
 - **Forcing CPU BC6H/BC7.** If `CAO_ORACLE_FORCE_CPU_BC` is set to any non-empty value,
-  D3D11 device creation fails on purpose and BC6H/BC7 use the CPU codec. Only
-  `cao-parity calibrate` uses it, to compare the GPU encoder with the CPU encoder.
-  The log then says that DirectCompute is not available.
+  D3D11 device creation fails on purpose and BC6H/BC7 use the CPU codec.
+  `cao-parity calibrate` uses it to compare the GPU encoder with the CPU encoder.
+  The log then says that DirectCompute is not available. The oracle inherits the
+  harness's environment, so until the Rust side encodes on the GPU too (#495), run BC7
+  cases such as `apply-texture-bc7` with it set on a host that has a GPU. Otherwise the
+  GPU and CPU encoders are compared, which is calibration's question, not a parity one.

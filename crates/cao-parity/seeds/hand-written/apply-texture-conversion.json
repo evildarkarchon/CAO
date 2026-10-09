@@ -1,0 +1,99 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/ConvertMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": false,
+      "target_width": 2048,
+      "target_height": 2048
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "profile_overrides": {
+    "output_format": "BC1_UNORM",
+    "unwanted_formats": ["B5G6R5_UNORM", "BC3_UNORM"]
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "texture",
+        "path": "mods/ConvertMod/textures/rgb565.dds",
+        "format": "B5G6R5_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "Format conversion (#494): an unwanted uncompressed format, compressed to the profile's BC1 by necessary optimization alone."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/ConvertMod/textures/old.dds",
+        "format": "BC3_UNORM",
+        "width": 64,
+        "height": 64,
+        "mip_levels": 0,
+        "pattern": "alpha_ramp",
+        "note": "An unwanted compressed format: decompressed, then compressed to BC1 with its mip chain."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/ConvertMod/textures/sky.dds",
+        "format": "B8G8R8X8_UNORM",
+        "width": 16,
+        "height": 16,
+        "cubemap": true,
+        "note": "An uncompressed cubemap without alpha is incompatible, so it is compressed to BC1."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/ConvertMod/textures/odd.dds",
+        "format": "BC1_UNORM",
+        "width": 48,
+        "height": 48,
+        "pattern": "edges",
+        "note": "Compressed but not a power of two: incompatible. It is decompressed, and since it cannot be compressed again it becomes B8G8R8A8_UNORM."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/ConvertMod/textures/fine.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "Compatible, and compression is off: no work."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/ConvertMod/textures/alpha_sky.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 16,
+        "height": 16,
+        "cubemap": true,
+        "pattern": "alpha_ramp",
+        "note": "An uncompressed cubemap with alpha is compatible: no work."
+      }
+    ]
+  }
+}

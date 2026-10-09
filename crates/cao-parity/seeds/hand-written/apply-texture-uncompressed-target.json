@@ -1,0 +1,79 @@
+{
+  "spec": {
+    "profile": "TES5",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/PlainMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": true,
+      "mipmaps": true,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": true,
+      "target_width": 32,
+      "target_height": 32
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "profile_overrides": {
+    "output_format": "R8G8B8A8_UNORM"
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "texture",
+        "path": "mods/PlainMod/textures/bgra.dds",
+        "format": "B8G8R8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "pattern": "alpha_ramp",
+        "note": "An uncompressed output format (#494): resized to 32x32, mipmapped, and converted to R8G8B8A8_UNORM with DirectXTex Convert rather than Compress."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/PlainMod/textures/rgb565.dds",
+        "format": "B5G6R5_UNORM",
+        "width": 32,
+        "height": 32,
+        "note": "Converted to R8G8B8A8_UNORM and mipmapped."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/PlainMod/textures/worn.dds",
+        "format": "BC1_UNORM",
+        "width": 64,
+        "height": 64,
+        "pattern": "edges",
+        "note": "Compressed already, so compression does not apply: resized, mipmapped and compressed back to BC1."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/PlainMod/textures/same.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 16,
+        "height": 16,
+        "mip_levels": 0,
+        "note": "Already in the output format with a full chain: no work."
+      }
+    ]
+  }
+}

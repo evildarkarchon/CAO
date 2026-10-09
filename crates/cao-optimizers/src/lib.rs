@@ -3,6 +3,8 @@
 //! - [`textures`] loads Textures and makes C++'s Texture decisions, through the
 //!   workspace's `directxtex`, which the root `[patch.crates-io]` points at CAO's
 //!   fork (`tests/directxtex_fork.rs` checks that binding).
+//! - [`device`] is the texture backend's per-thread native setup: COM, which
+//!   WIC-backed mipmap generation needs. It is the one module allowed `unsafe`.
 //! - [`backend`] is the one Asset Execution Backend over every optimizer.
 //! - [`composition`] is the composition root both binaries share: given the app
 //!   directory, a profile and the options model, it builds the Run Request, the
@@ -14,4 +16,5 @@
 pub mod application_log;
 pub mod backend;
 pub mod composition;
+pub mod device;
 pub mod textures;

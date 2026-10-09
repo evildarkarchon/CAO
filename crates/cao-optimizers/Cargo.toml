@@ -7,11 +7,14 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-# Inherits `unsafe_code = "forbid"` for now. The D3D11 device module (#495) is
-# the one place here allowed `unsafe`; when it lands, this crate swaps to its own
-# `[lints]` table as `cao-winfs` does.
-[lints]
-workspace = true
+# This crate overrides the workspace's `unsafe_code = "forbid"` with `deny`, so
+# that the one module allowed `unsafe` can opt out by attribute: `device`, which
+# initializes COM on the Run Worker (#494) and creates the D3D11 device for GPU
+# BC7 (#495). `forbid` could not be lowered there (E0453). Cargo cannot combine
+# `workspace = true` with a local key, so this table replaces `[workspace.lints]`
+# entirely; keep every other lint in step with the root.
+[lints.rust]
+unsafe_code = "deny"
 
 [dependencies]
 cao-core.workspace = true
@@ -22,6 +25,11 @@ chrono.workspace = true
 directxtex.workspace = true
 log.workspace = true
 thiserror.workspace = true
+# `device`'s COM initialization; the D3D11 device joins it (#459, #495).
+windows = { workspace = true, features = ["Win32_System_Com"] }
+
+[build-dependencies]
+embed-resource.workspace = true
 
 [dev-dependencies]
 # The scenarios predict Mod Roots in the MSVC-canonical form Preparing gives them.
