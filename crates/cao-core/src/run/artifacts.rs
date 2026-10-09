@@ -19,6 +19,7 @@
 
 use std::fs::File;
 use std::io::{self, Read};
+use std::os::windows::fs::FileTypeExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -597,8 +598,12 @@ fn remove_registered(path: &Path) -> Result<(), String> {
     let removed = match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => Err(error),
-        // Never recurse: unregistered contents may be committed output.
-        Ok(metadata) if metadata.is_dir() => std::fs::remove_dir(path),
+        // Never recurse: unregistered contents may be committed output. A
+        // directory link substituted for the registration is removed as the
+        // link itself; Windows refuses to delete one as a file.
+        Ok(metadata) if metadata.is_dir() || metadata.file_type().is_symlink_dir() => {
+            std::fs::remove_dir(path)
+        }
         Ok(_) => std::fs::remove_file(path),
     };
     removed.map_err(|error| error.to_string())

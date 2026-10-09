@@ -7,7 +7,9 @@
 //!
 //! C++ caught exceptions at three boundaries here; they are `Result`s and
 //! `catch_unwind` now. A panic in the configuration provider, the work service
-//! or the cleanup service becomes the same Run Failure an exception did. A Run
+//! or the cleanup service becomes the same Run Failure an exception did. A
+//! panic that escapes those boundaries is caught around the whole traversal,
+//! so it still fails the run before Safety Cleanup rather than skipping it. A Run
 //! Evidence invariant violation is a bug: the executor finishes Safety Cleanup
 //! and then panics, and the Run Worker turns that panic into a Failed outcome.
 
@@ -22,7 +24,7 @@ use crate::run::{
     CancellationToken, MutableRunEvidence, OptimizationRunResult, PhaseSkipReason,
     RunConfiguration, RunConfigurationProvider, RunEvidence, RunFailure, RunFailureCode, RunId,
     RunObservationSink, RunOutcome, RunPhase, RunPhaseRecord, RunPreparation, RunRequest,
-    RunWorkEvidence, TemporaryArtifactRegistry, panic_message,
+    RunWorkEvidence, TemporaryArtifactRegistry, take_panic_message,
 };
 
 /// The typed work milestones through which a Run Work Service moves the lifecycle.
@@ -105,7 +107,7 @@ pub fn collect_safety_cleanup_failures(service: &mut dyn SafetyCleanupService) -
         Ok(Err(error)) => service_failure(error.to_string()),
         Err(payload) => service_failure(format!(
             "The cleanup service panicked: {}",
-            panic_message(payload.as_ref())
+            take_panic_message(payload)
         )),
     }
 }
@@ -225,7 +227,7 @@ fn load_configuration(
         Ok(Err(error)) => Err(failure(error.to_string())),
         Err(payload) => Err(failure(format!(
             "The configuration provider panicked: {}",
-            panic_message(payload.as_ref())
+            take_panic_message(payload)
         ))),
     }
 }
@@ -367,10 +369,91 @@ impl RunExecutor {
         } = services;
         let evidence = RefCell::new(MutableRunEvidence::new(observations));
         let mut invariant = DeferredInvariant::default();
-        let mut failed = false;
         // The run's Temporary Ownership scope. It lives for the whole run so
         // its root pins and staging lock are held through Safety Cleanup.
         let mut artifacts = TemporaryArtifactRegistry::new(run_id.clone());
+
+        // Every phase before Safety Cleanup runs inside one more containment
+        // boundary. The seams' own boundaries contain their panics, but a panic
+        // in the executor's own code, such as staging recovery, would otherwise
+        // unwind past Safety Cleanup and drop the registry, which never cleans
+        // up on drop, leaving the run's staged files behind.
+        let traversal = catch_unwind(AssertUnwindSafe(|| {
+            Self::traverse(
+                request,
+                configuration,
+                work,
+                &evidence,
+                &mut artifacts,
+                &mut invariant,
+                stop,
+            )
+        }));
+        if let Err(payload) = traversal {
+            let detail = format!("The Run Worker panicked: {}", take_panic_message(payload));
+            log::error!("{detail}");
+            // Any evidence borrow the panic interrupted was released by unwinding.
+            let mut evidence = evidence.borrow_mut();
+            let phase = evidence
+                .current_phase()
+                .map_or(RunPhase::Preparing, RunPhaseRecord::phase);
+            evidence.record_failure(RunFailure::new(
+                RunFailureCode::WorkServiceFailed,
+                phase,
+                detail,
+            ));
+        }
+
+        // Safety Cleanup runs exactly once on every terminal path, before the
+        // terminal result exists, so cancellation and failure cannot leave
+        // run-owned artifacts behind. It does not move the final work phase.
+        let mut evidence = evidence.into_inner();
+        let final_phase = evidence
+            .current_phase()
+            .map_or(RunPhase::Preparing, RunPhaseRecord::phase);
+        invariant
+            .note(evidence.record_phase(RunPhaseRecord::executed(RunPhase::SafetyCleanup, None)));
+        let mut cleanup_failures = collect_safety_cleanup_failures(&mut artifacts);
+        cleanup_failures.extend(collect_safety_cleanup_failures(safety_cleanup));
+        for failure in cleanup_failures {
+            invariant.note(evidence.record_safety_cleanup_failure(failure));
+        }
+        if stop.is_cancelled() {
+            evidence.record_cancellation_observation();
+        }
+        let Some(violation) = invariant.into_violation() else {
+            return Self::seal(evidence, final_phase, run_id);
+        };
+        let violation = violation.to_string();
+        log::error!("{violation}");
+        // Retained without publishing: Safety Cleanup has already been
+        // published, and no Run Failure event may follow it.
+        evidence.retain_failure(RunFailure::new(
+            RunFailureCode::WorkServiceFailed,
+            final_phase,
+            violation.clone(),
+        ));
+        let result = Self::seal(evidence, final_phase, run_id);
+        std::panic::panic_any(RunEvidenceInvariantPanic { violation, result })
+    }
+
+    /// Traverses Preparing and every work phase up to, but not including,
+    /// Safety Cleanup, recording each fact in `evidence`.
+    ///
+    /// Failures are recorded, never returned; Run Evidence invariant
+    /// violations are noted in `invariant` for the caller to raise after
+    /// cleanup. `artifacts` is the run's Temporary Ownership scope, which the
+    /// caller cleans up whatever happens here.
+    fn traverse(
+        request: &RunRequest,
+        configuration: Option<&dyn RunConfigurationProvider>,
+        work: Option<&dyn RunWorkService>,
+        evidence: &RefCell<MutableRunEvidence<'_>>,
+        artifacts: &mut TemporaryArtifactRegistry,
+        invariant: &mut DeferredInvariant,
+        stop: &CancellationToken,
+    ) {
+        let mut failed = false;
 
         // Preparing always executes: it is where the request becomes run-scoped
         // state. It is indeterminate work, so it reports no progress.
@@ -382,7 +465,7 @@ impl RunExecutor {
 
         let mut preparation = None;
         if !stop.is_cancelled() {
-            match prepare_run(request, configuration, &evidence, stop) {
+            match prepare_run(request, configuration, evidence, stop) {
                 Ok(prepared) => preparation = prepared,
                 Err(failure) => {
                     failed = true;
@@ -400,7 +483,7 @@ impl RunExecutor {
                 Ok(Err(error)) => Some(error.to_string()),
                 Err(payload) => Some(format!(
                     "Work configuration panicked: {}",
-                    panic_message(payload.as_ref())
+                    take_panic_message(payload)
                 )),
             };
             if let Some(detail) = detail {
@@ -468,12 +551,12 @@ impl RunExecutor {
             (&preparation, request.has_requested_work(), work)
         {
             let milestones = ExecutorMilestones {
-                evidence: &evidence,
+                evidence,
                 mode: request.execution_mode(),
             };
-            let work_evidence = RunWorkEvidence::new(&evidence);
+            let work_evidence = RunWorkEvidence::new(evidence);
             let outcome = catch_unwind(AssertUnwindSafe(|| {
-                work.execute(prepared, &work_evidence, &mut artifacts, &milestones, stop)
+                work.execute(prepared, &work_evidence, artifacts, &milestones, stop)
             }));
             let detail = match outcome {
                 Ok(Ok(())) => None,
@@ -484,7 +567,7 @@ impl RunExecutor {
                 Ok(Err(error)) => Some(error.to_string()),
                 Err(payload) => Some(format!(
                     "The work service panicked: {}",
-                    panic_message(payload.as_ref())
+                    take_panic_message(payload)
                 )),
             };
             if let Some(detail) = detail {
@@ -516,38 +599,6 @@ impl RunExecutor {
                 )));
             }
         }
-
-        // Safety Cleanup runs exactly once on every terminal path, before the
-        // terminal result exists, so cancellation and failure cannot leave
-        // run-owned artifacts behind. It does not move the final work phase.
-        let mut evidence = evidence.into_inner();
-        let final_phase = evidence
-            .current_phase()
-            .map_or(RunPhase::Preparing, RunPhaseRecord::phase);
-        invariant
-            .note(evidence.record_phase(RunPhaseRecord::executed(RunPhase::SafetyCleanup, None)));
-        let mut cleanup_failures = collect_safety_cleanup_failures(&mut artifacts);
-        cleanup_failures.extend(collect_safety_cleanup_failures(safety_cleanup));
-        for failure in cleanup_failures {
-            invariant.note(evidence.record_safety_cleanup_failure(failure));
-        }
-        if stop.is_cancelled() {
-            evidence.record_cancellation_observation();
-        }
-        let Some(violation) = invariant.into_violation() else {
-            return Self::seal(evidence, final_phase, run_id);
-        };
-        let violation = violation.to_string();
-        log::error!("{violation}");
-        // Retained without publishing: Safety Cleanup has already been
-        // published, and no Run Failure event may follow it.
-        evidence.retain_failure(RunFailure::new(
-            RunFailureCode::WorkServiceFailed,
-            final_phase,
-            violation.clone(),
-        ));
-        let result = Self::seal(evidence, final_phase, run_id);
-        std::panic::panic_any(RunEvidenceInvariantPanic { violation, result })
     }
 
     /// Commits the terminal result of a run whose worker could not be scheduled.

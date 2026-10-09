@@ -24,7 +24,7 @@ use crate::routing::{RoutingLedger, SkipReason};
 use crate::run::{
     MutationKind, MutationSummary, RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode,
     RunFailure, RunFailureCode, RunPhase, RunPhaseRecord, RunPhaseStatus, RunPreparation,
-    RunProgress, panic_message,
+    RunProgress, take_panic_message,
 };
 
 /// Receives live facts only after Run Evidence has retained them.
@@ -583,7 +583,7 @@ impl<'a> MutableRunEvidence<'a> {
     /// `ObserverFailed` diagnostic.
     pub fn report_safely(&mut self, phase: RunPhase, publication: impl FnOnce()) {
         if let Err(payload) = catch_unwind(AssertUnwindSafe(publication)) {
-            self.retain_observer_failure(phase, panic_message(payload.as_ref()));
+            self.retain_observer_failure(phase, take_panic_message(payload));
         }
     }
 
@@ -727,7 +727,7 @@ impl<'e, 'a> RunWorkEvidence<'e, 'a> {
         if let Err(payload) = catch_unwind(AssertUnwindSafe(publication)) {
             self.evidence
                 .borrow_mut()
-                .retain_observer_failure(phase, panic_message(payload.as_ref()));
+                .retain_observer_failure(phase, take_panic_message(payload));
         }
     }
 

@@ -25,7 +25,7 @@ use crate::routing::{
 use crate::run::{
     ArchiveDiscoveryEvidence, CancellationToken, RunDiagnostic, RunDiagnosticCode, RunFailure,
     RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunWorkEvidence, RunWorkMilestones,
-    panic_message,
+    take_panic_message,
 };
 
 /// One completed attempt: its routed identity, resolved Mod Root and durable outcome.
@@ -211,11 +211,18 @@ impl Discovery<'_, '_, '_, '_> {
     }
 }
 
-/// The Mod Root an Asset is attributed to: the longest prepared root containing it.
+/// The Mod Root an Asset is attributed to: the longest prepared root
+/// containing it once links are resolved.
+///
+/// Resolution happens as the attempt starts, before it can remove a converted
+/// source, so a folder swapped for a link after discovery is attributed to
+/// the root it really leads into, or to none (C++ `weakly_canonical`). A path
+/// that cannot be resolved is attributed by its own spelling.
 fn attributed_mod_root<'p>(path: &Path, mod_roots: &'p [PathBuf]) -> Option<&'p PathBuf> {
+    let resolved = cao_winfs::msvc_weakly_canonical(path).unwrap_or_else(|_| path.to_path_buf());
     mod_roots
         .iter()
-        .filter(|root| path.starts_with(root))
+        .filter(|root| resolved.starts_with(root))
         .max_by_key(|root| root.as_os_str().len())
 }
 
@@ -404,7 +411,7 @@ pub fn execute_asset_run(
                             mod_root.clone(),
                             AssetExecutionResult::failed(
                                 AssetExecutionFailure::BackendException,
-                                panic_message(payload.as_ref()),
+                                take_panic_message(payload),
                             )
                             .with_mutation(MutationState::PartialOrUnknown)
                             .with_safe_to_continue(false)
@@ -449,6 +456,11 @@ pub fn execute_asset_run(
         return finish(true);
     }
     evidence.publish_diagnostics();
+    // An observer of those diagnostics may cancel; the run then stops before
+    // entering Archive Finalization rather than recording a phase it skips.
+    if cancelled() {
+        return finish(true);
+    }
 
     let finalizer = adapters.finalize_archive_lifecycle.as_mut();
     report(milestones.archive_finalization_available(mode, finalizer.is_some())?);
