@@ -4,18 +4,15 @@
 //! This is its own test binary with one test, because `log::set_logger`
 //! succeeds only once per process.
 
-use std::path::Path;
+mod common;
 
 use cao_optimizers::application_log::ApplicationLog;
+use common::scratch_dir;
 use log::LevelFilter;
 
 #[test]
 fn the_installed_sink_follows_each_runs_redirect_through_the_log_macros() {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("cao-optimizers-log")
-        .join("installed");
-    // A missing directory is the expected case; anything else surfaces below.
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = scratch_dir("log-installed");
     let startup = dir.join("logs").join("SSE").join("startup.html");
     let run = dir.join("logs").join("SSE").join("run.html");
 

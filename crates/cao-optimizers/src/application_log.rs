@@ -31,7 +31,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use chrono::NaiveDateTime;
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
-/// The live file rolls before the first write that finds it larger than this.
+/// The live file rolls before a write that finds it larger than this, except
+/// the first write after opening it, as plog did.
 pub const MAX_FILE_SIZE: u64 = 250_000;
 /// The live file plus `name.1.html` … `name.999.html`.
 pub const MAX_FILES: u32 = 1_000;
@@ -67,6 +68,8 @@ fn local_now() -> NaiveDateTime {
 /// at a run's redirect the run is not started.
 #[derive(Debug, thiserror::Error)]
 pub enum LogError {
+    /// The file or its `logs/<profile>/` folder could not be created or opened.
+    /// Worded as C++ `prepareLogFile`'s message, which the GUI shows.
     #[error("Cannot open log file `{}`: {source}", path.display())]
     Open {
         path: PathBuf,
@@ -78,7 +81,10 @@ pub enum LogError {
 /// One Log tab row: the file's line without markup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogLine {
+    /// The record's level, which picks the row's colour. `Trace` is plog's verbose.
     pub severity: Level,
+    /// The line as the file has it, unescaped: timestamp, severity token, the
+    /// debug layout's `{module::path@line}`, and the message.
     pub text: String,
 }
 
@@ -88,6 +94,8 @@ pub struct FeedUpdate {
     /// The tab must drop its log rows before appending `lines`: the feed was
     /// just attached, or a redirect moved to a new file.
     pub reset: bool,
+    /// The rows logged since the last drain, oldest first, at most
+    /// [`MAX_FEED_ROWS`] of the newest.
     pub lines: Vec<LogLine>,
 }
 
@@ -107,6 +115,11 @@ impl LogFeed {
     }
 }
 
+/// The attached feed's queue.
+///
+/// Lock order: the sink's state lock, then `pending`. The sink takes `pending`
+/// only while holding its state lock; [`LogFeed::drain`] takes `pending` alone
+/// and must never reach for the sink's lock.
 struct Subscriber {
     pending: Mutex<Pending>,
     wake: Box<dyn Fn() + Send + Sync>,
@@ -119,24 +132,20 @@ struct Pending {
 }
 
 impl Subscriber {
+    /// A poisoned lock is recovered: every change to the queue is a single
+    /// push, clear or take, so a panic cannot leave it half-updated.
     fn lock(&self) -> MutexGuard<'_, Pending> {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Applies `change` and reports whether the buffer just went from empty to
+    /// Applies `change` and reports whether the queue just went from empty to
     /// non-empty, which is the only time the wake callback is due.
-    fn queue(&self, change: impl FnOnce(&mut Pending)) -> bool {
+    fn needs_wake_after(&self, change: impl FnOnce(&mut Pending)) -> bool {
         let mut pending = self.lock();
         let was_idle = !pending.reset && pending.lines.is_empty();
         change(&mut pending);
         was_idle
     }
-}
-
-#[derive(Clone, Copy)]
-enum Layout {
-    Info,
-    Debug,
 }
 
 /// The process's Application Log sink. See the module docs.
@@ -151,8 +160,9 @@ pub struct ApplicationLog {
 /// Everything a redirect swaps, under the sink's single lock.
 struct State {
     file: RollingFile,
-    layout: Layout,
-    level: LevelFilter,
+    /// Debug logging: the debug layout at the verbose level, rather than the
+    /// info layout at the info level.
+    debug: bool,
     /// The session's rows from bootstrap onward, replayed when a feed attaches.
     history: VecDeque<LogLine>,
     subscriber: Option<Arc<Subscriber>>,
@@ -174,8 +184,7 @@ impl ApplicationLog {
         Ok(Self {
             state: Mutex::new(State {
                 file: RollingFile::open(path)?,
-                layout: layout_for(debug),
-                level: level_for(debug),
+                debug,
                 history: VecDeque::new(),
                 subscriber: None,
             }),
@@ -196,7 +205,7 @@ impl ApplicationLog {
         // Under the lock, so a concurrent redirect cannot leave a stale level.
         let state = sink.lock();
         sink.installed.store(true, Ordering::SeqCst);
-        log::set_max_level(state.level);
+        log::set_max_level(level_for(state.debug));
         Ok(sink)
     }
 
@@ -211,26 +220,25 @@ impl ApplicationLog {
     /// and the run must not start.
     pub fn redirect(&self, path: &Path, debug: bool) -> Result<(), LogError> {
         let mut state = self.lock();
-        let mut woken = None;
+        let mut to_wake = None;
         if state.file.path != path {
             state.file = RollingFile::open(path)?;
             state.history.clear();
             if let Some(subscriber) = &state.subscriber
-                && subscriber.queue(|pending| {
+                && subscriber.needs_wake_after(|pending| {
                     pending.reset = true;
                     pending.lines.clear();
                 })
             {
-                woken = Some(Arc::clone(subscriber));
+                to_wake = Some(Arc::clone(subscriber));
             }
         }
-        state.layout = layout_for(debug);
-        state.level = level_for(debug);
+        state.debug = debug;
         if self.installed.load(Ordering::SeqCst) {
-            log::set_max_level(state.level);
+            log::set_max_level(level_for(debug));
         }
         drop(state);
-        wake(woken);
+        wake(to_wake);
         Ok(())
     }
 
@@ -269,30 +277,42 @@ impl ApplicationLog {
 
 impl Log for ApplicationLog {
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        metadata.level() <= self.lock().level
+        metadata.level() <= level_for(self.lock().debug)
     }
 
     fn log(&self, record: &Record<'_>) {
-        let mut state = self.lock();
-        if record.level() > state.level {
+        if !self.enabled(record.metadata()) {
             return;
         }
-        // Formatted under the lock, so a concurrent redirect cannot put one
-        // layout's line into the other's file.
+        // The message is formatted before taking the lock, as plog did, so a
+        // `Display` that logs cannot deadlock and one that panics cannot
+        // poison the lock. A `Display` error keeps what it wrote.
+        let mut message = String::new();
+        let _ = write!(message, "{}", record.args());
+
+        let mut state = self.lock();
+        // Rechecked: a redirect may have lowered the level since `enabled`.
+        if record.level() > level_for(state.debug) {
+            return;
+        }
+        // The layout is applied under the lock, so a concurrent redirect cannot
+        // put one layout's line into the other's file.
         let line = LogLine {
             severity: record.level(),
-            text: plain_text(state.layout, record, (self.clock)()),
+            text: plain_text(state.debug, record, &message, (self.clock)()),
         };
         // A failed write or roll is swallowed; the Log tab still gets the row.
         state.file.write(html_line(&line).as_bytes());
         push_capped(&mut state.history, line.clone());
-        let woken = state
+        let to_wake = state
             .subscriber
             .as_ref()
-            .filter(|subscriber| subscriber.queue(|pending| push_capped(&mut pending.lines, line)))
+            .filter(|subscriber| {
+                subscriber.needs_wake_after(|pending| push_capped(&mut pending.lines, line))
+            })
             .cloned();
         drop(state);
-        wake(woken);
+        wake(to_wake);
     }
 
     /// Nothing to do: every record is one unbuffered write.
@@ -314,10 +334,6 @@ fn push_capped(rows: &mut VecDeque<LogLine>, line: LogLine) {
     rows.push_back(line);
 }
 
-fn layout_for(debug: bool) -> Layout {
-    if debug { Layout::Debug } else { Layout::Info }
-}
-
 /// Verbose (`trace!`) and up with debug logging; info and up without.
 fn level_for(debug: bool) -> LevelFilter {
     if debug {
@@ -327,57 +343,38 @@ fn level_for(debug: bool) -> LevelFilter {
     }
 }
 
-/// plog's severity token. `trace!` stands in for plog's verbose.
-fn token(level: Level) -> &'static str {
+/// plog's severity token and colour. `trace!` stands in for plog's verbose.
+fn style(level: Level) -> (&'static str, &'static str) {
     match level {
-        Level::Error => "ERROR",
-        Level::Warn => "WARN",
-        Level::Info => "INFO",
-        Level::Debug => "DEBUG",
-        Level::Trace => "VERB",
+        Level::Error => ("ERROR", "Red"),
+        Level::Warn => ("WARN", "Orange"),
+        Level::Info => ("INFO", "Green"),
+        Level::Debug => ("DEBUG", "Blue"),
+        Level::Trace => ("VERB", "Purple"),
     }
 }
 
-fn colour(level: Level) -> &'static str {
-    match level {
-        Level::Error => "Red",
-        Level::Warn => "Orange",
-        Level::Info => "Green",
-        Level::Debug => "Blue",
-        Level::Trace => "Purple",
-    }
-}
-
-/// The record's line without markup, in plog's info or debug layout.
-fn plain_text(layout: Layout, record: &Record<'_>, at: NaiveDateTime) -> String {
-    let mut text = String::new();
-    // Writing to a `String` cannot fail.
-    let _ = match layout {
-        Layout::Info => write!(
-            text,
-            "{} [{}] {}",
-            at.format("%Y-%m-%d %H:%M:%S"),
-            token(record.level()),
-            record.args()
-        ),
+/// The record's line without markup, in plog's debug layout or info layout.
+fn plain_text(debug: bool, record: &Record<'_>, message: &str, at: NaiveDateTime) -> String {
+    let (token, _) = style(record.level());
+    if debug {
         // plog padded the token to five and put `{` straight after it.
-        Layout::Debug => write!(
-            text,
-            "{} {:<5}{{{}@{}}} {}",
+        format!(
+            "{} {token:<5}{{{}@{}}} {message}",
             at.format("%Y-%m-%d %H:%M:%S%.3f"),
-            token(record.level()),
             record.module_path().unwrap_or(record.target()),
             record.line().unwrap_or(0),
-            record.args()
-        ),
-    };
-    text
+        )
+    } else {
+        format!("{} [{token}] {message}", at.format("%Y-%m-%d %H:%M:%S"))
+    }
 }
 
 /// The file's bytes for one row. The timestamp, token and module path hold no
 /// markup, so escaping the whole line escapes exactly the message.
 fn html_line(line: &LogLine) -> String {
-    let mut html = format!("<br><font color={}>", colour(line.severity));
+    let (_, colour) = style(line.severity);
+    let mut html = format!("<br><font color={colour}>");
     for ch in line.text.chars() {
         match ch {
             '&' => html.push_str("&amp;"),
@@ -397,14 +394,20 @@ struct RollingFile {
     /// tries again.
     file: Option<File>,
     size: u64,
+    /// plog skipped the size check on the first write after opening a file
+    /// (`m_firstWrite`), so a reopened oversized file takes one more record.
+    first_write: bool,
 }
 
 impl RollingFile {
+    /// Creates the file's folder and opens the file, as C++ `prepareLogFile`
+    /// did, so an unopenable path fails here rather than on the first record.
     fn open(path: &Path) -> Result<Self, LogError> {
         let mut rolling = Self {
             path: path.to_owned(),
             file: None,
             size: 0,
+            first_write: true,
         };
         let opened = match path.parent() {
             Some(folder) => std::fs::create_dir_all(folder),
@@ -417,34 +420,38 @@ impl RollingFile {
         })
     }
 
-    /// Opens the live file for appending, writing the header only into an empty one.
+    /// Opens the live file for appending and takes its size.
     fn reopen(&mut self) -> io::Result<()> {
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .append(true)
             .create(true)
             .open(&self.path)?;
-        let mut size = file.metadata()?.len();
-        if size == 0 {
-            file.write_all(HEADER.as_bytes())?;
-            size = HEADER.len() as u64;
-        }
+        self.size = file.metadata()?.len();
         self.file = Some(file);
-        self.size = size;
         Ok(())
     }
 
     /// Writes one record in one unbuffered write, so a reader sees it at once
     /// and a crash loses nothing. Failures are swallowed.
-    fn write(&mut self, bytes: &[u8]) {
-        if self.file.is_some() && self.size > MAX_FILE_SIZE {
+    fn write(&mut self, record: &[u8]) {
+        if !mem::take(&mut self.first_write) && self.file.is_some() && self.size > MAX_FILE_SIZE {
             self.roll();
         }
         // A failed reopen is retried by the next record.
         if self.file.is_none() && self.reopen().is_err() {
             return;
         }
+        // The header goes into an empty file with its first record, as plog
+        // wrote it then: a session that logs nothing leaves an empty file. One
+        // write means a failed header is retried with the next record rather
+        // than landing mid-file.
+        let bytes = if self.size == 0 {
+            [HEADER.as_bytes(), record].concat()
+        } else {
+            record.to_vec()
+        };
         if let Some(file) = &mut self.file
-            && file.write_all(bytes).is_ok()
+            && file.write_all(&bytes).is_ok()
         {
             self.size += bytes.len() as u64;
         }

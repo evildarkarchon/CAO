@@ -4,28 +4,21 @@
 //! Golden tests pin plog's bytes and deviation 22; the rest pin rotation, the
 //! per-run redirect, deviation 23, the failure scopes and the Log tab feed.
 
-use std::path::{Path, PathBuf};
+mod common;
+
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cao_optimizers::application_log::{
     ApplicationLog, FeedUpdate, LogError, LogFeed, LogLine, MAX_FEED_ROWS, MAX_FILE_SIZE, log_path,
+    stamp_log_path,
 };
 use chrono::{NaiveDate, NaiveDateTime};
+use common::scratch_dir;
 use log::{Level, Log, Record};
 
 const HEADER: &str = "\u{feff}<style>html{line-height:1.5rem}pre{line-height:1rem}</style>";
-
-/// A fresh, empty directory under the target directory for one scenario.
-fn scratch_dir(name: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("cao-optimizers-log")
-        .join(name);
-    // A missing directory is the expected case; anything else surfaces below.
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
 
 /// The fixed instant every record is stamped with: 2026-10-08 14:03:07.042.
 fn fixed_clock() -> NaiveDateTime {
@@ -72,7 +65,7 @@ fn counting_subscriber(sink: &ApplicationLog) -> (LogFeed, Arc<AtomicUsize>) {
 
 #[test]
 fn the_info_layout_keeps_plogs_bytes_with_escaped_text_and_a_newline_per_record() {
-    let path = scratch_dir("golden-info").join("26.10.08.14.03.html");
+    let path = scratch_dir("log-golden-info").join("26.10.08.14.03.html");
     let sink = open(&path, false);
 
     emit(&sink, Level::Error, "a < b & c > d");
@@ -91,7 +84,7 @@ fn the_info_layout_keeps_plogs_bytes_with_escaped_text_and_a_newline_per_record(
 
 #[test]
 fn the_debug_layout_keeps_plogs_bytes_with_the_module_path_for_the_function() {
-    let path = scratch_dir("golden-debug").join("26.10.08.14.03.html");
+    let path = scratch_dir("log-golden-debug").join("26.10.08.14.03.html");
     let sink = open(&path, true);
 
     emit(&sink, Level::Error, "failed");
@@ -116,7 +109,7 @@ fn the_debug_layout_keeps_plogs_bytes_with_the_module_path_for_the_function() {
 
 #[test]
 fn the_info_level_writes_neither_debug_nor_verbose_records() {
-    let path = scratch_dir("info-filter").join("log.html");
+    let path = scratch_dir("log-info-filter").join("log.html");
     let sink = open(&path, false);
     let (feed, _wakes) = counting_subscriber(&sink);
 
@@ -135,7 +128,7 @@ fn the_info_level_writes_neither_debug_nor_verbose_records() {
 
 #[test]
 fn a_file_that_already_has_records_gets_no_second_header() {
-    let path = scratch_dir("append").join("log.html");
+    let path = scratch_dir("log-append").join("log.html");
     emit(&open(&path, false), Level::Info, "first launch");
     emit(&open(&path, false), Level::Info, "second launch");
 
@@ -150,7 +143,7 @@ fn a_file_that_already_has_records_gets_no_second_header() {
 
 #[test]
 fn opening_creates_the_profile_log_folder() {
-    let app = scratch_dir("creates-folder");
+    let app = scratch_dir("log-creates-folder");
     let path = log_path(&app, "SSE", fixed_clock());
     assert_eq!(
         path,
@@ -164,8 +157,68 @@ fn opening_creates_the_profile_log_folder() {
 }
 
 #[test]
+fn the_gui_stamps_the_profiles_log_path_with_the_current_minute() {
+    let app = scratch_dir("log-stamp");
+    let before = chrono::Local::now().naive_local();
+    let stamped = stamp_log_path(&app, "SSE");
+    let after = chrono::Local::now().naive_local();
+
+    // The minute may turn between the two readings.
+    assert!(
+        stamped == log_path(&app, "SSE", before) || stamped == log_path(&app, "SSE", after),
+        "{}",
+        stamped.display()
+    );
+}
+
+#[test]
+fn a_session_that_logs_nothing_leaves_an_empty_file() {
+    let dir = scratch_dir("log-empty-session");
+    let startup = dir.join("startup.html");
+    let run = dir.join("run.html");
+    let sink = open(&startup, false);
+
+    // plog wrote the header with a file's first record, not when it opened it.
+    sink.redirect(&run, false).unwrap();
+
+    assert_eq!(read(&startup), "");
+    assert_eq!(read(&run), "");
+}
+
+#[test]
+fn reopening_an_oversized_file_rolls_only_after_its_first_record() {
+    let dir = scratch_dir("log-reopen-oversized");
+    let path = dir.join("log.html");
+    let earlier = [HEADER, &"x".repeat(MAX_FILE_SIZE as usize)].concat();
+    std::fs::write(&path, &earlier).unwrap();
+
+    // plog skipped the size check on the first write after opening a file.
+    let sink = open(&path, false);
+    emit(&sink, Level::Info, "first");
+    assert!(!dir.join("log.1.html").exists());
+    emit(&sink, Level::Info, "second");
+
+    assert_eq!(
+        read(&dir.join("log.1.html")),
+        [
+            earlier.as_str(),
+            "<br><font color=Green>2026-10-08 14:03:07 [INFO] first</font>\n"
+        ]
+        .concat()
+    );
+    assert_eq!(
+        read(&path),
+        [
+            HEADER,
+            "<br><font color=Green>2026-10-08 14:03:07 [INFO] second</font>\n"
+        ]
+        .concat()
+    );
+}
+
+#[test]
 fn the_log_rolls_past_the_size_limit_into_numbered_files() {
-    let dir = scratch_dir("rotation");
+    let dir = scratch_dir("log-rotation");
     let path = dir.join("log.html");
     // Older chunks shift up by one; the oldest kept chunk (999) falls off.
     std::fs::write(dir.join("log.1.html"), "chunk one").unwrap();
@@ -200,7 +253,7 @@ fn the_log_rolls_past_the_size_limit_into_numbered_files() {
 /// `_SH_DENYWR`, so toggling debug logging between runs silently dropped the log.
 #[test]
 fn toggling_debug_logging_between_runs_keeps_logging_to_the_same_file() {
-    let path = scratch_dir("deviation-23").join("log.html");
+    let path = scratch_dir("log-deviation-23").join("log.html");
     let sink = open(&path, false);
     emit(&sink, Level::Info, "first run");
 
@@ -223,7 +276,7 @@ fn toggling_debug_logging_between_runs_keeps_logging_to_the_same_file() {
 
 #[test]
 fn a_redirect_to_a_new_path_writes_there_and_leaves_the_old_file_alone() {
-    let app = scratch_dir("redirect");
+    let app = scratch_dir("log-redirect");
     let first = log_path(&app, "SSE", fixed_clock());
     let second = app.join("logs").join("FO4").join("26.10.08.14.05.html");
     let sink = open(&first, false);
@@ -246,7 +299,7 @@ fn a_redirect_to_a_new_path_writes_there_and_leaves_the_old_file_alone() {
 
 #[test]
 fn a_log_file_that_cannot_be_opened_fails_the_bootstrap() {
-    let dir = scratch_dir("bootstrap-failure");
+    let dir = scratch_dir("log-bootstrap-failure");
     std::fs::write(dir.join("logs"), "a file where the folder should be").unwrap();
     let path = dir.join("logs").join("SSE").join("log.html");
 
@@ -261,7 +314,7 @@ fn a_log_file_that_cannot_be_opened_fails_the_bootstrap() {
 
 #[test]
 fn a_redirect_that_cannot_open_its_file_refuses_and_keeps_the_current_log() {
-    let dir = scratch_dir("redirect-failure");
+    let dir = scratch_dir("log-redirect-failure");
     let path = dir.join("log.html");
     std::fs::write(dir.join("blocked"), "a file where the folder should be").unwrap();
     let unopenable = dir.join("blocked").join("log.html");
@@ -293,7 +346,7 @@ fn a_redirect_that_cannot_open_its_file_refuses_and_keeps_the_current_log() {
 
 #[test]
 fn a_reader_opening_the_file_mid_run_sees_every_record_so_far() {
-    let path = scratch_dir("mid-run").join("log.html");
+    let path = scratch_dir("log-mid-run").join("log.html");
     let sink = open(&path, false);
 
     for n in 0..20 {
@@ -312,7 +365,7 @@ fn a_record_that_panics_while_formatting_does_not_stop_later_records() {
             panic!("a message that cannot be formatted")
         }
     }
-    let path = scratch_dir("poisoned").join("log.html");
+    let path = scratch_dir("log-poisoned").join("log.html");
     let sink = open(&path, false);
 
     let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -331,7 +384,7 @@ fn a_record_that_panics_while_formatting_does_not_stop_later_records() {
 
 #[test]
 fn attaching_replays_startup_records_and_signals_once_until_drained() {
-    let path = scratch_dir("feed-replay").join("log.html");
+    let path = scratch_dir("log-feed-replay").join("log.html");
     let sink = open(&path, true);
     emit(&sink, Level::Info, "startup");
     emit(&sink, Level::Error, "startup error");
@@ -383,7 +436,7 @@ fn attaching_replays_startup_records_and_signals_once_until_drained() {
 /// rotation chunk, only capped to the newest rows.
 #[test]
 fn the_feed_keeps_the_newest_rows_across_rotation_up_to_the_cap() {
-    let path = scratch_dir("feed-cap").join("log.html");
+    let path = scratch_dir("log-feed-cap").join("log.html");
     let sink = open(&path, false);
     let total = MAX_FEED_ROWS + 5;
     for n in 0..total {
@@ -409,7 +462,7 @@ fn the_feed_keeps_the_newest_rows_across_rotation_up_to_the_cap() {
 
 #[test]
 fn a_redirect_to_a_new_path_clears_the_feed_but_the_same_path_does_not() {
-    let dir = scratch_dir("feed-redirect");
+    let dir = scratch_dir("log-feed-redirect");
     let path = dir.join("log.html");
     let sink = open(&path, false);
     emit(&sink, Level::Info, "startup");
