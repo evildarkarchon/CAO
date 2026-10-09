@@ -21,10 +21,11 @@ use cao_core::routing::{
     AssetOperations, ExecutionMode, MeshVariant, RequestedWork, RoutedAsset, TextureVariant,
 };
 use cao_core::run::{
-    AssetInitializationCancelled, AssetRunAdapters, CancellationToken, ModSelection,
-    RunConfiguration, RunConfigurationProvider, RunEvent, RunEventDispatcher, RunEventPayload,
-    RunFailure, RunHandle, RunPhase, RunPreparation, RunRequest, RunScheduler, RunWork,
-    RunWorkEvidence, RunWorkMilestones, RunWorkService, SafetyCleanupService, ScheduledRunWorker,
+    AssetInitializationCancelled, AssetRunAdapters, AssetRunProgress, CancellationToken,
+    ModSelection, RunConfiguration, RunConfigurationProvider, RunDiagnostic, RunEvent,
+    RunEventDispatcher, RunEventPayload, RunFailure, RunHandle, RunObservationSink, RunPhase,
+    RunPhaseRecord, RunPreparation, RunRequest, RunScheduler, RunWork, RunWorkEvidence,
+    RunWorkMilestones, RunWorkService, SafetyCleanupService, ScheduledRunWorker,
     SelectedProfileFacts, StandardRunScheduler, TemporaryArtifactRegistry, execute_asset_run,
 };
 
@@ -551,6 +552,241 @@ impl RunWorkService for BackendWork {
         }
         execute_asset_run(preparation, evidence, milestones, stop, &mut adapters)
     }
+}
+
+/// What a controlled attempt does, given the Routed Asset and its frozen Mod Root.
+pub type AssetScript = Box<
+    dyn Fn(&RoutedAsset, &Path) -> Result<AssetExecutionResult, AssetInitializationCancelled>
+        + Send
+        + Sync,
+>;
+
+/// A hook a controlled run calls without arguments.
+pub type Hook<T> = Box<dyn Fn() -> T + Send + Sync>;
+
+/// A hook observing one Asset Run lifecycle boundary.
+pub type PhaseHook = Box<dyn Fn(&RunPhaseRecord) + Send + Sync>;
+
+/// A hook observing one Asset Run progress update.
+pub type ProgressHook = Box<dyn Fn(AssetRunProgress) + Send + Sync>;
+
+/// A hook a [`RecordingSink`] runs on each observation.
+pub type ObservationHook = Box<dyn Fn(&Observed)>;
+
+/// The production `execute_asset_run` driven by scripted adapters, as C++
+/// `ControlledAssetWork` drove `executeAssetRun`.
+///
+/// Discovery, routing, phase publication and Run Evidence are all real. Each
+/// field left `None` keeps the adapter's default: attempts succeed without
+/// mutation, nothing extra cancels, and no Archive Finalization adapter
+/// exists. In Apply, `stage_temporary` stages `temporary.dds` beside the
+/// first Mod Root under the run's Temporary Ownership before any Asset runs,
+/// so a scenario can prove Safety Cleanup removed it.
+#[derive(Default)]
+pub struct ControlledWork {
+    pub execute: Option<AssetScript>,
+    /// Polled wherever the Asset Run checks cancellation; it may panic to
+    /// stand in for a later orchestration failure.
+    pub is_cancelled: Option<Hook<bool>>,
+    pub report_phase: Option<PhaseHook>,
+    pub report_progress: Option<ProgressHook>,
+    /// The Archive Finalization adapter; its calls are counted.
+    pub finalize: Option<Hook<Result<(), Error>>>,
+    /// Work-specific configuration loaded during Preparing.
+    pub prepare: Option<Hook<Result<(), Error>>>,
+    pub stage_temporary: bool,
+    /// Each attempt's execution path and the Mod Root it was handed.
+    pub attempts: Mutex<Vec<(PathBuf, PathBuf)>>,
+    pub executions: AtomicUsize,
+    pub finalizations: AtomicUsize,
+    pub staged: Mutex<Option<PathBuf>>,
+}
+
+impl ControlledWork {
+    /// The Mod Roots handed to each attempt, in attempt order.
+    pub fn attempted_roots(&self) -> Vec<PathBuf> {
+        let attempts = self.attempts.lock().unwrap();
+        attempts.iter().map(|(_, root)| root.clone()).collect()
+    }
+
+    /// The temporary file staged in Apply, which must not survive the run.
+    pub fn staged_temporary(&self) -> Option<PathBuf> {
+        self.staged.lock().unwrap().clone()
+    }
+}
+
+impl RunWorkService for ControlledWork {
+    fn prepare(&self) -> Result<(), Error> {
+        self.prepare.as_ref().map_or(Ok(()), |prepare| prepare())
+    }
+
+    fn execute(
+        &self,
+        preparation: &RunPreparation,
+        evidence: &RunWorkEvidence<'_, '_>,
+        artifacts: &mut TemporaryArtifactRegistry,
+        milestones: &dyn RunWorkMilestones,
+        stop: &CancellationToken,
+    ) -> Result<(), Error> {
+        if self.stage_temporary
+            && preparation.policy().execution_mode() == ExecutionMode::Apply
+            && let Some(root) = preparation.mod_roots().first()
+        {
+            let staged = artifacts
+                .stage_file(root, &root.join("temporary.dds"))
+                .expect("the scenario's temporary is staged");
+            std::fs::write(&staged.path, "temporary").unwrap();
+            *self.staged.lock().unwrap() = Some(staged.path);
+        }
+        let mut adapters =
+            AssetRunAdapters::new(Box::new(|asset: &RoutedAsset, mod_root: &Path| {
+                self.attempts
+                    .lock()
+                    .unwrap()
+                    .push((asset.execution_path().to_path_buf(), mod_root.to_path_buf()));
+                self.executions.fetch_add(1, Ordering::SeqCst);
+                match &self.execute {
+                    Some(execute) => execute(asset, mod_root),
+                    None => Ok(AssetExecutionResult::success(MutationState::None)),
+                }
+            }));
+        if let Some(is_cancelled) = &self.is_cancelled {
+            adapters.is_cancelled = Some(Box::new(is_cancelled));
+        }
+        if let Some(report_phase) = &self.report_phase {
+            adapters.report_phase = Some(Box::new(move |record| report_phase(record)));
+        }
+        if let Some(report_progress) = &self.report_progress {
+            adapters.report_progress = Some(Box::new(report_progress));
+        }
+        if let Some(finalize) = &self.finalize {
+            adapters.finalize_archive_lifecycle = Some(Box::new(move |_| {
+                self.finalizations.fetch_add(1, Ordering::SeqCst);
+                finalize()
+            }));
+        }
+        execute_asset_run(preparation, evidence, milestones, stop, &mut adapters)
+    }
+}
+
+/// One observation a [`RecordingSink`] received.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Observed {
+    Phase(RunPhaseRecord),
+    Failure(RunFailure),
+    Diagnostic(RunDiagnostic),
+}
+
+impl Observed {
+    /// The observation's kind: `phase`, `failure` or `diagnostic`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Phase(_) => "phase",
+            Self::Failure(_) => "failure",
+            Self::Diagnostic(_) => "diagnostic",
+        }
+    }
+}
+
+/// A Run Observation Sink that records every observation in order and runs
+/// an optional hook first, which may cancel the run or panic.
+#[derive(Default)]
+pub struct RecordingSink {
+    pub observed: Mutex<Vec<Observed>>,
+    pub hook: Option<ObservationHook>,
+}
+
+impl RecordingSink {
+    /// A sink running `hook` on each observation.
+    pub fn with_hook(hook: impl Fn(&Observed) + 'static) -> Self {
+        Self {
+            observed: Mutex::default(),
+            hook: Some(Box::new(hook)),
+        }
+    }
+
+    pub fn observed(&self) -> Vec<Observed> {
+        self.observed.lock().unwrap().clone()
+    }
+
+    fn observe(&self, observation: Observed) {
+        self.observed.lock().unwrap().push(observation.clone());
+        if let Some(hook) = &self.hook {
+            hook(&observation);
+        }
+    }
+}
+
+impl RunObservationSink for RecordingSink {
+    fn record_phase(&self, phase: &RunPhaseRecord) {
+        self.observe(Observed::Phase(*phase));
+    }
+
+    fn record_failure(&self, failure: &RunFailure) {
+        self.observe(Observed::Failure(failure.clone()));
+    }
+
+    fn record_diagnostic(&self, diagnostic: &RunDiagnostic) {
+        self.observe(Observed::Diagnostic(diagnostic.clone()));
+    }
+}
+
+/// `target` relative to the working directory, without changing it: the
+/// harness runs tests on parallel threads, so the process-wide working
+/// directory must stay put. Both paths must be on one volume.
+pub fn relative_to_working_directory(target: &Path) -> PathBuf {
+    let base = canonical(&std::env::current_dir().unwrap());
+    let target = canonical(target);
+    let common = base
+        .components()
+        .zip(target.components())
+        .take_while(|(left, right)| left == right)
+        .count();
+    assert!(
+        common > 0,
+        "{} shares no volume with the working directory",
+        target.display()
+    );
+    let mut relative = PathBuf::new();
+    for _ in base.components().skip(common) {
+        relative.push("..");
+    }
+    relative.extend(target.components().skip(common));
+    relative
+}
+
+/// A Safety Cleanup Service that may cancel the run during its pass, then
+/// returns scripted failures or panics.
+#[derive(Default)]
+pub struct ScriptedCleanup {
+    /// Cancelled during the pass, as a user clicking Cancel during cleanup would.
+    pub cancels: Option<CancellationToken>,
+    pub failures: Vec<RunFailure>,
+    pub panics: bool,
+    pub passes: usize,
+}
+
+impl SafetyCleanupService for ScriptedCleanup {
+    fn perform_safety_cleanup(&mut self) -> Result<Vec<RunFailure>, Error> {
+        self.passes += 1;
+        if let Some(token) = &self.cancels {
+            token.cancel();
+        }
+        if self.panics {
+            panic!("the cleanup service panicked");
+        }
+        Ok(self.failures.clone())
+    }
+}
+
+/// Leaves the staging of a run that crashed while staging `destination`, a
+/// partial sibling its manifest still owns, and returns the sibling.
+pub fn crashed_run_leftover(root: &Path, destination: &str) -> PathBuf {
+    let mut crashed = TemporaryArtifactRegistry::new(cao_core::run::create_run_id());
+    let sibling = crashed.stage_file(root, &root.join(destination)).unwrap();
+    std::fs::write(&sibling.path, "partial output").unwrap();
+    // Dropping the registry without Safety Cleanup is what a crash leaves.
+    sibling.path
 }
 
 /// What a scripted attempt does instead of running a backend.

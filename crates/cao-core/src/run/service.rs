@@ -23,7 +23,7 @@ use crate::run::{
     RunDiagnosticCode, RunEvent, RunEventPayload, RunEvidenceInvariantPanic, RunExecutor,
     RunFailure, RunFailureCode, RunId, RunObservationSink, RunPhase, RunPhaseRecord, RunProgress,
     RunRequest, RunScheduler, RunServices, RunSnapshot, RunWorkService, SafetyCleanupService,
-    ScheduledRunWorker, StandardRunScheduler, create_run_id, panic_message,
+    ScheduledRunWorker, StandardRunScheduler, create_run_id, take_panic_message,
 };
 
 /// Receives every Run Event of one run, in sequence order, on the Run Worker.
@@ -168,7 +168,7 @@ impl RunShared {
         if let Err(payload) = catch_unwind(AssertUnwindSafe(|| dispatcher(event))) {
             dispatch.dispatcher = None;
             drop(dispatch);
-            let detail = panic_message(payload.as_ref());
+            let detail = take_panic_message(payload);
             log::warn!("The Run Event dispatcher failed and was disabled: {detail}");
             let mut published = lock(&self.published);
             let phase = published.phase;
@@ -208,7 +208,7 @@ impl RunShared {
                 Ok(sealed) => return sealed.result,
                 Err(payload) => payload,
             };
-            let detail = panic_message(payload.as_ref());
+            let detail = take_panic_message(payload);
             log::error!("The Run Worker panicked: {detail}");
             let work_phase = lock(&self.published).work_phase;
             let mut cleanup = lock(&self.cleanup);

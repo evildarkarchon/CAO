@@ -513,15 +513,18 @@ fn a_child_linking_inside_another_child_is_a_conflicting_mod_root() {
     }
 }
 
-/// Origin: RunExecutor's `resolveModRoots`. A child linking back to the mods
-/// directory, or above it, would make the selection one of its own Mod Roots.
+/// Origin: RunExecutor's `resolveModRoots`, and
+/// RunExecutorTests::broadLinkedChildFailsPreparing (both rows). A child
+/// linking back to the mods directory, above it, or to the volume root would
+/// make the selection one of its own Mod Roots.
 #[test]
 fn a_child_linking_to_the_mods_directory_or_above_it_fails_preparing() {
     let _serial = serial();
     let base = scratch_dir("several-escaping-link");
     let mods = base.join("selected");
     std::fs::create_dir_all(mods.join("Mod")).unwrap();
-    for target in [mods.clone(), base.clone()] {
+    let volume_root = std::path::PathBuf::from(format!("{}\\", &env!("CARGO_MANIFEST_DIR")[..2]));
+    for target in [mods.clone(), base.clone(), volume_root] {
         let link = mods.join("loop");
         junction(&link, &target);
 
