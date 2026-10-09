@@ -8,7 +8,10 @@
 //!   directory, a profile and the options model, it builds the Run Request, the
 //!   profile-backed Run Configuration Provider and the per-run optimizer settings,
 //!   and wires them into an Optimization Run Service (spec #476).
+//! - [`application_log`] is the `log` facade's sink both binaries install: the
+//!   Application Log's HTML file, and the rows the Log tab shows (#470).
 
+pub mod application_log;
 pub mod backend;
 pub mod composition;
 pub mod textures;
