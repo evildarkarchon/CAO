@@ -5,12 +5,13 @@
 //! compressed and given mipmaps. Dry Run reports that decision and Apply acts on
 //! it, so both share this one function, as they share `processArguments` in C++.
 //!
-//! [`Texture::optimize`] is C++ `optimize` on the CPU path (#491, #494):
-//! decompress, resize without WIC, generate mipmaps, and convert or compress to
-//! the target format. Mipmap generation may use WIC, so the calling thread must
-//! have joined COM ([`crate::device::initialize_com`]); the backend does that on
-//! the Run Worker. GPU BC7/BC6H encoding is a later slice (#495); until then
-//! every format is compressed on the CPU, as C++ does without a device.
+//! [`Texture::optimize`] is C++ `optimize` (#491, #494): decompress, resize
+//! without WIC, generate mipmaps, and convert or compress to the target format.
+//! Mipmap generation may use WIC, so the calling thread must have joined COM
+//! ([`crate::device::initialize_com`]); the backend does that on the Run
+//! Worker. BC6H and BC7 are encoded on the GPU when the caller has a
+//! [`GpuDevice`] and on the CPU otherwise, as C++ does (#495); every other
+//! format is always encoded on the CPU.
 //!
 //! After each step the metadata C++ maintains is checked against the step's
 //! result. C++ `compareInfo` joined its comparisons with `||`, so it passed
@@ -24,6 +25,8 @@ use directxtex::{
     TEX_ALPHA_MODE_OPAQUE, TEX_COMPRESS_DEFAULT, TEX_FILTER_DEFAULT, TEX_FILTER_FORCE_NON_WIC,
     TEX_FILTER_SEPARATE_ALPHA, TEX_THRESHOLD_DEFAULT, TGA_FLAGS_NONE, TexMetadata,
 };
+
+use crate::device::GpuDevice;
 
 /// The profile's Texture settings a decision depends on, from `profile.ini`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +154,20 @@ fn optimal_mip_count(mut width: usize, mut height: usize) -> usize {
 
 fn is_power_of_two(info: &TexMetadata) -> bool {
     info.width.is_power_of_two() && info.height.is_power_of_two()
+}
+
+/// The formats C++ `convertWithCompression` sends to the GPU encoder when it
+/// has a device, typeless ones included.
+fn is_bc6h_or_bc7(format: DXGI_FORMAT) -> bool {
+    matches!(
+        format,
+        DXGI_FORMAT::DXGI_FORMAT_BC6H_TYPELESS
+            | DXGI_FORMAT::DXGI_FORMAT_BC6H_UF16
+            | DXGI_FORMAT::DXGI_FORMAT_BC6H_SF16
+            | DXGI_FORMAT::DXGI_FORMAT_BC7_TYPELESS
+            | DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM
+            | DXGI_FORMAT::DXGI_FORMAT_BC7_UNORM_SRGB
+    )
 }
 
 /// Why a Texture could not be loaded.
@@ -314,7 +331,8 @@ impl Texture {
     /// header matches the oracle's.
     ///
     /// Mipmap generation may go through WIC, so the calling thread must have
-    /// joined COM ([`crate::device::initialize_com`]).
+    /// joined COM ([`crate::device::initialize_com`]). BC6H and BC7 are
+    /// encoded with `gpu` when there is one, and on the CPU otherwise.
     ///
     /// # Errors
     /// [`TextureError`] when a DirectXTex step fails or its result's metadata
@@ -324,6 +342,7 @@ impl Texture {
         &mut self,
         profile: &TextureProfile,
         request: &TextureRequest,
+        gpu: Option<&GpuDevice>,
     ) -> Result<bool, TextureError> {
         let plan = self.plan(profile, request);
         if !plan.would_change() {
@@ -366,7 +385,7 @@ impl Texture {
         if !can_be_compressed(&self.info, self.is_interface(), profile) {
             target = DXGI_FORMAT::DXGI_FORMAT_B8G8R8A8_UNORM;
         }
-        modified |= self.convert(target)?;
+        modified |= self.convert(target, gpu)?;
         log::info!("Successfully processed texture: {}", self.name);
         Ok(modified)
     }
@@ -472,16 +491,27 @@ impl Texture {
 
     /// Converts to `format`, compressing when it is a block format, as C++
     /// `convert` does. Returns whether the pixels changed.
-    fn convert(&mut self, format: DXGI_FORMAT) -> Result<bool, TextureError> {
+    ///
+    /// BC6H and BC7 go to `gpu` when there is one, as C++
+    /// `convertWithCompression` does; a GPU failure fails the step rather
+    /// than falling back to the CPU, also as in C++.
+    fn convert(
+        &mut self,
+        format: DXGI_FORMAT,
+        gpu: Option<&GpuDevice>,
+    ) -> Result<bool, TextureError> {
         if format.is_compressed() {
             if self.info.format.is_compressed() || self.image.metadata().format == format {
                 return Ok(false);
             }
-            // C++ also passed TEX_FILTER_SEPARATE_ALPHA, which Compress ignores.
-            let image = self
-                .image
-                .compress(format, TEX_COMPRESS_DEFAULT, TEX_THRESHOLD_DEFAULT)
-                .map_err(step("compress"))?;
+            let image = match gpu.filter(|_| is_bc6h_or_bc7(format)) {
+                Some(gpu) => gpu.compress(&self.image, format),
+                // C++ also passed TEX_FILTER_SEPARATE_ALPHA, which Compress ignores.
+                None => self
+                    .image
+                    .compress(format, TEX_COMPRESS_DEFAULT, TEX_THRESHOLD_DEFAULT),
+            }
+            .map_err(step("compress"))?;
             self.info.format = image.metadata().format;
             check_metadata("compress", &self.info, image.metadata())?;
             self.image = image;

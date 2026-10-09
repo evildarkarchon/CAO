@@ -3,7 +3,7 @@
 //!
 //! TES5 targets BC3, which DirectXTex encodes on the CPU in both builds, so
 //! these outputs are what the parity oracle produces too. SSE's BC7 is encoded
-//! on the GPU when there is one, which arrives with #495.
+//! on the GPU when there is one (#495), which the last scenario needs.
 
 mod common;
 
@@ -12,11 +12,12 @@ use std::path::Path;
 use cao_core::execution::MutationState;
 use cao_core::run::RunOutcome;
 use cao_optimizers::composition::ApplicationRun;
+use cao_optimizers::device::GpuDevice;
 use cao_profiles::Options;
 use common::{app_dir, profile_options, serial, write, write_dds};
 use directxtex::{
     CP_FLAGS_NONE, DDS_FLAGS_NONE, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC3_UNORM,
-    DXGI_FORMAT_R8G8B8A8_UNORM, ScratchImage, TexMetadata,
+    DXGI_FORMAT_BC7_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, ScratchImage, TexMetadata,
 };
 
 /// Apply options over `mod_root` under `profile` with only Texture work:
@@ -211,4 +212,38 @@ fn a_texture_deeper_than_the_old_fixed_buffer_is_optimized() {
     let info = dds_metadata(&path);
     assert_eq!(info.format, DXGI_FORMAT_BC3_UNORM);
     assert_eq!((info.width, info.height), (32, 32));
+}
+
+/// Spec (#495): an SSE Apply encodes BC7 with the Run Worker's D3D11 device.
+/// The published Texture holds exactly the DirectCompute encoder's bytes, so the
+/// backend created a device on the worker and sent BC7 to it.
+#[test]
+fn an_sse_apply_encodes_bc7_on_the_gpu() {
+    let _serial = serial();
+    let app = app_dir("apply-sse-gpu-bc7");
+    let mod_root = app.join("mods").join("Mod");
+    let path = mod_root.join("textures/plain.dds");
+    write_dds(&path, DXGI_FORMAT_R8G8B8A8_UNORM, 64);
+    let bytes = std::fs::read(&path).unwrap();
+    let source = ScratchImage::load_dds(&bytes, DDS_FLAGS_NONE, None, None).unwrap();
+    let on_gpu = GpuDevice::create(0)
+        .unwrap()
+        .compress(&source, DXGI_FORMAT_BC7_UNORM)
+        .unwrap();
+    let mut options = apply_textures(&app, "SSE", &mod_root);
+    options.textures_resize_size = false;
+
+    let run = ApplicationRun::new(&app, "SSE", &options).unwrap();
+    let result = run.start(None).unwrap().wait();
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.asset_attempts()
+    );
+    let published = std::fs::read(&path).unwrap();
+    let published = ScratchImage::load_dds(&published, DDS_FLAGS_NONE, None, None).unwrap();
+    assert_eq!(published.metadata().format, DXGI_FORMAT_BC7_UNORM);
+    assert_eq!(published.pixels(), on_gpu.pixels());
 }

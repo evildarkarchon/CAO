@@ -4,7 +4,8 @@
 //!   workspace's `directxtex`, which the root `[patch.crates-io]` points at CAO's
 //!   fork (`tests/directxtex_fork.rs` checks that binding).
 //! - [`device`] is the texture backend's per-thread native setup: COM, which
-//!   WIC-backed mipmap generation needs. It is the one module allowed `unsafe`.
+//!   WIC-backed mipmap generation needs, and the D3D11 device that encodes BC6H
+//!   and BC7 on the GPU. It is the one module allowed `unsafe`.
 //! - [`backend`] is the one Asset Execution Backend over every optimizer.
 //! - [`composition`] is the composition root both binaries share: given the app
 //!   directory, a profile and the options model, it builds the Run Request, the
