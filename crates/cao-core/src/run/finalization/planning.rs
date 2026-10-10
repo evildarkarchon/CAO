@@ -56,6 +56,14 @@ pub(super) enum PlanningStop {
     Failed(String),
 }
 
+/// The counters tried, from 0, when every plugin-derived output name is
+/// taken; C++ gave up after 255.
+const NAME_COUNTERS: u32 = 255;
+
+/// The fixed staging allowance of the capacity estimate: once per output for
+/// framing and once more per source for its staging and name tables.
+const CAPACITY_ALLOWANCE: u64 = 65_536;
+
 /// Freezes output names and source partitions for every Mod Root, in order,
 /// without mutating anything.
 ///
@@ -190,7 +198,7 @@ pub(super) fn plan_finalization(
                     suffix: suffix.clone(),
                     ..plugins[0].clone()
                 };
-                for counter in 0..255 {
+                for counter in 0..NAME_COUNTERS {
                     check()?;
                     candidate.counter = Some(counter);
                     if available(&candidate)? {
@@ -340,7 +348,7 @@ pub(super) fn estimate_packed_capacity(
     dummy_len: u64,
     check: &dyn Fn() -> Result<(), PlanningStop>,
 ) -> Result<u64, PlanningStop> {
-    let mut estimate: u64 = 65_536;
+    let mut estimate: u64 = CAPACITY_ALLOWANCE;
     // A Loading Plugin can disappear before publication, requiring the dummy.
     if !output.loading_plugin_paths.is_empty() {
         estimate = estimate.saturating_add(dummy_len);
@@ -361,7 +369,7 @@ pub(super) fn estimate_packed_capacity(
             .unwrap_or(&source.path)
             .to_string_lossy()
             .len() as u64;
-        let overhead = 65_536u64.saturating_add(name.saturating_mul(3));
+        let overhead = CAPACITY_ALLOWANCE.saturating_add(name.saturating_mul(3));
         estimate = estimate.saturating_add(size.saturating_mul(2).saturating_add(overhead));
     }
     Ok(estimate)

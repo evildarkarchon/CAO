@@ -417,6 +417,39 @@ fn deviation_21_fo4_textures_always_get_a_compressed_dx10_ba2() {
     );
 }
 
+/// Quarantined files are never packed: `.caobad` and `.caobad.N` match no
+/// game's classification rule, so they stay loose beside the new Archive and
+/// are never deleted as packed sources.
+#[test]
+fn quarantined_files_are_never_packed() {
+    for game in [Game::Tes5, Game::Sse, Game::Fo4] {
+        let root = mod_root(&format!("quarantine-{game:?}"), "mod");
+        write(&root, "meshes/good.nif", b"packed mesh bytes");
+        write(&root, "meshes/broken.nif.caobad", b"quarantined mesh bytes");
+        write(
+            &root,
+            "textures/broken.dds.caobad.1",
+            b"quarantined texture bytes",
+        );
+
+        let result = finalize(game, &root, ArchiveFinalizationSettings::default(), None);
+
+        assert_eq!(result.attempts.len(), 1, "{game:?}");
+        let attempt = &result.attempts[0];
+        assert!(attempt.succeeded(), "{game:?}: {}", attempt.detail);
+        let names: Vec<_> = open(&attempt.archive_path)
+            .archived_assets()
+            .unwrap()
+            .into_iter()
+            .map(|asset| asset.name.to_lowercase().replace('/', "\\"))
+            .collect();
+        assert_eq!(names, [r"meshes\good.nif"], "{game:?}");
+        assert!(!root.join("meshes/good.nif").exists());
+        assert!(root.join("meshes/broken.nif.caobad").exists());
+        assert!(root.join("textures/broken.dds.caobad.1").exists());
+    }
+}
+
 /// The names core builds render exactly as `cao-archive`'s `FilePath` does,
 /// counters, suffixes and all-digit stems included.
 #[test]

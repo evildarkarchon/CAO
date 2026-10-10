@@ -2155,6 +2155,69 @@ fn deviation_20_pruning_has_no_separator_rule() {
     assert!(artifacts.cleanup().is_empty());
 }
 
+/// Split points: sources over the size limit split into several Archives of
+/// one kind, in sorted order. The first takes the plugin-derived name, the
+/// rest the next free counter names, and each gets its own Loading Plugin.
+/// The corpus cannot reach a real game's 2 GiB limit, so this pins the
+/// finalization side; `cao-archive` pins the exact split boundaries.
+#[test]
+fn split_outputs_take_counter_names_and_their_own_plugins() {
+    let root = scratch("split-points").join("mod");
+    for name in ["c", "a", "b"] {
+        write_file(&root.join(format!("meshes/{name}.nif")), b"twelve bytes");
+    }
+    let mut finalizer = Finalizer {
+        settings: ArchiveFinalizationSettings {
+            compress: false,
+            ..ArchiveFinalizationSettings::default()
+        },
+        ..Finalizer::default()
+    };
+    // Room for one source per Archive.
+    finalizer.packer.max_size = 20;
+    let evidence = Evidence::new();
+    let mut artifacts = registry();
+    finalizer
+        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .unwrap();
+
+    let result = evidence.finalization();
+    let archives: Vec<_> = result
+        .attempts
+        .iter()
+        .map(|attempt| {
+            assert!(attempt.succeeded(), "{}", attempt.detail);
+            attempt.archive_path.clone()
+        })
+        .collect();
+    assert_eq!(
+        archives,
+        [
+            root.join("mod.bsa"),
+            root.join("mod0.bsa"),
+            root.join("mod1.bsa")
+        ]
+    );
+    let names: Vec<_> = finalizer
+        .packer
+        .writes()
+        .into_iter()
+        .map(|write| write.names)
+        .collect();
+    assert_eq!(
+        names,
+        [["meshes/a.nif"], ["meshes/b.nif"], ["meshes/c.nif"]]
+    );
+    for plugin in ["mod.esp", "mod0.esp", "mod1.esp"] {
+        assert_eq!(
+            std::fs::read(root.join(plugin)).unwrap(),
+            fake_dummy_plugin()
+        );
+    }
+    assert!(!root.join("meshes").exists());
+    assert!(artifacts.cleanup().is_empty());
+}
+
 /// **Deviation 21 (core side).** A game that keeps Textures separate never
 /// merges them into the Main Archive, even when asked; a game that allows it
 /// merges them.

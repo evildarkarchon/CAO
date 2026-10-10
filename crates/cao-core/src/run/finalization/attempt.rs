@@ -234,6 +234,7 @@ fn readable_packed_source(source: &Path) -> bool {
         match file.read(&mut buffer) {
             Ok(0) => return read == metadata.len(),
             Ok(count) => read += count as u64,
+            // An interrupted read read nothing; try the same read again.
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => return false,
         }

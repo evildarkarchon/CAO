@@ -20,8 +20,8 @@ use cao_winfs::{Access, FileFacts, Open, RenameMode, Share, delete_by_handle, re
 /// when one is returned: a cleanup either happens whole or not at all.
 #[derive(Debug, thiserror::Error)]
 pub enum SourcePinError {
-    /// The source is not strictly inside its Mod Root.
-    #[error("A source file is outside its Mod Root.")]
+    /// The pinned source or plugin is not strictly inside its Mod Root.
+    #[error("A pinned file is outside its Mod Root.")]
     OutsideModRoot,
     /// A native open, query, rename or delete failed.
     #[error("{action} {}: {source}", .path.display())]
@@ -31,8 +31,8 @@ pub enum SourcePinError {
         #[source]
         source: io::Error,
     },
-    /// A directory on the source's path is a link or not a directory.
-    #[error("A source parent is no longer an ordinary directory: {}", .0.display())]
+    /// A directory on the pinned path is a link or not a directory.
+    #[error("A pinned parent is no longer an ordinary directory: {}", .0.display())]
     ParentNotDirectory(PathBuf),
     /// The source is a link or a directory rather than an ordinary file.
     #[error("A source file is no longer an ordinary file: {}", .0.display())]
@@ -348,9 +348,12 @@ pub(crate) fn pin_directories(
         let pin = Open::new(Access::LIST_DIRECTORY | Access::READ_ATTRIBUTES, share)
             .directory()
             .open(directory)
-            .map_err(SourcePinError::io("Could not pin source parent", directory))?;
+            .map_err(SourcePinError::io(
+                "Could not pin parent directory",
+                directory,
+            ))?;
         let facts = FileFacts::of(&pin).map_err(SourcePinError::io(
-            "Could not inspect source parent",
+            "Could not inspect parent directory",
             directory,
         ))?;
         if !facts.is_directory() || facts.is_reparse_point() {
