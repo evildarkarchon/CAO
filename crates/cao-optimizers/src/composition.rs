@@ -15,21 +15,23 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use cao_archive::{Game, Settings};
 use cao_core::Error;
 use cao_core::execution::{AssetExecutor, quarantine_failed_load};
 use cao_core::routing::{
     ExecutionMode, PolicyValidationError, RequestedWork, RoutingPolicyRequest,
 };
 use cao_core::run::{
-    ArchiveAdapters, ArchiveExtractor, AssetRunAdapters, CancellationToken, ModSelection,
-    OptimizationRunService, RunConfiguration, RunConfigurationProvider, RunEventDispatcher,
-    RunHandle, RunPreparation, RunRequest, RunWorkEvidence, RunWorkMilestones, RunWorkService,
-    SelectedProfileFacts, SourceCleanup, StartError, TemporaryArtifactRegistry, execute_asset_run,
+    ArchiveAdapters, ArchiveExtractor, ArchiveFinalization, ArchiveFinalizationSettings,
+    AssetRunAdapters, CancellationToken, ModSelection, OptimizationRunService, RunConfiguration,
+    RunConfigurationProvider, RunEventDispatcher, RunHandle, RunPreparation, RunRequest,
+    RunWorkEvidence, RunWorkMilestones, RunWorkService, SelectedProfileFacts, SourceCleanup,
+    StartError, TemporaryArtifactRegistry, execute_asset_run,
 };
 use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
 use directxtex::DXGI_FORMAT;
 
-use crate::archives::{ArchiveFileReader, VolumeProbes};
+use crate::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
 use crate::backend::{OptimizerBackend, TextureResize, TextureSettings};
 use crate::textures::TextureProfile;
 
@@ -275,6 +277,9 @@ struct OptimizerSettings {
     /// What becomes of an extracted Archive: removed when "delete backup" is
     /// on (`bBsaDeleteBackup`), otherwise kept as a `.bak`.
     extracted_archive_cleanup: SourceCleanup,
+    /// Archive Finalization's choices. Whether it packs at all is the Routing
+    /// Policy's Archive creation request.
+    finalization: ArchiveFinalizationSettings,
 }
 
 impl OptimizerSettings {
@@ -285,10 +290,6 @@ impl OptimizerSettings {
         }
         if options.animations_optimization {
             return Err(RunSetupError::Unavailable("Animation optimization"));
-        }
-        // Dry Run skips Archive Finalization, so only Apply would pack.
-        if options.bsa_create && !options.dry_run {
-            return Err(RunSetupError::Unavailable("Archive creation"));
         }
         // Ratio wins when both are on, as in `MainOptimizer::optimizeTexture`.
         let resize = if options.textures_resize_ratio {
@@ -316,6 +317,13 @@ impl OptimizerSettings {
             } else {
                 SourceCleanup::Backup
             },
+            finalization: ArchiveFinalizationSettings {
+                compress: options.bsa_compress,
+                delete_sources: options.bsa_delete_source,
+                create_dummy_plugins: options.bsa_create_dummies,
+                merge_incompressible: options.bsa_merge_incompressible,
+                merge_textures: options.bsa_merge_textures,
+            },
         })
     }
 }
@@ -328,15 +336,26 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// What Preparing read from the selected profile, pinned for the whole run.
+#[derive(Debug)]
+pub struct PreparedProfile {
+    /// `profile.ini`.
+    pub settings: Arc<ProfileSettings>,
+    /// The Packing Exclusion rules of `FilesToNotPack.txt`, as C++'s profile
+    /// snapshot loaded them during Preparing.
+    pub files_to_not_pack: Vec<String>,
+}
+
 /// The Run Configuration Provider over a `profiles/` directory, ported from C++
 /// `ApplicationRunConfigurationProvider`.
 ///
-/// Each load re-reads the named profile's `profile.ini` and `ignoredMods.txt`
-/// during Preparing, on the Run Worker, and publishes the settings it read so
-/// the run's work uses the very same profile facts its routing did.
+/// Each load re-reads the named profile's `profile.ini`, `ignoredMods.txt`
+/// and `FilesToNotPack.txt` during Preparing, on the Run Worker, and
+/// publishes what it read so the run's work uses the very same profile facts
+/// its routing did.
 pub struct ProfileConfigurationProvider {
     profiles: Profiles,
-    prepared: Mutex<Option<Arc<ProfileSettings>>>,
+    prepared: Mutex<Option<Arc<PreparedProfile>>>,
 }
 
 impl ProfileConfigurationProvider {
@@ -350,6 +369,12 @@ impl ProfileConfigurationProvider {
 
     /// The settings the last successful load read, or `None` before one.
     pub fn prepared_settings(&self) -> Option<Arc<ProfileSettings>> {
+        self.prepared_profile()
+            .map(|prepared| Arc::clone(&prepared.settings))
+    }
+
+    /// Everything the last successful load read, or `None` before one.
+    pub fn prepared_profile(&self) -> Option<Arc<PreparedProfile>> {
         lock(&self.prepared).clone()
     }
 }
@@ -361,10 +386,15 @@ impl RunConfigurationProvider for ProfileConfigurationProvider {
         // Strict, as C++ run setup rejected any QSettings status but NoError.
         let settings = profile.load_settings_checked().map_err(failed)?;
         let ignored_mods = profile.ignored_mods().map_err(failed)?;
+        // A missing or unreadable list is empty, as in C++; finalization logs it.
+        let files_to_not_pack = profile.files_to_not_pack();
         let facts = profile_facts(&settings);
         // Published only after every read succeeded, so work never sees a
         // partial profile.
-        *lock(&self.prepared) = Some(Arc::new(settings));
+        *lock(&self.prepared) = Some(Arc::new(PreparedProfile {
+            settings: Arc::new(settings),
+            files_to_not_pack,
+        }));
         Ok(RunConfiguration {
             profile: facts,
             ignored_mods,
@@ -398,13 +428,28 @@ fn profile_facts(settings: &ProfileSettings) -> SelectedProfileFacts {
     }
 }
 
-/// The Archive extension of a game, from bethutil's per-game tables. It moves
-/// to `cao-archive` with the rest of those tables.
+/// The Archive extension of a game, from `cao-archive`'s per-game tables.
 fn archive_extension(game: BsaGame) -> &'static str {
+    Settings::get(archive_game(game)).extension
+}
+
+/// The `cao-archive` game whose tables a profile's `bsaGame` names.
+fn archive_game(game: BsaGame) -> Game {
     match game {
-        BsaGame::Tes5 | BsaGame::Sse => ".bsa",
-        BsaGame::Fo4 => ".ba2",
+        BsaGame::Tes5 => Game::Tes5,
+        BsaGame::Sse => Game::Sse,
+        BsaGame::Fo4 => Game::Fo4,
     }
+}
+
+/// The packer for a profile's game, with its maximum Archive size raised to
+/// the profile's `maxBsaUncompressedSize` when that is larger, as C++
+/// `archiveSettings` did.
+fn archive_packer(settings: &ProfileSettings) -> GameArchivePacker {
+    GameArchivePacker::new(
+        Settings::get(archive_game(settings.bsa_game))
+            .with_profile_max_size(settings.max_bsa_uncompressed_size),
+    )
 }
 
 /// The profile's Texture settings, as the texture optimizer takes them.
@@ -425,12 +470,12 @@ struct ApplicationRunWork {
     settings: OptimizerSettings,
     configuration: Arc<ProfileConfigurationProvider>,
     /// The provider's Preparing snapshot, pinned for the whole run.
-    profile: Mutex<Option<Arc<ProfileSettings>>>,
+    profile: Mutex<Option<Arc<PreparedProfile>>>,
 }
 
 impl RunWorkService for ApplicationRunWork {
     fn prepare(&self) -> Result<(), Error> {
-        let prepared = self.configuration.prepared_settings().ok_or_else(|| {
+        let prepared = self.configuration.prepared_profile().ok_or_else(|| {
             Error::ConfigurationLoading("The selected profile was not prepared".to_owned())
         })?;
         *lock(&self.profile) = Some(prepared);
@@ -448,12 +493,24 @@ impl RunWorkService for ApplicationRunWork {
         let profile = lock(&self.profile)
             .clone()
             .ok_or_else(|| Error::WorkService("The run's profile was not prepared".to_owned()))?;
-        let texture_profile = texture_profile(&profile);
+        let texture_profile = texture_profile(&profile.settings);
         // Created on the first Asset, as C++ creates its MainOptimizer, so a run
         // with nothing to process never sets up an optimizer.
         let mut backend: Option<OptimizerBackend> = None;
         // Declared before `adapters`, which borrows them, so they outlive it.
         let reader = ArchiveFileReader::default();
+        let packer = archive_packer(&profile.settings);
+        // C++ always wires Archive Finalization, so Apply executes the phase:
+        // it packs only when the Routing Policy requests Archive creation, and
+        // prunes empty directories either way.
+        let finalization = ArchiveFinalization::new(
+            &packer,
+            &reader,
+            &VolumeProbes,
+            &VolumeProbes,
+            self.settings.finalization,
+            &profile.files_to_not_pack,
+        );
         let cleanup = self.settings.extracted_archive_cleanup;
         let mut adapters = AssetRunAdapters::new(Box::new(|asset, mod_root, artifacts| {
             let backend = backend.get_or_insert_with(|| {
@@ -467,12 +524,8 @@ impl RunWorkService for ApplicationRunWork {
             let result = AssetExecutor::new(backend).execute(asset, artifacts, mod_root);
             Ok(quarantine_failed_load(asset, result))
         }));
-        // C++ always wires Archive Finalization, so Apply executes the phase.
-        // Archive creation is refused up front until it is ported (#498), so
-        // the plan is always empty here; C++ then pruned empty directories,
-        // which also lands with #498.
-        adapters.finalize_archive_lifecycle = Some(Box::new(|evidence| {
-            evidence.record_archive_finalization_plan(0)
+        adapters.finalize_archive_lifecycle = Some(Box::new(|evidence, artifacts| {
+            finalization.run(preparation, evidence, artifacts, &|| stop.is_cancelled())
         }));
         // Dry Run never reads a manifest, so wiring the Archive seams
         // unconditionally is harmless.

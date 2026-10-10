@@ -24,9 +24,9 @@
 //!   in `a_failing_preflight_observer_cannot_lose_the_failure`.
 //!
 //! Not ported, with reasons:
-//! - `cancelledArchiveFinalizationIsReported`, and the Archive Finalization
-//!   half of `completeAttemptEvidenceSurvivesAdapters`: Archive Finalization
-//!   results are not Run Evidence yet (#498).
+//! - The diagnostics adapter of `cancelledArchiveFinalizationIsReported`:
+//!   Rust has no such adapter; diagnostics reach the Run Observation Sink,
+//!   and the Asset Run publishes them before finalization in every path.
 //! - The explicit-Archive rows of `filesystemTraversalPollsCancellation`, and
 //!   the explicit unsupported path of
 //!   `dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPathsSilent`: a
@@ -46,11 +46,11 @@ use cao_core::execution::{
 };
 use cao_core::routing::{AssetOperation, ExecutionMode, RequestedWork, SkipReason};
 use cao_core::run::{
-    AssetInitializationCancelled, CancellationToken, InlineRunScheduler, OptimizationRunResult,
-    OptimizationRunService, PhaseSkipReason, RunDiagnosticCode, RunEvent, RunEventPayload,
-    RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord, RunPhaseStatus, RunPreparation,
-    RunProgress, RunRequest, RunWorkEvidence, RunWorkMilestones, RunWorkService,
-    TemporaryArtifactRegistry,
+    ArchiveFinalizationAttempt, ArchiveFinalizationResult, AssetInitializationCancelled,
+    CancellationToken, InlineRunScheduler, OptimizationRunResult, OptimizationRunService,
+    PhaseSkipReason, RunDiagnosticCode, RunEvent, RunEventPayload, RunFailureCode, RunOutcome,
+    RunPhase, RunPhaseRecord, RunPhaseStatus, RunPreparation, RunProgress, RunRequest,
+    RunWorkEvidence, RunWorkMilestones, RunWorkService, TemporaryArtifactRegistry,
 };
 use common::{
     BackendWork, ControlledWork, EventLog, GatedScheduler, HandleSlot, ScriptedWork, canonical,
@@ -747,15 +747,16 @@ fn observer_failures(result: &OptimizationRunResult) -> usize {
         .count()
 }
 
-/// Origin: AssetRunTests::completeAttemptEvidenceSurvivesAdapters (the Asset
-/// half). Successful and failed attempt evidence outlives the adapters that
-/// produced it, and a safe failure does not stop the run reaching
-/// finalization.
+/// Origin: AssetRunTests::completeAttemptEvidenceSurvivesAdapters.
+/// Successful and failed attempt evidence, and the Archive Finalization
+/// attempt after them, outlive the adapters that produced them, and a safe
+/// failure does not stop the run reaching finalization.
 #[test]
 fn attempt_evidence_outlives_its_adapters() {
     let _serial = serial();
     let root = canonical(&scratch_dir("loose-evidence-outlives-adapters"));
     write_tree(&root, &["a.dds", "b.dds"]);
+    let finalized_root = root.clone();
     let work = Arc::new(ControlledWork {
         execute: Some(Box::new(|asset, _| {
             Ok(if asset.execution_path().ends_with("a.dds") {
@@ -764,7 +765,16 @@ fn attempt_evidence_outlives_its_adapters() {
                 AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed, "retained")
             })
         })),
-        finalize: Some(Box::new(|| Ok(()))),
+        finalization: Some(Box::new(move || ArchiveFinalizationResult {
+            attempts: vec![ArchiveFinalizationAttempt {
+                mutation: MutationState::Committed,
+                ..ArchiveFinalizationAttempt::new(
+                    finalized_root.join("output.bsa"),
+                    finalized_root.clone(),
+                )
+            }],
+            ..ArchiveFinalizationResult::default()
+        })),
         ..ControlledWork::default()
     });
 
@@ -784,7 +794,38 @@ fn attempt_evidence_outlives_its_adapters() {
     assert_eq!(attempts[0].asset.execution_path(), root.join("a.dds"));
     assert!(!attempts[1].result.succeeded());
     assert_eq!(attempts[1].result.message(), "retained");
+    assert_eq!(
+        result.archive_finalization().unwrap().attempts[0].mod_root,
+        root
+    );
     assert!(result.routing_ledger().is_some());
+}
+
+/// Origin: AssetRunTests::cancelledArchiveFinalizationIsReported. A
+/// finalization that observed cancellation makes the run Cancelled, with no
+/// finalization failure.
+#[test]
+fn a_cancelled_finalization_is_reported() {
+    let _serial = serial();
+    let root = canonical(&scratch_dir("loose-finalization-cancelled"));
+    write_tree(&root, &["textures/native.dds"]);
+    let work = Arc::new(ControlledWork {
+        finalization: Some(Box::new(|| ArchiveFinalizationResult {
+            cancelled: true,
+            ..ArchiveFinalizationResult::default()
+        })),
+        ..ControlledWork::default()
+    });
+
+    let (result, _) = run(work.clone(), archive_and_textures(&root));
+
+    assert_eq!(work.finalizations.load(Ordering::SeqCst), 1);
+    assert_eq!(work.executions.load(Ordering::SeqCst), 1);
+    assert!(result.cancellation_observed());
+    assert_eq!(result.outcome(), RunOutcome::Cancelled);
+    let finalization = result.archive_finalization().unwrap();
+    assert!(finalization.cancelled);
+    assert_eq!(finalization.failure, None);
 }
 
 /// Origin: AssetRunTests::throwingAttemptRetainsCancellation, under the

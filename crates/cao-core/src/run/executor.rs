@@ -304,6 +304,23 @@ fn classify_terminal_outcome(evidence: &RunEvidence) -> RunOutcome {
                     )
                 }),
         );
+    let finalization = evidence.archive_finalization();
+    if let Some(finalization) = finalization {
+        unsafe_work |= !finalization.safe_to_continue;
+        contained_failure |= finalization.failure.is_some();
+    }
+    let attempts = attempts.chain(
+        finalization
+            .into_iter()
+            .flat_map(|finalization| &finalization.attempts)
+            .map(|attempt| {
+                (
+                    attempt.mutation,
+                    attempt.succeeded(),
+                    attempt.safe_to_continue,
+                )
+            }),
+    );
     for (mutation, succeeded, safe_to_continue) in attempts {
         unsafe_work |= !safe_to_continue || mutation == MutationState::PartialOrUnknown;
         contained_failure |= !succeeded;

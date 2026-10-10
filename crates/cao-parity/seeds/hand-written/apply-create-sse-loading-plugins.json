@@ -1,0 +1,76 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/PatchMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": false,
+      "target_width": 64,
+      "target_height": 64
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": true,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "text",
+        "path": "mods/PatchMod/Patch.esp",
+        "text": "TES4 full plugin bytes",
+        "note": "Loading Plugins (#498): new Archives are named after this full plugin, which loads them, so no Dummy Plugin is published for them."
+      },
+      {
+        "kind": "archive",
+        "path": "mods/PatchMod/Legacy.bsa",
+        "game": "sse",
+        "type": "standard",
+        "note": "An existing Archive no plugin loads: finalization publishes Legacy.esp for it, and never packs or extracts it.",
+        "content": [
+          {
+            "kind": "text",
+            "path": "scripts/legacy.pex",
+            "text": "legacy compiled script bytes"
+          }
+        ]
+      },
+      {
+        "kind": "raw",
+        "path": "mods/PatchMod/meshes/patch/fix.nif",
+        "base64": "R2FtZWJyeW8gRmlsZSBGb3JtYXQ=",
+        "note": "Not a real mesh: Mesh work is off, so it is only packed."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/PatchMod/textures/patch/fix.dds",
+        "format": "BC1_UNORM",
+        "width": 32,
+        "height": 32,
+        "mip_levels": 0,
+        "pattern": "edges"
+      }
+    ]
+  }
+}

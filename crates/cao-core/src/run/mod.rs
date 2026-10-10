@@ -9,6 +9,7 @@ mod artifacts;
 mod asset_run;
 mod evidence;
 mod executor;
+mod finalization;
 mod lifecycle;
 mod mod_selection;
 mod preparation;
@@ -38,6 +39,11 @@ pub use executor::{
     RunEvidenceInvariantPanic, RunExecutor, RunServices, RunWorkMilestones, RunWorkService,
     SafetyCleanupService, collect_safety_cleanup_failures,
 };
+pub use finalization::{
+    ArchiveFinalization, ArchiveFinalizationAttempt, ArchiveFinalizationFailure,
+    ArchiveFinalizationMutation, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
+    ArchiveFinalizationSettings,
+};
 pub use lifecycle::{
     CancellationToken, ModSelection, MutationKind, MutationSummary, OptimizationRunResult,
     PhaseSkipReason, RunDiagnostic, RunDiagnosticCode, RunEvent, RunEventPayload, RunFailure,
@@ -48,12 +54,16 @@ pub use preparation::{
     ArchivePrecedence, RunConfiguration, RunConfigurationProvider, RunPreparation,
     SelectedProfileFacts,
 };
-pub use probes::{ArchiveEntry, ArchiveReader, CapacityProbe, VolumeIdentityProbe};
+pub use probes::{
+    ArchiveEntry, ArchiveMerge, ArchiveName, ArchiveNameKind, ArchiveNamingRules, ArchivePacker,
+    ArchiveReader, CapacityProbe, PackedArchiveKind, PackedFile, PlannedArchive,
+    VolumeIdentityProbe,
+};
 pub use scheduler::{
     InlineRunScheduler, RunScheduler, RunWork, ScheduledRunWorker, StandardRunScheduler,
 };
 pub use service::{OptimizationRunService, RunEventDispatcher, RunHandle, StartError};
-pub use source_pin::{SourceFilePin, SourcePinError};
+pub use source_pin::{LoadingPluginPin, SourceDirectoryPins, SourceFilePin, SourcePinError};
 pub use staging::StagingError;
 
 pub(crate) use artifacts::fingerprint;

@@ -8,6 +8,7 @@
 //! reopens the path and acts only if it still names the very file object
 //! that was pinned, unchanged.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io;
@@ -39,6 +40,10 @@ pub enum SourcePinError {
     /// The path names another file object, or the pinned one was changed.
     #[error("A source file changed before cleanup: {}", .0.display())]
     Changed(PathBuf),
+    /// A Loading Plugin about to justify source deletion is a link, a
+    /// directory or empty.
+    #[error("The loading plugin is not a nonempty ordinary file: {}", .0.display())]
+    NotLoadingPlugin(PathBuf),
 }
 
 impl SourcePinError {
@@ -82,19 +87,42 @@ impl SourceFilePin {
     /// [`SourcePinError::Io`] when an open or query fails, including a
     /// sharing violation with a handle that already writes the source.
     pub fn new(source: &Path, mod_root: &Path) -> Result<Self, SourcePinError> {
-        let absolute = |path: &Path| {
-            std::path::absolute(path).map_err(SourcePinError::io("Could not resolve", path))
-        };
-        let source = absolute(source)?;
-        let root = absolute(mod_root)?;
-        let directories = pin_source_directories(&source, &root)?;
+        let mut directories = SourceDirectoryPins::default();
+        let mut pin = Self::with_shared_directories(source, mod_root, &mut directories)?;
+        pin._directories = directories.handles.into_values().collect();
+        Ok(pin)
+    }
+
+    /// Pins `source` as [`Self::new`] does, but keeps its directory chain in
+    /// `directories`, reusing any directory already pinned there, as C++
+    /// `SourceFilePin::sharedDirectoryPins` let one output's sources share
+    /// ancestor handles.
+    ///
+    /// The returned pin owns no directory handle: keep `directories` alive
+    /// until its cleanup ends.
+    ///
+    /// # Errors
+    /// As [`Self::new`].
+    pub fn with_shared_directories(
+        source: &Path,
+        mod_root: &Path,
+        directories: &mut SourceDirectoryPins,
+    ) -> Result<Self, SourcePinError> {
+        let source = absolute_normal(source)?;
+        let root = absolute_normal(mod_root)?;
+        pin_directories(
+            &source,
+            &root,
+            Share::READ | Share::WRITE,
+            &mut directories.handles,
+        )?;
         let pinned = Open::new(Access::READ, Share::READ)
             .open(&source)
             .map_err(SourcePinError::io("Could not pin source file", &source))?;
         let facts = inspect_source(&pinned, &source)?;
         Ok(Self {
             source,
-            _directories: directories,
+            _directories: Vec::new(),
             pinned: Some(pinned),
             facts,
         })
@@ -227,45 +255,108 @@ fn inspect_source(file: &File, source: &Path) -> Result<FileFacts, SourcePinErro
     Ok(facts)
 }
 
-/// Pins each directory from the volume root through the source's parent,
-/// rejecting junctions and other reparse points before a pathname-based reader
-/// can follow them.
+/// Directory pins shared by the sources of one output Archive; see
+/// [`SourceFilePin::with_shared_directories`].
+///
+/// Dropping it releases every directory it pinned.
+#[derive(Default)]
+pub struct SourceDirectoryPins {
+    handles: BTreeMap<PathBuf, File>,
+}
+
+/// Keeps one ordinary Loading Plugin entry usable until its Archive's source
+/// cleanup ends (C++ `LoadingPluginPin`).
+///
+/// Packed sources are deleted only because the new Archive loads through this
+/// plugin, so the plugin must not disappear, or become a link a later
+/// retarget could unload, before the last source is gone. Its directory chain
+/// shares only reading, and its entry is held without write or delete sharing.
+pub struct LoadingPluginPin {
+    _directories: BTreeMap<PathBuf, File>,
+    _entry: File,
+}
+
+impl LoadingPluginPin {
+    /// Pins `plugin`, inside `mod_root`, and its directory chain.
+    ///
+    /// # Errors
+    /// [`SourcePinError::NotLoadingPlugin`] for a link, a directory or an
+    /// empty file: an attribute-only write can retarget a symlink despite
+    /// sharing locks, while a nonempty ordinary file cannot become one without
+    /// a write this pin excludes. Otherwise as [`SourceFilePin::new`].
+    pub fn new(plugin: &Path, mod_root: &Path) -> Result<Self, SourcePinError> {
+        let plugin = absolute_normal(plugin)?;
+        let root = absolute_normal(mod_root)?;
+        let mut directories = BTreeMap::new();
+        pin_directories(&plugin, &root, Share::READ, &mut directories)?;
+        let entry = Open::new(Access::READ, Share::READ)
+            .open(&plugin)
+            .map_err(SourcePinError::io("Could not pin loading plugin", &plugin))?;
+        let facts = FileFacts::of(&entry).map_err(SourcePinError::io(
+            "Could not inspect loading plugin",
+            &plugin,
+        ))?;
+        if !facts.is_ordinary_file() || facts.size() == 0 {
+            return Err(SourcePinError::NotLoadingPlugin(plugin));
+        }
+        Ok(Self {
+            _directories: directories,
+            _entry: entry,
+        })
+    }
+}
+
+/// `path` made absolute and lexically normal, as C++ `absolute(...)
+/// .lexically_normal()` did; Windows' full-path resolution does both.
+pub(crate) fn absolute_normal(path: &Path) -> Result<PathBuf, SourcePinError> {
+    std::path::absolute(path).map_err(SourcePinError::io("Could not resolve", path))
+}
+
+/// Pins each directory from the volume root through the parent of `path`,
+/// which must be strictly inside `root`, into `pins`, rejecting junctions and
+/// other reparse points before a pathname-based reader can follow them.
+/// Directories already in `pins` are reused.
 ///
 /// Each pin is opened before the next child, from a root that cannot be
 /// renamed down: checking only the final parent could still follow an earlier
 /// junction. Directory read access makes the withheld delete sharing actually
-/// stop a parent rename.
-fn pin_source_directories(source: &Path, root: &Path) -> Result<Vec<File>, SourcePinError> {
-    let contained = source.strip_prefix(root).is_ok_and(|relative| {
+/// stop a parent rename. `share` is what the pins let other handles do:
+/// sources share reading and writing; a Loading Plugin and a Dummy Plugin
+/// being removed share only reading, as C++ did.
+pub(crate) fn pin_directories(
+    path: &Path,
+    root: &Path,
+    share: Share,
+    pins: &mut BTreeMap<PathBuf, File>,
+) -> Result<(), SourcePinError> {
+    let contained = path.strip_prefix(root).is_ok_and(|relative| {
         !relative.as_os_str().is_empty()
             && relative
                 .components()
                 .all(|component| matches!(component, Component::Normal(_)))
     });
-    let parent = source.parent().filter(|_| contained);
+    let parent = path.parent().filter(|_| contained);
     let Some(parent) = parent else {
         return Err(SourcePinError::OutsideModRoot);
     };
     let mut ancestors: Vec<&Path> = parent.ancestors().collect();
     ancestors.reverse();
-    ancestors
-        .into_iter()
-        .map(|directory| {
-            let pin = Open::new(
-                Access::LIST_DIRECTORY | Access::READ_ATTRIBUTES,
-                Share::READ | Share::WRITE,
-            )
+    for directory in ancestors {
+        if pins.contains_key(directory) {
+            continue;
+        }
+        let pin = Open::new(Access::LIST_DIRECTORY | Access::READ_ATTRIBUTES, share)
             .directory()
             .open(directory)
             .map_err(SourcePinError::io("Could not pin source parent", directory))?;
-            let facts = FileFacts::of(&pin).map_err(SourcePinError::io(
-                "Could not inspect source parent",
-                directory,
-            ))?;
-            if !facts.is_directory() || facts.is_reparse_point() {
-                return Err(SourcePinError::ParentNotDirectory(directory.to_path_buf()));
-            }
-            Ok(pin)
-        })
-        .collect()
+        let facts = FileFacts::of(&pin).map_err(SourcePinError::io(
+            "Could not inspect source parent",
+            directory,
+        ))?;
+        if !facts.is_directory() || facts.is_reparse_point() {
+            return Err(SourcePinError::ParentNotDirectory(directory.to_path_buf()));
+        }
+        pins.insert(directory.to_path_buf(), pin);
+    }
+    Ok(())
 }

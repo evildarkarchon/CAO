@@ -9,8 +9,6 @@
 //! Structural violations are programming errors. They return
 //! [`Error::EvidenceInvariant`], which the Run Executor turns into a panic only
 //! after Safety Cleanup.
-//!
-//! Archive Finalization results join this record with their slice (#498).
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -21,9 +19,10 @@ use crate::Error;
 use crate::execution::MutationState;
 use crate::routing::{RoutingLedger, SkipReason};
 use crate::run::{
-    ArchiveCollision, ArchiveExtractionResult, MutationKind, MutationSummary, RoutedAssetAttempt,
-    RunDiagnostic, RunDiagnosticCode, RunFailure, RunFailureCode, RunPhase, RunPhaseRecord,
-    RunPhaseStatus, RunPreparation, RunProgress, take_panic_message,
+    ArchiveCollision, ArchiveExtractionResult, ArchiveFinalizationAttempt,
+    ArchiveFinalizationResult, MutationKind, MutationSummary, RoutedAssetAttempt, RunDiagnostic,
+    RunDiagnosticCode, RunFailure, RunFailureCode, RunPhase, RunPhaseRecord, RunPhaseStatus,
+    RunPreparation, RunProgress, take_panic_message,
 };
 
 /// Receives live facts only after Run Evidence has retained them.
@@ -72,6 +71,11 @@ struct Storage {
     archive_discovery: Option<ArchiveDiscoveryEvidence>,
     routing_ledger: Option<RoutingLedger>,
     asset_attempts: Vec<RoutedAssetAttempt>,
+    /// The phase's streamed attempts once its total is recorded, then its
+    /// returned result.
+    archive_finalization: Option<ArchiveFinalizationResult>,
+    archive_finalization_total: Option<usize>,
+    archive_finalization_completed: bool,
     safety_cleanup_failures: Vec<RunFailure>,
     cancellation_observed: bool,
     // Derived when the evidence is consumed, after every producer has stopped.
@@ -160,6 +164,11 @@ impl RunEvidence {
     /// Completed Asset attempts in execution order, including unsafe failures.
     pub fn asset_attempts(&self) -> &[RoutedAssetAttempt] {
         &self.storage.asset_attempts
+    }
+
+    /// Archive Finalization's result, or `None` when the phase recorded none.
+    pub fn archive_finalization(&self) -> Option<&ArchiveFinalizationResult> {
+        self.storage.archive_finalization.as_ref()
     }
 
     /// Recognized exclusions from Archive discovery and routing together.
@@ -394,20 +403,149 @@ impl<'a> MutableRunEvidence<'a> {
     /// the plan is recorded once and never changed (C++
     /// `recordArchiveFinalizationPlan`).
     pub fn record_archive_finalization_plan(&mut self, total: usize) -> Result<(), Error> {
-        let planned = self.storage.phases.last().is_some_and(|record| {
-            record.phase() == RunPhase::ArchiveFinalization
-                && record.status() == super::RunPhaseStatus::Executed
-                && record.progress().is_none()
-        });
+        let planned = self.storage.archive_finalization_total.is_none()
+            && self.storage.phases.last().is_some_and(|record| {
+                record.phase() == RunPhase::ArchiveFinalization
+                    && record.status() == RunPhaseStatus::Executed
+                    && record.progress().is_none()
+            });
         if !planned {
             return Err(Error::EvidenceInvariant(
                 "Archive Finalization needs an executed phase and one immutable plan",
             ));
         }
+        self.storage.archive_finalization_total = Some(total);
+        self.storage.archive_finalization = Some(ArchiveFinalizationResult::default());
         self.record_phase(RunPhaseRecord::executed(
             RunPhase::ArchiveFinalization,
             Some(RunProgress::determinate(total, 0, 0)),
         ))
+    }
+
+    /// Retains one completed Archive Finalization output attempt, then
+    /// advances progress against the immutable output total (C++
+    /// `recordArchiveFinalizationAttempt`).
+    pub fn record_archive_finalization_attempt(
+        &mut self,
+        attempt: ArchiveFinalizationAttempt,
+        total: usize,
+    ) -> Result<(), Error> {
+        let progress = self
+            .storage
+            .phases
+            .last()
+            .filter(|record| {
+                record.phase() == RunPhase::ArchiveFinalization
+                    && record.status() == RunPhaseStatus::Executed
+            })
+            .and_then(RunPhaseRecord::progress);
+        let (Some(progress), Some(planned), false, Some(finalization)) = (
+            progress,
+            self.storage.archive_finalization_total,
+            self.storage.archive_finalization_completed,
+            self.storage.archive_finalization.as_mut(),
+        ) else {
+            return Err(Error::EvidenceInvariant(
+                "Archive Finalization attempts require the immutable executed plan",
+            ));
+        };
+        if planned != total {
+            return Err(Error::EvidenceInvariant(
+                "Archive Finalization attempts require the immutable executed plan",
+            ));
+        }
+        if finalization.attempts.len() >= total {
+            return Err(Error::EvidenceInvariant(
+                "Archive Finalization attempts cannot exceed the planned total",
+            ));
+        }
+        let succeeded = attempt.succeeded();
+        finalization.attempts.push(attempt);
+        self.record_phase(RunPhaseRecord::executed(
+            RunPhase::ArchiveFinalization,
+            Some(RunProgress::determinate(
+                total,
+                progress.succeeded() + usize::from(succeeded),
+                progress.failed() + usize::from(!succeeded),
+            )),
+        ))
+    }
+
+    /// Retains Archive Finalization's one returned result (C++
+    /// `recordArchiveFinalization`).
+    ///
+    /// Its attempts must begin with every attempt already streamed, in order;
+    /// any it adds are recorded as attempts first. A result returned before
+    /// any output total, because planning failed or was cancelled, may have
+    /// no attempts. A cancelled result marks cancellation observed.
+    pub fn record_archive_finalization(
+        &mut self,
+        result: ArchiveFinalizationResult,
+    ) -> Result<(), Error> {
+        let executing = self.storage.phases.last().is_some_and(|record| {
+            record.phase() == RunPhase::ArchiveFinalization
+                && record.status() == RunPhaseStatus::Executed
+        });
+        if self.storage.archive_finalization_completed || !executing {
+            return Err(Error::EvidenceInvariant(
+                "Archive Finalization results require the executed work phase exactly once",
+            ));
+        }
+        let Some(total) = self.storage.archive_finalization_total else {
+            // A finalizer may fail or cancel before planning establishes a
+            // trustworthy total; keep its phase-level status without
+            // inventing zero planned outputs.
+            if !result.attempts.is_empty() {
+                return Err(Error::EvidenceInvariant(
+                    "Archive Finalization attempts require a recorded output total",
+                ));
+            }
+            self.complete_archive_finalization(result);
+            return Ok(());
+        };
+        let streamed = self
+            .storage
+            .archive_finalization
+            .as_ref()
+            .map_or(0, |finalization| finalization.attempts.len());
+        let matches = self
+            .storage
+            .archive_finalization
+            .as_ref()
+            .is_some_and(|finalization| {
+                result.attempts.len() <= total
+                    && streamed <= result.attempts.len()
+                    && finalization
+                        .attempts
+                        .iter()
+                        .zip(&result.attempts)
+                        .all(|(retained, returned)| retained == returned)
+            });
+        if !matches {
+            return Err(Error::EvidenceInvariant(
+                "Returned Archive Finalization attempts must match retained attempt order",
+            ));
+        }
+        for attempt in &result.attempts[streamed..] {
+            self.record_archive_finalization_attempt(attempt.clone(), total)?;
+        }
+        self.complete_archive_finalization(result);
+        Ok(())
+    }
+
+    /// Retains the phase's final result, once.
+    fn complete_archive_finalization(&mut self, result: ArchiveFinalizationResult) {
+        if result.cancelled {
+            self.storage.cancellation_observed = true;
+        }
+        self.storage.archive_finalization = Some(result);
+        self.storage.archive_finalization_completed = true;
+    }
+
+    /// Archive Finalization's attempts and result so far, once its output
+    /// total or result is recorded.
+    pub fn archive_finalization(&self) -> Option<&ArchiveFinalizationResult> {
+        self.storage.archive_finalization.as_ref()
     }
 
     /// Accepts that Dry Run made Archive extraction inapplicable.
@@ -683,6 +821,7 @@ impl<'a> MutableRunEvidence<'a> {
         storage.mutation_summaries = derive_mutation_summaries(
             &storage.archive_extraction_attempts,
             &storage.asset_attempts,
+            storage.archive_finalization.as_ref(),
         );
         storage.cleanup_failures = storage
             .asset_attempts
@@ -701,12 +840,16 @@ impl<'a> MutableRunEvidence<'a> {
     }
 }
 
-/// Groups durable effects of completed attempts by Mod Root and kind.
+/// Groups durable effects of completed attempts, and finalization effects
+/// outside its output attempts, by Mod Root and kind.
 fn derive_mutation_summaries(
     extractions: &[ArchiveExtractionResult],
     attempts: &[RoutedAssetAttempt],
+    finalization: Option<&ArchiveFinalizationResult>,
 ) -> Vec<MutationSummary> {
     let mut grouped: BTreeMap<(PathBuf, MutationKind), MutationSummary> = BTreeMap::new();
+    let finalization_attempts = finalization.map_or(&[][..], |result| &result.attempts);
+    let finalization_mutations = finalization.map_or(&[][..], |result| &result.mutations);
     let effects = extractions
         .iter()
         .map(|attempt| {
@@ -714,6 +857,7 @@ fn derive_mutation_summaries(
                 &attempt.mod_root,
                 MutationKind::ArchiveExtraction,
                 attempt.mutation,
+                1,
             )
         })
         .chain(attempts.iter().map(|attempt| {
@@ -721,9 +865,26 @@ fn derive_mutation_summaries(
                 &attempt.mod_root,
                 MutationKind::AssetProcessing,
                 attempt.result.mutation_state(),
+                1,
+            )
+        }))
+        .chain(finalization_attempts.iter().map(|attempt| {
+            (
+                &attempt.mod_root,
+                MutationKind::ArchiveFinalization,
+                attempt.mutation,
+                1,
+            )
+        }))
+        .chain(finalization_mutations.iter().map(|mutation| {
+            (
+                &mutation.mod_root,
+                MutationKind::ArchiveFinalization,
+                mutation.mutation,
+                mutation.count,
             )
         }));
-    for (mod_root, kind, mutation) in effects {
+    for (mod_root, kind, mutation, count) in effects {
         if mutation == MutationState::None {
             continue;
         }
@@ -736,9 +897,9 @@ fn derive_mutation_summaries(
                 partial_or_unknown: 0,
             });
         if mutation == MutationState::Committed {
-            summary.committed += 1;
+            summary.committed += count;
         } else {
-            summary.partial_or_unknown += 1;
+            summary.partial_or_unknown += count;
         }
     }
     grouped.into_values().collect()
@@ -755,7 +916,11 @@ pub struct RunWorkEvidence<'e, 'a> {
 
 impl<'e, 'a> RunWorkEvidence<'e, 'a> {
     /// Borrows the executor's evidence owner for one work call.
-    pub(crate) fn new(evidence: &'e RefCell<MutableRunEvidence<'a>>) -> Self {
+    ///
+    /// Public so a phase can be driven against evidence its caller owns, as
+    /// the Archive Finalization scenarios do; the view grants nothing its
+    /// owner could not already do.
+    pub fn new(evidence: &'e RefCell<MutableRunEvidence<'a>>) -> Self {
         Self { evidence }
     }
 
@@ -809,6 +974,32 @@ impl<'e, 'a> RunWorkEvidence<'e, 'a> {
         self.evidence
             .borrow_mut()
             .record_archive_finalization_plan(total)
+    }
+
+    /// Retains one completed finalization attempt and advances its progress.
+    pub fn record_archive_finalization_attempt(
+        &self,
+        attempt: ArchiveFinalizationAttempt,
+        total: usize,
+    ) -> Result<(), Error> {
+        self.evidence
+            .borrow_mut()
+            .record_archive_finalization_attempt(attempt, total)
+    }
+
+    /// Retains Archive Finalization's one returned result.
+    pub fn record_archive_finalization(
+        &self,
+        result: ArchiveFinalizationResult,
+    ) -> Result<(), Error> {
+        self.evidence
+            .borrow_mut()
+            .record_archive_finalization(result)
+    }
+
+    /// A copy of Archive Finalization's attempts and result so far.
+    pub fn archive_finalization(&self) -> Option<ArchiveFinalizationResult> {
+        self.evidence.borrow().archive_finalization().cloned()
     }
 
     /// Retains and publishes a Run Failure.

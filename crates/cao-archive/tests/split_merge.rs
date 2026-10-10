@@ -295,7 +295,8 @@ fn textures_merge_only_when_the_total_is_strictly_under_the_limit() {
     )
     .merge(merge);
     // A merged Archive keeps Standard's type and version: FO4 puts the DDS into
-    // the GNRL Main BA2. Refusing this is #498's job (deviation 21, core side).
+    // the GNRL Main BA2. Archive Finalization never asks for this under FO4
+    // (deviation 21, core side), so the bethutil rule stays as it was.
     assert_eq!(
         layout(&under),
         [(

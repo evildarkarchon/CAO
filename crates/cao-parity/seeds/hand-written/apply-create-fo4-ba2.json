@@ -1,0 +1,77 @@
+{
+  "spec": {
+    "profile": "FO4",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/WastelandMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": false,
+      "target_width": 64,
+      "target_height": 64
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": true,
+      "delete_backup": false,
+      "compress": false,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "raw",
+        "path": "mods/WastelandMod/meshes/weapons/rifle.nif",
+        "base64": "R2FtZWJyeW8gRmlsZSBGb3JtYXQ=",
+        "note": "FO4 Archive creation (#498): an uncompressed GNRL Main BA2 with a name table. Not a real mesh: FO4 has no Mesh work."
+      },
+      {
+        "kind": "text",
+        "path": "mods/WastelandMod/materials/weapons/rifle.bgsm",
+        "text": "BGSM material"
+      },
+      {
+        "kind": "text",
+        "path": "mods/WastelandMod/sound/fx/shot.xwm",
+        "text": "xwm audio bytes xwm audio bytes",
+        "note": "Incompressible, merged into the Main BA2."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/WastelandMod/textures/weapons/rifle_d.dds",
+        "format": "BC1_UNORM",
+        "width": 1024,
+        "height": 1024,
+        "mip_levels": 0,
+        "pattern": "noise",
+        "note": "A DX10 Textures BA2, compressed even with compression off and chunked at 512x512: mips 0 and 1 each fill a chunk, the rest share a third. Textures are never merged here, so deviation 21 stays out of the case."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/WastelandMod/textures/weapons/rifle_n.dds",
+        "format": "BC5_UNORM",
+        "width": 64,
+        "height": 64,
+        "mip_levels": 0,
+        "pattern": "normal"
+      }
+    ]
+  }
+}

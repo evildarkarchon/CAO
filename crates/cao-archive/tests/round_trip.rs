@@ -318,6 +318,27 @@ fn an_existing_output_is_never_overwritten() {
     assert_eq!(std::fs::read(&out).unwrap(), b"keep me");
 }
 
+/// An Archive written into an output its caller created, as CAO fills a staged
+/// file, is the same Archive `write_archive` writes, and its sources are
+/// released when the call returns.
+#[test]
+fn an_archive_written_into_an_open_output_round_trips() {
+    let root = mod_root("round_trip_into_open_output");
+    let settings = Settings::get(Game::Sse);
+    let archives = plan(&root, &settings);
+    let out = root.with_file_name("Staged.bsa");
+    let mut file = std::fs::File::create_new(&out).unwrap();
+    cao_archive::write_archive_into(false, &archives[0], &root, &mut file, &out).unwrap();
+    drop(file);
+    assert_eq!(
+        assert_round_trips(&out, &root).len(),
+        archives[0].files().len()
+    );
+    for source in archives[0].files() {
+        std::fs::remove_file(source).unwrap();
+    }
+}
+
 #[test]
 fn unknown_magic_is_not_an_archive() {
     let dir = common::scratch_dir("round_trip_unknown_magic");
