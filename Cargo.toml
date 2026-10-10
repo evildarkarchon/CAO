@@ -54,6 +54,9 @@ windows = "0.62"
 windows-sys = "0.61"
 getrandom = "0.3"
 dunce = "1"
+# Compressed HDPT records in plugins (#505, deviation 17). The `zlib` backend is
+# the one `ba2` already builds, so the graph keeps one zlib.
+flate2 = { version = "1", default-features = false, features = ["zlib"] }
 # GUI (#462, #466). `~1.18` because `unstable-winit-030` and the undocumented
 # `SLINT_NO_MUDA` may change in any minor release.
 slint = { version = "~1.18", features = ["unstable-winit-030", "raw-window-handle-06"] }

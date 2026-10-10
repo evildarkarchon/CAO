@@ -984,8 +984,9 @@ fn packing_exclusion_scope(context: &Context<'_>) -> Option<String> {
 
 /// Deviation 17, Headpart Meshes. C++:
 /// - finds a Mesh's game path from the first `/meshes/` in its absolute path,
-///   so a `meshes` folder at or above a Mod Root shifts it (and the facegen
-///   rule reads that game path);
+///   so a `meshes` folder at or above a Mod Root shifts it, as does one nested
+///   below the Mod Root's top level (and the facegen rule reads that game
+///   path);
 /// - skips the facegen rule in Dry Run;
 /// - scans every plugin under the selection, staging included;
 /// - reads HDPT records with a parser that overflows or hangs on bad framing
@@ -1000,6 +1001,21 @@ fn headpart_meshes(context: &Context<'_>) -> Option<String> {
                 ));
             }
         }
+    }
+    // Below the Mod Root, C++'s cut and Rust's game path part ways only when
+    // the first `meshes` folder is not the Mod Root's own.
+    let nested = context.in_mod_roots().find(|(_, relative, item)| {
+        let relative = relative.to_lowercase();
+        !item.directory
+            && has_extension(&relative, &MESH_EXTENSIONS)
+            && !relative.starts_with("meshes/")
+            && relative.contains("/meshes/")
+    });
+    if let Some((_, _, item)) = nested {
+        return Some(format!(
+            "the Mesh `{}` lies under a `meshes` folder below its Mod Root's top level",
+            item.path
+        ));
     }
     let spec = &context.case.spec;
     if spec.dry_run && spec.meshes.level >= 1 {

@@ -18,11 +18,22 @@
 //! A C++ exception inside nifly ([`NifError::Exception`]) is returned from
 //! here; the backend turns it into the outcome C++ CAO reported for it (see
 //! `unless_exception` in [`crate::backend`]).
+//!
+//! Headpart Meshes (#505) are those the run's [`HeadpartList`] names and those
+//! on a facegen path. Deviation 17 fixes two things C++ did:
+//!
+//! - It matched a Mesh by its absolute path cut at the first `/meshes/`, so a
+//!   `meshes` folder at or above the Mod Root shifted the path. Here a Mesh is
+//!   matched by its game path within its Mod Root.
+//! - Its Dry Run left out the facegen rule, so it reported less than Apply
+//!   did. Here Dry Run applies it too.
 
 use std::path::Path;
 
 use cao_core::routing::{ExecutionMode, MeshVariant};
 use nifly_sys::{LoadOptions, Nif, NifError, NifVersion, OptimizeOptions, OptimizeReport};
+
+use crate::headparts::HeadpartList;
 
 /// The per-run Mesh options: C++ `OptionsCAO`'s Mesh fields, validated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -34,6 +45,14 @@ pub struct MeshSettings {
     pub headparts: bool,
     /// `bMeshesResave`: save every loaded Mesh again, whatever the level.
     pub resave: bool,
+}
+
+impl MeshSettings {
+    /// Whether Headpart Meshes get their own rule: from the necessary level
+    /// up, as in C++. Below it a run needs no headpart list.
+    pub fn recognises_headparts(&self) -> bool {
+        self.level >= 1
+    }
 }
 
 /// What `scan()` makes of a loaded Mesh. C++ also had `lightIssue`, which no
@@ -55,10 +74,10 @@ pub struct MeshOptimizer {
     settings: MeshSettings,
     /// The profile's `meshesFileVersion`, `meshesUser` and `meshesStream`.
     target: NifVersion,
-    /// The Headpart Mesh list, as paths from `meshes/`. Recognising Headpart
-    /// Meshes from the profile and plugins is #505's, so it is empty here and
-    /// only the facegen rule applies.
-    headparts: Vec<String>,
+    /// The run's Headpart Mesh list, from the profile and its plugins. Empty
+    /// until [`MeshOptimizer::with_headparts`], when only the facegen rule
+    /// applies.
+    headparts: HeadpartList,
 }
 
 impl MeshOptimizer {
@@ -67,8 +86,15 @@ impl MeshOptimizer {
         Self {
             settings,
             target,
-            headparts: Vec::new(),
+            headparts: HeadpartList::default(),
         }
+    }
+
+    /// This optimizer, recognising the Headpart Meshes `headparts` names.
+    #[must_use]
+    pub fn with_headparts(mut self, headparts: HeadpartList) -> Self {
+        self.headparts = headparts;
+        self
     }
 
     /// Loads the Mesh at `path`, as a terrain file for a Terrain Mesh.
@@ -119,11 +145,15 @@ impl MeshOptimizer {
     /// from the necessary level up, on a critical issue from the necessary
     /// level up, and on any Mesh at the full level. The medium level runs it
     /// on no other Mesh but still reports every Mesh as changed, so it is
-    /// saved again. `path` is only matched and logged.
+    /// saved again. With head parts off, a Headpart Mesh gets no `OptimizeFor`
+    /// but is still saved when its level says so, as in C++.
     ///
-    /// Dry Run evaluates the same levels without touching `nif`, but as in
-    /// C++ only a listed Headpart Mesh, not a facegen path, gets the headpart
-    /// rule there; deviation 17 (#505) changes that.
+    /// Dry Run evaluates the same levels without touching `nif`, the facegen
+    /// rule included (deviation 17).
+    ///
+    /// `path` is matched by its game path within `mod_root`, the Mod Root the
+    /// attempt is attributed to (deviation 17), and logged; see
+    /// [`game_path`].
     ///
     /// # Errors
     /// The [`NifError`] a nifly call reported.
@@ -131,6 +161,7 @@ impl MeshOptimizer {
         &self,
         nif: &mut Nif,
         path: &Path,
+        mod_root: &Path,
         mode: ExecutionMode,
     ) -> Result<bool, NifError> {
         let scan = self.scan(nif)?;
@@ -139,15 +170,14 @@ impl MeshOptimizer {
         }
         let level = self.settings.level;
         let shown = path.display();
-        // Folded once: Qt matched both rules ignoring case.
-        let relative = relative_mesh_path(path).to_lowercase();
-        let listed_headpart = self
-            .headparts
-            .iter()
-            .any(|headpart| headpart.to_lowercase() == relative);
+        let game_path = game_path(path, mod_root);
+        // Qt matched both rules ignoring case.
+        let is_headpart = self.settings.recognises_headparts()
+            && (self.headparts.contains(&game_path)
+                || game_path.to_lowercase().contains("facegen"));
 
         if mode == ExecutionMode::DryRun {
-            if level >= 1 && self.settings.headparts && listed_headpart {
+            if is_headpart && self.settings.headparts {
                 log::info!(
                     "{shown} would be optimized as an headpart due to necessary optimization"
                 );
@@ -177,7 +207,7 @@ impl MeshOptimizer {
             remove_parallax: false,
         };
         let mut processed_headpart = false;
-        if level >= 1 && (listed_headpart || relative.contains("facegen")) {
+        if is_headpart {
             if self.settings.headparts {
                 options.head_parts = true;
                 log::info!("Optimizing: {shown} as an headpart due to necessary optimization");
@@ -205,17 +235,27 @@ impl MeshOptimizer {
     }
 }
 
-/// `path` from its first `/meshes/` folder on, `/`-separated, as C++ matched
-/// headparts: `meshes/...`. Without one it is the whole path. The search
-/// ignores ASCII case, as Qt's did for this ASCII needle.
-fn relative_mesh_path(path: &Path) -> String {
-    let normalized = path.to_string_lossy().replace('\\', "/");
-    // ASCII lowercasing keeps every byte offset, so an index into the folded
-    // copy is an index into `normalized`.
-    match normalized.to_ascii_lowercase().find("/meshes/") {
-        Some(index) => normalized[index + 1..].to_owned(),
-        None => normalized,
-    }
+/// The `/`-separated game path of the Mesh at `path` within `mod_root`, such
+/// as `meshes/actors/hair.nif` (deviation 17).
+///
+/// Discovery joins every path it finds onto its canonical Mod Root, so the
+/// prefix strips; a path spelled otherwise is resolved first, as the Asset Run
+/// resolved it to attribute the attempt. A path still outside `mod_root`, or
+/// any path when `mod_root` is empty (a standalone call), is matched whole.
+fn game_path(path: &Path, mod_root: &Path) -> String {
+    let within = |path: &Path| {
+        (!mod_root.as_os_str().is_empty())
+            .then(|| path.strip_prefix(mod_root).ok().map(Path::to_path_buf))
+            .flatten()
+    };
+    let relative = within(path)
+        .or_else(|| {
+            cao_winfs::msvc_weakly_canonical(path)
+                .ok()
+                .and_then(|resolved| within(&resolved))
+        })
+        .unwrap_or_else(|| path.to_path_buf());
+    relative.to_string_lossy().replace('\\', "/")
 }
 
 /// Logs what one `OptimizeFor` call did, as C++'s `print_res` did, at the

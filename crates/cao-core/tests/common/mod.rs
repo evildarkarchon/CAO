@@ -469,7 +469,12 @@ impl AssetExecutionBackend for FakeBackend {
         self.load("load_mesh", path)
     }
 
-    fn optimize_mesh(&mut self, path: &Path, _mode: ExecutionMode) -> OperationResult {
+    fn optimize_mesh(
+        &mut self,
+        path: &Path,
+        _mod_root: &Path,
+        _mode: ExecutionMode,
+    ) -> OperationResult {
         self.record("optimize_mesh", path);
         self.evaluate()
     }

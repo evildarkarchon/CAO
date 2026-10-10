@@ -8,6 +8,9 @@
 //!   and BC7 on the GPU. It is the one module allowed `unsafe`.
 //! - [`meshes`] optimizes Meshes with nifly through `nifly-sys`, at the C++
 //!   mesh levels (#504).
+//! - [`plugins`] reads the Headpart Meshes a plugin's HDPT records name, and
+//!   [`headparts`] lists a run's Headpart Meshes from the profile and from
+//!   every plugin across the Mod Selection (#505).
 //! - [`animations`] converts LE Animations by running the app directory's
 //!   `bin/hkxcmd.exe` as a subprocess (#502).
 //! - [`backend`] is the one Asset Execution Backend over every optimizer.
@@ -26,5 +29,7 @@ pub mod archives;
 pub mod backend;
 pub mod composition;
 pub mod device;
+pub mod headparts;
 pub mod meshes;
+pub mod plugins;
 pub mod textures;

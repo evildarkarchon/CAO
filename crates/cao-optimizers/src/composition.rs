@@ -23,8 +23,9 @@ use cao_core::routing::{
 };
 use cao_core::run::{
     ArchiveAdapters, ArchiveExtractor, ArchiveFinalization, ArchiveFinalizationSettings,
-    AssetRunAdapters, CancellationToken, ModSelection, OptimizationRunService, RunConfiguration,
-    RunConfigurationProvider, RunEventDispatcher, RunHandle, RunPreparation, RunRequest,
+    AssetInitializationCancelled, AssetRunAdapters, CancellationToken, ModSelection,
+    OptimizationRunService, RunConfiguration, RunConfigurationProvider, RunDiagnostic,
+    RunDiagnosticCode, RunEventDispatcher, RunHandle, RunPhase, RunPreparation, RunRequest,
     RunWorkEvidence, RunWorkMilestones, RunWorkService, SelectedProfileFacts, SourceCleanup,
     StartError, TemporaryArtifactRegistry, execute_asset_run,
 };
@@ -35,6 +36,7 @@ use nifly_sys::NifVersion;
 use crate::animations::Hkxcmd;
 use crate::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
 use crate::backend::{OptimizerBackend, TextureResize, TextureSettings};
+use crate::headparts::{HeadpartList, ScanCancelled, scan_headparts};
 use crate::meshes::{MeshOptimizer, MeshSettings};
 use crate::textures::TextureProfile;
 
@@ -110,6 +112,7 @@ impl ApplicationRun {
         let configuration = Arc::new(ProfileConfigurationProvider::new(app_dir));
         let work = Arc::new(ApplicationRunWork {
             settings,
+            selected_folder: request.mod_selection().directory().to_path_buf(),
             hkxcmd: Hkxcmd::in_app_dir(app_dir),
             configuration: Arc::clone(&configuration),
             profile: Mutex::new(None),
@@ -347,15 +350,18 @@ pub struct PreparedProfile {
     /// The Packing Exclusion rules of `FilesToNotPack.txt`, as C++'s profile
     /// snapshot loaded them during Preparing.
     pub files_to_not_pack: Vec<String>,
+    /// The Headpart Meshes `customHeadparts.txt` lists, loaded with
+    /// `FilesToNotPack.txt`, as C++'s profile snapshot loaded them.
+    pub custom_headparts: Vec<String>,
 }
 
 /// The Run Configuration Provider over a `profiles/` directory, ported from C++
 /// `ApplicationRunConfigurationProvider`.
 ///
-/// Each load re-reads the named profile's `profile.ini`, `ignoredMods.txt`
-/// and `FilesToNotPack.txt` during Preparing, on the Run Worker, and
-/// publishes what it read so the run's work uses the very same profile facts
-/// its routing did.
+/// Each load re-reads the named profile's `profile.ini`, `ignoredMods.txt`,
+/// `FilesToNotPack.txt` and `customHeadparts.txt` during Preparing, on the
+/// Run Worker, and publishes what it read so the run's work uses the very same
+/// profile facts its routing did.
 pub struct ProfileConfigurationProvider {
     profiles: Profiles,
     prepared: Mutex<Option<Arc<PreparedProfile>>>,
@@ -391,12 +397,15 @@ impl RunConfigurationProvider for ProfileConfigurationProvider {
         let ignored_mods = profile.ignored_mods().map_err(failed)?;
         // A missing or unreadable list is empty, as in C++; finalization logs it.
         let files_to_not_pack = profile.files_to_not_pack();
+        // The same holds here; the headpart scan logs it.
+        let custom_headparts = profile.custom_headparts();
         let facts = profile_facts(&settings);
         // Published only after every read succeeded, so work never sees a
         // partial profile.
         *lock(&self.prepared) = Some(Arc::new(PreparedProfile {
             settings: Arc::new(settings),
             files_to_not_pack,
+            custom_headparts,
         }));
         Ok(RunConfiguration {
             profile: facts,
@@ -482,12 +491,63 @@ fn mesh_target(settings: &ProfileSettings) -> NifVersion {
 /// The production Run Work Service, ported from C++ `ApplicationRunWork`.
 struct ApplicationRunWork {
     settings: OptimizerSettings,
+    /// The selected folder, which the headpart scan walks whole: C++ scanned
+    /// `userPath`, so mods with a Mod Exclusion are scanned too.
+    selected_folder: PathBuf,
     /// The app directory's `bin/hkxcmd.exe`; each run's backend gets a fresh
     /// copy, so each run checks for the exe once, as each C++ run did.
     hkxcmd: Hkxcmd,
     configuration: Arc<ProfileConfigurationProvider>,
     /// The provider's Preparing snapshot, pinned for the whole run.
     profile: Mutex<Option<Arc<PreparedProfile>>>,
+}
+
+impl ApplicationRunWork {
+    /// The run's Headpart Meshes, from `profile`'s `customHeadparts.txt` and
+    /// every plugin under the selected folder, as C++ `listHeadparts` gathered
+    /// them.
+    ///
+    /// Only the necessary mesh level and above consult the list, so a run
+    /// below it scans nothing; C++ scanned regardless, which no run fact
+    /// showed. Each plugin that cannot be read is retained in `evidence` as a
+    /// `PluginUnreadable` Run Diagnostic, and the scan carries on (deviation
+    /// 17).
+    ///
+    /// # Errors
+    /// [`AssetInitializationCancelled`] when `stop` is cancelled during the
+    /// scan, as C++'s scan threw it.
+    fn list_headparts(
+        &self,
+        profile: &PreparedProfile,
+        evidence: &RunWorkEvidence<'_, '_>,
+        stop: &CancellationToken,
+    ) -> Result<HeadpartList, AssetInitializationCancelled> {
+        if !self.settings.meshes.recognises_headparts() {
+            return Ok(HeadpartList::default());
+        }
+        let extensions = Settings::get(archive_game(profile.settings.bsa_game)).plugin_extensions;
+        let scan = scan_headparts(
+            &profile.custom_headparts,
+            &self.selected_folder,
+            extensions,
+            &|| stop.is_cancelled(),
+        )
+        .map_err(|ScanCancelled| AssetInitializationCancelled)?;
+        for plugin in scan.unreadable {
+            evidence.retain_diagnostic(
+                RunDiagnostic::new(
+                    RunDiagnosticCode::PluginUnreadable,
+                    RunPhase::ProcessingAssets,
+                    format!(
+                        "The plugin's headparts cannot be read, so it names no Headpart Mesh: {}",
+                        plugin.error
+                    ),
+                )
+                .with_path(plugin.path),
+            );
+        }
+        Ok(scan.headparts)
+    }
 }
 
 impl RunWorkService for ApplicationRunWork {
@@ -531,19 +591,26 @@ impl RunWorkService for ApplicationRunWork {
         );
         let cleanup = self.settings.extracted_archive_cleanup;
         let mut adapters = AssetRunAdapters::new(Box::new(|asset, mod_root, artifacts| {
-            let backend = backend.get_or_insert_with(|| {
+            if backend.is_none() {
+                // C++ listed Headpart Meshes as it built its MainOptimizer for
+                // the first Asset, so the scan sees any plugin extraction
+                // produced.
+                let headparts = self.list_headparts(&profile, evidence, stop)?;
                 // This closure runs on the Run Worker, the thread that must
                 // join COM. C++'s texture optimizer threw when it could not,
                 // and the Asset Run contained the exception as an unsafe
                 // Operation Failure; it contains this panic the same way.
-                OptimizerBackend::new(
-                    self.settings.textures,
-                    texture_profile.clone(),
-                    meshes.clone(),
-                    self.hkxcmd.clone(),
-                )
-                .unwrap_or_else(|error| panic!("{error}"))
-            });
+                backend = Some(
+                    OptimizerBackend::new(
+                        self.settings.textures,
+                        texture_profile.clone(),
+                        meshes.clone().with_headparts(headparts),
+                        self.hkxcmd.clone(),
+                    )
+                    .unwrap_or_else(|error| panic!("{error}")),
+                );
+            }
+            let backend = backend.as_mut().expect("the backend was created above");
             let result = AssetExecutor::new(backend).execute(asset, artifacts, mod_root);
             Ok(quarantine_failed_load(asset, result))
         }));

@@ -691,6 +691,29 @@ fn d17_fires_for_meshes_or_facegen_at_or_above_the_mod_root() {
     Host::shipped().fires(17, &facegen_root);
 }
 
+/// C++ cut a Mesh's path at its first `/meshes/`, so a `meshes` folder below
+/// the Mod Root's top level gave it another game path than Rust's: a listed
+/// `meshes/hair.nif` matched there, and a `facegen` folder before the cut was
+/// dropped.
+#[test]
+fn d17_fires_for_a_mesh_under_a_nested_meshes_folder() {
+    let host = Host::shipped();
+    for mesh in [
+        "mods/Mod/extras/meshes/hair.nif",
+        "mods/Mod/FaceGen/Meshes/hair.nif",
+    ] {
+        host.fires(17, &with_content(json!([text(mesh)])));
+    }
+    host.quiet(
+        17,
+        &with_content(json!([
+            text("mods/Mod/meshes/actors/meshes/hair.nif"),
+            text("mods/Mod/extras/meshes/readme.txt"),
+            text("mods/Mod/extras/hair.nif"),
+        ])),
+    );
+}
+
 #[test]
 fn d17_fires_for_a_dry_run_over_a_facegen_mesh() {
     let dry_facegen = case(|case| {
