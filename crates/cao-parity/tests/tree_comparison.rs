@@ -174,6 +174,44 @@ fn files_without_a_rule_must_be_byte_identical() {
     );
 }
 
+/// The Mesh rule (#467, #504): `.nif`, `.btr` and `.bto` files, in any case,
+/// must be byte-identical under the parity rules. Nothing loosens it: if
+/// nifly drifts between the two builds, their compiler flags are aligned.
+#[test]
+fn meshes_must_be_byte_identical_under_the_parity_rules() {
+    let same = sides("mesh-same");
+    for path in [
+        "mods/A/meshes/a.nif",
+        "mods/A/meshes/b.BTR",
+        "mods/A/meshes/c.bto",
+    ] {
+        both(&same, path, b"mesh bytes");
+    }
+    assert_eq!(compare(&same, &ParityRules).verdict(), Verdict::Identical);
+
+    let differing = sides("mesh-differing");
+    for (path, rust) in [
+        ("mods/A/meshes/a.nif", b"mesh bytez"),
+        ("mods/A/meshes/b.BTR", b"mesh bytez"),
+        ("mods/A/meshes/c.bto", b"mesh bytez"),
+        ("mods/A/meshes/d.NIF", b"mesh bytez"),
+    ] {
+        write(&differing.oracle, path, b"mesh bytes");
+        write(&differing.rust, path, rust);
+    }
+    let mut broken = broken(&compare(&differing, &ParityRules));
+    broken.sort();
+    assert_eq!(
+        broken,
+        vec![
+            ("mods/A/meshes/a.nif".to_owned(), "Byte Equality"),
+            ("mods/A/meshes/b.BTR".to_owned(), "Byte Equality"),
+            ("mods/A/meshes/c.bto".to_owned(), "Byte Equality"),
+            ("mods/A/meshes/d.NIF".to_owned(), "Byte Equality"),
+        ]
+    );
+}
+
 /// A rule that records each path it is asked about and returns a fixed outcome.
 struct Recording {
     name: &'static str,

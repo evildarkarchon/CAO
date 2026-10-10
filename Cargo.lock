@@ -115,6 +115,7 @@ dependencies = [
  "directxtex",
  "embed-resource",
  "log",
+ "nifly-sys",
  "thiserror 2.0.21",
  "windows",
 ]

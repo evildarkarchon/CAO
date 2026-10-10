@@ -152,8 +152,23 @@ in `sse-static-<file name>`.
 The list pins SSE Meshes and Animations, and 20 LE Animations from LE's
 `Skyrim - Animations.bsa` as `hkxcmd` conversion inputs (#502). The seeds
 `apply-le-animations`, `apply-le-animation-faults` and `dry-run-le-animations` use them, so
-they also need `hkxcmd.exe` (`--hkxcmd`, `CAO_HKXCMD` or the repository's `bin/`). The
-research (#473) also calls for about 30 LE Meshes, which still need pinning.
+they also need `hkxcmd.exe` (`--hkxcmd`, `CAO_HKXCMD` or the repository's `bin/`).
+
+It also pins 34 LE Meshes from LE's `Skyrim - Meshes.bsa` (#504): the SSE Meshes' own
+internal paths, so both editions cover the same categories, and four Meshes with triangle
+strips. None of the other 30 has strips, so under the SSE profile only those four are the
+critical issues the necessary mesh level converts. The mesh seeds use them:
+
+- `apply-meshes-resave`, `apply-meshes-necessary`, `apply-meshes-medium` and
+  `apply-meshes-full` run each mesh level (resaving alone, then 1 to 3) over the LE static,
+  skinned and LOD Meshes and three synthetic ones;
+- `dry-run-meshes` runs the full level with resaving as a Dry Run.
+
+They are not run without the LE BSA. `apply-meshes-le-target`, `apply-meshes-fo4-target`
+(the two ported nifly quirks: a TES5 target makes every Mesh a critical issue, and
+`OptimizeFor` is a no-op towards FO4) and `apply-mesh-quarantine` use synthetic Meshes only.
+No mesh seed puts a Mesh on a headpart or facegen path, nor on one the SSE profile's
+`customHeadparts.txt` lists: recognising Headpart Meshes is #505's.
 
 A pin is the SHA-256 of an entry's extracted bytes, so an entry can be hashed from a loose
 copy extracted from the same BSA. The pool itself still has to hold the BSA.

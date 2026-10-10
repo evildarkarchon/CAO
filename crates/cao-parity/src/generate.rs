@@ -19,8 +19,11 @@
 //! - **Not yet dimensions:** LE and SSE input Meshes (the local asset pool's
 //!   `local_asset` entry, #501, and synthetic Meshes, #503) and a headpart
 //!   plugin (#529). Each joins the array with a [`GENERATOR_VERSION`] bump once
-//!   its recipe entry exists; the pool's entry does, but the pinned list holds
-//!   no LE Meshes yet. LE Animations are pinned (#502), and the seeds cover
+//!   its recipe entry exists and the Rust side can match the oracle on it. Both
+//!   Mesh entries exist and LE Meshes are pinned (#504), but any case that
+//!   converts TGAs routes every Mesh for Mesh Reference Maintenance, which is
+//!   not ported until #506, so Meshes wait for it; the mesh seeds cover each
+//!   level meanwhile. LE Animations are pinned (#502), and the seeds cover
 //!   them; generated Animation cases still hold no `.hkx` files.
 
 use cao_archive::Settings;

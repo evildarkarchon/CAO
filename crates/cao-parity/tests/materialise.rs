@@ -1004,6 +1004,52 @@ fn a_case_is_not_run_when_the_pool_cannot_supply_a_pinned_entry() {
     }
 }
 
+/// #504: the mesh-level seeds and the mesh Dry Run take LE Meshes from the
+/// pool, so without it they are not run, naming LE's `Skyrim - Meshes.bsa`,
+/// and nothing is written. The seeds of the ported quirks and of Quarantine
+/// use synthetic Meshes only, so they run on any host.
+#[test]
+fn mesh_seeds_needing_the_pool_are_not_run_without_it() {
+    let temp = TempDir::new("materialise-mesh-seeds");
+    // The committed list over a folder that does not exist: a host without
+    // the pool.
+    let pool = LocalAssetPool::new(temp.path().join("absent"), PinnedList::committed().unwrap());
+    let seeds = seeds().unwrap();
+    let seed = |id: &str| {
+        seeds
+            .iter()
+            .find(|(seed, _)| seed == id)
+            .unwrap_or_else(|| panic!("no seed `{id}`"))
+            .1
+            .clone()
+    };
+    for id in [
+        "apply-meshes-resave",
+        "apply-meshes-necessary",
+        "apply-meshes-medium",
+        "apply-meshes-full",
+        "dry-run-meshes",
+    ] {
+        let (layout, readiness) = materialised_with_pool(&temp, id, &seed(id), false, &pool);
+        let Readiness::NotRun(reason) = readiness.unwrap() else {
+            panic!("{id}: the case ran");
+        };
+        assert!(
+            reason.contains("Skyrim - Meshes.bsa is missing"),
+            "{id}: {reason}"
+        );
+        assert!(!layout.input().exists(), "{id}: input/ was written");
+    }
+    for id in [
+        "apply-meshes-le-target",
+        "apply-meshes-fo4-target",
+        "apply-mesh-quarantine",
+    ] {
+        let (_, readiness) = materialised_with_pool(&temp, id, &seed(id), false, &pool);
+        assert_eq!(readiness.unwrap(), Readiness::Ready, "{id}");
+    }
+}
+
 /// An id the pinned list lacks is a recipe error, reported even on a host
 /// with no pool, rather than a reason not to run.
 #[test]

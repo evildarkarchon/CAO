@@ -1,0 +1,90 @@
+{
+  "spec": {
+    "profile": "TES5",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/MeshMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": false,
+      "target_width": 2048,
+      "target_height": 2048
+    },
+    "meshes": {
+      "level": 1,
+      "headparts": true,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "mesh",
+        "path": "mods/MeshMod/meshes/clutter/synthetic/bowl_le.nif",
+        "version": "le",
+        "shapes": [
+          {
+            "name": "Bowl",
+            "textures": [
+              "textures\\clutter\\bowl.dds",
+              "textures\\clutter\\bowl_n.dds"
+            ]
+          }
+        ],
+        "note": "Ported as-is (#460): scan() asks whether the profile's target, not the Mesh, is Skyrim LE, so under TES5 every Mesh is a critical issue at the necessary level. OptimizeFor LE to LE is a no-op, so this Mesh is only saved again."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/MeshMod/meshes/clutter/synthetic/twins_le.nif",
+        "version": "le",
+        "shapes": [
+          {
+            "name": "Twin",
+            "textures": [
+              "textures\\clutter\\twin.dds"
+            ]
+          },
+          {
+            "name": "Twin",
+            "textures": [
+              "textures\\clutter\\twin.dds"
+            ]
+          }
+        ],
+        "note": "Saved again; OptimizeFor changes nothing between equal versions, so its duplicate names stay."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/MeshMod/meshes/clutter/synthetic/bowl_sse.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Bowl",
+            "textures": [
+              "textures\\clutter\\bowl.dds"
+            ]
+          }
+        ],
+        "note": "Converted from SSE to LE."
+      }
+    ]
+  }
+}

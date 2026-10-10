@@ -29,6 +29,8 @@ chrono.workspace = true
 # Resolves to CAO's fork through the root `[patch.crates-io]` (#479).
 directxtex.workspace = true
 log.workspace = true
+# The Mesh backend (#504), without the parity corpus's `corpus` feature.
+nifly-sys.workspace = true
 thiserror.workspace = true
 # `device`'s COM initialization and its D3D11 device for GPU BC7 (#459, #495).
 windows = { workspace = true, features = [

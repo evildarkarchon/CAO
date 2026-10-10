@@ -1,0 +1,193 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/MeshMod"
+    },
+    "dry_run": true,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": false,
+      "target_width": 2048,
+      "target_height": 2048
+    },
+    "meshes": {
+      "level": 3,
+      "headparts": true,
+      "resave": true
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "mesh",
+        "path": "mods/MeshMod/meshes/clutter/synthetic/bowl_le.nif",
+        "version": "le",
+        "shapes": [
+          {
+            "name": "Bowl",
+            "textures": [
+              "textures\\clutter\\bowl.dds",
+              "textures\\clutter\\bowl_n.dds"
+            ]
+          }
+        ],
+        "note": "Dry Run at the full level with resaving: every Mesh is evaluated as one that would change, and nothing is written."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/MeshMod/meshes/clutter/synthetic/twins_le.nif",
+        "version": "le",
+        "shapes": [
+          {
+            "name": "Twin",
+            "textures": [
+              "textures\\clutter\\twin.dds"
+            ]
+          },
+          {
+            "name": "Twin",
+            "textures": [
+              "textures\\clutter\\twin.dds"
+            ]
+          }
+        ],
+        "note": "Would change; untouched."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/MeshMod/meshes/clutter/synthetic/bowl_sse.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Bowl",
+            "textures": [
+              "textures\\clutter\\bowl.dds"
+            ]
+          }
+        ],
+        "note": "Would change; untouched."
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/dungeons/nordic/levers/pullchainanim/norpullchainanim01.nif",
+        "asset": "le-static-norpullchainanim01.nif",
+        "note": "LE Meshes from the local asset pool (#501, #504): static, skinned, terrain and object LOD, and four with triangle strips, which are not SSE-compatible; never a headpart or facegen path, which #505 recognises. Not run without the LE pool's Skyrim - Meshes.bsa."
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/dungeons/caves/blackreach/blackreachewall01hole.nif",
+        "asset": "le-static-blackreachewall01hole.nif"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/dungeons/riften/ratwayroom/riftenrwroomwall04.nif",
+        "asset": "le-static-riftenrwroomwall04.nif"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/architecture/windhelm/whstormcloaksfancybanner01.nif",
+        "asset": "le-static-whstormcloaksfancybanner01.nif"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/clutter/skeevernest/skeevernestbale02.nif",
+        "asset": "le-static-skeevernestbale02.nif"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/dungeons/imperial/smallroom/improombrace01.nif",
+        "asset": "le-static-improombrace01.nif"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/dungeons/caves/green/balcony/cavegbalconycurve01.nif",
+        "asset": "le-static-cavegbalconycurve01.nif"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/dungeons/caves/ice/smallhall/caveihall1way128u01.nif",
+        "asset": "le-static-caveihall1way128u01.nif"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/clutter/powershrines/powshrinecircle02.nif",
+        "asset": "le-static-powshrinecircle02.nif"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/clutter/stockade/stockadescaffoldtop2sided01b.nif",
+        "asset": "le-static-stockadescaffoldtop2sided01b.nif"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/terrain/tamriel/tamriel.8.32.-16.btr",
+        "asset": "le-lod-tamriel.8.32.-16.btr"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/terrain/tamriel/tamriel.4.-88.72.btr",
+        "asset": "le-lod-tamriel.4.-88.72.btr"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/terrain/tamriel/objects/tamriel.8.32.-24.bto",
+        "asset": "le-lod-tamriel.8.32.-24.bto"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/terrain/tamriel/objects/tamriel.4.-16.8.bto",
+        "asset": "le-lod-tamriel.4.-16.8.bto"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/architecture/farmhouse/fern01.nif",
+        "asset": "le-static-fern01.nif"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/clutter/table02.nif",
+        "asset": "le-static-table02.nif"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/weapons/1handmelee/1handsword.nif",
+        "asset": "le-static-1handsword.nif"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/MeshMod/meshes/clutter/quest/sigilstone.nif",
+        "asset": "le-static-sigilstone.nif"
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/MeshMod/meshes/clutter/synthetic/garbage.nif",
+        "version": "le",
+        "shapes": [
+          {
+            "name": "Garbage"
+          }
+        ],
+        "fault": "garbage",
+        "note": "Fails to load: an Asset Failure that Dry Run never quarantines."
+      }
+    ]
+  }
+}

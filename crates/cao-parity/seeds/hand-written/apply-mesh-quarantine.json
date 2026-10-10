@@ -1,0 +1,80 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/QuarantineMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": false,
+      "target_width": 2048,
+      "target_height": 2048
+    },
+    "meshes": {
+      "level": 3,
+      "headparts": true,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "mesh",
+        "path": "mods/QuarantineMod/meshes/clutter/garbage.nif",
+        "version": "le",
+        "shapes": [
+          {
+            "name": "Garbage"
+          }
+        ],
+        "fault": "garbage",
+        "note": "Quarantine (#504): nifly cannot read its header, so in Apply both builds rename it to garbage.nif.caobad and record the rename as a Committed Mutation."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/QuarantineMod/meshes/clutter/empty.nif",
+        "version": "le",
+        "fault": "zero",
+        "note": "A zero-byte Mesh fails to load too; its .caobad name is taken, so it becomes empty.nif.caobad.1."
+      },
+      {
+        "kind": "text",
+        "path": "mods/QuarantineMod/meshes/clutter/empty.nif.caobad",
+        "text": "an earlier quarantine",
+        "note": "Not an Asset, and never overwritten."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/QuarantineMod/meshes/clutter/plain.nif",
+        "version": "le",
+        "shapes": [
+          {
+            "name": "Plain",
+            "textures": [
+              "textures\\clutter\\plain.dds"
+            ]
+          }
+        ],
+        "note": "The run carries on past the quarantines: converted to SSE at the full level."
+      }
+    ]
+  }
+}

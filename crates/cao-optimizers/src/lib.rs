@@ -6,6 +6,8 @@
 //! - [`device`] is the texture backend's per-thread native setup: COM, which
 //!   WIC-backed mipmap generation needs, and the D3D11 device that encodes BC6H
 //!   and BC7 on the GPU. It is the one module allowed `unsafe`.
+//! - [`meshes`] optimizes Meshes with nifly through `nifly-sys`, at the C++
+//!   mesh levels (#504).
 //! - [`animations`] converts LE Animations by running the app directory's
 //!   `bin/hkxcmd.exe` as a subprocess (#502).
 //! - [`backend`] is the one Asset Execution Backend over every optimizer.
@@ -24,4 +26,5 @@ pub mod archives;
 pub mod backend;
 pub mod composition;
 pub mod device;
+pub mod meshes;
 pub mod textures;

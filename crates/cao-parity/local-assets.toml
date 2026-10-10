@@ -14,9 +14,12 @@
 # internal path), `category` (`static`, `skinned`, `headpart`, `facegen`,
 # `lod` or `animation`), `sha256`, and an optional `note`.
 #
-# The 20 LE Animations at the end are `hkxcmd`'s conversion inputs (#502),
-# hashed from an LE `Skyrim - Animations.bsa`. The research (#473) also calls
-# for about 30 LE Meshes, which are still to be pinned.
+# The 20 LE Animations that follow the SSE entries are `hkxcmd`'s conversion
+# inputs (#502), hashed from an LE `Skyrim - Animations.bsa`. The 34 LE Meshes
+# at the end (#504) come from LE's `Skyrim - Meshes.bsa`: first the SSE Meshes'
+# internal paths, so both editions cover the same categories, then four Meshes
+# with triangle strips. None of the first 30 has strips, so they are
+# SSE-compatible; the four are the critical issues a necessary-level run fixes.
 
 [[asset]]
 id = "sse-static-norpullchainanim01.nif"
@@ -458,3 +461,279 @@ path = "meshes/actors/ambient/hare/behaviors/harebehavior.hkx"
 category = "animation"
 sha256 = "445a3650111fa305ab32da365215806d0794da67983fea0a5d618f53269c48ce"
 note = "A behavior graph, not an Animation clip; hkxcmd converts it too."
+
+[[asset]]
+id = "le-static-norpullchainanim01.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/dungeons/nordic/levers/pullchainanim/norpullchainanim01.nif"
+category = "static"
+sha256 = "f9d5674004be4f7f46b222e61269b10105a5bec8eced7522897ccd4d90d7c94d"
+
+[[asset]]
+id = "le-static-blackreachewall01hole.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/dungeons/caves/blackreach/blackreachewall01hole.nif"
+category = "static"
+sha256 = "e68c719987c5fa26941939dd2a52a9ef2e3294fafcc2a5623495341b8352d6d5"
+
+[[asset]]
+id = "le-static-riftenrwroomwall04.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/dungeons/riften/ratwayroom/riftenrwroomwall04.nif"
+category = "static"
+sha256 = "579df68dc3a2f2fb3cf40e1c7aa2fcca0085b1852e3ffabff429d13665a2e76c"
+
+[[asset]]
+id = "le-static-whstormcloaksfancybanner01.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/architecture/windhelm/whstormcloaksfancybanner01.nif"
+category = "static"
+sha256 = "cdafd011eb9d52518df4863bb0ebf8c0a0e69890111bca66d3835646fa1edbd3"
+
+[[asset]]
+id = "le-static-skeevernestbale02.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/clutter/skeevernest/skeevernestbale02.nif"
+category = "static"
+sha256 = "96d0f7b5c7de46b95d2d27283cf482092f112a048b1bb54d26d61090f80f8fa2"
+
+[[asset]]
+id = "le-static-improombrace01.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/dungeons/imperial/smallroom/improombrace01.nif"
+category = "static"
+sha256 = "c6669a65374df19efe097c4478cf8cb5ff8da5a52d33c3d8d3566ceb19c45554"
+
+[[asset]]
+id = "le-static-cavegbalconycurve01.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/dungeons/caves/green/balcony/cavegbalconycurve01.nif"
+category = "static"
+sha256 = "721c3c9fdbfbce57e28991dfbe5bb6d9fa6138b89d104cc194d81cebbf94762b"
+
+[[asset]]
+id = "le-static-caveihall1way128u01.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/dungeons/caves/ice/smallhall/caveihall1way128u01.nif"
+category = "static"
+sha256 = "a06466844698ee470b786f51f67974ceb8021aa5b3c4879667628d9ddcaca8ab"
+
+[[asset]]
+id = "le-static-powshrinecircle02.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/clutter/powershrines/powshrinecircle02.nif"
+category = "static"
+sha256 = "128fd225c6c94dd58c9b042bd9576e27e1b3ce4a6e7a8f74957b4385d44cc2a5"
+
+[[asset]]
+id = "le-static-stockadescaffoldtop2sided01b.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/clutter/stockade/stockadescaffoldtop2sided01b.nif"
+category = "static"
+sha256 = "786b6498d245c3658f7cd315229d67e7db2d7513fca088f852f1ef1f5e4fad4d"
+
+[[asset]]
+id = "le-skinned-1stpersonprisonerrags_f_0.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/clothes/prisoner/1stpersonprisonerrags_f_0.nif"
+category = "skinned"
+sha256 = "da51e959a9b185f218972a5ada17749ddafef7302a4e0fd48643d367502fe67a"
+
+[[asset]]
+id = "le-skinned-1stpersonemperoroutfitm_0.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/clothes/emperor/1stpersonemperoroutfitm_0.nif"
+category = "skinned"
+sha256 = "9a343fb0da1e42ad375465582e168146a35a13da479e2e384f54961fb084d1e5"
+
+[[asset]]
+id = "le-skinned-armbandagesf_1.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/clothes/bandages/armbandagesf_1.nif"
+category = "skinned"
+sha256 = "d97332dd77015882302ff5b1953703935b03ce75d557139399e31db58b43d94b"
+
+[[asset]]
+id = "le-skinned-torso02_0.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/clothes/childrenclothes/m/torso02_0.nif"
+category = "skinned"
+sha256 = "6f4b0a9062b77d83eb0557c2de22696fa854dad162501051dab6aa314e7893db"
+
+[[asset]]
+id = "le-skinned-monkvariantoutfit_1.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/clothes/monk/monkvariantoutfit_1.nif"
+category = "skinned"
+sha256 = "c45873e06c5c7e061af78eb7bdfaf88fa67da1215f650bcb9162f595770e08df"
+
+[[asset]]
+id = "le-skinned-magejourneymanrobes_1.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/clothes/magejourneyman/magejourneymanrobes_1.nif"
+category = "skinned"
+sha256 = "b49cb36cd6d33805e7f11dc094431aad700388307d0cc16a138ba72ae0d44b9b"
+
+[[asset]]
+id = "le-skinned-1stpersonwoundsusanna_0.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/clothes/wounds/1stpersonwoundsusanna_0.nif"
+category = "skinned"
+sha256 = "7d76dbdcf3cb7249f14bad70706a585ed6924c081a2463b959043a61f3ad2346"
+
+[[asset]]
+id = "le-skinned-1stpersonbodym_1.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/armor/bandit/1stpersonbodym_1.nif"
+category = "skinned"
+sha256 = "e5191c538daebdcdb2d45b62ce2f754d74fa470dba5de78e776696a79b1e9257"
+
+[[asset]]
+id = "le-headpart-hair01.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/actors/character/character assets/hair/male/hair01.nif"
+category = "headpart"
+sha256 = "f6484f1d69457bbd6e9104a010009385ea203ff5dc7b9e55eacad2893a603e0b"
+
+[[asset]]
+id = "le-headpart-maleorchair12.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/actors/character/character assets/hair/maleorchair12.nif"
+category = "headpart"
+sha256 = "b8b21e774a6e77abd2b4ec6440e33a2d222dd60e8ffe8fb00baab2fcca1c25c5"
+
+[[asset]]
+id = "le-headpart-argonianfemalehorns01.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/actors/character/character assets/hair/argonianfemalehorns01.nif"
+category = "headpart"
+sha256 = "77ef328a009b3d58a205e62d7800f6c95d55e97bea305dc0ef07ef8ba5750534"
+
+[[asset]]
+id = "le-headpart-decapitatedheadgorehumanoidmale_0.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/actors/character/character assets/decapitatedheadgorehumanoidmale_0.nif"
+category = "headpart"
+sha256 = "15825adeca34d741d0074e89d434b9673d4db518c0f12a39b4927d46b4985d22"
+
+[[asset]]
+id = "le-headpart-khajiitmustache01.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/actors/character/character assets/beards/khajiitmustache01.nif"
+category = "headpart"
+sha256 = "283c2f1b04315f3c7414a82a5f8b76e248838c6bf464981fe6142a09a9b437cc"
+
+[[asset]]
+id = "le-facegen-00013255.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/actors/character/facegendata/facegeom/skyrim.esm/00013255.nif"
+category = "facegen"
+sha256 = "936db45d8814603094eca03e05f0d6428ce4c96a3423f48171ba8ea05007e3a1"
+
+[[asset]]
+id = "le-facegen-00039d03.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/actors/character/facegendata/facegeom/skyrim.esm/00039d03.nif"
+category = "facegen"
+sha256 = "b1e5855b4237672d78bee5746f03925fb0df35dba3e890a1a43b0ddd135c1d2f"
+
+[[asset]]
+id = "le-facegen-0006d260.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/actors/character/facegendata/facegeom/skyrim.esm/0006d260.nif"
+category = "facegen"
+sha256 = "fb716cb78b8e1d058a9b12aada1f054d9c456cb45109d564f63af26f1913912f"
+
+[[asset]]
+id = "le-lod-tamriel.8.32.-16.btr"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/terrain/tamriel/tamriel.8.32.-16.btr"
+category = "lod"
+sha256 = "2f4dc322be04ddfa14f156eb5b7bf36cf791006ca712125b97bd562b58bc71bc"
+
+[[asset]]
+id = "le-lod-tamriel.4.-88.72.btr"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/terrain/tamriel/tamriel.4.-88.72.btr"
+category = "lod"
+sha256 = "aa42e6f2b99351d40f510c52df7466136e0e0946167f15181e075c01f5c32231"
+
+[[asset]]
+id = "le-lod-tamriel.8.32.-24.bto"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/terrain/tamriel/objects/tamriel.8.32.-24.bto"
+category = "lod"
+sha256 = "10baee5039a33704f5a18abeda20ef253f8442d15742f9fc63a754ff689566f1"
+
+[[asset]]
+id = "le-lod-tamriel.4.-16.8.bto"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/terrain/tamriel/objects/tamriel.4.-16.8.bto"
+category = "lod"
+sha256 = "cf65c96324586042a9f2b376fbd728a1efce5fcb8c88064a035e362faf3e8107"
+
+[[asset]]
+id = "le-static-fern01.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/architecture/farmhouse/fern01.nif"
+category = "static"
+sha256 = "b36e3db12341000181502994dc9e81636eb7bbcbe561d3149dc53349fc9a87fa"
+note = "Triangle strips: not SSE-compatible, so a critical issue at the necessary level."
+
+[[asset]]
+id = "le-static-table02.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/clutter/table02.nif"
+category = "static"
+sha256 = "365277e84daf5a89e923fd7b42ea4a9e01cac3a588e5bec1b62c253dd9af071d"
+note = "Triangle strips: not SSE-compatible, so a critical issue at the necessary level."
+
+[[asset]]
+id = "le-static-1handsword.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/weapons/1handmelee/1handsword.nif"
+category = "static"
+sha256 = "660762595d4ef7fd30712ab3e78300ba079f5795b31f8225e65a21dae026b94e"
+note = "Triangle strips: not SSE-compatible, so a critical issue at the necessary level."
+
+[[asset]]
+id = "le-static-sigilstone.nif"
+edition = "le"
+archive = "Skyrim - Meshes.bsa"
+path = "meshes/clutter/quest/sigilstone.nif"
+category = "static"
+sha256 = "0c9a0df7b390eeb4cba1de14d5d4eeaf31b520d9a7ea893ed7348f3bb5b16b09"
+note = "Triangle strips: not SSE-compatible, so a critical issue at the necessary level."

@@ -72,6 +72,34 @@ fn the_committed_pinned_list_holds_le_animations_to_convert() {
     }
 }
 
+/// #504: about 30 LE Meshes, as the research (#473) asked, all from LE's
+/// `Skyrim - Meshes.bsa` and covering every Mesh category the SSE entries do.
+#[test]
+fn the_committed_pinned_list_holds_le_meshes() {
+    let list = PinnedList::committed().unwrap();
+    let le_meshes: Vec<_> = list
+        .assets
+        .iter()
+        .filter(|asset| asset.edition == Edition::Le && asset.category != Category::Animation)
+        .collect();
+    assert!(le_meshes.len() >= 30, "{}", le_meshes.len());
+    for asset in &le_meshes {
+        assert_eq!(asset.archive, "Skyrim - Meshes.bsa", "{}", asset.id);
+    }
+    for category in [
+        Category::Static,
+        Category::Skinned,
+        Category::Headpart,
+        Category::Facegen,
+        Category::Lod,
+    ] {
+        assert!(
+            le_meshes.iter().any(|asset| asset.category == category),
+            "no LE {category:?} entry"
+        );
+    }
+}
+
 /// The pool is gitignored, so a maintainer's BSAs can never be committed,
 /// while the list pinning it is not.
 #[test]
