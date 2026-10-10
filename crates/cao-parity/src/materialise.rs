@@ -819,6 +819,26 @@ pub(crate) fn raw_bytes(
     }
 }
 
+/// Encodes bytes as standard, padded base64 (RFC 4648 §4), the form a `raw`
+/// entry's `base64` holds.
+pub(crate) fn encode_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut text = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let word = chunk.iter().enumerate().fold(0u32, |word, (index, &byte)| {
+            word | u32::from(byte) << (16 - 8 * index)
+        });
+        for index in 0..4 {
+            text.push(if index <= chunk.len() {
+                char::from(ALPHABET[(word >> (18 - 6 * index) & 0x3f) as usize])
+            } else {
+                '='
+            });
+        }
+    }
+    text
+}
+
 /// Decodes standard, padded base64 (RFC 4648 §4).
 fn decode_base64(text: &str) -> Result<Vec<u8>, String> {
     let value = |byte: u8| match byte {
@@ -882,5 +902,28 @@ impl Random {
     fn colour(&mut self) -> [u8; 3] {
         let bits = self.next().to_le_bytes();
         [bits[0], bits[1], bits[2]]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RFC 4648 §10's test vectors, then a round trip of every byte value.
+    #[test]
+    fn base64_encodes_the_rfc_vectors_and_round_trips() {
+        for (bytes, text) in [
+            (&b""[..], ""),
+            (b"f", "Zg=="),
+            (b"fo", "Zm8="),
+            (b"foo", "Zm9v"),
+            (b"foob", "Zm9vYg=="),
+            (b"fooba", "Zm9vYmE="),
+            (b"foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(encode_base64(bytes), text);
+        }
+        let all: Vec<u8> = (0..=255).collect();
+        assert_eq!(decode_base64(&encode_base64(&all)).unwrap(), all);
     }
 }

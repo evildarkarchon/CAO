@@ -14,7 +14,7 @@ use std::time::Duration;
 use cao_parity::HarnessError;
 use cao_parity::case::{
     ArchiveOptions, CaseDrivers, CaseFile, CaseLayout, CaseSpec, DRY_RUN_UNCHANGED, MeshOptions,
-    ModSelection, Side, SideResources, TextureOptions, oracle_arguments, run_case,
+    ModSelection, ReportContext, Side, SideResources, TextureOptions, oracle_arguments, run_case,
 };
 use cao_parity::compare::Verdict;
 use cao_parity::oracle;
@@ -280,6 +280,14 @@ impl CaseDrivers for FakeDrivers {
     }
 }
 
+/// The report context of the runner tests' case.
+fn report() -> ReportContext {
+    ReportContext {
+        replay: "cao-parity case case-7".into(),
+        generator_version: None,
+    }
+}
+
 /// Prepares a provisioned case whose Rust facts are the transcript as the Rust
 /// side would report it, edited by `edit_rust`.
 fn prepared_case(temp: &TempDir, edit_rust: fn(String) -> String) -> (CaseLayout, FakeDrivers) {
@@ -319,7 +327,14 @@ fn prepared_case(temp: &TempDir, edit_rust: fn(String) -> String) -> (CaseLayout
 fn a_passing_case_runs_the_oracle_first_and_is_deleted() {
     let temp = TempDir::new("run-pass");
     let (layout, drivers) = prepared_case(&temp, |text| text);
-    let result = run_case(&layout, &drivers, &DefaultRules, Duration::from_secs(60)).unwrap();
+    let result = run_case(
+        &layout,
+        &drivers,
+        &DefaultRules,
+        Duration::from_secs(60),
+        &report(),
+    )
+    .unwrap();
     assert_eq!(result.facts, Verdict::Identical);
     assert_eq!(result.tree, Verdict::Identical);
     assert!(result.passed());
@@ -334,7 +349,14 @@ fn a_different_case_is_kept_with_a_report_naming_the_broken_rule() {
     });
     std::fs::write(layout.side(Side::Rust).join("mods/DryMod/extra.txt"), b"x").unwrap();
 
-    let result = run_case(&layout, &drivers, &DefaultRules, Duration::from_secs(60)).unwrap();
+    let result = run_case(
+        &layout,
+        &drivers,
+        &DefaultRules,
+        Duration::from_secs(60),
+        &report(),
+    )
+    .unwrap();
     assert!(!result.passed());
     let report = std::fs::read_to_string(layout.report()).unwrap();
     assert!(report.contains("Cancellation Observed"), "{report}");
@@ -352,7 +374,14 @@ fn a_harness_error_keeps_the_case_with_a_report() {
     let temp = TempDir::new("run-harness-error");
     let (layout, mut drivers) = prepared_case(&temp, |text| text);
     drivers.exit_code = 0; // Contradicts the transcript's Completed With Failures.
-    let error = run_case(&layout, &drivers, &DefaultRules, Duration::from_secs(60)).unwrap_err();
+    let error = run_case(
+        &layout,
+        &drivers,
+        &DefaultRules,
+        Duration::from_secs(60),
+        &report(),
+    )
+    .unwrap_err();
     assert!(
         matches!(error, HarnessError::ExitCodeMismatch { .. }),
         "{error}"
@@ -389,6 +418,7 @@ fn a_side_past_the_timeout_is_killed_and_is_a_harness_error() {
         &HangingOracle(drivers),
         &DefaultRules,
         Duration::from_secs(1),
+        &report(),
     )
     .unwrap_err();
     assert!(
@@ -421,7 +451,14 @@ fn a_dry_run_that_both_builds_mutate_alike_is_still_different() {
         .unwrap();
     }
 
-    let result = run_case(&layout, &drivers, &DefaultRules, Duration::from_secs(60)).unwrap();
+    let result = run_case(
+        &layout,
+        &drivers,
+        &DefaultRules,
+        Duration::from_secs(60),
+        &report(),
+    )
+    .unwrap();
 
     assert_eq!(result.facts, Verdict::Identical);
     let Verdict::Different(differences) = &result.tree else {
@@ -457,7 +494,14 @@ fn an_apply_case_may_change_the_input_when_both_builds_agree() {
         .unwrap();
     }
 
-    let result = run_case(&layout, &drivers, &DefaultRules, Duration::from_secs(60)).unwrap();
+    let result = run_case(
+        &layout,
+        &drivers,
+        &DefaultRules,
+        Duration::from_secs(60),
+        &report(),
+    )
+    .unwrap();
 
     assert!(result.passed(), "{result:?}");
 }

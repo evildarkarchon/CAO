@@ -6,26 +6,38 @@
 //!   It runs the case through the composition root with `<dir>` as the app
 //!   directory and writes the raw `RunFacts` JSON. It exits 0 whenever it
 //!   produced facts, whatever the Run Outcome.
-//! - `case <id> [--work <dir>] [--oracle <exe>] [--profiles <dir>]
-//!   [--hkxcmd <exe>] [--timeout <seconds>]`: runs the oracle and then the Rust
-//!   driver on one case and compares them. `<id>` names a committed seed, or a
-//!   case kept in the work directory; either way the case is materialised
-//!   afresh from its `case.json`. Exits 0 when both verdicts pass, 1 for a
-//!   Different verdict, 2 for a harness error and 3 when the case cannot run
-//!   here (it needs `hkxcmd.exe` or symlink rights this host lacks). A case
+//! - `case <id> [options]`: runs the oracle and then the Rust driver on one
+//!   case and compares them. `<id>` names a committed seed, a case this
+//!   generator version produces, or a case kept in the work directory; either
+//!   way the case is materialised afresh. Exits 0 when both verdicts pass, 1
+//!   for a Different verdict, 2 for a harness error and 3 when the case cannot
+//!   run here (it needs `hkxcmd.exe` or symlink rights this host lacks). A case
 //!   the deviation guard rejects is a harness error, before either build runs.
-//! - `corpus` and `calibrate` need the corpus generator, which lands in a later
-//!   slice, so they report that they are not available yet.
+//! - `corpus [options]`: runs every seed and generated case, within the case
+//!   budget, prints a summary and writes it to `<work>/corpus-report.md`.
+//!   Exits 2 when any case hit a harness error, otherwise 1 when any was
+//!   Different, otherwise 3 when some did not run here, and 0 only when every
+//!   case passed. The summary lists every Different even when it exits 2.
+//! - `calibrate` lands with the BC7/BC6H calibration (#513), so it reports
+//!   that it is not available yet.
+//!
+//! `case` and `corpus` take the same options: `--work <dir>` (default
+//! `target/parity`), `--oracle <exe>` (or `CAO_ORACLE`), `--profiles <dir>`
+//! (default the repository's), `--hkxcmd <exe>` (or `CAO_HKXCMD`, or the
+//! repository's `bin/hkxcmd.exe`) and `--timeout <seconds>` per case.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use cao_parity::case::{CaseFile, CaseLayout, ProductionDrivers, Side, SideResources, run_case};
-use cao_parity::cases::{fixtures_dir, seed};
+use cao_parity::case::{CaseFile, CaseLayout, ProductionDrivers, SideResources};
+use cao_parity::cases::fixtures_dir;
+use cao_parity::corpus::{
+    CaseOutcome, Harness, TIME_BUDGET, corpus_cases, resolve_case, run_corpus, run_one,
+};
 use cao_parity::driver::drive;
-use cao_parity::materialise::{Environment, Readiness, can_create_symlinks, materialise};
+use cao_parity::materialise::{Environment, can_create_symlinks};
 use cao_parity::rules::ParityRules;
 
 const USAGE: &str = "usage: cao-parity <run|corpus|case <id>|calibrate> [options]";
@@ -38,8 +50,9 @@ fn main() -> ExitCode {
     let outcome = match arguments.first().map(String::as_str) {
         Some("run") => run(&arguments[1..]).map(|()| ExitCode::SUCCESS),
         Some("case") => case(&arguments[1..]),
-        Some(command @ ("corpus" | "calibrate")) => Err(anyhow!(
-            "`cao-parity {command}` is not implemented yet; it needs the corpus generator"
+        Some("corpus") => corpus(&arguments[1..]),
+        Some("calibrate") => Err(anyhow!(
+            "`cao-parity calibrate` is not implemented yet; it lands with the BC7/BC6H calibration"
         )),
         Some("--help" | "-h") => {
             println!("{USAGE}");
@@ -109,119 +122,183 @@ fn run(arguments: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// The options `case` and `corpus` share, resolved.
+struct Settings {
+    /// Absolute, so the replay command works from any directory.
+    work: PathBuf,
+    oracle_exe: PathBuf,
+    profiles: PathBuf,
+    hkxcmd: Option<PathBuf>,
+    timeout: Duration,
+    parity_exe: PathBuf,
+}
+
+impl Settings {
+    /// The options `case` and `corpus` take.
+    const FLAGS: [&str; 5] = ["work", "oracle", "profiles", "hkxcmd", "timeout"];
+
+    /// Resolves the shared options, with their environment and default
+    /// fallbacks, and creates the work directory.
+    fn resolve(flags: &Flags) -> Result<Self> {
+        let work = match flags.get("work") {
+            Some(work) => PathBuf::from(work),
+            None => target_dir()?.join("parity"),
+        };
+        std::fs::create_dir_all(&work).with_context(|| format!("creating {}", work.display()))?;
+        let work =
+            std::path::absolute(&work).with_context(|| format!("resolving {}", work.display()))?;
+        let oracle_exe = flags
+            .get("oracle")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("CAO_ORACLE").map(PathBuf::from))
+            .context("the oracle exe is needed: pass `--oracle <exe>` or set CAO_ORACLE")?;
+        let profiles = flags
+            .get("profiles")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| workspace_root().join("profiles"));
+        let hkxcmd = flags
+            .get("hkxcmd")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("CAO_HKXCMD").map(PathBuf::from))
+            .or_else(|| {
+                Some(workspace_root().join("bin/hkxcmd.exe")).filter(|path| path.is_file())
+            });
+        let timeout =
+            match flags.get("timeout") {
+                Some(seconds) => Duration::from_secs(seconds.parse().with_context(|| {
+                    format!("`--timeout {seconds}` is not a number of seconds")
+                })?),
+                None => DEFAULT_TIMEOUT,
+            };
+        // Absolute, so the replay command names the same files from anywhere.
+        let absolute = |path: PathBuf| {
+            std::path::absolute(&path).with_context(|| format!("resolving {}", path.display()))
+        };
+        Ok(Self {
+            work,
+            oracle_exe: absolute(oracle_exe)?,
+            profiles: absolute(profiles)?,
+            hkxcmd: hkxcmd.map(absolute).transpose()?,
+            timeout,
+            parity_exe: std::env::current_exe().context("locating cao-parity itself")?,
+        })
+    }
+
+    /// The exact command that replays case `id` with these settings: every
+    /// option is spelled out, so neither the environment nor a default can
+    /// change what the replay runs.
+    fn replay_command(&self, id: &str) -> String {
+        let quoted = |path: &Path| format!("\"{}\"", path.display());
+        let mut command = format!(
+            "{} case {id} --work {} --oracle {} --profiles {}",
+            quoted(&self.parity_exe),
+            quoted(&self.work),
+            quoted(&self.oracle_exe),
+            quoted(&self.profiles)
+        );
+        if let Some(hkxcmd) = &self.hkxcmd {
+            command.push_str(&format!(" --hkxcmd {}", quoted(hkxcmd)));
+        }
+        command.push_str(&format!(" --timeout {}", self.timeout.as_secs()));
+        command
+    }
+
+    /// Runs `body` with a harness over these settings.
+    fn with_harness<T>(&self, body: impl FnOnce(&Harness<'_>) -> T) -> T {
+        let drivers = ProductionDrivers {
+            oracle_exe: self.oracle_exe.clone(),
+            parity_exe: self.parity_exe.clone(),
+        };
+        let fixtures = fixtures_dir();
+        let replay = |id: &str| self.replay_command(id);
+        let harness = Harness {
+            work: &self.work,
+            environment: Environment {
+                resources: SideResources {
+                    profiles: &self.profiles,
+                    hkxcmd: self.hkxcmd.as_deref(),
+                },
+                fixtures: &fixtures,
+                symlink_rights: can_create_symlinks(&self.work),
+            },
+            drivers: &drivers,
+            rules: &ParityRules,
+            timeout: self.timeout,
+            time_budget: TIME_BUDGET,
+            replay: &replay,
+        };
+        body(&harness)
+    }
+}
+
 /// `cao-parity case <id>`: runs one case through both builds and compares them.
 fn case(arguments: &[String]) -> Result<ExitCode> {
     let Some((id, rest)) = arguments.split_first() else {
         bail!("`cao-parity case` needs a case id\n{USAGE}");
     };
-    let flags = Flags::parse(rest, &["work", "oracle", "profiles", "hkxcmd", "timeout"])?;
-    let work = match flags.get("work") {
-        Some(work) => PathBuf::from(work),
-        None => target_dir()?.join("parity"),
+    let settings = Settings::resolve(&Flags::parse(rest, &Settings::FLAGS)?)?;
+    let layout = CaseLayout::new(&settings.work, id)?;
+    let kept: Option<CaseFile> = if layout.case_file().is_file() {
+        Some(layout.read_case()?)
+    } else {
+        None
     };
-    let oracle_exe = flags
-        .get("oracle")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("CAO_ORACLE").map(PathBuf::from))
-        .context("the oracle exe is needed: pass `--oracle <exe>` or set CAO_ORACLE")?;
-    let profiles = flags
-        .get("profiles")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| workspace_root().join("profiles"));
-    let hkxcmd = flags
-        .get("hkxcmd")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("CAO_HKXCMD").map(PathBuf::from))
-        .or_else(|| Some(workspace_root().join("bin/hkxcmd.exe")).filter(|path| path.is_file()));
-    let timeout = match flags.get("timeout") {
-        Some(seconds) => Duration::from_secs(
-            seconds
-                .parse()
-                .with_context(|| format!("`--timeout {seconds}` is not a number of seconds"))?,
-        ),
-        None => DEFAULT_TIMEOUT,
-    };
-
-    let layout = CaseLayout::new(&work, id)?;
-    let case = prepare_case(&layout)?;
-    let environment = Environment {
-        resources: SideResources {
-            profiles: &profiles,
-            hkxcmd: hkxcmd.as_deref(),
-        },
-        fixtures: &fixtures_dir(),
-        symlink_rights: can_create_symlinks(layout.root()),
-    };
-    if let Readiness::NotRun(reason) = materialise(&layout, &case, &environment)? {
-        println!("Case `{id}`: not run, because {reason}");
-        return Ok(ExitCode::from(3));
+    let resolved = resolve_case(id, kept)?;
+    if let Some(warning) = &resolved.warning {
+        println!("warning: {warning}");
     }
 
-    let drivers = ProductionDrivers {
-        oracle_exe,
-        parity_exe: std::env::current_exe().context("locating cao-parity itself")?,
-    };
-    match run_case(&layout, &drivers, &ParityRules, timeout) {
-        Ok(result) => {
-            println!("Case `{id}`");
+    let outcome = settings.with_harness(|harness| run_one(harness, id, &resolved.case));
+    println!("Case `{id}`: {}", outcome.name());
+    Ok(match &outcome {
+        CaseOutcome::Passed(result) | CaseOutcome::Different(result) => {
             println!("  Run facts:   {}", result.facts.name());
             println!("  Output tree: {}", result.tree.name());
             if result.passed() {
-                Ok(ExitCode::SUCCESS)
+                ExitCode::SUCCESS
             } else {
                 println!("  Report:      {}", layout.report().display());
-                Ok(ExitCode::from(1))
+                ExitCode::from(1)
             }
         }
-        Err(error) => {
-            println!("Case `{id}`: harness error: {error}");
+        CaseOutcome::HarnessError(message) => {
+            println!("  {message}");
             println!("  Report:      {}", layout.report().display());
-            Ok(ExitCode::from(2))
+            ExitCode::from(2)
         }
-    }
+        CaseOutcome::NotRun(reason) => {
+            println!("  because {reason}");
+            ExitCode::from(3)
+        }
+    })
 }
 
-/// Leaves the case directory holding only `case.json`, and returns the case.
-///
-/// A seed is written afresh from its committed recipe. Any other id must be a
-/// case kept in the work directory; everything but its `case.json` is removed,
-/// so it is rebuilt from that recipe. The recipe is seeded by the case id, so
-/// the rebuild has the same bytes, and a shaped `input/` (links, read-only
-/// files) never has to be copied.
-fn prepare_case(layout: &CaseLayout) -> Result<CaseFile> {
-    if let Some(case) = seed(layout.id())? {
-        remove_if_present(layout.root())?;
-        layout.write_case(&case)?;
-        return Ok(case);
-    }
-    if !layout.case_file().is_file() {
-        bail!(
-            "`{}` is neither a seed nor a case kept in {}",
-            layout.id(),
-            layout.root().display()
-        );
-    }
-    let case = layout.read_case()?;
-    let leftovers = [Side::Oracle, Side::Rust]
-        .into_iter()
-        .flat_map(|side| [layout.side(side), layout.stdout(side), layout.stderr(side)])
-        .chain([layout.input(), layout.rust_facts(), layout.report()]);
-    for path in leftovers {
-        remove_if_present(&path)?;
-    }
-    Ok(case)
-}
+/// `cao-parity corpus`: runs every seed and generated case and summarises them.
+fn corpus(arguments: &[String]) -> Result<ExitCode> {
+    let settings = Settings::resolve(&Flags::parse(arguments, &Settings::FLAGS)?)?;
+    let budgeted = corpus_cases()?;
+    let total = budgeted.cases.len();
+    let mut index = 0;
+    let mut started = Instant::now();
+    let summary = settings.with_harness(|harness| {
+        run_corpus(harness, &budgeted, &mut |id, outcome| {
+            index += 1;
+            println!(
+                "[{index:>3}/{total}] {id}: {} ({:.1} s)",
+                outcome.name(),
+                started.elapsed().as_secs_f64()
+            );
+            started = Instant::now();
+        })
+    });
 
-/// Removes a file or a whole directory tree, if anything is at `path`.
-fn remove_if_present(path: &Path) -> Result<()> {
-    let removed = if path.is_dir() {
-        std::fs::remove_dir_all(path)
-    } else if path.exists() {
-        std::fs::remove_file(path)
-    } else {
-        return Ok(());
-    };
-    removed.with_context(|| format!("removing {}", path.display()))
+    let text = summary.render();
+    println!("\n{text}");
+    let report = settings.work.join("corpus-report.md");
+    std::fs::write(&report, format!("```text\n{text}```\n"))
+        .with_context(|| format!("writing {}", report.display()))?;
+    println!("Summary: {}", report.display());
+    Ok(ExitCode::from(summary.exit_code()))
 }
 
 /// The Cargo target directory this exe was built into: `target/<profile>/cao-parity.exe`.

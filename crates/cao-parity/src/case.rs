@@ -35,7 +35,8 @@ use crate::normalise::normalise;
 use crate::oracle;
 use crate::recipe::{ProfileOverrides, TreeRecipe};
 use crate::tree::{
-    ArtifactDifference, ArtifactVerdict, DefaultRules, TreeRules, TreeSide, compare_trees,
+    ArtifactComparison, ArtifactDifference, ArtifactVerdict, DefaultRules, TreeRules, TreeSide,
+    compare_trees,
 };
 
 /// The top-level folders of a side that the harness provisions. They are not
@@ -64,6 +65,11 @@ pub struct CaseFile {
     pub profile_overrides: ProfileOverrides,
     #[serde(default)]
     pub tree: TreeRecipe,
+    /// The [`crate::generate::GENERATOR_VERSION`] that produced a generated
+    /// case; absent for a seed. A replay compares it with the running
+    /// generator's, because another version may build different bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generator_version: Option<u32>,
 }
 
 impl CaseFile {
@@ -73,6 +79,7 @@ impl CaseFile {
             spec,
             profile_overrides: ProfileOverrides::default(),
             tree: TreeRecipe::default(),
+            generator_version: None,
         }
     }
 }
@@ -518,11 +525,14 @@ impl CaseDrivers for ProductionDrivers {
     }
 }
 
-/// A case's two verdicts.
+/// A case's two verdicts, and the verdict of every artifact behind the second.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaseResult {
     pub facts: Verdict<FactDifference>,
     pub tree: Verdict<ArtifactDifference>,
+    /// Every compared path of the output tree, then, for a Dry Run, each path
+    /// a side changed from the input, as a Different artifact.
+    pub artifacts: Vec<ArtifactComparison>,
 }
 
 impl CaseResult {
@@ -536,13 +546,14 @@ impl CaseResult {
 /// and output-tree comparisons.
 ///
 /// A passing case's directory is deleted. A Different case, or one that hit a
-/// harness error, is kept with a `report.md`. A harness error is returned as
-/// `Err` after its report is written.
+/// harness error, is kept with a `report.md` written for `report`. A harness
+/// error is returned as `Err` after its report is written.
 pub fn run_case(
     layout: &CaseLayout,
     drivers: &dyn CaseDrivers,
     rules: &dyn TreeRules,
     timeout: Duration,
+    report: &ReportContext,
 ) -> Result<CaseResult, HarnessError> {
     match evaluate(layout, drivers, rules, timeout) {
         Ok(result) if result.passed() => {
@@ -552,16 +563,37 @@ pub fn run_case(
             Ok(result)
         }
         Ok(result) => {
-            write_report(layout, &different_report(&result))?;
+            write_report(layout, report, &different_report(&result))?;
             Ok(result)
         }
         Err(error) => {
-            // The harness error is what the caller must see; a report that
-            // cannot be written as well must not replace it.
-            let _ = write_report(layout, &format!("## Harness error\n\n{error}\n"));
+            write_harness_error_report(layout, report, &error);
             Err(error)
         }
     }
+}
+
+/// What a case's `report.md` says beyond its verdicts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportContext {
+    /// The exact command line that replays the case, with every option the
+    /// run used.
+    pub replay: String,
+    /// The generator version the run used, which every corpus report records;
+    /// `None` outside a corpus run, where no generator is involved.
+    pub generator_version: Option<u32>,
+}
+
+/// Writes the `report.md` of a case that hit a harness error, best effort.
+///
+/// The harness error is what the caller must see; a report that cannot be
+/// written as well must not replace it, so a write failure is dropped.
+pub fn write_harness_error_report(
+    layout: &CaseLayout,
+    report: &ReportContext,
+    error: &HarnessError,
+) {
+    let _ = write_report(layout, report, &format!("## Harness error\n\n{error}\n"));
 }
 
 /// Runs both sides and compares them, without deciding the case directory's fate.
@@ -604,7 +636,7 @@ fn evaluate(
         &normalise(&oracle_facts, &oracle_root)?,
         &normalise(&rust_facts, &rust_root)?,
     );
-    let mut tree = compare_trees(
+    let comparison = compare_trees(
         TreeSide {
             root: &oracle_root,
             run_id: run_id(&oracle_facts),
@@ -614,11 +646,16 @@ fn evaluate(
             run_id: run_id(&rust_facts),
         },
         rules,
-    )?
-    .verdict();
+    )?;
+    let mut tree = comparison.verdict();
+    let mut artifacts = comparison.artifacts;
     if spec.dry_run {
         let changed = dry_run_changes(layout, &oracle_facts, &rust_facts)?;
         if !changed.is_empty() {
+            artifacts.extend(changed.iter().map(|difference| ArtifactComparison {
+                path: difference.path.clone(),
+                verdict: ArtifactVerdict::Different(difference.clone()),
+            }));
             let mut differences = match tree {
                 Verdict::Different(differences) => differences,
                 _ => Vec::new(),
@@ -627,7 +664,11 @@ fn evaluate(
             tree = Verdict::Different(differences);
         }
     }
-    Ok(CaseResult { facts, tree })
+    Ok(CaseResult {
+        facts,
+        tree,
+        artifacts,
+    })
 }
 
 /// The rule a Dry Run breaks when it leaves its side's tree different from the input.
@@ -770,21 +811,99 @@ fn different_report(result: &CaseResult) -> String {
     text
 }
 
-/// Writes `report.md`: the body, then the captures and the replay command.
-fn write_report(layout: &CaseLayout, body: &str) -> Result<(), HarnessError> {
-    let mut text = format!("# Parity case `{}`\n\n{body}\n## Captures\n\n", layout.id());
+/// The most of one capture a report embeds; the whole file stays in the case
+/// directory.
+const EMBEDDED_CAPTURE_BYTES: usize = 64 * 1024;
+
+/// Writes `report.md`: the generator version, the body, both sides' captures
+/// embedded, the Rust facts and both sides' Application Logs by path, and the
+/// exact replay command.
+fn write_report(
+    layout: &CaseLayout,
+    report: &ReportContext,
+    body: &str,
+) -> Result<(), HarnessError> {
+    let mut text = format!("# Parity case `{}`\n\n", layout.id());
+    if let Some(version) = report.generator_version {
+        text.push_str(&format!("Generator version: {version}\n\n"));
+    }
+    text.push_str(body);
+    text.push_str("\n## Captures\n");
     let captures = [Side::Oracle, Side::Rust]
         .into_iter()
-        .flat_map(|side| [layout.stdout(side), layout.stderr(side)])
-        .chain([layout.rust_facts()]);
+        .flat_map(|side| [layout.stdout(side), layout.stderr(side)]);
     for path in captures {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        text.push_str(&format!("- `{name}`\n"));
+        text.push_str(&format!("\n### `{name}`\n\n"));
+        match std::fs::read(&path) {
+            Ok(bytes) if bytes.is_empty() => text.push_str("(empty)\n"),
+            Ok(bytes) => {
+                let shown = &bytes[..bytes.len().min(EMBEDDED_CAPTURE_BYTES)];
+                text.push_str(&fenced(&String::from_utf8_lossy(shown)));
+                if shown.len() < bytes.len() {
+                    text.push_str(&format!(
+                        "\n(the first {} of {} bytes; the whole capture is in the case directory)\n",
+                        shown.len(),
+                        bytes.len()
+                    ));
+                }
+            }
+            // The side never ran, as when the case failed before it started.
+            Err(_) => text.push_str("(not captured)\n"),
+        }
     }
-    text.push_str(&format!(
-        "\n## Replay\n\n```text\ncao-parity case {}\n```\n",
-        layout.id()
-    ));
+    text.push_str("\n## Rust facts\n\n");
+    text.push_str(if layout.rust_facts().is_file() {
+        "- `rust.facts.json`\n"
+    } else {
+        "(not written)\n"
+    });
+    text.push_str("\n## Logs\n\n");
+    for side in [Side::Oracle, Side::Rust] {
+        let mut logs = Vec::new();
+        collect_files(&layout.side(side).join("logs"), side.name(), &mut logs);
+        logs.sort();
+        if logs.is_empty() {
+            text.push_str(&format!("- {side}: no Application Log was written\n"));
+        }
+        for log in logs {
+            text.push_str(&format!("- `{log}`\n"));
+        }
+    }
+    text.push_str(&format!("\n## Replay\n\n```text\n{}\n```\n", report.replay));
     std::fs::write(layout.report(), text)
         .map_err(|error| HarnessError::io(format!("writing {}", layout.report().display()), error))
+}
+
+/// `text` in a code fence longer than any backtick run inside it, so a capture
+/// can never close its own fence.
+fn fenced(text: &str) -> String {
+    let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    let newline = if text.ends_with('\n') { "" } else { "\n" };
+    format!("{fence}text\n{text}{newline}{fence}\n")
+}
+
+/// Collects every file beneath `directory` as a `/`-separated path: `prefix`,
+/// then `directory`'s own name, then the path within it. A missing directory
+/// adds nothing.
+fn collect_files(directory: &Path, prefix: &str, found: &mut Vec<String>) {
+    let Ok(items) = std::fs::read_dir(directory) else {
+        // No `logs/` folder: the side never got far enough to write one.
+        return;
+    };
+    let prefix = format!(
+        "{prefix}/{}",
+        directory.file_name().unwrap_or_default().to_string_lossy()
+    );
+    // An entry that cannot be read is skipped: the list only points a reader
+    // at logs, and the case directory itself is kept for them to browse.
+    for item in items.flatten() {
+        let path = item.path();
+        if path.is_dir() {
+            collect_files(&path, &prefix, found);
+        } else {
+            found.push(format!("{prefix}/{}", item.file_name().to_string_lossy()));
+        }
+    }
 }
