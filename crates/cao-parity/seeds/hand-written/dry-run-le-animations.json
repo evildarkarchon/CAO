@@ -1,0 +1,52 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/DryRunMod"
+    },
+    "dry_run": true,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": false,
+      "target_width": 2048,
+      "target_height": 2048
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": true,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "local_asset",
+        "path": "mods/DryRunMod/meshes/actors/character/animations/1hm_1stp_run.hkx",
+        "asset": "le-animation-character-1hm_1stp_run.hkx",
+        "note": "A Dry Run reports each Animation as one that would be converted, without running hkxcmd."
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/DryRunMod/meshes/actors/character/animations/2hw_equip.hkx",
+        "asset": "le-animation-character-2hw_equip.hkx"
+      }
+    ]
+  }
+}

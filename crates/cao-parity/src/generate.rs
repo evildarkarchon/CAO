@@ -20,7 +20,8 @@
 //!   `local_asset` entry, #501, and synthetic Meshes, #503) and a headpart
 //!   plugin (#529). Each joins the array with a [`GENERATOR_VERSION`] bump once
 //!   its recipe entry exists; the pool's entry does, but the pinned list holds
-//!   no LE entries yet.
+//!   no LE Meshes yet. LE Animations are pinned (#502), and the seeds cover
+//!   them; generated Animation cases still hold no `.hkx` files.
 
 use cao_archive::Settings;
 

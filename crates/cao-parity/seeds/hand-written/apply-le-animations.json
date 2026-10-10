@@ -1,0 +1,148 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/AnimationMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": false,
+      "target_width": 2048,
+      "target_height": 2048
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": true,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/character/animations/1hm_1stp_run.hkx",
+        "asset": "le-animation-character-1hm_1stp_run.hkx",
+        "note": "LE Animations converted by hkxcmd.exe from each side's bin/ (#502): both builds run `convert <src> -o <dst> -v AMD64` on the same bytes, so every output is byte-identical. Not run without hkxcmd.exe or the LE pool's Skyrim - Animations.bsa."
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/character/animations/2hw_equip.hkx",
+        "asset": "le-animation-character-2hw_equip.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/character/animations/bleedout_mrhselfconcentration.hkx",
+        "asset": "le-animation-character-bleedout_mrhselfconcentration.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/character/animations/dw_attackpowerknifeslashcombo.hkx",
+        "asset": "le-animation-character-dw_attackpowerknifeslashcombo.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/character/animations/magcast_walkforward.hkx",
+        "asset": "le-animation-character-magcast_walkforward.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/character/animations/shd_blockanticipate.hkx",
+        "asset": "le-animation-character-shd_blockanticipate.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/character/_1stperson/animations/1hm_1stp_run.hkx",
+        "asset": "le-animation-1stperson-1hm_1stp_run.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/character/_1stperson/animations/dw1hm1hmblockbash.hkx",
+        "asset": "le-animation-1stperson-dw1hm1hmblockbash.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/draugr/animations/1hmattacka.hkx",
+        "asset": "le-animation-draugr-1hmattacka.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/dragon/animations/ground_bite.hkx",
+        "asset": "le-animation-dragon-ground_bite.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/werewolfbeast/animations/ww_attackleft.hkx",
+        "asset": "le-animation-werewolfbeast-ww_attackleft.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/falmer/animations/1hm_aggrowarning1.hkx",
+        "asset": "le-animation-falmer-1hm_aggrowarning1.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/canine/animations/aggrowarning1.hkx",
+        "asset": "le-animation-canine-aggrowarning1.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/horse/animations/attack1.hkx",
+        "asset": "le-animation-horse-attack1.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/troll/animations/bleedoutgetup.hkx",
+        "asset": "le-animation-troll-bleedoutgetup.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/giant/animations/aggrowarning1.hkx",
+        "asset": "le-animation-giant-aggrowarning1.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/auxbones/tail/animations/1hm_equip.hkx",
+        "asset": "le-animation-tail-1hm_equip.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/dungeons/dwemer/animated/astrolabe/hub/animations/seq00.hkx",
+        "asset": "le-animation-astrolabe-seq00.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/ambient/chicken/character assets/skeleton.hkx",
+        "asset": "le-animation-chicken-skeleton.hkx"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/AnimationMod/meshes/actors/ambient/hare/behaviors/harebehavior.hkx",
+        "asset": "le-animation-hare-harebehavior.hkx"
+      },
+      {
+        "kind": "text",
+        "path": "mods/AnimationMod/readme.txt",
+        "text": "Animation mod\r\n",
+        "note": "Not an Asset; untouched."
+      }
+    ]
+  }
+}

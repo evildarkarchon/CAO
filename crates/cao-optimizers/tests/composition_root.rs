@@ -120,12 +120,12 @@ fn work_this_build_cannot_do_is_refused_up_front() {
         Err(RunSetupError::Unavailable(_))
     ));
 
+    // Animations are ported (#502), in both modes.
     let mut options = dry_run_textures(&app, &app.join("mods/Mod"));
     options.animations_optimization = true;
-    assert!(matches!(
-        ApplicationRun::new(&app, "SSE", &options),
-        Err(RunSetupError::Unavailable(_))
-    ));
+    assert!(ApplicationRun::new(&app, "SSE", &options).is_ok());
+    options.dry_run = false;
+    assert!(ApplicationRun::new(&app, "SSE", &options).is_ok());
 
     // Archive creation is ported (#498), in both modes.
     let mut options = dry_run_textures(&app, &app.join("mods/Mod"));

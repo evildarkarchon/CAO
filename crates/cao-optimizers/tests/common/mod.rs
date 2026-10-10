@@ -111,6 +111,20 @@ pub fn write(root: &Path, relative: &str, bytes: &[u8]) {
     std::fs::write(&path, bytes).unwrap();
 }
 
+/// The names left in `mod_root/.cao-staging`, sorted. After a clean Apply only
+/// [`STAGING_CONTROL_FILES`] remain.
+pub fn staging_leftovers(mod_root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(mod_root.join(".cao-staging"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// The staging control files a run leaves in `.cao-staging`, sorted.
+pub const STAGING_CONTROL_FILES: [&str; 2] = ["owner.lock", "ownership.manifest"];
+
 /// Every file under `root` with its bytes, for proving a tree was not touched.
 pub fn snapshot_tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     let mut files = BTreeMap::new();

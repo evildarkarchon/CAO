@@ -14,9 +14,9 @@
 # internal path), `category` (`static`, `skinned`, `headpart`, `facegen`,
 # `lod` or `animation`), `sha256`, and an optional `note`.
 #
-# LE entries are still to be pinned: the research (#473) calls for about 20
-# LE Animations, the conversion inputs, and about 30 LE Meshes. They need an
-# LE install to hash.
+# The 20 LE Animations at the end are `hkxcmd`'s conversion inputs (#502),
+# hashed from an LE `Skyrim - Animations.bsa`. The research (#473) also calls
+# for about 30 LE Meshes, which are still to be pinned.
 
 [[asset]]
 id = "sse-static-norpullchainanim01.nif"
@@ -289,3 +289,172 @@ archive = "Skyrim - Animations.bsa"
 path = "meshes/actors/character/animations/cartprisonercsway.hkx"
 category = "animation"
 sha256 = "fc194168cbef530b4c3f7f3c105477fa4f90b9ce312e5b40a7f8ce1ca7e60f4c"
+
+# LE Animations, the conversion inputs of hkxcmd (#502): clips from the
+# character, first-person, creature, tail and dungeon-object folders, plus a
+# skeleton and a behavior graph, which hkxcmd converts too.
+
+[[asset]]
+id = "le-animation-character-1hm_1stp_run.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/character/animations/1hm_1stp_run.hkx"
+category = "animation"
+sha256 = "c9848b9bac477ce4b722746b59e4281189e9f2ef144e682f605028985ec5957f"
+
+[[asset]]
+id = "le-animation-character-2hw_equip.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/character/animations/2hw_equip.hkx"
+category = "animation"
+sha256 = "d0a623a7567188735950ea227e860710e28348426b5c6d57e83ccf1ed0c9d012"
+
+[[asset]]
+id = "le-animation-character-bleedout_mrhselfconcentration.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/character/animations/bleedout_mrhselfconcentration.hkx"
+category = "animation"
+sha256 = "e32323eb3357be8a61390eef56585e1807dd9019df98853300c4202c5ac755d2"
+
+[[asset]]
+id = "le-animation-character-dw_attackpowerknifeslashcombo.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/character/animations/dw_attackpowerknifeslashcombo.hkx"
+category = "animation"
+sha256 = "97e61f2c864ab7352b9202f15f234dd1aafd71a3eebd0c5a094525d6279162c4"
+
+[[asset]]
+id = "le-animation-character-magcast_walkforward.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/character/animations/magcast_walkforward.hkx"
+category = "animation"
+sha256 = "06ed11f1e053c042a6116d85811124b5a5e7a5fd7ee459a4f30f1d94a57e858d"
+
+[[asset]]
+id = "le-animation-character-shd_blockanticipate.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/character/animations/shd_blockanticipate.hkx"
+category = "animation"
+sha256 = "54633c02690dc0f0822738ed20e0112b63510a57382b7de5f32125c3a5feefc5"
+
+[[asset]]
+id = "le-animation-1stperson-1hm_1stp_run.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/character/_1stperson/animations/1hm_1stp_run.hkx"
+category = "animation"
+sha256 = "504cc31a5bbd432351621f75f5cf2f7499caf7149be2d8625b6c5ba4837f0635"
+note = "A first-person Animation."
+
+[[asset]]
+id = "le-animation-1stperson-dw1hm1hmblockbash.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/character/_1stperson/animations/dw1hm1hmblockbash.hkx"
+category = "animation"
+sha256 = "1677c19d7a86cfa537f55c0056917574300a4665d213b5cc4ee7435cdbf9fbde"
+note = "A first-person Animation."
+
+[[asset]]
+id = "le-animation-draugr-1hmattacka.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/draugr/animations/1hmattacka.hkx"
+category = "animation"
+sha256 = "b674a6fe7a2f5f69431e616df487217f6f96df61208cb515faa04cdb7ccc98e9"
+
+[[asset]]
+id = "le-animation-dragon-ground_bite.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/dragon/animations/ground_bite.hkx"
+category = "animation"
+sha256 = "103836ca499a80d7f21b9a7a345691e2996b7891eacbaa45536ceba371a051bc"
+
+[[asset]]
+id = "le-animation-werewolfbeast-ww_attackleft.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/werewolfbeast/animations/ww_attackleft.hkx"
+category = "animation"
+sha256 = "02e0f0e862f0c99eb24de0a11848fc8fa373ea5a96855763e58d6a89aec34d4b"
+
+[[asset]]
+id = "le-animation-falmer-1hm_aggrowarning1.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/falmer/animations/1hm_aggrowarning1.hkx"
+category = "animation"
+sha256 = "720d9c412c6099aeb5b61669f30298c99d20801cfea2edc2eecad32e02952ccd"
+
+[[asset]]
+id = "le-animation-canine-aggrowarning1.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/canine/animations/aggrowarning1.hkx"
+category = "animation"
+sha256 = "852a670159d45a0dbe7ad7631e348c070c17be4dbd09f430c3e8559d92699db0"
+
+[[asset]]
+id = "le-animation-horse-attack1.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/horse/animations/attack1.hkx"
+category = "animation"
+sha256 = "5aa387a9e11a4fabb6c3f940a599ccfe4c7cd1e82b8ff19b09f487492c64544b"
+
+[[asset]]
+id = "le-animation-troll-bleedoutgetup.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/troll/animations/bleedoutgetup.hkx"
+category = "animation"
+sha256 = "e6856b5687ab50cfa0d44a07109dbee994c6ea5de6cff87e363b163b5e8e074f"
+
+[[asset]]
+id = "le-animation-giant-aggrowarning1.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/giant/animations/aggrowarning1.hkx"
+category = "animation"
+sha256 = "39087fabe8eb05ebf86a8376e13df7a65e776f6b077e77a585eb88145154de6c"
+
+[[asset]]
+id = "le-animation-tail-1hm_equip.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/auxbones/tail/animations/1hm_equip.hkx"
+category = "animation"
+sha256 = "f350c6ea8fb3ccc997b84e71c0788de33712f6794a9bd11d434d833c88a3ed97"
+
+[[asset]]
+id = "le-animation-astrolabe-seq00.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/dungeons/dwemer/animated/astrolabe/hub/animations/seq00.hkx"
+category = "animation"
+sha256 = "f1dc04db724820a793394c1c38b409be94a7deae9e1fdfb8975334603171986d"
+note = "A dungeon object's Animation."
+
+[[asset]]
+id = "le-animation-chicken-skeleton.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/ambient/chicken/character assets/skeleton.hkx"
+category = "animation"
+sha256 = "71241aba1d1c490d012b7cb047f7ca5cd115c995568f60b3694f18a165f11233"
+note = "A skeleton, not an Animation clip; hkxcmd converts it too."
+
+[[asset]]
+id = "le-animation-hare-harebehavior.hkx"
+edition = "le"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/ambient/hare/behaviors/harebehavior.hkx"
+category = "animation"
+sha256 = "445a3650111fa305ab32da365215806d0794da67983fea0a5d618f53269c48ce"
+note = "A behavior graph, not an Animation clip; hkxcmd converts it too."

@@ -14,7 +14,9 @@ use cao_core::run::RunOutcome;
 use cao_optimizers::composition::ApplicationRun;
 use cao_optimizers::device::GpuDevice;
 use cao_profiles::Options;
-use common::{app_dir, profile_options, serial, write, write_dds};
+use common::{
+    STAGING_CONTROL_FILES, app_dir, profile_options, serial, staging_leftovers, write, write_dds,
+};
 use directxtex::{
     CP_FLAGS_NONE, DDS_FLAGS_NONE, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC3_UNORM,
     DXGI_FORMAT_BC7_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, ScratchImage, TexMetadata,
@@ -82,12 +84,7 @@ fn a_tes5_apply_publishes_bc3_textures_and_quarantines_broken_ones() {
         assert_eq!(attempt.result.mutation_state(), MutationState::Committed);
     }
     assert_eq!(result.mutation_summaries()[0].committed, 2);
-    let mut staging: Vec<String> = std::fs::read_dir(mod_root.join(".cao-staging"))
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    staging.sort();
-    assert_eq!(staging, ["owner.lock", "ownership.manifest"]);
+    assert_eq!(staging_leftovers(&mod_root), STAGING_CONTROL_FILES);
 }
 
 /// Spec (#494): mipmaps are generated on the Run Worker. An 8-bit Texture's

@@ -134,9 +134,14 @@ Add an `[[asset]]` table to `local-assets.toml` with `id`, `edition` (`le` or `s
 the pool is the one you mean to pin, then copy the hash in. Ids start with the edition, as
 in `sse-static-<file name>`.
 
-The list pins SSE entries only so far. The LE entries the research (#473) calls for, about
-20 LE Animations as `hkxcmd` conversion inputs and about 30 LE Meshes, need an LE install to
-hash.
+The list pins SSE Meshes and Animations, and 20 LE Animations from LE's
+`Skyrim - Animations.bsa` as `hkxcmd` conversion inputs (#502). The seeds
+`apply-le-animations`, `apply-le-animation-faults` and `dry-run-le-animations` use them, so
+they also need `hkxcmd.exe` (`--hkxcmd`, `CAO_HKXCMD` or the repository's `bin/`). The
+research (#473) also calls for about 30 LE Meshes, which still need pinning.
+
+A pin is the SHA-256 of an entry's extracted bytes, so an entry can be hashed from a loose
+copy extracted from the same BSA. The pool itself still has to hold the BSA.
 
 ## Oracle-only behaviour
 

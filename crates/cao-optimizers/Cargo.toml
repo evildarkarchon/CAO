@@ -46,3 +46,9 @@ embed-resource.workspace = true
 # Builds raw TES3, TES4 and FO4 Archives with names `cao-archive` never writes,
 # as the C++ suite built them with `rsm-bsa` directly.
 ba2.workspace = true
+
+# The Animation scenarios' binary is also their fake `hkxcmd.exe`, which
+# libtest would reject the converter's arguments for; it runs its own scenarios.
+[[test]]
+name = "animations"
+harness = false

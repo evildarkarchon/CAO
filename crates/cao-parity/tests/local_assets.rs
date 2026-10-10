@@ -55,6 +55,23 @@ fn the_committed_pinned_list_is_valid_and_covers_every_mesh_kind() {
     }
 }
 
+/// #502: the LE Animations `hkxcmd` converts, about 20 as the research (#473)
+/// asked, all from LE's `Skyrim - Animations.bsa`.
+#[test]
+fn the_committed_pinned_list_holds_le_animations_to_convert() {
+    let list = PinnedList::committed().unwrap();
+    let le_animations: Vec<_> = list
+        .assets
+        .iter()
+        .filter(|asset| asset.edition == Edition::Le && asset.category == Category::Animation)
+        .collect();
+    assert!(le_animations.len() >= 20, "{}", le_animations.len());
+    for asset in le_animations {
+        assert_eq!(asset.archive, "Skyrim - Animations.bsa", "{}", asset.id);
+        assert!(asset.path.ends_with(".hkx"), "{}", asset.id);
+    }
+}
+
 /// The pool is gitignored, so a maintainer's BSAs can never be committed,
 /// while the list pinning it is not.
 #[test]

@@ -9,9 +9,11 @@ use std::path::{Path, PathBuf};
 use cao_parity::HarnessError;
 use cao_parity::case::{CaseFile, CaseLayout, CaseSpec, Side, SideResources};
 use cao_parity::cases::{fixtures_dir, seed, seeds};
-use cao_parity::local_assets::{LocalAssetPool, PinnedList, sha256_hex};
-use cao_parity::materialise::{Environment, PATH_CAP_UTF16, Readiness, materialise, write_input};
-use cao_parity::recipe::{TextureFormat, TreeRecipe};
+use cao_parity::local_assets::{Edition, LocalAssetPool, PinnedList, sha256_hex};
+use cao_parity::materialise::{
+    Environment, PATH_CAP_UTF16, Readiness, Sources, materialise, write_input, write_input_from,
+};
+use cao_parity::recipe::{ContentEntry, TextureFormat, TreeRecipe};
 use common::{TempDir, shipped_profiles};
 use directxtex::{DDS_FLAGS_NONE, DXGI_FORMAT, ScratchImage, TexMetadata};
 
@@ -296,10 +298,100 @@ fn every_committed_seed_builds() {
         "{:?}",
         seeds.iter().map(|(id, _)| id).collect::<Vec<_>>()
     );
+    // Seeds using the pool are built from a stand-in for it, so they are
+    // checked here whether or not this host has the real one.
+    let ids: Vec<String> = seeds
+        .iter()
+        .flat_map(|(_, case)| local_asset_ids(case))
+        .collect();
+    let pool = stand_in_pool(&temp.path().join("pool"), &ids);
     for (id, case) in seeds {
-        write_input(&case, &id, &temp.path().join(&id), &fixtures_dir())
+        let local_assets = pool
+            .fetch(local_asset_ids(&case).iter().map(String::as_str))
+            .unwrap_or_else(|reason| panic!("seed `{id}`: {reason}"));
+        let sources = Sources {
+            fixtures: &fixtures_dir(),
+            local_assets: &local_assets,
+        };
+        write_input_from(&case, &id, &temp.path().join(&id), &sources)
             .unwrap_or_else(|error| panic!("seed `{id}`: {error}"));
     }
+}
+
+/// The ids of every `local_asset` entry in `case`, packed ones included.
+fn local_asset_ids(case: &CaseFile) -> Vec<String> {
+    case.tree
+        .content
+        .iter()
+        .flat_map(|entry| match entry {
+            ContentEntry::Archive(archive) => archive.content.as_slice(),
+            _ => std::slice::from_ref(entry),
+        })
+        .filter_map(|entry| match entry {
+            ContentEntry::LocalAsset(asset) => Some(asset.asset.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A pool at `root` standing in for the committed pinned list's entries
+/// `ids`: each keeps its id, edition, BSA and internal path, but holds
+/// stand-in bytes, and is pinned by their hash.
+///
+/// Panics when an id is not in the committed list, which is a seed error.
+fn stand_in_pool(root: &Path, ids: &[String]) -> LocalAssetPool {
+    let committed = PinnedList::committed().unwrap();
+    let mut pinned = PinnedList::default();
+    for id in ids {
+        if pinned.get(id).is_some() {
+            continue;
+        }
+        let mut asset = committed
+            .get(id)
+            .unwrap_or_else(|| panic!("`{id}` is not in the pinned list"))
+            .clone();
+        asset.sha256 = sha256_hex(stand_in_bytes(id).as_bytes());
+        pinned.assets.push(asset);
+    }
+    // One BSA per edition folder and archive name, as the real pool holds.
+    let mut archives: Vec<(String, Edition, Vec<serde_json::Value>)> = Vec::new();
+    for asset in &pinned.assets {
+        let path = format!("{}/{}", asset.edition.folder(), asset.archive);
+        let entry = serde_json::json!(
+            {"kind": "text", "path": asset.path, "text": stand_in_bytes(&asset.id)}
+        );
+        match archives.iter_mut().find(|(known, _, _)| *known == path) {
+            Some((_, _, content)) => content.push(entry),
+            None => archives.push((path, asset.edition, vec![entry])),
+        }
+    }
+    let content: Vec<serde_json::Value> = archives
+        .into_iter()
+        .map(|(path, edition, content)| {
+            // LE's BSAs are TES5 (v104), SSE's are v105.
+            let game = match edition {
+                Edition::Le => "tes5",
+                Edition::Sse => "sse",
+            };
+            serde_json::json!(
+                {"kind": "archive", "path": path, "game": game, "type": "standard",
+                 "content": content}
+            )
+        })
+        .collect();
+    write_input(
+        &shaped(serde_json::Value::Array(content), serde_json::json!([])),
+        "stand-in-pool",
+        root,
+        &fixtures_dir(),
+    )
+    .unwrap();
+    LocalAssetPool::new(root.to_path_buf(), pinned)
+}
+
+/// The stand-in bytes of the pinned entry `id`.
+fn stand_in_bytes(id: &str) -> String {
+    format!("stand-in for {id}")
 }
 
 #[test]

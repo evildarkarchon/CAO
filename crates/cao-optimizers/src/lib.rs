@@ -6,6 +6,8 @@
 //! - [`device`] is the texture backend's per-thread native setup: COM, which
 //!   WIC-backed mipmap generation needs, and the D3D11 device that encodes BC6H
 //!   and BC7 on the GPU. It is the one module allowed `unsafe`.
+//! - [`animations`] converts LE Animations by running the app directory's
+//!   `bin/hkxcmd.exe` as a subprocess (#502).
 //! - [`backend`] is the one Asset Execution Backend over every optimizer.
 //! - [`archives`] implements core's archive reader over `cao-archive`, and the
 //!   capacity and volume-identity probes over `cao-winfs` (#497).
@@ -16,6 +18,7 @@
 //! - [`application_log`] is the `log` facade's sink both binaries install: the
 //!   Application Log's HTML file, and the rows the Log tab shows (#470).
 
+pub mod animations;
 pub mod application_log;
 pub mod archives;
 pub mod backend;

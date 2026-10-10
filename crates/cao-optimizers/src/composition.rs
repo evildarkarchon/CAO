@@ -9,7 +9,7 @@
 //! exercises the wiring users run.
 //!
 //! Everything resolves against the app directory the caller passes: `profiles/`
-//! here, and later `logs/` and `bin/hkxcmd.exe` (deviation 1). Only `cao-gui`'s
+//! and `bin/hkxcmd.exe` here, and later `logs/` (deviation 1). Only `cao-gui`'s
 //! `main` derives that directory from the exe.
 
 use std::path::{Path, PathBuf};
@@ -31,6 +31,7 @@ use cao_core::run::{
 use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
 use directxtex::DXGI_FORMAT;
 
+use crate::animations::Hkxcmd;
 use crate::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
 use crate::backend::{OptimizerBackend, TextureResize, TextureSettings};
 use crate::textures::TextureProfile;
@@ -112,6 +113,7 @@ impl ApplicationRun {
         let configuration = Arc::new(ProfileConfigurationProvider::new(app_dir));
         let work = Arc::new(ApplicationRunWork {
             settings,
+            hkxcmd: Hkxcmd::in_app_dir(app_dir),
             configuration: Arc::clone(&configuration),
             profile: Mutex::new(None),
         });
@@ -287,9 +289,6 @@ impl OptimizerSettings {
     fn from_options(options: &Options) -> Result<Self, RunSetupError> {
         if requests_mesh_work(options) {
             return Err(RunSetupError::Unavailable("Mesh optimization"));
-        }
-        if options.animations_optimization {
-            return Err(RunSetupError::Unavailable("Animation optimization"));
         }
         // Ratio wins when both are on, as in `MainOptimizer::optimizeTexture`.
         let resize = if options.textures_resize_ratio {
@@ -468,6 +467,9 @@ fn texture_profile(settings: &ProfileSettings) -> TextureProfile {
 /// The production Run Work Service, ported from C++ `ApplicationRunWork`.
 struct ApplicationRunWork {
     settings: OptimizerSettings,
+    /// The app directory's `bin/hkxcmd.exe`; each run's backend gets a fresh
+    /// copy, so each run checks for the exe once, as each C++ run did.
+    hkxcmd: Hkxcmd,
     configuration: Arc<ProfileConfigurationProvider>,
     /// The provider's Preparing snapshot, pinned for the whole run.
     profile: Mutex<Option<Arc<PreparedProfile>>>,
@@ -518,8 +520,12 @@ impl RunWorkService for ApplicationRunWork {
                 // join COM. C++'s texture optimizer threw when it could not,
                 // and the Asset Run contained the exception as an unsafe
                 // Operation Failure; it contains this panic the same way.
-                OptimizerBackend::new(self.settings.textures, texture_profile.clone())
-                    .unwrap_or_else(|error| panic!("{error}"))
+                OptimizerBackend::new(
+                    self.settings.textures,
+                    texture_profile.clone(),
+                    self.hkxcmd.clone(),
+                )
+                .unwrap_or_else(|error| panic!("{error}"))
             });
             let result = AssetExecutor::new(backend).execute(asset, artifacts, mod_root);
             Ok(quarantine_failed_load(asset, result))

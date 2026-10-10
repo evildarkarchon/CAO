@@ -6,13 +6,14 @@
 //! turns a Routed Asset's operations into one optimizer's request, as
 //! `MainOptimizer::optimizeTexture` does.
 //!
-//! Only Textures are ported. The composition root refuses Mesh and Animation
-//! work before a run touches anything, but Texture conversion still routes every
+//! Textures and Animations are ported. The composition root refuses Mesh work
+//! before a run touches anything, but Texture conversion still routes every
 //! Mesh for Mesh Reference Maintenance, so Meshes do reach this backend. Until
 //! `nifly-sys` lands they fail to load, which a parity case with a real Mesh
 //! reports as Different rather than hiding. Apply runs a Texture decision (see
 //! [`crate::textures`]), encoding BC6H and BC7 on the Run Worker's D3D11 device
-//! when it has one (#495).
+//! when it has one (#495), and converts Animations with the app directory's
+//! `hkxcmd.exe` (see [`crate::animations`], #502).
 
 use std::path::Path;
 
@@ -21,6 +22,7 @@ use cao_core::routing::{
     AssetOperation, AssetOperations, ExecutionMode, MeshVariant, TextureVariant,
 };
 
+use crate::animations::Hkxcmd;
 use crate::device::{ComUnavailable, GpuDevice, initialize_com};
 use crate::textures::{Texture, TextureProfile, TextureRequest};
 
@@ -47,17 +49,20 @@ pub struct TextureSettings {
 /// The Asset Execution Backend of one run, owned by its Run Worker.
 ///
 /// It holds at most one loaded Texture at a time, as the C++ optimizers do,
-/// and the Run Worker's D3D11 device for BC6H and BC7, if it got one.
+/// the Run Worker's D3D11 device for BC6H and BC7, if it got one, and the
+/// run's Animation converter.
 pub struct OptimizerBackend {
     textures: TextureSettings,
     texture_profile: TextureProfile,
     gpu: Option<GpuDevice>,
     loaded: Option<Texture>,
     texture_failure_detail: String,
+    hkxcmd: Hkxcmd,
 }
 
 impl OptimizerBackend {
-    /// A backend applying `textures` under the profile's `texture_profile`.
+    /// A backend applying `textures` under the profile's `texture_profile`,
+    /// converting Animations with `hkxcmd`.
     ///
     /// Creates a D3D11 device on the first adapter and joins the calling
     /// thread to COM's multithreaded apartment, as C++ `TexturesOptimizer`'s
@@ -73,6 +78,7 @@ impl OptimizerBackend {
     pub fn new(
         textures: TextureSettings,
         texture_profile: TextureProfile,
+        hkxcmd: Hkxcmd,
     ) -> Result<Self, ComUnavailable> {
         // C++ always asks for the first adapter.
         let gpu = GpuDevice::create(0)
@@ -90,6 +96,7 @@ impl OptimizerBackend {
             gpu,
             loaded: None,
             texture_failure_detail: String::new(),
+            hkxcmd,
         })
     }
 
@@ -252,12 +259,29 @@ impl AssetExecutionBackend for OptimizerBackend {
         false
     }
 
+    /// As C++ `MainOptimizer::optimizeAnimation`: a Dry Run reports every
+    /// Animation as one that would change, without starting the converter;
+    /// Apply converts it into the staged `output_path`. The failure message
+    /// becomes the Asset Failure's service detail.
     fn optimize_animation(
         &mut self,
-        _path: &Path,
-        _output_path: Option<&Path>,
-        _mode: ExecutionMode,
+        path: &Path,
+        output_path: Option<&Path>,
+        mode: ExecutionMode,
     ) -> OperationResult {
-        OperationResult::failed(unavailable("Animation optimization"))
+        if mode == ExecutionMode::DryRun {
+            log::info!(
+                "{} would be converted to the appropriate format.",
+                path.display()
+            );
+            return OperationResult::changed();
+        }
+        let Some(output_path) = output_path else {
+            return OperationResult::failed("Apply supplied no Animation staging path.");
+        };
+        match self.hkxcmd.convert(path, output_path) {
+            Ok(()) => OperationResult::changed(),
+            Err(error) => OperationResult::failed(error.to_string()),
+        }
     }
 }
