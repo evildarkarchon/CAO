@@ -10,6 +10,8 @@ use std::sync::{Mutex, MutexGuard};
 use cao_profiles::{Options, Profiles};
 use directxtex::{CP_FLAGS_NONE, DDS_FLAGS_NONE, DXGI_FORMAT, ScratchImage};
 
+pub mod plugin;
+
 /// Serializes scenarios that start runs: one run may be active per process,
 /// and a test binary runs its tests on parallel threads.
 pub fn serial() -> MutexGuard<'static, ()> {

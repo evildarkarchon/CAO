@@ -301,7 +301,16 @@ pub trait AssetExecutionBackend {
 
     /// Applies or evaluates ordinary optimization against the loaded Mesh; `path`
     /// is context, never a destination.
-    fn optimize_mesh(&mut self, path: &Path, mode: ExecutionMode) -> OperationResult;
+    ///
+    /// `mod_root` is the canonical Mod Root the attempt is attributed to, or
+    /// empty for a standalone call without one. A backend matches the Mesh's
+    /// game path within it, such as against Headpart Meshes (deviation 17).
+    fn optimize_mesh(
+        &mut self,
+        path: &Path,
+        mod_root: &Path,
+        mode: ExecutionMode,
+    ) -> OperationResult;
 
     /// Applies or evaluates Mesh Reference Maintenance against the loaded Mesh.
     fn maintain_mesh_references(&mut self, mode: ExecutionMode) -> OperationResult;
@@ -752,7 +761,9 @@ impl<'b> AssetExecutor<'b> {
         }
         let mut would_change = false;
         if asset.operations().contains(AssetOperation::Optimization) {
-            let optimization = self.backend.optimize_mesh(path, asset.execution_mode());
+            let optimization = self
+                .backend
+                .optimize_mesh(path, mod_root, asset.execution_mode());
             if !optimization.succeeded() {
                 return AssetExecutionResult::failed(
                     AssetExecutionFailure::OperationFailed,

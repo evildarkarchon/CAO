@@ -114,6 +114,7 @@ dependencies = [
  "chrono",
  "directxtex",
  "embed-resource",
+ "flate2",
  "log",
  "nifly-sys",
  "thiserror 2.0.21",

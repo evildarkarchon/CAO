@@ -28,6 +28,8 @@ cao-winfs.workspace = true
 chrono.workspace = true
 # Resolves to CAO's fork through the root `[patch.crates-io]` (#479).
 directxtex.workspace = true
+# Decompresses compressed HDPT records when listing Headpart Meshes (#505).
+flate2.workspace = true
 log.workspace = true
 # The Mesh backend (#504), without the parity corpus's `corpus` feature.
 nifly-sys.workspace = true
@@ -48,6 +50,8 @@ embed-resource.workspace = true
 # Builds raw TES3, TES4 and FO4 Archives with names `cao-archive` never writes,
 # as the C++ suite built them with `rsm-bsa` directly.
 ba2.workspace = true
+# Writes the compressed HDPT records the plugin scenarios read (#505).
+flate2.workspace = true
 
 # The Animation scenarios' binary is also their fake `hkxcmd.exe`, which
 # libtest would reject the converter's arguments for; it runs its own scenarios.

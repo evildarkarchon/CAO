@@ -248,7 +248,12 @@ impl AssetExecutionBackend for HookBackend {
         self.load("load_mesh", path)
     }
 
-    fn optimize_mesh(&mut self, _path: &Path, mode: ExecutionMode) -> OperationResult {
+    fn optimize_mesh(
+        &mut self,
+        _path: &Path,
+        _mod_root: &Path,
+        mode: ExecutionMode,
+    ) -> OperationResult {
         self.modes.push(mode);
         self.enter("optimize_mesh");
         self.operation.clone()

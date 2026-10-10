@@ -1,0 +1,117 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/HeadpartMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": false,
+      "target_width": 2048,
+      "target_height": 2048
+    },
+    "meshes": {
+      "level": 1,
+      "headparts": true,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "raw",
+        "path": "mods/HeadpartMod/HeadpartMod.esp",
+        "base64": "VEVTNBIAAAAAAAAAAQgAAAAAAAAsAAAASEVEUgwASOHaPwIAAAACCAAAR1JVUMcAAABIRFBUAAAAAAAAAAAAAAAASERQVDwAAAAAAAAAAQgAAAAAAAAsAAAARURJRBIASGVhZHBhcnRNb2RIYWlyMDEATU9ETBcASGVhZHBhcnRNb2RcSGFpcjAxLm5pZgBEQVRBAQABSERQVEMAAAAAAAAAAQgAAAAAAAAsAAAARURJRBIASGVhZHBhcnRNb2RIYWlyMDIATU9ETB4ATWVzaGVzXEhlYWRwYXJ0TW9kXEhhaXIwMi5uaWYAREFUQQEAAQ==",
+        "note": "Headpart Meshes from a plugin (#505): a TES4 header and one uncompressed HDPT group of two records, whose MODL fields name `HeadpartMod\\Hair01.nif` (no `meshes` prefix) and `Meshes\\HeadpartMod\\Hair02.nif` (with one). No deviation 17 trigger: framing is whole, nothing is compressed, and each MODL is short and NUL-terminated. Raw until plugin recipe entries exist (#529)."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/HeadpartMod/meshes/headpartmod/hair01.nif",
+        "version": "le",
+        "shapes": [
+          {
+            "name": "Hair",
+            "textures": [
+              "textures\\headpartmod\\hair01.dds"
+            ]
+          }
+        ],
+        "note": "Named by the plugin without its `meshes` prefix, and in another case: optimized as a headpart at the necessary level, converted from LE to SSE, although its scan finds no critical issue."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/HeadpartMod/meshes/headpartmod/hair02.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Hair",
+            "textures": [
+              "textures\\headpartmod\\hair02.dds"
+            ]
+          }
+        ],
+        "note": "Named by the plugin with its `meshes` prefix: optimized as a headpart and saved."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/HeadpartMod/meshes/actors/character/character assets/beards/humanbeardlong01.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Beard",
+            "textures": [
+              "textures\\actors\\character\\beards\\beard01.dds"
+            ]
+          }
+        ],
+        "note": "Listed in the SSE profile's customHeadparts.txt: optimized as a headpart and saved."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/HeadpartMod/meshes/actors/character/facegendata/facegeom/headpartmod.esp/00000801.nif",
+        "version": "le",
+        "shapes": [
+          {
+            "name": "Head",
+            "textures": [
+              "textures\\actors\\character\\head.dds"
+            ]
+          }
+        ],
+        "note": "On a facegen path, in Apply: optimized as a headpart and converted to SSE. Dry Run would apply the same rule only in Rust (deviation 17), so this seed is Apply."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/HeadpartMod/meshes/clutter/synthetic/bowl_le.nif",
+        "version": "le",
+        "shapes": [
+          {
+            "name": "Bowl",
+            "textures": [
+              "textures\\clutter\\bowl.dds"
+            ]
+          }
+        ],
+        "note": "Not a Headpart Mesh: SSE-compatible, so the necessary level leaves it alone."
+      }
+    ]
+  }
+}

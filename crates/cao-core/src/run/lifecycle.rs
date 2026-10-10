@@ -110,6 +110,9 @@ pub enum RunDiagnosticCode {
     IgnoredModExcluded,
     SeparatorModExcluded,
     LinkedEntryExcluded,
+    /// A plugin whose HDPT records cannot be read names no Headpart Mesh; the
+    /// run carries on without them (deviation 17). C++ had no such report.
+    PluginUnreadable,
 }
 
 /// An informational observation that never determines the Run Outcome.

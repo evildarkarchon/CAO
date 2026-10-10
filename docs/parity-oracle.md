@@ -167,8 +167,13 @@ critical issues the necessary mesh level converts. The mesh seeds use them:
 They are not run without the LE BSA. `apply-meshes-le-target`, `apply-meshes-fo4-target`
 (the two ported nifly quirks: a TES5 target makes every Mesh a critical issue, and
 `OptimizeFor` is a no-op towards FO4) and `apply-mesh-quarantine` use synthetic Meshes only.
-No mesh seed puts a Mesh on a headpart or facegen path, nor on one the SSE profile's
-`customHeadparts.txt` lists: recognising Headpart Meshes is #505's.
+None of those seeds puts a Mesh on a headpart or facegen path, nor on one the SSE profile's
+`customHeadparts.txt` lists. `apply-meshes-headparts` does (#505): synthetic Meshes that a
+raw plugin's HDPT records name (with and without the `meshes\` prefix), that the profile
+lists, and that lie on a facegen path, at the necessary level in Apply. It holds no deviation
+17 trigger: the plugin's framing is whole and uncompressed, and a Dry Run over a facegen
+path, which only Rust treats as a Headpart Mesh, is left out. The plugin stays a `raw` entry
+until plugin recipe entries exist (#529).
 
 A pin is the SHA-256 of an entry's extracted bytes, so an entry can be hashed from a loose
 copy extracted from the same BSA. The pool itself still has to hold the BSA.

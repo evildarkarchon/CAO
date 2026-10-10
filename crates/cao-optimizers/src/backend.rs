@@ -287,11 +287,17 @@ impl AssetExecutionBackend for OptimizerBackend {
 
     /// The run's mesh level against the loaded Mesh; see
     /// [`MeshOptimizer::optimize`].
-    fn optimize_mesh(&mut self, path: &Path, mode: ExecutionMode) -> OperationResult {
+    fn optimize_mesh(
+        &mut self,
+        path: &Path,
+        mod_root: &Path,
+        mode: ExecutionMode,
+    ) -> OperationResult {
         let Some(nif) = self.loaded_mesh.as_mut() else {
             return OperationResult::failed("No Mesh is loaded.");
         };
-        match unless_exception(self.meshes.optimize(nif, path, mode), "optimize", path) {
+        let optimized = self.meshes.optimize(nif, path, mod_root, mode);
+        match unless_exception(optimized, "optimize", path) {
             Ok(true) => OperationResult::changed(),
             Ok(false) => OperationResult::unchanged(),
             Err(error) => OperationResult::failed(error.to_string()),
