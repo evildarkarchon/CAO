@@ -1,0 +1,111 @@
+{
+  "spec": {
+    "profile": "FO4",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/FourMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": false,
+      "target_width": 64,
+      "target_height": 64
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": true,
+      "create": false,
+      "delete_backup": true,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "archive",
+        "path": "mods/FourMod/FourMod - Main.ba2",
+        "game": "fo4",
+        "type": "standard",
+        "note": "FO4 extraction (#497): a compressed GNRL BA2 with a name table. Delete backup is on, so both BA2s are removed after extraction.",
+        "content": [
+          {
+            "kind": "raw",
+            "path": "meshes/weapons/rifle.nif",
+            "base64": "R2FtZWJyeW8gRmlsZSBGb3JtYXQ=",
+            "note": "Not a real mesh: FO4 has no Mesh work, so it is only extracted."
+          },
+          {
+            "kind": "text",
+            "path": "scripts/quest.pex",
+            "text": "compiled script bytes compiled script bytes compiled script bytes"
+          },
+          {
+            "kind": "text",
+            "path": "materials/weapons/rifle.bgsm",
+            "text": "BGSM material"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/FourMod/FourMod - Textures.ba2",
+        "game": "fo4",
+        "type": "textures",
+        "note": "A DX10 Textures BA2, always compressed and chunked at 512x512. Its cubemap is legacy-format BC3: deviation 7's BC7, BC6H and sRGB cubemaps, which C++ cannot extract, stay out of the corpus.",
+        "content": [
+          {
+            "kind": "texture",
+            "path": "textures/weapons/rifle_d.dds",
+            "format": "BC1_UNORM",
+            "width": 1024,
+            "height": 1024,
+            "mip_levels": 0,
+            "pattern": "noise",
+            "note": "Mips 0 and 1 each fill a chunk; the rest share a third."
+          },
+          {
+            "kind": "texture",
+            "path": "textures/weapons/rifle_n.dds",
+            "format": "BC5_UNORM",
+            "width": 64,
+            "height": 64,
+            "mip_levels": 0,
+            "pattern": "normal"
+          },
+          {
+            "kind": "texture",
+            "path": "textures/sky/clouds.dds",
+            "format": "BC3_UNORM",
+            "width": 16,
+            "height": 16,
+            "cubemap": true,
+            "pattern": "alpha_ramp"
+          },
+          {
+            "kind": "texture",
+            "path": "textures/interface/icon.dds",
+            "format": "R8G8B8A8_UNORM",
+            "width": 32,
+            "height": 32,
+            "pattern": "mask"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -77,10 +77,10 @@ pub type ExecuteAsset<'a> = Box<
 /// Extracts one Archive by its frozen preflight plan, staging every entry
 /// through the run's Temporary Ownership scope.
 ///
-/// A production adapter wraps [`ArchiveExtractor`] with source pinning and
-/// backup or removal, as C++ `BSAOptimizer::extract` did; that lands with the
-/// real reader (#497). The result carries its own mutation fact; a panic is
-/// contained as unknown mutation, unsafe to continue.
+/// The production adapter is [`ArchiveExtractor::extract_with_source_cleanup`],
+/// which adds source pinning and backup or removal, as C++
+/// `BSAOptimizer::extract` did. The result carries its own mutation fact; a
+/// panic is contained as unknown mutation, unsafe to continue.
 pub type ExtractArchive<'a> = Box<
     dyn FnMut(&ArchiveExtractionPlan, &mut TemporaryArtifactRegistry) -> ArchiveExtractionResult
         + 'a,

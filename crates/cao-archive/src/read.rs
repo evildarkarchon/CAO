@@ -4,6 +4,7 @@
 
 use std::fs::File as FsFile;
 use std::io::Write;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
 use ba2::prelude::*;
@@ -29,6 +30,51 @@ pub struct ArchivedAsset {
     pub compressed: bool,
     /// How many chunks hold its data: 1 except in FO4 Archives.
     pub chunks: usize,
+    /// The mip range each chunk of a DX10 texture holds, in chunk order;
+    /// empty for every other entry.
+    pub mip_ranges: Vec<RangeInclusive<u16>>,
+}
+
+/// An Archive's container family, as its magic names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ArchiveFormat {
+    /// A Morrowind BSA.
+    Tes3,
+    /// A BSA from Oblivion to Skyrim SE.
+    Tes4,
+    /// A BTDX BA2.
+    Fo4,
+}
+
+/// An FO4 BA2's container kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Fo4Container {
+    /// `GNRL`: general files.
+    General,
+    /// `DX10`: textures, with a DDS header rebuilt on extraction.
+    Dx10,
+    /// `GNMF`: PlayStation textures, which CAO never writes.
+    Gnmf,
+}
+
+/// What an Archive's header says, beyond its entries: the facts the parity
+/// comparator holds equal between two Archives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArchiveHeader {
+    /// The container family, from the magic.
+    pub format: ArchiveFormat,
+    /// The version field: 103, 104 or 105 for a TES4 BSA, 1 to 8 for a BA2,
+    /// and 0 for TES3, which has none.
+    pub version: u32,
+    /// The TES4 archive flags' bits; 0 for the other formats.
+    pub flags: u32,
+    /// The TES4 archive types' bits; 0 for the other formats.
+    pub types: u32,
+    /// The BA2 container kind; `None` for a BSA.
+    pub container: Option<Fo4Container>,
+    /// Whether the Archive stores its entries' names: a BA2's name table, or
+    /// a TES4 BSA's directory and file strings both. TES3 always does.
+    pub name_table: bool,
 }
 
 /// An Archive opened for reading.
@@ -113,6 +159,49 @@ impl ReadArchive {
         }
     }
 
+    /// The path this Archive was opened from.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The header facts of this Archive.
+    pub fn header(&self) -> ArchiveHeader {
+        match &self.inner {
+            Inner::Tes3(_) => ArchiveHeader {
+                format: ArchiveFormat::Tes3,
+                version: 0,
+                flags: 0,
+                types: 0,
+                container: None,
+                name_table: true,
+            },
+            Inner::Tes4(_, options) => {
+                let strings =
+                    tes4::ArchiveFlags::DIRECTORY_STRINGS | tes4::ArchiveFlags::FILE_STRINGS;
+                ArchiveHeader {
+                    format: ArchiveFormat::Tes4,
+                    version: options.version() as u32,
+                    flags: options.flags().bits(),
+                    types: u32::from(options.types().bits()),
+                    container: None,
+                    name_table: options.flags().contains(strings),
+                }
+            }
+            Inner::Fo4(_, options) => ArchiveHeader {
+                format: ArchiveFormat::Fo4,
+                version: options.version() as u32,
+                flags: 0,
+                types: 0,
+                container: Some(match options.format() {
+                    fo4::Format::GNRL => Fo4Container::General,
+                    fo4::Format::DX10 => Fo4Container::Dx10,
+                    fo4::Format::GNMF => Fo4Container::Gnmf,
+                }),
+                name_table: options.strings(),
+            },
+        }
+    }
+
     /// Lists every Archived Asset, in the Archive's own (hash) order.
     ///
     /// # Errors
@@ -129,6 +218,7 @@ impl ReadArchive {
                         size: file.len() as u64,
                         compressed: false,
                         chunks: 1,
+                        mip_ranges: Vec::new(),
                     });
                 }
             }
@@ -147,6 +237,7 @@ impl ReadArchive {
                             size: file.decompressed_len().unwrap_or(file.len()) as u64,
                             compressed: file.is_compressed(),
                             chunks: 1,
+                            mip_ranges: Vec::new(),
                         });
                     }
                 }
@@ -168,6 +259,7 @@ impl ReadArchive {
                         compressed: !file.is_empty()
                             && file.iter().all(|chunk| chunk.is_compressed()),
                         chunks: file.len(),
+                        mip_ranges: file.iter().filter_map(|chunk| chunk.mips.clone()).collect(),
                     });
                 }
             }

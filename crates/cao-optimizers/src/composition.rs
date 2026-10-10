@@ -21,14 +21,15 @@ use cao_core::routing::{
     ExecutionMode, PolicyValidationError, RequestedWork, RoutingPolicyRequest,
 };
 use cao_core::run::{
-    AssetRunAdapters, CancellationToken, ModSelection, OptimizationRunService, RunConfiguration,
-    RunConfigurationProvider, RunEventDispatcher, RunHandle, RunPreparation, RunRequest,
-    RunWorkEvidence, RunWorkMilestones, RunWorkService, SelectedProfileFacts, StartError,
-    TemporaryArtifactRegistry, execute_asset_run,
+    ArchiveAdapters, ArchiveExtractor, AssetRunAdapters, CancellationToken, ModSelection,
+    OptimizationRunService, RunConfiguration, RunConfigurationProvider, RunEventDispatcher,
+    RunHandle, RunPreparation, RunRequest, RunWorkEvidence, RunWorkMilestones, RunWorkService,
+    SelectedProfileFacts, SourceCleanup, StartError, TemporaryArtifactRegistry, execute_asset_run,
 };
 use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
 use directxtex::DXGI_FORMAT;
 
+use crate::archives::{ArchiveFileReader, VolumeProbes};
 use crate::backend::{OptimizerBackend, TextureResize, TextureSettings};
 use crate::textures::TextureProfile;
 
@@ -271,6 +272,9 @@ fn validate(options: &Options) -> Result<(), RunSetupError> {
 #[derive(Debug, Clone, Copy)]
 struct OptimizerSettings {
     textures: TextureSettings,
+    /// What becomes of an extracted Archive: removed when "delete backup" is
+    /// on (`bBsaDeleteBackup`), otherwise kept as a `.bak`.
+    extracted_archive_cleanup: SourceCleanup,
 }
 
 impl OptimizerSettings {
@@ -306,6 +310,11 @@ impl OptimizerSettings {
                 compress: options.textures_compress,
                 mipmaps: options.textures_mipmaps,
                 resize,
+            },
+            extracted_archive_cleanup: if options.bsa_delete_backup {
+                SourceCleanup::Remove
+            } else {
+                SourceCleanup::Backup
             },
         })
     }
@@ -443,6 +452,9 @@ impl RunWorkService for ApplicationRunWork {
         // Created on the first Asset, as C++ creates its MainOptimizer, so a run
         // with nothing to process never sets up an optimizer.
         let mut backend: Option<OptimizerBackend> = None;
+        // Declared before `adapters`, which borrows them, so they outlive it.
+        let reader = ArchiveFileReader::default();
+        let cleanup = self.settings.extracted_archive_cleanup;
         let mut adapters = AssetRunAdapters::new(Box::new(|asset, mod_root, artifacts| {
             let backend = backend.get_or_insert_with(|| {
                 // This closure runs on the Run Worker, the thread that must
@@ -462,9 +474,24 @@ impl RunWorkService for ApplicationRunWork {
         adapters.finalize_archive_lifecycle = Some(Box::new(|evidence| {
             evidence.record_archive_finalization_plan(0)
         }));
-        // Archive extraction is not wired yet (#497): without Archive
-        // adapters, an Apply run that selects an Archive fails before any
-        // extraction.
+        // Dry Run never reads a manifest, so wiring the Archive seams
+        // unconditionally is harmless.
+        adapters.archives = Some(ArchiveAdapters {
+            reader: &reader,
+            capacity: &VolumeProbes,
+            volume_identity: &VolumeProbes,
+            extract: Box::new(|plan, artifacts| {
+                let result = ArchiveExtractor::new(&reader, &VolumeProbes)
+                    .extract_with_source_cleanup(plan, cleanup, artifacts);
+                if result.succeeded() {
+                    log::info!(
+                        "BSA successfully extracted: {}",
+                        plan.archive_path.display()
+                    );
+                }
+                result
+            }),
+        });
         execute_asset_run(
             preparation,
             evidence,

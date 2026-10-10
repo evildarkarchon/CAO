@@ -17,8 +17,13 @@ publish.workspace = true
 unsafe_code = "deny"
 
 [dependencies]
+# The archive reader core's extraction reads through (#497).
+cao-archive.workspace = true
 cao-core.workspace = true
 cao-profiles.workspace = true
+# The capacity and volume-identity probes of the Capacity Check (#497). The
+# scenarios also predict Mod Roots in the MSVC-canonical form Preparing gives them.
+cao-winfs.workspace = true
 # The Application Log sink's timestamps (#470).
 chrono.workspace = true
 # Resolves to CAO's fork through the root `[patch.crates-io]` (#479).
@@ -38,5 +43,6 @@ windows = { workspace = true, features = [
 embed-resource.workspace = true
 
 [dev-dependencies]
-# The scenarios predict Mod Roots in the MSVC-canonical form Preparing gives them.
-cao-winfs.workspace = true
+# Builds raw TES3, TES4 and FO4 Archives with names `cao-archive` never writes,
+# as the C++ suite built them with `rsm-bsa` directly.
+ba2.workspace = true

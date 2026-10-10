@@ -37,6 +37,7 @@ unsafe_code = "forbid"
 # them with `dep.workspace = true` and add their own features.
 [workspace.dependencies]
 # Workspace members other members depend on.
+cao-archive = { path = "crates/cao-archive" }
 cao-core = { path = "crates/cao-core" }
 cao-optimizers = { path = "crates/cao-optimizers" }
 cao-profiles = { path = "crates/cao-profiles" }

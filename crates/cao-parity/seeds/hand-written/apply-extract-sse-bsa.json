@@ -1,0 +1,118 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/ArchiveMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": false,
+      "target_width": 64,
+      "target_height": 64
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": true,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "texture",
+        "path": "mods/ArchiveMod/textures/shared.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 16,
+        "height": 16,
+        "note": "A Loose Asset both Archives also provide: it outranks them, so neither archived copy is published."
+      },
+      {
+        "kind": "archive",
+        "path": "mods/ArchiveMod/ArchiveMod.bsa",
+        "game": "sse",
+        "type": "standard",
+        "note": "SSE extraction (#497): a compressed v105 BSA, backed up as ArchiveMod.bsa.bak afterwards. Only Archive extraction is requested, so the extracted Assets are skipped rather than optimized.",
+        "content": [
+          {
+            "kind": "texture",
+            "path": "textures/shared.dds",
+            "format": "BC1_UNORM",
+            "width": 16,
+            "height": 16,
+            "pattern": "noise"
+          },
+          {
+            "kind": "raw",
+            "path": "meshes/armor/cuirass.nif",
+            "base64": "R2FtZWJyeW8gRmlsZSBGb3JtYXQ=",
+            "note": "Not a real mesh: Mesh work is off, so it is only extracted."
+          },
+          {
+            "kind": "text",
+            "path": "scripts/quest.pex",
+            "text": "compiled script bytes compiled script bytes compiled script bytes"
+          },
+          {
+            "kind": "text",
+            "path": "interface/translations/archivemod_english.txt",
+            "text": "$ARCHIVEMOD_NAME\tArchive Mod\r\n"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/ArchiveMod/ArchiveMod - Textures.bsa",
+        "game": "sse",
+        "type": "textures",
+        "note": "The Textures BSA. It wins textures/shared.dds over ArchiveMod.bsa by default Archive Precedence (relative names, case-folded: ' ' sorts before '.'), and the Loose Asset outranks both: one Archive Collision.",
+        "content": [
+          {
+            "kind": "texture",
+            "path": "textures/shared.dds",
+            "format": "BC3_UNORM",
+            "width": 16,
+            "height": 16,
+            "pattern": "alpha_ramp"
+          },
+          {
+            "kind": "texture",
+            "path": "textures/armor/cuirass.dds",
+            "format": "BC1_UNORM",
+            "width": 64,
+            "height": 64,
+            "mip_levels": 0,
+            "pattern": "noise"
+          },
+          {
+            "kind": "texture",
+            "path": "textures/sky/clouds.dds",
+            "format": "BC3_UNORM",
+            "width": 16,
+            "height": 16,
+            "cubemap": true,
+            "pattern": "gradient",
+            "note": "A legacy-header cubemap, which both builds extract."
+          }
+        ]
+      }
+    ]
+  }
+}

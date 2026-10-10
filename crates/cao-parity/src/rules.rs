@@ -1,11 +1,12 @@
 //! The comparator rules every parity case uses (#467).
 //!
 //! [`ParityRules`] fills the output-tree comparator's two hooks with the rules
-//! landed so far: the leftovers rules of [`crate::leftovers`] (#491) and the
-//! Texture rule of [`crate::textures`] (#494). Meshes, Animations, Archives
-//! and Loading Plugins have no rule yet, so their files must be
-//! byte-identical, which is also their final rule for all but Archives.
+//! landed so far: the leftovers rules of [`crate::leftovers`] (#491), the
+//! Texture rule of [`crate::textures`] (#494) and the Archive rule of
+//! [`crate::archives`] (#497). Meshes, Animations and Loading Plugins have no
+//! rule, so their files must be byte-identical, which is also their final rule.
 
+use crate::archives::ArchiveRule;
 use crate::leftovers::{ManifestRule, PresenceRule};
 use crate::textures::TextureRule;
 use crate::tree::{ArtifactRule, TreeRules};
@@ -28,14 +29,23 @@ impl TreeRules for ParityRules {
         }
     }
 
-    /// `.dds` files, matched by extension ignoring ASCII case as Asset
-    /// Routing does, follow the Texture rule. `.caobad` and `.bak` files never
-    /// match, so they stay byte-identical.
+    /// Matched by extension, ignoring ASCII case as Asset Routing does:
+    /// `.dds` files follow the Texture rule, and `.bsa` and `.ba2` files the
+    /// Archive rule. `.caobad` and `.bak` files never match, so they stay
+    /// byte-identical: they are renamed originals.
     fn asset_rule(&self, path: &str) -> Option<&dyn ArtifactRule> {
         let name = path.rsplit('/').next().unwrap_or(path);
-        let is_dds = name.len() > 4
-            && name.is_char_boundary(name.len() - 4)
-            && name[name.len() - 4..].eq_ignore_ascii_case(".dds");
-        is_dds.then_some(&TextureRule as &dyn ArtifactRule)
+        let has_extension = |extension: &str| {
+            name.len() > extension.len()
+                && name.is_char_boundary(name.len() - extension.len())
+                && name[name.len() - extension.len()..].eq_ignore_ascii_case(extension)
+        };
+        if has_extension(".dds") {
+            Some(&TextureRule)
+        } else if has_extension(".bsa") || has_extension(".ba2") {
+            Some(&ArchiveRule)
+        } else {
+            None
+        }
     }
 }

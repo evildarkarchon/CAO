@@ -15,11 +15,12 @@ mod preparation;
 mod probes;
 mod scheduler;
 mod service;
+mod source_pin;
 mod staging;
 
 pub use archives::{
     ArchiveCollision, ArchiveExtractionFailure, ArchiveExtractionPlan, ArchiveExtractionResult,
-    ArchiveExtractor,
+    ArchiveExtractor, SourceCleanup,
 };
 pub use artifacts::{
     PublicationPolicy, PublicationReceipt, PublicationResult, PublicationState, PublicationTarget,
@@ -52,6 +53,7 @@ pub use scheduler::{
     InlineRunScheduler, RunScheduler, RunWork, ScheduledRunWorker, StandardRunScheduler,
 };
 pub use service::{OptimizationRunService, RunEventDispatcher, RunHandle, StartError};
+pub use source_pin::{SourceFilePin, SourcePinError};
 pub use staging::StagingError;
 
 pub(crate) use artifacts::fingerprint;

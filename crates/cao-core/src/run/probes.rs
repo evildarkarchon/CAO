@@ -22,15 +22,27 @@ pub struct ArchiveEntry {
 /// Reads Archives without CAO depending on the archive library.
 ///
 /// It replaces the C++ `ArchiveExtractionOperation` and the Archive closures of
-/// `AssetRunAdapters`. Implementations must release any memory map of an
-/// Archive before returning, so the Archive can be renamed or deleted.
+/// `AssetRunAdapters`.
+///
+/// On Windows an open memory map stops its file from being deleted, so when
+/// an Archive's handles and maps are released is part of the contract:
+/// [`Self::list_entries`] releases everything before it returns, while
+/// [`Self::extract_entry`] may keep its Archive open for the next entry, as
+/// C++ read an Archive once per extraction, until [`Self::release`]. The
+/// extractor calls `release` at the end of every attempt, before the source
+/// Archive can be removed or renamed.
 pub trait ArchiveReader: Send + Sync {
-    /// Lists every entry without extracting or decompressing it.
+    /// Lists every entry without extracting or decompressing it, holding
+    /// nothing open afterwards.
     fn list_entries(&self, archive: &Path) -> Result<Vec<ArchiveEntry>, Error>;
 
     /// Writes one entry's decompressed bytes to `destination`, which the caller
     /// has already registered for Temporary Ownership.
     fn extract_entry(&self, archive: &Path, entry: &str, destination: &Path) -> Result<(), Error>;
+
+    /// Drops every Archive this reader still holds open, so each can be
+    /// renamed or deleted. The default holds nothing, so does nothing.
+    fn release(&self) {}
 }
 
 /// Samples the bytes available to the caller at a Mod Root.

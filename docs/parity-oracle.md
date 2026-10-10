@@ -61,8 +61,10 @@ kept with a `report.md` holding the fact diff and the replay command.
 
 A case is one `case.json` with three parts: the `spec` (what both builds are asked to do),
 optional `profile_overrides` (GUI-reachable `profile.ini` values), and a `tree` recipe. The
-recipe's `content` entries (`texture`, `text`, `raw`, `directory`) are written once into
-`input/`, seeded by the case id, and copied byte for byte to `oracle/` and `rust/`. Its
+recipe's `content` entries (`texture`, `text`, `raw`, `directory`, `archive`) are written once
+into `input/`, seeded by the case id, and copied byte for byte to `oracle/` and `rust/`. An
+`archive` entry packs its own `texture`, `text` and `raw` entries, whose paths are the game
+paths it stores, with `cao-archive`, in the container its `game` and `type` give. Its
 `fs_shape` operations (`hardlink`, `junction`, `file_symlink`, `readonly`, `reserved_name`)
 are then applied to all three copies. Recipe paths must keep game paths ASCII and every
 absolute path within 400 UTF-16 units. `crates/cao-parity/src/recipe.rs` documents each

@@ -182,6 +182,9 @@ pub enum ContentEntry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+    /// An Archive packed from its own content entries, as CAO's Archive
+    /// creation would write it.
+    Archive(ArchiveRecipe),
 }
 
 impl ContentEntry {
@@ -189,7 +192,75 @@ impl ContentEntry {
     pub fn path(&self) -> &str {
         match self {
             Self::Texture(texture) => &texture.path,
+            Self::Archive(archive) => &archive.path,
             Self::Text { path, .. } | Self::Raw { path, .. } | Self::Directory { path, .. } => path,
+        }
+    }
+}
+
+/// An Archive packed with `cao-archive` from `content`, whose paths are the
+/// game paths the Archive stores, relative to the Archive's own directory.
+///
+/// Only `texture`, `text` and `raw` entries may be packed. The container
+/// follows the game and type, as CAO's per-game tables give them: TES5 and
+/// SSE write BSA v104 and v105; FO4 writes a `GNRL` BA2, or a `DX10` one for
+/// `textures`, which is always compressed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArchiveRecipe {
+    pub path: String,
+    pub game: ArchiveGame,
+    #[serde(rename = "type")]
+    pub archive_type: ArchiveKind,
+    /// Whether files are compressed. An `incompressible` Archive never is,
+    /// and an FO4 `textures` one always is.
+    #[serde(default = "yes")]
+    pub compress: bool,
+    pub content: Vec<ContentEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// The game whose archive tables an [`ArchiveRecipe`] is written with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveGame {
+    Tes5,
+    Sse,
+    Fo4,
+}
+
+impl ArchiveGame {
+    /// The `cao-archive` game.
+    pub fn game(self) -> cao_archive::Game {
+        match self {
+            Self::Tes5 => cao_archive::Game::Tes5,
+            Self::Sse => cao_archive::Game::Sse,
+            Self::Fo4 => cao_archive::Game::Fo4,
+        }
+    }
+}
+
+/// What an [`ArchiveRecipe`] holds, which picks its container and compression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveKind {
+    Standard,
+    Incompressible,
+    Textures,
+}
+
+impl ArchiveKind {
+    /// The `cao-archive` Archive type.
+    pub fn archive_type(self) -> cao_archive::ArchiveType {
+        match self {
+            Self::Standard => cao_archive::ArchiveType::Standard,
+            Self::Incompressible => cao_archive::ArchiveType::Incompressible,
+            Self::Textures => cao_archive::ArchiveType::Textures,
         }
     }
 }
