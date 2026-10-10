@@ -36,7 +36,7 @@
   },
   "profile_overrides": {
     "output_format": "BC1_UNORM",
-    "unwanted_formats": ["B5G6R5_UNORM", "BC3_UNORM"]
+    "unwanted_formats": ["BC3_UNORM", "B5G6R5_UNORM"]
   },
   "tree": {
     "content": [

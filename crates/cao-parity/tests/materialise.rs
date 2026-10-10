@@ -11,7 +11,7 @@ use cao_parity::case::{CaseFile, CaseLayout, CaseSpec, Side, SideResources};
 use cao_parity::cases::{fixtures_dir, seed, seeds};
 use cao_parity::materialise::{Environment, PATH_CAP_UTF16, Readiness, materialise, write_input};
 use cao_parity::recipe::{TextureFormat, TreeRecipe};
-use common::TempDir;
+use common::{TempDir, shipped_profiles};
 use directxtex::{DDS_FLAGS_NONE, DXGI_FORMAT, ScratchImage, TexMetadata};
 
 /// A tree touching every content kind and every texture option.
@@ -271,14 +271,16 @@ fn every_named_format_round_trips_through_its_json_name() {
 #[test]
 fn a_junction_path_may_not_hold_what_cmd_would_interpret() {
     let temp = TempDir::new("materialise-junction-cmd");
+    // `^` rather than `&`: the deviation guard already rejects `&` in any path
+    // (deviation 22), before this check could see it.
     let case = shaped(
         serde_json::json!([{"kind": "directory", "path": "mods/Mod/real"}]),
-        serde_json::json!([{"op": "junction", "path": "mods/Mod/a&b", "target": "mods/Mod/real"}]),
+        serde_json::json!([{"op": "junction", "path": "mods/Mod/a^b", "target": "mods/Mod/real"}]),
     );
     let (layout, readiness) = materialised(&temp, "junction-cmd", &case, false);
     let error = readiness.unwrap_err();
     assert!(
-        matches!(&error, HarnessError::InvalidCase(message) if message.contains("a&b")),
+        matches!(&error, HarnessError::InvalidCase(message) if message.contains("a^b")),
         "{error}"
     );
     assert!(!layout.input().exists());
@@ -369,11 +371,6 @@ fn textures_have_the_shape_the_recipe_asks_for() {
         [0x00, 0x01, 0x02, 0xff]
     );
     assert!(root.join("mods/Mod/empty").is_dir());
-}
-
-/// The repository's shipped `profiles/`.
-fn shipped_profiles() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles")
 }
 
 /// Materialises `case` as case `id` under `temp`, with no `hkxcmd.exe`.

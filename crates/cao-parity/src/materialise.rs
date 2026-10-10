@@ -1,6 +1,8 @@
 //! The materialiser (#473, #490): turns a [`CaseFile`]'s recipe into a case
 //! directory.
 //!
+//! 0. The deviation [`crate::guard`] rejects a case holding any deviation
+//!    trigger or a profile value the GUI cannot produce.
 //! 1. The recipe is validated against every root it will be written under:
 //!    plain relative paths, ASCII game paths, no reserved device names outside
 //!    the `reserved_name` operation, and at most [`PATH_CAP_UTF16`] UTF-16
@@ -29,6 +31,7 @@ use cao_profiles::Profiles;
 
 use crate::HarnessError;
 use crate::case::{CaseFile, CaseLayout, ModSelection, Side, SideResources, is_harness_owned};
+use crate::guard::GuardInput;
 use crate::recipe::{
     ArchiveRecipe, ContentEntry, DdsHeader, Fault, FsShape, MeshTarget, Pattern, ProfileOverrides,
     TextureEntry,
@@ -64,15 +67,27 @@ pub enum Readiness {
 /// The case directory must hold no `input/`, `oracle/` or `rust/` yet.
 ///
 /// # Errors
-/// [`HarnessError::InvalidCase`] for a recipe the materialiser cannot build,
-/// which includes any path over [`PATH_CAP_UTF16`]; [`HarnessError::Io`] when
-/// a file cannot be written. A recipe error is always reported, even for a
-/// case that could not run here.
+/// [`HarnessError::DeviationTrigger`] or
+/// [`HarnessError::UnreachableProfileValue`] when the deviation guard rejects
+/// the case, before anything is written; [`HarnessError::InvalidCase`] for a
+/// recipe the materialiser cannot build, which includes any path over
+/// [`PATH_CAP_UTF16`]; [`HarnessError::Io`] when a file cannot be written. A
+/// recipe error is always reported, even for a case that could not run here.
 pub fn materialise(
     layout: &CaseLayout,
     case: &CaseFile,
     environment: &Environment<'_>,
 ) -> Result<Readiness, HarnessError> {
+    // The guard runs before anything is written, so a case holding a
+    // deviation trigger never reaches either build. It runs ahead of
+    // `validate` too, so a trigger is reported as one even when the recipe
+    // has other problems.
+    crate::guard::check(&GuardInput {
+        case,
+        case_root: layout.root(),
+        profiles: environment.resources.profiles,
+        fixtures: environment.fixtures,
+    })?;
     let input = layout.input();
     let (oracle, rust) = (layout.side(Side::Oracle), layout.side(Side::Rust));
     validate(case, &[&input, &oracle, &rust])?;
@@ -784,7 +799,7 @@ fn apply_fault(mut bytes: Vec<u8>, fault: Option<Fault>, random: &mut Random) ->
 }
 
 /// The bytes of a `raw` entry: inline base64, or a committed fixture.
-fn raw_bytes(
+pub(crate) fn raw_bytes(
     base64: Option<&str>,
     fixture: Option<&str>,
     fixtures: &Path,

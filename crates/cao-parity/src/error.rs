@@ -48,6 +48,31 @@ pub enum HarnessError {
     #[error("invalid case: {0}")]
     InvalidCase(String),
 
+    /// The case would trigger an entry on the deviation list, where the Rust
+    /// port fixes a C++ behaviour on purpose. Comparing it would report the fix
+    /// as a regression, so the deviation guard rejects it before either build
+    /// runs.
+    #[error("deviation {deviation} trigger ({rule}): {detail}")]
+    DeviationTrigger {
+        /// The entry's number on the spec's deviation list.
+        deviation: u8,
+        /// The guard rule that fired.
+        rule: &'static str,
+        /// What in the case triggers it.
+        detail: String,
+    },
+
+    /// The case's profile holds a value the GUI's widgets cannot produce, so
+    /// only a hand-edit could have put it there. The deviation guard rejects
+    /// it, since the corpus compares what users can reach.
+    #[error("profile value `{key}` = `{value}` is one the GUI cannot produce")]
+    UnreachableProfileValue {
+        /// The QSettings key, such as `Textures/texturesFormat`.
+        key: &'static str,
+        /// The value as the profile file holds it.
+        value: String,
+    },
+
     /// A side was still running when the case's timeout ran out, and was killed.
     #[error("the {side} side did not finish within the case's {seconds} s timeout")]
     Timeout { side: Side, seconds: u64 },

@@ -12,7 +12,8 @@
 //!   case kept in the work directory; either way the case is materialised
 //!   afresh from its `case.json`. Exits 0 when both verdicts pass, 1 for a
 //!   Different verdict, 2 for a harness error and 3 when the case cannot run
-//!   here (it needs `hkxcmd.exe` or symlink rights this host lacks).
+//!   here (it needs `hkxcmd.exe` or symlink rights this host lacks). A case
+//!   the deviation guard rejects is a harness error, before either build runs.
 //! - `corpus` and `calibrate` need the corpus generator, which lands in a later
 //!   slice, so they report that they are not available yet.
 

@@ -54,6 +54,25 @@ impl Drop for TempDir {
     }
 }
 
+/// The repository's shipped `profiles/`.
+pub fn shipped_profiles() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles")
+}
+
+/// Copies a tree of plain files and directories from `from` to `to`.
+pub fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
 /// Writes `bytes` at `root/relative`, creating parent directories.
 pub fn write(root: &Path, relative: &str, bytes: &[u8]) {
     let path = root.join(relative);

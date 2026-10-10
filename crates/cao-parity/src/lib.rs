@@ -8,6 +8,8 @@
 //! [`driver`] is the Rust side, over the shared composition root. A case's
 //! tree is a declarative [`recipe`] that [`materialise`] turns into files, and
 //! [`cases`] loads the committed seed cases `cao-parity case` can run by name.
+//! The deviation [`guard`] rejects any case that would trigger a deliberate
+//! fix before it is materialised.
 //!
 //! The library exists so the `cao-parity` binary and its tests share one
 //! implementation; it is never shipped.
@@ -19,6 +21,7 @@ pub mod compare;
 pub mod driver;
 pub mod error;
 pub mod facts;
+pub mod guard;
 pub mod leftovers;
 pub mod materialise;
 pub mod names;
