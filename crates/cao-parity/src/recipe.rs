@@ -99,6 +99,15 @@ impl MeshTarget {
             Self::Fo4 => (12, 130),
         }
     }
+
+    /// The preset as the version nifly writes a synthetic Mesh at.
+    pub fn nif_version(self) -> nifly_sys::NifVersion {
+        match self {
+            Self::Le => nifly_sys::NifVersion::SK,
+            Self::Sse => nifly_sys::NifVersion::SSE,
+            Self::Fo4 => nifly_sys::NifVersion::FO4,
+        }
+    }
 }
 
 /// A `DXGI_FORMAT`, named in JSON without its `DXGI_FORMAT_` prefix, such as
@@ -181,6 +190,8 @@ pub enum ContentEntry {
     /// not run when the pool lacks the entry or its bytes no longer match the
     /// pin.
     LocalAsset(LocalAssetEntry),
+    /// A synthetic Mesh, built by nifly as the C++ tests build theirs.
+    Mesh(MeshEntry),
     /// A directory, which may stay empty.
     Directory {
         path: String,
@@ -199,6 +210,7 @@ impl ContentEntry {
             Self::Texture(texture) => &texture.path,
             Self::Archive(archive) => &archive.path,
             Self::LocalAsset(asset) => &asset.path,
+            Self::Mesh(mesh) => &mesh.path,
             Self::Text { path, .. } | Self::Raw { path, .. } | Self::Directory { path, .. } => path,
         }
     }
@@ -207,7 +219,7 @@ impl ContentEntry {
 /// An Archive packed with `cao-archive` from `content`, whose paths are the
 /// game paths the Archive stores, relative to the Archive's own directory.
 ///
-/// Only `texture`, `text`, `raw` and `local_asset` entries may be packed. The container
+/// Only `texture`, `text`, `raw`, `mesh` and `local_asset` entries may be packed. The container
 /// follows the game and type, as CAO's per-game tables give them: TES5 and
 /// SSE write BSA v104 and v105; FO4 writes a `GNRL` BA2, or a `DX10` one for
 /// `textures`, which is always compressed.
@@ -286,6 +298,48 @@ pub struct LocalAssetEntry {
     pub fault: Option<Fault>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+}
+
+/// A synthetic Mesh (#503), written by nifly through `nifly-sys`'s `corpus`
+/// feature with the calls the C++ tests use: `Create` at `version`, then one
+/// `CreateShapeFromData` per shape, then `SetTextureSlot` per texture.
+///
+/// It covers Mesh Reference Maintenance and structural cases without the
+/// local asset pool. The bytes are the same for every case id, because nifly
+/// builds them from the recipe alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeshEntry {
+    /// Ends in `.nif`, `.btr` or `.bto`.
+    pub path: String,
+    /// The game whose Mesh layout nifly writes: LE gives `NiTriShape`s, SSE
+    /// `BSTriShape`s and FO4 `BSSubIndexTriShape`s, each with a
+    /// `BSLightingShaderProperty` and its texture set.
+    pub version: MeshTarget,
+    /// The shapes, in order, under the root node. None leaves a Mesh holding
+    /// only its root node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shapes: Vec<MeshShape>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault: Option<Fault>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// One shape of a [`MeshEntry`]: a single triangle, as in the C++ tests, with
+/// no UVs or normals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeshShape {
+    /// The shape's name, which `OptimizeFor` reports shapes by and renames
+    /// when two siblings share it.
+    pub name: String,
+    /// The texture-set slots from slot 0 (diffuse), 1 (normal) and on; `""`
+    /// leaves a slot empty. Skyrim texture sets have 9 slots and Fallout 4's
+    /// have 10. Write them as game Meshes do, `\`-separated: nifly's load
+    /// turns `/` into `\` anyway.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub textures: Vec<String>,
 }
 
 /// A synthetic Texture. The container follows the extension: `.dds` or `.tga`.

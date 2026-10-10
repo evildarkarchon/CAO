@@ -16,6 +16,7 @@ use cao_parity::materialise::{
 use cao_parity::recipe::{ContentEntry, TextureFormat, TreeRecipe};
 use common::{TempDir, shipped_profiles};
 use directxtex::{DDS_FLAGS_NONE, DXGI_FORMAT, ScratchImage, TexMetadata};
+use nifly_sys::{LoadOptions, Nif, NifVersion, OptimizeOptions};
 
 /// A tree touching every content kind and every texture option.
 fn every_content_kind() -> TreeRecipe {
@@ -52,6 +53,8 @@ fn every_content_kind() -> TreeRecipe {
             {"kind": "text", "path": "mods/Mod/readme.txt", "text": "Hello\r\n",
              "note": "not an Asset"},
             {"kind": "raw", "path": "mods/Mod/meshes/blob.nif", "base64": "AAEC/w=="},
+            {"kind": "mesh", "path": "mods/Mod/meshes/bowl.nif", "version": "sse",
+             "shapes": [{"name": "Bowl", "textures": ["textures\\old.tga"]}]},
             {"kind": "directory", "path": "mods/Mod/empty"}
         ]
     }))
@@ -534,7 +537,7 @@ fn both_sides_are_byte_identical_copies_of_the_input_before_shaping() {
     assert_eq!(readiness.unwrap(), Readiness::Ready);
 
     let input = case_tree(&layout.input());
-    assert_eq!(input.len(), 18, "{input:?}");
+    assert_eq!(input.len(), 19, "{input:?}");
     assert_eq!(case_tree(&layout.side(Side::Oracle)), input);
     assert_eq!(case_tree(&layout.side(Side::Rust)), input);
     // Without overrides, each side's profile is the shipped one.
@@ -1060,4 +1063,138 @@ fn a_local_asset_must_keep_its_pinned_extension() {
         matches!(readiness.unwrap(), Readiness::NotRun(_)),
         "the extension is matched ignoring case"
     );
+}
+
+/// Loads a Mesh the materialiser wrote, through the same nifly the Rust
+/// build's mesh backend loads with.
+fn load_mesh(path: &Path) -> Nif {
+    let mut nif = Nif::new();
+    nif.load(path, LoadOptions::default())
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    nif
+}
+
+/// Every texture-set slot of every shape, in shape order, as text.
+fn texture_slots(nif: &mut Nif) -> Vec<String> {
+    let paths = nif.texture_paths().unwrap();
+    (0..paths.len())
+        .map(|index| String::from_utf8(paths.get(index).unwrap().to_vec()).unwrap())
+        .collect()
+}
+
+/// `filled` in slot order, then empty slots up to `slots`.
+fn padded(filled: &[&str], slots: usize) -> Vec<String> {
+    let mut paths: Vec<String> = filled.iter().map(|path| (*path).to_owned()).collect();
+    paths.resize(slots, String::new());
+    paths
+}
+
+/// A `mesh` entry is built by nifly (#503), as the C++ tests build theirs:
+/// one shape per recipe shape, each texture in its slot, at the version asked
+/// for.
+#[test]
+fn a_mesh_entry_writes_a_mesh_nifly_loads_back() {
+    let temp = TempDir::new("materialise-mesh");
+    let case = shaped(
+        serde_json::json!([
+            {"kind": "mesh", "path": "mods/Mod/meshes/clutter/bowl.nif", "version": "sse",
+             "shapes": [
+                {"name": "Bowl",
+                 "textures": ["textures\\clutter\\bowl.tga", "", "textures\\clutter\\bowl_g.dds"]},
+                {"name": "Lid"}]},
+            {"kind": "mesh", "path": "mods/Mod/meshes/clutter/old.nif", "version": "le",
+             "shapes": [{"name": "Old", "textures": ["textures\\clutter\\old.dds"]}]},
+            {"kind": "mesh", "path": "mods/Mod/meshes/clutter/empty.nif", "version": "fo4"}
+        ]),
+        serde_json::json!([]),
+    );
+    let root = temp.path().join("input");
+    write_input(&case, "meshes", &root, &fixtures_dir()).unwrap();
+
+    let mut bowl = load_mesh(&root.join("mods/Mod/meshes/clutter/bowl.nif"));
+    assert!(bowl.is_sse_compatible().unwrap());
+    // Skyrim's texture sets have 9 slots; the Lid's are all empty.
+    let mut expected = padded(
+        &[
+            r"textures\clutter\bowl.tga",
+            "",
+            r"textures\clutter\bowl_g.dds",
+        ],
+        9,
+    );
+    expected.extend(padded(&[], 9));
+    assert_eq!(texture_slots(&mut bowl), expected);
+
+    // An LE Mesh is really LE: nifly converts it to SSE without a mismatch.
+    let mut old = load_mesh(&root.join("mods/Mod/meshes/clutter/old.nif"));
+    let report = old
+        .optimize_for(&OptimizeOptions {
+            target: NifVersion::SSE,
+            head_parts: false,
+            remove_parallax: false,
+        })
+        .unwrap();
+    assert!(!report.version_mismatch, "{report:?}");
+    assert_eq!(texture_slots(&mut old)[0], r"textures\clutter\old.dds");
+
+    // No shapes is a Mesh holding only its root node.
+    let mut empty = load_mesh(&root.join("mods/Mod/meshes/clutter/empty.nif"));
+    assert!(texture_slots(&mut empty).is_empty());
+}
+
+#[test]
+fn a_mesh_entry_takes_faults_and_may_be_packed() {
+    let temp = TempDir::new("materialise-mesh-packed");
+    let mesh = serde_json::json!(
+        {"kind": "mesh", "path": "mods/Mod/meshes/whole.nif", "version": "sse",
+         "shapes": [{"name": "Shape", "textures": ["textures\\a.dds"]}]});
+    let case = shaped(
+        serde_json::json!([
+            mesh,
+            {"kind": "mesh", "path": "mods/Mod/meshes/cut.nif", "version": "sse",
+             "shapes": [{"name": "Shape", "textures": ["textures\\a.dds"]}],
+             "fault": {"truncate": 40}},
+            {"kind": "archive", "path": "mods/Mod/Mod.bsa", "game": "sse", "type": "standard",
+             "content": [
+                {"kind": "mesh", "path": "meshes/packed.nif", "version": "sse",
+                 "shapes": [{"name": "Shape"}]}]}
+        ]),
+        serde_json::json!([]),
+    );
+    let root = temp.path().join("input");
+    write_input(&case, "meshes", &root, &fixtures_dir()).unwrap();
+
+    let whole = std::fs::read(root.join("mods/Mod/meshes/whole.nif")).unwrap();
+    let cut = std::fs::read(root.join("mods/Mod/meshes/cut.nif")).unwrap();
+    assert_eq!(cut, whole[..40], "the fault cuts the same Mesh short");
+    assert!(root.join("mods/Mod/Mod.bsa").is_file());
+}
+
+#[test]
+fn a_mesh_entry_must_be_a_mesh_nifly_can_build() {
+    let temp = TempDir::new("materialise-mesh-invalid");
+    let ten_textures: Vec<String> = (0..10).map(|n| format!("textures\\{n}.dds")).collect();
+    for (index, (entry, reason)) in [
+        (
+            serde_json::json!({"kind": "mesh", "path": "mods/Mod/textures/a.dds",
+                               "version": "sse"}),
+            "`.nif`, `.btr` or `.bto`",
+        ),
+        (
+            serde_json::json!({"kind": "mesh", "path": "mods/Mod/meshes/a.nif", "version": "sse",
+                               "shapes": [{"name": "Shape", "textures": ten_textures}]}),
+            "9 texture slots",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let case = shaped(serde_json::json!([entry.clone()]), serde_json::json!([]));
+        let root = temp.path().join(format!("invalid-{index}"));
+        let error = write_input(&case, "meshes", &root, &fixtures_dir()).unwrap_err();
+        assert!(
+            matches!(&error, HarnessError::InvalidCase(message) if message.contains(reason)),
+            "{entry}: {error}"
+        );
+    }
 }

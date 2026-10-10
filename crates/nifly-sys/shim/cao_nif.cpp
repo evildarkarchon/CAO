@@ -7,15 +7,20 @@
 // - Every entry point is `noexcept` and catches every C++ exception: unwinding
 //   into Rust through `extern "C"` is undefined behaviour. A caught exception
 //   returns -1 and leaves its message for `cao_nif_last_error`.
-// - Status returns: 0 ok; >0 nifly's own code; -1 C++ exception; -2 bad argument.
+// - Status returns: 0 ok; >0 nifly's own code, or a code the entry point
+//   documents where nifly reports failure by null; -1 C++ exception; -2 bad
+//   argument.
 // - Paths are UTF-16 code units, passed straight to `std::filesystem::path`.
 //   Texture paths are raw bytes in nifly's unspecified code page.
 // - Nothing is null-checked: `handle` must be a live pointer from
 //   `cao_nif_new`, every out-pointer must be writable, and every buffer must
 //   hold `length` elements. Only an index or a stale snapshot is validated (-2).
+// - The mesh-creation entry points (`cao_nif_create*`, `cao_nif_set_texture_slot`)
+//   exist only when built with CAO_NIF_CORPUS, nifly-sys's `corpus` feature.
 
 #include "NifFile.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -23,6 +28,7 @@
 #include <functional>
 #include <new>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -91,6 +97,14 @@ const std::vector<std::string>* optimizationNames(const OptResult& result, int32
         default: return nullptr;
     }
 }
+
+#ifdef CAO_NIF_CORPUS
+// The texture set behind a shape's shader, or null when it has none.
+const BSShaderTextureSet* textureSetOf(const NifFile& nif, NiShape* shape) {
+    const auto* shader = nif.GetShader(shape);
+    return shader ? nif.GetHeader().GetBlock(shader->TextureSetRef()) : nullptr;
+}
+#endif
 }  // namespace
 
 extern "C" {
@@ -222,6 +236,77 @@ std::size_t cao_nif_last_error(const CaoNif* handle, const char** ptr) noexcept 
     *ptr = handle->lastError.data();
     return handle->lastError.size();
 }
+
+#ifdef CAO_NIF_CORPUS
+// Mesh creation for the parity corpus's synthetic Meshes (#503), compiled only
+// with nifly-sys's `corpus` feature, which build.rs maps to CAO_NIF_CORPUS.
+
+// NifFile::Create: replaces the content with an empty Mesh of the version
+// (file, user, stream) holding only a "Scene Root" NiNode.
+int32_t cao_nif_create(CaoNif* handle, uint32_t file, uint32_t user, uint32_t stream) noexcept {
+    return guard(*handle, [&] {
+        invalidateTextures(*handle);
+        // The constructor NiVersion::getSSE() and friends use, so a Mesh made
+        // here matches one the C++ tests make from them.
+        handle->nif.Create(NiVersion(static_cast<NiFileVersion>(file), user, stream));
+        return int32_t{0};
+    });
+}
+
+// NifFile::CreateShapeFromData without UVs or normals, as the C++ tests call
+// it. `vertices` holds 3 floats per vertex and `triangles` 3 indices per
+// triangle; neither is validated. Reports the new shape's index in
+// GetShapes() and its texture-set slot count. Returns 1, creating nothing,
+// when the Mesh has no root node to hang the shape from.
+int32_t cao_nif_create_shape(CaoNif* handle, const char* name, std::size_t nameLength, const float* vertices,
+                             std::size_t vertexCount, const uint16_t* triangles, std::size_t triangleCount,
+                             std::size_t* outIndex, std::size_t* outTextureSlots) noexcept {
+    return guard(*handle, [&] {
+        // Copied element by element, so nothing depends on Vector3's or
+        // Triangle's layout.
+        std::vector<Vector3> points;
+        points.reserve(vertexCount);
+        for (std::size_t i = 0; i < vertexCount; ++i)
+            points.emplace_back(vertices[3 * i], vertices[3 * i + 1], vertices[3 * i + 2]);
+        std::vector<Triangle> faces;
+        faces.reserve(triangleCount);
+        for (std::size_t i = 0; i < triangleCount; ++i)
+            faces.emplace_back(triangles[3 * i], triangles[3 * i + 1], triangles[3 * i + 2]);
+
+        // A new block leaves existing references intact, but the snapshot
+        // would no longer list every shape.
+        invalidateTextures(*handle);
+        NiShape* shape = handle->nif.CreateShapeFromData(std::string(name, nameLength), &points, &faces, nullptr);
+        if (!shape) return int32_t{1};
+
+        // nifly adds every new shape as a block, so GetShapes() lists it; the
+        // throw only keeps a broken invariant from reading past the end.
+        const auto shapes = handle->nif.GetShapes();
+        const auto found = std::find(shapes.begin(), shapes.end(), shape);
+        if (found == shapes.end()) throw std::logic_error("nifly did not list the shape it created");
+        *outIndex = static_cast<std::size_t>(found - shapes.begin());
+        const auto* textureSet = textureSetOf(handle->nif, shape);
+        *outTextureSlots = textureSet ? textureSet->textures.size() : 0;
+        return int32_t{0};
+    });
+}
+
+// NifFile::SetTextureSlot on the shape at `shape` in GetShapes(). Returns -2
+// for a shape index or texture-set slot that does not exist: nifly would
+// silently write nowhere, or into an OB texturing property.
+int32_t cao_nif_set_texture_slot(CaoNif* handle, std::size_t shape, uint32_t slot, const char* ptr,
+                                 std::size_t length) noexcept {
+    return guard(*handle, [&] {
+        const auto shapes = handle->nif.GetShapes();
+        if (shape >= shapes.size()) return kBadArgument;
+        const auto* textureSet = textureSetOf(handle->nif, shapes[shape]);
+        if (!textureSet || slot >= textureSet->textures.size()) return kBadArgument;
+        std::string path(ptr, length);
+        handle->nif.SetTextureSlot(shapes[shape], path, slot);
+        return int32_t{0};
+    });
+}
+#endif  // CAO_NIF_CORPUS
 
 // Test support only; the mesh backend never calls it. Loads `length` bytes
 // through a stream whose exception mask makes reading past their end throw
