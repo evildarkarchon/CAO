@@ -11,7 +11,9 @@ use std::mem::offset_of;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
+use std::time::Duration;
 
+use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_DISPOSITION_INFO, FILE_RENAME_INFO, FileDispositionInfo, FileRenameInfo,
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, SetFileInformationByHandle,
@@ -122,26 +124,59 @@ pub fn delete_by_handle(file: &File) -> io::Result<()> {
 /// with C++. Paths go to Win32 as they are, so long ones rely on the
 /// `longPathAware` manifest.
 ///
+/// A move refused with Access denied or a sharing violation is retried with
+/// backoff for about a second before that error is returned (deviation 25).
+/// A real-time scanner briefly opens a file a run has just written, and
+/// replacing a destination someone holds without delete sharing is refused;
+/// C++ moved once, so the scan failed the run. The wait blocks the calling
+/// thread, and a lasting refusal, such as a read-only manifest, costs it
+/// that second before it fails.
+///
 /// # Errors
 ///
 /// Returns [`io::ErrorKind::InvalidInput`] for a path with an interior NUL,
-/// and otherwise the `MoveFileExW` error.
+/// and otherwise the `MoveFileExW` error, of the last attempt when retried.
+/// The source is left in place on failure.
 pub fn move_file_write_through(from: &Path, to: &Path) -> io::Result<()> {
     let from = terminated(from.as_os_str())?;
     let to = terminated(to.as_os_str())?;
-    // SAFETY: both buffers are NUL-terminated UTF-16 and outlive the call.
-    let moved = unsafe {
-        MoveFileExW(
-            from.as_ptr(),
-            to.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if moved == 0 {
-        return Err(io::Error::last_os_error());
+    let mut waits = TRANSIENT_REFUSAL_WAITS.iter();
+    loop {
+        // SAFETY: both buffers are NUL-terminated UTF-16 and outlive the call.
+        let moved = unsafe {
+            MoveFileExW(
+                from.as_ptr(),
+                to.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if moved != 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        let transient = matches!(
+            error.raw_os_error().map(|code| code as u32),
+            Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION)
+        );
+        match waits.next() {
+            Some(wait) if transient => std::thread::sleep(*wait),
+            _ => return Err(error),
+        }
     }
-    Ok(())
 }
+
+/// The waits between attempts of a move a held destination refused: about a
+/// second in all. The scanner holds observed on a loaded host cleared within
+/// 6 ms, so the first retry is usually the last.
+const TRANSIENT_REFUSAL_WAITS: [Duration; 7] = [
+    Duration::from_millis(5),
+    Duration::from_millis(10),
+    Duration::from_millis(20),
+    Duration::from_millis(50),
+    Duration::from_millis(100),
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+];
 
 /// Encodes `text` as NUL-terminated UTF-16 for a Win32 path parameter.
 pub(crate) fn terminated(text: &OsStr) -> io::Result<Vec<u16>> {

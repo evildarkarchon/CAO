@@ -5,6 +5,7 @@ mod common;
 
 use std::io;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use cao_winfs::{
     Access, Open, RenameMode, Share, delete_by_handle, move_file_write_through, rename_by_handle,
@@ -13,6 +14,7 @@ use common::{scratch_dir, write};
 
 const ERROR_FILE_NOT_FOUND: i32 = windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND as i32;
 const ERROR_ALREADY_EXISTS: i32 = windows_sys::Win32::Foundation::ERROR_ALREADY_EXISTS as i32;
+const ERROR_ACCESS_DENIED: i32 = windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32;
 
 /// The staged-publication handle: exclusive, with the rights to flush and
 /// rename.
@@ -144,6 +146,63 @@ fn write_through_moves_replace_the_destination() {
 
     assert!(!scratch.exists());
     assert_eq!(std::fs::read(&manifest).unwrap(), b"v3 new");
+}
+
+/// Opens `path` as a real-time scanner's transient open does: readable, but
+/// without delete sharing, so a replacing move onto it is refused.
+fn hold_without_delete_sharing(path: &Path) -> std::fs::File {
+    Open::new(Access::READ, Share::READ | Share::WRITE)
+        .open(path)
+        .unwrap()
+}
+
+/// Deviation 25: a scanner briefly holding the manifest a run just wrote
+/// made the replacing move fail with Access denied, failing the run, though
+/// a retry milliseconds later succeeds. The move waits a held destination
+/// out.
+#[test]
+fn write_through_moves_wait_out_a_transient_hold_on_the_destination() {
+    let dir = scratch_dir("move-transient-hold");
+    let scratch = dir.join("ownership.manifest.next");
+    let manifest = dir.join("ownership.manifest");
+    write(&scratch, b"v3 new");
+    write(&manifest, b"v3 old");
+    let held = hold_without_delete_sharing(&manifest);
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        drop(held);
+    });
+
+    let moved = move_file_write_through(&scratch, &manifest);
+    release.join().unwrap();
+
+    moved.unwrap();
+    assert!(!scratch.exists());
+    assert_eq!(std::fs::read(&manifest).unwrap(), b"v3 new");
+}
+
+/// A destination that stays held is still refused once the wait is spent,
+/// with the original error, and the source is kept for the caller.
+#[test]
+fn write_through_moves_still_fail_on_a_lasting_hold() {
+    let dir = scratch_dir("move-lasting-hold");
+    let scratch = dir.join("ownership.manifest.next");
+    let manifest = dir.join("ownership.manifest");
+    write(&scratch, b"v3 new");
+    write(&manifest, b"v3 old");
+    let _held = hold_without_delete_sharing(&manifest);
+
+    let started = Instant::now();
+    let error = move_file_write_through(&scratch, &manifest).unwrap_err();
+
+    assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(std::fs::read(&scratch).unwrap(), b"v3 new");
+    assert_eq!(std::fs::read(&manifest).unwrap(), b"v3 old");
 }
 
 #[test]

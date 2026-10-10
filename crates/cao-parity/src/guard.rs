@@ -40,7 +40,7 @@ use crate::recipe::{
 
 /// The spec's deviation list (#476, "Deviation list (fix, don't copy)"), in
 /// order: entry `n` is at index `n - 1`.
-pub const DEVIATIONS: [&str; 24] = [
+pub const DEVIATIONS: [&str; 25] = [
     "`profiles/`, `logs/`, `bin/hkxcmd.exe` and `translations/` resolve relative to the exe",
     "Cancel in the unwanted-formats dialog reverts edits",
     "The Dry Run and Several Mods UI rules also apply on INI load",
@@ -65,6 +65,7 @@ pub const DEVIATIONS: [&str; 24] = [
     "Application Log format: `{module::path@line}`, `fatal` as `ERROR`, HTML-escaped text, `\\n` per record",
     "Toggling debug logging between runs no longer drops the log",
     "The Log tab is fed by the sink, isn't truncated, and shows startup records",
+    "Replacing the staging manifest waits out a destination a scanner briefly holds",
 ];
 
 /// One guard rule: the trigger of one deviation-list entry.
@@ -78,7 +79,7 @@ pub struct Rule {
 }
 
 /// One rule per [`DEVIATIONS`] entry, in list order.
-pub const RULES: [Rule; 24] = [
+pub const RULES: [Rule; 25] = [
     Rule {
         deviation: 1,
         name: "app-directory resources",
@@ -198,6 +199,11 @@ pub const RULES: [Rule; 24] = [
         deviation: 24,
         name: "logs folder",
         check: logs_folder,
+    },
+    Rule {
+        deviation: 25,
+        name: "held staging manifest",
+        check: held_staging_manifest,
     },
 ];
 
@@ -1243,6 +1249,16 @@ fn debug_log(context: &Context<'_>) -> Option<String> {
 /// Application Log, whose format and rotation differ by design, into the case.
 fn logs_folder(context: &Context<'_>) -> Option<String> {
     top_level(context, &["logs"])
+}
+
+/// Deviation 25. C++ replaced `ownership.manifest` with one `MoveFileExW`, so
+/// a real-time scanner briefly holding the manifest a run had just written
+/// failed the run with Access denied; Rust retries for about a second. The
+/// trigger is that host race, which no recipe can produce, so this never
+/// fires. A destination that stays unreplaceable, such as a read-only
+/// manifest, fails in both builds alike: Rust only waits first.
+fn held_staging_manifest(_context: &Context<'_>) -> Option<String> {
+    None
 }
 
 /// The profile values in `profile.ini` that no GUI widget can produce

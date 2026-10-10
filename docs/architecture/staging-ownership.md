@@ -63,7 +63,10 @@ can forge the manifest and edit the Mod Root.
 Producers flush a complete registration snapshot before exclusively creating each temporary file.
 A v2 or v3 manifest additionally authorizes the fixed `ownership.manifest.next` scratch file used to
 publish its next snapshot. The writer exclusively creates and flushes that scratch file, then
-replaces `ownership.manifest` on the same volume. Recovery can discard a partial scratch file
+replaces `ownership.manifest` on the same volume. A replacement refused with Access denied or a
+sharing violation is retried for about a second, since a real-time scanner can briefly hold the
+manifest a run has just written; the scratch file stays in place until it succeeds or the error
+is reported. Recovery can discard a partial scratch file
 only after validating the authoritative v2 or v3 manifest and the owned tree. A v1 manifest does
 not authorize this extra control file.
 
