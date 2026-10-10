@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use cao_parity::HarnessError;
 use cao_parity::case::{CaseFile, CaseLayout, CaseSpec, Side, SideResources};
 use cao_parity::cases::{fixtures_dir, seed, seeds};
+use cao_parity::local_assets::{LocalAssetPool, PinnedList, sha256_hex};
 use cao_parity::materialise::{Environment, PATH_CAP_UTF16, Readiness, materialise, write_input};
 use cao_parity::recipe::{TextureFormat, TreeRecipe};
 use common::{TempDir, shipped_profiles};
@@ -380,6 +381,17 @@ fn materialised(
     case: &CaseFile,
     symlink_rights: bool,
 ) -> (CaseLayout, Result<Readiness, HarnessError>) {
+    materialised_with_pool(temp, id, case, symlink_rights, common::empty_pool())
+}
+
+/// [`materialised`], with `pool` as the local asset pool.
+fn materialised_with_pool(
+    temp: &TempDir,
+    id: &str,
+    case: &CaseFile,
+    symlink_rights: bool,
+    pool: &LocalAssetPool,
+) -> (CaseLayout, Result<Readiness, HarnessError>) {
     let layout = CaseLayout::new(temp.path(), id).unwrap();
     let profiles = shipped_profiles();
     let environment = Environment {
@@ -389,6 +401,7 @@ fn materialised(
         },
         fixtures: &fixtures_dir(),
         symlink_rights,
+        local_assets: pool,
     };
     let readiness = materialise(&layout, case, &environment);
     (layout, readiness)
@@ -757,4 +770,202 @@ fn game_paths_stay_ascii_while_mod_roots_and_plugins_need_not() {
             "{rejected}: {error}"
         );
     }
+}
+
+/// The bytes of the pool's Mesh in [`pool_at`].
+const POOL_MESH: &[u8] = b"a pooled mesh's bytes";
+/// The bytes of the pool's Animation in [`pool_at`].
+const POOL_ANIMATION: &[u8] = b"a pooled animation's bytes";
+
+/// Builds a pool at `root` whose SSE BSA `Pool - Meshes.bsa` holds
+/// [`POOL_MESH`] and [`POOL_ANIMATION`], and pins them as `sse-static-a.nif`
+/// and `sse-animation-b.hkx`. `mesh_sha256` replaces the mesh's true hash, and
+/// `mesh_path` its internal path, so a test can pin bytes the pool lacks.
+fn pool_at(root: &Path, mesh_sha256: Option<&str>, mesh_path: &str) -> LocalAssetPool {
+    let text = |bytes: &[u8]| std::str::from_utf8(bytes).unwrap().to_owned();
+    let bsa = shaped(
+        serde_json::json!([
+            {"kind": "archive", "path": "sse/Pool - Meshes.bsa", "game": "sse",
+             "type": "standard", "content": [
+                {"kind": "text", "path": "meshes/pool/a.nif", "text": text(POOL_MESH)},
+                {"kind": "text", "path": "meshes/actors/b.hkx", "text": text(POOL_ANIMATION)}]}
+        ]),
+        serde_json::json!([]),
+    );
+    // The case id seeds the Archive's scratch folder, so pools packed on
+    // parallel test threads need their own ids, or they share one folder.
+    let id = format!("pool-{}", root.file_name().unwrap().to_string_lossy());
+    write_input(&bsa, &id, root, &fixtures_dir()).unwrap();
+    let mesh_sha256 = mesh_sha256.map_or_else(|| sha256_hex(POOL_MESH), str::to_owned);
+    let pinned = PinnedList::parse(&format!(
+        r#"
+[[asset]]
+id = "sse-static-a.nif"
+edition = "sse"
+archive = "Pool - Meshes.bsa"
+path = "{mesh_path}"
+category = "static"
+sha256 = "{mesh_sha256}"
+
+[[asset]]
+id = "sse-animation-b.hkx"
+edition = "sse"
+archive = "Pool - Meshes.bsa"
+path = "meshes/actors/b.hkx"
+category = "animation"
+sha256 = "{}"
+"#,
+        sha256_hex(POOL_ANIMATION)
+    ))
+    .unwrap();
+    LocalAssetPool::new(root.to_path_buf(), pinned)
+}
+
+/// A case using the pooled mesh loose, truncated, and the pooled animation
+/// packed into an input Archive.
+fn uses_the_pool() -> CaseFile {
+    shaped(
+        serde_json::json!([
+            {"kind": "local_asset", "path": "mods/Mod/meshes/a.nif", "asset": "sse-static-a.nif"},
+            {"kind": "local_asset", "path": "mods/Mod/meshes/cut.nif", "asset": "sse-static-a.nif",
+             "fault": {"truncate": 3}},
+            {"kind": "archive", "path": "mods/Mod/Mod.bsa", "game": "sse", "type": "standard",
+             "content": [
+                {"kind": "local_asset", "path": "meshes/actors/b.hkx",
+                 "asset": "sse-animation-b.hkx"}]}
+        ]),
+        serde_json::json!([]),
+    )
+}
+
+/// A `local_asset` entry writes the pinned entry's bytes into every copy,
+/// loose or packed, and a fault decorator damages them as it would a texture.
+#[test]
+fn a_local_asset_entry_writes_the_pinned_bytes_into_every_copy() {
+    let temp = TempDir::new("materialise-pool");
+    let pool = pool_at(&temp.path().join("pool"), None, "meshes/pool/a.nif");
+    let (layout, readiness) =
+        materialised_with_pool(&temp, "pooled", &uses_the_pool(), false, &pool);
+    assert_eq!(readiness.unwrap(), Readiness::Ready);
+
+    for root in roots(&layout) {
+        let read = |path: &str| std::fs::read(root.join(path)).unwrap();
+        assert_eq!(read("mods/Mod/meshes/a.nif"), POOL_MESH);
+        assert_eq!(read("mods/Mod/meshes/cut.nif"), &POOL_MESH[..3]);
+        let archive = cao_archive::ReadArchive::open(&root.join("mods/Mod/Mod.bsa"))
+            .unwrap()
+            .unwrap();
+        let mut packed = Vec::new();
+        archive.extract("meshes/actors/b.hkx", &mut packed).unwrap();
+        assert_eq!(packed, POOL_ANIMATION);
+    }
+}
+
+/// A case whose pool entry is missing or changed is not run, with a reason
+/// naming the entry, and nothing of it is written.
+#[test]
+fn a_case_is_not_run_when_the_pool_cannot_supply_a_pinned_entry() {
+    let temp = TempDir::new("materialise-pool-not-run");
+    let changed = "0".repeat(64);
+    let pools = [
+        (
+            "no-pool",
+            LocalAssetPool::new(
+                temp.path().join("absent"),
+                pool_at(&temp.path().join("unused"), None, "meshes/pool/a.nif")
+                    .pinned()
+                    .clone(),
+            ),
+            "Pool - Meshes.bsa is missing".to_owned(),
+        ),
+        (
+            "no-entry",
+            pool_at(&temp.path().join("no-entry"), None, "meshes/pool/gone.nif"),
+            "`meshes/pool/gone.nif` cannot be extracted".to_owned(),
+        ),
+        (
+            "changed",
+            pool_at(
+                &temp.path().join("changed"),
+                Some(&changed),
+                "meshes/pool/a.nif",
+            ),
+            format!(
+                "has SHA-256 {}, not the pinned {changed}",
+                sha256_hex(POOL_MESH)
+            ),
+        ),
+    ];
+    for (id, pool, expected) in pools {
+        let (layout, readiness) = materialised_with_pool(&temp, id, &uses_the_pool(), false, &pool);
+        let Readiness::NotRun(reason) = readiness.unwrap() else {
+            panic!("{id}: the case ran");
+        };
+        assert!(
+            reason.contains("the local asset `sse-static-a.nif`") && reason.contains(&expected),
+            "{id}: {reason}"
+        );
+        assert!(!layout.input().exists(), "{id}: input/ was written");
+    }
+}
+
+/// An id the pinned list lacks is a recipe error, reported even on a host
+/// with no pool, rather than a reason not to run.
+#[test]
+fn an_unpinned_local_asset_is_a_recipe_error_even_without_a_pool() {
+    let temp = TempDir::new("materialise-pool-unpinned");
+    let case = shaped(
+        serde_json::json!([
+            {"kind": "local_asset", "path": "mods/Mod/meshes/a.nif", "asset": "sse-static-nope.nif"}
+        ]),
+        serde_json::json!([]),
+    );
+    let (_, readiness) = materialised(&temp, "unpinned", &case, false);
+    let error = readiness.unwrap_err();
+    assert!(
+        matches!(&error, HarnessError::InvalidCase(message) if message.contains("sse-static-nope.nif")),
+        "{error}"
+    );
+}
+
+/// Pool bytes keep their pinned extension, loose or packed, so they never
+/// pose as a plugin or Texture whose content the deviation guard reads. The
+/// pool is never touched: it is a recipe error.
+#[test]
+fn a_local_asset_must_keep_its_pinned_extension() {
+    let temp = TempDir::new("materialise-pool-extension");
+    let pool = LocalAssetPool::new(
+        temp.path().join("absent"),
+        pool_at(&temp.path().join("pinned"), None, "meshes/pool/a.nif")
+            .pinned()
+            .clone(),
+    );
+    let loose = serde_json::json!(
+        {"kind": "local_asset", "path": "mods/Mod/Mod.esp", "asset": "sse-static-a.nif"});
+    let packed = serde_json::json!(
+        {"kind": "archive", "path": "mods/Mod/Mod.bsa", "game": "sse", "type": "standard",
+         "content": [{"kind": "local_asset", "path": "textures/a.dds",
+                      "asset": "sse-static-a.nif"}]});
+    for (index, entry) in [loose, packed].into_iter().enumerate() {
+        let case = shaped(serde_json::json!([entry]), serde_json::json!([]));
+        let (_, readiness) =
+            materialised_with_pool(&temp, &format!("ext-{index}"), &case, false, &pool);
+        let error = readiness.unwrap_err();
+        assert!(
+            matches!(&error, HarnessError::InvalidCase(message)
+                if message.contains("keeps its pinned extension")),
+            "{entry}: {error}"
+        );
+    }
+    let case = shaped(
+        serde_json::json!([
+            {"kind": "local_asset", "path": "mods/Mod/meshes/A.NIF", "asset": "sse-static-a.nif"}
+        ]),
+        serde_json::json!([]),
+    );
+    let (_, readiness) = materialised_with_pool(&temp, "ext-case", &case, false, &pool);
+    assert!(
+        matches!(readiness.unwrap(), Readiness::NotRun(_)),
+        "the extension is matched ignoring case"
+    );
 }

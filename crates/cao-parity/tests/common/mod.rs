@@ -54,6 +54,13 @@ impl Drop for TempDir {
     }
 }
 
+/// A pool with nothing pinned, for tests whose cases use no local assets.
+pub fn empty_pool() -> &'static cao_parity::local_assets::LocalAssetPool {
+    use cao_parity::local_assets::{LocalAssetPool, PinnedList};
+    static POOL: std::sync::OnceLock<LocalAssetPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| LocalAssetPool::new(PathBuf::from("no-pool"), PinnedList::default()))
+}
+
 /// The repository's shipped `profiles/`.
 pub fn shipped_profiles() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles")

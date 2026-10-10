@@ -6,7 +6,8 @@
 //! compared by [`tree`], under the [`rules`] for leftovers ([`leftovers`]),
 //! Textures ([`textures`]) and Archives ([`archives`]). [`case`] owns the per-case layout and runs the sides.
 //! [`driver`] is the Rust side, over the shared composition root. A case's
-//! tree is a declarative [`recipe`] that [`materialise`] turns into files, and
+//! tree is a declarative [`recipe`] that [`materialise`] turns into files,
+//! taking real Meshes and Animations from the [`local_assets`] pool, and
 //! [`cases`] loads the committed seed cases `cao-parity case` can run by name.
 //! The deviation [`guard`] rejects any case that would trigger a deliberate
 //! fix before it is materialised.
@@ -25,6 +26,7 @@ pub mod facts;
 pub mod generate;
 pub mod guard;
 pub mod leftovers;
+pub mod local_assets;
 pub mod materialise;
 pub mod names;
 pub mod normalise;

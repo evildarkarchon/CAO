@@ -1,0 +1,291 @@
+# The pinned local asset list (#473, #501): the real Skyrim Meshes and
+# Animations a recipe's `local_asset` entry may use, by `id`.
+#
+# The bytes are never committed. They come from the gitignored pool, which
+# holds the user's own BSAs at `<pool>/le/` and `<pool>/sse/`; the harness
+# finds it at `--local-assets`, then `CAO_LOCAL_ASSETS`, then `tests/local`.
+# Each entry pins the SHA-256 of its extracted bytes, so a pool from another
+# game patch makes the cases using it not run instead of comparing different
+# inputs. `docs/parity-oracle.md` says how to populate the pool and add
+# entries; `cao-parity local-assets` checks the pool against this list.
+#
+# Fields: `id` (lowercase ASCII letters, digits, `.`, `_`, `-`), `edition`
+# (`le` or `sse`), `archive` (the BSA's file name), `path` (the `/`-separated
+# internal path), `category` (`static`, `skinned`, `headpart`, `facegen`,
+# `lod` or `animation`), `sha256`, and an optional `note`.
+#
+# LE entries are still to be pinned: the research (#473) calls for about 20
+# LE Animations, the conversion inputs, and about 30 LE Meshes. They need an
+# LE install to hash.
+
+[[asset]]
+id = "sse-static-norpullchainanim01.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/dungeons/nordic/levers/pullchainanim/norpullchainanim01.nif"
+category = "static"
+sha256 = "0e734ed060118e69b7082b357153d5107efa767d2190ee5abebcd6a8e1b861ef"
+
+[[asset]]
+id = "sse-static-blackreachewall01hole.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/dungeons/caves/blackreach/blackreachewall01hole.nif"
+category = "static"
+sha256 = "6bdc4852046429c8bc2e8153d21b7c9f9626e3ce9f9f29431a5c0cfb8007a56d"
+
+[[asset]]
+id = "sse-static-riftenrwroomwall04.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/dungeons/riften/ratwayroom/riftenrwroomwall04.nif"
+category = "static"
+sha256 = "609d39c0eb93bb132a18a96cca4ab1cd6c0bfa511ec0febc195c68a49cbeac51"
+
+[[asset]]
+id = "sse-static-whstormcloaksfancybanner01.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/architecture/windhelm/whstormcloaksfancybanner01.nif"
+category = "static"
+sha256 = "7ebd9701f160838eae8e7bc951ebdebe20200ba2aae1995df3bf570ccf75df49"
+
+[[asset]]
+id = "sse-static-skeevernestbale02.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/clutter/skeevernest/skeevernestbale02.nif"
+category = "static"
+sha256 = "ef705d1833d963f473b3b34d17338c3c4c2361b690b93b4fecccceae819c92a6"
+
+[[asset]]
+id = "sse-static-improombrace01.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/dungeons/imperial/smallroom/improombrace01.nif"
+category = "static"
+sha256 = "1d18b27bc720dcdd7121f4a4d39fbd9eace0e7888f193ba9263a2cdb741a5a0d"
+
+[[asset]]
+id = "sse-static-cavegbalconycurve01.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/dungeons/caves/green/balcony/cavegbalconycurve01.nif"
+category = "static"
+sha256 = "a8a10f8bbc23735ee7d7a6e666e815ba840e81841bbf088242f26658648763a7"
+
+[[asset]]
+id = "sse-static-caveihall1way128u01.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/dungeons/caves/ice/smallhall/caveihall1way128u01.nif"
+category = "static"
+sha256 = "c159da79e3c55712b73e6332df6109feab29687c53bd0e61ddc9ef52b6a225f7"
+
+[[asset]]
+id = "sse-static-powshrinecircle02.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/clutter/powershrines/powshrinecircle02.nif"
+category = "static"
+sha256 = "b3ebb68e58c400d8a5e35ea96183d3cc8a213a3655c3fb0f4455695291b45af3"
+
+[[asset]]
+id = "sse-static-stockadescaffoldtop2sided01b.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/clutter/stockade/stockadescaffoldtop2sided01b.nif"
+category = "static"
+sha256 = "3b43b1688338d7d68c26a4672c1c006b3b0df60d000e4061a81f17fce24d8c3f"
+
+[[asset]]
+id = "sse-skinned-1stpersonprisonerrags_f_0.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/clothes/prisoner/1stpersonprisonerrags_f_0.nif"
+category = "skinned"
+sha256 = "b88eed6fdd782c57ad9c2feec8c45bb9fcf40c4050b78bf89b3f5cec529da86f"
+
+[[asset]]
+id = "sse-skinned-1stpersonemperoroutfitm_0.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/clothes/emperor/1stpersonemperoroutfitm_0.nif"
+category = "skinned"
+sha256 = "84e3b45e595884a44d1c7322da25389f89903a052aee1e616ccae19ceeb5d1c2"
+
+[[asset]]
+id = "sse-skinned-armbandagesf_1.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/clothes/bandages/armbandagesf_1.nif"
+category = "skinned"
+sha256 = "033453949021a988ff614343bc28431283ce7cacfcd0619382586c756f164cc9"
+
+[[asset]]
+id = "sse-skinned-torso02_0.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/clothes/childrenclothes/m/torso02_0.nif"
+category = "skinned"
+sha256 = "bc3e768afe3aec4af78f32cb3f24b7e243e6f67d869900d862f16ee67267133d"
+
+[[asset]]
+id = "sse-skinned-monkvariantoutfit_1.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/clothes/monk/monkvariantoutfit_1.nif"
+category = "skinned"
+sha256 = "6fc05153c9189ad79517525706e2bd837c47ce689b21a57f81364fe466a28e76"
+
+[[asset]]
+id = "sse-skinned-magejourneymanrobes_1.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/clothes/magejourneyman/magejourneymanrobes_1.nif"
+category = "skinned"
+sha256 = "c4d2ab15fd0b158658a22c609ecf546a9c395894dcfa3a83f5e9be5df122f3e7"
+
+[[asset]]
+id = "sse-skinned-1stpersonwoundsusanna_0.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/clothes/wounds/1stpersonwoundsusanna_0.nif"
+category = "skinned"
+sha256 = "f6624d10e0f3dd7682ebce90c76774ff36106d5ddc308cb663721bae8d697a1b"
+
+[[asset]]
+id = "sse-skinned-1stpersonbodym_1.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/armor/bandit/1stpersonbodym_1.nif"
+category = "skinned"
+sha256 = "f68ddd9a020400272392db554b30eca3ab3727900efcb85b6c809609061d148a"
+
+[[asset]]
+id = "sse-headpart-hair01.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/actors/character/character assets/hair/male/hair01.nif"
+category = "headpart"
+sha256 = "5206532cd0d579ef803cf7ecc8c81bfd2fc077c28db76c9aca19ae82d78579ea"
+
+[[asset]]
+id = "sse-headpart-maleorchair12.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/actors/character/character assets/hair/maleorchair12.nif"
+category = "headpart"
+sha256 = "aa726f0581ef956105d9c2c61b1162e703e740aa1bf4b20baa6a142df52b2e91"
+
+[[asset]]
+id = "sse-headpart-argonianfemalehorns01.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/actors/character/character assets/hair/argonianfemalehorns01.nif"
+category = "headpart"
+sha256 = "2905077d7945a9ac148617979803880ffbe86a7650b3aa2f2f52ad11f218828b"
+
+[[asset]]
+id = "sse-headpart-decapitatedheadgorehumanoidmale_0.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/actors/character/character assets/decapitatedheadgorehumanoidmale_0.nif"
+category = "headpart"
+sha256 = "605615fab328abeab5ec0cc42dfa2f5ca2c43a4d37d152551059b80760a0bbdd"
+
+[[asset]]
+id = "sse-headpart-khajiitmustache01.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/actors/character/character assets/beards/khajiitmustache01.nif"
+category = "headpart"
+sha256 = "b13e2564a63ff1c261b8ac4aedbc1edf4dd657519bd9e661d3a950a9474f2489"
+
+[[asset]]
+id = "sse-facegen-00013255.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/actors/character/facegendata/facegeom/skyrim.esm/00013255.nif"
+category = "facegen"
+sha256 = "aa52be6de8954f01c95f669aa1567c75a39ce57419b5073912ab91ac34f184c5"
+
+[[asset]]
+id = "sse-facegen-00039d03.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/actors/character/facegendata/facegeom/skyrim.esm/00039d03.nif"
+category = "facegen"
+sha256 = "44dd51ea1b75530b632efb552a6997488e2a1f3245d505667c17a953d97376a7"
+
+[[asset]]
+id = "sse-facegen-0006d260.nif"
+edition = "sse"
+archive = "Skyrim - Meshes0.bsa"
+path = "meshes/actors/character/facegendata/facegeom/skyrim.esm/0006d260.nif"
+category = "facegen"
+sha256 = "b2bc57d4291d1fecf6a9f829ecabaa80fa23499962404b7619402a730566a651"
+
+[[asset]]
+id = "sse-lod-tamriel.8.32.-16.btr"
+edition = "sse"
+archive = "Skyrim - Meshes1.bsa"
+path = "meshes/terrain/tamriel/tamriel.8.32.-16.btr"
+category = "lod"
+sha256 = "8b633555a29f485b68befde3a3a848ea493e4abc2e48152b46a937382c826deb"
+
+[[asset]]
+id = "sse-lod-tamriel.4.-88.72.btr"
+edition = "sse"
+archive = "Skyrim - Meshes1.bsa"
+path = "meshes/terrain/tamriel/tamriel.4.-88.72.btr"
+category = "lod"
+sha256 = "0b326786c44a9831af377d730ce6dda6966136e3d6a3786d7e199716a60bf00e"
+
+[[asset]]
+id = "sse-lod-tamriel.8.32.-24.bto"
+edition = "sse"
+archive = "Skyrim - Meshes1.bsa"
+path = "meshes/terrain/tamriel/objects/tamriel.8.32.-24.bto"
+category = "lod"
+sha256 = "8e01587dcadb704bf8268ef7b69444ec9b8b724d1f90950eb41e97891b4ff0cd"
+
+[[asset]]
+id = "sse-lod-tamriel.4.-16.8.bto"
+edition = "sse"
+archive = "Skyrim - Meshes1.bsa"
+path = "meshes/terrain/tamriel/objects/tamriel.4.-16.8.bto"
+category = "lod"
+sha256 = "c8d9fbd3e25d228a9dabb62ebc39d95c2aefaa3be306d05c59cf88e91f3dadf8"
+
+[[asset]]
+id = "sse-animation-2hw_runleftattackleftintro.hkx"
+edition = "sse"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/character/animations/2hw_runleftattackleftintro.hkx"
+category = "animation"
+sha256 = "66917eca9afc985c385642e9e6b4bb9f7d6d0f72a01a0cd273f4364a291716b4"
+
+[[asset]]
+id = "sse-animation-1hm_walkbackwardright.hkx"
+edition = "sse"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/character/animations/1hm_walkbackwardright.hkx"
+category = "animation"
+sha256 = "e687284d105c32e4b4de6c869dde8d6caa3fdf23f651c4be2a8dbea9b46f5788"
+
+[[asset]]
+id = "sse-animation-bedroll_rightquickexit.hkx"
+edition = "sse"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/character/animations/bedroll_rightquickexit.hkx"
+category = "animation"
+sha256 = "7384e5c9a4737cc903279f9029bebba301dc70aad344e88e3a54c08532122d40"
+
+[[asset]]
+id = "sse-animation-cartprisonercsway.hkx"
+edition = "sse"
+archive = "Skyrim - Animations.bsa"
+path = "meshes/actors/character/animations/cartprisonercsway.hkx"
+category = "animation"
+sha256 = "fc194168cbef530b4c3f7f3c105477fa4f90b9ce312e5b40a7f8ce1ca7e60f4c"

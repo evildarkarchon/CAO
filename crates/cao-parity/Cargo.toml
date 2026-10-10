@@ -26,6 +26,8 @@ log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# The pinned local asset list, `local-assets.toml` (#501).
+toml.workspace = true
 
 [build-dependencies]
 embed-resource.workspace = true

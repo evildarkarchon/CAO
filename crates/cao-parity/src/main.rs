@@ -11,7 +11,8 @@
 //!   generator version produces, or a case kept in the work directory; either
 //!   way the case is materialised afresh. Exits 0 when both verdicts pass, 1
 //!   for a Different verdict, 2 for a harness error and 3 when the case cannot
-//!   run here (it needs `hkxcmd.exe` or symlink rights this host lacks). A case
+//!   run here (it needs `hkxcmd.exe`, symlink rights or a local asset pool
+//!   entry this host lacks). A case
 //!   the deviation guard rejects is a harness error, before either build runs.
 //! - `corpus [options]`: runs every seed and generated case, within the case
 //!   budget, prints a summary and writes it to `<work>/corpus-report.md`.
@@ -21,10 +22,18 @@
 //! - `calibrate` lands with the BC7/BC6H calibration (#513), so it reports
 //!   that it is not available yet.
 //!
+//! - `local-assets [--local-assets <dir>]`: checks every entry of the pinned
+//!   local asset list against the pool and prints each one's status, with the
+//!   actual SHA-256 of any changed entry. Exits 0 when the pool supplies every
+//!   entry, otherwise 3.
+//!
 //! `case` and `corpus` take the same options: `--work <dir>` (default
 //! `target/parity`), `--oracle <exe>` (or `CAO_ORACLE`), `--profiles <dir>`
 //! (default the repository's), `--hkxcmd <exe>` (or `CAO_HKXCMD`, or the
-//! repository's `bin/hkxcmd.exe`) and `--timeout <seconds>` per case.
+//! repository's `bin/hkxcmd.exe`), `--local-assets <dir>` (or
+//! `CAO_LOCAL_ASSETS`, or the repository's `tests/local`) and
+//! `--timeout <seconds>` per case. A case that uses a pool entry the pool
+//! lacks, or whose bytes no longer match the pin, is not run.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -37,10 +46,11 @@ use cao_parity::corpus::{
     CaseOutcome, Harness, TIME_BUDGET, corpus_cases, resolve_case, run_corpus, run_one,
 };
 use cao_parity::driver::drive;
+use cao_parity::local_assets::{LocalAssetPool, PinnedAsset, PinnedList, default_pool_dir};
 use cao_parity::materialise::{Environment, can_create_symlinks};
 use cao_parity::rules::ParityRules;
 
-const USAGE: &str = "usage: cao-parity <run|corpus|case <id>|calibrate> [options]";
+const USAGE: &str = "usage: cao-parity <run|corpus|case <id>|local-assets|calibrate> [options]";
 
 /// The per-case timeout when `--timeout` is not given.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
@@ -51,6 +61,7 @@ fn main() -> ExitCode {
         Some("run") => run(&arguments[1..]).map(|()| ExitCode::SUCCESS),
         Some("case") => case(&arguments[1..]),
         Some("corpus") => corpus(&arguments[1..]),
+        Some("local-assets") => local_assets(&arguments[1..]),
         Some("calibrate") => Err(anyhow!(
             "`cao-parity calibrate` is not implemented yet; it lands with the BC7/BC6H calibration"
         )),
@@ -129,13 +140,21 @@ struct Settings {
     oracle_exe: PathBuf,
     profiles: PathBuf,
     hkxcmd: Option<PathBuf>,
+    local_assets: LocalAssetPool,
     timeout: Duration,
     parity_exe: PathBuf,
 }
 
 impl Settings {
     /// The options `case` and `corpus` take.
-    const FLAGS: [&str; 5] = ["work", "oracle", "profiles", "hkxcmd", "timeout"];
+    const FLAGS: [&str; 6] = [
+        "work",
+        "oracle",
+        "profiles",
+        "hkxcmd",
+        "local-assets",
+        "timeout",
+    ];
 
     /// Resolves the shared options, with their environment and default
     /// fallbacks, and creates the work directory.
@@ -179,6 +198,7 @@ impl Settings {
             oracle_exe: absolute(oracle_exe)?,
             profiles: absolute(profiles)?,
             hkxcmd: hkxcmd.map(absolute).transpose()?,
+            local_assets: local_asset_pool(flags)?,
             timeout,
             parity_exe: std::env::current_exe().context("locating cao-parity itself")?,
         })
@@ -199,6 +219,10 @@ impl Settings {
         if let Some(hkxcmd) = &self.hkxcmd {
             command.push_str(&format!(" --hkxcmd {}", quoted(hkxcmd)));
         }
+        command.push_str(&format!(
+            " --local-assets {}",
+            quoted(self.local_assets.root())
+        ));
         command.push_str(&format!(" --timeout {}", self.timeout.as_secs()));
         command
     }
@@ -220,6 +244,7 @@ impl Settings {
                 },
                 fixtures: &fixtures,
                 symlink_rights: can_create_symlinks(&self.work),
+                local_assets: &self.local_assets,
             },
             drivers: &drivers,
             rules: &ParityRules,
@@ -299,6 +324,61 @@ fn corpus(arguments: &[String]) -> Result<ExitCode> {
         .with_context(|| format!("writing {}", report.display()))?;
     println!("Summary: {}", report.display());
     Ok(ExitCode::from(summary.exit_code()))
+}
+
+/// The local asset pool: `--local-assets`, then `CAO_LOCAL_ASSETS`, then the
+/// repository's gitignored `tests/local`, checked against the committed pinned
+/// list. The folder need not exist; a missing pool only makes the cases that
+/// use it not run.
+///
+/// # Errors
+/// When the committed pinned list cannot be read or is invalid, which is a
+/// harness error for every case, not a reason to skip some.
+fn local_asset_pool(flags: &Flags) -> Result<LocalAssetPool> {
+    let root = flags
+        .get("local-assets")
+        .map(PathBuf::from)
+        // An empty variable counts as unset: it cannot name a folder, and
+        // failing on it would fail every case, not just those using the pool.
+        .or_else(|| {
+            std::env::var_os("CAO_LOCAL_ASSETS")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        })
+        .unwrap_or_else(default_pool_dir);
+    // Absolute, so the replay command names the same pool from anywhere.
+    let root =
+        std::path::absolute(&root).with_context(|| format!("resolving {}", root.display()))?;
+    Ok(LocalAssetPool::new(root, PinnedList::committed()?))
+}
+
+/// `cao-parity local-assets`: checks every pinned entry against the pool,
+/// printing `ok` or `missing` with the reason (a changed entry's reason holds
+/// its actual SHA-256). Exits 0 when every entry is available, otherwise 3.
+fn local_assets(arguments: &[String]) -> Result<ExitCode> {
+    let pool = local_asset_pool(&Flags::parse(arguments, &["local-assets"])?)?;
+    let assets: Vec<&PinnedAsset> = pool.pinned().assets.iter().collect();
+    println!("Pool: {}", pool.root().display());
+    let mut unavailable = 0;
+    for (asset, result) in assets.iter().zip(pool.verify_each(&assets)) {
+        match result {
+            Ok(_) => println!("  ok       {}", asset.id),
+            Err(reason) => {
+                unavailable += 1;
+                println!("  missing  {}: {reason}", asset.id);
+            }
+        }
+    }
+    println!(
+        "{} of {} pinned entries are available.",
+        assets.len() - unavailable,
+        assets.len()
+    );
+    Ok(if unavailable == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(3)
+    })
 }
 
 /// The Cargo target directory this exe was built into: `target/<profile>/cao-parity.exe`.

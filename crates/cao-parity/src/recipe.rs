@@ -176,6 +176,11 @@ pub enum ContentEntry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+    /// A real Mesh or Animation from the local asset pool: the pinned entry
+    /// `asset` of `crates/cao-parity/local-assets.toml`. A case using one is
+    /// not run when the pool lacks the entry or its bytes no longer match the
+    /// pin.
+    LocalAsset(LocalAssetEntry),
     /// A directory, which may stay empty.
     Directory {
         path: String,
@@ -193,6 +198,7 @@ impl ContentEntry {
         match self {
             Self::Texture(texture) => &texture.path,
             Self::Archive(archive) => &archive.path,
+            Self::LocalAsset(asset) => &asset.path,
             Self::Text { path, .. } | Self::Raw { path, .. } | Self::Directory { path, .. } => path,
         }
     }
@@ -201,7 +207,7 @@ impl ContentEntry {
 /// An Archive packed with `cao-archive` from `content`, whose paths are the
 /// game paths the Archive stores, relative to the Archive's own directory.
 ///
-/// Only `texture`, `text` and `raw` entries may be packed. The container
+/// Only `texture`, `text`, `raw` and `local_asset` entries may be packed. The container
 /// follows the game and type, as CAO's per-game tables give them: TES5 and
 /// SSE write BSA v104 and v105; FO4 writes a `GNRL` BA2, or a `DX10` one for
 /// `textures`, which is always compressed.
@@ -263,6 +269,23 @@ impl ArchiveKind {
             Self::Textures => cao_archive::ArchiveType::Textures,
         }
     }
+}
+
+/// A pool entry written at `path`, byte for byte as the pool's BSA holds it,
+/// unless a `fault` damages it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalAssetEntry {
+    /// Where the bytes go. It keeps the pinned entry's extension, so pool bytes
+    /// never pose as a plugin or Texture the deviation guard would need to read.
+    pub path: String,
+    /// The `id` of a pinned entry. An id the pinned list lacks is a recipe
+    /// error, reported even where the pool is missing.
+    pub asset: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault: Option<Fault>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// A synthetic Texture. The container follows the extension: `.dds` or `.tga`.

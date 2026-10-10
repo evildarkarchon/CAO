@@ -231,6 +231,7 @@ fn a_triggering_recipe_is_rejected_before_anything_is_written() {
         },
         fixtures: &fixtures_dir(),
         symlink_rights: true,
+        local_assets: common::empty_pool(),
     };
 
     let error = materialise(&layout, &triggering, &environment).unwrap_err();

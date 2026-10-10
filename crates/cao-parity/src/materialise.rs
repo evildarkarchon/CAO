@@ -6,14 +6,18 @@
 //! 1. The recipe is validated against every root it will be written under:
 //!    plain relative paths, ASCII game paths, no reserved device names outside
 //!    the `reserved_name` operation, and at most [`PATH_CAP_UTF16`] UTF-16
-//!    units of absolute path.
-//! 2. Content is written once into `input/`, seeded by the case id, so the same
+//!    units of absolute path. Every `local_asset` id must be pinned, and its
+//!    path keep the pinned entry's extension.
+//! 2. Each `local_asset` entry is extracted from the [`crate::local_assets`]
+//!    pool and checked against its pinned SHA-256. A case the pool cannot
+//!    supply is not run, and nothing is written.
+//! 3. Content is written once into `input/`, seeded by the case id, so the same
 //!    id always gives the same bytes. Input encoder nondeterminism therefore
 //!    never reaches the comparison: both sides get copies of one encoding.
-//! 3. `input/` is copied byte for byte to `oracle/` and `rust/`
+//! 4. `input/` is copied byte for byte to `oracle/` and `rust/`
 //!    ([`CaseLayout::provision`]), and the profile overrides are written into
 //!    each side's private `profile.ini`.
-//! 4. Filesystem-shape operations are applied to `input/` and to each side, in
+//! 5. Filesystem-shape operations are applied to `input/` and to each side, in
 //!    recipe order. `input/` is shaped too, so a Dry Run's side can still be
 //!    compared with it.
 
@@ -32,9 +36,10 @@ use cao_profiles::Profiles;
 use crate::HarnessError;
 use crate::case::{CaseFile, CaseLayout, ModSelection, Side, SideResources, is_harness_owned};
 use crate::guard::GuardInput;
+use crate::local_assets::{LocalAssetBytes, LocalAssetPool};
 use crate::recipe::{
-    ArchiveRecipe, ContentEntry, DdsHeader, Fault, FsShape, MeshTarget, Pattern, ProfileOverrides,
-    TextureEntry,
+    ArchiveRecipe, ContentEntry, DdsHeader, Fault, FsShape, LocalAssetEntry, MeshTarget, Pattern,
+    ProfileOverrides, TextureEntry,
 };
 
 /// The longest absolute path, in UTF-16 units, a case may create: well under
@@ -50,6 +55,18 @@ pub struct Environment<'a> {
     pub fixtures: &'a Path,
     /// Whether this process can create file symlinks; see [`can_create_symlinks`].
     pub symlink_rights: bool,
+    /// Where `local_asset` entries come from. A pool that lacks an entry, or
+    /// holds changed bytes, makes the cases using it not run.
+    pub local_assets: &'a LocalAssetPool,
+}
+
+/// Where a recipe's non-synthetic bytes come from.
+#[derive(Clone, Copy)]
+pub struct Sources<'a> {
+    /// Where `raw` entries' fixture files live.
+    pub fixtures: &'a Path,
+    /// The verified bytes of every pool entry the recipe uses.
+    pub local_assets: &'a LocalAssetBytes,
 }
 
 /// Whether a materialised case can run here.
@@ -71,8 +88,9 @@ pub enum Readiness {
 /// [`HarnessError::UnreachableProfileValue`] when the deviation guard rejects
 /// the case, before anything is written; [`HarnessError::InvalidCase`] for a
 /// recipe the materialiser cannot build, which includes any path over
-/// [`PATH_CAP_UTF16`]; [`HarnessError::Io`] when a file cannot be written. A
-/// recipe error is always reported, even for a case that could not run here.
+/// [`PATH_CAP_UTF16`] and any `local_asset` id the pinned list lacks;
+/// [`HarnessError::Io`] when a file cannot be written. A recipe error is
+/// always reported, even for a case that could not run here.
 pub fn materialise(
     layout: &CaseLayout,
     case: &CaseFile,
@@ -91,11 +109,50 @@ pub fn materialise(
     let input = layout.input();
     let (oracle, rust) = (layout.side(Side::Oracle), layout.side(Side::Rust));
     validate(case, &[&input, &oracle, &rust])?;
+    let pinned = environment.local_assets.pinned();
+    let local_entries = local_asset_entries(case);
+    for entry in &local_entries {
+        let Some(asset) = pinned.get(&entry.asset) else {
+            return Err(HarnessError::InvalidCase(format!(
+                "the local asset `{}` is not in {}",
+                entry.asset,
+                crate::local_assets::pinned_list_path().display()
+            )));
+        };
+        // The deviation guard never sees a pool entry's bytes, which are read
+        // only after it runs, so its content checks for plugins and DDS files
+        // would be blind to one written under such a name. Keeping the
+        // pinned extension keeps pool bytes to the Meshes and Animations
+        // they are.
+        if !extension(&entry.path).eq_ignore_ascii_case(extension(&asset.path)) {
+            return Err(invalid_entry(
+                &entry.path,
+                &format!(
+                    "a local asset keeps its pinned extension, and `{}` is `{}`",
+                    asset.id, asset.path
+                ),
+            ));
+        }
+    }
+    let asset_ids: Vec<&str> = local_entries
+        .iter()
+        .map(|entry| entry.asset.as_str())
+        .collect();
     if let Some(reason) = missing_prerequisite(case, environment) {
         return Ok(Readiness::NotRun(reason));
     }
+    // Read and checked before anything is written, so a case the pool cannot
+    // supply leaves no half-built tree behind.
+    let local_assets = match environment.local_assets.fetch(asset_ids) {
+        Ok(bytes) => bytes,
+        Err(reason) => return Ok(Readiness::NotRun(reason)),
+    };
 
-    write_input(case, layout.id(), &input, environment.fixtures)?;
+    let sources = Sources {
+        fixtures: environment.fixtures,
+        local_assets: &local_assets,
+    };
+    write_input_from(case, layout.id(), &input, &sources)?;
     layout.provision(&environment.resources)?;
     for side in [&oracle, &rust] {
         apply_profile_overrides(&case.spec.profile, &case.profile_overrides, side)?;
@@ -124,6 +181,27 @@ fn missing_prerequisite(case: &CaseFile, environment: &Environment<'_>) -> Optio
         return Some("it requests Animations and no hkxcmd.exe was found".into());
     }
     None
+}
+
+/// Every `local_asset` entry in the recipe, packed ones included, in recipe
+/// order.
+fn local_asset_entries(case: &CaseFile) -> Vec<&LocalAssetEntry> {
+    let packed = case.tree.content.iter().flat_map(|entry| match entry {
+        ContentEntry::Archive(archive) => archive.content.as_slice(),
+        _ => std::slice::from_ref(entry),
+    });
+    packed
+        .filter_map(|entry| match entry {
+            ContentEntry::LocalAsset(asset) => Some(asset),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The extension of a `/`-separated path's last component, or `""`.
+fn extension(path: &str) -> &str {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.rsplit_once('.').map_or("", |(_, extension)| extension)
 }
 
 /// Writes the profile overrides into the side's private `profile.ini`, through
@@ -174,6 +252,9 @@ pub fn apply_profile_overrides(
 /// Only content entries are written; filesystem-shape operations are applied
 /// separately by [`apply_fs_shape`], because a copy would not keep them.
 ///
+/// Takes no pool, so a `local_asset` entry is an
+/// [`HarnessError::InvalidCase`] here; [`write_input_from`] takes its bytes.
+///
 /// # Errors
 /// [`HarnessError::InvalidCase`] for a recipe that cannot be built under
 /// `root`; [`HarnessError::Io`] when a file cannot be written.
@@ -183,6 +264,25 @@ pub fn write_input(
     root: &Path,
     fixtures: &Path,
 ) -> Result<(), HarnessError> {
+    let sources = Sources {
+        fixtures,
+        local_assets: &LocalAssetBytes::default(),
+    };
+    write_input_from(case, case_id, root, &sources)
+}
+
+/// [`write_input`], with `local_asset` entries written from
+/// `sources.local_assets`, which [`LocalAssetPool::fetch`] has verified.
+///
+/// # Errors
+/// Those of [`write_input`], and [`HarnessError::InvalidCase`] for a
+/// `local_asset` entry whose bytes `sources` lacks.
+pub fn write_input_from(
+    case: &CaseFile,
+    case_id: &str,
+    root: &Path,
+    sources: &Sources<'_>,
+) -> Result<(), HarnessError> {
     validate(case, &[root])?;
     let case_seed = hash(case_id.as_bytes());
     for entry in &case.tree.content {
@@ -191,7 +291,7 @@ pub fn write_input(
             create_dir_all(&path)?;
             continue;
         }
-        let bytes = file_bytes(entry, case_seed, fixtures)?;
+        let bytes = file_bytes(entry, case_seed, sources)?;
         if let Some(parent) = path.parent() {
             create_dir_all(parent)?;
         }
@@ -205,7 +305,11 @@ pub fn write_input(
 ///
 /// # Errors
 /// [`HarnessError::InvalidCase`] for an entry that cannot be built.
-fn file_bytes(entry: &ContentEntry, seed: u64, fixtures: &Path) -> Result<Vec<u8>, HarnessError> {
+fn file_bytes(
+    entry: &ContentEntry,
+    seed: u64,
+    sources: &Sources<'_>,
+) -> Result<Vec<u8>, HarnessError> {
     let mut random = Random::new(seed ^ hash(entry.path().as_bytes()).rotate_left(29));
     Ok(match entry {
         ContentEntry::Texture(texture) => {
@@ -216,9 +320,21 @@ fn file_bytes(entry: &ContentEntry, seed: u64, fixtures: &Path) -> Result<Vec<u8
         ContentEntry::Text { text, .. } => text.as_bytes().to_vec(),
         ContentEntry::Raw {
             base64, fixture, ..
-        } => raw_bytes(base64.as_deref(), fixture.as_deref(), fixtures)
+        } => raw_bytes(base64.as_deref(), fixture.as_deref(), sources.fixtures)
             .map_err(|message| invalid_entry(entry.path(), &message))?,
-        ContentEntry::Archive(archive) => archive_bytes(archive, seed, fixtures)?,
+        ContentEntry::LocalAsset(asset) => {
+            let bytes = sources.local_assets.get(&asset.asset).ok_or_else(|| {
+                invalid_entry(
+                    entry.path(),
+                    &format!(
+                        "the local asset `{}` was not fetched from the pool",
+                        asset.asset
+                    ),
+                )
+            })?;
+            apply_fault(bytes.to_vec(), asset.fault, &mut random)
+        }
+        ContentEntry::Archive(archive) => archive_bytes(archive, seed, sources)?,
         ContentEntry::Directory { .. } => {
             return Err(invalid_entry(entry.path(), "a directory has no bytes"));
         }
@@ -248,7 +364,7 @@ impl Drop for PackingDir {
 fn archive_bytes(
     archive: &ArchiveRecipe,
     seed: u64,
-    fixtures: &Path,
+    inputs: &Sources<'_>,
 ) -> Result<Vec<u8>, HarnessError> {
     let seed = seed ^ hash(archive.path.as_bytes());
     let scratch = PackingDir(std::env::temp_dir().join(format!(
@@ -261,7 +377,7 @@ fn archive_bytes(
     let mut files = Vec::new();
     for entry in &archive.content {
         let path = resolve(&sources, entry.path());
-        let bytes = file_bytes(entry, seed, fixtures)?;
+        let bytes = file_bytes(entry, seed, inputs)?;
         create_dir_all(path.parent().expect("a resolved entry has a parent"))?;
         std::fs::write(&path, &bytes)
             .map_err(|error| HarnessError::io(format!("writing {}", path.display()), error))?;
@@ -486,7 +602,9 @@ fn validate_archive(archive: &ArchiveRecipe, roots: &[&Path]) -> Result<(), Harn
             entry,
             ContentEntry::Directory { .. } | ContentEntry::Archive(_)
         ) {
-            return Err(named("an Archive packs only texture, text and raw files"));
+            return Err(named(
+                "an Archive packs only texture, text, raw and local_asset files",
+            ));
         }
         let parts: Vec<&str> = path.split('/').collect();
         if !parts.iter().all(|part| is_plain_component(part)) {

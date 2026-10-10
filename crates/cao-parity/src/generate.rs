@@ -16,9 +16,11 @@
 //!   Animations outside SSE, FO4 textures merged into `GNRL`, and the GUI's own
 //!   rules (a Dry Run clears Archive work; Several Mods allows only mesh levels
 //!   0 and 1).
-//! - **Not yet dimensions:** LE and SSE input Meshes (the local asset pool,
-//!   #501, and synthetic Meshes, #503) and a headpart plugin (#529). Each joins
-//!   the array with a [`GENERATOR_VERSION`] bump once its recipe entry exists.
+//! - **Not yet dimensions:** LE and SSE input Meshes (the local asset pool's
+//!   `local_asset` entry, #501, and synthetic Meshes, #503) and a headpart
+//!   plugin (#529). Each joins the array with a [`GENERATOR_VERSION`] bump once
+//!   its recipe entry exists; the pool's entry does, but the pinned list holds
+//!   no LE entries yet.
 
 use cao_archive::Settings;
 

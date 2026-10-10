@@ -71,6 +71,8 @@ rayon = "1"
 # `case.json` and the Rust driver's `RunFacts` JSON (#472).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# `cao-parity`'s pinned local asset list, `local-assets.toml` (#501).
+toml = "1"
 # Build scripts (#460, #471).
 cc = "1"
 embed-resource = "3"

@@ -49,11 +49,12 @@ kept with a `report.md` holding the fact diff and the replay command.
 
 - **Work directory.** `--work <dir>`, by default `target/parity/`.
 - **Other flags.** `--profiles <dir>` (default: the repository's `profiles/`),
-  `--hkxcmd <exe>` (or `CAO_HKXCMD`, then `bin/hkxcmd.exe`), `--timeout <seconds>`
-  (default 600).
+  `--hkxcmd <exe>` (or `CAO_HKXCMD`, then `bin/hkxcmd.exe`), `--local-assets <dir>` (or
+  `CAO_LOCAL_ASSETS`, then `tests/local`; see [The local asset pool](#the-local-asset-pool)),
+  `--timeout <seconds>` (default 600).
 - **Exit code.** 0 when both verdicts pass, 1 for Different, 2 for a harness error, 3 when
-  the case cannot run here (it needs `hkxcmd.exe` and none was found, or a file symlink and
-  the process lacks symlink rights).
+  the case cannot run here (it needs `hkxcmd.exe` and none was found, a file symlink and
+  the process lacks symlink rights, or a local asset the pool lacks or holds changed).
 - **Paths.** Pass Windows-style paths (`C:\...` or `C:/...`). From Git Bash, a `/c/...` path
   reaches the harness unconverted, and Windows reads it as `C:\c\...`.
 
@@ -61,9 +62,10 @@ kept with a `report.md` holding the fact diff and the replay command.
 
 A case is one `case.json` with three parts: the `spec` (what both builds are asked to do),
 optional `profile_overrides` (GUI-reachable `profile.ini` values), and a `tree` recipe. The
-recipe's `content` entries (`texture`, `text`, `raw`, `directory`, `archive`) are written once
-into `input/`, seeded by the case id, and copied byte for byte to `oracle/` and `rust/`. An
-`archive` entry packs its own `texture`, `text` and `raw` entries, whose paths are the game
+recipe's `content` entries (`texture`, `text`, `raw`, `local_asset`, `directory`, `archive`)
+are written once into `input/`, seeded by the case id, and copied byte for byte to `oracle/`
+and `rust/`. An `archive` entry packs its own `texture`, `text`, `raw` and `local_asset`
+entries, whose paths are the game
 paths it stores, with `cao-archive`, in the container its `game` and `type` give. Its
 `fs_shape` operations (`hardlink`, `junction`, `file_symlink`, `readonly`, `reserved_name`)
 are then applied to all three copies. Recipe paths must keep game paths ASCII and every
@@ -73,6 +75,68 @@ field.
 Committed seeds live under `crates/cao-parity/seeds/`, in any subfolder; a seed's case id
 is its file stem. `raw` entries may name a fixture file under
 `crates/cao-parity/fixtures/`.
+
+## The local asset pool
+
+Real Skyrim LE and SSE Meshes and Animations cannot be committed, and no freely licensed LE
+animation exists. A `local_asset` entry therefore takes its bytes from the **pool**, a
+gitignored folder holding your own Skyrim BSAs:
+
+```json
+{"kind": "local_asset", "path": "mods/Mod/meshes/hair01.nif", "asset": "sse-headpart-hair01.nif"}
+```
+
+`asset` names an entry of the **pinned list**, `crates/cao-parity/local-assets.toml`, which
+is committed. Each entry gives the edition, the BSA, the internal path and the SHA-256 of the
+extracted bytes. A `local_asset` entry may also take a `fault`, as a `texture` does, and its
+path must keep the pinned entry's extension.
+
+- **Missing or changed.** When the pool lacks the BSA or the entry, or the entry's bytes no
+  longer match the pinned SHA-256 (another game patch, say), every case using it is
+  reported as **not run**, with the reason. It never passes.
+- **Unknown id.** An `asset` the pinned list lacks is a harness error, even with no pool.
+
+### Populating it
+
+The harness looks for the pool at `--local-assets <dir>`, then `CAO_LOCAL_ASSETS`, then the
+repository's `tests/local/`, which is gitignored. It holds one folder per edition, each
+with that edition's BSAs under their own names:
+
+```
+tests/local/
+  le/   Skyrim - Animations.bsa  Skyrim - Meshes.bsa
+  sse/  Skyrim - Animations.bsa  Skyrim - Meshes0.bsa  Skyrim - Meshes1.bsa
+```
+
+1. Copy the BSAs from each install's `Data` folder: Skyrim LE (`Skyrim`) into `le/` and
+   Skyrim Special Edition into `sse/`. The pinned list's `archive` fields name the files it
+   needs. A directory junction to the `Data` folder works too, and copies nothing:
+
+   ```
+   mklink /J tests\local\sse "C:\...\Skyrim Special Edition\Data"
+   ```
+
+2. Check the pool:
+
+   ```
+   cargo run -p cao-parity -- local-assets
+   ```
+
+   It prints `ok`, or `missing` with the reason, for each pinned entry, and exits 0 when the
+   pool supplies them all.
+
+### Adding entries
+
+Add an `[[asset]]` table to `local-assets.toml` with `id`, `edition` (`le` or `sse`),
+`archive`, `path` (the internal path, `/`-separated), `category` (`static`, `skinned`,
+`headpart`, `facegen`, `lod` or `animation`) and, for now, a `sha256` of 64 zeros. Run
+`cao-parity local-assets`: it reports the entry's actual SHA-256 as a mismatch. Check that
+the pool is the one you mean to pin, then copy the hash in. Ids start with the edition, as
+in `sse-static-<file name>`.
+
+The list pins SSE entries only so far. The LE entries the research (#473) calls for, about
+20 LE Animations as `hkxcmd` conversion inputs and about 30 LE Meshes, need an LE install to
+hash.
 
 ## Oracle-only behaviour
 
