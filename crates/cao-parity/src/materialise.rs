@@ -24,12 +24,14 @@ use directxtex::{
     TGA_FLAGS_NONE,
 };
 
+use cao_archive::{ArchiveData, Settings, write_archive};
 use cao_profiles::Profiles;
 
 use crate::HarnessError;
 use crate::case::{CaseFile, CaseLayout, ModSelection, Side, SideResources, is_harness_owned};
 use crate::recipe::{
-    ContentEntry, DdsHeader, Fault, FsShape, MeshTarget, Pattern, ProfileOverrides, TextureEntry,
+    ArchiveRecipe, ContentEntry, DdsHeader, Fault, FsShape, MeshTarget, Pattern, ProfileOverrides,
+    TextureEntry,
 };
 
 /// The longest absolute path, in UTF-16 units, a case may create: well under
@@ -174,20 +176,7 @@ pub fn write_input(
             create_dir_all(&path)?;
             continue;
         }
-        let mut random = Random::new(case_seed ^ hash(entry.path().as_bytes()).rotate_left(29));
-        let bytes = match entry {
-            ContentEntry::Texture(texture) => {
-                let bytes = texture_bytes(texture, &mut random)
-                    .map_err(|message| invalid_entry(entry.path(), &message))?;
-                apply_fault(bytes, texture.fault, &mut random)
-            }
-            ContentEntry::Text { text, .. } => text.as_bytes().to_vec(),
-            ContentEntry::Raw {
-                base64, fixture, ..
-            } => raw_bytes(base64.as_deref(), fixture.as_deref(), fixtures)
-                .map_err(|message| invalid_entry(entry.path(), &message))?,
-            ContentEntry::Directory { .. } => unreachable!("handled above"),
-        };
+        let bytes = file_bytes(entry, case_seed, fixtures)?;
         if let Some(parent) = path.parent() {
             create_dir_all(parent)?;
         }
@@ -195,6 +184,92 @@ pub fn write_input(
             .map_err(|error| HarnessError::io(format!("writing {}", path.display()), error))?;
     }
     Ok(())
+}
+
+/// The bytes of one file entry, seeded by `seed` and the entry's own path.
+///
+/// # Errors
+/// [`HarnessError::InvalidCase`] for an entry that cannot be built.
+fn file_bytes(entry: &ContentEntry, seed: u64, fixtures: &Path) -> Result<Vec<u8>, HarnessError> {
+    let mut random = Random::new(seed ^ hash(entry.path().as_bytes()).rotate_left(29));
+    Ok(match entry {
+        ContentEntry::Texture(texture) => {
+            let bytes = texture_bytes(texture, &mut random)
+                .map_err(|message| invalid_entry(entry.path(), &message))?;
+            apply_fault(bytes, texture.fault, &mut random)
+        }
+        ContentEntry::Text { text, .. } => text.as_bytes().to_vec(),
+        ContentEntry::Raw {
+            base64, fixture, ..
+        } => raw_bytes(base64.as_deref(), fixture.as_deref(), fixtures)
+            .map_err(|message| invalid_entry(entry.path(), &message))?,
+        ContentEntry::Archive(archive) => archive_bytes(archive, seed, fixtures)?,
+        ContentEntry::Directory { .. } => {
+            return Err(invalid_entry(entry.path(), "a directory has no bytes"));
+        }
+    })
+}
+
+/// A scratch directory under the system temp dir, removed on drop, where an
+/// Archive's files are laid out and packed.
+struct PackingDir(PathBuf);
+
+impl Drop for PackingDir {
+    fn drop(&mut self) {
+        // Best effort: a leftover in the temp dir must not fail the case.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Packs an [`ArchiveRecipe`] with `cao-archive` and returns the Archive's bytes.
+///
+/// Its files are seeded by the Archive's own path as well as their game paths,
+/// so two Archives holding one game path still get their own bytes. Sources
+/// are sorted by path before packing, as C++ Archive creation sorts them.
+///
+/// # Errors
+/// [`HarnessError::InvalidCase`] when a file cannot be built or packed, such
+/// as a texture the Archive's container cannot hold.
+fn archive_bytes(
+    archive: &ArchiveRecipe,
+    seed: u64,
+    fixtures: &Path,
+) -> Result<Vec<u8>, HarnessError> {
+    let seed = seed ^ hash(archive.path.as_bytes());
+    let scratch = PackingDir(std::env::temp_dir().join(format!(
+        "cao-parity-archive-{}-{seed:016x}",
+        std::process::id()
+    )));
+    // A leftover from a killed run is the only thing that can be there.
+    let _ = std::fs::remove_dir_all(&scratch.0);
+    let sources = scratch.0.join("sources");
+    let mut files = Vec::new();
+    for entry in &archive.content {
+        let path = resolve(&sources, entry.path());
+        let bytes = file_bytes(entry, seed, fixtures)?;
+        create_dir_all(path.parent().expect("a resolved entry has a parent"))?;
+        std::fs::write(&path, &bytes)
+            .map_err(|error| HarnessError::io(format!("writing {}", path.display()), error))?;
+        files.push((path, bytes.len() as u64));
+    }
+    files.sort();
+    let mut data = ArchiveData::new(
+        &Settings::get(archive.game.game()),
+        archive.archive_type.archive_type(),
+    );
+    for (path, size) in files {
+        if !data.add_file(path, size) {
+            return Err(invalid_entry(
+                &archive.path,
+                "the files exceed the Archive's size limit",
+            ));
+        }
+    }
+    let out = scratch.0.join("packed");
+    write_archive(archive.compress, &data, &sources, &out)
+        .map_err(|error| invalid_entry(&archive.path, &error.to_string()))?;
+    std::fs::read(&out)
+        .map_err(|error| HarnessError::io(format!("reading {}", out.display()), error))
 }
 
 /// Applies the filesystem-shape operations under `root`, in order.
@@ -364,6 +439,71 @@ fn validate(case: &CaseFile, roots: &[&Path]) -> Result<(), HarnessError> {
                 return Err(invalid_entry(path, "the path is written twice"));
             }
             written.push(key);
+        }
+    }
+    for entry in &case.tree.content {
+        if let ContentEntry::Archive(archive) = entry {
+            validate_archive(archive, roots)?;
+        }
+    }
+    Ok(())
+}
+
+/// Checks an Archive's packed entries: files only, each game path plain,
+/// ASCII, free of device names and stored once, and each within the path cap
+/// once extracted beside the Archive under every root.
+fn validate_archive(archive: &ArchiveRecipe, roots: &[&Path]) -> Result<(), HarnessError> {
+    if archive.content.is_empty() {
+        return Err(invalid_entry(
+            &archive.path,
+            "an Archive needs at least one file",
+        ));
+    }
+    let directory = archive
+        .path
+        .rsplit_once('/')
+        .map_or("", |(directory, _)| directory);
+    let mut stored: Vec<String> = Vec::new();
+    for entry in &archive.content {
+        let path = entry.path();
+        let named = |message: &str| invalid_entry(&archive.path, &format!("`{path}`: {message}"));
+        if matches!(
+            entry,
+            ContentEntry::Directory { .. } | ContentEntry::Archive(_)
+        ) {
+            return Err(named("an Archive packs only texture, text and raw files"));
+        }
+        let parts: Vec<&str> = path.split('/').collect();
+        if !parts.iter().all(|part| is_plain_component(part)) {
+            return Err(named("not a `/`-separated game path"));
+        }
+        if parts.iter().any(|part| is_device_name(part)) {
+            return Err(named("a game path may not hold a reserved device name"));
+        }
+        if !path.is_ascii() {
+            return Err(named("game paths must be ASCII"));
+        }
+        let key = path.to_lowercase();
+        if stored.contains(&key) {
+            return Err(named("the game path is stored twice"));
+        }
+        stored.push(key);
+        let extracted = if directory.is_empty() {
+            path.to_owned()
+        } else {
+            format!("{directory}/{path}")
+        };
+        for root in roots {
+            let absolute = std::path::absolute(resolve(root, &extracted)).map_err(|error| {
+                HarnessError::io(format!("resolving {}", root.display()), error)
+            })?;
+            let units = absolute.as_os_str().encode_wide().count();
+            if units > PATH_CAP_UTF16 {
+                return Err(named(&format!(
+                    "extracts to {}, {units} UTF-16 units long, over the {PATH_CAP_UTF16}-unit cap",
+                    absolute.display()
+                )));
+            }
         }
     }
     Ok(())

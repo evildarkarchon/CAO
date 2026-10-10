@@ -983,6 +983,8 @@ pub struct FakeArchiveReader {
     pub on_extract: Option<ExtractHook>,
     /// Every Archive whose manifest was listed, in order.
     pub listed: Mutex<Vec<PathBuf>>,
+    /// How many times the reader was told to release what it holds open.
+    pub releases: AtomicUsize,
 }
 
 impl ArchiveReader for FakeArchiveReader {
@@ -1004,6 +1006,10 @@ impl ArchiveReader for FakeArchiveReader {
             .find(|(listed, _)| listed.name == entry)
             .ok_or_else(|| Error::Archive(format!("The Archive has no entry {entry}.")))?;
         std::fs::write(destination, payload).map_err(|error| Error::Archive(error.to_string()))
+    }
+
+    fn release(&self) {
+        self.releases.fetch_add(1, Ordering::SeqCst);
     }
 }
 

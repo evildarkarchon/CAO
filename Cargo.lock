@@ -106,6 +106,8 @@ dependencies = [
 name = "cao-optimizers"
 version = "0.1.0"
 dependencies = [
+ "ba2",
+ "cao-archive",
  "cao-core",
  "cao-profiles",
  "cao-winfs",
@@ -122,6 +124,8 @@ name = "cao-parity"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ba2",
+ "cao-archive",
  "cao-core",
  "cao-optimizers",
  "cao-profiles",

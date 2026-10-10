@@ -11,10 +11,11 @@
 //!   `finalizationResultCannotDropStreamedAttempts`,
 //!   `finalizationAttemptsRequireRecordedTotal`,
 //!   `sealedMutationSummariesReflectCompletedAttempts` and
-//!   `pluginOnlyFinalizationMutationsAreSealed`: Archive extraction attempts and
-//!   Archive Finalization results are not Run Evidence yet. They join it with
-//!   Archive extraction (#497) and Archive Finalization (#498), whose slices
-//!   port these.
+//!   `pluginOnlyFinalizationMutationsAreSealed`: Archive Finalization results
+//!   are not Run Evidence yet. They join it with Archive Finalization (#498),
+//!   whose slice ports these. Archive extraction attempts already joined it
+//!   (#496), but the one scenario that seals them also seals Finalization
+//!   results, so it waits for #498 whole.
 //! - The Archive Finalization half of `finalizationAndCleanupFailuresRemainSeparate`,
 //!   for the same reason; its plan and Safety Cleanup halves are ported.
 //! - The post-consumption half of `phaseOrderViolationsAreRejected` and

@@ -26,6 +26,7 @@ use cao_winfs::{
 
 use crate::execution::MutationState;
 use crate::run::artifacts::reserved_device_name;
+use crate::run::source_pin::SourceFilePin;
 use crate::run::staging::{has_staging_component, pin_directory};
 use crate::run::{
     ArchiveAdapters, ArchiveEntry, ArchivePrecedence, ArchiveReader, CapacityProbe,
@@ -170,6 +171,13 @@ impl<'a> ArchiveExtractor<'a> {
             self.try_extract(plan, artifacts, &mut result, &mut progress)
         }))
         .unwrap_or_else(|payload| Err(take_panic_message(payload)));
+        // Whatever happened, nothing reads this Archive again in the attempt,
+        // and the caller may remove or rename it next. A panicking release is
+        // ignored: the attempt's own outcome is the fact worth reporting, and
+        // source cleanup still fails safely on a source left mapped.
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| self.reader.release())) {
+            take_panic_message(payload);
+        }
         match outcome {
             Ok(()) => result,
             Err(detail) => {
@@ -298,6 +306,88 @@ impl<'a> ArchiveExtractor<'a> {
             result.mutation = MutationState::Committed;
         }
         Ok(())
+    }
+}
+
+/// What becomes of a source Archive once every entry it won is published.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceCleanup {
+    /// Rename it to the first unoccupied `<name>.bak`, `<name>.bak.bak`, ...
+    Backup,
+    /// Delete it (the "delete backup" option).
+    Remove,
+}
+
+impl ArchiveExtractor<'_> {
+    /// Extracts one Archive, then backs up or removes its source, as C++
+    /// `BSAOptimizer::extract` did.
+    ///
+    /// The source and its ancestors are pinned before the first read and
+    /// until cleanup ends, so no read follows a substituted file or parent,
+    /// and cleanup acts only on the very file object that was read, unchanged.
+    /// The source keeps its name and bytes until the merge has succeeded, so a
+    /// failed attempt leaves it recoverable. The reader is released before
+    /// cleanup, since a memory-mapped source cannot be deleted.
+    ///
+    /// A pin that cannot be taken fails the attempt before anything is read.
+    /// A failed cleanup is [`ArchiveExtractionFailure::SourceCleanupFailed`]
+    /// and unsafe to continue, unless entries were committed and the source is
+    /// still the same readable Archive: then the run may go on, because the
+    /// retained source is still recovery material for what was extracted.
+    /// Otherwise the mutation becomes unknown.
+    pub fn extract_with_source_cleanup(
+        &self,
+        plan: &ArchiveExtractionPlan,
+        cleanup: SourceCleanup,
+        artifacts: &mut TemporaryArtifactRegistry,
+    ) -> ArchiveExtractionResult {
+        let mut pin = match SourceFilePin::new(&plan.archive_path, &plan.mod_root) {
+            Ok(pin) => pin,
+            Err(error) => {
+                return ArchiveExtractionResult {
+                    failure: Some(ArchiveExtractionFailure::ExtractionFailed),
+                    detail: error.to_string(),
+                    ..ArchiveExtractionResult::new(plan)
+                };
+            }
+        };
+        // `extract` releases the reader before it returns.
+        let mut result = self.extract(plan, artifacts);
+        if !result.succeeded() {
+            return result;
+        }
+        let cleaned = match cleanup {
+            SourceCleanup::Remove => pin.remove_if_unchanged(),
+            SourceCleanup::Backup => pin.backup_if_unchanged().map(|_| ()),
+        };
+        match cleaned {
+            Ok(()) => result.mutation = MutationState::Committed,
+            Err(error) => {
+                result.failure = Some(ArchiveExtractionFailure::SourceCleanupFailed);
+                result.safe_to_continue = false;
+                result.detail = error.to_string();
+                // Existence alone cannot prove the retained source is still
+                // usable: reopen its manifest, through the same pin, before
+                // letting later phases proceed.
+                if result.mutation == MutationState::Committed
+                    && pin.pin_unchanged_for_recovery().is_ok()
+                {
+                    let readable = catch_unwind(AssertUnwindSafe(|| {
+                        let listed = self.reader.list_entries(pin.path()).is_ok();
+                        self.reader.release();
+                        listed
+                    }));
+                    result.safe_to_continue = readable.unwrap_or_else(|payload| {
+                        take_panic_message(payload);
+                        false
+                    });
+                }
+                if !result.safe_to_continue {
+                    result.mutation = MutationState::PartialOrUnknown;
+                }
+            }
+        }
+        result
     }
 }
 

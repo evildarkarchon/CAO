@@ -3,8 +3,8 @@
 //!
 //! Scenarios that port a C++ test name its origin, mostly from
 //! `tests/AssetRunTests.cpp`; the rest pin Rust-side contracts from the spec
-//! (#476): panic containment, and the interim behaviour of Apply work whose
-//! production work service wires no Archive extraction yet (#497).
+//! (#476): panic containment, and Apply work whose work service wires no
+//! Archive adapters.
 //!
 //! Ported elsewhere:
 //! - `throwingDiagnosticsCancellationSkipsFinalization`: `run_executor.rs`,
@@ -678,9 +678,9 @@ fn a_run_worker_panic_ends_the_run_in_one_failed_outcome() {
     ));
 }
 
-/// Rust-only, interim until the production work service wires Archive
-/// extraction (#497): an Apply run whose work supplies no Archive adapters
-/// fails when it selects an Archive, before extraction, and routes nothing.
+/// Rust-only: an Apply run whose work supplies no Archive adapters fails when
+/// it selects an Archive, before extraction, and routes nothing. Production
+/// wires them (#497), so this pins core's behaviour for any work that does not.
 #[test]
 fn an_apply_run_selecting_an_archive_fails_before_any_extraction() {
     let _serial = serial();

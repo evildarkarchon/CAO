@@ -12,6 +12,9 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+# The Archive rule parses both sides' Archives, and recipes build input
+# Archives, with the same port the Rust side extracts through (#497).
+cao-archive.workspace = true
 # `run` drives the same composition root as the GUI; it fills the options model
 # from `case.json` and reads the run's typed events and evidence back.
 cao-core.workspace = true
@@ -26,3 +29,8 @@ thiserror.workspace = true
 
 [build-dependencies]
 embed-resource.workspace = true
+
+[dev-dependencies]
+# The Archive rule's tests build Archives that differ in one header or entry
+# fact at a time, which `cao-archive`'s fixed options never would.
+ba2.workspace = true

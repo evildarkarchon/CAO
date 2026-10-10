@@ -172,6 +172,81 @@ fn a_raw_entry_takes_exactly_one_source_inside_the_fixtures_folder() {
     }
 }
 
+/// An `archive` entry packs its own content entries, as game paths, into an
+/// Archive of the game's container, the same bytes for the same case id; and
+/// it may pack only files with safe, ASCII game paths.
+#[test]
+fn an_archive_entry_packs_its_files_into_the_games_container() {
+    let temp = TempDir::new("materialise-archive");
+    let archives = || {
+        shaped(
+            serde_json::json!([
+                {"kind": "archive", "path": "mods/Mod/Mod - Textures.ba2", "game": "fo4",
+                 "type": "textures", "content": [
+                    {"kind": "texture", "path": "textures/sky.dds", "format": "BC1_UNORM",
+                     "width": 16, "height": 16, "mip_levels": 0}]},
+                {"kind": "archive", "path": "mods/Mod/Mod.bsa", "game": "sse",
+                 "type": "standard", "compress": false, "content": [
+                    {"kind": "text", "path": "scripts/quest.pex", "text": "compiled"},
+                    {"kind": "raw", "path": "meshes/blob.nif", "base64": "AAEC/w=="}]}
+            ]),
+            serde_json::json!([]),
+        )
+    };
+    let (first, second) = (temp.path().join("first"), temp.path().join("second"));
+    write_input(&archives(), "archives", &first, &fixtures_dir()).unwrap();
+    write_input(&archives(), "archives", &second, &fixtures_dir()).unwrap();
+    assert_eq!(snapshot(&first), snapshot(&second));
+
+    let textures = cao_archive::ReadArchive::open(&first.join("mods/Mod/Mod - Textures.ba2"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(textures.version(), Some(cao_archive::ArchiveVersion::Fo4Dx));
+    let names: Vec<_> = textures
+        .archived_assets()
+        .unwrap()
+        .into_iter()
+        .map(|asset| asset.name)
+        .collect();
+    assert_eq!(names, [r"textures\sky.dds"]);
+    let general = cao_archive::ReadArchive::open(&first.join("mods/Mod/Mod.bsa"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(general.version(), Some(cao_archive::ArchiveVersion::Sse));
+    let mut script = Vec::new();
+    general.extract(r"scripts\quest.pex", &mut script).unwrap();
+    assert_eq!(script, b"compiled");
+    assert!(
+        general
+            .archived_assets()
+            .unwrap()
+            .iter()
+            .all(|asset| !asset.compressed)
+    );
+
+    for (index, packed) in [
+        serde_json::json!({"kind": "directory", "path": "meshes"}),
+        serde_json::json!({"kind": "text", "path": "../escape.txt", "text": "x"}),
+        serde_json::json!({"kind": "text", "path": "sound/aux.wav", "text": "x"}),
+        serde_json::json!({"kind": "text", "path": "sound/caf\u{e9}.wav", "text": "x"}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let case = shaped(
+            serde_json::json!([{"kind": "archive", "path": "mods/Mod/Mod.bsa", "game": "sse",
+                                "type": "standard", "content": [packed.clone()]}]),
+            serde_json::json!([]),
+        );
+        let root = temp.path().join(format!("invalid-{index}"));
+        let error = write_input(&case, "archives", &root, &fixtures_dir()).unwrap_err();
+        assert!(
+            matches!(error, HarnessError::InvalidCase(_)),
+            "{packed}: {error}"
+        );
+    }
+}
+
 #[test]
 fn every_named_format_round_trips_through_its_json_name() {
     let bc7: TextureFormat = serde_json::from_value(serde_json::json!("BC7_UNORM")).unwrap();

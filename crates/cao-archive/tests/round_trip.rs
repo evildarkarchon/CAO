@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 
 use ba2::prelude::*;
 use cao_archive::{
-    ArchiveData, ArchiveError, ArchiveType, ArchiveVersion, Game, MergeSettings, PackSource,
-    ReadArchive, Settings, SplitArchives, write_archive,
+    ArchiveData, ArchiveError, ArchiveFormat, ArchiveHeader, ArchiveType, ArchiveVersion,
+    Fo4Container, Game, MergeSettings, PackSource, ReadArchive, Settings, SplitArchives,
+    write_archive,
 };
 use directxtex::{CP_FLAGS_NONE, DDS_FLAGS_NONE, DXGI_FORMAT_BC1_UNORM, ScratchImage};
 
@@ -172,6 +173,17 @@ fn sse_archives_are_v105_bsas_that_round_trip() {
 
     let read = ReadArchive::open(&written[0]).unwrap().unwrap();
     assert_eq!(read.version(), Some(ArchiveVersion::Sse));
+    assert_eq!(
+        read.header(),
+        ArchiveHeader {
+            format: ArchiveFormat::Tes4,
+            version: 105,
+            flags: 0x7,
+            types: 0,
+            container: None,
+            name_table: true,
+        }
+    );
     let entries = read.archived_assets().unwrap();
     assert!(entries.iter().all(|entry| entry.compressed));
     // Inventory sizes are the decompressed sizes.
@@ -219,6 +231,22 @@ fn fo4_archives_are_gnrl_and_dx10_ba2s_with_name_tables_that_round_trip() {
     use ba2::fo4::Format::{DX10, GNRL};
     assert_eq!(formats, [GNRL, GNRL, DX10]);
 
+    // `header` reports the same facts `ba2` read.
+    let containers: Vec<_> = written
+        .iter()
+        .map(|path| {
+            let header = ReadArchive::open(path).unwrap().unwrap().header();
+            assert_eq!(
+                (header.format, header.version, header.flags, header.types),
+                (ArchiveFormat::Fo4, 1, 0, 0)
+            );
+            assert!(header.name_table);
+            header.container
+        })
+        .collect();
+    use Fo4Container::{Dx10, General};
+    assert_eq!(containers, [Some(General), Some(General), Some(Dx10)]);
+
     // FO4 names are kept as written, so they come back with backslashes.
     assert_eq!(
         assert_round_trips(&written[0], &root),
@@ -254,6 +282,14 @@ fn an_fo4_dx10_textures_ba2_is_always_compressed() {
     assert!(entries[0].compressed);
     // 1024x1024 BC1 mips 0 and 1 each fill a 512x512 chunk; the rest share one.
     assert_eq!(entries[0].chunks, 3);
+    assert_eq!(entries[0].mip_ranges, [0..=0, 1..=1, 2..=10]);
+    assert!(
+        main.archived_assets()
+            .unwrap()
+            .iter()
+            .all(|entry| entry.mip_ranges.is_empty()),
+        "GNRL chunks carry no mips"
+    );
     // Inventory counts the pixel data plus a 148-byte DDS header; the source
     // has a 128-byte legacy header.
     let source_len = std::fs::metadata(root.join(TEXTURE)).unwrap().len();

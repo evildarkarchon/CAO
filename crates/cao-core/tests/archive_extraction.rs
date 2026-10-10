@@ -15,6 +15,7 @@
 mod common;
 
 use std::path::Path;
+use std::sync::atomic::Ordering;
 
 use cao_core::execution::MutationState;
 use cao_core::run::{
@@ -260,4 +261,38 @@ fn a_linked_parent_cannot_redirect_a_merge() {
     assert!(!outside.join("a.dds").exists());
     assert!(archive.exists());
     assert!(artifacts.cleanup().is_empty());
+}
+
+/// Rust-only, for the #497 risk "drop a memory-mapped Archive before deleting
+/// or renaming its source". The reader may keep its Archive open between
+/// entries, so the extractor tells it to let go at the end of every attempt,
+/// whether the attempt succeeded, failed or panicked; source cleanup comes
+/// after.
+#[test]
+fn every_attempt_releases_the_reader_before_returning() {
+    let root = canonical(&scratch_dir("extractor-releases"));
+    let archive = root.join("source.bsa");
+    write_archive(&archive, &[entry("textures/a.dds", b"B")]);
+    let succeeded = FakeArchiveReader::default();
+    let failed = FakeArchiveReader::default();
+    let panicked = FakeArchiveReader {
+        on_extract: Some(Box::new(|_, _| panic!("the archive library panicked"))),
+        ..FakeArchiveReader::default()
+    };
+    let attempts = [
+        (&succeeded, "textures/a.dds", true),
+        (&failed, "textures/expected.dds", false),
+        (&panicked, "textures/a.dds", false),
+    ];
+
+    for (reader, planned, succeeds) in attempts {
+        let mut artifacts = registry();
+        let result = ArchiveExtractor::new(reader, &FakeCapacity::default())
+            .extract(&plan(&archive, &root, &[planned]), &mut artifacts);
+
+        assert_eq!(result.succeeded(), succeeds, "{planned}: {}", result.detail);
+        assert_eq!(reader.releases.load(Ordering::SeqCst), 1, "{planned}");
+        assert!(artifacts.cleanup().is_empty());
+        let _ = std::fs::remove_file(root.join("textures/a.dds"));
+    }
 }
