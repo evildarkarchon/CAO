@@ -621,7 +621,7 @@ const STAGING_PREFIX: &str = ".cao-staging";
 const SEPARATOR_MARKER: &str = "separator";
 
 const PLUGIN_EXTENSIONS: [&str; 3] = ["esp", "esm", "esl"];
-const MESH_EXTENSIONS: [&str; 3] = ["nif", "btr", "bto"];
+pub(crate) const MESH_EXTENSIONS: [&str; 3] = ["nif", "btr", "bto"];
 const TEXTURE_EXTENSIONS: [&str; 2] = ["dds", "tga"];
 
 /// The first item whose top-level component is one of `names`, ignoring ASCII

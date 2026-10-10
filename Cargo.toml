@@ -42,6 +42,7 @@ cao-core = { path = "crates/cao-core" }
 cao-optimizers = { path = "crates/cao-optimizers" }
 cao-profiles = { path = "crates/cao-profiles" }
 cao-winfs = { path = "crates/cao-winfs" }
+nifly-sys = { path = "crates/nifly-sys" }
 # Archives (#461). Exact pin: bsa-rs#14 proposes dropping its directxtex dependency.
 ba2 = "=3.0.1"
 # Textures (#459). `[patch.crates-io]` below replaces this with CAO's fork, so

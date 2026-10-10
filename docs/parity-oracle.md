@@ -62,15 +62,30 @@ kept with a `report.md` holding the fact diff and the replay command.
 
 A case is one `case.json` with three parts: the `spec` (what both builds are asked to do),
 optional `profile_overrides` (GUI-reachable `profile.ini` values), and a `tree` recipe. The
-recipe's `content` entries (`texture`, `text`, `raw`, `local_asset`, `directory`, `archive`)
-are written once into `input/`, seeded by the case id, and copied byte for byte to `oracle/`
-and `rust/`. An `archive` entry packs its own `texture`, `text`, `raw` and `local_asset`
-entries, whose paths are the game
+recipe's `content` entries (`texture`, `text`, `raw`, `mesh`, `local_asset`, `directory`,
+`archive`) are written once into `input/`, seeded by the case id, and copied byte for byte to
+`oracle/` and `rust/`. An `archive` entry packs its own `texture`, `text`, `raw`, `mesh` and
+`local_asset` entries, whose paths are the game
 paths it stores, with `cao-archive`, in the container its `game` and `type` give. Its
 `fs_shape` operations (`hardlink`, `junction`, `file_symlink`, `readonly`, `reserved_name`)
 are then applied to all three copies. Recipe paths must keep game paths ASCII and every
 absolute path within 400 UTF-16 units. `crates/cao-parity/src/recipe.rs` documents each
 field.
+
+A `mesh` entry is a synthetic Mesh that nifly builds through the `nifly-sys` `corpus` feature,
+using the calls the C++ tests use: `Create` at an LE, SSE or FO4 `version`, then one
+single-triangle shape per `shapes` entry, with its `textures` in texture-set slot order:
+
+```json
+{"kind": "mesh", "path": "mods/Mod/meshes/bowl.nif", "version": "sse",
+ "shapes": [{"name": "Bowl", "textures": ["textures\\bowl.tga", "textures\\bowl_n.dds"]}]}
+```
+
+Its path ends in `.nif`, `.btr` or `.bto`, and it may take a `fault`. Unlike other content, its
+bytes are not seeded: nifly builds them from the recipe alone, so every case id gets the same
+Mesh. Only `cao-parity` enables the `corpus` feature. Cargo unifies features across one build's
+packages, so build the app as its own package (`-p <app>`), not with `--workspace`, to keep
+Mesh creation out of it.
 
 Committed seeds live under `crates/cao-parity/seeds/`, in any subfolder; a seed's case id
 is its file stem. `raw` entries may name a fixture file under

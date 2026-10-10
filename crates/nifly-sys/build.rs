@@ -38,7 +38,13 @@ fn build_nifly() {
     println!("cargo:rerun-if-changed={SHIM}");
     println!("cargo:rerun-if-changed={}", nifly.display());
 
-    cc::Build::new()
+    let mut build = cc::Build::new();
+    // The `corpus` feature's mesh-creation entry points. Cargo reruns this
+    // script whenever the feature set changes, so no rerun line is needed.
+    if std::env::var_os("CARGO_FEATURE_CORPUS").is_some() {
+        build.define("CAO_NIF_CORPUS", None);
+    }
+    build
         .cpp(true)
         // nifly's declared standard (its CMakeLists.txt); the patch makes C++20
         // compile too, but C++17 is what nifly is tested with.

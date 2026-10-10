@@ -85,6 +85,30 @@ unsafe extern "C" {
     pub(crate) fn cao_nif_last_error(handle: *const CaoNif, ptr: *mut *const c_char) -> usize;
 }
 
+// Compiled into the library only with the `corpus` feature (`CAO_NIF_CORPUS`).
+#[cfg(feature = "corpus")]
+unsafe extern "C" {
+    pub(crate) fn cao_nif_create(handle: *mut CaoNif, file: u32, user: u32, stream: u32) -> i32;
+    pub(crate) fn cao_nif_create_shape(
+        handle: *mut CaoNif,
+        name: *const c_char,
+        name_length: usize,
+        vertices: *const f32,
+        vertex_count: usize,
+        triangles: *const u16,
+        triangle_count: usize,
+        out_index: *mut usize,
+        out_texture_slots: *mut usize,
+    ) -> i32;
+    pub(crate) fn cao_nif_set_texture_slot(
+        handle: *mut CaoNif,
+        shape: usize,
+        slot: u32,
+        ptr: *const c_char,
+        length: usize,
+    ) -> i32;
+}
+
 #[cfg(test)]
 unsafe extern "C" {
     /// Test support: loads `length` bytes through a stream that throws when

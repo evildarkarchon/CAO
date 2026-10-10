@@ -15,6 +15,15 @@ publish.workspace = true
 [lints.rust]
 unsafe_code = "allow"
 
+[features]
+default = []
+# Mesh creation (`Nif::create`, `create_shape`, `set_texture_slot`) for the
+# parity corpus's synthetic Meshes (#473, #503). Only `cao-parity` enables it;
+# the mesh backend and the GUI never do. Cargo unifies features across every
+# package one invocation builds, so a release build of the app selects its own
+# package (`-p cao-gui`), never `--workspace`, to keep this out of it.
+corpus = []
+
 # A leaf: no workspace members, so the mesh backend in `cao-optimizers` adapts
 # `Nif` to core's traits rather than this crate knowing about them (#476).
 [dependencies]
@@ -24,3 +33,9 @@ thiserror.workspace = true
 # nifly is built from source with `cc`, not CMake or vcpkg (#460).
 cc.workspace = true
 embed-resource.workspace = true
+
+# Mesh creation exists only with the feature; Cargo skips this test binary
+# without it rather than building an empty one.
+[[test]]
+name = "corpus"
+required-features = ["corpus"]

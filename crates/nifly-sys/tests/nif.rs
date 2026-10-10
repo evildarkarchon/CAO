@@ -119,7 +119,16 @@ fn errors_describe_what_failed() {
 
 #[test]
 fn nif_versions_match_nifly() {
-    // BasicTypes.hpp: getSK() and getSSE(), IsSK() is file 20.2.0.7 and stream 83.
+    // BasicTypes.hpp: getSK(), getSSE() and getFO4(); IsSK() is file 20.2.0.7
+    // and stream 83.
+    assert_eq!(
+        NifVersion::FO4,
+        NifVersion {
+            file: 0x1402_0007,
+            user: 12,
+            stream: 130
+        }
+    );
     assert_eq!(
         NifVersion::SK,
         NifVersion {

@@ -23,6 +23,9 @@ cao-profiles.workspace = true
 # Hand-written cases build their Textures synthetically (#473).
 directxtex.workspace = true
 log.workspace = true
+# `mesh` recipe entries are synthetic Meshes nifly builds (#473, #503). Only
+# this crate enables `corpus`; the app's crates never depend on this one.
+nifly-sys = { workspace = true, features = ["corpus"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

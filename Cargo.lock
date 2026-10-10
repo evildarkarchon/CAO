@@ -132,6 +132,7 @@ dependencies = [
  "directxtex",
  "embed-resource",
  "log",
+ "nifly-sys",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

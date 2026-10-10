@@ -23,6 +23,7 @@
 
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use directxtex::{
     CP_FLAGS_NONE, DDS_FLAGS, DDS_FLAGS_FORCE_DX10_EXT, DDS_FLAGS_NONE, DXGI_FORMAT, ScratchImage,
@@ -32,14 +33,15 @@ use directxtex::{
 
 use cao_archive::{ArchiveData, Settings, write_archive};
 use cao_profiles::Profiles;
+use nifly_sys::Nif;
 
 use crate::HarnessError;
 use crate::case::{CaseFile, CaseLayout, ModSelection, Side, SideResources, is_harness_owned};
-use crate::guard::GuardInput;
+use crate::guard::{GuardInput, MESH_EXTENSIONS};
 use crate::local_assets::{LocalAssetBytes, LocalAssetPool};
 use crate::recipe::{
-    ArchiveRecipe, ContentEntry, DdsHeader, Fault, FsShape, LocalAssetEntry, MeshTarget, Pattern,
-    ProfileOverrides, TextureEntry,
+    ArchiveRecipe, ContentEntry, DdsHeader, Fault, FsShape, LocalAssetEntry, MeshEntry, MeshTarget,
+    Pattern, ProfileOverrides, TextureEntry,
 };
 
 /// The longest absolute path, in UTF-16 units, a case may create: well under
@@ -334,6 +336,11 @@ fn file_bytes(
             })?;
             apply_fault(bytes.to_vec(), asset.fault, &mut random)
         }
+        ContentEntry::Mesh(mesh) => {
+            let bytes =
+                mesh_bytes(mesh).map_err(|message| invalid_entry(entry.path(), &message))?;
+            apply_fault(bytes, mesh.fault, &mut random)
+        }
         ContentEntry::Archive(archive) => archive_bytes(archive, seed, sources)?,
         ContentEntry::Directory { .. } => {
             return Err(invalid_entry(entry.path(), "a directory has no bytes"));
@@ -342,10 +349,10 @@ fn file_bytes(
 }
 
 /// A scratch directory under the system temp dir, removed on drop, where an
-/// Archive's files are laid out and packed.
-struct PackingDir(PathBuf);
+/// Archive's files are laid out and packed, or nifly saves a Mesh.
+struct ScratchDir(PathBuf);
 
-impl Drop for PackingDir {
+impl Drop for ScratchDir {
     fn drop(&mut self) {
         // Best effort: a leftover in the temp dir must not fail the case.
         let _ = std::fs::remove_dir_all(&self.0);
@@ -367,7 +374,7 @@ fn archive_bytes(
     inputs: &Sources<'_>,
 ) -> Result<Vec<u8>, HarnessError> {
     let seed = seed ^ hash(archive.path.as_bytes());
-    let scratch = PackingDir(std::env::temp_dir().join(format!(
+    let scratch = ScratchDir(std::env::temp_dir().join(format!(
         "cao-parity-archive-{}-{seed:016x}",
         std::process::id()
     )));
@@ -603,7 +610,7 @@ fn validate_archive(archive: &ArchiveRecipe, roots: &[&Path]) -> Result<(), Harn
             ContentEntry::Directory { .. } | ContentEntry::Archive(_)
         ) {
             return Err(named(
-                "an Archive packs only texture, text, raw and local_asset files",
+                "an Archive packs only texture, text, raw, mesh and local_asset files",
             ));
         }
         let parts: Vec<&str> = path.split('/').collect();
@@ -846,6 +853,63 @@ fn texture_bytes(texture: &TextureEntry, random: &mut Random) -> Result<Vec<u8>,
         ));
     }
     Ok(bytes)
+}
+
+/// The vertices of the one triangle every synthetic shape holds, as in the C++
+/// tests' `writeMeshWithTexture` (`tests/MainOptimizerTests.cpp`).
+const MESH_VERTICES: [[f32; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+/// That triangle, over [`MESH_VERTICES`].
+const MESH_TRIANGLES: [[u16; 3]; 1] = [[0, 1, 2]];
+
+/// Builds a [`MeshEntry`]'s file bytes with nifly: `Create`, a shape per
+/// recipe shape, its texture slots, then `Save`.
+///
+/// nifly only saves to a path, so the Mesh goes through a scratch file. Its
+/// bytes depend on the recipe alone; nothing here is seeded.
+fn mesh_bytes(mesh: &MeshEntry) -> Result<Vec<u8>, String> {
+    // The deviation guard reads plugins and DDS files to find triggers but
+    // never builds a Mesh, so Mesh bytes must not pose as either.
+    if !MESH_EXTENSIONS
+        .iter()
+        .any(|known| extension(&mesh.path).eq_ignore_ascii_case(known))
+    {
+        return Err("a mesh's path must end in `.nif`, `.btr` or `.bto`".into());
+    }
+    let nifly = |error: nifly_sys::NifError| format!("nifly failed: {error}");
+    let mut nif = Nif::new();
+    nif.create(mesh.version.nif_version()).map_err(nifly)?;
+    for shape in &mesh.shapes {
+        let created = nif
+            .create_shape(shape.name.as_bytes(), &MESH_VERTICES, &MESH_TRIANGLES)
+            .map_err(nifly)?;
+        if shape.textures.len() > created.texture_slots() {
+            return Err(format!(
+                "shape `{}` has {} textures, and its texture set has {} texture slots",
+                shape.name,
+                shape.textures.len(),
+                created.texture_slots()
+            ));
+        }
+        for (slot, texture) in shape.textures.iter().enumerate() {
+            nif.set_texture_slot(&created, slot, texture.as_bytes())
+                .map_err(nifly)?;
+        }
+    }
+
+    // Parallel tests build Meshes in one process, so the pid alone would not
+    // keep their scratch directories apart.
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let scratch = ScratchDir(std::env::temp_dir().join(format!(
+        "cao-parity-mesh-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )));
+    let failed = |error: std::io::Error| format!("{}: {error}", scratch.0.display());
+    // nifly's save opens the file but creates no directories.
+    std::fs::create_dir_all(&scratch.0).map_err(failed)?;
+    let file = scratch.0.join("mesh.nif");
+    nif.save(&file).map_err(nifly)?;
+    std::fs::read(&file).map_err(failed)
 }
 
 /// Fills one RGBA8 image with `pattern`.
