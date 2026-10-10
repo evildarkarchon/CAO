@@ -11,7 +11,8 @@
 //! mutation fact becomes the attempt's. Dry Run never stages anything.
 //!
 //! [`quarantine_failed_load`] is the adapter step C++ `MainOptimizer` ran after
-//! each attempt: in Apply, a Texture that failed to load becomes `.caobad`.
+//! each attempt: in Apply, a Texture or Mesh that failed to load becomes
+//! `.caobad`.
 
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
@@ -911,19 +912,18 @@ impl<'b> AssetExecutor<'b> {
 }
 
 /// Finishes one attempt as C++ `MainOptimizer::finishAttempt` did: logs a
-/// failure and, in Apply, quarantines a Texture that failed to load.
+/// failure and, in Apply, quarantines a Texture or Mesh that failed to load.
 ///
-/// Quarantine renames the Texture to `<name>.caobad` (or `.caobad.1`, `.2`,
-/// …) with a no-replace rename, so a later run and Archive creation leave it
-/// alone, and records the rename as a Committed Mutation. A Texture that
+/// Quarantine renames the Asset to `<name>.caobad` (or `.caobad.1`, `.2`, …)
+/// with a no-replace rename, so a later run and Archive creation leave it
+/// alone, and records the rename as a Committed Mutation. An Asset that
 /// cannot be renamed is still packable, so the run must not continue to
 /// Archive Finalization: the attempt becomes unsafe. Dry Run only reports the
 /// failure.
 ///
-/// C++ quarantined Meshes too. Here Meshes are left alone until they load
-/// through `nifly-sys`: until then every Mesh fails to load, and Texture
-/// conversion routes every Mesh, so quarantining them would rename every Mesh
-/// of an SSE or FO4 mod.
+/// A Mesh is quarantined whichever operation routed it, so Texture conversion,
+/// which routes every Mesh for Mesh Reference Maintenance, quarantines a Mesh
+/// nifly cannot load, as C++ did.
 pub fn quarantine_failed_load(
     asset: &RoutedAsset,
     result: AssetExecutionResult,
@@ -940,8 +940,13 @@ pub fn quarantine_failed_load(
     if !result.service_detail().is_empty() {
         log::error!("{}", result.service_detail());
     }
+    // Only Textures and Meshes are loaded before they are processed; an
+    // Animation never fails with LoadFailed.
     if asset.execution_mode() != ExecutionMode::Apply
-        || asset.target() != OptimizerTarget::Texture
+        || !matches!(
+            asset.target(),
+            OptimizerTarget::Texture | OptimizerTarget::Mesh
+        )
         || result.failure() != Some(AssetExecutionFailure::LoadFailed)
     {
         return result;

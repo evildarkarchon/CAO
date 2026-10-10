@@ -3,8 +3,13 @@
 //! [`ParityRules`] fills the output-tree comparator's two hooks with the rules
 //! landed so far: the leftovers rules of [`crate::leftovers`] (#491), the
 //! Texture rule of [`crate::textures`] (#494) and the Archive rule of
-//! [`crate::archives`] (#497). Meshes, Animations and Loading Plugins have no
-//! rule, so their files must be byte-identical, which is also their final rule.
+//! [`crate::archives`] (#497). Meshes (#504), Animations (#502) and Loading
+//! Plugins (#498) have no rule, so their files must be byte-identical, which is
+//! their final rule. For Meshes that holds even though the oracle builds nifly
+//! with vcpkg and CMake and `nifly-sys` with `cc`: if nifly's float output
+//! drifts between the two, the builds' compiler flags are aligned rather than
+//! the rule loosened. A structural comparator with ulp tolerance is only the
+//! recorded fallback, and needs the maintainer's agreement.
 
 use crate::archives::ArchiveRule;
 use crate::leftovers::{ManifestRule, PresenceRule};

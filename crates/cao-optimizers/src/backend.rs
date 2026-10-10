@@ -6,14 +6,15 @@
 //! turns a Routed Asset's operations into one optimizer's request, as
 //! `MainOptimizer::optimizeTexture` does.
 //!
-//! Textures and Animations are ported. The composition root refuses Mesh work
-//! before a run touches anything, but Texture conversion still routes every
-//! Mesh for Mesh Reference Maintenance, so Meshes do reach this backend. Until
-//! `nifly-sys` lands they fail to load, which a parity case with a real Mesh
-//! reports as Different rather than hiding. Apply runs a Texture decision (see
-//! [`crate::textures`]), encoding BC6H and BC7 on the Run Worker's D3D11 device
-//! when it has one (#495), and converts Animations with the app directory's
-//! `hkxcmd.exe` (see [`crate::animations`], #502).
+//! Textures, Meshes and Animations are ported. Apply runs a Texture decision
+//! (see [`crate::textures`]), encoding BC6H and BC7 on the Run Worker's D3D11
+//! device when it has one (#495), optimizes Meshes with nifly at the run's
+//! mesh level (see [`crate::meshes`], #504), and converts Animations with the
+//! app directory's `hkxcmd.exe` (see [`crate::animations`], #502).
+//!
+//! Mesh Reference Maintenance is not ported yet (#506): Texture conversion
+//! routes every Mesh for it, and each such Mesh fails that operation, which a
+//! parity case with a referencing Mesh reports as Different rather than hiding.
 
 use std::path::Path;
 
@@ -22,8 +23,11 @@ use cao_core::routing::{
     AssetOperation, AssetOperations, ExecutionMode, MeshVariant, TextureVariant,
 };
 
+use nifly_sys::{Nif, NifError};
+
 use crate::animations::Hkxcmd;
 use crate::device::{ComUnavailable, GpuDevice, initialize_com};
+use crate::meshes::MeshOptimizer;
 use crate::textures::{Texture, TextureProfile, TextureRequest};
 
 /// How the user asked Textures to be resized, from the Textures tab.
@@ -48,21 +52,23 @@ pub struct TextureSettings {
 
 /// The Asset Execution Backend of one run, owned by its Run Worker.
 ///
-/// It holds at most one loaded Texture at a time, as the C++ optimizers do,
-/// the Run Worker's D3D11 device for BC6H and BC7, if it got one, and the
-/// run's Animation converter.
+/// It holds at most one loaded Texture and one loaded Mesh at a time, as the
+/// C++ optimizers do, the Run Worker's D3D11 device for BC6H and BC7, if it
+/// got one, and the run's Mesh optimizer and Animation converter.
 pub struct OptimizerBackend {
     textures: TextureSettings,
     texture_profile: TextureProfile,
     gpu: Option<GpuDevice>,
     loaded: Option<Texture>,
     texture_failure_detail: String,
+    meshes: MeshOptimizer,
+    loaded_mesh: Option<Nif>,
     hkxcmd: Hkxcmd,
 }
 
 impl OptimizerBackend {
     /// A backend applying `textures` under the profile's `texture_profile`,
-    /// converting Animations with `hkxcmd`.
+    /// optimizing Meshes with `meshes` and converting Animations with `hkxcmd`.
     ///
     /// Creates a D3D11 device on the first adapter and joins the calling
     /// thread to COM's multithreaded apartment, as C++ `TexturesOptimizer`'s
@@ -78,6 +84,7 @@ impl OptimizerBackend {
     pub fn new(
         textures: TextureSettings,
         texture_profile: TextureProfile,
+        meshes: MeshOptimizer,
         hkxcmd: Hkxcmd,
     ) -> Result<Self, ComUnavailable> {
         // C++ always asks for the first adapter.
@@ -96,6 +103,8 @@ impl OptimizerBackend {
             gpu,
             loaded: None,
             texture_failure_detail: String::new(),
+            meshes,
+            loaded_mesh: None,
             hkxcmd,
         })
     }
@@ -130,6 +139,29 @@ impl OptimizerBackend {
 /// The detail of every call into an optimizer this build does not have yet.
 fn unavailable(what: &str) -> String {
     format!("{what} is not available in this build")
+}
+
+/// Unwraps a nifly result whose only possible error is a C++ exception.
+///
+/// C++ CAO let such an exception reach its Asset Executor, which reported a
+/// backend exception with unknown mutation that stops the run. Panicking here
+/// reaches the same outcome, since the Asset Run contains the panic; the
+/// loaded Mesh's content is unspecified afterwards, and the next load
+/// replaces it.
+fn unless_exception<T>(
+    result: Result<T, NifError>,
+    call: &str,
+    path: &Path,
+) -> Result<T, NifError> {
+    match result {
+        Err(NifError::Exception(message)) => {
+            panic!(
+                "nifly raised a C++ exception in {call} for {}: {message}",
+                path.display()
+            )
+        }
+        other => other,
+    }
 }
 
 impl AssetExecutionBackend for OptimizerBackend {
@@ -240,23 +272,43 @@ impl AssetExecutionBackend for OptimizerBackend {
         self.texture_failure_detail.clone()
     }
 
-    fn load_mesh(&mut self, path: &Path, _variant: MeshVariant) -> bool {
-        log::error!("{}: {}", path.display(), unavailable("Loading Meshes"));
-        false
+    /// Loads the Mesh with nifly, replacing any loaded one. A load nifly
+    /// refuses is a load failure, which Apply quarantines.
+    fn load_mesh(&mut self, path: &Path, variant: MeshVariant) -> bool {
+        self.loaded_mesh = None;
+        match unless_exception(self.meshes.load(path, variant), "load", path) {
+            Ok(nif) => {
+                self.loaded_mesh = Some(nif);
+                true
+            }
+            Err(_) => false,
+        }
     }
 
-    fn optimize_mesh(&mut self, _path: &Path, _mode: ExecutionMode) -> OperationResult {
-        OperationResult::failed(unavailable("Mesh optimization"))
+    /// The run's mesh level against the loaded Mesh; see
+    /// [`MeshOptimizer::optimize`].
+    fn optimize_mesh(&mut self, path: &Path, mode: ExecutionMode) -> OperationResult {
+        let Some(nif) = self.loaded_mesh.as_mut() else {
+            return OperationResult::failed("No Mesh is loaded.");
+        };
+        match unless_exception(self.meshes.optimize(nif, path, mode), "optimize", path) {
+            Ok(true) => OperationResult::changed(),
+            Ok(false) => OperationResult::unchanged(),
+            Err(error) => OperationResult::failed(error.to_string()),
+        }
     }
 
     fn maintain_mesh_references(&mut self, _mode: ExecutionMode) -> OperationResult {
         OperationResult::failed(unavailable("Mesh Reference Maintenance"))
     }
 
-    fn save_mesh(&mut self, _path: &Path) -> bool {
-        // Unreachable while `load_mesh` always fails, and the seam has no Mesh
-        // failure detail to fill; failing keeps it safe if that changes.
-        false
+    /// Saves the loaded Mesh into the staged `path`. The seam has no Mesh
+    /// failure detail; the optimizer logs why a save failed.
+    fn save_mesh(&mut self, path: &Path) -> bool {
+        let Some(nif) = self.loaded_mesh.as_mut() else {
+            return false;
+        };
+        unless_exception(self.meshes.save(nif, path), "save", path).is_ok()
     }
 
     /// As C++ `MainOptimizer::optimizeAnimation`: a Dry Run reports every

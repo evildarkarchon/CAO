@@ -111,14 +111,19 @@ fn disabled_texture_work_does_not_request_profile_conversion() {
 }
 
 #[test]
-fn work_this_build_cannot_do_is_refused_up_front() {
-    let app = app_dir("unavailable-work");
-    let mut options = dry_run_textures(&app, &app.join("mods/Mod"));
-    options.meshes_optimization_level = 1;
-    assert!(matches!(
-        ApplicationRun::new(&app, "SSE", &options),
-        Err(RunSetupError::Unavailable(_))
-    ));
+fn every_kind_of_work_is_accepted() {
+    let app = app_dir("available-work");
+
+    // Meshes are ported (#504), at every level and when only resaving, in
+    // both modes.
+    for (level, resave) in [(1, false), (2, false), (3, false), (0, true)] {
+        let mut options = dry_run_textures(&app, &app.join("mods/Mod"));
+        options.meshes_optimization_level = level;
+        options.meshes_resave = resave;
+        assert!(ApplicationRun::new(&app, "SSE", &options).is_ok());
+        options.dry_run = false;
+        assert!(ApplicationRun::new(&app, "SSE", &options).is_ok());
+    }
 
     // Animations are ported (#502), in both modes.
     let mut options = dry_run_textures(&app, &app.join("mods/Mod"));

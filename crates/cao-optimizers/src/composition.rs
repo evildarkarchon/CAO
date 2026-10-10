@@ -30,10 +30,12 @@ use cao_core::run::{
 };
 use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
 use directxtex::DXGI_FORMAT;
+use nifly_sys::NifVersion;
 
 use crate::animations::Hkxcmd;
 use crate::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
 use crate::backend::{OptimizerBackend, TextureResize, TextureSettings};
+use crate::meshes::{MeshOptimizer, MeshSettings};
 use crate::textures::TextureProfile;
 
 /// Why the options cannot start a run. Nothing has run and nothing has changed.
@@ -57,10 +59,6 @@ pub enum RunSetupError {
     /// A relative folder would resolve against the working directory.
     #[error("The selected folder `{}` is not an absolute path.", .0.display())]
     RelativeSelection(PathBuf),
-    /// Work whose optimizer is not ported yet. Refusing it up front means a run
-    /// never silently skips work the user asked for.
-    #[error("{0} is not available in this build.")]
-    Unavailable(&'static str),
     /// The request contradicts the selected profile's Profile Capabilities,
     /// such as Mesh work under FO4. Every conflict is kept, in compiler order.
     #[error("{}", conflict_messages(.0))]
@@ -104,12 +102,11 @@ impl ApplicationRun {
     ///
     /// # Errors
     /// [`RunSetupError`] when the options are invalid, contradict the
-    /// profile's capabilities, ask for work this build cannot do, or the
-    /// profile's TGA choice cannot be read.
+    /// profile's capabilities, or the profile's TGA choice cannot be read.
     pub fn new(app_dir: &Path, profile: &str, options: &Options) -> Result<Self, RunSetupError> {
         let request = run_request(app_dir, profile, options)?;
         check_profile_capabilities(app_dir, profile, &request)?;
-        let settings = OptimizerSettings::from_options(options)?;
+        let settings = OptimizerSettings::from_options(options);
         let configuration = Arc::new(ProfileConfigurationProvider::new(app_dir));
         let work = Arc::new(ApplicationRunWork {
             settings,
@@ -276,6 +273,7 @@ fn validate(options: &Options) -> Result<(), RunSetupError> {
 #[derive(Debug, Clone, Copy)]
 struct OptimizerSettings {
     textures: TextureSettings,
+    meshes: MeshSettings,
     /// What becomes of an extracted Archive: removed when "delete backup" is
     /// on (`bBsaDeleteBackup`), otherwise kept as a `.bak`.
     extracted_archive_cleanup: SourceCleanup,
@@ -285,11 +283,11 @@ struct OptimizerSettings {
 }
 
 impl OptimizerSettings {
-    /// Captures the options, refusing work whose optimizer is not ported yet.
-    fn from_options(options: &Options) -> Result<Self, RunSetupError> {
-        if requests_mesh_work(options) {
-            return Err(RunSetupError::Unavailable("Mesh optimization"));
-        }
+    /// Captures the options, which [`validate`] has already checked.
+    ///
+    /// # Panics
+    /// If the mesh level is outside 0 to 3, which `validate` rejects first.
+    fn from_options(options: &Options) -> Self {
         // Ratio wins when both are on, as in `MainOptimizer::optimizeTexture`.
         let resize = if options.textures_resize_ratio {
             TextureResize::Ratio {
@@ -304,12 +302,18 @@ impl OptimizerSettings {
         } else {
             TextureResize::None
         };
-        Ok(Self {
+        Self {
             textures: TextureSettings {
                 necessary: options.textures_necessary,
                 compress: options.textures_compress,
                 mipmaps: options.textures_mipmaps,
                 resize,
+            },
+            meshes: MeshSettings {
+                level: u8::try_from(options.meshes_optimization_level)
+                    .expect("validate() keeps the mesh level within 0 to 3"),
+                headparts: options.meshes_headparts,
+                resave: options.meshes_resave,
             },
             extracted_archive_cleanup: if options.bsa_delete_backup {
                 SourceCleanup::Remove
@@ -323,7 +327,7 @@ impl OptimizerSettings {
                 merge_incompressible: options.bsa_merge_incompressible,
                 merge_textures: options.bsa_merge_textures,
             },
-        })
+        }
     }
 }
 
@@ -464,6 +468,17 @@ fn texture_profile(settings: &ProfileSettings) -> TextureProfile {
     }
 }
 
+/// The version a profile writes Meshes as (`meshesFileVersion`, `meshesUser`,
+/// `meshesStream`), which C++ handed nifly through `SetFile`, `SetUser` and
+/// `SetStream`.
+fn mesh_target(settings: &ProfileSettings) -> NifVersion {
+    NifVersion {
+        file: settings.meshes_file_version,
+        user: settings.meshes_user,
+        stream: settings.meshes_stream,
+    }
+}
+
 /// The production Run Work Service, ported from C++ `ApplicationRunWork`.
 struct ApplicationRunWork {
     settings: OptimizerSettings,
@@ -496,6 +511,7 @@ impl RunWorkService for ApplicationRunWork {
             .clone()
             .ok_or_else(|| Error::WorkService("The run's profile was not prepared".to_owned()))?;
         let texture_profile = texture_profile(&profile.settings);
+        let meshes = MeshOptimizer::new(self.settings.meshes, mesh_target(&profile.settings));
         // Created on the first Asset, as C++ creates its MainOptimizer, so a run
         // with nothing to process never sets up an optimizer.
         let mut backend: Option<OptimizerBackend> = None;
@@ -523,6 +539,7 @@ impl RunWorkService for ApplicationRunWork {
                 OptimizerBackend::new(
                     self.settings.textures,
                     texture_profile.clone(),
+                    meshes.clone(),
                     self.hkxcmd.clone(),
                 )
                 .unwrap_or_else(|error| panic!("{error}"))

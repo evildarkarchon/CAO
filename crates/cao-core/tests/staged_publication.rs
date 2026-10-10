@@ -279,17 +279,50 @@ fn an_unloadable_texture_is_quarantined() {
     assert_eq!(result.mutation_summaries()[0].committed, 2);
 }
 
-/// Rust-only, until Meshes load through `nifly-sys`: a Mesh that fails to
-/// load is reported but never quarantined, because every Mesh fails to load
-/// in this build and Texture conversion routes them all.
+/// Quarantine (Apply only, #504): a Mesh that fails to load is renamed to
+/// `.caobad` as a Texture is, whichever operation routed it, so a later run
+/// and Archive creation leave it alone.
 #[test]
-fn an_unloadable_mesh_is_not_quarantined() {
-    let root = mod_root("mesh-not-quarantined", &["meshes/m_unloadable.nif"]);
-    let before = snapshot_tree(&root);
+fn an_unloadable_mesh_is_quarantined() {
+    let root = mod_root(
+        "mesh-quarantine",
+        &["meshes/m_unloadable.nif", "meshes/m_unloadable.nif.caobad"],
+    );
 
     let result = run(
         Arc::new(BackendWork::new()),
         apply(&root, &[RequestedWork::StandardMeshOptimization]),
+    );
+
+    assert_eq!(result.outcome(), RunOutcome::CompletedWithFailures);
+    let attempt = &result.asset_attempts()[0].result;
+    assert_eq!(attempt.failure(), Some(AssetExecutionFailure::LoadFailed));
+    assert_eq!(attempt.mutation_state(), MutationState::Committed);
+    assert!(attempt.safe_to_continue());
+    assert_eq!(
+        names(&root.join("meshes")),
+        ["m_unloadable.nif.caobad", "m_unloadable.nif.caobad.1"]
+    );
+    assert_eq!(
+        read(&root.join("meshes/m_unloadable.nif.caobad.1")),
+        "meshes/m_unloadable.nif"
+    );
+    assert_eq!(result.mutation_summaries()[0].committed, 1);
+}
+
+/// Dry Run only reports a Mesh that fails to load; nothing is renamed.
+#[test]
+fn a_dry_run_never_quarantines_a_mesh() {
+    let root = mod_root("mesh-quarantine-dry-run", &["meshes/m_unloadable.nif"]);
+    let before = snapshot_tree(&root);
+
+    let result = run(
+        Arc::new(BackendWork::new()),
+        common::request(
+            ExecutionMode::DryRun,
+            &root,
+            &[RequestedWork::StandardMeshOptimization],
+        ),
     );
 
     assert_eq!(result.outcome(), RunOutcome::CompletedWithFailures);
