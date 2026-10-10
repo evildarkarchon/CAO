@@ -593,7 +593,7 @@ pub(crate) fn estimated_capacity_bytes(entries: &[ArchiveEntry]) -> u64 {
 }
 
 /// Explains a failed Capacity Check without promising a reservation.
-fn capacity_detail(required: u64, available: u64) -> String {
+pub(crate) fn capacity_detail(required: u64, available: u64) -> String {
     format!(
         "Insufficient Archive staging capacity: estimated {required} bytes, available \
          {available} bytes. Estimates include staging overhead allowances but do not reserve \
@@ -606,7 +606,7 @@ fn capacity_detail(required: u64, available: u64) -> String {
 ///
 /// A root with positive work and an unknown volume could share any volume,
 /// so it makes every root carry the whole batch's total.
-struct CapacityRequirements<'p> {
+pub(crate) struct CapacityRequirements<'p> {
     probe: &'p dyn VolumeIdentityProbe,
     volumes: BTreeMap<PathBuf, Option<String>>,
     required_by_volume: HashMap<String, u64>,
@@ -615,7 +615,7 @@ struct CapacityRequirements<'p> {
 }
 
 impl<'p> CapacityRequirements<'p> {
-    fn new(probe: &'p dyn VolumeIdentityProbe) -> Self {
+    pub(crate) fn new(probe: &'p dyn VolumeIdentityProbe) -> Self {
         Self {
             probe,
             volumes: BTreeMap::new(),
@@ -626,7 +626,7 @@ impl<'p> CapacityRequirements<'p> {
     }
 
     /// Adds an estimate to the root's volume, probing each root once.
-    fn add(&mut self, root: &Path, bytes: u64) {
+    pub(crate) fn add(&mut self, root: &Path, bytes: u64) {
         let probe = self.probe;
         let volume = self
             .volumes
@@ -646,7 +646,7 @@ impl<'p> CapacityRequirements<'p> {
     }
 
     /// The estimate sharing this previously added root's volume.
-    fn required_at(&self, root: &Path) -> u64 {
+    pub(crate) fn required_at(&self, root: &Path) -> u64 {
         match self.volumes.get(root) {
             Some(Some(volume)) if !self.unknown_volume => self.required_by_volume[volume],
             _ => self.total,

@@ -22,13 +22,15 @@ use cao_core::routing::{
 };
 use cao_core::run::{
     ArchiveAdapters, ArchiveCollision, ArchiveEntry, ArchiveExtractionPlan,
-    ArchiveExtractionResult, ArchiveExtractor, ArchiveReader, AssetInitializationCancelled,
-    AssetRunAdapters, AssetRunProgress, CancellationToken, CapacityProbe, ModSelection,
-    RunConfiguration, RunConfigurationProvider, RunDiagnostic, RunEvent, RunEventDispatcher,
-    RunEventPayload, RunFailure, RunHandle, RunObservationSink, RunPhase, RunPhaseRecord,
-    RunPreparation, RunRequest, RunScheduler, RunWork, RunWorkEvidence, RunWorkMilestones,
-    RunWorkService, SafetyCleanupService, ScheduledRunWorker, SelectedProfileFacts,
-    StandardRunScheduler, TemporaryArtifactRegistry, VolumeIdentityProbe, execute_asset_run,
+    ArchiveExtractionResult, ArchiveExtractor, ArchiveFinalizationResult, ArchiveMerge,
+    ArchiveName, ArchiveNameKind, ArchiveNamingRules, ArchivePacker, ArchiveReader,
+    AssetInitializationCancelled, AssetRunAdapters, AssetRunProgress, CancellationToken,
+    CapacityProbe, ModSelection, PackedArchiveKind, PackedFile, PlannedArchive, RunConfiguration,
+    RunConfigurationProvider, RunDiagnostic, RunEvent, RunEventDispatcher, RunEventPayload,
+    RunFailure, RunHandle, RunObservationSink, RunPhase, RunPhaseRecord, RunPreparation,
+    RunRequest, RunScheduler, RunWork, RunWorkEvidence, RunWorkMilestones, RunWorkService,
+    SafetyCleanupService, ScheduledRunWorker, SelectedProfileFacts, StandardRunScheduler,
+    TemporaryArtifactRegistry, VolumeIdentityProbe, execute_asset_run,
 };
 
 /// Serializes scenarios that start runs: one active run is allowed per
@@ -605,6 +607,10 @@ pub struct ControlledWork {
     pub report_progress: Option<ProgressHook>,
     /// The Archive Finalization adapter; its calls are counted.
     pub finalize: Option<Hook<Result<(), Error>>>,
+    /// A scripted Archive Finalization result, recorded as the real phase
+    /// records one; it takes the place of `finalize`, and its calls are
+    /// counted too.
+    pub finalization: Option<Hook<ArchiveFinalizationResult>>,
     /// Work-specific configuration loaded during Preparing.
     pub prepare: Option<Hook<Result<(), Error>>>,
     pub stage_temporary: bool,
@@ -679,9 +685,15 @@ impl RunWorkService for ControlledWork {
             adapters.report_progress = Some(Box::new(report_progress));
         }
         if let Some(finalize) = &self.finalize {
-            adapters.finalize_archive_lifecycle = Some(Box::new(move |_| {
+            adapters.finalize_archive_lifecycle = Some(Box::new(move |_, _| {
                 self.finalizations.fetch_add(1, Ordering::SeqCst);
                 finalize()
+            }));
+        }
+        if let Some(finalization) = &self.finalization {
+            adapters.finalize_archive_lifecycle = Some(Box::new(move |evidence, _| {
+                self.finalizations.fetch_add(1, Ordering::SeqCst);
+                record_finalization_result(evidence, finalization(), None)
             }));
         }
         if let Some(fakes) = &self.archives {
@@ -712,6 +724,24 @@ impl RunWorkService for ControlledWork {
             &mut adapters,
         )
     }
+}
+
+/// Records a scripted finalizer's result the way Archive Finalization does:
+/// the output total, each attempt in order, then the complete result (C++
+/// `recordArchiveFinalizationResult`). The total defaults to the attempt
+/// count; pass a larger one for a result that stopped before every planned
+/// output.
+pub fn record_finalization_result(
+    evidence: &RunWorkEvidence<'_, '_>,
+    result: ArchiveFinalizationResult,
+    total: Option<usize>,
+) -> Result<(), Error> {
+    let planned = total.unwrap_or(result.attempts.len());
+    evidence.record_archive_finalization_plan(planned)?;
+    for attempt in &result.attempts {
+        evidence.record_archive_finalization_attempt(attempt.clone(), planned)?;
+    }
+    evidence.record_archive_finalization(result)
 }
 
 /// One observation a [`RecordingSink`] received.
@@ -1048,6 +1078,273 @@ pub struct ArchiveFakes {
     pub capacity: FakeCapacity,
     pub volumes: FakeVolumes,
     pub extract: Option<ExtractScript>,
+}
+
+/// The fake game's 49-byte Dummy Plugin: a `TES4` magic, then a fixed pattern.
+pub fn fake_dummy_plugin() -> Vec<u8> {
+    let mut bytes = b"TES4".to_vec();
+    bytes.extend((0..45u8).map(|byte| byte.wrapping_mul(7)));
+    bytes
+}
+
+/// One Archive the fake packer wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FakeWrite {
+    pub kind: PackedArchiveKind,
+    pub compress: bool,
+    /// The stored names: each source's `/`-separated path in its Mod Root.
+    pub names: Vec<String>,
+}
+
+/// An Archive packer over fake Archive files [`FakeArchiveReader`] reads.
+///
+/// Its rules are a small stand-in for a game's: a `.dds` under `textures` or
+/// `interface` is a Texture, anything under `sound` or `music` is
+/// Incompressible, plugins and Archives are never packed, and everything else
+/// is Standard. Splitting and merging follow the real strict limits against
+/// [`Self::max_size`]. Names parse as the real `FilePath` does.
+pub struct FakeArchivePacker {
+    pub rules: ArchiveNamingRules,
+    /// The most source bytes one Archive may hold.
+    pub max_size: u64,
+    /// Every Archive written, in order.
+    pub writes: Mutex<Vec<FakeWrite>>,
+    /// Runs after each Archive is written, once its sources were read.
+    pub after_write: Option<AfterWrite>,
+}
+
+/// A hook [`FakeArchivePacker`] runs after writing one Archive.
+pub type AfterWrite = Box<dyn Fn(&PlannedArchive) + Send + Sync>;
+
+impl Default for FakeArchivePacker {
+    /// SSE-like rules: `.bsa`, a `Textures` suffix only for Textures, and
+    /// Textures that may merge.
+    fn default() -> Self {
+        Self {
+            rules: ArchiveNamingRules {
+                extension: ".bsa".to_owned(),
+                suffix: None,
+                texture_suffix: Some("Textures".to_owned()),
+                plugin_extensions: vec![".esl".to_owned(), ".esm".to_owned(), ".esp".to_owned()],
+                dummy_plugin: fake_dummy_plugin(),
+                separate_textures: false,
+            },
+            max_size: u64::MAX,
+            writes: Mutex::default(),
+            after_write: None,
+        }
+    }
+}
+
+impl FakeArchivePacker {
+    /// FO4-like rules: `.ba2`, `Main` and `Textures` suffixes, and Textures
+    /// that always stay separate (deviation 21).
+    pub fn fo4_like() -> Self {
+        let mut packer = Self::default();
+        packer.rules.extension = ".ba2".to_owned();
+        packer.rules.suffix = Some("Main".to_owned());
+        packer.rules.separate_textures = true;
+        packer
+    }
+
+    pub fn writes(&self) -> Vec<FakeWrite> {
+        self.writes.lock().unwrap().clone()
+    }
+
+    /// The fake classification of a file beneath `root`; `None` stays loose.
+    fn kind_of(&self, path: &Path, root: &Path) -> Option<PackedArchiveKind> {
+        let relative = path.strip_prefix(root).ok()?;
+        let first = relative
+            .components()
+            .next()?
+            .as_os_str()
+            .to_string_lossy()
+            .to_lowercase();
+        let extension = path
+            .extension()
+            .map(|extension| format!(".{}", extension.to_string_lossy().to_lowercase()))
+            .unwrap_or_default();
+        if extension == self.rules.extension || self.rules.plugin_extensions.contains(&extension) {
+            return None;
+        }
+        Some(match (first.as_str(), extension.as_str()) {
+            ("textures" | "interface", ".dds") => PackedArchiveKind::Textures,
+            ("sound" | "music", _) => PackedArchiveKind::Incompressible,
+            _ => PackedArchiveKind::Standard,
+        })
+    }
+
+    /// Parses a file name as the real `FilePath::make` does.
+    fn parse_name(&self, path: &Path, kind: ArchiveNameKind) -> Option<ArchiveName> {
+        let file = path.file_name()?.to_str()?;
+        let (stem, ext) = match file.rfind('.') {
+            Some(dot) if dot > 0 => file.split_at(dot),
+            _ => (file, ""),
+        };
+        let known = match kind {
+            ArchiveNameKind::Plugin => self
+                .rules
+                .plugin_extensions
+                .iter()
+                .any(|known| known == ext),
+            ArchiveNameKind::Archive => ext == self.rules.extension,
+        };
+        if !known {
+            return None;
+        }
+        let eat_digits = |name: &mut String| {
+            let digits = name.bytes().rev().take_while(u8::is_ascii_digit).count();
+            if digits == 0 || digits == name.len() {
+                return None;
+            }
+            let start = name.len() - digits;
+            let counter = name[start..].parse().ok()?;
+            name.truncate(start);
+            Some(counter)
+        };
+        let mut name = stem.to_owned();
+        let mut counter = eat_digits(&mut name);
+        let mut suffix = String::new();
+        if let Some(position) = name.rfind(" - ") {
+            let candidate = &name[position + 3..];
+            if self.rules.suffix.as_deref() == Some(candidate)
+                || self.rules.texture_suffix.as_deref() == Some(candidate)
+            {
+                suffix = candidate.to_owned();
+                name.truncate(position);
+            }
+        }
+        if counter.is_none() {
+            counter = eat_digits(&mut name);
+        }
+        Some(ArchiveName {
+            dir: path.parent().unwrap_or(Path::new("")).to_path_buf(),
+            name,
+            suffix,
+            ext: ext.to_owned(),
+            counter,
+        })
+    }
+}
+
+impl ArchivePacker for FakeArchivePacker {
+    fn rules(&self) -> &ArchiveNamingRules {
+        &self.rules
+    }
+
+    fn list_names(&self, dir: &Path, kind: ArchiveNameKind) -> Result<Vec<ArchiveName>, Error> {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                continue;
+            }
+            names.extend(self.parse_name(&path, kind));
+        }
+        Ok(names)
+    }
+
+    fn partition(
+        &self,
+        root: &Path,
+        mut sources: Vec<PackedFile>,
+        merge: ArchiveMerge,
+    ) -> Result<Vec<PlannedArchive>, Error> {
+        sources.sort_by(|left, right| left.path.cmp(&right.path));
+        let open = |kind| PlannedArchive {
+            kind,
+            files: Vec::new(),
+        };
+        let size =
+            |archive: &PlannedArchive| archive.files.iter().map(|file| file.size).sum::<u64>();
+        let mut full = Vec::new();
+        let mut standard = open(PackedArchiveKind::Standard);
+        let mut incompressible = open(PackedArchiveKind::Incompressible);
+        let mut textures = open(PackedArchiveKind::Textures);
+        for source in sources {
+            let partition = match self.kind_of(&source.path, root) {
+                Some(PackedArchiveKind::Standard) => &mut standard,
+                Some(PackedArchiveKind::Incompressible) => &mut incompressible,
+                Some(PackedArchiveKind::Textures) => &mut textures,
+                None => continue,
+            };
+            if source.size > self.max_size {
+                return Err(Error::Archive(format!(
+                    "`{}` exceeds the output Archive size limit",
+                    source.path.display()
+                )));
+            }
+            if size(partition) + source.size > self.max_size {
+                let kind = partition.kind;
+                full.push(std::mem::replace(partition, open(kind)));
+            }
+            partition.files.push(source);
+        }
+        if merge.incompressible && size(&standard) + size(&incompressible) < self.max_size {
+            standard.files.append(&mut incompressible.files);
+            standard.kind = PackedArchiveKind::Incompressible;
+        }
+        if merge.textures && size(&standard) + size(&textures) < self.max_size {
+            standard.files.append(&mut textures.files);
+        }
+        full.extend([standard, incompressible, textures]);
+        full.retain(|archive| !archive.files.is_empty());
+        Ok(full)
+    }
+
+    fn write(
+        &self,
+        archive: &PlannedArchive,
+        compress: bool,
+        root: &Path,
+        destination: &Path,
+    ) -> Result<(), Error> {
+        let mut stored = Vec::new();
+        for file in &archive.files {
+            let payload = std::fs::read(&file.path).map_err(|error| {
+                Error::Archive(format!("cannot read `{}`: {error}", file.path.display()))
+            })?;
+            let name = file
+                .path
+                .strip_prefix(root)
+                .unwrap()
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/");
+            stored.push((name, payload));
+        }
+        let entries: Vec<FakeEntry<'_>> = stored
+            .iter()
+            .map(|(name, payload)| entry(name, payload))
+            .collect();
+        write_archive(destination, &entries);
+        self.writes.lock().unwrap().push(FakeWrite {
+            kind: archive.kind,
+            compress,
+            names: stored.into_iter().map(|(name, _)| name).collect(),
+        });
+        if let Some(after_write) = &self.after_write {
+            after_write(archive);
+        }
+        Ok(())
+    }
+}
+
+/// The Archives directly in `root`, by the fake game's two extensions.
+pub fn archives_in(root: &Path) -> Vec<PathBuf> {
+    let mut archives: Vec<PathBuf> = std::fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension == "bsa" || extension == "ba2")
+        })
+        .collect();
+    archives.sort();
+    archives
 }
 
 impl ArchiveFakes {

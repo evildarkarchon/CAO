@@ -131,9 +131,12 @@ pub struct AssetRunAdapters<'a> {
 /// Observes the complete Archive Collision plan, in Mod Root and game-path order.
 pub type ReportArchiveCollisions<'a> = Box<dyn FnMut(&[ArchiveCollision]) + 'a>;
 
-/// Runs Archive Finalization against the run's evidence.
-pub type FinalizeArchiveLifecycle<'a> =
-    Box<dyn FnMut(&RunWorkEvidence<'_, '_>) -> Result<(), Error> + 'a>;
+/// Runs Archive Finalization against the run's evidence, staging its outputs
+/// through the run's Temporary Ownership scope, which is lent per call like
+/// every other adapter's.
+pub type FinalizeArchiveLifecycle<'a> = Box<
+    dyn FnMut(&RunWorkEvidence<'_, '_>, &mut TemporaryArtifactRegistry) -> Result<(), Error> + 'a,
+>;
 
 impl<'a> AssetRunAdapters<'a> {
     /// Adapters that only execute Assets.
@@ -580,7 +583,7 @@ pub fn execute_asset_run(
     if mode == ExecutionMode::Apply
         && let Some(finalize) = finalizer
     {
-        finalize(evidence)?;
+        finalize(evidence, artifacts)?;
     }
     finish(cancelled())
 }

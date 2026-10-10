@@ -6,18 +6,9 @@
 //! [`Error::EvidenceInvariant`], which the Run Executor raises after cleanup.
 //!
 //! Not ported, with reasons:
-//! - `finalizationProgressPublishesRetainedAttempt`,
-//!   `interruptedFinalizationRetainsCompletedAttempts`,
-//!   `finalizationResultCannotDropStreamedAttempts`,
-//!   `finalizationAttemptsRequireRecordedTotal`,
-//!   `sealedMutationSummariesReflectCompletedAttempts` and
-//!   `pluginOnlyFinalizationMutationsAreSealed`: Archive Finalization results
-//!   are not Run Evidence yet. They join it with Archive Finalization (#498),
-//!   whose slice ports these. Archive extraction attempts already joined it
-//!   (#496), but the one scenario that seals them also seals Finalization
-//!   results, so it waits for #498 whole.
-//! - The Archive Finalization half of `finalizationAndCleanupFailuresRemainSeparate`,
-//!   for the same reason; its plan and Safety Cleanup halves are ported.
+//! - The sink reading the owner in `finalizationProgressPublishesRetainedAttempt`:
+//!   a sink cannot borrow the owner it is called from. The retained attempts
+//!   and the progress they publish are ported.
 //! - The post-consumption half of `phaseOrderViolationsAreRejected` and
 //!   `preparationAndPostConsumptionMutationAreRejected`, and the "a failed
 //!   consume leaves the owner usable" rule: `consume` takes the owner by value,
@@ -32,11 +23,14 @@ use std::cell::Cell;
 use std::path::PathBuf;
 
 use cao_core::Error;
+use cao_core::execution::MutationState;
 use cao_core::routing::{ExecutionMode, RoutingPolicyRequest};
 use cao_core::run::{
-    ArchivePrecedence, MutableRunEvidence, PhaseSkipReason, RunConfiguration, RunDiagnostic,
-    RunDiagnosticCode, RunEvidence, RunFailure, RunFailureCode, RunPhase, RunPhaseRecord,
-    RunPreparation, RunProgress, SelectedProfileFacts,
+    ArchiveExtractionFailure, ArchiveExtractionResult, ArchiveFinalizationAttempt,
+    ArchiveFinalizationFailure, ArchiveFinalizationMutation, ArchiveFinalizationMutationKind,
+    ArchiveFinalizationResult, ArchivePrecedence, MutableRunEvidence, MutationKind,
+    PhaseSkipReason, RunConfiguration, RunDiagnostic, RunDiagnosticCode, RunEvidence, RunFailure,
+    RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunProgress, SelectedProfileFacts,
 };
 use common::{Observed, RecordingSink};
 
@@ -83,6 +77,34 @@ fn progress(phase: RunPhase, total: usize, succeeded: usize, failed: usize) -> R
 
 fn is_invariant(result: Result<(), Error>) -> bool {
     matches!(result, Err(Error::EvidenceInvariant(_)))
+}
+
+/// A finalization attempt at `archive` in `mod_root`.
+fn finalization_attempt(
+    archive: &str,
+    mod_root: &str,
+    mutation: MutationState,
+    failure: Option<ArchiveFinalizationFailure>,
+) -> ArchiveFinalizationAttempt {
+    ArchiveFinalizationAttempt {
+        mutation,
+        failure,
+        detail: failure.map_or_else(String::new, |failure| format!("{failure:?}")),
+        ..ArchiveFinalizationAttempt::new(archive.into(), mod_root.into())
+    }
+}
+
+/// Evidence in the executed Archive Finalization phase, optionally reporting
+/// to `sink`.
+fn finalizing(sink: Option<&dyn cao_core::run::RunObservationSink>) -> MutableRunEvidence<'_> {
+    let mut evidence = MutableRunEvidence::new(sink);
+    evidence
+        .record_phase(executed(RunPhase::Preparing))
+        .unwrap();
+    evidence
+        .record_phase(executed(RunPhase::ArchiveFinalization))
+        .unwrap();
+    evidence
 }
 
 /// Origin: RunEvidenceTests::successfulPreparationIsAtomicallyOwned.
@@ -257,10 +279,10 @@ fn an_observed_cancellation_is_sealed_as_a_fact() {
     assert!(consume_after_cleanup(evidence).cancellation_observed());
 }
 
-/// Origin: RunEvidenceTests::finalizationAndCleanupFailuresRemainSeparate (the
-/// plan and Safety Cleanup halves). An Archive Finalization plan needs the
-/// executed phase first, and Safety Cleanup failures stay apart from Run
-/// Failures.
+/// Origin: RunEvidenceTests::finalizationAndCleanupFailuresRemainSeparate. An
+/// Archive Finalization plan needs the executed phase first; its attempts,
+/// including a contained cleanup failure, stay apart from Run Failures and
+/// from Safety Cleanup failures.
 #[test]
 fn a_finalization_plan_needs_its_phase_and_cleanup_failures_stay_separate() {
     let mut evidence = MutableRunEvidence::new(None);
@@ -276,6 +298,22 @@ fn a_finalization_plan_needs_its_phase_and_cleanup_failures_stay_separate() {
         is_invariant(evidence.record_archive_finalization_plan(2)),
         "the plan is immutable"
     );
+    let mut retained = finalization_attempt(
+        "second.bsa",
+        "second-mod",
+        MutationState::Committed,
+        Some(ArchiveFinalizationFailure::SourceCleanupFailed),
+    );
+    retained.detail = "source retained".to_owned();
+    evidence
+        .record_archive_finalization(ArchiveFinalizationResult {
+            attempts: vec![
+                finalization_attempt("first.bsa", "first-mod", MutationState::Committed, None),
+                retained,
+            ],
+            ..ArchiveFinalizationResult::default()
+        })
+        .unwrap();
     evidence
         .record_phase(executed(RunPhase::SafetyCleanup))
         .unwrap();
@@ -306,7 +344,311 @@ fn a_finalization_plan_needs_its_phase_and_cleanup_failures_stay_separate() {
         .unwrap()
         .progress()
         .unwrap();
-    assert_eq!((plan.total(), plan.completed()), (2, 0));
+    assert_eq!((plan.total(), plan.completed()), (2, 2));
+    let finalization = terminal.archive_finalization().unwrap();
+    assert_eq!(
+        finalization.attempts[0].mod_root,
+        PathBuf::from("first-mod")
+    );
+    assert!(finalization.attempts[0].succeeded());
+    assert_eq!(
+        finalization.attempts[1].failure,
+        Some(ArchiveFinalizationFailure::SourceCleanupFailed)
+    );
+    assert!(finalization.attempts[1].safe_to_continue);
+}
+
+/// Origin: RunEvidenceTests::finalizationProgressPublishesRetainedAttempt.
+/// Each streamed attempt is retained and published as progress, a failed
+/// one counting as failed, and the returned result keeps both.
+#[test]
+fn finalization_progress_publishes_each_retained_attempt() {
+    let sink = RecordingSink::default();
+    let mut evidence = finalizing(Some(&sink));
+    evidence.record_archive_finalization_plan(2).unwrap();
+    let attempts = vec![
+        finalization_attempt("first.bsa", "first-mod", MutationState::Committed, None),
+        finalization_attempt(
+            "second.bsa",
+            "second-mod",
+            MutationState::None,
+            Some(ArchiveFinalizationFailure::WriteFailed),
+        ),
+    ];
+    for attempt in &attempts {
+        evidence
+            .record_archive_finalization_attempt(attempt.clone(), 2)
+            .unwrap();
+        let retained = evidence.archive_finalization().unwrap();
+        assert_eq!(retained.attempts.last(), Some(attempt));
+    }
+    evidence
+        .record_archive_finalization(ArchiveFinalizationResult {
+            attempts,
+            ..ArchiveFinalizationResult::default()
+        })
+        .unwrap();
+
+    let published: Vec<_> = sink
+        .observed()
+        .into_iter()
+        .filter_map(|observed| match observed {
+            Observed::Phase(record) if record.phase() == RunPhase::ArchiveFinalization => {
+                record.progress()
+            }
+            _ => None,
+        })
+        .map(|progress| {
+            (
+                progress.completed(),
+                progress.succeeded(),
+                progress.failed(),
+            )
+        })
+        .collect();
+    assert_eq!(published, [(0, 0, 0), (1, 1, 0), (2, 1, 1)]);
+    let terminal = consume_after_cleanup(evidence);
+    assert_eq!(terminal.archive_finalization().unwrap().attempts.len(), 2);
+}
+
+/// Origin: RunEvidenceTests::interruptedFinalizationRetainsCompletedAttempts.
+/// A phase-level failure keeps the attempt completed before it.
+#[test]
+fn an_interrupted_finalization_keeps_its_completed_attempts() {
+    let mut evidence = finalizing(None);
+    evidence.record_archive_finalization_plan(2).unwrap();
+    let committed =
+        finalization_attempt("committed.bsa", "first-mod", MutationState::Committed, None);
+    evidence
+        .record_archive_finalization_attempt(committed.clone(), 2)
+        .unwrap();
+    evidence
+        .record_archive_finalization(ArchiveFinalizationResult {
+            attempts: vec![committed],
+            failure: Some(ArchiveFinalizationFailure::UnexpectedException),
+            safe_to_continue: false,
+            detail: "packing interrupted".to_owned(),
+            ..ArchiveFinalizationResult::default()
+        })
+        .unwrap();
+
+    let terminal = consume_after_cleanup(evidence);
+    let finalization = terminal.archive_finalization().unwrap();
+    assert_eq!(finalization.attempts.len(), 1);
+    assert_eq!(finalization.attempts[0].mutation, MutationState::Committed);
+    assert_eq!(
+        finalization.failure,
+        Some(ArchiveFinalizationFailure::UnexpectedException)
+    );
+    assert!(!finalization.safe_to_continue);
+    let progress = terminal
+        .phase(RunPhase::ArchiveFinalization)
+        .unwrap()
+        .progress()
+        .unwrap();
+    assert_eq!((progress.total(), progress.completed()), (2, 1));
+}
+
+/// Origin: RunEvidenceTests::finalizationResultCannotDropStreamedAttempts.
+#[test]
+fn a_finalization_result_cannot_drop_a_streamed_attempt() {
+    let mut evidence = finalizing(None);
+    evidence.record_archive_finalization_plan(2).unwrap();
+    evidence
+        .record_archive_finalization_attempt(
+            finalization_attempt("committed.bsa", "first-mod", MutationState::Committed, None),
+            2,
+        )
+        .unwrap();
+    assert!(is_invariant(evidence.record_archive_finalization(
+        ArchiveFinalizationResult {
+            failure: Some(ArchiveFinalizationFailure::UnexpectedException),
+            safe_to_continue: false,
+            ..ArchiveFinalizationResult::default()
+        }
+    )));
+}
+
+/// Origin: RunEvidenceTests::finalizationAttemptsRequireRecordedTotal. An
+/// attempt needs an output total, but a phase-level result may come without
+/// one, and a cancelled one is sealed as observed cancellation.
+#[test]
+fn finalization_attempts_need_a_recorded_total() {
+    let mut evidence = finalizing(None);
+    assert!(is_invariant(evidence.record_archive_finalization(
+        ArchiveFinalizationResult {
+            attempts: vec![finalization_attempt(
+                "packed.bsa",
+                "first-mod",
+                MutationState::Committed,
+                None
+            )],
+            ..ArchiveFinalizationResult::default()
+        }
+    )));
+    evidence
+        .record_archive_finalization(ArchiveFinalizationResult {
+            cancelled: true,
+            ..ArchiveFinalizationResult::default()
+        })
+        .unwrap();
+
+    let terminal = consume_after_cleanup(evidence);
+    assert!(terminal.archive_finalization().is_some());
+    assert!(
+        terminal
+            .phase(RunPhase::ArchiveFinalization)
+            .unwrap()
+            .progress()
+            .is_none()
+    );
+    assert!(terminal.cancellation_observed());
+}
+
+/// Origin: RunEvidenceTests::sealedMutationSummariesReflectCompletedAttempts.
+/// Extraction and finalization attempts are summarized per Mod Root and
+/// kind; an attempt that mutated nothing adds nothing.
+#[test]
+fn sealed_mutation_summaries_count_completed_attempts() {
+    let extraction = |archive: &str, root: &str, mutation, failure| ArchiveExtractionResult {
+        archive_path: archive.into(),
+        mod_root: root.into(),
+        mutation,
+        failure,
+        safe_to_continue: mutation != MutationState::PartialOrUnknown,
+        detail: String::new(),
+    };
+    let mut evidence = MutableRunEvidence::new(None);
+    evidence
+        .record_phase(executed(RunPhase::Preparing))
+        .unwrap();
+    evidence
+        .record_phase(executed(RunPhase::DiscoveringArchives))
+        .unwrap();
+    evidence.record_archive_extraction_plan(3).unwrap();
+    for attempt in [
+        extraction("first.bsa", "alpha", MutationState::Committed, None),
+        extraction(
+            "second.bsa",
+            "alpha",
+            MutationState::PartialOrUnknown,
+            Some(ArchiveExtractionFailure::MergeFailed),
+        ),
+        extraction(
+            "third.bsa",
+            "beta",
+            MutationState::None,
+            Some(ArchiveExtractionFailure::ExtractionFailed),
+        ),
+    ] {
+        evidence
+            .record_archive_extraction_attempt(attempt, 3)
+            .unwrap();
+    }
+    evidence
+        .record_phase(executed(RunPhase::ArchiveFinalization))
+        .unwrap();
+    evidence.record_archive_finalization_plan(2).unwrap();
+    evidence
+        .record_archive_finalization(ArchiveFinalizationResult {
+            attempts: vec![
+                finalization_attempt("packed-a.bsa", "alpha", MutationState::Committed, None),
+                finalization_attempt(
+                    "packed-b.bsa",
+                    "beta",
+                    MutationState::Committed,
+                    Some(ArchiveFinalizationFailure::SourceCleanupFailed),
+                ),
+            ],
+            ..ArchiveFinalizationResult::default()
+        })
+        .unwrap();
+
+    let terminal = consume_after_cleanup(evidence);
+    let summaries: Vec<_> = terminal
+        .mutation_summaries()
+        .iter()
+        .map(|summary| {
+            (
+                summary.mod_root.to_str().unwrap(),
+                summary.kind,
+                summary.committed,
+                summary.partial_or_unknown,
+            )
+        })
+        .collect();
+    assert_eq!(
+        summaries,
+        [
+            ("alpha", MutationKind::ArchiveExtraction, 1, 1),
+            ("alpha", MutationKind::ArchiveFinalization, 1, 0),
+            ("beta", MutationKind::ArchiveFinalization, 1, 0),
+        ]
+    );
+}
+
+/// Origin: RunEvidenceTests::pluginOnlyFinalizationMutationsAreSealed. Plugin
+/// actions with no output attempt still count, by their Mod Root.
+#[test]
+fn plugin_only_finalization_mutations_are_sealed() {
+    let plugin = |root: &str, path: &str, kind| ArchiveFinalizationMutation {
+        mod_root: root.into(),
+        path: path.into(),
+        kind,
+        mutation: MutationState::Committed,
+        count: 1,
+    };
+    let mut evidence = finalizing(None);
+    evidence.record_archive_finalization_plan(0).unwrap();
+    evidence
+        .record_archive_finalization(ArchiveFinalizationResult {
+            mutations: vec![
+                plugin(
+                    "first-mod",
+                    "first-mod/existing.esp",
+                    ArchiveFinalizationMutationKind::PluginCreation,
+                ),
+                plugin(
+                    "second-mod",
+                    "second-mod/old.esp",
+                    ArchiveFinalizationMutationKind::PluginRemoval,
+                ),
+            ],
+            ..ArchiveFinalizationResult::default()
+        })
+        .unwrap();
+
+    let terminal = consume_after_cleanup(evidence);
+    let retained = terminal.archive_finalization().unwrap();
+    assert!(retained.attempts.is_empty());
+    assert_eq!(retained.mutations.len(), 2);
+    assert_eq!(
+        terminal
+            .phase(RunPhase::ArchiveFinalization)
+            .unwrap()
+            .progress()
+            .unwrap()
+            .total(),
+        0
+    );
+    let summaries: Vec<_> = terminal
+        .mutation_summaries()
+        .iter()
+        .map(|summary| {
+            (
+                summary.mod_root.to_str().unwrap(),
+                summary.kind,
+                summary.committed,
+            )
+        })
+        .collect();
+    assert_eq!(
+        summaries,
+        [
+            ("first-mod", MutationKind::ArchiveFinalization, 1),
+            ("second-mod", MutationKind::ArchiveFinalization, 1),
+        ]
+    );
 }
 
 /// Origin: RunEvidenceTests::liveFactsAreRetainedBeforePublication (the

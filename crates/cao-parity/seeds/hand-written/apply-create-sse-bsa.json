@@ -1,0 +1,97 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/PackedMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": false,
+      "target_width": 64,
+      "target_height": 64
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": true,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "raw",
+        "path": "mods/PackedMod/meshes/armor/cuirass.nif",
+        "base64": "R2FtZWJyeW8gRmlsZSBGb3JtYXQ=",
+        "note": "SSE Archive creation (#498): Standard files join the merged Main BSA. Not a real mesh: Mesh work is off, so it is only packed."
+      },
+      {
+        "kind": "text",
+        "path": "mods/PackedMod/scripts/source/quest.psc",
+        "text": "Scriptname PackedQuest extends Quest\r\n"
+      },
+      {
+        "kind": "text",
+        "path": "mods/PackedMod/scripts/quest.pex",
+        "text": "compiled script bytes compiled script bytes compiled script bytes",
+        "note": "Incompressible, merged into the Standard BSA, which is then written uncompressed."
+      },
+      {
+        "kind": "text",
+        "path": "mods/PackedMod/sound/fx/hit.wav",
+        "text": "RIFF wave bytes RIFF wave bytes RIFF wave bytes"
+      },
+      {
+        "kind": "texture",
+        "path": "mods/PackedMod/textures/armor/cuirass_d.dds",
+        "format": "BC1_UNORM",
+        "width": 64,
+        "height": 64,
+        "mip_levels": 0,
+        "pattern": "noise",
+        "note": "Textures stay apart in a compressed PackedMod - Textures.bsa."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/PackedMod/interface/icons/item.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 16,
+        "height": 16,
+        "pattern": "mask"
+      },
+      {
+        "kind": "text",
+        "path": "mods/PackedMod/meshes/actors/character/behaviors/0_master.hkx",
+        "text": "behavior graph",
+        "note": "A Packing Exclusion of the shipped FilesToNotPack.txt: it stays loose, so meshes/ is not pruned."
+      },
+      {
+        "kind": "text",
+        "path": "mods/PackedMod/readme.txt",
+        "text": "Files directly in the Mod Root are never packed.\r\n"
+      },
+      {
+        "kind": "directory",
+        "path": "mods/PackedMod/docs/empty",
+        "note": "Empty directories are pruned once every output is finished."
+      }
+    ]
+  }
+}

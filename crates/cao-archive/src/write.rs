@@ -5,7 +5,7 @@
 //! Sources: `src/bsa/pack.cpp` and `src/bsa/archive.cpp` at bethutil `81f882ed`.
 
 use std::fs::File as FsFile;
-use std::io::{BufWriter, Write as _};
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use ba2::prelude::*;
@@ -55,6 +55,69 @@ pub fn write_archive(
     if data.is_empty() {
         return Ok(());
     }
+    let prepared = prepare(compress, data, root)?;
+    write_new_file(out_path, |out| prepared.write(out, out_path))
+}
+
+/// Writes `data`'s files as [`write_archive`] does, but into `out`, an output
+/// its caller already created and owns, such as a file CAO staged under
+/// Temporary Ownership. `out_path` only names the output in errors.
+///
+/// Every file is read and compressed before the first byte reaches `out`, and
+/// every source mapping is released before this returns. Nothing is written
+/// for an Archive with no files. On an error, `out` may hold a partial
+/// Archive; removing it is the caller's.
+///
+/// # Errors
+///
+/// As [`write_archive`], except that `out` is never created here, and a write
+/// to it fails as [`ArchiveError::Tes4`] or [`ArchiveError::Fo4`].
+pub fn write_archive_into<W: Write>(
+    compress: bool,
+    data: &ArchiveData,
+    root: &Path,
+    out: &mut W,
+    out_path: &Path,
+) -> Result<(), ArchiveError> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    prepare(compress, data, root)?.write(out, out_path)
+}
+
+/// An Archive read and compressed in memory, with the options it is written with.
+enum PreparedArchive {
+    Tes4(tes4::Archive<'static>, tes4::ArchiveOptions),
+    Fo4(fo4::Archive<'static>, fo4::ArchiveOptions),
+}
+
+impl PreparedArchive {
+    /// Writes the Archive to `out`; `out_path` names it in errors.
+    fn write<W: Write>(&self, out: &mut W, out_path: &Path) -> Result<(), ArchiveError> {
+        match self {
+            Self::Tes4(archive, options) => tes4_write(archive, options, out, out_path),
+            // BA2 data offsets are 64-bit, so a BA2 past 4 GiB is valid (C++
+            // wrote one too) and deviation 8 does not apply; any `ba2` error is
+            // reported as it is.
+            Self::Fo4(archive, options) => {
+                archive
+                    .write(out, options)
+                    .map_err(|source| ArchiveError::Fo4 {
+                        path: out_path.to_path_buf(),
+                        source,
+                    })
+            }
+        }
+    }
+}
+
+/// Reads and compresses `data`'s files, which live under `root`, in parallel,
+/// and builds the Archive with every option set explicitly.
+fn prepare(
+    compress: bool,
+    data: &ArchiveData,
+    root: &Path,
+) -> Result<PreparedArchive, ArchiveError> {
     let version = data.version();
     let compressed = (compress && data.archive_type() != ArchiveType::Incompressible)
         || version == ArchiveVersion::Fo4Dx;
@@ -101,7 +164,7 @@ pub fn write_archive(
                 .flags(flags)
                 .types(tes4::ArchiveTypes::empty())
                 .build();
-            write_tes4(&tes4_archive(files), &options, out_path)
+            Ok(PreparedArchive::Tes4(tes4_archive(files), options))
         }
         ArchiveVersion::Fo4 | ArchiveVersion::Fo4Dx => {
             let format = if version == ArchiveVersion::Fo4Dx {
@@ -142,17 +205,7 @@ pub fn write_archive(
                 .strings(true)
                 .compression_format(fo4::CompressionFormat::Zip)
                 .build();
-            // BA2 data offsets are 64-bit, so a BA2 past 4 GiB is valid (C++ wrote
-            // one too) and deviation 8 does not apply; any `ba2` error is reported
-            // as it is.
-            write_new_file(out_path, |out| {
-                archive
-                    .write(out, &options)
-                    .map_err(|source| ArchiveError::Fo4 {
-                        path: out_path.to_path_buf(),
-                        source,
-                    })
-            })
+            Ok(PreparedArchive::Fo4(archive, options))
         }
     }
 }
@@ -198,7 +251,7 @@ fn tes4_archive(files: Vec<(String, tes4::File<'static>)>) -> tes4::Archive<'sta
     archive
 }
 
-/// Writes a TES4 archive to a new file at `out_path`.
+/// Writes a TES4 archive to `out`; `out_path` names it in errors.
 ///
 /// **Deviation 8:** `ba2` keeps every TES4 offset in a `u32` and reports
 /// `IntegralOverflow` past 4 GiB (or `IntegralTruncation` for a file of 1 GiB or
@@ -206,24 +259,34 @@ fn tes4_archive(files: Vec<(String, tes4::File<'static>)>) -> tes4::Archive<'sta
 /// silently wrapped and wrote a corrupt BSA. Both become
 /// [`ArchiveError::ArchiveTooLarge`]. `ba2` writes every file entry before any
 /// file data, so the overflow is found before any data is written.
+fn tes4_write<W: Write>(
+    archive: &tes4::Archive<'_>,
+    options: &tes4::ArchiveOptions,
+    out: &mut W,
+    out_path: &Path,
+) -> Result<(), ArchiveError> {
+    archive.write(out, options).map_err(|source| match source {
+        tes4::Error::IntegralOverflow | tes4::Error::IntegralTruncation => {
+            ArchiveError::ArchiveTooLarge {
+                path: out_path.to_path_buf(),
+            }
+        }
+        source => ArchiveError::Tes4 {
+            path: out_path.to_path_buf(),
+            source,
+        },
+    })
+}
+
+/// Writes a TES4 archive to a new file at `out_path`, as [`write_archive`]
+/// does after reading its files.
+#[cfg(test)]
 fn write_tes4(
     archive: &tes4::Archive<'_>,
     options: &tes4::ArchiveOptions,
     out_path: &Path,
 ) -> Result<(), ArchiveError> {
-    write_new_file(out_path, |out| {
-        archive.write(out, options).map_err(|source| match source {
-            tes4::Error::IntegralOverflow | tes4::Error::IntegralTruncation => {
-                ArchiveError::ArchiveTooLarge {
-                    path: out_path.to_path_buf(),
-                }
-            }
-            source => ArchiveError::Tes4 {
-                path: out_path.to_path_buf(),
-                source,
-            },
-        })
-    })
+    write_new_file(out_path, |out| tes4_write(archive, options, out, out_path))
 }
 
 /// Creates `out_path`, failing if it exists, and fills it with `write`. On any

@@ -1,0 +1,68 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/TidyMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": false,
+      "target_width": 64,
+      "target_height": 64
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": true,
+      "delete_backup": false,
+      "compress": false,
+      "create_dummies": false,
+      "merge_incompressible": true,
+      "merge_textures": true,
+      "delete_sources": false
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "raw",
+        "path": "mods/TidyMod/Stale.esp",
+        "base64": "VEVTNBkAAAAAAgAAAAAAAAAAAAAsAAAASEVEUgwAmpnZPwAAAAAACAAAQ05BTQEAAA==",
+        "note": "Dummy Plugins off (#498): this exact SSE Dummy Plugin is removed, and it never names an output."
+      },
+      {
+        "kind": "text",
+        "path": "mods/TidyMod/Tidy.esm",
+        "text": "TES4 full master bytes",
+        "note": "A full plugin is never removed; the outputs are named after it."
+      },
+      {
+        "kind": "raw",
+        "path": "mods/TidyMod/meshes/tidy/shelf.nif",
+        "base64": "R2FtZWJyeW8gRmlsZSBGb3JtYXQ=",
+        "note": "Not a real mesh: Mesh work is off, so it is only packed. Sources are kept."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/TidyMod/textures/tidy/shelf.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 16,
+        "height": 16,
+        "pattern": "gradient",
+        "note": "SSE may merge Textures: they join the one uncompressed Tidy.bsa."
+      }
+    ]
+  }
+}

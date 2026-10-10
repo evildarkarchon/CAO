@@ -1,0 +1,68 @@
+{
+  "spec": {
+    "profile": "TES5",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/LegacyMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": false,
+      "target_width": 64,
+      "target_height": 64
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": true,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": false,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "raw",
+        "path": "mods/LegacyMod/meshes/clutter/bowl.nif",
+        "base64": "R2FtZWJyeW8gRmlsZSBGb3JtYXQ=",
+        "note": "TES5 Archive creation (#498): a compressed BSA v104 named after the Mod Root. Not a real mesh: Mesh work is off."
+      },
+      {
+        "kind": "text",
+        "path": "mods/LegacyMod/meshes/clutter/bowl.tri",
+        "text": "tri morph bytes"
+      },
+      {
+        "kind": "text",
+        "path": "mods/LegacyMod/sound/voice/line.fuz",
+        "text": "fuz voice bytes fuz voice bytes",
+        "note": "Incompressible and not merged: TES5 has no suffixes, so its BSA takes the next free counter name."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/LegacyMod/textures/clutter/bowl.dds",
+        "format": "BC3_UNORM",
+        "width": 32,
+        "height": 32,
+        "mip_levels": 0,
+        "pattern": "alpha_ramp",
+        "note": "Textures get their own BSA, again at a counter name, each with its own Dummy Plugin."
+      }
+    ]
+  }
+}

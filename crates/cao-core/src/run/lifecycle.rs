@@ -13,8 +13,8 @@ use crate::routing::{
     ExecutionMode, PolicyValidationError, RequestedWork, RoutingLedger, SkipReason,
 };
 use crate::run::{
-    ArchiveCollision, ArchiveExtractionResult, ArchivePrecedence, RoutedAssetAttempt, RunEvidence,
-    RunPreparation,
+    ArchiveCollision, ArchiveExtractionResult, ArchiveFinalizationResult, ArchivePrecedence,
+    RoutedAssetAttempt, RunEvidence, RunPreparation,
 };
 
 /// The unique identity of one Optimization Run, carried by its events and terminal result.
@@ -539,6 +539,11 @@ impl OptimizationRunResult {
     /// Completed Archive extraction attempts, in attempt order.
     pub fn archive_extraction_attempts(&self) -> &[ArchiveExtractionResult] {
         self.evidence.archive_extraction_attempts()
+    }
+
+    /// Archive Finalization's result, or `None` when the phase recorded none.
+    pub fn archive_finalization(&self) -> Option<&ArchiveFinalizationResult> {
+        self.evidence.archive_finalization()
     }
 
     /// Recognized-Asset exclusions, including discovery's skipped Archives.

@@ -182,8 +182,8 @@ fn terminal(result: &OptimizationRunResult) -> TerminalFacts {
                 service_detail: attempt.result.service_detail().to_owned(),
             })
             .collect(),
-        // Failed extraction attempts, as the oracle prints them. Archive
-        // Finalization is not ported yet (#498), so it adds none.
+        // Failed extraction attempts, then failed finalization attempts, as
+        // the oracle prints them.
         archive_failures: result
             .archive_extraction_attempts()
             .iter()
@@ -192,8 +192,22 @@ fn terminal(result: &OptimizationRunResult) -> TerminalFacts {
                 archive_path: text(&attempt.archive_path),
                 detail: attempt.detail.clone(),
             })
+            .chain(
+                result
+                    .archive_finalization()
+                    .into_iter()
+                    .flat_map(|finalization| &finalization.attempts)
+                    .filter(|attempt| !attempt.succeeded())
+                    .map(|attempt| ArchiveFailure {
+                        archive_path: text(&attempt.archive_path),
+                        detail: attempt.detail.clone(),
+                    }),
+            )
             .collect(),
-        finalization_failure: None,
+        finalization_failure: result
+            .archive_finalization()
+            .filter(|finalization| finalization.failure.is_some())
+            .map(|finalization| finalization.detail.clone()),
         committed_mutations: result
             .mutation_summaries()
             .iter()

@@ -28,10 +28,6 @@
 //!   each naming its origin.
 //!
 //! Not ported, with reasons:
-//! - `archiveFinalizationCancellationRetainsCommittedOutput`,
-//!   `missingPlannedLoadingPluginFailsRunWithArchiveCommit`, and the Archive
-//!   Finalization half of `mixedWorkEvidenceOutlivesServices`: Archive
-//!   Finalization results are not Run Evidence yet (#498).
 //! - `terminalResultOwnsItsDataAfterTheRunEnds`: the result is an owned
 //!   value, so outliving the executor, request and services is guaranteed by
 //!   the borrow checker rather than by a test.
@@ -47,6 +43,7 @@ use cao_core::Error;
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use cao_core::routing::{AssetOperation, ExecutionMode, PolicyValidationError, RequestedWork};
 use cao_core::run::{
+    ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationResult,
     ArchivePrecedence, CancellationToken, ModSelection, MutationKind, OptimizationRunResult,
     PhaseSkipReason, RunConfiguration, RunConfigurationProvider, RunDiagnosticCode,
     RunEvidenceInvariantPanic, RunExecutor, RunFailure, RunFailureCode, RunObservationSink,
@@ -1589,16 +1586,19 @@ fn a_panicking_progress_observer_keeps_the_failed_attempt() {
     }
 }
 
-/// Origin: RunExecutorTests::mixedWorkEvidenceOutlivesServices (the Asset
-/// half). Mixed successes and failures complete with failures, and every
-/// fact is owned by the result once the services are gone.
+/// Origin: RunExecutorTests::mixedWorkEvidenceOutlivesServices. Mixed Asset
+/// and Archive Finalization successes and failures complete with failures,
+/// and every fact is owned by the result once the services are gone.
 #[test]
 fn mixed_asset_evidence_outlives_every_service() {
     let root = mod_root("mixed-evidence", &[]);
     for name in ["a.dds", "b.dds"] {
         std::fs::write(root.join(name), "original").unwrap();
     }
+    let output = root.join("packed.bsa");
     let result = {
+        let packed = output.clone();
+        let failed_root = root.clone();
         let work = ControlledWork {
             execute: Some(Box::new(|asset, _| {
                 let path = asset.execution_path();
@@ -1615,7 +1615,24 @@ fn mixed_asset_evidence_outlives_every_service() {
                     .with_service_detail("raw detail")
                 })
             })),
-            finalize: Some(Box::new(|| Ok(()))),
+            finalization: Some(Box::new(move || {
+                std::fs::write(&packed, "packed").unwrap();
+                ArchiveFinalizationResult {
+                    attempts: vec![
+                        finalization_attempt(&packed, &failed_root, MutationState::Committed),
+                        ArchiveFinalizationAttempt {
+                            failure: Some(ArchiveFinalizationFailure::WriteFailed),
+                            detail: "write detail".to_owned(),
+                            ..finalization_attempt(
+                                &failed_root.join("failed.bsa"),
+                                &failed_root,
+                                MutationState::None,
+                            )
+                        },
+                    ],
+                    ..ArchiveFinalizationResult::default()
+                }
+            })),
             stage_temporary: true,
             ..ControlledWork::default()
         };
@@ -1624,7 +1641,10 @@ fn mixed_asset_evidence_outlives_every_service() {
             &request(
                 ExecutionMode::Apply,
                 &root,
-                &[RequestedWork::NativeTextureOptimization],
+                &[
+                    RequestedWork::NativeTextureOptimization,
+                    RequestedWork::ArchiveCreation,
+                ],
             ),
             &mut cleanup,
             Some(&*test_configuration()),
@@ -1666,15 +1686,168 @@ fn mixed_asset_evidence_outlives_every_service() {
         Some(RunProgress::determinate(2, 1, 1))
     );
     assert!(result.failures().is_empty());
-    assert_eq!(result.mutation_summaries().len(), 1);
-    assert_eq!(result.mutation_summaries()[0].committed, 1);
+    let finalization = result.archive_finalization().unwrap();
+    assert_eq!(finalization.attempts.len(), 2);
+    assert_eq!(finalization.attempts[0].archive_path, output);
+    assert_eq!(finalization.attempts[0].mod_root, root);
+    assert_eq!(finalization.attempts[0].mutation, MutationState::Committed);
+    assert_eq!(
+        finalization.attempts[1].failure,
+        Some(ArchiveFinalizationFailure::WriteFailed)
+    );
+    assert_eq!(finalization.attempts[1].detail, "write detail");
+    let summaries: Vec<_> = result
+        .mutation_summaries()
+        .iter()
+        .map(|summary| {
+            (
+                &summary.mod_root,
+                summary.kind,
+                summary.committed,
+                summary.partial_or_unknown,
+            )
+        })
+        .collect();
+    assert_eq!(
+        summaries,
+        [
+            (&root, MutationKind::AssetProcessing, 1, 0),
+            (&root, MutationKind::ArchiveFinalization, 1, 0),
+        ]
+    );
     assert!(result.cleanup_failures().is_empty());
     assert_eq!(read(&root.join("a.dds")), "committed");
     assert_eq!(read(&root.join("b.dds")), "original");
+    assert_eq!(read(&output), "packed");
     assert_eq!(
         result.phases().last().unwrap().phase(),
         RunPhase::SafetyCleanup
     );
+}
+
+/// An Archive Finalization attempt at `archive` in `root`.
+fn finalization_attempt(
+    archive: &Path,
+    root: &Path,
+    mutation: MutationState,
+) -> ArchiveFinalizationAttempt {
+    ArchiveFinalizationAttempt {
+        mutation,
+        ..ArchiveFinalizationAttempt::new(archive.to_path_buf(), root.to_path_buf())
+    }
+}
+
+/// Origin: RunExecutorTests::archiveFinalizationCancellationRetainsCommittedOutput.
+/// A cancelled finalization keeps its committed output, and the run is
+/// Cancelled after Safety Cleanup.
+#[test]
+fn a_cancelled_finalization_keeps_its_committed_output() {
+    let root = mod_root("finalization-cancelled", &[]);
+    let output = root.join("committed.bsa");
+    let (packed, packed_root) = (output.clone(), root.clone());
+    let work = ControlledWork {
+        finalization: Some(Box::new(move || {
+            std::fs::write(&packed, "committed output").unwrap();
+            ArchiveFinalizationResult {
+                attempts: vec![finalization_attempt(
+                    &packed,
+                    &packed_root,
+                    MutationState::Committed,
+                )],
+                cancelled: true,
+                ..ArchiveFinalizationResult::default()
+            }
+        })),
+        stage_temporary: true,
+        ..ControlledWork::default()
+    };
+    let mut cleanup = CountingCleanup::default();
+    let result = execute(
+        &request(
+            ExecutionMode::Apply,
+            &root,
+            &[RequestedWork::ArchiveCreation],
+        ),
+        &mut cleanup,
+        Some(&*test_configuration()),
+        Some(&work),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(work.finalizations.load(Ordering::SeqCst), 1);
+    assert_eq!(cleanup.passes, 1);
+    assert_eq!(result.outcome(), RunOutcome::Cancelled);
+    assert_eq!(result.final_phase(), RunPhase::ArchiveFinalization);
+    assert!(result.cancellation_observed());
+    assert!(result.failures().is_empty());
+    let finalization = result.archive_finalization().unwrap();
+    assert!(finalization.cancelled);
+    assert_eq!(finalization.attempts.len(), 1);
+    assert_eq!(finalization.attempts[0].mod_root, root);
+    assert_eq!(finalization.attempts[0].mutation, MutationState::Committed);
+    assert!(finalization.attempts[0].safe_to_continue);
+    let progress = result
+        .phase(RunPhase::ArchiveFinalization)
+        .unwrap()
+        .progress()
+        .unwrap();
+    assert_eq!(progress.completed(), 1);
+    assert!(result.cleanup_failures().is_empty());
+    assert_temporary_removed(&work);
+    assert_eq!(read(&output), "committed output");
+}
+
+/// Origin: RunExecutorTests::missingPlannedLoadingPluginFailsRunWithArchiveCommit.
+/// An output whose Loading Plugin failed after its Archive committed fails
+/// the run, and the committed Archive still counts as a mutation.
+#[test]
+fn a_committed_archive_without_its_loading_plugin_fails_the_run() {
+    let root = mod_root("missing-loading-plugin", &["textures/asset.dds"]);
+    let source = root.join("textures/asset.dds");
+    let output = root.join("packed.bsa");
+    let (packed, packed_root) = (output.clone(), root.clone());
+    let work = ControlledWork {
+        finalization: Some(Box::new(move || {
+            std::fs::write(&packed, "committed Archive").unwrap();
+            ArchiveFinalizationResult {
+                attempts: vec![ArchiveFinalizationAttempt {
+                    failure: Some(ArchiveFinalizationFailure::PluginCreationFailed),
+                    safe_to_continue: false,
+                    detail: "planned Loading Plugin occupied".to_owned(),
+                    ..finalization_attempt(&packed, &packed_root, MutationState::Committed)
+                }],
+                safe_to_continue: false,
+                ..ArchiveFinalizationResult::default()
+            }
+        })),
+        ..ControlledWork::default()
+    };
+    let mut cleanup = CountingCleanup::default();
+    let result = execute(
+        &request(
+            ExecutionMode::Apply,
+            &root,
+            &[RequestedWork::ArchiveCreation],
+        ),
+        &mut cleanup,
+        Some(&*test_configuration()),
+        Some(&work),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(result.outcome(), RunOutcome::Failed);
+    assert_eq!(result.final_phase(), RunPhase::ArchiveFinalization);
+    let finalization = result.archive_finalization().unwrap();
+    assert_eq!(finalization.attempts.len(), 1);
+    assert_eq!(
+        finalization.attempts[0].failure,
+        Some(ArchiveFinalizationFailure::PluginCreationFailed)
+    );
+    assert_eq!(finalization.attempts[0].mutation, MutationState::Committed);
+    assert_eq!(result.mutation_summaries().len(), 1);
+    assert_eq!(result.mutation_summaries()[0].committed, 1);
+    assert!(output.exists());
+    assert!(source.exists());
 }
 
 /// Origin: RunExecutorTests::cancellationAfterAtomicAssetAttempt (the unsafe

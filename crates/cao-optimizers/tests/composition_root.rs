@@ -127,6 +127,7 @@ fn work_this_build_cannot_do_is_refused_up_front() {
         Err(RunSetupError::Unavailable(_))
     ));
 
+    // Archive creation is ported (#498), in both modes.
     let mut options = dry_run_textures(&app, &app.join("mods/Mod"));
     options.bsa_create = true;
     assert!(
@@ -134,10 +135,7 @@ fn work_this_build_cannot_do_is_refused_up_front() {
         "Dry Run never packs"
     );
     options.dry_run = false;
-    assert!(matches!(
-        ApplicationRun::new(&app, "SSE", &options),
-        Err(RunSetupError::Unavailable(_))
-    ));
+    assert!(ApplicationRun::new(&app, "SSE", &options).is_ok());
 }
 
 /// Origin: ApplicationRunSetupTests::archiveCreationRequiresProfileArchiveSupport

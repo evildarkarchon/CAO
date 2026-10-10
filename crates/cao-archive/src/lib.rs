@@ -17,4 +17,4 @@ pub use error::ArchiveError;
 pub use name::{FilePath, NameKind, list_archives, list_plugins};
 pub use read::{ArchiveFormat, ArchiveHeader, ArchivedAsset, Fo4Container, ReadArchive};
 pub use settings::{AllowedPath, ArchiveVersion, FileType, Game, Settings, file_type};
-pub use write::write_archive;
+pub use write::{write_archive, write_archive_into};
