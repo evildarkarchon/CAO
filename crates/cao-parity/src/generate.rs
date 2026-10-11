@@ -22,10 +22,10 @@
 //!   [`GENERATOR_VERSION`] bump once its recipe entry exists and the Rust side
 //!   can match the oracle on it. A headpart plugin names Meshes, so it waits
 //!   with them; the headparts seed covers it meanwhile. Both Mesh entries
-//!   exist and LE Meshes are pinned (#504), but any case that
-//!   converts TGAs routes every Mesh for Mesh Reference Maintenance, which is
-//!   not ported until #506, so Meshes wait for it; the mesh seeds cover each
-//!   level meanwhile. LE Animations are pinned (#502), and the seeds cover
+//!   exist, LE Meshes are pinned (#504), and Mesh Reference Maintenance,
+//!   which every TGA-converting case routes each Mesh for, is ported (#506),
+//!   so Meshes can join with their bump; the mesh and mesh-references seeds
+//!   cover them meanwhile. LE Animations are pinned (#502), and the seeds cover
 //!   them; generated Animation cases still hold no `.hkx` files.
 
 use cao_archive::Settings;

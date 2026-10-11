@@ -8,6 +8,8 @@
 //!   and BC7 on the GPU. It is the one module allowed `unsafe`.
 //! - [`meshes`] optimizes Meshes with nifly through `nifly-sys`, at the C++
 //!   mesh levels (#504).
+//! - [`mesh_references`] is Mesh Reference Maintenance: it rewrites a Mesh's
+//!   referenced TGA names to DDS when TGA Textures are converted (#506).
 //! - [`plugins`] reads the Headpart Meshes a plugin's HDPT records name, and
 //!   [`headparts`] lists a run's Headpart Meshes from the profile and from
 //!   every plugin across the Mod Selection (#505).
@@ -30,6 +32,7 @@ pub mod backend;
 pub mod composition;
 pub mod device;
 pub mod headparts;
+pub mod mesh_references;
 pub mod meshes;
 pub mod plugins;
 pub mod textures;
