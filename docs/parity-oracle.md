@@ -62,11 +62,18 @@ kept with a `report.md` holding the fact diff and the replay command.
 
 A case is one `case.json` with three parts: the `spec` (what both builds are asked to do),
 optional `profile_overrides` (GUI-reachable `profile.ini` values), and a `tree` recipe. The
-recipe's `content` entries (`texture`, `text`, `raw`, `mesh`, `local_asset`, `directory`,
-`archive`) are written once into `input/`, seeded by the case id, and copied byte for byte to
-`oracle/` and `rust/`. An `archive` entry packs its own `texture`, `text`, `raw`, `mesh` and
-`local_asset` entries, whose paths are the game
-paths it stores, with `cao-archive`, in the container its `game` and `type` give. Its
+recipe's `content` entries (`texture`, `text`, `raw`, `mesh`, `local_asset`, `plugin`,
+`directory`, `archive`) are written once into `input/`, seeded by the case id, and copied byte
+for byte to `oracle/` and `rust/`. An `archive` entry packs its own `texture`, `text`, `raw`,
+`mesh`, `local_asset` and `plugin` entries, whose paths are the game paths it stores, in the
+container its `game` and `type` give: TES5 BSA v104, SSE BSA v105, FO4 `GNRL`, or FO4 `DX10`
+for `textures`. It is written with the pinned `ba2` writer directly, never with `cao-archive`,
+so the port's own packing code never builds its test inputs (#529). A packed `raw` entry with
+`"verbatim": true` is stored under exactly its `path`, a name the writer would not produce
+(other case, `/` separators, `..`, device names, control characters, non-ASCII): the writer's
+lowercase, `\`-separated name is overwritten after writing, as the C++ tests'
+`createRawArchive` does, so the spelling must be the stored name's length. An `archive` may
+take a `fault` of its own, which damages the written Archive. The
 `fs_shape` operations (`hardlink`, `junction`, `file_symlink`, `readonly`, `reserved_name`)
 are then applied to all three copies. Recipe paths must keep game paths ASCII and every
 absolute path within 400 UTF-16 units. `crates/cao-parity/src/recipe.rs` documents each
@@ -86,6 +93,24 @@ bytes are not seeded: nifly builds them from the recipe alone, so every case id 
 Mesh. Only `cao-parity` enables the `corpus` feature. Cargo unifies features across one build's
 packages, so build the app as its own package (`-p <app>`), not with `--workspace`, to keep
 Mesh creation out of it.
+
+A `plugin` entry is a port of the C++ tests' `writeHeadpartPlugin`: a `TES4` header, an empty
+group per `extra_groups` label, then one HDPT group with a record holding a single MODL per
+`headparts` path, each written byte for byte, with or without its `meshes\` prefix. With no
+headparts it is a bare full plugin. With `dummy` (`tes5`, `sse` or `fo4`) it is instead that
+game's canonical 49-byte Dummy Plugin from `cao-archive`'s tables, and with `flip_byte` too, a
+near-dummy one byte off:
+
+```json
+{"kind": "plugin", "path": "mods/Mod/Mod.esp",
+ "headparts": ["Mod\\Hair01.nif", "Meshes\\Mod\\Hair02.nif"], "extra_groups": ["GMST"]}
+{"kind": "plugin", "path": "mods/Mod/Mod.esl", "dummy": "sse", "flip_byte": 48}
+```
+
+Its path ends in `.esp`, `.esm` or `.esl`, and it may take a `fault`. No recipe can write
+deviation 17's triggers (compressed records, unterminated MODL fields or ones of 1024 bytes or
+more); a `truncate` fault that cuts into the HDPT group is one, and the deviation guard rejects
+it.
 
 Committed seeds live under `crates/cao-parity/seeds/`, in any subfolder; a seed's case id
 is its file stem. `raw` entries may name a fixture file under
@@ -169,11 +194,10 @@ They are not run without the LE BSA. `apply-meshes-le-target`, `apply-meshes-fo4
 `OptimizeFor` is a no-op towards FO4) and `apply-mesh-quarantine` use synthetic Meshes only.
 None of those seeds puts a Mesh on a headpart or facegen path, nor on one the SSE profile's
 `customHeadparts.txt` lists. `apply-meshes-headparts` does (#505): synthetic Meshes that a
-raw plugin's HDPT records name (with and without the `meshes\` prefix), that the profile
+`plugin` entry's HDPT records name (with and without the `meshes\` prefix), that the profile
 lists, and that lie on a facegen path, at the necessary level in Apply. It holds no deviation
 17 trigger: the plugin's framing is whole and uncompressed, and a Dry Run over a facegen
-path, which only Rust treats as a Headpart Mesh, is left out. The plugin stays a `raw` entry
-until plugin recipe entries exist (#529).
+path, which only Rust treats as a Headpart Mesh, is left out.
 
 A pin is the SHA-256 of an entry's extracted bytes, so an entry can be hashed from a loose
 copy extracted from the same BSA. The pool itself still has to hold the BSA.

@@ -35,7 +35,8 @@ use crate::HarnessError;
 use crate::case::{CaseFile, ModSelection, Side};
 use crate::materialise::{is_device_name, raw_bytes};
 use crate::recipe::{
-    ArchiveGame, ArchiveKind, ArchiveRecipe, ContentEntry, FsShape, OutputFormat, TextureFormat,
+    ArchiveGame, ArchiveKind, ArchiveRecipe, ContentEntry, Fault, FsShape, OutputFormat,
+    TextureFormat,
 };
 
 /// The spec's deviation list (#476, "Deviation list (fix, don't copy)"), in
@@ -446,15 +447,32 @@ impl<'a> Context<'a> {
         })
     }
 
-    /// The bytes a `text` or `raw` entry writes, when they can be known
-    /// without building anything. A broken `raw` entry has none; the
-    /// materialiser reports it.
+    /// The bytes a `text`, `raw` or `plugin` entry writes, when they can be
+    /// known without the case id or a heavy build. A broken `raw` or `plugin`
+    /// entry has none; the materialiser reports it.
     fn bytes(&self, entry: &ContentEntry) -> Option<Vec<u8>> {
         match entry {
             ContentEntry::Text { text, .. } => Some(text.as_bytes().to_vec()),
             ContentEntry::Raw {
                 base64, fixture, ..
             } => raw_bytes(base64.as_deref(), fixture.as_deref(), self.fixtures).ok(),
+            // Built here as the materialiser will build them, so a `truncate`
+            // that cuts into the HDPT group is seen. `garbage` is seeded by the
+            // case id, which the guard does not know, but seeded bytes that
+            // start with `TES4` (2^-32) are all a reader could mistake for a
+            // plugin, so they are taken as no plugin at all.
+            ContentEntry::Plugin(plugin) => {
+                let bytes = crate::plugin::plugin_bytes(plugin).ok()?;
+                match plugin.fault {
+                    None => Some(bytes),
+                    Some(Fault::Truncate(length)) => {
+                        let length = usize::try_from(length).unwrap_or(usize::MAX);
+                        Some(bytes[..length.min(bytes.len())].to_vec())
+                    }
+                    Some(Fault::Zero) => Some(Vec::new()),
+                    Some(Fault::Garbage) => None,
+                }
+            }
             _ => None,
         }
     }
@@ -539,8 +557,10 @@ fn items(case: &CaseFile) -> Vec<Item<'_>> {
     items
 }
 
-/// Where an Archive's packed `game_path` lands when it is extracted.
+/// Where an Archive's packed `game_path` lands when it is extracted. A
+/// `verbatim` name may be `\`-separated, which extraction treats as `/`.
 fn extracted_path(archive: &ArchiveRecipe, game_path: &str) -> String {
+    let game_path = &game_path.replace('\\', "/");
     match archive.path.rsplit_once('/') {
         Some((directory, _)) => format!("{directory}/{game_path}"),
         None => game_path.to_owned(),
@@ -620,7 +640,7 @@ const STAGING_PREFIX: &str = ".cao-staging";
 /// pruned paths (any case).
 const SEPARATOR_MARKER: &str = "separator";
 
-const PLUGIN_EXTENSIONS: [&str; 3] = ["esp", "esm", "esl"];
+pub(crate) const PLUGIN_EXTENSIONS: [&str; 3] = ["esp", "esm", "esl"];
 pub(crate) const MESH_EXTENSIONS: [&str; 3] = ["nif", "btr", "bto"];
 const TEXTURE_EXTENSIONS: [&str; 2] = ["dds", "tga"];
 

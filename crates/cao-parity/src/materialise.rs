@@ -31,13 +31,13 @@ use directxtex::{
     TGA_FLAGS_NONE,
 };
 
-use cao_archive::{ArchiveData, Settings, write_archive};
 use cao_profiles::Profiles;
 use nifly_sys::Nif;
 
 use crate::HarnessError;
 use crate::case::{CaseFile, CaseLayout, ModSelection, Side, SideResources, is_harness_owned};
 use crate::guard::{GuardInput, MESH_EXTENSIONS};
+use crate::input_archive::PackedFile;
 use crate::local_assets::{LocalAssetBytes, LocalAssetPool};
 use crate::recipe::{
     ArchiveRecipe, ContentEntry, DdsHeader, Fault, FsShape, LocalAssetEntry, MeshEntry, MeshTarget,
@@ -341,15 +341,23 @@ fn file_bytes(
                 mesh_bytes(mesh).map_err(|message| invalid_entry(entry.path(), &message))?;
             apply_fault(bytes, mesh.fault, &mut random)
         }
-        ContentEntry::Archive(archive) => archive_bytes(archive, seed, sources)?,
+        ContentEntry::Plugin(plugin) => {
+            let bytes = crate::plugin::plugin_bytes(plugin)
+                .map_err(|message| invalid_entry(entry.path(), &message))?;
+            apply_fault(bytes, plugin.fault, &mut random)
+        }
+        ContentEntry::Archive(archive) => {
+            let bytes = archive_bytes(archive, seed, sources)?;
+            apply_fault(bytes, archive.fault, &mut random)
+        }
         ContentEntry::Directory { .. } => {
             return Err(invalid_entry(entry.path(), "a directory has no bytes"));
         }
     })
 }
 
-/// A scratch directory under the system temp dir, removed on drop, where an
-/// Archive's files are laid out and packed, or nifly saves a Mesh.
+/// A scratch directory under the system temp dir, removed on drop, where
+/// nifly saves a Mesh.
 struct ScratchDir(PathBuf);
 
 impl Drop for ScratchDir {
@@ -359,55 +367,35 @@ impl Drop for ScratchDir {
     }
 }
 
-/// Packs an [`ArchiveRecipe`] with `cao-archive` and returns the Archive's bytes.
+/// Packs an [`ArchiveRecipe`] with `ba2` ([`crate::input_archive`]) and
+/// returns the Archive's bytes.
 ///
 /// Its files are seeded by the Archive's own path as well as their game paths,
-/// so two Archives holding one game path still get their own bytes. Sources
-/// are sorted by path before packing, as C++ Archive creation sorts them.
+/// so two Archives holding one game path still get their own bytes.
 ///
 /// # Errors
 /// [`HarnessError::InvalidCase`] when a file cannot be built or packed, such
-/// as a texture the Archive's container cannot hold.
+/// as a file a `DX10` BA2 cannot hold, or a `verbatim` name that cannot be
+/// written.
 fn archive_bytes(
     archive: &ArchiveRecipe,
     seed: u64,
     inputs: &Sources<'_>,
 ) -> Result<Vec<u8>, HarnessError> {
     let seed = seed ^ hash(archive.path.as_bytes());
-    let scratch = ScratchDir(std::env::temp_dir().join(format!(
-        "cao-parity-archive-{}-{seed:016x}",
-        std::process::id()
-    )));
-    // A leftover from a killed run is the only thing that can be there.
-    let _ = std::fs::remove_dir_all(&scratch.0);
-    let sources = scratch.0.join("sources");
-    let mut files = Vec::new();
-    for entry in &archive.content {
-        let path = resolve(&sources, entry.path());
-        let bytes = file_bytes(entry, seed, inputs)?;
-        create_dir_all(path.parent().expect("a resolved entry has a parent"))?;
-        std::fs::write(&path, &bytes)
-            .map_err(|error| HarnessError::io(format!("writing {}", path.display()), error))?;
-        files.push((path, bytes.len() as u64));
-    }
-    files.sort();
-    let mut data = ArchiveData::new(
-        &Settings::get(archive.game.game()),
-        archive.archive_type.archive_type(),
-    );
-    for (path, size) in files {
-        if !data.add_file(path, size) {
-            return Err(invalid_entry(
-                &archive.path,
-                "the files exceed the Archive's size limit",
-            ));
-        }
-    }
-    let out = scratch.0.join("packed");
-    write_archive(archive.compress, &data, &sources, &out)
-        .map_err(|error| invalid_entry(&archive.path, &error.to_string()))?;
-    std::fs::read(&out)
-        .map_err(|error| HarnessError::io(format!("reading {}", out.display()), error))
+    let files = archive
+        .content
+        .iter()
+        .map(|entry| {
+            Ok(PackedFile {
+                name: entry.path().to_owned(),
+                bytes: file_bytes(entry, seed, inputs)?,
+                verbatim: entry.is_verbatim(),
+            })
+        })
+        .collect::<Result<Vec<_>, HarnessError>>()?;
+    crate::input_archive::archive_bytes(archive, &files)
+        .map_err(|message| invalid_entry(&archive.path, &message))
 }
 
 /// Applies the filesystem-shape operations under `root`, in order.
@@ -536,6 +524,12 @@ fn validate(case: &CaseFile, roots: &[&Path]) -> Result<(), HarnessError> {
             ));
         }
     }
+    if let Some(entry) = case.tree.content.iter().find(|entry| entry.is_verbatim()) {
+        return Err(invalid_entry(
+            entry.path(),
+            "`verbatim` spells an Archive's stored name, so it is valid only inside an Archive",
+        ));
+    }
     let mut written: Vec<String> = Vec::new();
     for (index, (path, reserved)) in content.chain(shaped).enumerate() {
         let components = components(path)?;
@@ -590,6 +584,10 @@ fn validate(case: &CaseFile, roots: &[&Path]) -> Result<(), HarnessError> {
 /// Checks an Archive's packed entries: files only, each game path plain,
 /// ASCII, free of device names and stored once, and each within the path cap
 /// once extracted beside the Archive under every root.
+///
+/// A `verbatim` raw entry's name is exempt from the shape checks: it exists
+/// to spell what game paths may not. Whether the writer can carry it is
+/// [`crate::input_archive`]'s call.
 fn validate_archive(archive: &ArchiveRecipe, roots: &[&Path]) -> Result<(), HarnessError> {
     if archive.content.is_empty() {
         return Err(invalid_entry(
@@ -610,20 +608,23 @@ fn validate_archive(archive: &ArchiveRecipe, roots: &[&Path]) -> Result<(), Harn
             ContentEntry::Directory { .. } | ContentEntry::Archive(_)
         ) {
             return Err(named(
-                "an Archive packs only texture, text, raw, mesh and local_asset files",
+                "an Archive packs only texture, text, raw, mesh, local_asset and plugin files",
             ));
         }
-        let parts: Vec<&str> = path.split('/').collect();
-        if !parts.iter().all(|part| is_plain_component(part)) {
-            return Err(named("not a `/`-separated game path"));
+        if !entry.is_verbatim() {
+            let parts: Vec<&str> = path.split('/').collect();
+            if !parts.iter().all(|part| is_plain_component(part)) {
+                return Err(named("not a `/`-separated game path"));
+            }
+            if parts.iter().any(|part| is_device_name(part)) {
+                return Err(named("a game path may not hold a reserved device name"));
+            }
+            if !path.is_ascii() {
+                return Err(named("game paths must be ASCII"));
+            }
         }
-        if parts.iter().any(|part| is_device_name(part)) {
-            return Err(named("a game path may not hold a reserved device name"));
-        }
-        if !path.is_ascii() {
-            return Err(named("game paths must be ASCII"));
-        }
-        let key = path.to_lowercase();
+        // As the writer folds names: ASCII case and both separators.
+        let key = path.to_ascii_lowercase().replace('\\', "/");
         if stored.contains(&key) {
             return Err(named("the game path is stored twice"));
         }
@@ -1003,7 +1004,11 @@ pub(crate) fn raw_bytes(
 
 /// Encodes bytes as standard, padded base64 (RFC 4648 §4), the form a `raw`
 /// entry's `base64` holds.
-pub(crate) fn encode_base64(bytes: &[u8]) -> String {
+///
+/// Test-only since the generator writes its Loading Plugins as `plugin`
+/// entries (#529); it still checks [`decode_base64`] by round trip.
+#[cfg(test)]
+fn encode_base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut text = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

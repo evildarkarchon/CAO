@@ -37,9 +37,8 @@
   "tree": {
     "content": [
       {
-        "kind": "text",
+        "kind": "plugin",
         "path": "mods/PatchMod/Patch.esp",
-        "text": "TES4 full plugin bytes",
         "note": "Loading Plugins (#498): new Archives are named after this full plugin, which loads them, so no Dummy Plugin is published for them."
       },
       {

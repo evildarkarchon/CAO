@@ -37,15 +37,14 @@
   "tree": {
     "content": [
       {
-        "kind": "raw",
+        "kind": "plugin",
         "path": "mods/TidyMod/Stale.esp",
-        "base64": "VEVTNBkAAAAAAgAAAAAAAAAAAAAsAAAASEVEUgwAmpnZPwAAAAAACAAAQ05BTQEAAA==",
+        "dummy": "sse",
         "note": "Dummy Plugins off (#498): this exact SSE Dummy Plugin is removed, and it never names an output."
       },
       {
-        "kind": "text",
+        "kind": "plugin",
         "path": "mods/TidyMod/Tidy.esm",
-        "text": "TES4 full master bytes",
         "note": "A full plugin is never removed; the outputs are named after it."
       },
       {
