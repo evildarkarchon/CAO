@@ -789,6 +789,51 @@ fn d17_is_quiet_for_well_formed_plugins_and_an_apply_over_facegen() {
     host.quiet(17, &apply_facegen);
 }
 
+/// A `plugin` entry the recipe builds is read as the bytes it will be, so a
+/// `truncate` fault cutting into its HDPT group is caught (#529), loose or
+/// packed into an Archive.
+#[test]
+fn d17_fires_for_a_plugin_entry_truncated_into_its_hdpt_group() {
+    let host = Host::shipped();
+    // A TES4 header, then an 84-byte plugin's HDPT group from byte 24.
+    let cut = json!({"kind": "plugin", "path": "mods/Mod/Cut.esp", "headparts": ["a.nif"],
+                     "fault": {"truncate": 80}});
+    host.fires(17, &with_content(json!([cut])));
+    let packed = json!({"kind": "archive", "path": "mods/Mod/Mod.bsa", "game": "sse",
+                        "type": "standard", "content": [
+                            {"kind": "plugin", "path": "Packed.esp", "headparts": ["a.nif"],
+                             "fault": {"truncate": 80}}]});
+    host.fires(17, &with_content(json!([packed])));
+}
+
+/// A `verbatim` Archive name may be `\`-separated, as game Archives store
+/// names, and both builds extract it to the same place as its `/` spelling.
+#[test]
+fn d17_fires_for_a_verbatim_archived_mesh_under_a_nested_meshes_folder() {
+    let packed = json!({"kind": "archive", "path": "mods/Mod/Mod.bsa", "game": "sse",
+                        "type": "standard", "content": [
+                            {"kind": "raw", "path": "Textures\\Meshes\\a.nif", "base64": "Qg==",
+                             "verbatim": true}]});
+    Host::shipped().fires(17, &with_content(json!([packed])));
+}
+
+#[test]
+fn d17_is_quiet_for_whole_plugin_entries_and_faults_outside_the_hdpt_group() {
+    Host::shipped().quiet(
+        17,
+        &with_content(json!([
+            {"kind": "plugin", "path": "mods/Mod/Mod.esp",
+             "headparts": ["Mod\\Hair.nif", "Meshes\\Mod\\Head.nif"], "extra_groups": ["GMST"]},
+            {"kind": "plugin", "path": "mods/Mod/Dummy.esp", "dummy": "sse"},
+            {"kind": "plugin", "path": "mods/Mod/Near.esp", "dummy": "sse", "flip_byte": 0},
+            {"kind": "plugin", "path": "mods/Mod/Short.esp", "headparts": ["a.nif"],
+             "fault": {"truncate": 20}},
+            {"kind": "plugin", "path": "mods/Mod/Empty.esp", "headparts": ["a.nif"],
+             "fault": "zero"}
+        ])),
+    );
+}
+
 #[test]
 fn d18_fires_for_an_odd_target_while_resizing_by_size_is_off() {
     Host::shipped().fires(

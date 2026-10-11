@@ -182,6 +182,15 @@ pub enum ContentEntry {
         base64: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fixture: Option<String>,
+        /// Inside an Archive only: `path` is the exact name the Archive
+        /// stores, a name the writer would not produce (#529). The writer's
+        /// lowercase, `\`-separated name is overwritten with it after
+        /// writing, as the C++ tests' `createRawArchive` does, so it must be
+        /// the stored name's length: it may differ in case and separators,
+        /// and hold what game paths may not, such as `..`, device names,
+        /// control characters or non-ASCII text.
+        #[serde(default, skip_serializing_if = "is_false")]
+        verbatim: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
@@ -192,6 +201,9 @@ pub enum ContentEntry {
     LocalAsset(LocalAssetEntry),
     /// A synthetic Mesh, built by nifly as the C++ tests build theirs.
     Mesh(MeshEntry),
+    /// A plugin: a headpart plugin as the C++ tests write theirs, a bare
+    /// `TES4` plugin, or a game's Dummy Plugin, exact or one byte off.
+    Plugin(PluginEntry),
     /// A directory, which may stay empty.
     Directory {
         path: String,
@@ -211,18 +223,28 @@ impl ContentEntry {
             Self::Archive(archive) => &archive.path,
             Self::LocalAsset(asset) => &asset.path,
             Self::Mesh(mesh) => &mesh.path,
+            Self::Plugin(plugin) => &plugin.path,
             Self::Text { path, .. } | Self::Raw { path, .. } | Self::Directory { path, .. } => path,
         }
     }
+
+    /// Whether the entry is a `raw` one whose path is an Archive's exact
+    /// stored name.
+    pub fn is_verbatim(&self) -> bool {
+        matches!(self, Self::Raw { verbatim: true, .. })
+    }
 }
 
-/// An Archive packed with `cao-archive` from `content`, whose paths are the
-/// game paths the Archive stores, relative to the Archive's own directory.
+/// An input Archive packed from `content` with the pinned `ba2` writer
+/// ([`crate::input_archive`]), never `cao-archive`'s, so the port's own
+/// packing code never builds its test inputs. `content`'s paths are the game
+/// paths the Archive stores, relative to the Archive's own directory.
 ///
-/// Only `texture`, `text`, `raw`, `mesh` and `local_asset` entries may be packed. The container
-/// follows the game and type, as CAO's per-game tables give them: TES5 and
-/// SSE write BSA v104 and v105; FO4 writes a `GNRL` BA2, or a `DX10` one for
-/// `textures`, which is always compressed.
+/// Only `texture`, `text`, `raw`, `mesh`, `local_asset` and `plugin` entries
+/// may be packed. The container follows the game and type, as CAO's per-game
+/// tables give them: TES5 and SSE write BSA v104 and v105; FO4 writes a
+/// `GNRL` BA2, or a `DX10` one for `textures`, which holds only DDS files and
+/// is always compressed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArchiveRecipe {
@@ -235,6 +257,10 @@ pub struct ArchiveRecipe {
     #[serde(default = "yes")]
     pub compress: bool,
     pub content: Vec<ContentEntry>,
+    /// Damages the written Archive, such as a `truncate` that keeps its index
+    /// and cuts its file data short.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault: Option<Fault>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
@@ -320,6 +346,52 @@ pub struct MeshEntry {
     /// only its root node.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shapes: Vec<MeshShape>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault: Option<Fault>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// A plugin (#529), whose bytes depend on the recipe alone.
+///
+/// - **Headpart plugin:** a port of the C++ tests' `writeHeadpartPlugin`
+///   (`tests/MainOptimizerTests.cpp`). A `TES4` header with no fields, an
+///   empty top-level group per `extra_groups` label, then, when `headparts`
+///   is not empty, one `HDPT` group holding one record per headpart, each with
+///   a single MODL field. Header fields the readers skip are zero.
+/// - **Full plugin:** the same with no headparts, which is no Dummy Plugin,
+///   such as one named after an existing Archive.
+/// - **Dummy Plugin:** with `dummy`, the game's canonical 49 bytes from
+///   `cao-archive`'s tables, and with `flip_byte` too, a near-dummy one byte
+///   off.
+///
+/// No recipe can write a deviation 17 trigger: records are never compressed,
+/// and every MODL field is NUL-terminated and under 1024 bytes. A `truncate`
+/// fault that cuts into the HDPT group is one, which the deviation guard
+/// rejects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginEntry {
+    /// Ends in `.esp`, `.esm` or `.esl`, so the deviation guard reads it as
+    /// the plugin it is.
+    pub path: String,
+    /// Each headpart's MODL path, written byte for byte, so it may carry the
+    /// `meshes\` prefix or not, as real plugins differ. Game plugins spell it
+    /// `\`-separated.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headparts: Vec<String>,
+    /// The four-character labels of empty non-HDPT groups written before the
+    /// HDPT group, such as `"GMST"`, which a reader must skip.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_groups: Vec<String>,
+    /// Writes this game's Dummy Plugin instead of a headpart plugin; no
+    /// `headparts` or `extra_groups` may be given with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dummy: Option<ArchiveGame>,
+    /// With `dummy`, the offset of the one byte flipped (XOR 1) to make a
+    /// near-dummy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flip_byte: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fault: Option<Fault>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

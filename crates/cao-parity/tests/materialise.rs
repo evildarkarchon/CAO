@@ -1244,3 +1244,516 @@ fn a_mesh_entry_must_be_a_mesh_nifly_can_build() {
         );
     }
 }
+
+/// The 24-byte record or group header `writeHeadpartPlugin` writes
+/// (`tests/MainOptimizerTests.cpp`): a signature, a size and 16 zero bytes,
+/// or, for a group, a label and 12.
+fn plugin_header(signature: &[u8; 4], size: u32, label: Option<&[u8; 4]>) -> Vec<u8> {
+    let mut header = signature.to_vec();
+    header.extend_from_slice(&size.to_le_bytes());
+    header.extend_from_slice(label.map_or(&[0; 4], |label| label));
+    header.extend_from_slice(&[0; 12]);
+    header
+}
+
+/// A headpart plugin is a port of the C++ tests' `writeHeadpartPlugin`: a
+/// `TES4` header, the extra groups, then one HDPT group holding a record with
+/// a single MODL per headpart, each written exactly as the recipe spells it,
+/// with or without its `meshes` prefix.
+#[test]
+fn a_headpart_plugin_writes_each_modl_path_as_written() {
+    let temp = TempDir::new("materialise-headpart-plugin");
+    let case = shaped(
+        serde_json::json!([
+            {"kind": "plugin", "path": "mods/Mod/Small.esp", "headparts": ["a.nif"],
+             "extra_groups": ["GMST"]},
+            {"kind": "plugin", "path": "mods/Mod/Mod.esm",
+             "headparts": ["HeadpartMod\\Hair01.nif", "Meshes\\HeadpartMod\\Hair02.nif"],
+             "extra_groups": ["GMST", "KYWD"]}
+        ]),
+        serde_json::json!([]),
+    );
+    let root = temp.path().join("input");
+    write_input(&case, "plugins", &root, &fixtures_dir()).unwrap();
+
+    // Worked by hand from the C++ writer: one 6-byte MODL of `a.nif\0` in a
+    // 12-byte record, in a group of 24 + 24 + 12 bytes.
+    let mut small = plugin_header(b"TES4", 0, None);
+    small.extend(plugin_header(b"GRUP", 24, Some(b"GMST")));
+    small.extend(plugin_header(b"GRUP", 60, Some(b"HDPT")));
+    small.extend(plugin_header(b"HDPT", 12, None));
+    small.extend_from_slice(b"MODL\x06\x00a.nif\0");
+    assert_eq!(
+        std::fs::read(root.join("mods/Mod/Small.esp")).unwrap(),
+        small
+    );
+
+    let path = root.join("mods/Mod/Mod.esm");
+    let bytes = std::fs::read(&path).unwrap();
+    for modl in [
+        &b"MODL\x17\x00HeadpartMod\\Hair01.nif\0"[..],
+        b"MODL\x1e\x00Meshes\\HeadpartMod\\Hair02.nif\0",
+    ] {
+        assert!(
+            bytes.windows(modl.len()).any(|window| window == modl),
+            "{}",
+            String::from_utf8_lossy(modl)
+        );
+    }
+    // The Rust port's HDPT reader finds both, prefixed or not.
+    let headparts =
+        cao_optimizers::plugins::headparts(&mut std::fs::File::open(&path).unwrap()).unwrap();
+    assert_eq!(
+        headparts,
+        [
+            "meshes/HeadpartMod/Hair01.nif",
+            "Meshes/HeadpartMod/Hair02.nif"
+        ]
+    );
+}
+
+/// An exact Dummy Plugin is `cao-archive`'s canonical table for its game, a
+/// near-dummy differs from it in exactly the flipped byte, and a plugin with
+/// no headparts is a bare `TES4` header, no dummy at all.
+#[test]
+fn dummy_plugins_are_the_games_table_exactly_or_one_byte_off() {
+    let temp = TempDir::new("materialise-dummy-plugin");
+    let case = shaped(
+        serde_json::json!([
+            {"kind": "plugin", "path": "mods/Mod/Exact.esp", "dummy": "sse"},
+            {"kind": "plugin", "path": "mods/Mod/Fallout.esp", "dummy": "fo4"},
+            {"kind": "plugin", "path": "mods/Mod/Near.esp", "dummy": "tes5", "flip_byte": 48},
+            {"kind": "plugin", "path": "mods/Mod/Full.esp"}
+        ]),
+        serde_json::json!([]),
+    );
+    let root = temp.path().join("input");
+    write_input(&case, "dummies", &root, &fixtures_dir()).unwrap();
+    let read = |name: &str| std::fs::read(root.join("mods/Mod").join(name)).unwrap();
+    let table = |game| cao_archive::Settings::get(game).dummy_plugin.to_vec();
+
+    assert_eq!(read("Exact.esp"), table(cao_archive::Game::Sse));
+    assert_eq!(read("Fallout.esp"), table(cao_archive::Game::Fo4));
+    let near = read("Near.esp");
+    let tes5 = table(cao_archive::Game::Tes5);
+    assert_eq!(near.len(), tes5.len());
+    let differing: Vec<usize> = (0..near.len()).filter(|&at| near[at] != tes5[at]).collect();
+    assert_eq!(differing, [48]);
+    assert_eq!(read("Full.esp"), plugin_header(b"TES4", 0, None));
+}
+
+#[test]
+fn a_plugin_entry_must_be_one_the_vocabulary_can_write() {
+    let temp = TempDir::new("materialise-plugin-invalid");
+    for (index, (entry, reason)) in [
+        (
+            serde_json::json!({"kind": "plugin", "path": "mods/Mod/Mod.txt"}),
+            "`.esp`, `.esm` or `.esl`",
+        ),
+        (
+            serde_json::json!({"kind": "plugin", "path": "mods/Mod/Mod.esp", "dummy": "sse",
+                               "headparts": ["a.nif"]}),
+            "takes no `headparts`",
+        ),
+        (
+            serde_json::json!({"kind": "plugin", "path": "mods/Mod/Mod.esp", "dummy": "sse",
+                               "flip_byte": 49}),
+            "past the Dummy Plugin's 49 bytes",
+        ),
+        (
+            serde_json::json!({"kind": "plugin", "path": "mods/Mod/Mod.esp", "flip_byte": 0}),
+            "needs `dummy`",
+        ),
+        (
+            serde_json::json!({"kind": "plugin", "path": "mods/Mod/Mod.esp",
+                               "headparts": ["a\u{0}.nif"]}),
+            "holds a NUL",
+        ),
+        (
+            serde_json::json!({"kind": "plugin", "path": "mods/Mod/Mod.esp",
+                               "headparts": ["x".repeat(1023)]}),
+            "1024 bytes",
+        ),
+        (
+            serde_json::json!({"kind": "plugin", "path": "mods/Mod/Mod.esp",
+                               "extra_groups": ["HDPT"]}),
+            "four-character",
+        ),
+        (
+            serde_json::json!({"kind": "plugin", "path": "mods/Mod/Mod.esp",
+                               "extra_groups": ["GMS"]}),
+            "four-character",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let case = shaped(serde_json::json!([entry.clone()]), serde_json::json!([]));
+        let root = temp.path().join(format!("invalid-{index}"));
+        let error = write_input(&case, "plugins", &root, &fixtures_dir()).unwrap_err();
+        assert!(
+            matches!(&error, HarnessError::InvalidCase(message) if message.contains(reason)),
+            "{entry}: {error}"
+        );
+    }
+    // 1022 characters and a NUL make the longest field C++'s buffer holds.
+    let longest = shaped(
+        serde_json::json!([{"kind": "plugin", "path": "mods/Mod/Mod.esp",
+                            "headparts": ["x".repeat(1022)]}]),
+        serde_json::json!([]),
+    );
+    write_input(
+        &longest,
+        "plugins",
+        &temp.path().join("longest"),
+        &fixtures_dir(),
+    )
+    .unwrap();
+}
+
+/// One file of an Archive read back through `ba2`: its stored name (a BSA's
+/// directory and file joined by `\`), its decompressed bytes, and whether it
+/// is stored compressed.
+type ArchivedFile = (Vec<u8>, Vec<u8>, bool);
+
+/// A BSA's version, flags and files, read with `ba2`, in name order.
+fn read_bsa(
+    path: &Path,
+) -> (
+    ba2::tes4::Version,
+    ba2::tes4::ArchiveFlags,
+    Vec<ArchivedFile>,
+) {
+    use ba2::prelude::*;
+    let (archive, options) = ba2::tes4::Archive::read(path).unwrap();
+    let compression: ba2::tes4::FileCompressionOptions = options.into();
+    let mut files = Vec::new();
+    for (directory_key, directory) in &archive {
+        for (file_key, file) in directory {
+            let mut name = directory_key.name().to_vec();
+            name.push(b'\\');
+            name.extend_from_slice(file_key.name());
+            let mut bytes = Vec::new();
+            file.write(&mut bytes, &compression).unwrap();
+            files.push((name, bytes, file.is_compressed()));
+        }
+    }
+    files.sort();
+    (options.version(), options.flags(), files)
+}
+
+/// A BA2's format and files, read with `ba2`, in name order. A DX10 file's
+/// bytes are the DDS `ba2` rebuilds from its chunks.
+fn read_ba2(path: &Path) -> (ba2::fo4::Format, Vec<ArchivedFile>) {
+    use ba2::prelude::*;
+    let (archive, options) = ba2::fo4::Archive::read(path).unwrap();
+    let write_options: ba2::fo4::FileWriteOptions = options.into();
+    let mut files: Vec<ArchivedFile> = archive
+        .iter()
+        .map(|(key, file)| {
+            let mut bytes = Vec::new();
+            file.write(&mut bytes, &write_options).unwrap();
+            let compressed = file.iter().all(|chunk| chunk.is_compressed());
+            (key.name().to_vec(), bytes, compressed)
+        })
+        .collect();
+    files.sort();
+    (options.format(), files)
+}
+
+/// Every input Archive format (#529) is written with `ba2` and reads back
+/// through it with the recipe's names and contents: TES5 BSA v104, SSE v105
+/// compressed and not, FO4 `GNRL` and FO4 `DX10`. Plugins pack like any
+/// other file, and the same case id writes the same bytes.
+#[test]
+fn every_input_archive_format_reads_back_through_ba2() {
+    let temp = TempDir::new("materialise-input-archives");
+    let archives = || {
+        shaped(
+            serde_json::json!([
+                {"kind": "archive", "path": "mods/Mod/Old.bsa", "game": "tes5",
+                 "type": "standard", "content": [
+                    {"kind": "text", "path": "scripts/quest.pex", "text": "compiled"},
+                    {"kind": "plugin", "path": "Packed.esp", "headparts": ["a.nif"]}]},
+                {"kind": "archive", "path": "mods/Mod/Packed.bsa", "game": "sse",
+                 "type": "standard", "content": [
+                    {"kind": "text", "path": "scripts/quest.pex", "text": "compiled"},
+                    {"kind": "raw", "path": "meshes/Blob.nif", "base64": "AAEC/w=="}]},
+                {"kind": "archive", "path": "mods/Mod/Loose.bsa", "game": "sse",
+                 "type": "standard", "compress": false, "content": [
+                    {"kind": "plugin", "path": "Dummy.esp", "dummy": "sse"}]},
+                {"kind": "archive", "path": "mods/Mod/Mod - Main.ba2", "game": "fo4",
+                 "type": "standard", "content": [
+                    {"kind": "text", "path": "scripts/quest.pex", "text": "compiled"},
+                    {"kind": "plugin", "path": "Dummy.esp", "dummy": "fo4"}]},
+                {"kind": "archive", "path": "mods/Mod/Mod - Textures.ba2", "game": "fo4",
+                 "type": "textures", "content": [
+                    {"kind": "texture", "path": "textures/sky.dds", "format": "BC1_UNORM",
+                     "width": 16, "height": 16, "mip_levels": 0}]}
+            ]),
+            serde_json::json!([]),
+        )
+    };
+    let (first, second) = (temp.path().join("first"), temp.path().join("second"));
+    write_input(&archives(), "archives", &first, &fixtures_dir()).unwrap();
+    write_input(&archives(), "archives", &second, &fixtures_dir()).unwrap();
+    assert_eq!(snapshot(&first), snapshot(&second));
+    let archive = |name: &str| first.join("mods/Mod").join(name);
+
+    let mut packed_plugin = plugin_header(b"TES4", 0, None);
+    packed_plugin.extend(plugin_header(b"GRUP", 60, Some(b"HDPT")));
+    packed_plugin.extend(plugin_header(b"HDPT", 12, None));
+    packed_plugin.extend_from_slice(b"MODL\x06\x00a.nif\0");
+    let script = (b"scripts\\quest.pex".to_vec(), b"compiled".to_vec());
+
+    // A root-level file sits in `ba2`'s `.` directory; names are stored
+    // lowercase, `\`-separated.
+    let (version, flags, files) = read_bsa(&archive("Old.bsa"));
+    assert_eq!(version, ba2::tes4::Version::v104);
+    assert!(flags.contains(ba2::tes4::ArchiveFlags::COMPRESSED));
+    assert_eq!(
+        files,
+        [
+            (b".\\packed.esp".to_vec(), packed_plugin, true),
+            (script.0.clone(), script.1.clone(), true)
+        ]
+    );
+
+    let (version, flags, files) = read_bsa(&archive("Packed.bsa"));
+    assert_eq!(version, ba2::tes4::Version::v105);
+    assert!(flags.contains(
+        ba2::tes4::ArchiveFlags::COMPRESSED
+            | ba2::tes4::ArchiveFlags::DIRECTORY_STRINGS
+            | ba2::tes4::ArchiveFlags::FILE_STRINGS
+    ));
+    assert_eq!(
+        files,
+        [
+            (
+                b"meshes\\blob.nif".to_vec(),
+                vec![0x00, 0x01, 0x02, 0xff],
+                true
+            ),
+            (script.0.clone(), script.1.clone(), true)
+        ]
+    );
+
+    let sse_dummy = cao_archive::Settings::get(cao_archive::Game::Sse).dummy_plugin;
+    let (version, flags, files) = read_bsa(&archive("Loose.bsa"));
+    assert_eq!(version, ba2::tes4::Version::v105);
+    assert!(!flags.contains(ba2::tes4::ArchiveFlags::COMPRESSED));
+    assert_eq!(
+        files,
+        [(b".\\dummy.esp".to_vec(), sse_dummy.to_vec(), false)]
+    );
+
+    let fo4_dummy = cao_archive::Settings::get(cao_archive::Game::Fo4).dummy_plugin;
+    let (format, files) = read_ba2(&archive("Mod - Main.ba2"));
+    assert_eq!(format, ba2::fo4::Format::GNRL);
+    assert_eq!(
+        files,
+        [
+            (b"dummy.esp".to_vec(), fo4_dummy.to_vec(), true),
+            (script.0, script.1, true)
+        ]
+    );
+
+    let (format, files) = read_ba2(&archive("Mod - Textures.ba2"));
+    assert_eq!(format, ba2::fo4::Format::DX10);
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].0, b"textures\\sky.dds");
+    assert!(files[0].1.starts_with(b"DDS "), "a DDS rebuilt from chunks");
+    assert!(files[0].2, "a DX10 BA2 is always compressed");
+}
+
+/// A `verbatim` raw entry's name is one the writer would not produce: it is
+/// patched over the stored name after writing, as `createRawArchive` does,
+/// and survives materialisation byte for byte, case, separators and all.
+#[test]
+fn a_verbatim_archive_name_survives_byte_for_byte() {
+    let temp = TempDir::new("materialise-verbatim");
+    let raw = |path: &str| {
+        serde_json::json!(
+        {"kind": "raw", "path": path, "base64": "Qg==", "verbatim": true})
+    };
+    let case = shaped(
+        serde_json::json!([
+            {"kind": "archive", "path": "mods/Mod/Sharp.bsa", "game": "sse",
+             "type": "standard", "content": [
+                raw("Textures/Stra\u{df}e.DDS"),
+                {"kind": "text", "path": "scripts/quest.pex", "text": "compiled"}]},
+            {"kind": "archive", "path": "mods/Mod/Unsafe.bsa", "game": "tes5",
+             "type": "standard", "compress": false, "content": [
+                raw("..\\escaped.dds"),
+                raw("textures/con.dds"),
+                raw("bad\u{1f}/file.dds")]},
+            {"kind": "archive", "path": "mods/Mod/Unsafe - Main.ba2", "game": "fo4",
+             "type": "standard", "content": [
+                raw("TEXTURES\\folder\\..\\.\\SHARED.DDS"),
+                raw("textures/a.dds")]}
+        ]),
+        serde_json::json!([]),
+    );
+    let root = temp.path().join("input");
+    write_input(&case, "verbatim", &root, &fixtures_dir()).unwrap();
+    let archive = |name: &str| root.join("mods/Mod").join(name);
+    let names = |files: Vec<ArchivedFile>| -> Vec<Vec<u8>> {
+        files
+            .into_iter()
+            .map(|(name, bytes, _)| {
+                if name != b"scripts\\quest.pex" {
+                    assert_eq!(bytes, b"B", "{}", String::from_utf8_lossy(&name));
+                }
+                name
+            })
+            .collect()
+    };
+
+    let (_, _, files) = read_bsa(&archive("Sharp.bsa"));
+    assert_eq!(
+        names(files),
+        [&b"Textures\\Stra\xc3\x9fe.DDS"[..], b"scripts\\quest.pex"]
+    );
+    let (_, _, files) = read_bsa(&archive("Unsafe.bsa"));
+    let mut found = names(files);
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            &b"..\\escaped.dds"[..],
+            b"bad\x1f\\file.dds",
+            b"textures\\con.dds"
+        ]
+    );
+    let (_, files) = read_ba2(&archive("Unsafe - Main.ba2"));
+    let mut found = names(files);
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            &b"TEXTURES\\folder\\..\\.\\SHARED.DDS"[..],
+            b"textures/a.dds"
+        ]
+    );
+}
+
+#[test]
+fn a_verbatim_name_must_be_one_the_stored_name_can_carry() {
+    let temp = TempDir::new("materialise-verbatim-invalid");
+    let raw = |path: &str| {
+        serde_json::json!(
+        {"kind": "raw", "path": path, "base64": "Qg==", "verbatim": true})
+    };
+    let in_archive = |content: serde_json::Value| {
+        serde_json::json!([
+        {"kind": "archive", "path": "mods/Mod/Mod.bsa", "game": "sse",
+         "type": "standard", "content": content}])
+    };
+    for (index, (content, reason)) in [
+        (
+            serde_json::json!([{"kind": "raw", "path": "mods/Mod/Loose.dds", "base64": "Qg==",
+                                "verbatim": true}]),
+            "inside an Archive",
+        ),
+        // `ba2` strips a leading separator, so the stored name is shorter.
+        (
+            in_archive(serde_json::json!([raw("/textures/a.dds")])),
+            "another length",
+        ),
+        (
+            in_archive(serde_json::json!([
+                raw("Textures/a.dds"),
+                raw("TEXTURES/b.dds")
+            ])),
+            "spelled both",
+        ),
+        (
+            in_archive(serde_json::json!([
+                raw("textures/A.dds"),
+                {"kind": "text", "path": "textures/a.dds", "text": "x"}])),
+            "stored",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let case = shaped(content.clone(), serde_json::json!([]));
+        let root = temp.path().join(format!("invalid-{index}"));
+        let error = write_input(&case, "verbatim", &root, &fixtures_dir()).unwrap_err();
+        assert!(
+            matches!(&error, HarnessError::InvalidCase(message) if message.contains(reason)),
+            "{content}: {error}"
+        );
+    }
+}
+
+/// The fault decorators damage plugins and input Archives as they damage any
+/// generated file (#529), and the same case id still writes a byte-identical
+/// `input/` with plugins and Archives in it; another id draws other garbage.
+#[test]
+fn plugins_and_archives_take_faults_and_repeat_for_one_case_id() {
+    let temp = TempDir::new("materialise-plugin-archive-faults");
+    let archive = |path: &str, fault: serde_json::Value| {
+        let mut archive = serde_json::json!(
+            {"kind": "archive", "path": path, "game": "sse", "type": "standard",
+             "content": [
+                {"kind": "text", "path": "scripts/quest.pex", "text": "compiled"},
+                {"kind": "plugin", "path": "Packed.esp", "headparts": ["a.nif"]}]});
+        if !fault.is_null() {
+            archive["fault"] = fault;
+        }
+        archive
+    };
+    let plugin = |path: &str, fault: serde_json::Value| {
+        let mut plugin = serde_json::json!(
+            {"kind": "plugin", "path": path, "headparts": ["Mod\\Hair.nif"]});
+        if !fault.is_null() {
+            plugin["fault"] = fault;
+        }
+        plugin
+    };
+    let case = shaped(
+        serde_json::json!([
+            plugin("mods/Mod/Whole.esp", serde_json::Value::Null),
+            plugin("mods/Mod/Cut.esp", serde_json::json!({"truncate": 10})),
+            plugin("mods/Mod/Empty.esp", serde_json::json!("zero")),
+            plugin("mods/Mod/Junk.esp", serde_json::json!("garbage")),
+            archive("mods/Mod/Whole.bsa", serde_json::Value::Null),
+            archive("mods/Mod/Cut.bsa", serde_json::json!({"truncate": 40})),
+            archive("mods/Mod/Empty.bsa", serde_json::json!("zero")),
+            archive("mods/Mod/Junk.bsa", serde_json::json!("garbage"))
+        ]),
+        serde_json::json!([]),
+    );
+    let (first, second, other) = (
+        temp.path().join("first"),
+        temp.path().join("second"),
+        temp.path().join("other"),
+    );
+    write_input(&case, "faults", &first, &fixtures_dir()).unwrap();
+    write_input(&case, "faults", &second, &fixtures_dir()).unwrap();
+    write_input(&case, "other-faults", &other, &fixtures_dir()).unwrap();
+    assert_eq!(snapshot(&first), snapshot(&second));
+
+    let read = |root: &Path, name: &str| std::fs::read(root.join("mods/Mod").join(name)).unwrap();
+    for kind in ["esp", "bsa"] {
+        let whole = read(&first, &format!("Whole.{kind}"));
+        let cut = read(&first, &format!("Cut.{kind}"));
+        assert_eq!(cut, whole[..cut.len()], "{kind}: cut short");
+        assert!(read(&first, &format!("Empty.{kind}")).is_empty(), "{kind}");
+        let junk = read(&first, &format!("Junk.{kind}"));
+        assert_eq!(
+            junk.len(),
+            whole.len(),
+            "{kind}: garbage of the same length"
+        );
+        assert_ne!(junk[..4], whole[..4], "{kind}: no longer the format");
+        assert_ne!(
+            junk,
+            read(&other, &format!("Junk.{kind}")),
+            "{kind}: seeded"
+        );
+    }
+    assert_eq!(read(&first, "Cut.esp").len(), 10);
+    assert_eq!(read(&first, "Cut.bsa").len(), 40);
+}

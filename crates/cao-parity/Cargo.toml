@@ -12,8 +12,15 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
-# The Archive rule parses both sides' Archives, and recipes build input
-# Archives, with the same port the Rust side extracts through (#497).
+# Recipes write input Archives with `ba2` directly, never through `cao-archive`
+# (#529): otherwise the port's own packing code would build the inputs it is
+# tested on. The oracle reads them with rsm-bsa, so a reader disagreement
+# still shows up as Different. The Archive rule's tests also build Archives
+# that differ in one header or entry fact at a time, which `cao-archive`'s
+# fixed options never would.
+ba2.workspace = true
+# The Archive rule parses both sides' Archives with the same port the Rust side
+# extracts through (#497); recipes take the per-game Dummy Plugin tables from it.
 cao-archive.workspace = true
 # `run` drives the same composition root as the GUI; it fills the options model
 # from `case.json` and reads the run's typed events and evidence back.
@@ -34,8 +41,3 @@ toml.workspace = true
 
 [build-dependencies]
 embed-resource.workspace = true
-
-[dev-dependencies]
-# The Archive rule's tests build Archives that differ in one header or entry
-# fact at a time, which `cao-archive`'s fixed options never would.
-ba2.workspace = true

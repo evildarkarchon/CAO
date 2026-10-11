@@ -7,7 +7,8 @@
 //! Textures ([`textures`]) and Archives ([`archives`]). [`case`] owns the per-case layout and runs the sides.
 //! [`driver`] is the Rust side, over the shared composition root. A case's
 //! tree is a declarative [`recipe`] that [`materialise`] turns into files,
-//! taking real Meshes and Animations from the [`local_assets`] pool, and
+//! taking real Meshes and Animations from the [`local_assets`] pool and
+//! building plugins and input Archives itself, and
 //! [`cases`] loads the committed seed cases `cao-parity case` can run by name.
 //! The deviation [`guard`] rejects any case that would trigger a deliberate
 //! fix before it is materialised.
@@ -25,6 +26,7 @@ pub mod error;
 pub mod facts;
 pub mod generate;
 pub mod guard;
+mod input_archive;
 pub mod leftovers;
 pub mod local_assets;
 pub mod materialise;
@@ -32,6 +34,7 @@ pub mod names;
 pub mod normalise;
 pub mod oracle;
 pub mod pairwise;
+mod plugin;
 pub mod recipe;
 pub mod rules;
 pub mod textures;

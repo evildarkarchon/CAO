@@ -37,10 +37,16 @@
   "tree": {
     "content": [
       {
-        "kind": "raw",
+        "kind": "plugin",
         "path": "mods/HeadpartMod/HeadpartMod.esp",
-        "base64": "VEVTNBIAAAAAAAAAAQgAAAAAAAAsAAAASEVEUgwASOHaPwIAAAACCAAAR1JVUMcAAABIRFBUAAAAAAAAAAAAAAAASERQVDwAAAAAAAAAAQgAAAAAAAAsAAAARURJRBIASGVhZHBhcnRNb2RIYWlyMDEATU9ETBcASGVhZHBhcnRNb2RcSGFpcjAxLm5pZgBEQVRBAQABSERQVEMAAAAAAAAAAQgAAAAAAAAsAAAARURJRBIASGVhZHBhcnRNb2RIYWlyMDIATU9ETB4ATWVzaGVzXEhlYWRwYXJ0TW9kXEhhaXIwMi5uaWYAREFUQQEAAQ==",
-        "note": "Headpart Meshes from a plugin (#505): a TES4 header and one uncompressed HDPT group of two records, whose MODL fields name `HeadpartMod\\Hair01.nif` (no `meshes` prefix) and `Meshes\\HeadpartMod\\Hair02.nif` (with one). No deviation 17 trigger: framing is whole, nothing is compressed, and each MODL is short and NUL-terminated. Raw until plugin recipe entries exist (#529)."
+        "headparts": [
+          "HeadpartMod\\Hair01.nif",
+          "Meshes\\HeadpartMod\\Hair02.nif"
+        ],
+        "extra_groups": [
+          "GMST"
+        ],
+        "note": "Headpart Meshes from a plugin (#505, #529): a TES4 header, an empty GMST group both readers skip, and one uncompressed HDPT group of two records, whose MODL fields name `HeadpartMod\\Hair01.nif` (no `meshes` prefix) and `Meshes\\HeadpartMod\\Hair02.nif` (with one). No deviation 17 trigger: framing is whole, nothing is compressed, and each MODL is short and NUL-terminated."
       },
       {
         "kind": "mesh",

@@ -18,9 +18,11 @@
 //!   0 and 1).
 //! - **Not yet dimensions:** LE and SSE input Meshes (the local asset pool's
 //!   `local_asset` entry, #501, and synthetic Meshes, #503) and a headpart
-//!   plugin (#529). Each joins the array with a [`GENERATOR_VERSION`] bump once
-//!   its recipe entry exists and the Rust side can match the oracle on it. Both
-//!   Mesh entries exist and LE Meshes are pinned (#504), but any case that
+//!   plugin (the `plugin` entry, #529). Each joins the array with a
+//!   [`GENERATOR_VERSION`] bump once its recipe entry exists and the Rust side
+//!   can match the oracle on it. A headpart plugin names Meshes, so it waits
+//!   with them; the headparts seed covers it meanwhile. Both Mesh entries
+//!   exist and LE Meshes are pinned (#504), but any case that
 //!   converts TGAs routes every Mesh for Mesh Reference Maintenance, which is
 //!   not ported until #506, so Meshes wait for it; the mesh seeds cover each
 //!   level meanwhile. LE Animations are pinned (#502), and the seeds cover
@@ -29,17 +31,16 @@
 use cao_archive::Settings;
 
 use crate::case::{ArchiveOptions, CaseFile, CaseSpec, MeshOptions, ModSelection, TextureOptions};
-use crate::materialise::encode_base64;
 use crate::names::{FOLDERS, MOD_ROOTS, PARENTS, STEMS};
 use crate::pairwise::{Level, covering_array};
 use crate::recipe::{
     ArchiveGame, ArchiveKind, ArchiveRecipe, ContentEntry, DdsHeader, MeshTarget, OutputFormat,
-    Pattern, ProfileOverrides, TextureEntry, TextureFormat, TreeRecipe,
+    Pattern, PluginEntry, ProfileOverrides, TextureEntry, TextureFormat, TreeRecipe,
 };
 
 /// The generator's version. Bump it whenever a change makes any id build a
 /// different case: a dimension, a level, a constraint, a name or a recipe.
-pub const GENERATOR_VERSION: u32 = 1;
+pub const GENERATOR_VERSION: u32 = 2;
 
 /// The array's dimensions, in column order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -528,6 +529,7 @@ fn input_archives(
             archive_type: ArchiveKind::Standard,
             compress: true,
             content,
+            fault: None,
             note: None,
         })
     };
@@ -552,23 +554,26 @@ fn loading_plugin(
     game: ArchiveGame,
 ) -> Vec<ContentEntry> {
     let settings = Settings::get(game.game());
-    let path = format!("{root}/{root_name}.{}", settings.plugin_extensions[0]);
-    let raw = |bytes: &[u8]| ContentEntry::Raw {
-        path: path.clone(),
-        base64: Some(encode_base64(bytes)),
-        fixture: None,
-        note: None,
+    // The table's extensions carry their dot.
+    let path = format!("{root}/{root_name}{}", settings.plugin_extensions[0]);
+    let plugin = |dummy: Option<ArchiveGame>, flip_byte: Option<usize>| {
+        ContentEntry::Plugin(PluginEntry {
+            path: path.clone(),
+            headparts: Vec::new(),
+            extra_groups: Vec::new(),
+            dummy,
+            flip_byte,
+            fault: None,
+            note: None,
+        })
     };
     match feature {
         0 => Vec::new(),
-        1 => vec![raw(settings.dummy_plugin)],
-        2 => {
-            let mut near = *settings.dummy_plugin;
-            let last = near.len() - 1;
-            near[last] ^= 0x01;
-            vec![raw(&near)]
-        }
-        _ => vec![text(path, "TES4 full plugin bytes")],
+        1 => vec![plugin(Some(game), None)],
+        // The last byte, one off.
+        2 => vec![plugin(Some(game), Some(settings.dummy_plugin.len() - 1))],
+        // A bare TES4 header: a real plugin, no dummy.
+        _ => vec![plugin(None, None)],
     }
 }
 
