@@ -612,6 +612,9 @@ impl RunWorkService for ApplicationRunWork {
             }
             let backend = backend.as_mut().expect("the backend was created above");
             let result = AssetExecutor::new(backend).execute(asset, artifacts, mod_root);
+            // Recorded before quarantine, as C++ `finishAttempt` did, so the
+            // failed conversion is judged by the executor's own result.
+            backend.record_attempt(asset, &result);
             Ok(quarantine_failed_load(asset, result))
         }));
         adapters.finalize_archive_lifecycle = Some(Box::new(|evidence, artifacts| {

@@ -12,21 +12,26 @@
 //! mesh level (see [`crate::meshes`], #504), and converts Animations with the
 //! app directory's `hkxcmd.exe` (see [`crate::animations`], #502).
 //!
-//! Mesh Reference Maintenance is not ported yet (#506): Texture conversion
-//! routes every Mesh for it, and each such Mesh fails that operation, which a
-//! parity case with a referencing Mesh reports as Different rather than hiding.
+//! Texture conversion routes every Mesh for Mesh Reference Maintenance, which
+//! rewrites the Mesh's referenced TGA names to DDS (see
+//! [`crate::mesh_references`], #506). The backend records the run's failed
+//! conversions, through [`OptimizerBackend::record_attempt`], so a reference
+//! to a TGA that did not become a DDS keeps its name.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use cao_core::execution::{AssetExecutionBackend, OperationResult};
+use cao_core::execution::{AssetExecutionBackend, AssetExecutionResult, OperationResult};
 use cao_core::routing::{
-    AssetOperation, AssetOperations, ExecutionMode, MeshVariant, TextureVariant,
+    AssetOperation, AssetOperations, ExecutionMode, MeshVariant, RoutedAsset, TextureVariant,
 };
 
 use nifly_sys::{Nif, NifError};
 
 use crate::animations::Hkxcmd;
 use crate::device::{ComUnavailable, GpuDevice, initialize_com};
+use crate::mesh_references::{
+    FailedTextureConversions, has_referenced_tga_texture, replace_referenced_tga_texture_names,
+};
 use crate::meshes::MeshOptimizer;
 use crate::textures::{Texture, TextureProfile, TextureRequest};
 
@@ -54,7 +59,8 @@ pub struct TextureSettings {
 ///
 /// It holds at most one loaded Texture and one loaded Mesh at a time, as the
 /// C++ optimizers do, the Run Worker's D3D11 device for BC6H and BC7, if it
-/// got one, and the run's Mesh optimizer and Animation converter.
+/// got one, the run's Mesh optimizer and Animation converter, and the run's
+/// failed Texture conversions.
 pub struct OptimizerBackend {
     textures: TextureSettings,
     texture_profile: TextureProfile,
@@ -63,6 +69,11 @@ pub struct OptimizerBackend {
     texture_failure_detail: String,
     meshes: MeshOptimizer,
     loaded_mesh: Option<Nif>,
+    /// The loaded Mesh's execution path. Mesh Reference Maintenance is told
+    /// only the execution mode, so `load_mesh` captures where the Mesh lies,
+    /// to tell which Mod Root a failed conversion is in.
+    loaded_mesh_path: PathBuf,
+    failed_conversions: FailedTextureConversions,
     hkxcmd: Hkxcmd,
 }
 
@@ -105,8 +116,18 @@ impl OptimizerBackend {
             texture_failure_detail: String::new(),
             meshes,
             loaded_mesh: None,
+            loaded_mesh_path: PathBuf::new(),
+            failed_conversions: FailedTextureConversions::default(),
             hkxcmd,
         })
+    }
+
+    /// Notes one finished attempt, as C++ `MainOptimizer::finishAttempt` did:
+    /// a failed Texture conversion withholds the rewrite of every reference
+    /// to that Texture in the Meshes attempted after it. Call it with each
+    /// attempt's result before the next Asset executes.
+    pub fn record_attempt(&mut self, asset: &RoutedAsset, result: &AssetExecutionResult) {
+        self.failed_conversions.record_attempt(asset, result);
     }
 
     /// The Texture request one Routed Asset's operations make of the loaded
@@ -134,11 +155,6 @@ impl OptimizerBackend {
             target,
         }
     }
-}
-
-/// The detail of every call into an optimizer this build does not have yet.
-fn unavailable(what: &str) -> String {
-    format!("{what} is not available in this build")
 }
 
 /// Unwraps a nifly result whose only possible error is a C++ exception.
@@ -276,9 +292,11 @@ impl AssetExecutionBackend for OptimizerBackend {
     /// refuses is a load failure, which Apply quarantines.
     fn load_mesh(&mut self, path: &Path, variant: MeshVariant) -> bool {
         self.loaded_mesh = None;
+        self.loaded_mesh_path = PathBuf::new();
         match unless_exception(self.meshes.load(path, variant), "load", path) {
             Ok(nif) => {
                 self.loaded_mesh = Some(nif);
+                self.loaded_mesh_path = path.to_path_buf();
                 true
             }
             Err(_) => false,
@@ -304,8 +322,65 @@ impl AssetExecutionBackend for OptimizerBackend {
         }
     }
 
-    fn maintain_mesh_references(&mut self, _mode: ExecutionMode) -> OperationResult {
-        OperationResult::failed(unavailable("Mesh Reference Maintenance"))
+    /// As C++ `MainOptimizer::maintainMeshReferences`: Dry Run reports whether
+    /// the loaded Mesh references a TGA it would rewrite; Apply rewrites them
+    /// in memory, for `save_mesh` to write. A reference to a Texture whose own
+    /// conversion failed keeps its name, with a warning, and never fails the
+    /// Mesh: reporting it unchanged keeps any other optimization saved.
+    fn maintain_mesh_references(&mut self, mode: ExecutionMode) -> OperationResult {
+        let Some(nif) = self.loaded_mesh.as_mut() else {
+            return OperationResult::failed("No Mesh is loaded.");
+        };
+        let mut withheld = false;
+        let is_eligible = |reference: &[u8]| {
+            let failed = self
+                .failed_conversions
+                .withholds(reference, &self.loaded_mesh_path);
+            withheld |= failed;
+            !failed
+        };
+        // The executor passes no path, so a nifly exception names the Mesh by
+        // the path `load_mesh` captured.
+        let mesh = self.loaded_mesh_path.as_path();
+
+        if mode == ExecutionMode::DryRun {
+            let found = has_referenced_tga_texture(nif, is_eligible);
+            let would_change = match unless_exception(found, "texture_paths", mesh) {
+                Ok(would_change) => would_change,
+                Err(error) => return OperationResult::failed(error.to_string()),
+            };
+            // Detection stops at the first eligible reference, so this
+            // reports at least one withheld rewrite, not a count.
+            if withheld {
+                log::warn!(
+                    "At least one referenced TGA Texture would keep its name because its \
+                     own conversion failed during this run."
+                );
+            }
+            if would_change {
+                log::info!("Referenced TGA Texture names would be replaced with DDS.");
+                return OperationResult::changed();
+            }
+            return OperationResult::unchanged();
+        }
+
+        let replaced = replace_referenced_tga_texture_names(nif, is_eligible);
+        let changed = match unless_exception(replaced, "set_texture_path", mesh) {
+            Ok(changed) => changed,
+            Err(error) => return OperationResult::failed(error.to_string()),
+        };
+        if withheld {
+            log::warn!(
+                "Kept a referenced TGA Texture name because its own conversion failed \
+                 during this run."
+            );
+        }
+        if changed {
+            log::trace!("Replaced referenced TGA Texture names with DDS.");
+            OperationResult::changed()
+        } else {
+            OperationResult::unchanged()
+        }
     }
 
     /// Saves the loaded Mesh into the staged `path`. The seam has no Mesh

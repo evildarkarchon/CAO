@@ -1,0 +1,89 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/WithheldMod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 1,
+      "ratio_height": 1,
+      "resize_by_size": false,
+      "target_width": 2048,
+      "target_height": 2048
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": true,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "profile_overrides": {
+    "output_format": "BC1_UNORM"
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "texture",
+        "path": "mods/WithheldMod/textures/broken.tga",
+        "format": "R8G8B8A8_UNORM",
+        "width": 16,
+        "height": 16,
+        "fault": "zero",
+        "note": "A TGA that fails to load: it is quarantined as broken.tga.caobad and never becomes a DDS."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/WithheldMod/meshes/broken.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Broken",
+            "textures": [
+              "textures\\broken.tga"
+            ]
+          }
+        ],
+        "note": "Names the TGA that failed to convert, so its rewrite is withheld and the Mesh is not written."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/WithheldMod/textures/armor/body.tga",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "Converts to body.dds, so the Mesh naming it is still rewritten: only the failed Texture's references are withheld, as C++ failedConversionKeepsUnrelatedMeshReferences pins."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/WithheldMod/meshes/armor/body.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Body",
+            "textures": [
+              "textures\\armor\\body.tga"
+            ]
+          }
+        ],
+        "note": "Rewritten to textures\\armor\\body.dds."
+      }
+    ]
+  }
+}
