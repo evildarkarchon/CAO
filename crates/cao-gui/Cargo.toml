@@ -47,7 +47,9 @@ thiserror.workspace = true
 # The element metadata `ElementHandle` queries need; tests only (#508).
 cao-gui-ui = { workspace = true, features = ["debug-info"] }
 # Seam 4: drives the real components headlessly by accessible label (#476).
-i-slint-backend-testing.workspace = true
+# `renderer-software` lets the theme test render the window and read its
+# colours (#508).
+i-slint-backend-testing = { workspace = true, features = ["renderer-software"] }
 
 [build-dependencies]
 # The application manifest and the icon (#471).

@@ -230,14 +230,89 @@ fn every_menu_item_is_found_by_its_text() {
     }
 }
 
+/// Starts the headless backend on this test thread with a real software
+/// rasterizer, so the window can be rendered and its pixels read. Text is then
+/// measured with the system's fonts rather than the backend's fixed metrics.
+fn headless_with_pixels() {
+    slint::platform::set_platform(Box::new(i_slint_backend_testing::TestingBackend::new(
+        i_slint_backend_testing::TestingBackendOptions {
+            mock_time: true,
+            threading: false,
+            renderer_name: Some("software".into()),
+        },
+    )))
+    .unwrap();
+}
+
+/// What the rendered window shows where the theme is visible: the menu bar
+/// beside its entries, the window background below it, and the lightest and
+/// darkest pixels of the "Tools" title (its text and the bar behind it).
+#[derive(Debug)]
+struct ThemeSample {
+    menu_bar: u8,
+    background: u8,
+    title_lightest: u8,
+    title_darkest: u8,
+}
+
+/// Renders the window and samples it, as luma (0 black, 255 white).
+fn sample_theme(ui: &cao_gui::ui::MainWindow) -> ThemeSample {
+    use slint::ComponentHandle;
+    let shot = ui.window().take_snapshot().unwrap();
+    let width = shot.width() as usize;
+    let height = shot.height() as usize;
+    let luma = |x: usize, y: usize| {
+        let pixel = shot.as_slice()[y * width + x];
+        ((u32::from(pixel.r) * 299 + u32::from(pixel.g) * 587 + u32::from(pixel.b) * 114) / 1000)
+            as u8
+    };
+    let title = menu_entry(ui, "Tools");
+    let at = title.absolute_position();
+    let size = title.size();
+    let title_y = (at.y + size.height / 2.0) as usize;
+    let title_pixels: Vec<u8> = (at.y as usize..(at.y + size.height) as usize)
+        .flat_map(|y| (at.x as usize..(at.x + size.width) as usize).map(move |x| (x, y)))
+        .map(|(x, y)| luma(x, y))
+        .collect();
+    ThemeSample {
+        // The right end of the bar holds no entry.
+        menu_bar: luma(width - 4, title_y),
+        background: luma(width - 4, height - 4),
+        title_lightest: *title_pixels.iter().max().unwrap(),
+        title_darkest: *title_pixels.iter().min().unwrap(),
+    }
+}
+
+/// Asserts the rendered window, menu bar included, is in the dark (or light)
+/// scheme: dark surfaces with light text, or the reverse.
+fn assert_rendered_scheme(ui: &cao_gui::ui::MainWindow, dark: bool) {
+    let sample = sample_theme(ui);
+    let scheme = if dark { "dark" } else { "light" };
+    let surfaces_match = |luma: u8| if dark { luma < 80 } else { luma > 175 };
+    assert!(
+        surfaces_match(sample.menu_bar) && surfaces_match(sample.background),
+        "the window is not drawn {scheme}: {sample:?}"
+    );
+    let title_text_matches = if dark {
+        sample.title_lightest > 175
+    } else {
+        sample.title_darkest < 80
+    };
+    assert!(
+        title_text_matches,
+        "the menu title is not drawn {scheme}: {sample:?}"
+    );
+}
+
 #[test]
 fn the_dark_theme_menu_item_restyles_the_whole_window() {
-    headless();
+    headless_with_pixels();
     let app_dir = app_dir("theme");
     edit_ini(&app_dir, "common.ini", "bDarkMode", "true");
     let (app, _desktop) = open(&app_dir);
     let ui = app.window();
     assert!(ui.get_palette_dark(), "bDarkMode=true starts dark");
+    assert_rendered_scheme(ui, true);
 
     // The menu bar is drawn by Slint from the same palette as the rest of the
     // window (`SLINT_NO_MUDA` in the app; always under the test backend), so
@@ -245,10 +320,12 @@ fn the_dark_theme_menu_item_restyles_the_whole_window() {
     click_menu(ui, "Tools");
     click_menu(ui, "Enable dark theme");
     assert!(!ui.get_palette_dark());
+    assert_rendered_scheme(ui, false);
 
     click_menu(ui, "Tools");
     click_menu(ui, "Enable dark theme");
     assert!(ui.get_palette_dark());
+    assert_rendered_scheme(ui, true);
 }
 
 #[test]
