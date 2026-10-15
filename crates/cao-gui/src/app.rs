@@ -771,6 +771,8 @@ impl App {
         // beside it, under `<app_dir>/logs`.
         let app_dir = self.profiles.root().parent().unwrap_or(Path::new(""));
         let attached = AttachedLog::attach(&self.window, log, app_dir);
+        // Fails only if the cell is already set, which the early return above
+        // rules out: the window lives on one thread, so nothing set it since.
         let _ = self.log.set(attached);
     }
 

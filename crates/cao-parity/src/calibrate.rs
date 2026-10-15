@@ -226,6 +226,7 @@ impl CalibrationSummary {
             })
     }
 
+    /// How many cases could not be measured ([`CalibrationOutcome::Error`]).
     fn errors(&self) -> usize {
         self.records
             .iter()

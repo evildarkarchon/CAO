@@ -127,6 +127,8 @@ impl Drop for ModalGuard {
 struct PendingOwner;
 
 impl PendingOwner {
+    /// Publishes `owner` (a window handle, or `None`) as the owner of the next
+    /// window created on this thread, until the returned guard drops.
     fn set(owner: Option<isize>) -> Self {
         PENDING_OWNER.set(owner);
         Self

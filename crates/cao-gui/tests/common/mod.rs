@@ -64,6 +64,11 @@ pub fn edit_ini(app: &Path, file: &str, key: &str, value: &str) {
     std::fs::write(&path, edited.join("\r\n")).unwrap();
 }
 
+/// Copies the directory tree `from` into `to`, creating `to` and its
+/// subdirectories; files already in `to` are overwritten.
+///
+/// # Panics
+/// On any I/O failure.
 pub fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {
