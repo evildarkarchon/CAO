@@ -1,8 +1,9 @@
 # Untranscribed C++ scenarios
 
 The C++ QtTest scenarios (#465) that could not become corpus seeds (#507), each with the reason. Every
-other C++ scenario is a seed under `seeds/<Suite>/`, whose `origin` names it. `tests/seeds.rs` checks
-that every C++ test slot is one or the other.
+other C++ scenario is a seed under `seeds/<Suite>/`, whose `origin` names it. `tests/seeds.rs` checked
+that every C++ test slot was one or the other until the C++ tree was deleted (#515); it now checks that each
+entry names one of the deleted suites and gives its reason.
 
 This list feeds the Rust-test backlog: a scenario the differential corpus cannot reach is ported as a Rust
 test against the seams the spec names (#476, "Testing Decisions"), except where the reason says its suite is

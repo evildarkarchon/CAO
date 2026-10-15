@@ -1,12 +1,10 @@
 # Rust port of Cathedral Assets Optimizer (ADR 0003).
 #
-# This virtual workspace grows beside the C++ tree: its members live under
-# `crates/`, CMake never looks there, and Cargo never looks at `src/` or `tests/`,
-# so nothing has to move when the C++ tree is deleted.
+# This virtual workspace grew beside the C++ tree, with its members under
+# `crates/`, so nothing had to move when the C++ tree was deleted (#515).
 #
 # Minimum native toolchain (documented, not enforced): Visual Studio 2026 (v145)
-# Build Tools and Windows SDK 10.0.26100. That is the same install the C++
-# `vs2026-windows` preset needs, so one setup builds both trees. Rust cannot pin
+# Build Tools and Windows SDK 10.0.26100. Rust cannot pin
 # MSVC; `cc` and `embed-resource` find the installed Visual Studio or use a
 # Developer Command Prompt's environment.
 #

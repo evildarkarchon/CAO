@@ -22,9 +22,7 @@ Run-ID-derived child for control-area artifacts. A manifest may also own generat
 and Animation staging siblings elsewhere beneath the same Mod Root. Producers must hold the OS
 lock before publishing ownership or creating temporary entries and through Safety Cleanup. On
 Windows this is an existing-file open with `GENERIC_READ` and no sharing, including no delete
-sharing. The existing POSIX implementation
-uses an exclusive, nonblocking `flock`; it does not represent a supported native Linux or macOS
-release. Lock files, PIDs, and timestamps alone do not prove an
+sharing. Lock files, PIDs, and timestamps alone do not prove an
 active owner.
 Recovery never unlinks or replaces either control file or the reserved directory, so a competing
 run cannot acquire a new lock identity while an earlier run still owns the old one.
@@ -32,6 +30,7 @@ run cannot acquire a new lock identity while an earlier run still owns the old o
 The writer emits v3 manifests; recovery also accepts existing v1 and v2 manifests. All are UTF-8,
 bounded to 8 MiB and 100,000 registrations. Whitespace separates fields;
 strings use C++ `std::quoted` double-quote/backslash escaping. All string fields must be quoted.
+The Rust port keeps this grammar unchanged, so recovery still reads manifests the C++ build wrote.
 The grammar is:
 
 ```text
@@ -137,8 +136,6 @@ replacement and delete those file identities. Windows also pins every ordinary a
 present sibling before opening its file by name, then holds the ancestor pins through deletion.
 Production keeps sibling parent pins from stage creation through Safety Cleanup; the run child
 stays pinned until its staged Archive files have been removed. Directory removal is nonrecursive.
-POSIX producers must cooperate with `owner.lock`; file identity is checked again immediately
-before unlinking.
 This protects staging from competing CAO processes, without claiming a sandbox against arbitrary
 filesystem changes by the same operating-system user.
 

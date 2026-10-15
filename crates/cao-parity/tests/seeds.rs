@@ -2,81 +2,46 @@
 //! origin, or is listed in `seeds/UNTRANSCRIBED.md` with the reason it could
 //! not be one, and the fault seeds are provoked purely by their tree.
 //!
-//! The C++ suites under `<workspace>/tests/*.cpp` are the inventory these
-//! tests check against. When the C++ tree is deleted (the spec's last slice),
-//! the inventory checks go with it; the seeds and the list stay.
-
-use std::collections::BTreeMap;
-use std::path::Path;
+//! The C++ suites under `<workspace>/tests/*.cpp` were the inventory these
+//! tests checked against: that every test slot was a seed or on the list,
+//! and that every origin named a real slot and row. Those inventory checks
+//! passed for the last time before the C++ tree was deleted (#515) and went
+//! with it. The seeds and the list stay, so the checks below hold them to
+//! their shape without the C++ sources: each scenario reference is well
+//! formed and names one of the suites that existed, each entry gives its
+//! reason, and a seed sits in its origin's suite folder.
 
 use cao_parity::cases::{FAULT_FOLDER, Seed, seed_files, seeds_dir};
 
 /// The folder of the hand-written seeds that predate transcription.
 const HAND_WRITTEN: &str = "hand-written";
 
-/// One C++ QtTest suite: its slots and its source text.
-struct Suite {
-    slots: Vec<String>,
-    source: String,
-}
-
-/// Every C++ QtTest suite, by name, with its test slots: the functions under
-/// `private slots:`, without `initTestCase`, `cleanupTestCase`, `init`,
-/// `cleanup` and the `_data` row tables.
-fn cpp_suites() -> BTreeMap<String, Suite> {
-    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests");
-    let mut suites = BTreeMap::new();
-    for entry in std::fs::read_dir(&tests).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().is_none_or(|extension| extension != "cpp") {
-            continue;
-        }
-        let source = std::fs::read_to_string(&path).unwrap();
-        let slots = test_slots(&source);
-        assert!(
-            !slots.is_empty(),
-            "{} declares no test slots",
-            path.display()
-        );
-        let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-        suites.insert(name, Suite { slots, source });
-    }
-    assert!(suites.len() >= 21, "found only {} suites", suites.len());
-    suites
-}
-
-/// The test slots a QtTest class declares under `private slots:`.
-fn test_slots(source: &str) -> Vec<String> {
-    const FIXTURE_SLOTS: [&str; 4] = ["initTestCase", "cleanupTestCase", "init", "cleanup"];
-    let mut slots = Vec::new();
-    let mut inside = false;
-    for raw in source.lines() {
-        let line = raw.trim();
-        if line == "private slots:" || line == "private Q_SLOTS:" {
-            inside = true;
-            continue;
-        }
-        // The class ends at a `};` in column 0; a slot defined inline may
-        // hold indented `};` of its own.
-        if inside && (raw.trim_end() == "};" || line == "private:" || line == "public:") {
-            break;
-        }
-        // Declared (`void name();`) or defined inline (`void name() {`).
-        let Some(name) = inside
-            .then(|| line.strip_prefix("void "))
-            .flatten()
-            .and_then(|rest| rest.split_once("()"))
-            .map(|(name, _)| name.trim())
-            .filter(|name| name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-        else {
-            continue;
-        };
-        if !FIXTURE_SLOTS.contains(&name) && !name.ends_with("_data") {
-            slots.push(name.to_owned());
-        }
-    }
-    slots
-}
+/// The 21 C++ QtTest suites, as the C++ tree held them when it was deleted.
+/// A scenario reference must name one of them; the slots and rows they held
+/// can no longer be checked.
+const CPP_SUITES: [&str; 21] = [
+    "ApplicationLoggingTests",
+    "ApplicationRunSetupTests",
+    "ArchiveFinalizationTests",
+    "ArchiveFirstAssetDiscoveryTests",
+    "AssetExecutionTests",
+    "AssetRoutingTests",
+    "AssetRunTests",
+    "CliConsoleInterruptTests",
+    "CliExecutionTests",
+    "CliRunTests",
+    "DurableStagingTests",
+    "GuiRunDispatchTests",
+    "GuiRunTests",
+    "MainOptimizerTests",
+    "MeshReferenceMaintenanceTests",
+    "OptimizationRunServiceTests",
+    "OptionsCAOTests",
+    "RunEventDeliveryTests",
+    "RunEvidenceTests",
+    "RunExecutorTests",
+    "RunSetupTests",
+];
 
 /// A scenario reference, `Suite::slot` or `Suite::slot [row]`, split into its
 /// suite, slot and row.
@@ -89,51 +54,22 @@ fn parse_scenario(text: &str) -> Option<(&str, &str, Option<&str>)> {
     Some((suite, slot, row))
 }
 
-/// Panics unless `text` names a slot of a real suite and, when it names a
-/// row, that row's name appears as a string literal in the suite's source.
-fn check_scenario(suites: &BTreeMap<String, Suite>, text: &str, context: &str) {
+/// Panics unless `text` is a well-formed scenario reference whose suite is
+/// one of [`CPP_SUITES`], with a slot that is a C++ identifier and, when it
+/// names a row, a non-empty row name.
+fn check_scenario(text: &str, context: &str) {
     let (suite, slot, row) =
         parse_scenario(text).unwrap_or_else(|| panic!("{context}: `{text}` is not a scenario"));
-    let known = suites
-        .get(suite)
-        .unwrap_or_else(|| panic!("{context}: no C++ suite `{suite}`"));
     assert!(
-        known.slots.iter().any(|known| known == slot),
-        "{context}: `{suite}` has no test slot `{slot}`"
+        CPP_SUITES.contains(&suite),
+        "{context}: no C++ suite `{suite}`"
+    );
+    assert!(
+        !slot.is_empty() && slot.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+        "{context}: `{slot}` is not a test slot name"
     );
     if let Some(row) = row {
-        assert!(
-            row_names(&known.source, suite, slot)
-                .iter()
-                .any(|name| row_matches(name, row)),
-            "{context}: `{suite}::{slot}_data` has no row named \"{row}\""
-        );
-    }
-}
-
-/// The string literals of a slot's `_data` function: its row names among
-/// them, or templates such as `format-%1-contained` for rows a loop
-/// generates. Rows named from a list (`for (problem : {"invalid", ...})`)
-/// are found the same way.
-fn row_names<'s>(source: &'s str, suite: &str, slot: &str) -> Vec<&'s str> {
-    let header = format!("void {suite}::{slot}_data()");
-    let Some(start) = source.find(&header) else {
-        return Vec::new();
-    };
-    // The definition ends at the first `}` in column 0.
-    let body = &source[start..];
-    let end = body.find("\n}").unwrap_or(body.len());
-    body[..end].split('"').skip(1).step_by(2).collect()
-}
-
-/// Whether `row` is the row name `name`, or fills its one `%1` with digits.
-fn row_matches(name: &str, row: &str) -> bool {
-    match name.split_once("%1") {
-        None => name == row,
-        Some((head, tail)) => row
-            .strip_prefix(head)
-            .and_then(|rest| rest.strip_suffix(tail))
-            .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())),
+        assert!(!row.is_empty(), "{context}: `{text}` names an empty row");
     }
 }
 
@@ -170,55 +106,20 @@ fn seeds() -> Vec<Seed> {
     seed_files().unwrap()
 }
 
-/// The inventory parser finds every slot: 411 across the 21 suites at the
-/// time of transcription, counted independently of this parser. A miscount
-/// would let a scenario escape the coverage check below.
+/// A misspelt suite in a reference is caught even without the C++ sources.
 #[test]
-fn the_inventory_finds_every_cpp_test_slot() {
-    let suites = cpp_suites();
-    let total: usize = suites.values().map(|suite| suite.slots.len()).sum();
-    assert_eq!((suites.len(), total), (21, 411));
-    assert_eq!(
-        suites["CliConsoleInterruptTests"].slots,
-        ["consoleInterruptsRemainCooperative"]
-    );
+#[should_panic(expected = "no C++ suite `RunExecutorTest`")]
+fn a_scenario_naming_no_cpp_suite_is_rejected() {
+    check_scenario("RunExecutorTest::cancellation", "probe");
 }
 
 #[test]
-fn every_cpp_scenario_is_a_seed_or_on_the_untranscribed_list() {
-    let suites = cpp_suites();
-    let seeds = seeds();
-    let listed = untranscribed();
-    let mut missing = Vec::new();
-    for (suite, known) in &suites {
-        for slot in &known.slots {
-            let names =
-                |text: &str| parse_scenario(text).is_some_and(|(s, t, _)| s == suite && t == slot);
-            let seeded = seeds
-                .iter()
-                .any(|seed| seed.case.origin.iter().any(|origin| names(origin)));
-            let untranscribed = listed.iter().any(|entry| names(&entry.scenario));
-            if !seeded && !untranscribed {
-                missing.push(format!("{suite}::{slot}"));
-            }
-        }
-    }
-    assert!(
-        missing.is_empty(),
-        "{} C++ scenarios are neither a seed nor untranscribed:\n{}",
-        missing.len(),
-        missing.join("\n")
-    );
-}
-
-#[test]
-fn every_untranscribed_entry_names_a_real_scenario_and_gives_its_reason() {
-    let suites = cpp_suites();
+fn every_untranscribed_entry_names_a_scenario_and_gives_its_reason() {
     let listed = untranscribed();
     assert!(!listed.is_empty());
     let mut seen = Vec::new();
     for entry in &listed {
-        check_scenario(&suites, &entry.scenario, "UNTRANSCRIBED.md");
+        check_scenario(&entry.scenario, "UNTRANSCRIBED.md");
         assert!(
             entry.reason.len() > 10,
             "UNTRANSCRIBED.md: `{}` needs a real reason, not `{}`",
@@ -236,25 +137,24 @@ fn every_untranscribed_entry_names_a_real_scenario_and_gives_its_reason() {
 
 #[test]
 fn a_transcribed_seed_sits_in_its_suites_folder_and_names_its_origin() {
-    let suites = cpp_suites();
     let mut transcribed = 0;
     for seed in seeds() {
         let context = format!("seed `{}`", seed.id);
         if seed.folder == HAND_WRITTEN || seed.folder == FAULT_FOLDER {
             for origin in &seed.case.origin {
-                check_scenario(&suites, origin, &context);
+                check_scenario(origin, &context);
             }
             continue;
         }
         assert!(
-            suites.contains_key(&seed.folder),
+            CPP_SUITES.contains(&seed.folder.as_str()),
             "{context} sits in `{}`, which is neither a C++ suite, `{HAND_WRITTEN}` nor \
              `{FAULT_FOLDER}`",
             seed.folder
         );
         assert!(!seed.case.origin.is_empty(), "{context} names no origin");
         for origin in &seed.case.origin {
-            check_scenario(&suites, origin, &context);
+            check_scenario(origin, &context);
         }
         let (suite, _, _) = parse_scenario(&seed.case.origin[0]).unwrap();
         assert_eq!(
