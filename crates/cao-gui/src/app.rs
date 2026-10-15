@@ -1,8 +1,11 @@
 //! The main window's behaviour: startup, profile selection and creation, saving
-//! and loading settings, and the menu (C++ `MainWindow`).
+//! and loading settings, and the menu (C++ `MainWindow`). Optimization Runs are
+//! in [`run`].
+
+mod run;
 
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
 use cao_gui_ui::{AboutSlintDialog, ChoiceDialog, MainWindow, TabInfo, TextInputDialog};
@@ -54,8 +57,12 @@ pub struct App {
     desktop: Rc<dyn Desktop>,
     loaded: RefCell<Loaded>,
     /// While a run holds the controls (C++ `_bLockVariables`), the options are
-    /// not saved. #510 sets it.
+    /// not saved. Set from a run's start to its end (#510).
     locked: std::cell::Cell<bool>,
+    /// The CAO install the window works over, which runs resolve against.
+    app_dir: PathBuf,
+    /// Optimization Runs started from the window (#510).
+    runs: run::Runs,
     profile_names: Rc<VecModel<SharedString>>,
     tabs: Rc<VecModel<TabInfo>>,
     name_dialog: ModalSlot<TextInputDialog>,
@@ -103,6 +110,8 @@ impl App {
             profiles,
             desktop,
             locked: Default::default(),
+            app_dir: app_dir.to_owned(),
+            runs: run::Runs::default(),
             profile_names: Rc::new(VecModel::from(
                 names.iter().map(SharedString::from).collect::<Vec<_>>(),
             )),
@@ -122,6 +131,7 @@ impl App {
         let ui = &app.window;
         ui.set_profiles(ModelRc::from(app.profile_names.clone()));
         ui.set_tabs(ModelRc::from(app.tabs.clone()));
+        ui.set_run_details(ModelRc::from(app.runs.details.clone()));
         // C++ `loadUi`: the common settings first.
         ui.set_dark(common.dark_mode);
         ui.set_show_advanced(common.show_advanced_settings);
@@ -209,10 +219,16 @@ impl App {
         ui.on_open_discord(with(|app| app.desktop.open(DISCORD_URL)));
         ui.on_about(with(Self::about));
         ui.on_about_slint(with(Self::about_slint));
+        ui.on_run_clicked(with(Self::run_clicked));
         ui.window().on_close_requested({
             let app = app.clone();
             move || {
                 if let Some(app) = app.upgrade() {
+                    // During a run the window stays open: the run is cancelled,
+                    // and the window closes once it reports its outcome (#510).
+                    if !app.may_close() {
+                        return CloseRequestResponse::KeepWindowShown;
+                    }
                     app.save();
                 }
                 // Fails only without an event loop (headless), where hiding the
@@ -250,8 +266,10 @@ impl App {
         let profile = self.profiles.open(name);
         let mut loaded = self.loaded.borrow_mut();
 
-        // C++ `Profiles::setCurrentProfile` writes the choice at once.
+        // C++ `Profiles::setCurrentProfile` writes the choice at once, and
+        // stamps the profile session's log file.
         loaded.common.profile = name.to_owned();
+        self.stamp_run_log(name);
         if let Err(error) = self.profiles.save_common(&loaded.common) {
             self.error(
                 "Profile",

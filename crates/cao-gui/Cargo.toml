@@ -23,6 +23,10 @@ cao-profiles.workspace = true
 cao-gui-unsafe.workspace = true
 # The compiled `.slint` window and dialogs, kept apart because Slint's generated code needs `unsafe` (#508).
 cao-gui-ui.workspace = true
+# The Run Events, Run Handle and terminal result the window presents (#510).
+cao-core.workspace = true
+# The composition root that starts runs, and the Application Log each run start redirects (#510).
+cao-optimizers.workspace = true
 # `exe_directory`, the app directory only `main` derives (deviation 1, #463).
 cao-winfs.workspace = true
 # The `DXGI_FORMAT` numbers behind the unwanted-format names the window shows (#508, #509).

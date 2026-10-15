@@ -13,6 +13,15 @@ use cao_gui::{App, Desktop, MessageLevel};
 use i_slint_backend_testing::{AccessibleRole, ElementHandle};
 use slint::ComponentHandle;
 
+/// Serializes tests that may start a run: one run may be active per process,
+/// and the test harness runs a file's tests on parallel threads.
+pub fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// A fresh, empty directory under the target directory for one test.
 pub fn scratch_dir(name: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -148,6 +157,30 @@ pub fn open(app: &Path) -> (Rc<App>, Rc<FakeDesktop>) {
     let window = App::new(app, desktop.clone()).unwrap();
     window.window().show().unwrap();
     (window, desktop)
+}
+
+/// Runs the event loop until `done` holds, delivering whatever the Run Worker
+/// has posted to it, or fails after a minute.
+///
+/// Needs the event-loop backend (`i_slint_backend_testing::
+/// init_integration_test_with_mock_time`), which a process may start only
+/// once, so a test using this is alone in its file.
+pub fn run_event_loop_until(mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while !done() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the event loop never reached the expected state"
+        );
+        // Queued behind what is already posted, so one pass delivers that.
+        slint::invoke_from_event_loop(|| {
+            // Only fails without an event loop, which this one is running.
+            let _ = slint::quit_event_loop();
+        })
+        .unwrap();
+        slint::run_event_loop().unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Lets one turn of the event loop pass: zero-delay timers, such as a modal

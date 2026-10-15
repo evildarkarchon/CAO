@@ -99,6 +99,9 @@ export component MainWindow inherits Window {
     in property <float> progress;
     in property <string> progress-text;
     in property <string> status-text;
+    // The latest run's detail rows (failures, cleanup, retained mutations); the Log
+    // tab pins them below its log rows (#511).
+    in property <[string]> run-details;
 
     // ---- Menu state
     in-out property <bool> dark: true;
