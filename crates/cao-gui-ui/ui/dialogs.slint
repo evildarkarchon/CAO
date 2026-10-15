@@ -1,0 +1,108 @@
+// The window's modal Slint dialogs (#508). Rust opens and closes them through
+// `modal.rs`, which owns the owner window, the depth-counted guard and the deferred
+// teardown; these components only raise `confirm` and `dismiss`.
+//
+// Gotchas (#466): a callback named `ok` would shadow `StandardButton { kind: ok }`,
+// and a Dialog's `title` must be re-exposed as an `in` property to be set from Rust.
+
+import { AboutSlint, ComboBox, LineEdit, StandardButton } from "std-widgets.slint";
+
+// QInputDialog::getText
+export component TextInputDialog inherits Dialog {
+    in property <string> dialog-title;
+    title: root.dialog-title;
+    preferred-width: 320px;
+    in property <string> label;
+    in-out property <string> value;
+    callback confirm();
+    callback dismiss();
+
+    init => {
+        le.focus();
+    }
+
+    VerticalLayout {
+        padding: 9px;
+        spacing: 6px;
+        Text {
+            text: root.label;
+        }
+
+        le := LineEdit {
+            accessible-label: root.label;
+            text <=> root.value;
+            accepted => {
+                root.confirm();
+            }
+        }
+    }
+
+    StandardButton {
+        kind: ok;
+        clicked => {
+            root.confirm();
+        }
+    }
+
+    StandardButton {
+        kind: cancel;
+        clicked => {
+            root.dismiss();
+        }
+    }
+}
+
+// QInputDialog::getItem
+export component ChoiceDialog inherits Dialog {
+    in property <string> dialog-title;
+    title: root.dialog-title;
+    preferred-width: 320px;
+    in property <string> label;
+    in property <[string]> choices;
+    in-out property <int> current-index;
+    callback confirm();
+    callback dismiss();
+
+    VerticalLayout {
+        padding: 9px;
+        spacing: 6px;
+        Text {
+            text: root.label;
+        }
+
+        ComboBox {
+            accessible-label: root.label;
+            model: root.choices;
+            current-index <=> root.current-index;
+        }
+    }
+
+    StandardButton {
+        kind: ok;
+        clicked => {
+            root.confirm();
+        }
+    }
+
+    StandardButton {
+        kind: cancel;
+        clicked => {
+            root.dismiss();
+        }
+    }
+}
+
+// Replaces QMessageBox::aboutQt.
+export component AboutSlintDialog inherits Dialog {
+    title: @tr("About Slint");
+    callback confirm();
+
+    AboutSlint { }
+
+    StandardButton {
+        kind: ok;
+        clicked => {
+            root.confirm();
+        }
+    }
+}

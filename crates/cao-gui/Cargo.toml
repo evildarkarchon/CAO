@@ -1,0 +1,47 @@
+[package]
+name = "cao-gui"
+description = "Cathedral Assets Optimizer's Slint main window over the composition root."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "cao-gui"
+path = "src/main.rs"
+
+[dependencies]
+# Binary-only error reporting in `main` (#468).
+anyhow.workspace = true
+# Profiles, the options model and the settings model the window edits (#482).
+cao-profiles.workspace = true
+# The Slint-drawn menu bar's environment switch; the only `unsafe` call the GUI makes (#508).
+cao-gui-unsafe.workspace = true
+# The compiled `.slint` window and dialogs, kept apart because Slint's generated code needs `unsafe` (#508).
+cao-gui-ui.workspace = true
+# `exe_directory`, the app directory only `main` derives (deviation 1, #463).
+cao-winfs.workspace = true
+# The `DXGI_FORMAT` numbers behind the unwanted-format names the window shows (#508, #509).
+directxtex.workspace = true
+# The dialog owner's HWND, read from Slint's window handle (#462).
+raw-window-handle.workspace = true
+# Native message and folder dialogs, parented to the main window (#462).
+rfd.workspace = true
+# The window, on winit and femtovg in the Fluent style (#462, #466).
+slint.workspace = true
+# The library's startup error (#468).
+thiserror.workspace = true
+
+[dev-dependencies]
+# The element metadata `ElementHandle` queries need; tests only (#508).
+cao-gui-ui = { workspace = true, features = ["debug-info"] }
+# Seam 4: drives the real components headlessly by accessible label (#476).
+i-slint-backend-testing.workspace = true
+
+[build-dependencies]
+# The application manifest and the icon (#471).
+embed-resource.workspace = true
