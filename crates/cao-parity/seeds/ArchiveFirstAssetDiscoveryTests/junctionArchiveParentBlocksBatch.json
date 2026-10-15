@@ -1,0 +1,84 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": true,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "archive",
+        "path": "mods/first/source.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/fixture.dds",
+            "text": "fixture"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/last/source.bsa",
+        "game": "sse",
+        "type": "standard",
+        "compress": false,
+        "content": [
+          {
+            "kind": "raw",
+            "path": "textures/a.dds",
+            "base64": "Qg=="
+          }
+        ]
+      },
+      {
+        "kind": "directory",
+        "path": "mods/last/target"
+      }
+    ],
+    "fs_shape": [
+      {
+        "op": "junction",
+        "path": "mods/last/textures",
+        "target": "mods/last/target",
+        "note": "A linked destination parent blocks the batch."
+      }
+    ]
+  },
+  "origin": [
+    "ArchiveFirstAssetDiscoveryTests::junctionArchiveParentBlocksBatch"
+  ]
+}

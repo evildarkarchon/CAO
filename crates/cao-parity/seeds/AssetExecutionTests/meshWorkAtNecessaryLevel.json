@@ -1,0 +1,89 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 1,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "directory",
+        "path": "mods",
+        "note": "One Mod Root per transcribed scenario, named after it. Each scenario's work and evidence belong to its own Mod Root, so they cannot disturb each other."
+      },
+      {
+        "kind": "text",
+        "path": "mods/meshOperationFailure-load/actor.nif",
+        "text": "original",
+        "note": "A safe LoadFailed."
+      },
+      {
+        "kind": "text",
+        "path": "mods/skipReasonPrecedence-disabled-texture-kind/Textures/Native.dds",
+        "text": "fixture",
+        "note": "DisabledAssetKind: Texture work is off."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/meshWorkRoutesStandardAndTerrainMeshes-optimization-only/meshes/armor.nif",
+        "version": "sse",
+        "note": "Standard and Terrain Meshes are routed together, or not at all."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/meshWorkRoutesStandardAndTerrainMeshes-optimization-only/meshes/terrain.btr",
+        "version": "sse"
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/meshOperationsShareOneTransaction-optimization-only/Meshes/Actor.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\actor.tga"
+            ]
+          }
+        ],
+        "note": "One committed rewrite, whatever operations the request gives it."
+      }
+    ]
+  },
+  "origin": [
+    "AssetExecutionTests::meshOperationFailure [load]",
+    "AssetRoutingTests::skipReasonPrecedence [disabled Texture kind]",
+    "ApplicationRunSetupTests::meshWorkRoutesStandardAndTerrainMeshes [optimization only]",
+    "AssetExecutionTests::meshOperationsShareOneTransaction [optimization only]"
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/Mod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": true,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "text",
+        "path": "mods/Mod/.cao-staging/owner.lock",
+        "text": "",
+        "note": "A corrupt manifest: unverified, so the sibling and the scratch are both kept."
+      },
+      {
+        "kind": "directory",
+        "path": "mods/Mod/.cao-staging/run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff"
+      },
+      {
+        "kind": "text",
+        "path": "mods/Mod/.cao-staging/ownership.manifest.next",
+        "text": "must stay"
+      },
+      {
+        "kind": "text",
+        "path": "mods/Mod/.cao-staging-texture-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.dds",
+        "text": ""
+      },
+      {
+        "kind": "text",
+        "path": "mods/Mod/.cao-staging/ownership.manifest",
+        "text": "corrupt"
+      }
+    ]
+  },
+  "origin": [
+    "DurableStagingTests::partialScratchIsRecoveredButCorruptOwnershipIsPreserved"
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/mod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "texture",
+        "path": "mods/mod/textures/asset.dds",
+        "format": "BC1_UNORM",
+        "width": 4,
+        "height": 4,
+        "note": "Texture work only: nothing is packed."
+      },
+      {
+        "kind": "text",
+        "path": "mods/mod/existing.bsa",
+        "text": "retained archive",
+        "note": "No plugin upkeep without Archive creation."
+      },
+      {
+        "kind": "directory",
+        "path": "mods/mod/empty/nested",
+        "note": "Finalization still prunes empty folders."
+      }
+    ]
+  },
+  "origin": [
+    "ArchiveFinalizationTests::packingRequiresArchiveCreationRequest"
+  ]
+}

@@ -19,15 +19,22 @@
 //!   Exits 2 when any case hit a harness error, otherwise 1 when any was
 //!   Different, otherwise 3 when some did not run here, and 0 only when every
 //!   case passed. The summary lists every Different even when it exits 2.
-//! - `calibrate` lands with the BC7/BC6H calibration (#513), so it reports
-//!   that it is not available yet.
+//! - `calibrate [options]`: the BC7/BC6H threshold calibration (#513). Runs
+//!   every corpus case that can encode a Texture through the oracle twice, on
+//!   the GPU and with `CAO_ORACLE_FORCE_CPU_BC` set, measures every BC7 and
+//!   BC6H image the two runs wrote, and prints each case's floor, the observed
+//!   floor, the threshold it gives, and the host and driver to record with it.
+//!   The summary is also written to `<work>/calibration-report.md`. Exits 0
+//!   when it calibrated, 2 when any case hit an error (the floor may then be
+//!   incomplete) and 3 when no BC7 or BC6H Texture was measured. It needs a
+//!   D3D11 device on adapter 0; it never runs the Rust driver.
 //!
 //! - `local-assets [--local-assets <dir>]`: checks every entry of the pinned
 //!   local asset list against the pool and prints each one's status, with the
 //!   actual SHA-256 of any changed entry. Exits 0 when the pool supplies every
 //!   entry, otherwise 3.
 //!
-//! `case` and `corpus` take the same options: `--work <dir>` (default
+//! `case`, `corpus` and `calibrate` take the same options: `--work <dir>` (default
 //! `target/parity`), `--oracle <exe>` (or `CAO_ORACLE`), `--profiles <dir>`
 //! (default the repository's), `--hkxcmd <exe>` (or `CAO_HKXCMD`, or the
 //! repository's `bin/hkxcmd.exe`), `--local-assets <dir>` (or
@@ -36,14 +43,22 @@
 //! lacks, or whose bytes no longer match the pin, is not run.
 
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use cao_parity::case::{CaseFile, CaseLayout, ProductionDrivers, SideResources};
+use cao_optimizers::device::{GpuDevice, describe_adapter};
+use cao_parity::HarnessError;
+use cao_parity::calibrate::{
+    CalibrationHost, CalibrationOutcome, CalibrationSummary, Calibrator, FORCE_CPU_VARIABLE,
+    calibrate_case, decibels, is_calibration_case,
+};
+use cao_parity::case::{
+    CaseFile, CaseLayout, CaseSpec, ProductionDrivers, SideResources, oracle_arguments,
+};
 use cao_parity::cases::fixtures_dir;
 use cao_parity::corpus::{
-    CaseOutcome, Harness, TIME_BUDGET, corpus_cases, resolve_case, run_corpus, run_one,
+    CaseOutcome, CorpusCase, Harness, TIME_BUDGET, corpus_cases, resolve_case, run_corpus, run_one,
 };
 use cao_parity::driver::drive;
 use cao_parity::local_assets::{LocalAssetPool, PinnedAsset, PinnedList, default_pool_dir};
@@ -62,9 +77,7 @@ fn main() -> ExitCode {
         Some("case") => case(&arguments[1..]),
         Some("corpus") => corpus(&arguments[1..]),
         Some("local-assets") => local_assets(&arguments[1..]),
-        Some("calibrate") => Err(anyhow!(
-            "`cao-parity calibrate` is not implemented yet; it lands with the BC7/BC6H calibration"
-        )),
+        Some("calibrate") => calibrate(&arguments[1..]),
         Some("--help" | "-h") => {
             println!("{USAGE}");
             Ok(ExitCode::SUCCESS)
@@ -227,6 +240,20 @@ impl Settings {
         command
     }
 
+    /// What these settings offer the cases they materialise, with `fixtures`
+    /// as the `raw` entries' fixture folder.
+    fn environment<'a>(&'a self, fixtures: &'a Path) -> Environment<'a> {
+        Environment {
+            resources: SideResources {
+                profiles: &self.profiles,
+                hkxcmd: self.hkxcmd.as_deref(),
+            },
+            fixtures,
+            symlink_rights: can_create_symlinks(&self.work),
+            local_assets: &self.local_assets,
+        }
+    }
+
     /// Runs `body` with a harness over these settings.
     fn with_harness<T>(&self, body: impl FnOnce(&Harness<'_>) -> T) -> T {
         let drivers = ProductionDrivers {
@@ -237,15 +264,7 @@ impl Settings {
         let replay = |id: &str| self.replay_command(id);
         let harness = Harness {
             work: &self.work,
-            environment: Environment {
-                resources: SideResources {
-                    profiles: &self.profiles,
-                    hkxcmd: self.hkxcmd.as_deref(),
-                },
-                fixtures: &fixtures,
-                symlink_rights: can_create_symlinks(&self.work),
-                local_assets: &self.local_assets,
-            },
+            environment: self.environment(&fixtures),
             drivers: &drivers,
             rules: &ParityRules,
             timeout: self.timeout,
@@ -324,6 +343,101 @@ fn corpus(arguments: &[String]) -> Result<ExitCode> {
         .with_context(|| format!("writing {}", report.display()))?;
     println!("Summary: {}", report.display());
     Ok(ExitCode::from(summary.exit_code()))
+}
+
+/// `cao-parity calibrate`: runs every BC7/BC6H case of the corpus through the
+/// oracle on the GPU and with the CPU codec forced, prints each case's floor,
+/// the observed floor and the threshold it gives, and writes the summary to
+/// `<work>/calibration-report.md`. Exits as
+/// [`CalibrationSummary::exit_code`] says.
+///
+/// # Errors
+/// When the settings do not resolve, when this host has no D3D11 device on
+/// adapter 0 (the GPU run would be a CPU run too), or when the report cannot
+/// be written.
+fn calibrate(arguments: &[String]) -> Result<ExitCode> {
+    let settings = Settings::resolve(&Flags::parse(arguments, &Settings::FLAGS)?)?;
+    let host = calibration_host()?;
+    let cases: Vec<CorpusCase> = corpus_cases()?
+        .cases
+        .into_iter()
+        .filter(|case| is_calibration_case(&case.case))
+        .collect();
+    println!(
+        "Calibrating on {} ({}, driver {}): {} cases, each run on the GPU and with {} set",
+        host.name,
+        host.adapter,
+        host.driver,
+        cases.len(),
+        FORCE_CPU_VARIABLE
+    );
+
+    let fixtures = fixtures_dir();
+    let oracle = |root: &Path, spec: &CaseSpec| -> Result<Command, HarnessError> {
+        let mut command = Command::new(&settings.oracle_exe);
+        command.args(oracle_arguments(spec, root)?);
+        Ok(command)
+    };
+    let calibrator = Calibrator {
+        work: &settings.work,
+        environment: settings.environment(&fixtures),
+        oracle: &oracle,
+        timeout: settings.timeout,
+    };
+    let total = cases.len();
+    let mut records = Vec::with_capacity(total);
+    for (index, case) in cases.iter().enumerate() {
+        let started = Instant::now();
+        let outcome = calibrate_case(&calibrator, &case.id, &case.case);
+        let floor = match &outcome {
+            CalibrationOutcome::Measured(measurement) => measurement
+                .floor()
+                .map_or_else(String::new, |floor| format!(", floor {}", decibels(floor))),
+            _ => String::new(),
+        };
+        println!(
+            "[{:>3}/{total}] {}: {}{floor} ({:.1} s)",
+            index + 1,
+            case.id,
+            outcome.name(),
+            started.elapsed().as_secs_f64()
+        );
+        records.push((case.id.clone(), outcome));
+    }
+
+    let summary = CalibrationSummary { host, records };
+    let text = summary.render();
+    println!("\n{text}");
+    let report = settings.work.join("calibration-report.md");
+    std::fs::write(&report, format!("```text\n{text}```\n"))
+        .with_context(|| format!("writing {}", report.display()))?;
+    println!("Summary: {}", report.display());
+    Ok(ExitCode::from(summary.exit_code()))
+}
+
+/// This host and the adapter the oracle encodes on: adapter 0, as C++
+/// `createDevice` asks for.
+///
+/// # Errors
+/// When adapter 0 cannot be described or gives no D3D11 device: without one
+/// the oracle's "GPU" run would use the CPU codec too, and calibration would
+/// compare the CPU encoder with itself.
+fn calibration_host() -> Result<CalibrationHost> {
+    let adapter = describe_adapter(0).context("describing GPU adapter 0")?;
+    GpuDevice::create(0).with_context(|| {
+        format!(
+            "calibration needs a D3D11 device for the GPU run, and adapter 0 ({}) gives none",
+            adapter.name
+        )
+    })?;
+    Ok(CalibrationHost {
+        name: std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown host".to_owned()),
+        adapter: format!(
+            "{} (vendor {:04x}, device {:04x})",
+            adapter.name, adapter.vendor_id, adapter.device_id
+        ),
+        driver: adapter.driver_version,
+    })
 }
 
 /// The local asset pool: `--local-assets`, then `CAO_LOCAL_ASSETS`, then the

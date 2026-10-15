@@ -1,0 +1,311 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": true,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "directory",
+        "path": "mods",
+        "note": "One Mod Root per transcribed scenario, named after it. Each scenario's work and evidence belong to its own Mod Root, so they cannot disturb each other."
+      },
+      {
+        "kind": "archive",
+        "path": "mods/stagedExtractionCommitsPayload-tes4/source.bsa",
+        "game": "sse",
+        "type": "standard",
+        "compress": false,
+        "content": [
+          {
+            "kind": "raw",
+            "path": "textures/a.dds",
+            "base64": "Qg=="
+          }
+        ],
+        "note": "Extracted and committed, then backed up as .bak."
+      },
+      {
+        "kind": "archive",
+        "path": "mods/stagedExtractionCommitsPayload-compressed-tes4/source.bsa",
+        "game": "sse",
+        "type": "standard",
+        "compress": true,
+        "content": [
+          {
+            "kind": "raw",
+            "path": "textures/a.dds",
+            "base64": "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQg=="
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/unicodeEntrySpellingSurvivesExtraction/source.bsa",
+        "game": "sse",
+        "type": "standard",
+        "compress": false,
+        "content": [
+          {
+            "kind": "raw",
+            "path": "Textures/Straße.DDS",
+            "base64": "Qg==",
+            "verbatim": true
+          }
+        ],
+        "note": "Extracted under its stored spelling, never a folded one."
+      },
+      {
+        "kind": "archive",
+        "path": "mods/distinctWindowsNamesBothPublish/source.bsa",
+        "game": "sse",
+        "type": "standard",
+        "compress": false,
+        "content": [
+          {
+            "kind": "raw",
+            "path": "textures/strasse.dds",
+            "base64": "QQ=="
+          },
+          {
+            "kind": "raw",
+            "path": "textures/straße.dds",
+            "base64": "Qg==",
+            "verbatim": true
+          }
+        ],
+        "note": "Two names Windows keeps apart: both publish, no collision."
+      },
+      {
+        "kind": "archive",
+        "path": "mods/extractionUsesExistingParentCasing/source.bsa",
+        "game": "sse",
+        "type": "standard",
+        "compress": false,
+        "content": [
+          {
+            "kind": "raw",
+            "path": "textures/a.dds",
+            "base64": "Qg=="
+          }
+        ]
+      },
+      {
+        "kind": "directory",
+        "path": "mods/extractionUsesExistingParentCasing/Textures",
+        "note": "Extraction reuses this folder's spelling rather than adding textures/."
+      },
+      {
+        "kind": "archive",
+        "path": "mods/extractsEnabledArchivesBeforeDefinitiveDiscovery/content.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/extracted.dds",
+            "text": "extracted"
+          }
+        ],
+        "note": "Extracted first; the Archive itself never joins the Effective Asset Tree."
+      },
+      {
+        "kind": "text",
+        "path": "mods/extractsEnabledArchivesBeforeDefinitiveDiscovery/textures/loose.dds",
+        "text": "loose"
+      },
+      {
+        "kind": "archive",
+        "path": "mods/realExtractionPreservesLooseAssetPrecedence/content.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/collision.dds",
+            "text": "archived collision"
+          },
+          {
+            "kind": "text",
+            "path": "textures/archived-only.dds",
+            "text": "archived only"
+          }
+        ],
+        "note": "Only archived-only.dds is merged: the Loose Asset outranks the archived copy."
+      },
+      {
+        "kind": "text",
+        "path": "mods/realExtractionPreservesLooseAssetPrecedence/textures/collision.dds",
+        "text": "loose collision"
+      },
+      {
+        "kind": "archive",
+        "path": "mods/collisionsAreReportedBeforeExtraction-deterministic/a.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/shared.dds",
+            "text": "a"
+          }
+        ],
+        "note": "Default Archive Precedence: a.bsa wins, shadowing b.bsa and c.bsa."
+      },
+      {
+        "kind": "archive",
+        "path": "mods/collisionsAreReportedBeforeExtraction-deterministic/b.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/shared.dds",
+            "text": "b"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/collisionsAreReportedBeforeExtraction-deterministic/c.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/shared.dds",
+            "text": "c"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/collisionsAreReportedBeforeExtraction-loose-over-deterministic/a.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/shared.dds",
+            "text": "a"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/collisionsAreReportedBeforeExtraction-loose-over-deterministic/b.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/shared.dds",
+            "text": "b"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/collisionsAreReportedBeforeExtraction-loose-over-deterministic/c.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/shared.dds",
+            "text": "c"
+          }
+        ]
+      },
+      {
+        "kind": "text",
+        "path": "mods/collisionsAreReportedBeforeExtraction-loose-over-deterministic/textures/shared.dds",
+        "text": "loose",
+        "note": "The Loose Asset wins."
+      },
+      {
+        "kind": "archive",
+        "path": "mods/rawManifestPaths-format-1-contained/a.bsa",
+        "game": "sse",
+        "type": "standard",
+        "compress": false,
+        "content": [
+          {
+            "kind": "raw",
+            "path": "Textures/Shared.dds",
+            "base64": "Qg==",
+            "verbatim": true
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/rawManifestPaths-format-1-contained/b.bsa",
+        "game": "sse",
+        "type": "standard",
+        "compress": false,
+        "content": [
+          {
+            "kind": "raw",
+            "path": "TEXTURES\\folder\\..\\.\\SHARED.DDS",
+            "base64": "Qg==",
+            "verbatim": true
+          }
+        ],
+        "note": "Names the same game path once normalised: an Archive Collision a.bsa wins."
+      }
+    ]
+  },
+  "origin": [
+    "ArchiveFirstAssetDiscoveryTests::stagedExtractionCommitsPayload [tes4]",
+    "ArchiveFirstAssetDiscoveryTests::stagedExtractionCommitsPayload [compressed tes4]",
+    "ArchiveFirstAssetDiscoveryTests::unicodeEntrySpellingSurvivesExtraction",
+    "ArchiveFirstAssetDiscoveryTests::distinctWindowsNamesBothPublish",
+    "ArchiveFirstAssetDiscoveryTests::extractionUsesExistingParentCasing",
+    "ArchiveFirstAssetDiscoveryTests::extractsEnabledArchivesBeforeDefinitiveDiscovery",
+    "ArchiveFirstAssetDiscoveryTests::realExtractionPreservesLooseAssetPrecedence",
+    "AssetRunTests::realExtractionPreservesLooseAssetPrecedence",
+    "ArchiveFirstAssetDiscoveryTests::collisionsAreReportedBeforeExtraction [deterministic]",
+    "ArchiveFirstAssetDiscoveryTests::collisionsAreReportedBeforeExtraction [loose-over-deterministic]",
+    "ArchiveFirstAssetDiscoveryTests::rawManifestPaths [format-1-contained]"
+  ]
+}

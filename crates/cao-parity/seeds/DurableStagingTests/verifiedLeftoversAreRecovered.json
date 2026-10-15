@@ -1,0 +1,346 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": true,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "text",
+        "path": "mods/archive-entry/.cao-staging/owner.lock",
+        "text": "",
+        "note": "Each Mod Root holds what one C++ scenario leaves behind when its owner is killed: an unheld owner.lock and a verified manifest. Recovery in Preparing removes every recorded artifact, the scratch and the run child, and nothing else."
+      },
+      {
+        "kind": "text",
+        "path": "mods/archive-entry/.cao-staging/run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff/archive-entry-0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "text": "arbitrary Archive script bytes"
+      },
+      {
+        "kind": "text",
+        "path": "mods/abandoned-output/.cao-staging/owner.lock",
+        "text": ""
+      },
+      {
+        "kind": "directory",
+        "path": "mods/abandoned-output/.cao-staging/run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff"
+      },
+      {
+        "kind": "text",
+        "path": "mods/abandoned-output/texture.dds",
+        "text": "original"
+      },
+      {
+        "kind": "text",
+        "path": "mods/abandoned-output/.cao-staging-texture-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.dds",
+        "text": "partial"
+      },
+      {
+        "kind": "text",
+        "path": "mods/killed-after-publication/.cao-staging/owner.lock",
+        "text": ""
+      },
+      {
+        "kind": "directory",
+        "path": "mods/killed-after-publication/.cao-staging/run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff"
+      },
+      {
+        "kind": "text",
+        "path": "mods/killed-after-publication/.cao-staging/ownership.manifest.next",
+        "text": "occupied scratch"
+      },
+      {
+        "kind": "text",
+        "path": "mods/killed-after-publication/texture.tga",
+        "text": "source"
+      },
+      {
+        "kind": "text",
+        "path": "mods/killed-after-publication/texture.dds",
+        "text": "converted"
+      },
+      {
+        "kind": "text",
+        "path": "mods/missing-sibling-parent/.cao-staging/owner.lock",
+        "text": ""
+      },
+      {
+        "kind": "directory",
+        "path": "mods/missing-sibling-parent/.cao-staging/run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff"
+      },
+      {
+        "kind": "text",
+        "path": "mods/mesh-nif/.cao-staging/owner.lock",
+        "text": ""
+      },
+      {
+        "kind": "directory",
+        "path": "mods/mesh-nif/.cao-staging/run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff"
+      },
+      {
+        "kind": "text",
+        "path": "mods/mesh-nif/meshes/Mesh.NIF",
+        "text": "original Mesh"
+      },
+      {
+        "kind": "text",
+        "path": "mods/mesh-nif/meshes/.cao-staging-mesh-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.nif",
+        "text": "partial Mesh"
+      },
+      {
+        "kind": "text",
+        "path": "mods/mesh-btr/.cao-staging/owner.lock",
+        "text": ""
+      },
+      {
+        "kind": "directory",
+        "path": "mods/mesh-btr/.cao-staging/run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff"
+      },
+      {
+        "kind": "text",
+        "path": "mods/mesh-btr/meshes/Mesh.BTR",
+        "text": "original Mesh"
+      },
+      {
+        "kind": "text",
+        "path": "mods/mesh-btr/meshes/.cao-staging-mesh-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.btr",
+        "text": "partial Mesh"
+      },
+      {
+        "kind": "text",
+        "path": "mods/mesh-bto/.cao-staging/owner.lock",
+        "text": ""
+      },
+      {
+        "kind": "directory",
+        "path": "mods/mesh-bto/.cao-staging/run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff"
+      },
+      {
+        "kind": "text",
+        "path": "mods/mesh-bto/meshes/Mesh.BTO",
+        "text": "original Mesh"
+      },
+      {
+        "kind": "text",
+        "path": "mods/mesh-bto/meshes/.cao-staging-mesh-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.bto",
+        "text": "partial Mesh"
+      },
+      {
+        "kind": "text",
+        "path": "mods/animation/.cao-staging/owner.lock",
+        "text": ""
+      },
+      {
+        "kind": "directory",
+        "path": "mods/animation/.cao-staging/run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff"
+      },
+      {
+        "kind": "text",
+        "path": "mods/animation/animations/Walk.HKX",
+        "text": "original Animation"
+      },
+      {
+        "kind": "text",
+        "path": "mods/animation/animations/.cao-staging-animation-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.hkx",
+        "text": "partial Animation"
+      },
+      {
+        "kind": "text",
+        "path": "mods/partial-scratch/.cao-staging/owner.lock",
+        "text": ""
+      },
+      {
+        "kind": "directory",
+        "path": "mods/partial-scratch/.cao-staging/run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff"
+      },
+      {
+        "kind": "text",
+        "path": "mods/partial-scratch/.cao-staging/ownership.manifest.next",
+        "text": "partial replacement"
+      },
+      {
+        "kind": "text",
+        "path": "mods/partial-scratch/.cao-staging-texture-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.dds",
+        "text": ""
+      },
+      {
+        "kind": "text",
+        "path": "mods/uppercase-dds/.cao-staging/owner.lock",
+        "text": ""
+      },
+      {
+        "kind": "directory",
+        "path": "mods/uppercase-dds/.cao-staging/run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff"
+      },
+      {
+        "kind": "text",
+        "path": "mods/uppercase-dds/.cao-staging-texture-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.dds",
+        "text": "partial"
+      },
+      {
+        "kind": "text",
+        "path": "mods/release-failure/.cao-staging/owner.lock",
+        "text": ""
+      },
+      {
+        "kind": "text",
+        "path": "mods/release-failure/.cao-staging/ownership.manifest.next",
+        "text": "occupied scratch"
+      },
+      {
+        "kind": "text",
+        "path": "mods/release-failure/entry.pex",
+        "text": "committed entry"
+      },
+      {
+        "kind": "text",
+        "path": "mods/producer-termination/.cao-staging/owner.lock",
+        "text": ""
+      },
+      {
+        "kind": "text",
+        "path": "mods/producer-termination/.cao-staging/ownership.manifest.next",
+        "text": "occupied scratch"
+      },
+      {
+        "kind": "text",
+        "path": "mods/producer-termination/scripts/entry.pex",
+        "text": "committed entry"
+      },
+      {
+        "kind": "text",
+        "path": "mods/producer-termination/unrelated.txt",
+        "text": "keep this"
+      },
+      {
+        "kind": "text",
+        "path": "mods/producer-termination/.cao-staging/run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff/archive-entry-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+        "text": "abandoned entry"
+      },
+      {
+        "kind": "directory",
+        "path": "mods/missing-sibling-parent/textures",
+        "note": "Its nested folder, where the recorded sibling would be, is gone: recovery skips it."
+      }
+    ],
+    "fs_shape": [
+      {
+        "op": "mod_root_text",
+        "path": "mods/archive-entry/.cao-staging/ownership.manifest",
+        "mod_root": "mods/archive-entry",
+        "text": "CAO-STAGING 3\n\"{mod_root}\"\n\"0123456789abcdef0123456789abcdef\" \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\n2\nD \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\nF \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff/archive-entry-0f1e2d3c4b5a69788796a5b4c3d2e1f0\"\n"
+      },
+      {
+        "op": "mod_root_text",
+        "path": "mods/abandoned-output/.cao-staging/ownership.manifest",
+        "mod_root": "mods/abandoned-output",
+        "text": "CAO-STAGING 3\n\"{mod_root}\"\n\"0123456789abcdef0123456789abcdef\" \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\n2\nD \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\nS \".cao-staging-texture-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.dds\"\n"
+      },
+      {
+        "op": "mod_root_text",
+        "path": "mods/killed-after-publication/.cao-staging/ownership.manifest",
+        "mod_root": "mods/killed-after-publication",
+        "text": "CAO-STAGING 3\n\"{mod_root}\"\n\"0123456789abcdef0123456789abcdef\" \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\n2\nD \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\nS \".cao-staging-texture-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.dds\"\n"
+      },
+      {
+        "op": "mod_root_text",
+        "path": "mods/missing-sibling-parent/.cao-staging/ownership.manifest",
+        "mod_root": "mods/missing-sibling-parent",
+        "text": "CAO-STAGING 3\n\"{mod_root}\"\n\"0123456789abcdef0123456789abcdef\" \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\n2\nD \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\nS \"textures/nested/.cao-staging-texture-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.dds\"\n"
+      },
+      {
+        "op": "mod_root_text",
+        "path": "mods/mesh-nif/.cao-staging/ownership.manifest",
+        "mod_root": "mods/mesh-nif",
+        "text": "CAO-STAGING 3\n\"{mod_root}\"\n\"0123456789abcdef0123456789abcdef\" \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\n2\nD \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\nS \"meshes/.cao-staging-mesh-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.nif\"\n"
+      },
+      {
+        "op": "mod_root_text",
+        "path": "mods/mesh-btr/.cao-staging/ownership.manifest",
+        "mod_root": "mods/mesh-btr",
+        "text": "CAO-STAGING 3\n\"{mod_root}\"\n\"0123456789abcdef0123456789abcdef\" \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\n2\nD \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\nS \"meshes/.cao-staging-mesh-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.btr\"\n"
+      },
+      {
+        "op": "mod_root_text",
+        "path": "mods/mesh-bto/.cao-staging/ownership.manifest",
+        "mod_root": "mods/mesh-bto",
+        "text": "CAO-STAGING 3\n\"{mod_root}\"\n\"0123456789abcdef0123456789abcdef\" \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\n2\nD \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\nS \"meshes/.cao-staging-mesh-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.bto\"\n"
+      },
+      {
+        "op": "mod_root_text",
+        "path": "mods/animation/.cao-staging/ownership.manifest",
+        "mod_root": "mods/animation",
+        "text": "CAO-STAGING 3\n\"{mod_root}\"\n\"0123456789abcdef0123456789abcdef\" \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\n2\nD \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\nS \"animations/.cao-staging-animation-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.hkx\"\n"
+      },
+      {
+        "op": "mod_root_text",
+        "path": "mods/partial-scratch/.cao-staging/ownership.manifest",
+        "mod_root": "mods/partial-scratch",
+        "text": "CAO-STAGING 3\n\"{mod_root}\"\n\"0123456789abcdef0123456789abcdef\" \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\n2\nD \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\nS \".cao-staging-texture-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.dds\"\n"
+      },
+      {
+        "op": "mod_root_text",
+        "path": "mods/uppercase-dds/.cao-staging/ownership.manifest",
+        "mod_root": "mods/uppercase-dds",
+        "text": "CAO-STAGING 3\n\"{mod_root}\"\n\"0123456789abcdef0123456789abcdef\" \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\n2\nD \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\nS \".cao-staging-texture-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.dds\"\n"
+      },
+      {
+        "op": "mod_root_text",
+        "path": "mods/release-failure/.cao-staging/ownership.manifest",
+        "mod_root": "mods/release-failure",
+        "text": "CAO-STAGING 3\n\"{mod_root}\"\n\"0123456789abcdef0123456789abcdef\" \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\n2\nD \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\nF \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff/archive-entry-0f1e2d3c4b5a69788796a5b4c3d2e1f0\"\n"
+      },
+      {
+        "op": "mod_root_text",
+        "path": "mods/producer-termination/.cao-staging/ownership.manifest",
+        "mod_root": "mods/producer-termination",
+        "text": "CAO-STAGING 3\n\"{mod_root}\"\n\"0123456789abcdef0123456789abcdef\" \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\n3\nD \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\nF \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff/archive-entry-0f1e2d3c4b5a69788796a5b4c3d2e1f0\"\nF \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff/archive-entry-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5\"\n"
+      }
+    ]
+  },
+  "origin": [
+    "DurableStagingTests::abandonedArchiveEntryIsRecovered",
+    "DurableStagingTests::abandonedOutputIsRecovered",
+    "DurableStagingTests::killedAfterPublicationKeepsDestination",
+    "DurableStagingTests::recoverySkipsMissingSiblingParent",
+    "DurableStagingTests::meshSiblingRecoveryPreservesOriginal [standard-nif]",
+    "DurableStagingTests::meshSiblingRecoveryPreservesOriginal [terrain-btr]",
+    "DurableStagingTests::meshSiblingRecoveryPreservesOriginal [terrain-bto]",
+    "DurableStagingTests::animationSiblingRecoveryPreservesOriginal",
+    "DurableStagingTests::partialScratchIsRecoveredButCorruptOwnershipIsPreserved",
+    "DurableStagingTests::uppercaseDdsDestinationUsesRecoverableSibling",
+    "DurableStagingTests::publicationReleaseFailurePreservesCommittedDestination",
+    "DurableStagingTests::archivePublicationSurvivesProducerTermination"
+  ]
+}

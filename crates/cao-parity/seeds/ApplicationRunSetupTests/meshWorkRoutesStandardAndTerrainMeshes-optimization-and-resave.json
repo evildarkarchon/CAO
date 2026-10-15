@@ -1,0 +1,55 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/Mod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 1,
+      "headparts": false,
+      "resave": true
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "mesh",
+        "path": "mods/Mod/meshes/armor.nif",
+        "version": "sse",
+        "note": "Standard and Terrain Meshes are routed together, or not at all."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/Mod/meshes/terrain.btr",
+        "version": "sse"
+      }
+    ]
+  },
+  "origin": [
+    "ApplicationRunSetupTests::meshWorkRoutesStandardAndTerrainMeshes [optimization and resave]"
+  ]
+}

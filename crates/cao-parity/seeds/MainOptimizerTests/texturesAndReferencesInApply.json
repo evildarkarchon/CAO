@@ -1,0 +1,309 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "directory",
+        "path": "mods",
+        "note": "One Mod Root per transcribed scenario, named after it. Each scenario's work and evidence belong to its own Mod Root, so they cannot disturb each other."
+      },
+      {
+        "kind": "text",
+        "path": "mods/loadFailureUsesCollisionSafeQuarantineName/collision-malformed.dds",
+        "text": "new malformed input",
+        "note": "Its .caobad name is taken: quarantined as .caobad.1."
+      },
+      {
+        "kind": "text",
+        "path": "mods/loadFailureUsesCollisionSafeQuarantineName/collision-malformed.dds.caobad",
+        "text": "previous malformed input"
+      },
+      {
+        "kind": "text",
+        "path": "mods/failedConversionSuppressesMeshReferenceMaintenance/textures/armor/failed.tga",
+        "text": "malformed",
+        "note": "Fails to convert, so references to it are withheld, while a reference to a TGA that converts (or is absent) is maintained."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/failedConversionSuppressesMeshReferenceMaintenance/meshes/armor/rejected.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\armor\\failed.tga"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/failedConversionSuppressesMeshReferenceMaintenance/meshes/armor/accepted.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\armor\\converted.tga"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "texture",
+        "path": "mods/committedConversionWithRetainedSourceMaintainsMeshReferences/textures/retained.tga",
+        "format": "R8G8B8A8_UNORM",
+        "width": 1,
+        "height": 1
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/committedConversionWithRetainedSourceMaintainsMeshReferences/retained-reference.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\retained.tga"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/successfulRunStillMaintainsMeshReferences/maintained-reference.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\armor\\body.tga"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/successfulRunStillMaintainsMeshReferences/meshes/armor/convertible.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\armor\\body.TgA"
+            ]
+          }
+        ],
+        "note": "A mixed-case .TgA reference becomes .dds."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/successfulRunStillMaintainsMeshReferences/meshes/armor/native.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\armor\\body.dds"
+            ]
+          }
+        ],
+        "note": "Already .dds: unchanged."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/textureCommitFailure/source.tga",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "Its DDS name is a folder, so the conversion cannot commit: a safe CommitFailed, and the TGA stays."
+      },
+      {
+        "kind": "text",
+        "path": "mods/textureCommitFailure/source.dds/unowned",
+        "text": "keep"
+      },
+      {
+        "kind": "texture",
+        "path": "mods/conversionOnlyTextureExecution-apply/Source.Name.TgA",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "A mixed-case TGA extension: converted to Source.Name.dds and removed."
+      },
+      {
+        "kind": "text",
+        "path": "mods/mutationAwareFailuresControlContinuation-safe-failure/first.dds",
+        "text": "fixture",
+        "note": "A safe load failure (the C++ test injects a safe SaveFailed): the run goes on to the next Asset and to finalization."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/mutationAwareFailuresControlContinuation-safe-failure/second.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64
+      },
+      {
+        "kind": "text",
+        "path": "mods/reportsAssetExecutionStatus-quarantined-texture-loads/first.dds",
+        "text": "malformed",
+        "note": "Both fail and are quarantined; the first does not stop the second: Completed With Failures, 2 of 2 attempted."
+      },
+      {
+        "kind": "text",
+        "path": "mods/reportsAssetExecutionStatus-quarantined-texture-loads/second.dds",
+        "text": "malformed"
+      },
+      {
+        "kind": "directory",
+        "path": "mods/reportsDirectoryPruningMutation/empty",
+        "note": "Pruned in Archive Finalization: one committed mutation."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/nativeTextureTracer/Textures/Armor.DdS",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "The only routed Asset."
+      },
+      {
+        "kind": "text",
+        "path": "mods/nativeTextureTracer/textures.dds/readme",
+        "text": "fixture",
+        "note": "Each other file would fail to load if it were routed."
+      },
+      {
+        "kind": "text",
+        "path": "mods/nativeTextureTracer/Textures/Armor.dds.backup",
+        "text": "fixture"
+      },
+      {
+        "kind": "text",
+        "path": "mods/nativeTextureTracer/Textures/DDS",
+        "text": "fixture"
+      },
+      {
+        "kind": "text",
+        "path": "mods/nativeTextureTracer/Textures/readme.txt",
+        "text": "fixture"
+      },
+      {
+        "kind": "text",
+        "path": "mods/skipReasonPrecedence-disabled-animation-kind/Animations/Behavior.hkx",
+        "text": "fixture",
+        "note": "DisabledAssetKind: Animation work is off."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/conversionOnlyRoutesTextureAndMaintainsMeshes/Textures/Convertible.tga",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "Converted; every Mesh is routed for reference maintenance only."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/conversionOnlyRoutesTextureAndMaintainsMeshes/Meshes/Standard.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\Convertible.tga"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/conversionOnlyRoutesTextureAndMaintainsMeshes/Meshes/Terrain.btr",
+        "version": "sse"
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/conversionOnlyRoutesTextureAndMaintainsMeshes/Meshes/Terrain.bto",
+        "version": "sse"
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/meshOperationsShareOneTransaction-maintenance-only/Meshes/Actor.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\actor.tga"
+            ]
+          }
+        ],
+        "note": "One committed rewrite, whatever operations the request gives it."
+      }
+    ],
+    "fs_shape": [
+      {
+        "op": "readonly",
+        "path": "mods/committedConversionWithRetainedSourceMaintainsMeshReferences/textures/retained.tga",
+        "note": "Read-only in place of the C++ held handle: converted, the source stays, and the reference is still maintained."
+      }
+    ]
+  },
+  "origin": [
+    "MainOptimizerTests::loadFailureUsesCollisionSafeQuarantineName",
+    "MainOptimizerTests::failedConversionSuppressesMeshReferenceMaintenance",
+    "MainOptimizerTests::failedConversionKeepsUnrelatedMeshReferences",
+    "MeshReferenceMaintenanceTests::eligibilityFilterWithholdsRejectedReferences",
+    "MainOptimizerTests::committedConversionWithRetainedSourceMaintainsMeshReferences",
+    "MainOptimizerTests::successfulRunStillMaintainsMeshReferences",
+    "MeshReferenceMaintenanceTests::replacesReferencedTgaTextureNames",
+    "AssetExecutionTests::textureCommitFailure",
+    "AssetExecutionTests::conversionOnlyTextureExecution [Apply]",
+    "AssetRunTests::mutationAwareFailuresControlContinuation [safe-failure]",
+    "CliExecutionTests::reportsAssetExecutionStatus [quarantined-texture-loads]",
+    "CliExecutionTests::reportsDirectoryPruningMutation",
+    "AssetRoutingTests::nativeTextureTracer [mixed-case terminal DDS]",
+    "AssetRoutingTests::nativeTextureTracer [DDS only in parent segment]",
+    "AssetRoutingTests::nativeTextureTracer [DDS before another terminal extension]",
+    "AssetRoutingTests::nativeTextureTracer [extension text without terminal period]",
+    "AssetRoutingTests::nativeTextureTracer [unknown terminal extension]",
+    "AssetRoutingTests::skipReasonPrecedence [disabled Animation kind]",
+    "AssetRoutingTests::conversionOnlyRoutesTextureAndMaintainsMeshes",
+    "AssetExecutionTests::meshOperationsShareOneTransaction [maintenance only]"
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/Mod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 1,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": true,
+    "archives": {
+      "extract": true,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "texture",
+        "path": "mods/Mod/Textures/Native.DdS",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "Every mixed-case extension is recognised and routed."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/Mod/Textures/Convertible.TgA",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/Mod/Meshes/Standard.NiF",
+        "version": "sse"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/Mod/Meshes/Terrain.BtR",
+        "asset": "sse-lod-tamriel.8.32.-16.btr"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/Mod/Meshes/Terrain.BtO",
+        "asset": "sse-lod-tamriel.8.32.-24.bto"
+      },
+      {
+        "kind": "local_asset",
+        "path": "mods/Mod/Animations/Behavior.HkX",
+        "asset": "le-animation-character-1hm_1stp_run.hkx"
+      }
+    ]
+  },
+  "origin": [
+    "AssetRoutingTests::supportedAssetRecognition [native Texture]",
+    "AssetRoutingTests::supportedAssetRecognition [convertible Texture]",
+    "AssetRoutingTests::supportedAssetRecognition [standard Mesh]",
+    "AssetRoutingTests::supportedAssetRecognition [BTR terrain Mesh]",
+    "AssetRoutingTests::supportedAssetRecognition [BTO terrain Mesh]",
+    "AssetRoutingTests::supportedAssetRecognition [Animation]"
+  ]
+}

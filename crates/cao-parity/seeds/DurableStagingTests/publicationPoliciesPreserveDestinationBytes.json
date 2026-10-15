@@ -1,0 +1,68 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/Mod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": false,
+      "mipmaps": true,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": true,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "texture",
+        "path": "mods/Mod/texture.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 8,
+        "height": 8,
+        "note": "Published by replacement."
+      },
+      {
+        "kind": "archive",
+        "path": "mods/Mod/assets.bsa",
+        "game": "sse",
+        "type": "standard",
+        "content": [
+          {
+            "kind": "text",
+            "path": "scripts/entry.pex",
+            "text": "new archive entry"
+          }
+        ],
+        "note": "Published without replacement; afterwards no temporaries and no run child remain."
+      }
+    ]
+  },
+  "origin": [
+    "DurableStagingTests::publicationPoliciesPreserveDestinationBytes",
+    "DurableStagingTests::cleanupRemovesTheRunChildAndKeepsCommittedOutput",
+    "DurableStagingTests::archiveCleanupKeepsCommittedEntry"
+  ]
+}

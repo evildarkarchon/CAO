@@ -11,9 +11,10 @@ use cao_parity::case::{CaseFile, CaseLayout, CaseSpec, Side, SideResources};
 use cao_parity::cases::{fixtures_dir, seed, seeds};
 use cao_parity::local_assets::{Edition, LocalAssetPool, PinnedList, sha256_hex};
 use cao_parity::materialise::{
-    Environment, PATH_CAP_UTF16, Readiness, Sources, materialise, write_input, write_input_from,
+    Environment, PATH_CAP_UTF16, Readiness, Sources, apply_fs_shape, can_create_symlinks,
+    materialise, write_input, write_input_from,
 };
-use cao_parity::recipe::{ContentEntry, TextureFormat, TreeRecipe};
+use cao_parity::recipe::{ContentEntry, FsShape, TextureFormat, TreeRecipe};
 use common::{TempDir, shipped_profiles};
 use directxtex::{DDS_FLAGS_NONE, DXGI_FORMAT, ScratchImage, TexMetadata};
 use nifly_sys::{LoadOptions, Nif, NifVersion, OptimizeOptions};
@@ -308,17 +309,42 @@ fn every_committed_seed_builds() {
         .flat_map(|(_, case)| local_asset_ids(case))
         .collect();
     let pool = stand_in_pool(&temp.path().join("pool"), &ids);
+    let symlink_rights = can_create_symlinks(temp.path());
+    // Every broken seed is reported at once, so a batch of transcribed seeds
+    // (#507) is fixed in one pass rather than one seed per run.
+    let mut broken = Vec::new();
     for (id, case) in seeds {
-        let local_assets = pool
-            .fetch(local_asset_ids(&case).iter().map(String::as_str))
-            .unwrap_or_else(|reason| panic!("seed `{id}`: {reason}"));
+        let local_assets = match pool.fetch(local_asset_ids(&case).iter().map(String::as_str)) {
+            Ok(bytes) => bytes,
+            Err(reason) => {
+                broken.push(format!("seed `{id}`: {reason}"));
+                continue;
+            }
+        };
         let sources = Sources {
             fixtures: &fixtures_dir(),
             local_assets: &local_assets,
         };
-        write_input_from(&case, &id, &temp.path().join(&id), &sources)
-            .unwrap_or_else(|error| panic!("seed `{id}`: {error}"));
+        let root = temp.path().join(&id);
+        if let Err(error) = write_input_from(&case, &id, &root, &sources) {
+            broken.push(format!("seed `{id}`: {error}"));
+            continue;
+        }
+        // The shape is applied too, so a link target or a staging manifest's
+        // Mod Root that the content never writes is caught here. A seed with
+        // a file symlink is shaped only where this process may create one.
+        let needs_symlinks = case
+            .tree
+            .fs_shape
+            .iter()
+            .any(|operation| matches!(operation, FsShape::FileSymlink { .. }));
+        if (!needs_symlinks || symlink_rights)
+            && let Err(error) = apply_fs_shape(&case.tree.fs_shape, &root)
+        {
+            broken.push(format!("seed `{id}`: {error}"));
+        }
     }
+    assert!(broken.is_empty(), "{}", broken.join("\n"));
 }
 
 /// The ids of every `local_asset` entry in `case`, packed ones included.
@@ -695,6 +721,36 @@ fn a_hardlink_joins_two_names_within_each_copy() {
     let read = |side| std::fs::read(layout.side(side).join("mods/Mod/textures/a.dds")).unwrap();
     assert_eq!(read(Side::Oracle), b"changed");
     assert_eq!(read(Side::Rust), original);
+}
+
+/// #507: leftover staging names its own Mod Root by absolute path, so the
+/// staging-residue fault seeds write each copy's manifest with that copy's
+/// own Mod Root, spelled as C++'s `canonical(...).generic_u8string()` does.
+#[test]
+fn mod_root_text_names_each_copys_own_mod_root() {
+    let temp = TempDir::new("materialise-mod-root-text");
+    let case = shaped(
+        serde_json::json!([{"kind": "text", "path": "mods/Mod/textures/a.txt", "text": "a"}]),
+        serde_json::json!([{"op": "mod_root_text", "path": "mods/Mod/.cao-staging/ownership.manifest",
+                            "mod_root": "mods/Mod",
+                            "text": "CAO-STAGING 3\n\"{mod_root}\"\n\"r\" \"run-r\"\n0\n"}]),
+    );
+    let (layout, readiness) = materialised(&temp, "mod-root-text", &case, false);
+    assert_eq!(readiness.unwrap(), Readiness::Ready);
+    for root in roots(&layout) {
+        // The canonical path without its `\\?\` prefix, `/`-separated.
+        let canonical = std::fs::canonicalize(root.join("mods/Mod")).unwrap();
+        let generic = canonical
+            .to_str()
+            .unwrap()
+            .strip_prefix(r"\\?\")
+            .unwrap()
+            .replace('\\', "/");
+        assert_eq!(
+            std::fs::read_to_string(root.join("mods/Mod/.cao-staging/ownership.manifest")).unwrap(),
+            format!("CAO-STAGING 3\n\"{generic}\"\n\"r\" \"run-r\"\n0\n")
+        );
+    }
 }
 
 #[test]

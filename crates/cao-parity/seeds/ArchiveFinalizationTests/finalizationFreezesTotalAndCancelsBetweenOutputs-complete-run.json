@@ -1,0 +1,55 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": true,
+      "delete_backup": false,
+      "compress": false,
+      "create_dummies": false,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "text",
+        "path": "mods/mod-a/textures/asset.dds",
+        "text": "source bytes",
+        "note": "Two outputs, one per Mod Root in order: the progress total is 2 from the start, and each source is packed, deleted and its folder pruned."
+      },
+      {
+        "kind": "text",
+        "path": "mods/mod-b/textures/asset.dds",
+        "text": "source bytes"
+      }
+    ]
+  },
+  "origin": [
+    "ArchiveFinalizationTests::finalizationFreezesTotalAndCancelsBetweenOutputs [complete-run]"
+  ]
+}

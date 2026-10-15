@@ -11,7 +11,7 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use cao_core::routing::TextureVariant;
-use cao_optimizers::device::{DeviceUnavailable, GpuDevice};
+use cao_optimizers::device::{DeviceUnavailable, GpuDevice, describe_adapter};
 use cao_optimizers::textures::{Texture, TextureProfile, TextureRequest};
 use common::{scratch_dir, write_dds};
 use directxtex::{
@@ -156,6 +156,34 @@ fn the_first_adapter_gives_a_device() {
 #[test]
 fn an_adapter_the_host_does_not_have_gives_no_device() {
     let error = GpuDevice::create(MISSING_ADAPTER).err().unwrap();
+    assert!(
+        matches!(error, DeviceUnavailable::NoAdapter { adapter, .. } if adapter == MISSING_ADAPTER),
+        "{error}"
+    );
+}
+
+/// The adapter a device is created on can be described, for the record the
+/// BC7/BC6H threshold calibration keeps (#513): its name and the user-mode
+/// driver version, as four dotted parts.
+#[test]
+fn the_first_adapter_is_described_with_its_driver_version() {
+    let description = describe_adapter(0).unwrap();
+
+    assert!(!description.name.is_empty());
+    assert!(!description.name.contains('\0'), "{:?}", description.name);
+    let parts: Vec<&str> = description.driver_version.split('.').collect();
+    assert_eq!(parts.len(), 4, "{}", description.driver_version);
+    assert!(
+        parts.iter().all(|part| part.parse::<u16>().is_ok()),
+        "{}",
+        description.driver_version
+    );
+}
+
+/// An adapter the host does not have cannot be described.
+#[test]
+fn an_adapter_the_host_does_not_have_is_not_described() {
+    let error = describe_adapter(MISSING_ADAPTER).err().unwrap();
     assert!(
         matches!(error, DeviceUnavailable::NoAdapter { adapter, .. } if adapter == MISSING_ADAPTER),
         "{error}"

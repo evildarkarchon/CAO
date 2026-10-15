@@ -1,0 +1,98 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 1,
+      "headparts": true,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "plugin",
+        "path": "mods/mod-a/mod-a.esp",
+        "headparts": [
+          "Actors\\mod-a\\head.nif"
+        ],
+        "note": "Each Mod Root's headparts come from its own plugins."
+      },
+      {
+        "kind": "plugin",
+        "path": "mods/mod-b/mod-b.esp",
+        "headparts": [
+          "Actors\\mod-b\\head.nif"
+        ]
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/mod-a/meshes/actors/mod-a/head.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\actors\\skin.dds"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/mod-b/meshes/actors/mod-b/head.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\actors\\skin.dds"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/mod-a/meshes/actors/mod-a/body.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\actors\\skin.dds"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "origin": [
+    "MainOptimizerTests::severalModsKeepsEveryModRootsHeadparts"
+  ]
+}
