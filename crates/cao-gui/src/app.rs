@@ -13,6 +13,8 @@ use crate::desktop::{Desktop, MessageLevel};
 use crate::form::{self, EnabledTabs};
 use crate::modal::ModalSlot;
 
+mod input;
+
 const DOCUMENTATION_URL: &str = "https://www.nexusmods.com/skyrimspecialedition/mods/23316";
 const DISCORD_URL: &str = "https://discordapp.com/invite/B9abN8d";
 
@@ -61,6 +63,8 @@ pub struct App {
     name_dialog: ModalSlot<TextInputDialog>,
     base_dialog: ModalSlot<ChoiceDialog>,
     about_slint_dialog: ModalSlot<AboutSlintDialog>,
+    /// Whether the current folder drop's first path has been handled (#512).
+    drop_handled: std::cell::Cell<bool>,
 }
 
 impl App {
@@ -116,6 +120,7 @@ impl App {
             name_dialog: ModalSlot::default(),
             base_dialog: ModalSlot::default(),
             about_slint_dialog: ModalSlot::default(),
+            drop_handled: Default::default(),
             window,
         });
 
@@ -221,6 +226,7 @@ impl App {
                 CloseRequestResponse::HideWindow
             }
         });
+        self.wire_tabs_and_drop();
     }
 
     // ---- Profiles

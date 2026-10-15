@@ -207,13 +207,19 @@ export component HelpArea inherits TouchArea {
 
 // Draws the active HelpTip. Place once, last, filling the window.
 export component HelpTipLayer {
+    // The pointer in this layer's coordinates. HelpTip holds window coordinates, and
+    // the layer does not start at the window's origin: Slint puts a window's content,
+    // this layer included, below its MenuBar.
+    property <length> pointer-x: HelpTip.px - root.absolute-position.x;
+    property <length> pointer-y: HelpTip.py - root.absolute-position.y;
+
     if HelpTip.visible: tip := Rectangle {
         property <length> cap-width: min(380px, root.width - 16px);
-        property <length> below: HelpTip.py + 20px;
+        property <length> below: root.pointer-y + 20px;
         width: min(self.cap-width, body.preferred-width + 20px);
         height: layout.preferred-height;
-        x: max(8px, min(HelpTip.px + 2px, root.width - self.width - 8px));
-        y: self.below + self.height <= root.height - 8px ? self.below : max(8px, HelpTip.py - self.height - 6px);
+        x: max(8px, min(root.pointer-x + 2px, root.width - self.width - 8px));
+        y: self.below + self.height <= root.height - 8px ? self.below : max(8px, root.pointer-y - self.height - 6px);
         background: Palette.alternate-background;
         border-radius: 4px;
         border-width: 1px;

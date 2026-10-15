@@ -9,7 +9,7 @@
 // lock, #510) and its group's `checked` by hand. Text does not grey out by itself.
 
 import { Button, CheckBox, ComboBox, GroupBox, LineEdit, ListView, SpinBox, RadioGroup, Palette } from "std-widgets.slint";
-import { TabInfo, CaoTabBar, CheckableGroupBox, HelpCheckBox, HelpLabel, HelpRadio, DoubleSpinBox, CaoProgressBar, HelpTipLayer } from "widgets.slint";
+import { TabInfo, CaoTabBar, CheckableGroupBox, HelpArea, HelpCheckBox, HelpLabel, HelpRadio, DoubleSpinBox, CaoProgressBar, HelpTipLayer } from "widgets.slint";
 import { TextInputDialog, ChoiceDialog, AboutSlintDialog } from "dialogs.slint";
 
 export { TabInfo, TextInputDialog, ChoiceDialog, AboutSlintDialog }
@@ -109,6 +109,10 @@ export component MainWindow inherits Window {
     // window is also disabled through winit; this blocks pointer input to the content
     // in-tree as well, so the headless tests see what a user sees.
     in property <bool> modal-blocked;
+
+    // ---- Folder drop: true while Explorer drags something over the window (winit
+    // `HoveredFile`), which shows the drop hint (#512).
+    in property <bool> drop-hover;
 
     // Whether the std-widgets palette is dark: the whole window, menu bar included,
     // is drawn from it.
@@ -457,30 +461,49 @@ export component MainWindow inherits Window {
                             // binding is dropped on the first click. Two-way bindings survive.
                             // The group resyncs them through change handlers, which run on the
                             // next turn of the event loop.
-                            RadioGroup {
+                            levels := RadioGroup {
                                 orientation: horizontal;
                                 enabled: root.ed && MeshesTab.process;
                                 RadioButton {
                                     text: @tr("Necessary optimization");
                                     checked <=> MeshesTab.necessary;
-                                    Tooltip {
-                                        text: @markdown("\{@tr("Attempts to repair meshes which are guaranteed to crash the game. Headparts are included.")}");
+                                    // The help overlay owns the pointer (shared tooltip layer,
+                                    // help cursor, tips on a disabled radio); it forwards the
+                                    // click by checking the radio, which the group then
+                                    // selects. See `HelpArea` in widgets.slint.
+                                    HelpArea {
+                                        help: @tr("Attempts to repair meshes which are guaranteed to crash the game. Headparts are included.");
+                                        clicked => {
+                                            if parent.enabled && levels.enabled {
+                                                MeshesTab.necessary = true;
+                                            }
+                                        }
                                     }
                                 }
 
                                 RadioButton {
                                     text: @tr("Medium optimization");
                                     checked <=> MeshesTab.medium;
-                                    Tooltip {
-                                        text: @markdown("\{@tr("Perform necessary optimization, and also lightly optimizes other meshes. This may fix some visual issues, but may also lower quality.")}");
+                                    HelpArea {
+                                        help: @tr("Perform necessary optimization, and also lightly optimizes other meshes. This may fix some visual issues, but may also lower quality.");
+                                        clicked => {
+                                            if parent.enabled && levels.enabled {
+                                                MeshesTab.medium = true;
+                                            }
+                                        }
                                     }
                                 }
 
                                 RadioButton {
                                     text: @tr("Full optimization");
                                     checked <=> MeshesTab.full;
-                                    Tooltip {
-                                        text: @markdown("\{@tr("Fully optimize all meshes. Only apply if standard mesh optimization ignored necessary files. May lower visual quality.")}");
+                                    HelpArea {
+                                        help: @tr("Fully optimize all meshes. Only apply if standard mesh optimization ignored necessary files. May lower visual quality.");
+                                        clicked => {
+                                            if parent.enabled && levels.enabled {
+                                                MeshesTab.full = true;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -829,6 +852,21 @@ export component MainWindow inherits Window {
     // after the content so it is on top; the menu bar is outside it, and the real
     // window is disabled through winit anyway.
     if root.modal-blocked: TouchArea { }
+
+    // The drop hint. No TouchArea: the drag is an OS one that Slint's pointer
+    // handling never sees, so there is nothing to intercept.
+    if root.drop-hover: Rectangle {
+        background: Palette.accent-background.with-alpha(0.18);
+        border-width: 3px;
+        border-color: Palette.accent-background;
+        Text {
+            text: @tr("Drop a folder to set the mod path");
+            font-size: 20px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
 
     HelpTipLayer {
         width: 100%;
