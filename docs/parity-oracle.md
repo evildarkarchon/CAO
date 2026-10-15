@@ -2,18 +2,28 @@
 
 The C++ CLI is the **parity oracle** for the Rust port ([ADR 0003](adr/0003-port-cao-to-rust-and-slint.md)).
 The `cao-parity` harness runs it and the Rust driver on the same corpus case, then compares
-what each produced. The oracle and its oracle-only changes are deleted with the C++ tree.
+what each produced.
+
+The C++ tree, the oracle and its oracle-only changes were deleted once the port took over
+(#515). `cao-parity` is kept as it was, frozen: its `run` and `local-assets` subcommands and its recipe
+materialiser need no oracle, and `case`, `corpus` and `calibrate` still work against an oracle exe built
+from the last commit that has the C++ tree.
 
 ## Building it
 
-Build a Release CLI, with the GUI off, in its own binary directory:
+Check out the commit before the one that deleted the C++ tree in its own worktree, then build a
+Release CLI there, with the GUI off, in its own binary directory:
 
 ```
+git worktree add ../cao-oracle "$(git log -1 --format=%H --diff-filter=D -- CMakeLists.txt)^"
+cd ../cao-oracle
 cmake --preset vs2026-windows -B build/oracle -DCAO_BUILD_GUI=OFF -DBUILD_TESTING=OFF
 cmake --build build/oracle --config Release --target Cathedral_Assets_Optimizer
 ```
 
-The exe is `build/oracle/src/Release/Cathedral_Assets_Optimizer.exe`.
+The exe is `build/oracle/src/Release/Cathedral_Assets_Optimizer.exe` in that worktree. The
+CMake and vcpkg files this section names, and the CLI documentation (`docs/cli.md`) that
+[Oracle-only behaviour](#oracle-only-behaviour) refers to, exist only at that commit.
 
 - **Own binary directory.** The GUI build produces a target with the same name. The oracle
   must not share a build directory with it.
@@ -23,7 +33,8 @@ The exe is `build/oracle/src/Release/Cathedral_Assets_Optimizer.exe`.
   `overrides` entry. This is the release the Rust port builds, so both sides make the same
   texture decisions. Configure output names the version: `directxtex[...]@2026-05-07`.
 
-The harness never runs CMake. Rebuild the oracle by hand after changing C++ or `vcpkg.json`.
+The harness never runs CMake. The oracle is frozen at that commit, so there is nothing to rebuild
+it for.
 
 ## Giving the harness the exe
 
@@ -125,7 +136,8 @@ is its file stem. `raw` entries may name a fixture file under
   per scenario, to keep the seeds within the case budget.
 - `seeds/UNTRANSCRIBED.md` lists every C++ scenario that is not a seed, or only partly one,
   with the reason. It is the backlog of scenarios to port as Rust tests. `tests/seeds.rs`
-  checks that every C++ test slot is one or the other.
+  checked that every C++ test slot was one or the other until the C++ tree was deleted; it now
+  checks that each seed and entry names one of the deleted suites.
 - `seeds/fault/` holds the fault seeds, each provoking a fault through its tree alone.
 - `seeds/hand-written/` holds the tracer and the other hand-written cases.
 
@@ -247,9 +259,9 @@ cargo run -p cao-parity -- calibrate --oracle <exe>
 ## Oracle-only behaviour
 
 - **Archive options.** `--bcomp`, `--bdum`, `--bmi`, `--bmt` and `--bds` set the archive
-  options that the GUI reads from `settings.ini` ([cli.md](cli.md)).
+  options that the GUI reads from `settings.ini` (`docs/cli.md` at the oracle's commit).
 - **Event escaping.** Text fields in the `EVENT:` stream are escaped, so the stream parses
-  strictly ([cli.md](cli.md)).
+  strictly (`docs/cli.md` at the oracle's commit).
 - **Forcing CPU BC6H/BC7.** If `CAO_ORACLE_FORCE_CPU_BC` is set to any non-empty value,
   D3D11 device creation fails on purpose and BC6H/BC7 use the CPU codec.
   `cao-parity calibrate` uses it to compare the GPU encoder with the CPU encoder.

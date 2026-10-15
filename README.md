@@ -8,11 +8,7 @@ Documentation is incomplete. It is available [here](https://g_ka.gitlab.io/sse-a
 
 # Build instructions
 
-See [the wiki](https://gitlab.com/G_ka/sse-assets-optimiser/wikis/Build-instructions).
-
-## Rust workspace
-
-CAO is being ported to Rust and Slint ([ADR 0003](docs/adr/0003-port-cao-to-rust-and-slint.md)). The Cargo workspace lives at the repository root, with its crates under `crates/`, and builds independently of the CMake tree:
+CAO is written in Rust with a Slint GUI ([ADR 0003](docs/adr/0003-port-cao-to-rust-and-slint.md)); the C++ implementation it was ported from has been deleted. The Cargo workspace lives at the repository root, with its crates under `crates/`:
 
 ```
 cargo build
@@ -21,9 +17,9 @@ cargo clippy --all-targets
 ```
 
 - **Rust:** `rust-toolchain.toml` pins Rust 1.99.0 with rustfmt and clippy; rustup installs it on first use.
-- **MSVC and Windows SDK:** Visual Studio 2026 (v145) Build Tools and Windows SDK 10.0.26100 are the documented minimum. They are not enforced; the build uses whichever Visual Studio installation it finds, or the environment of a Developer Command Prompt. This is the same install the C++ build needs.
-- **CRT:** the workspace links the dynamic CRT, as the C++ build does, so running CAO still needs the Visual C++ redistributable.
-- **DirectXTex:** the root `Cargo.toml` patches `directxtex` to CAO's fork, [evildarkarchon/directxtex-rs](https://github.com/evildarkarchon/directxtex-rs) (`cao` branch), pinned by commit. The fork builds DirectXTex `may2026`, the same release the parity oracle builds, and `ba2` links the same copy. Its `FORK.md` records the upstream base and delta. Cargo fetches the fork and its submodules with git on first build.
+- **MSVC and Windows SDK:** Visual Studio 2026 (v145) Build Tools and Windows SDK 10.0.26100 are the documented minimum. They are not enforced; the build uses whichever Visual Studio installation it finds, or the environment of a Developer Command Prompt.
+- **CRT:** the workspace links the dynamic CRT, so running CAO needs the Visual C++ redistributable.
+- **DirectXTex:** the root `Cargo.toml` patches `directxtex` to CAO's fork, [evildarkarchon/directxtex-rs](https://github.com/evildarkarchon/directxtex-rs) (`cao` branch), pinned by commit. The fork builds DirectXTex `may2026`, the same release the parity oracle ([docs/parity-oracle.md](docs/parity-oracle.md)) was built with, and `ba2` links the same copy. Its `FORK.md` records the upstream base and delta. Cargo fetches the fork and its submodules with git on first build.
 
 # Features and use instructions
 
