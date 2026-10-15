@@ -1,0 +1,55 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/mod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": true,
+      "delete_backup": false,
+      "compress": false,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": false
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "text",
+        "path": "mods/mod/meshes/asset.nif",
+        "text": "mesh bytes",
+        "note": "mod.bsa, then mod - Textures.bsa, sharing one created mod.esp: three committed mutations."
+      },
+      {
+        "kind": "text",
+        "path": "mods/mod/textures/asset.dds",
+        "text": "texture bytes"
+      }
+    ]
+  },
+  "origin": [
+    "ArchiveFinalizationTests::plannedOutputsRecordSharedDummyPublication"
+  ]
+}

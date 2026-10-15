@@ -1,0 +1,108 @@
+{
+  "spec": {
+    "profile": "FO4",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": true,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "directory",
+        "path": "mods",
+        "note": "One Mod Root per transcribed scenario, named after it. Each scenario's work and evidence belong to its own Mod Root, so they cannot disturb each other."
+      },
+      {
+        "kind": "text",
+        "path": "mods/existingArchivePluginNamesFollowProfile-fo4-main-suffix/bundle - Main.ba2",
+        "text": "retained archive",
+        "note": "The Dummy Plugin takes the Archive's name without its suffix: bundle.esp."
+      },
+      {
+        "kind": "text",
+        "path": "mods/existingArchivePluginNamesFollowProfile-fo4-texture-suffix/bundle - Textures.ba2",
+        "text": "retained archive",
+        "note": "The Dummy Plugin takes the Archive's name without its suffix: bundle.esp."
+      },
+      {
+        "kind": "text",
+        "path": "mods/existingArchivesShareLoadingPlugin-create-once/bundle - Main.ba2",
+        "text": "retained main archive",
+        "note": "Both Archives share one Loading Plugin, created once or kept as found."
+      },
+      {
+        "kind": "text",
+        "path": "mods/existingArchivesShareLoadingPlugin-create-once/bundle - Textures.ba2",
+        "text": "retained texture archive"
+      },
+      {
+        "kind": "text",
+        "path": "mods/existingArchivesShareLoadingPlugin-preserve-full-plugin/bundle - Main.ba2",
+        "text": "retained main archive",
+        "note": "Both Archives share one Loading Plugin, created once or kept as found."
+      },
+      {
+        "kind": "text",
+        "path": "mods/existingArchivesShareLoadingPlugin-preserve-full-plugin/bundle - Textures.ba2",
+        "text": "retained texture archive"
+      },
+      {
+        "kind": "text",
+        "path": "mods/existingArchivesShareLoadingPlugin-preserve-full-plugin/bundle.esm",
+        "text": "full loading plugin"
+      },
+      {
+        "kind": "text",
+        "path": "mods/existingArchivesShareLoadingPlugin-preserve-exact-dummy/bundle - Main.ba2",
+        "text": "retained main archive",
+        "note": "Both Archives share one Loading Plugin, created once or kept as found."
+      },
+      {
+        "kind": "text",
+        "path": "mods/existingArchivesShareLoadingPlugin-preserve-exact-dummy/bundle - Textures.ba2",
+        "text": "retained texture archive"
+      },
+      {
+        "kind": "plugin",
+        "path": "mods/existingArchivesShareLoadingPlugin-preserve-exact-dummy/bundle.esp",
+        "dummy": "fo4"
+      }
+    ]
+  },
+  "origin": [
+    "ArchiveFinalizationTests::existingArchivePluginNamesFollowProfile [FO4 main suffix]",
+    "ArchiveFinalizationTests::existingArchivePluginNamesFollowProfile [FO4 texture suffix]",
+    "ArchiveFinalizationTests::existingArchivesShareLoadingPlugin [create-once]",
+    "ArchiveFinalizationTests::existingArchivesShareLoadingPlugin [preserve-full-plugin]",
+    "ArchiveFinalizationTests::existingArchivesShareLoadingPlugin [preserve-exact-dummy]"
+  ]
+}

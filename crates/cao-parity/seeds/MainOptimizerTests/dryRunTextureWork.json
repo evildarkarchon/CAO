@@ -1,0 +1,113 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": true,
+    "textures": {
+      "necessary": true,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "directory",
+        "path": "mods",
+        "note": "One Mod Root per transcribed scenario, named after it. Each scenario's work and evidence belong to its own Mod Root, so they cannot disturb each other."
+      },
+      {
+        "kind": "text",
+        "path": "mods/dryRunLoadFailureDoesNotQuarantine/dry-run-malformed.dds",
+        "text": "malformed",
+        "note": "A Dry Run load failure is never quarantined."
+      },
+      {
+        "kind": "text",
+        "path": "mods/stagingIsExcludedFromDiscovery/loose.dds",
+        "text": "loose",
+        "note": "The only Asset discovery sees."
+      },
+      {
+        "kind": "text",
+        "path": "mods/stagingIsExcludedFromDiscovery/.cao-staging/temporary.dds",
+        "text": "temporary"
+      },
+      {
+        "kind": "text",
+        "path": "mods/stagingIsExcludedFromDiscovery/.cao-staging/archive.bsa",
+        "text": "uncommitted archive"
+      },
+      {
+        "kind": "text",
+        "path": "mods/stagingIsExcludedFromDiscovery/.CAO-Staging-abandoned/temporary.dds",
+        "text": "temporary"
+      },
+      {
+        "kind": "text",
+        "path": "mods/stagingIsExcludedFromDiscovery/.CAO-Staging-abandoned/archive.bsa",
+        "text": "uncommitted archive"
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/detectsReferencedTgaWithoutMutation/meshes/armor/body.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\armor\\body.TgA"
+            ]
+          }
+        ],
+        "note": "Maintenance is evaluated in a Dry Run: would change, bytes unchanged."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/conversionOnlyTextureExecution-dry-run/Source.Name.TgA",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "Evaluated only; nothing changes."
+      },
+      {
+        "kind": "text",
+        "path": "mods/conversionOnlyTextureExecution-dry-run/Source.Name.dds",
+        "text": "old destination",
+        "note": "Also routed as a native Texture, since the GUI cannot request conversion alone: a Dry Run load failure, never quarantined."
+      }
+    ]
+  },
+  "origin": [
+    "MainOptimizerTests::dryRunLoadFailureDoesNotQuarantine",
+    "ArchiveFirstAssetDiscoveryTests::stagingIsExcludedFromDiscovery",
+    "MeshReferenceMaintenanceTests::detectsReferencedTgaWithoutMutation",
+    "AssetExecutionTests::dryRunMeshMaintenanceDoesNotMutate",
+    "AssetExecutionTests::conversionOnlyTextureExecution [Dry Run]"
+  ]
+}

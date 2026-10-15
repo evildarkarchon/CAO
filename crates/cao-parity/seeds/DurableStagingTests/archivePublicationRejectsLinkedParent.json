@@ -1,0 +1,69 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": true,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "archive",
+        "path": "mods/mod-a/assets.bsa",
+        "game": "sse",
+        "type": "standard",
+        "content": [
+          {
+            "kind": "text",
+            "path": "linked/entry.pex",
+            "text": "staged"
+          }
+        ]
+      },
+      {
+        "kind": "directory",
+        "path": "mods/mod-b/outside"
+      }
+    ],
+    "fs_shape": [
+      {
+        "op": "junction",
+        "path": "mods/mod-a/linked",
+        "target": "mods/mod-b/outside",
+        "note": "A linked parent: extraction is refused, and nothing lands in mod-b."
+      }
+    ]
+  },
+  "origin": [
+    "DurableStagingTests::archivePublicationRejectsLinkedParent"
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/mod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": true,
+      "create": false,
+      "delete_backup": true,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "text",
+        "path": "mods/mod/assets.bsa",
+        "text": "corrupt archive bytes",
+        "note": "Unreadable: never merged, so never backed up or deleted."
+      },
+      {
+        "kind": "text",
+        "path": "mods/mod/assets.bsa.bak",
+        "text": "existing backup bytes",
+        "note": "An earlier backup is never overwritten."
+      }
+    ]
+  },
+  "origin": [
+    "MainOptimizerTests::archiveSourceCleanupRequiresSuccessfulMerge [failed-delete]"
+  ]
+}

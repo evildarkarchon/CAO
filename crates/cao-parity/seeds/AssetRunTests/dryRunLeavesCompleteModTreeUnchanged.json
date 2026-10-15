@@ -1,0 +1,97 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/Mod"
+    },
+    "dry_run": true,
+    "textures": {
+      "necessary": true,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 1,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "text",
+        "path": "mods/Mod/content.bsa",
+        "text": "archive bytes",
+        "note": "Never read: extraction is not requested."
+      },
+      {
+        "kind": "text",
+        "path": "mods/Mod/nested/second.bsa",
+        "text": "invalid manifest bytes"
+      },
+      {
+        "kind": "text",
+        "path": "mods/Mod/.CAO-Staging-unknown/hidden.bsa",
+        "text": "uncommitted archive bytes",
+        "note": "Staging-named, so excluded; a Dry Run never recovers staging."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/Mod/textures/convertible.tga",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "Converted in a Dry Run: evaluated only."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/Mod/meshes/actor.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\convertible.tga"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "text",
+        "path": "mods/Mod/animations/walk.hkx",
+        "text": "animation bytes"
+      },
+      {
+        "kind": "text",
+        "path": "mods/Mod/docs/readme.txt",
+        "text": "documentation bytes"
+      },
+      {
+        "kind": "directory",
+        "path": "mods/Mod/empty/nested",
+        "note": "The whole tree, this empty folder included, is unchanged."
+      }
+    ]
+  },
+  "origin": [
+    "AssetRunTests::dryRunLeavesCompleteModTreeUnchangedWhileEvaluatingLooseAssets"
+  ]
+}

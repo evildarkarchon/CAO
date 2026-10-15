@@ -356,6 +356,7 @@ fn pairwise_case(number: usize, row: &Row<'_>) -> (String, CaseFile) {
                 fs_shape: Vec::new(),
             },
             generator_version: Some(GENERATOR_VERSION),
+            origin: Vec::new(),
         },
     )
 }
@@ -642,6 +643,7 @@ fn start_error_cases() -> Vec<(String, CaseFile)> {
                     profile_overrides: ProfileOverrides::default(),
                     tree,
                     generator_version: Some(GENERATOR_VERSION),
+                    origin: Vec::new(),
                 },
             )
         })

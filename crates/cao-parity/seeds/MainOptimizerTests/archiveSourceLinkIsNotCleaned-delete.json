@@ -1,0 +1,66 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/mod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": true,
+      "create": false,
+      "delete_backup": true,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "archive",
+        "path": "mods/mod/original.dat",
+        "game": "sse",
+        "type": "textures",
+        "content": [
+          {
+            "kind": "text",
+            "path": "fixture.dds",
+            "text": "archived bytes"
+          }
+        ],
+        "note": "Archive bytes under a name discovery skips, as the C++ test's target outside the tree."
+      }
+    ],
+    "fs_shape": [
+      {
+        "op": "file_symlink",
+        "path": "mods/mod/assets.bsa",
+        "target": "mods/mod/original.dat",
+        "note": "A linked Archive is never extracted or cleaned up; the link survives."
+      }
+    ]
+  },
+  "origin": [
+    "MainOptimizerTests::archiveSourceLinkIsNotCleaned [delete]"
+  ]
+}

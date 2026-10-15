@@ -1,0 +1,67 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/Mod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": true,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "text",
+        "path": "mods/Mod/.cao-staging/owner.lock",
+        "text": "",
+        "note": "The manifest names a malformed sibling: StagingOwnershipUnverified, nothing deleted."
+      },
+      {
+        "kind": "directory",
+        "path": "mods/Mod/.cao-staging/run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff"
+      },
+      {
+        "kind": "text",
+        "path": "mods/Mod/textures/.cao-staging-texture-0123456789abcdef0123456789abcdef-ffeeddccbbaa99887766554433221100.dds",
+        "text": "partial"
+      }
+    ],
+    "fs_shape": [
+      {
+        "op": "mod_root_text",
+        "path": "mods/Mod/.cao-staging/ownership.manifest",
+        "mod_root": "mods/Mod",
+        "text": "CAO-STAGING 3\n\"{mod_root}\"\n\"0123456789abcdef0123456789abcdef\" \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\n2\nD \"run-0123456789abcdef0123456789abcdef-00112233445566778899aabbccddeeff\"\nS \"textures/.cao-staging-texture-wrong-short.dds\"\n"
+      }
+    ]
+  },
+  "origin": [
+    "DurableStagingTests::malformedSiblingOwnershipIsPreserved"
+  ]
+}

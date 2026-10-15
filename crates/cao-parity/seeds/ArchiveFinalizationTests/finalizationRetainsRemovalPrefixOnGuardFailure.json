@@ -1,0 +1,72 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": true,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": false,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "text",
+        "path": "mods/mod-a/existing.bsa",
+        "text": "retained archive"
+      },
+      {
+        "kind": "plugin",
+        "path": "mods/mod-a/external.esp",
+        "dummy": "sse",
+        "note": "Removed before mod-b's removal fails."
+      },
+      {
+        "kind": "text",
+        "path": "mods/mod-b/existing.bsa",
+        "text": "retained archive"
+      },
+      {
+        "kind": "plugin",
+        "path": "mods/mod-b/external.esp",
+        "dummy": "sse"
+      }
+    ],
+    "fs_shape": [
+      {
+        "op": "readonly",
+        "path": "mods/mod-b/external.esp",
+        "note": "Read-only in place of the C++ held handle."
+      }
+    ]
+  },
+  "origin": [
+    "ArchiveFinalizationTests::finalizationRetainsRemovalPrefixOnGuardFailure"
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/Mod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "text",
+        "path": "mods/Mod/.cao-staging/owner.lock",
+        "text": "",
+        "note": "A v2 leftover whose owner exited: recovered in Preparing (its scratch is owned from v2 on), then the run proceeds."
+      },
+      {
+        "kind": "text",
+        "path": "mods/Mod/.cao-staging/ownership.manifest.next",
+        "text": "partial replacement"
+      },
+      {
+        "kind": "text",
+        "path": "mods/Mod/.cao-staging/run-4f1c2a9e-0123456789abcdef0123456789abcdef/archive-entry-00112233445566778899aabbccddeeff",
+        "text": "staged entry"
+      },
+      {
+        "kind": "text",
+        "path": "mods/Mod/.cao-staging/run-4f1c2a9e-0123456789abcdef0123456789abcdef/extracted/archive-entry-ffeeddccbbaa99887766554433221100",
+        "text": "staged entry"
+      },
+      {
+        "kind": "texture",
+        "path": "mods/Mod/textures/a.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64
+      }
+    ],
+    "fs_shape": [
+      {
+        "op": "mod_root_text",
+        "path": "mods/Mod/.cao-staging/ownership.manifest",
+        "mod_root": "mods/Mod",
+        "text": "CAO-STAGING 2\n\"{mod_root}\"\n\"4f1c2a9e\" \"run-4f1c2a9e-0123456789abcdef0123456789abcdef\"\n4\nD \"run-4f1c2a9e-0123456789abcdef0123456789abcdef\"\nF \"run-4f1c2a9e-0123456789abcdef0123456789abcdef/archive-entry-00112233445566778899aabbccddeeff\"\nD \"run-4f1c2a9e-0123456789abcdef0123456789abcdef/extracted\"\nF \"run-4f1c2a9e-0123456789abcdef0123456789abcdef/extracted/archive-entry-ffeeddccbbaa99887766554433221100\"\n"
+      }
+    ]
+  }
+}

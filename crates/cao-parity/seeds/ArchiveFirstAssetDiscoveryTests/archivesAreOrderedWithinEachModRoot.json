@@ -1,0 +1,212 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": true,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "archive",
+        "path": "mods/a-mod/alpha.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/fixture.dds",
+            "text": "fixture"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/a-mod/alpha/z.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/fixture.dds",
+            "text": "fixture"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/a-mod/Beta.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/fixture.dds",
+            "text": "fixture"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/a-mod/STRASSE.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/fixture.dds",
+            "text": "fixture"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/a-mod/Straße.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/fixture.dds",
+            "text": "fixture"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/a-mod/z.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/fixture.dds",
+            "text": "fixture"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/z-mod/alpha.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/fixture.dds",
+            "text": "fixture"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/z-mod/alpha/z.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/fixture.dds",
+            "text": "fixture"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/z-mod/Beta.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/fixture.dds",
+            "text": "fixture"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/z-mod/STRASSE.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/fixture.dds",
+            "text": "fixture"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/z-mod/Straße.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/fixture.dds",
+            "text": "fixture"
+          }
+        ]
+      },
+      {
+        "kind": "archive",
+        "path": "mods/z-mod/z.bsa",
+        "game": "sse",
+        "type": "textures",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "textures/fixture.dds",
+            "text": "fixture"
+          }
+        ]
+      }
+    ]
+  },
+  "origin": [
+    "ArchiveFirstAssetDiscoveryTests::archivesAreOrderedWithinEachModRoot"
+  ]
+}

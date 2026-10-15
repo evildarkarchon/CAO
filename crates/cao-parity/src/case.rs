@@ -70,6 +70,13 @@ pub struct CaseFile {
     /// generator's, because another version may build different bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generator_version: Option<u32>,
+    /// The C++ scenarios a transcribed seed was written from (#507), each as
+    /// `<Suite>::<slot>`, or `<Suite>::<slot> [<row>]` for one `QTest::newRow`
+    /// row of a data-driven slot. Exact duplicates are merged into one seed,
+    /// which then names every scenario it stands for. Empty for a generated
+    /// case and for a seed with no C++ counterpart, such as a fault seed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub origin: Vec<String>,
 }
 
 impl CaseFile {
@@ -80,6 +87,7 @@ impl CaseFile {
             profile_overrides: ProfileOverrides::default(),
             tree: TreeRecipe::default(),
             generator_version: None,
+            origin: Vec::new(),
         }
     }
 }

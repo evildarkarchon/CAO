@@ -1,0 +1,68 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": true,
+      "mipmaps": true,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "profile_overrides": {
+    "output_format": "R8G8B8A8_UNORM",
+    "unwanted_formats": [],
+    "compress_interface": false
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "texture",
+        "path": "mods/already-optimal/texture.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 4,
+        "height": 4,
+        "mip_levels": 3,
+        "note": "Left alone by Apply; the Dry Run must report the same."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/missing-mipmaps/texture.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 4,
+        "height": 4,
+        "mip_levels": 1,
+        "note": "Changed by Apply; the Dry Run must report the same."
+      }
+    ]
+  },
+  "origin": [
+    "MainOptimizerTests::textureDryRunMatchesApply [already-optimal]",
+    "MainOptimizerTests::textureDryRunMatchesApply [missing-mipmaps]"
+  ]
+}

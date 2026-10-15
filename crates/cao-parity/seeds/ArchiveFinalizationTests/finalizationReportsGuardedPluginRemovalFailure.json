@@ -1,0 +1,61 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/mod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": true,
+      "delete_backup": false,
+      "compress": false,
+      "create_dummies": false,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": false
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "text",
+        "path": "mods/mod/textures/asset.dds",
+        "text": "source bytes"
+      },
+      {
+        "kind": "plugin",
+        "path": "mods/mod/existing.esp",
+        "dummy": "sse",
+        "note": "An exact Dummy Plugin to remove, read-only in place of the C++ test's held handle: PluginRemovalFailed, safe to continue, and no pruning."
+      }
+    ],
+    "fs_shape": [
+      {
+        "op": "readonly",
+        "path": "mods/mod/existing.esp"
+      }
+    ]
+  },
+  "origin": [
+    "ArchiveFinalizationTests::finalizationReportsGuardedPluginRemovalFailure"
+  ]
+}

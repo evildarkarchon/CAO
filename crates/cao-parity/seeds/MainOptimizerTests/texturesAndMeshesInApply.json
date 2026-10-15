@@ -1,0 +1,95 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 1,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "directory",
+        "path": "mods",
+        "note": "One Mod Root per transcribed scenario, named after it. Each scenario's work and evidence belong to its own Mod Root, so they cannot disturb each other."
+      },
+      {
+        "kind": "text",
+        "path": "mods/loadFailuresQuarantineMalformedAssets/apply-malformed.dds",
+        "text": "malformed",
+        "note": "Fails to load: quarantined as .caobad, and the run goes on."
+      },
+      {
+        "kind": "text",
+        "path": "mods/loadFailuresQuarantineMalformedAssets/apply-malformed.tga",
+        "text": "malformed"
+      },
+      {
+        "kind": "text",
+        "path": "mods/loadFailuresQuarantineMalformedAssets/apply-malformed.nif",
+        "text": "malformed"
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/ledgerWorkTotalCountsRoutedAssetsNotOperations/Meshes/BothOperations.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\a.tga"
+            ]
+          }
+        ],
+        "note": "Optimized and maintained, yet counted once: the work total is 1."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/meshOperationsShareOneTransaction-optimization-and-maintenance/Meshes/Actor.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\actor.tga"
+            ]
+          }
+        ],
+        "note": "One committed rewrite, whatever operations the request gives it."
+      }
+    ]
+  },
+  "origin": [
+    "MainOptimizerTests::loadFailuresQuarantineMalformedAssets",
+    "AssetRoutingTests::ledgerWorkTotalCountsRoutedAssetsNotOperations",
+    "AssetExecutionTests::meshOperationsShareOneTransaction [optimization and maintenance]"
+  ]
+}
