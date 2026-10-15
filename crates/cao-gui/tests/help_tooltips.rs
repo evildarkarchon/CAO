@@ -319,6 +319,27 @@ fn clicking_a_mesh_level_under_the_help_cursor_selects_it() {
 }
 
 #[test]
+fn clicking_a_mesh_level_several_mods_disables_under_the_help_cursor_leaves_it() {
+    headless();
+    let (app, _desktop) = open_sse("overlay_click_several_mods");
+    let ui = app.window();
+    choose(ui, "Optimization mode", "Several mods");
+    select_tab(ui, "Meshes");
+    if !checked(ui, "Process meshes") {
+        click(ui, "Process meshes");
+    }
+    // The group is enabled; only the Several Mods rule disables these two.
+    assert!(checked(ui, "Necessary optimization"));
+    assert!(!enabled(ui, "Medium optimization") && !enabled(ui, "Full optimization"));
+
+    mouse_click(ui, "Medium optimization");
+    mouse_click(ui, "Full optimization");
+
+    assert!(checked(ui, "Necessary optimization"));
+    assert!(!checked(ui, "Medium optimization") && !checked(ui, "Full optimization"));
+}
+
+#[test]
 fn pressing_an_option_hides_its_help() {
     headless();
     let (app, _desktop) = open_sse("tip_hidden_on_press");
