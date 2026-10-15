@@ -4,7 +4,7 @@
 
 mod common;
 
-use cao_gui::ui::{BsaTab, MeshesTab, TexturesTab};
+use cao_gui::ui::{MeshesTab, TexturesTab};
 use cao_profiles::{BsaGame, OptimizationMode, Options, Profiles};
 use common::*;
 use slint::ComponentHandle;
@@ -40,7 +40,8 @@ fn settings_saved_from_the_window_reload_identically() {
     let (app, _desktop) = open(&app_dir);
     let ui = app.window();
     enter(ui, "Mod folder", r"C:\Mods\Some Mod\");
-    ui.set_mode_index(1); // Several mods
+    // Several Mods brings its UI rule (#509): "Necessary" meshes below.
+    choose(ui, "Optimization mode", "Several mods");
     // The shipped `common.ini` shows them; turn them off and back on.
     click(ui, "Show advanced settings");
     assert!(!checked(ui, "Show advanced settings"));
@@ -51,13 +52,13 @@ fn settings_saved_from_the_window_reload_identically() {
     click(ui, "Create BSA");
     click(ui, "Separate textures BSA");
     enter(ui, "Maximum size", "3.5");
-    ui.global::<BsaTab>().set_game_index(2); // FO4
+    // Not FO4, whose UI rule (#509) would force "Separate textures BSA" back on.
+    choose(ui, "Game", "Skyrim LE");
 
     select_tab(ui, "Meshes");
     // SSE ships `iMeshesOptimizationLevel=0`, which unchecks the group.
     assert!(!checked(ui, "Process meshes"));
     click(ui, "Process meshes");
-    click(ui, "Full optimization");
     click(ui, "Resave meshes");
     ui.global::<MeshesTab>().set_stream_index(3); // Fallout 4 (130)
 
@@ -87,14 +88,14 @@ fn settings_saved_from_the_window_reload_identically() {
     assert_eq!(options.mode, OptimizationMode::SeveralMods);
     assert!(options.bsa_extract && options.bsa_create);
     assert!(options.bsa_merge_textures);
-    assert_eq!(options.meshes_optimization_level, 3);
+    assert_eq!(options.meshes_optimization_level, 1);
     assert!(options.meshes_resave);
     assert!(options.textures_compress && options.textures_mipmaps);
     assert!(options.textures_resize_size && !options.textures_resize_ratio);
     assert_eq!(options.textures_target_width, 1024);
     assert!(options.animations_optimization);
     let settings = profile.load_settings().unwrap();
-    assert_eq!(settings.bsa_game, BsaGame::Fo4);
+    assert_eq!(settings.bsa_game, BsaGame::Tes5);
     assert_eq!(
         settings.max_bsa_uncompressed_size,
         3.5 * 1024.0 * 1024.0 * 1024.0
@@ -127,10 +128,10 @@ fn settings_saved_from_the_window_reload_identically() {
     );
     assert_eq!(
         control(ui, "Game").accessible_value().as_deref(),
-        Some("FO4")
+        Some("Skyrim LE")
     );
     select_tab(ui, "Meshes");
-    assert!(checked(ui, "Full optimization") && !checked(ui, "Necessary optimization"));
+    assert!(checked(ui, "Necessary optimization") && !checked(ui, "Full optimization"));
     assert!(checked(ui, "Resave meshes"));
     select_tab(ui, "Textures");
     assert!(checked(ui, "By fixed size") && !checked(ui, "By ratio"));
