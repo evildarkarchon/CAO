@@ -379,7 +379,7 @@ fn the_shipped_common_ini_loads_into_the_common_settings_model() {
         CommonSettings {
             profile: "TES5".to_owned(),
             show_advanced_settings: true,
-            dark_mode: false,
+            dark_mode: true,
             show_tutorial: true,
             not_first_start: true,
         }
@@ -387,9 +387,10 @@ fn the_shipped_common_ini_loads_into_the_common_settings_model() {
 }
 
 #[test]
-fn a_missing_common_ini_shows_tutorials_and_is_a_first_start() {
-    // C++ reads `showTutorial` with an explicit default of `true`; every other key
-    // reads as `false` or empty.
+fn a_missing_common_ini_is_dark_shows_tutorials_and_is_a_first_start() {
+    // C++ reads `showTutorial` with an explicit default of `true`, and the port is
+    // dark by default (spec #476), so a missing `bDarkMode` reads as `true`; every
+    // other key reads as `false` or empty.
     let app_dir = common::scratch_dir("common-missing");
 
     assert_eq!(
@@ -397,11 +398,25 @@ fn a_missing_common_ini_shows_tutorials_and_is_a_first_start() {
         CommonSettings {
             profile: String::new(),
             show_advanced_settings: false,
-            dark_mode: false,
+            dark_mode: true,
             show_tutorial: true,
             not_first_start: false,
         }
     );
+}
+
+#[test]
+fn an_explicit_light_theme_choice_is_honoured() {
+    let ini = IniFile::parse(b"[General]\r\nbDarkMode=false\r\n");
+
+    assert!(!CommonSettings::read(&ini).dark_mode);
+}
+
+#[test]
+fn a_common_ini_without_a_theme_key_is_dark() {
+    let ini = IniFile::parse(b"[General]\r\nprofile=SSE\r\n");
+
+    assert!(CommonSettings::read(&ini).dark_mode);
 }
 
 #[test]

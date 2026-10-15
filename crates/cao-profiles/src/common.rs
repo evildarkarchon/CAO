@@ -13,7 +13,7 @@ pub struct CommonSettings {
     pub profile: String,
     /// `bShowAdvancedSettings`.
     pub show_advanced_settings: bool,
-    /// `bDarkMode`.
+    /// `bDarkMode`. A missing key reads as `true`: the port is dark by default.
     pub dark_mode: bool,
     /// `showTutorial`. Unlike every other key, C++ reads a missing one as `true`.
     pub show_tutorial: bool,
@@ -28,7 +28,9 @@ impl CommonSettings {
         Self {
             profile: ini.value("profile").to_qstring(),
             show_advanced_settings: ini.value("bShowAdvancedSettings").to_bool(),
-            dark_mode: ini.value("bDarkMode").to_bool(),
+            // Unlike C++, the port is dark by default (spec #476): a missing key reads
+            // as `true`, while an explicit `false` is still honoured.
+            dark_mode: ini.get("bDarkMode").is_none_or(|value| value.to_bool()),
             // `value("showTutorial", true)`: the default applies only to a missing key.
             show_tutorial: ini.get("showTutorial").is_none_or(|value| value.to_bool()),
             not_first_start: ini.value("notFirstStart").to_bool(),
