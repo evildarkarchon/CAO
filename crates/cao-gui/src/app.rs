@@ -17,7 +17,7 @@ use slint::{
 };
 
 use crate::desktop::{Desktop, MessageLevel};
-use crate::form::{self, EnabledTabs};
+use crate::form::{self, EnabledTabs, Tab};
 use crate::formats;
 use crate::log_tab::AttachedLog;
 use crate::modal::ModalSlot;
@@ -108,9 +108,9 @@ impl App {
         let current = profiles.resolve(&common.profile);
 
         let window = MainWindow::new()?;
-        let tab = |id: &str, title: &str| TabInfo {
-            id: id.into(),
-            title: title.into(),
+        let tab = |tab: Tab| TabInfo {
+            id: tab.id().into(),
+            title: tab.title().into(),
             enabled: true,
         };
         let app = Rc::new_cyclic(|me| Self {
@@ -129,13 +129,9 @@ impl App {
             profile_names: Rc::new(VecModel::from(
                 names.iter().map(SharedString::from).collect::<Vec<_>>(),
             )),
-            tabs: Rc::new(VecModel::from(vec![
-                tab("bsa", "BSA"),
-                tab("meshes", "Meshes"),
-                tab("textures", "Textures"),
-                tab("animations", "Animations"),
-                tab("log", "Log"),
-            ])),
+            tabs: Rc::new(VecModel::from(
+                Tab::ALL.into_iter().map(tab).collect::<Vec<_>>(),
+            )),
             name_dialog: ModalSlot::default(),
             base_dialog: ModalSlot::default(),
             about_slint_dialog: ModalSlot::default(),
@@ -196,47 +192,22 @@ impl App {
     fn wire(&self) {
         let ui = &self.window;
         let app = &self.me;
-        let with = |action: fn(&Self)| {
-            let app = app.clone();
-            move || {
-                if let Some(app) = app.upgrade() {
-                    action(&app);
-                }
-            }
-        };
-
-        ui.on_profile_selected({
-            let app = app.clone();
-            move |index| {
-                if let Some(app) = app.upgrade() {
-                    app.profile_selected(index);
-                }
-            }
-        });
+        let with = |action: fn(&Self)| self.with(action);
+        ui.on_profile_selected(self.with_arg(Self::profile_selected));
         ui.on_new_profile(with(Self::new_profile));
         ui.on_open_directory(with(Self::open_directory));
-        ui.on_advanced_clicked({
-            let app = app.clone();
-            move |_| {
-                if let Some(app) = app.upgrade() {
-                    app.tutorial(
-                        "Advanced settings",
-                        "Advanced settings can only be modified when using custom profiles.",
-                        Box::new(|| {}),
-                    );
-                }
-            }
-        });
+        ui.on_advanced_clicked(self.with_arg(|app, _: bool| {
+            app.tutorial(
+                "Advanced settings",
+                "Advanced settings can only be modified when using custom profiles.",
+                Box::new(|| {}),
+            );
+        }));
         // C++ saves the window when debug logging is toggled.
-        ui.on_debug_log_toggled({
-            let app = app.clone();
-            move |debug| {
-                if let Some(app) = app.upgrade() {
-                    app.save();
-                    app.debug_log_toggled(debug);
-                }
-            }
-        });
+        ui.on_debug_log_toggled(self.with_arg(|app, debug| {
+            app.save();
+            app.debug_log_toggled(debug);
+        }));
         ui.on_open_log(with(Self::open_log));
         ui.on_open_docs(with(|app| app.desktop.open(DOCUMENTATION_URL)));
         ui.on_open_discord(with(|app| app.desktop.open(DISCORD_URL)));
@@ -365,13 +336,7 @@ impl App {
             let Some(mut tab) = self.tabs.row_data(row) else {
                 continue;
             };
-            tab.enabled = match tab.id.as_str() {
-                "bsa" => enabled.bsa,
-                "meshes" => enabled.meshes,
-                "textures" => enabled.textures,
-                "animations" => enabled.animations,
-                _ => true,
-            };
+            tab.enabled = Tab::from_id(&tab.id).is_none_or(|id| enabled.allows(id));
             self.tabs.set_row_data(row, tab);
         }
         let current = self.window.get_current_tab();
@@ -595,6 +560,28 @@ impl App {
         self.me.clone()
     }
 
+    /// A no-argument window callback that runs `action` on the app, holding it
+    /// weakly (the window owns its callbacks, and the app owns the window). It
+    /// does nothing once the app is gone.
+    fn with(&self, action: impl Fn(&Self) + 'static) -> impl Fn() + 'static {
+        let app = self.weak();
+        move || {
+            if let Some(app) = app.upgrade() {
+                action(&app);
+            }
+        }
+    }
+
+    /// [`App::with`] for a callback that passes one argument on to `action`.
+    fn with_arg<A>(&self, action: impl Fn(&Self, A) + 'static) -> impl Fn(A) + 'static {
+        let app = self.weak();
+        move |argument| {
+            if let Some(app) = app.upgrade() {
+                action(&app, argument);
+            }
+        }
+    }
+
     /// C++ `showTutorialWindow`: an information box when Tools → Show tutorials
     /// is on. `then` runs after it closes, or at once when it is off.
     fn tutorial(&self, title: &str, text: &str, then: Box<dyn FnOnce()>) {
@@ -637,41 +624,13 @@ impl App {
     /// same call `load_profile` makes after loading settings.
     fn wire_rules(&self) {
         let ui = &self.window;
-        let app = &self.me;
-        ui.on_dry_run_clicked({
-            let app = app.clone();
-            move |_| {
-                if let Some(app) = app.upgrade() {
-                    rules::apply(&app.window);
-                }
-            }
-        });
+        let apply_rules = |app: &Self| rules::apply(&app.window);
+        ui.on_dry_run_clicked(self.with_arg(move |app, _| apply_rules(app)));
         // A RadioGroup disabled with its unchecked group reverts what a rule
         // writes to its radios, so the rules re-apply once the group is back.
-        ui.on_meshes_process_toggled({
-            let app = app.clone();
-            move || {
-                if let Some(app) = app.upgrade() {
-                    rules::apply(&app.window);
-                }
-            }
-        });
-        ui.on_game_selected({
-            let app = app.clone();
-            move |_| {
-                if let Some(app) = app.upgrade() {
-                    rules::apply(&app.window);
-                }
-            }
-        });
-        ui.on_mode_activated({
-            let app = app.clone();
-            move |_| {
-                if let Some(app) = app.upgrade() {
-                    app.mode_activated();
-                }
-            }
-        });
+        ui.on_meshes_process_toggled(self.with(apply_rules));
+        ui.on_game_selected(self.with_arg(move |app, _| apply_rules(app)));
+        ui.on_mode_activated(self.with_arg(|app, _| app.mode_activated()));
     }
 
     /// The Textures tab's Edit button (C++ `TexturesFormatSelectDialog`): opens
@@ -771,6 +730,8 @@ impl App {
         // beside it, under `<app_dir>/logs`.
         let app_dir = self.profiles.root().parent().unwrap_or(Path::new(""));
         let attached = AttachedLog::attach(&self.window, log, app_dir);
+        // Fails only if the cell is already set, which the early return above
+        // rules out: the window lives on one thread, so nothing set it since.
         let _ = self.log.set(attached);
     }
 

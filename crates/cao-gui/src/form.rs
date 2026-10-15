@@ -17,6 +17,12 @@ const GIGABYTE: f64 = 1024.0 * 1024.0 * 1024.0;
 
 /// The Game combo's games, by index (C++ `MainWindow` item data).
 const GAMES: [BsaGame; 3] = [BsaGame::Tes5, BsaGame::Sse, BsaGame::Fo4];
+/// The mode combo's modes, by index (C++ `modeChooserComboBox` item data).
+const MODES: [OptimizationMode; 2] = [OptimizationMode::SingleMod, OptimizationMode::SeveralMods];
+/// `TexturesTab.resize-mode` of the "By ratio" Downsizing radio.
+const RESIZE_BY_RATIO: i32 = 0;
+/// `TexturesTab.resize-mode` of the "By fixed size" Downsizing radio.
+const RESIZE_BY_SIZE: i32 = 1;
 /// The Version combo's NIF file versions: nifly's `V20_0_0_5` and `V20_2_0_7`.
 const MESH_VERSIONS: [u32; 2] = [0x1400_0005, 0x1402_0007];
 /// The User combo's NIF user versions.
@@ -31,6 +37,55 @@ const OUTPUT_FORMATS: [u32; 5] = [98, 83, 77, 71, 28];
 const RATIO_RANGE: (u32, u32) = (2, 10);
 const SIZE_RANGE: (u32, u32) = (4, 4096);
 
+/// The tab bar's tabs, in its order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Tab {
+    Bsa,
+    Meshes,
+    Textures,
+    Animations,
+    Log,
+}
+
+impl Tab {
+    /// Every tab, in the bar's order.
+    pub(crate) const ALL: [Tab; 5] = [
+        Tab::Bsa,
+        Tab::Meshes,
+        Tab::Textures,
+        Tab::Animations,
+        Tab::Log,
+    ];
+
+    /// The id the tab bar's `TabInfo` carries, which `main.slint` matches
+    /// against `current-tab` to show the tab's page.
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Tab::Bsa => "bsa",
+            Tab::Meshes => "meshes",
+            Tab::Textures => "textures",
+            Tab::Animations => "animations",
+            Tab::Log => "log",
+        }
+    }
+
+    /// The title the tab bar shows.
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Tab::Bsa => "BSA",
+            Tab::Meshes => "Meshes",
+            Tab::Textures => "Textures",
+            Tab::Animations => "Animations",
+            Tab::Log => "Log",
+        }
+    }
+
+    /// The tab whose [`Tab::id`] is `id`, if any.
+    pub(crate) fn from_id(id: &str) -> Option<Tab> {
+        Tab::ALL.into_iter().find(|tab| tab.id() == id)
+    }
+}
+
 /// Which tabs the profile enables, as the tab bar shows them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EnabledTabs {
@@ -44,14 +99,35 @@ impl EnabledTabs {
     /// Reads the tab bar's per-tab enable.
     pub(crate) fn of(ui: &MainWindow) -> Self {
         let tabs = ui.get_tabs();
-        let enabled = |id: &str| tabs.iter().any(|tab| tab.id == id && tab.enabled);
+        let enabled = |tab: Tab| tabs.iter().any(|row| row.id == tab.id() && row.enabled);
         Self {
-            bsa: enabled("bsa"),
-            meshes: enabled("meshes"),
-            textures: enabled("textures"),
-            animations: enabled("animations"),
+            bsa: enabled(Tab::Bsa),
+            meshes: enabled(Tab::Meshes),
+            textures: enabled(Tab::Textures),
+            animations: enabled(Tab::Animations),
         }
     }
+
+    /// Whether `tab` is enabled. The profile never disables the Log tab.
+    pub(crate) fn allows(&self, tab: Tab) -> bool {
+        match tab {
+            Tab::Bsa => self.bsa,
+            Tab::Meshes => self.meshes,
+            Tab::Textures => self.textures,
+            Tab::Animations => self.animations,
+            Tab::Log => true,
+        }
+    }
+}
+
+/// The mode the mode combo shows at `index`; `None` for no selection.
+pub(crate) fn mode_at(index: i32) -> Option<OptimizationMode> {
+    item(&MODES, index).copied()
+}
+
+/// The game the Game combo shows at `index`; `None` for no selection.
+pub(crate) fn game_at(index: i32) -> Option<BsaGame> {
+    item(&GAMES, index).copied()
 }
 
 /// Shows the options model (`settings.ini`) in the window.
@@ -82,9 +158,9 @@ pub(crate) fn show_options(ui: &MainWindow, options: &Options) {
     // C++'s `setChecked(size)` then `setChecked(ratio)` lets ratio win and keeps
     // the previous choice when neither is set.
     if options.textures_resize_ratio {
-        textures.set_resize_mode(0);
+        textures.set_resize_mode(RESIZE_BY_RATIO);
     } else if options.textures_resize_size {
-        textures.set_resize_mode(1);
+        textures.set_resize_mode(RESIZE_BY_SIZE);
     }
     textures.set_size_width(clamp(options.textures_target_width, SIZE_RANGE));
     textures.set_size_height(clamp(options.textures_target_height, SIZE_RANGE));
@@ -115,11 +191,7 @@ pub(crate) fn show_options(ui: &MainWindow, options: &Options) {
     ui.set_debug_log(options.debug_log);
     ui.set_dry_run(options.dry_run);
     // `findData` finds no item for an unsupported mode, which selects nothing.
-    ui.set_mode_index(match options.mode {
-        OptimizationMode::SingleMod => 0,
-        OptimizationMode::SeveralMods => 1,
-        OptimizationMode::Unsupported(_) => -1,
-    });
+    ui.set_mode_index(index_of(&MODES, &options.mode).unwrap_or(-1));
     ui.set_user_path(options.user_path.as_str().into());
 }
 
@@ -150,10 +222,10 @@ pub(crate) fn read_options(ui: &MainWindow, current: &Options) -> Options {
     options.textures_compress = textures_enabled && textures.get_compress();
 
     let resizing = textures.get_resize() && tabs.textures;
-    options.textures_resize_size = resizing && textures.get_resize_mode() == 1;
+    options.textures_resize_size = resizing && textures.get_resize_mode() == RESIZE_BY_SIZE;
     options.textures_target_width = unsigned(textures.get_size_width());
     options.textures_target_height = unsigned(textures.get_size_height());
-    options.textures_resize_ratio = resizing && textures.get_resize_mode() == 0;
+    options.textures_resize_ratio = resizing && textures.get_resize_mode() == RESIZE_BY_RATIO;
     options.textures_target_width_ratio = unsigned(textures.get_ratio_width());
     options.textures_target_height_ratio = unsigned(textures.get_ratio_height());
 
@@ -178,11 +250,7 @@ pub(crate) fn read_options(ui: &MainWindow, current: &Options) -> Options {
     options.dry_run = ui.get_dry_run();
     options.user_path = clean_path(&ui.get_user_path());
     // No selection reads as Single Mod, as an invalid `QVariant` converts to 0.
-    options.mode = if ui.get_mode_index() == 1 {
-        OptimizationMode::SeveralMods
-    } else {
-        OptimizationMode::SingleMod
-    };
+    options.mode = mode_at(ui.get_mode_index()).unwrap_or(OptimizationMode::SingleMod);
     options.debug_log = ui.get_debug_log();
     options
 }

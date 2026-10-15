@@ -1,8 +1,10 @@
-//! What `main` does before the window exists: bootstrapping the Application
-//! Log, and reporting a startup failure (C++ `main`, #511).
+//! What `main` does before the window exists: deriving the app directory,
+//! bootstrapping the Application Log, and reporting a startup failure (C++
+//! `main`, #511).
 
 use std::fmt::Display;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cao_optimizers::application_log::{self, ApplicationLog, LogError};
@@ -21,6 +23,18 @@ pub enum BootstrapError {
     /// Another `log` sink is already installed in this process.
     #[error("the Application Log could not be installed: {0}")]
     AlreadyInstalled(#[from] log::SetLoggerError),
+}
+
+/// The app directory `main` hands everything else: the running exe's
+/// directory, never the working directory (deviation 1). C++ CAO opened
+/// `profiles/` relative to the working directory, so a shortcut with another
+/// start-in folder lost them. Derive it once, in `main`.
+///
+/// # Errors
+/// The exe's path could not be found or has no parent (see
+/// [`cao_winfs::exe_directory`]); there is deliberately no fallback.
+pub fn app_directory() -> io::Result<PathBuf> {
+    cao_winfs::exe_directory()
 }
 
 /// Opens and installs the process's Application Log for the CAO install in

@@ -15,6 +15,9 @@ import { FormatItem, FormatsDialog } from "dialogs.slint";
 
 export { TabInfo, TextInputDialog, ChoiceDialog, AboutSlintDialog }
 export { FormatItem, FormatsDialog }
+// Exported so headless tests can place a tip where no help control reaches, such as
+// the bottom edge (#512). The app itself never sets it from Rust.
+export { HelpTip } from "widgets.slint";
 import { LogPage } from "log.slint";
 export { LogTab, LogRow, LogSeverity } from "log.slint";
 

@@ -1,9 +1,10 @@
 # MSVC `std::filesystem` probe
 
 `expected.txt` comes from the MSVC STL itself, not from a reading of its source.
-`canonical_probe.cpp` is built with the MSVC that builds CAO (STL 14.51 at recording time),
-with CAO's application manifest embedded so long paths behave as they do in CAO. It goes
-when the C++ tree goes.
+`canonical_probe.cpp` was built with the MSVC that built C++ CAO (STL 14.51 at recording
+time), with CAO's application manifest embedded so long paths behave as they do in CAO. It
+is the reference source the captured fixture was recorded with, kept for provenance; it is
+not part of the build, and no crate compiles it.
 
 - `cases.txt`: the tree to build and the `canonical` / `weakly_canonical` inputs. The format
   is described at the top of `canonical_probe.cpp`.

@@ -33,6 +33,14 @@ fn launched_from_another_start_in_folder_the_window_finds_its_own_profiles() {
     let decoy_common = std::fs::read(start_in.join("profiles").join("common.ini")).unwrap();
     std::env::set_current_dir(&start_in).unwrap();
 
+    // What `main` derives: the exe's directory, not the start-in folder.
+    let exe = std::env::current_exe().unwrap();
+    let derived = cao_gui::app_directory().unwrap();
+    assert_eq!(derived, exe.parent().unwrap());
+    assert_ne!(derived, start_in);
+
+    // The window is handed the install's directory, as `main` hands it the
+    // derived one (the test exe's directory holds no `profiles/`).
     let (app, _desktop) = open(&install);
     let ui = app.window();
 

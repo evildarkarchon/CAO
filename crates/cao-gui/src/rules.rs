@@ -19,16 +19,14 @@
 //! controls AND into their `enabled`.
 
 use cao_gui_ui::{BsaTab, MainWindow, MeshesTab, UiRules};
+use cao_profiles::{BsaGame, OptimizationMode};
 use slint::ComponentHandle;
 
-/// The mode combo's index of "Several mods".
-const SEVERAL_MODS: i32 = 1;
-/// The Game combo's index of FO4 (`BsaGame::Fo4` in `profile.ini`).
-const FO4: i32 = 2;
+use crate::form;
 
 /// Whether the mode combo shows "Several mods".
 pub(crate) fn several_mods_chosen(ui: &MainWindow) -> bool {
-    ui.get_mode_index() == SEVERAL_MODS
+    form::mode_at(ui.get_mode_index()) == Some(OptimizationMode::SeveralMods)
 }
 
 /// Applies every UI rule to the window's current state.
@@ -83,7 +81,7 @@ fn several_mods(ui: &MainWindow) {
 /// it is.
 fn fo4_textures(ui: &MainWindow) {
     let bsa = ui.global::<BsaTab>();
-    let fo4 = bsa.get_game_index() == FO4;
+    let fo4 = form::game_at(bsa.get_game_index()) == Some(BsaGame::Fo4);
     if fo4 {
         bsa.set_separate_textures(true);
     }

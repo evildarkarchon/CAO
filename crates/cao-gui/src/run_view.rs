@@ -1,5 +1,6 @@
 //! What the window shows of an Optimization Run (C++ `cao::gui::RunViewModel`,
-//! `src/GuiRun.cpp`).
+//! `src/GuiRun.cpp`, deleted with the C++ tree (#515) and kept at the oracle's
+//! commit; see `docs/parity-oracle.md`).
 //!
 //! [`RunView`] turns the ordered Run Events of one run into presentation facts:
 //! a label naming the phase or the Run Outcome, the phase's attempt counts, and
@@ -12,8 +13,8 @@ use std::path::Path;
 
 use cao_core::routing::SkipReason;
 use cao_core::run::{
-    MutationKind, OptimizationRunResult, PhaseSkipReason, RunEvent, RunEventPayload, RunId,
-    RunOutcome, RunPhase, RunPhaseStatus, RunProgress,
+    MutationKind, OptimizationRunResult, PhaseSkipReason, RunEvent, RunEventPayload, RunFailure,
+    RunId, RunOutcome, RunPhase, RunPhaseStatus, RunProgress,
 };
 
 /// Presentation facts copied from one run's ordered events.
@@ -82,7 +83,7 @@ impl RunView {
                     });
                 }
                 if state.cancellation_requested {
-                    state.label.insert_str(0, "Cancelling - ");
+                    mark_cancelling(&mut state.label);
                 }
             }
             RunEventPayload::Diagnostic(diagnostic) => state.details.push(format!(
@@ -90,11 +91,7 @@ impl RunView {
                 diagnostic.detail,
                 diagnostic.path.display()
             )),
-            RunEventPayload::Failure(failure) => state.details.push(format!(
-                "Failure: {} | {}",
-                failure.detail,
-                failure.path.display()
-            )),
+            RunEventPayload::Failure(failure) => state.details.push(failure_row(failure)),
             RunEventPayload::Terminal(result) => {
                 state.active = false;
                 state.outcome = Some(result.outcome());
@@ -116,7 +113,7 @@ impl RunView {
         let state = &mut self.state;
         if state.active && !state.cancellation_requested {
             state.cancellation_requested = true;
-            state.label.insert_str(0, "Cancelling - ");
+            mark_cancelling(&mut state.label);
         }
     }
 
@@ -224,6 +221,30 @@ fn shown(path: &Path) -> std::path::Display<'_> {
     path.display()
 }
 
+/// Prefixes a phase label with the cancellation marker, as both a requested
+/// cancellation and every later phase show it.
+fn mark_cancelling(label: &mut String) {
+    label.insert_str(0, "Cancelling - ");
+}
+
+/// The start of every [`failure_row`].
+const FAILURE_PREFIX: &str = "Failure: ";
+
+/// A Run Failure's detail row. The streamed row and the terminal result's copy
+/// must come out identical: the terminal copy is dropped by matching the text.
+fn failure_row(failure: &RunFailure) -> String {
+    format!(
+        "{FAILURE_PREFIX}{} | {}",
+        failure.detail,
+        shown(&failure.path)
+    )
+}
+
+/// The detail row of an Archive that failed to extract or to finalize.
+fn archive_failure_row(archive_path: &Path, detail: &str) -> String {
+    format!("Archive Failure: {} | {detail}", shown(archive_path))
+}
+
 /// Appends the terminal result's evidence to the detail rows, including the
 /// changes cancellation cannot roll back. A Run Failure already streamed as a
 /// `Failure:` row is not repeated when its terminal copy arrives.
@@ -241,12 +262,12 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
     let mut streamed: HashMap<String, usize> = HashMap::new();
     for detail in details
         .iter()
-        .filter(|detail| detail.starts_with("Failure: "))
+        .filter(|detail| detail.starts_with(FAILURE_PREFIX))
     {
         *streamed.entry(detail.clone()).or_default() += 1;
     }
     for failure in result.failures() {
-        let detail = format!("Failure: {} | {}", failure.detail, shown(&failure.path));
+        let detail = failure_row(failure);
         match streamed.get_mut(&detail) {
             Some(count) if *count > 0 => *count -= 1,
             _ => details.push(detail),
@@ -274,11 +295,7 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
     }
     for attempt in result.archive_extraction_attempts() {
         if !attempt.succeeded() {
-            details.push(format!(
-                "Archive Failure: {} | {}",
-                shown(&attempt.archive_path),
-                attempt.detail
-            ));
+            details.push(archive_failure_row(&attempt.archive_path, &attempt.detail));
         }
     }
     if let Some(finalization) = result.archive_finalization() {
@@ -287,11 +304,7 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
         }
         for attempt in &finalization.attempts {
             if !attempt.succeeded() {
-                details.push(format!(
-                    "Archive Failure: {} | {}",
-                    shown(&attempt.archive_path),
-                    attempt.detail
-                ));
+                details.push(archive_failure_row(&attempt.archive_path, &attempt.detail));
             }
         }
     }
