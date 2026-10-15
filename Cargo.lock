@@ -683,6 +683,7 @@ name = "cao-gui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cao-core",
  "cao-gui-ui",
  "cao-gui-unsafe",
  "cao-optimizers",

@@ -1,8 +1,11 @@
 //! The main window's behaviour: startup, profile selection and creation, saving
-//! and loading settings, and the menu (C++ `MainWindow`).
+//! and loading settings, and the menu (C++ `MainWindow`). Optimization Runs are
+//! in [`run`].
+
+mod run;
 
 use std::cell::{OnceCell, RefCell};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
 use cao_gui_ui::{AboutSlintDialog, ChoiceDialog, MainWindow, TabInfo, TextInputDialog};
@@ -63,8 +66,12 @@ pub struct App {
     desktop: Rc<dyn Desktop>,
     loaded: RefCell<Loaded>,
     /// While a run holds the controls (C++ `_bLockVariables`), the options are
-    /// not saved. #510 sets it.
+    /// not saved. Set from a run's start to its end (#510).
     locked: std::cell::Cell<bool>,
+    /// The CAO install the window works over, which runs resolve against.
+    app_dir: PathBuf,
+    /// Optimization Runs started from the window (#510).
+    runs: run::Runs,
     profile_names: Rc<VecModel<SharedString>>,
     tabs: Rc<VecModel<TabInfo>>,
     name_dialog: ModalSlot<TextInputDialog>,
@@ -117,6 +124,8 @@ impl App {
             profiles,
             desktop,
             locked: Default::default(),
+            app_dir: app_dir.to_owned(),
+            runs: run::Runs::default(),
             profile_names: Rc::new(VecModel::from(
                 names.iter().map(SharedString::from).collect::<Vec<_>>(),
             )),
@@ -233,12 +242,18 @@ impl App {
         ui.on_open_discord(with(|app| app.desktop.open(DISCORD_URL)));
         ui.on_about(with(Self::about));
         ui.on_about_slint(with(Self::about_slint));
+        ui.on_run_clicked(with(Self::run_clicked));
         ui.on_edit_unwanted(with(Self::edit_unwanted));
         self.wire_rules();
         ui.window().on_close_requested({
             let app = app.clone();
             move || {
                 if let Some(app) = app.upgrade() {
+                    // During a run the window stays open: the run is cancelled,
+                    // and the window closes once it reports its outcome (#510).
+                    if !app.may_close() {
+                        return CloseRequestResponse::KeepWindowShown;
+                    }
                     app.save();
                 }
                 // Fails only without an event loop (headless), where hiding the
@@ -774,7 +789,11 @@ impl App {
             return;
         };
         let debug = self.loaded.borrow().options.debug_log;
-        if let Err(error) = log.stamp(profile, debug) {
+        let path = log.stamp_path(profile);
+        // The profile session's runs log to this file even when it cannot be
+        // opened now: each run start retries it, and refuses to start without it.
+        self.remember_run_log(path.clone());
+        if let Err(error) = log.stamp(&path, debug) {
             self.error(
                 "Profile",
                 &format!("The profile's log file could not be opened: {error}"),

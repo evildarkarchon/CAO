@@ -71,18 +71,22 @@ impl AttachedLog {
         self.sink
     }
 
-    /// Stamps `logs/<profile>/yy.MM.dd.hh.mm.html` for a newly selected profile
-    /// and moves the log there at that profile's debug choice (C++
-    /// `Profiles::loadProfile`). The tab then clears and follows the new file.
+    /// Stamps `logs/<profile>/yy.MM.dd.hh.mm.html` for a profile selected now
+    /// (C++ `Profiles::loadProfile`). [`AttachedLog::stamp`] moves the log
+    /// there; runs of the profile session log to it too (#510).
+    pub(crate) fn stamp_path(&self, profile: &str) -> PathBuf {
+        application_log::stamp_log_path(&self.app_dir, profile)
+    }
+
+    /// Moves the log to `path`, stamped by [`AttachedLog::stamp_path`] for a
+    /// newly selected profile, at that profile's debug choice. The tab then
+    /// clears and follows the new file.
     ///
     /// # Errors
     /// [`LogError::Open`] when the file cannot be opened; the log keeps writing
     /// to the old one.
-    pub(crate) fn stamp(&self, profile: &str, debug: bool) -> Result<(), LogError> {
-        self.sink.redirect(
-            &application_log::stamp_log_path(&self.app_dir, profile),
-            debug,
-        )
+    pub(crate) fn stamp(&self, path: &Path, debug: bool) -> Result<(), LogError> {
+        self.sink.redirect(path, debug)
     }
 
     /// Switches debug logging on or off in the current file: the level and
