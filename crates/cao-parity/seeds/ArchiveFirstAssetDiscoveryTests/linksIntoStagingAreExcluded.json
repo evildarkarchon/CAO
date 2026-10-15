@@ -1,0 +1,67 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/Mod"
+    },
+    "dry_run": true,
+    "textures": {
+      "necessary": true,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "text",
+        "path": "mods/Mod/.cao-staging/owned/content.bsa",
+        "text": "uncommitted archive"
+      },
+      {
+        "kind": "text",
+        "path": "mods/Mod/.cao-staging/owned/texture.dds",
+        "text": "uncommitted asset"
+      }
+    ],
+    "fs_shape": [
+      {
+        "op": "file_symlink",
+        "path": "mods/Mod/linked.bsa",
+        "target": "mods/Mod/.cao-staging/owned/content.bsa",
+        "note": "Resolves into CAO staging: excluded with a LinkedEntryExcluded diagnostic."
+      },
+      {
+        "op": "file_symlink",
+        "path": "mods/Mod/linked.dds",
+        "target": "mods/Mod/.cao-staging/owned/texture.dds"
+      }
+    ]
+  },
+  "origin": [
+    "ArchiveFirstAssetDiscoveryTests::linksIntoStagingAreExcluded"
+  ]
+}

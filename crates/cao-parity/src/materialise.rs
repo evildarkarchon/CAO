@@ -432,6 +432,15 @@ pub fn apply_fs_shape(shape: &[FsShape], root: &Path) -> Result<(), HarnessError
                 std::fs::rename(verbatim(&resolve(root, from))?, verbatim(&path)?)
                     .map_err(failed)?;
             }
+            FsShape::ModRootText { mod_root, text, .. } => {
+                // The text C++ compares a manifest's root line with byte for
+                // byte, so it must be this exact spelling, not merely a path
+                // naming the same folder.
+                let canonical =
+                    cao_winfs::msvc_canonical(&resolve(root, mod_root)).map_err(failed)?;
+                let generic = cao_winfs::generic_utf8(&canonical).map_err(failed)?;
+                std::fs::write(&path, text.replace("{mod_root}", &generic)).map_err(failed)?;
+            }
         }
     }
     Ok(())

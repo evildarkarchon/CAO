@@ -74,8 +74,11 @@ so the port's own packing code never builds its test inputs (#529). A packed `ra
 lowercase, `\`-separated name is overwritten after writing, as the C++ tests'
 `createRawArchive` does, so the spelling must be the stored name's length. An `archive` may
 take a `fault` of its own, which damages the written Archive. The
-`fs_shape` operations (`hardlink`, `junction`, `file_symlink`, `readonly`, `reserved_name`)
-are then applied to all three copies. Recipe paths must keep game paths ASCII and every
+`fs_shape` operations (`hardlink`, `junction`, `file_symlink`, `readonly`, `reserved_name`,
+`mod_root_text`) are then applied to all three copies. `mod_root_text` writes text with each
+`{mod_root}` replaced by that copy's own Mod Root, spelled as C++ writes it into a staging
+manifest (MSVC `canonical`, `/`-separated), so a leftover `CAO-STAGING` manifest names the
+copy it sits in. Recipe paths must keep game paths ASCII and every
 absolute path within 400 UTF-16 units. `crates/cao-parity/src/recipe.rs` documents each
 field.
 
@@ -115,6 +118,16 @@ it.
 Committed seeds live under `crates/cao-parity/seeds/`, in any subfolder; a seed's case id
 is its file stem. `raw` entries may name a fixture file under
 `crates/cao-parity/fixtures/`.
+
+- `seeds/<Suite>/` holds the transcribed C++ scenarios (#507). Each names the C++ tests it
+  stands for in `origin`, as `Suite::slot` or `Suite::slot [row]`. Scenarios that cannot
+  disturb each other and share their options are folded into one Several Mods seed, one Mod Root
+  per scenario, to keep the seeds within the case budget.
+- `seeds/UNTRANSCRIBED.md` lists every C++ scenario that is not a seed, or only partly one,
+  with the reason. It is the backlog of scenarios to port as Rust tests. `tests/seeds.rs`
+  checks that every C++ test slot is one or the other.
+- `seeds/fault/` holds the fault seeds, each provoking a fault through its tree alone.
+- `seeds/hand-written/` holds the tracer and the other hand-written cases.
 
 ## The local asset pool
 

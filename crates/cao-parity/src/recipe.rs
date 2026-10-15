@@ -541,6 +541,21 @@ pub enum FsShape {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+    /// Writes `text` at `path` with every `{mod_root}` replaced by the copy's
+    /// own absolute Mod Root `mod_root`, spelled as C++ stores it in a staging
+    /// manifest: MSVC `canonical`, generic (`/`-separated) UTF-8 text (#507).
+    ///
+    /// Leftover staging, such as a `CAO-STAGING` manifest an earlier run left
+    /// behind, names its Mod Root by absolute path, so it cannot be written
+    /// once and copied: each copy gets the text naming itself. `mod_root` must
+    /// already exist in the copy.
+    ModRootText {
+        path: String,
+        mod_root: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
 }
 
 impl FsShape {
@@ -551,7 +566,8 @@ impl FsShape {
             | Self::Junction { path, .. }
             | Self::FileSymlink { path, .. }
             | Self::Readonly { path, .. }
-            | Self::ReservedName { path, .. } => path,
+            | Self::ReservedName { path, .. }
+            | Self::ModRootText { path, .. } => path,
         }
     }
 
@@ -562,6 +578,7 @@ impl FsShape {
             | Self::Junction { target, .. }
             | Self::FileSymlink { target, .. } => Some(target),
             Self::ReservedName { from, .. } => Some(from),
+            Self::ModRootText { mod_root, .. } => Some(mod_root),
             Self::Readonly { .. } => None,
         }
     }

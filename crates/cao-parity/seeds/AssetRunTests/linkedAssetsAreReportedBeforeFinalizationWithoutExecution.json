@@ -1,0 +1,65 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": true,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "text",
+        "path": "mods/outside.dds",
+        "text": "outside bytes",
+        "note": "A file beside the Mod Roots, never a Mod Root."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/mod/native.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64
+      }
+    ],
+    "fs_shape": [
+      {
+        "op": "file_symlink",
+        "path": "mods/mod/linked.dds",
+        "target": "mods/outside.dds",
+        "note": "Escapes its Mod Root: one LinkedEntryExcluded diagnostic, never executed, and outside.dds keeps its bytes."
+      }
+    ]
+  },
+  "origin": [
+    "AssetRunTests::linkedAssetsAreReportedBeforeFinalizationWithoutExecution"
+  ]
+}

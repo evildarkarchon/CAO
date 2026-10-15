@@ -1,0 +1,56 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/mod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": true,
+      "delete_backup": false,
+      "compress": false,
+      "create_dummies": false,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "text",
+        "path": "mods/mod/textures/asset.dds",
+        "text": "packed bytes",
+        "note": "Packed and deleted."
+      },
+      {
+        "kind": "text",
+        "path": "mods/mod/textures/calientetools/asset.dds",
+        "text": "retained bytes",
+        "note": "Matches the shipped Packing Exclusion CalienteTools/: neither packed nor deleted."
+      }
+    ]
+  },
+  "origin": [
+    "ArchiveFinalizationTests::filesToNotPackAreNeitherPackedNorDeleted"
+  ]
+}

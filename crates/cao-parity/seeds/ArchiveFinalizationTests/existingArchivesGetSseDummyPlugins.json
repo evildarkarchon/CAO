@@ -1,0 +1,82 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": true,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "directory",
+        "path": "mods",
+        "note": "One Mod Root per transcribed scenario, named after it. Each scenario's work and evidence belong to its own Mod Root, so they cannot disturb each other."
+      },
+      {
+        "kind": "text",
+        "path": "mods/finalizationRetainsPluginMutations-create-for-existing-archive/existing.bsa",
+        "text": "retained archive",
+        "note": "An existing Archive with no Loading Plugin gets the SSE Dummy Plugin existing.esp: one PluginCreation."
+      },
+      {
+        "kind": "text",
+        "path": "mods/existingArchivePluginNamesFollowProfile-sse-texture-suffix/bundle - Textures.bsa",
+        "text": "retained archive",
+        "note": "The Dummy Plugin takes the Archive's name without its suffix: bundle.esp."
+      },
+      {
+        "kind": "text",
+        "path": "mods/archiveOptionFlagsChangeOutput-defaults/meshes/a.nif",
+        "text": "fixture bytes",
+        "note": "One file per Archive kind; the rows' Archive options decide what is packed where, and what stays."
+      },
+      {
+        "kind": "text",
+        "path": "mods/archiveOptionFlagsChangeOutput-defaults/textures/a.dds",
+        "text": "fixture bytes"
+      },
+      {
+        "kind": "text",
+        "path": "mods/archiveOptionFlagsChangeOutput-defaults/sound/a.wav",
+        "text": "fixture bytes"
+      }
+    ]
+  },
+  "origin": [
+    "ArchiveFinalizationTests::finalizationRetainsPluginMutations [create-for-existing-archive]",
+    "ArchiveFinalizationTests::existingArchivePluginNamesFollowProfile [SSE texture suffix]",
+    "CliExecutionTests::archiveOptionFlagsChangeOutput [dummies-on]",
+    "CliExecutionTests::archiveOptionFlagsChangeOutput [merge-incompressible-on]",
+    "CliExecutionTests::archiveOptionFlagsChangeOutput [merge-textures-off]",
+    "CliExecutionTests::archiveOptionFlagsChangeOutput [delete-sources-on]"
+  ]
+}

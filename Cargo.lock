@@ -131,6 +131,7 @@ dependencies = [
  "cao-core",
  "cao-optimizers",
  "cao-profiles",
+ "cao-winfs",
  "directxtex",
  "embed-resource",
  "log",

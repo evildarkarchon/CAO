@@ -1,0 +1,83 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": true
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "directory",
+        "path": "mods",
+        "note": "One Mod Root per transcribed scenario, named after it. Each scenario's work and evidence belong to its own Mod Root, so they cannot disturb each other."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/disabledTextureWorkDoesNotRequestProfileConversion/textures/a.tga",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "Texture work is off, so SSE's TGA conversion is not requested: the TGA is skipped."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/disabledTextureWorkDoesNotRequestProfileConversion/meshes/a.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\a.tga"
+            ]
+          }
+        ],
+        "note": "Resaved, but its .tga reference is not maintained."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/meshWorkRoutesStandardAndTerrainMeshes-resave-only/meshes/armor.nif",
+        "version": "sse",
+        "note": "Standard and Terrain Meshes are routed together, or not at all."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/meshWorkRoutesStandardAndTerrainMeshes-resave-only/meshes/terrain.btr",
+        "version": "sse"
+      }
+    ]
+  },
+  "origin": [
+    "ApplicationRunSetupTests::disabledTextureWorkDoesNotRequestProfileConversion",
+    "ApplicationRunSetupTests::meshWorkRoutesStandardAndTerrainMeshes [resave only]"
+  ]
+}
