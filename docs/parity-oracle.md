@@ -2,18 +2,28 @@
 
 The C++ CLI is the **parity oracle** for the Rust port ([ADR 0003](adr/0003-port-cao-to-rust-and-slint.md)).
 The `cao-parity` harness runs it and the Rust driver on the same corpus case, then compares
-what each produced. The oracle and its oracle-only changes are deleted with the C++ tree.
+what each produced.
+
+The C++ tree, the oracle and its oracle-only changes were deleted once the port took over
+(#515). `cao-parity` is kept as it was, frozen: its `run` and `local-assets` subcommands and its recipe
+materialiser need no oracle, and `case`, `corpus` and `calibrate` still work against an oracle exe built
+from the last commit that has the C++ tree.
 
 ## Building it
 
-Build a Release CLI, with the GUI off, in its own binary directory:
+Check out the commit before the one that deleted the C++ tree in its own worktree, then build a
+Release CLI there, with the GUI off, in its own binary directory:
 
 ```
+git worktree add ../cao-oracle "$(git log -1 --format=%H --diff-filter=D -- CMakeLists.txt)^"
+cd ../cao-oracle
 cmake --preset vs2026-windows -B build/oracle -DCAO_BUILD_GUI=OFF -DBUILD_TESTING=OFF
 cmake --build build/oracle --config Release --target Cathedral_Assets_Optimizer
 ```
 
-The exe is `build/oracle/src/Release/Cathedral_Assets_Optimizer.exe`.
+The exe is `build/oracle/src/Release/Cathedral_Assets_Optimizer.exe` in that worktree. The
+CMake and vcpkg files this section names, and the CLI documentation (`docs/cli.md`) that
+[Oracle-only behaviour](#oracle-only-behaviour) refers to, exist only at that commit.
 
 - **Own binary directory.** The GUI build produces a target with the same name. The oracle
   must not share a build directory with it.
@@ -23,7 +33,8 @@ The exe is `build/oracle/src/Release/Cathedral_Assets_Optimizer.exe`.
   `overrides` entry. This is the release the Rust port builds, so both sides make the same
   texture decisions. Configure output names the version: `directxtex[...]@2026-05-07`.
 
-The harness never runs CMake. Rebuild the oracle by hand after changing C++ or `vcpkg.json`.
+The harness never runs CMake. The oracle is frozen at that commit, so there is nothing to rebuild
+it for.
 
 ## Giving the harness the exe
 
@@ -74,8 +85,11 @@ so the port's own packing code never builds its test inputs (#529). A packed `ra
 lowercase, `\`-separated name is overwritten after writing, as the C++ tests'
 `createRawArchive` does, so the spelling must be the stored name's length. An `archive` may
 take a `fault` of its own, which damages the written Archive. The
-`fs_shape` operations (`hardlink`, `junction`, `file_symlink`, `readonly`, `reserved_name`)
-are then applied to all three copies. Recipe paths must keep game paths ASCII and every
+`fs_shape` operations (`hardlink`, `junction`, `file_symlink`, `readonly`, `reserved_name`,
+`mod_root_text`) are then applied to all three copies. `mod_root_text` writes text with each
+`{mod_root}` replaced by that copy's own Mod Root, spelled as C++ writes it into a staging
+manifest (MSVC `canonical`, `/`-separated), so a leftover `CAO-STAGING` manifest names the
+copy it sits in. Recipe paths must keep game paths ASCII and every
 absolute path within 400 UTF-16 units. `crates/cao-parity/src/recipe.rs` documents each
 field.
 
@@ -115,6 +129,17 @@ it.
 Committed seeds live under `crates/cao-parity/seeds/`, in any subfolder; a seed's case id
 is its file stem. `raw` entries may name a fixture file under
 `crates/cao-parity/fixtures/`.
+
+- `seeds/<Suite>/` holds the transcribed C++ scenarios (#507). Each names the C++ tests it
+  stands for in `origin`, as `Suite::slot` or `Suite::slot [row]`. Scenarios that cannot
+  disturb each other and share their options are folded into one Several Mods seed, one Mod Root
+  per scenario, to keep the seeds within the case budget.
+- `seeds/UNTRANSCRIBED.md` lists every C++ scenario that is not a seed, or only partly one,
+  with the reason. It is the backlog of scenarios to port as Rust tests. `tests/seeds.rs`
+  checked that every C++ test slot was one or the other until the C++ tree was deleted; it now
+  checks that each seed and entry names one of the deleted suites.
+- `seeds/fault/` holds the fault seeds, each provoking a fault through its tree alone.
+- `seeds/hand-written/` holds the tracer and the other hand-written cases.
 
 ## The local asset pool
 
@@ -202,12 +227,41 @@ path, which only Rust treats as a Headpart Mesh, is left out.
 A pin is the SHA-256 of an entry's extracted bytes, so an entry can be hashed from a loose
 copy extracted from the same BSA. The pool itself still has to hold the BSA.
 
+## Calibrating the BC7/BC6H threshold
+
+The Texture rule lets BC7 and BC6H pixels differ, as long as every decoded mip and face
+reaches `MIN_BC7_BC6H_PSNR_DB` (`crates/cao-parity/src/textures.rs`). The constant is set by
+calibrating the oracle against itself (#513):
+
+```
+cargo run -p cao-parity -- calibrate --oracle <exe>
+```
+
+- **What runs.** Every corpus case (seeds and generated) that is not a Dry Run, turns on a
+  texture option and holds a `texture` entry, loose or packed. Each runs through the oracle
+  twice: over its `oracle/` copy on the GPU, and over its `rust/` copy with
+  `CAO_ORACLE_FORCE_CPU_BC` set. The Rust driver never runs.
+- **What is measured.** Every BC7 and BC6H Texture both runs wrote at the same path, loose or
+  inside a `.bsa` or `.ba2`, image by image, with the same PSNR the Texture rule applies.
+- **Checks.** The host needs a D3D11 device on adapter 0. The GPU run must not log
+  "DirectCompute is not available", and the CPU run must log it once any BC7 or BC6H
+  Texture was measured; otherwise the oracle predates the override and must be rebuilt.
+- **Output.** Each case's floor, then the observed floor and the threshold: 40 dB if the floor
+  is not below it, otherwise the floor minus 1 dB, rounded down to 0.01 dB. The host, adapter
+  and driver are printed with it. The summary is also written to
+  `<work>/calibration-report.md`. Measured cases are deleted; a case with an error keeps its
+  directory, with `gpu.*` and `cpu.*` captures.
+- **Exit code.** 0 when calibrated, 2 when any case hit an error (the floor may be
+  incomplete), 3 when no BC7 or BC6H Texture was measured.
+- **Recording.** Set `MIN_BC7_BC6H_PSNR_DB` to the printed threshold, and record the host,
+  adapter and driver beside it in `CALIBRATION_HOST`.
+
 ## Oracle-only behaviour
 
 - **Archive options.** `--bcomp`, `--bdum`, `--bmi`, `--bmt` and `--bds` set the archive
-  options that the GUI reads from `settings.ini` ([cli.md](cli.md)).
+  options that the GUI reads from `settings.ini` (`docs/cli.md` at the oracle's commit).
 - **Event escaping.** Text fields in the `EVENT:` stream are escaped, so the stream parses
-  strictly ([cli.md](cli.md)).
+  strictly (`docs/cli.md` at the oracle's commit).
 - **Forcing CPU BC6H/BC7.** If `CAO_ORACLE_FORCE_CPU_BC` is set to any non-empty value,
   D3D11 device creation fails on purpose and BC6H/BC7 use the CPU codec.
   `cao-parity calibrate` uses it to compare the GPU encoder with the CPU encoder.

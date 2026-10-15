@@ -1,12 +1,12 @@
 ## Platform scope
 
-CAO targets Windows; some dependencies require porting for POSIX. Validate releases with Windows profile triplets and Windows runtime behavior. Treat POSIX-only findings as compatibility notes unless a task explicitly includes porting.
+CAO targets Windows only. The Rust workspace carries no POSIX code paths; validate changes against Windows runtime behavior.
 
 ## Build workflow
 
-- Use the project's profile triplets as the primary workflow for building the program and validating changes.
-- Use alternate generators or direct CMake builds outside the profile-triplet workflow only for specific testing that requires them. State the testing purpose when choosing an alternate workflow.
-- If a profile-triplet build is blocked, diagnose and report the blocker rather than silently switching to an alternate generator. An alternate-generator test does not replace validation through the profile triplets.
+- CAO is a Cargo workspace at the repository root, with crates under `crates/`; `rust-toolchain.toml` pins the toolchain. The C++/CMake/vcpkg tree has been deleted.
+- Validate changes with `cargo build`, `cargo test`, `cargo clippy --all-targets` and `cargo fmt --check`.
+- If a build is blocked, diagnose and report the blocker rather than silently switching to another workflow.
 
 ## Agent skills
 

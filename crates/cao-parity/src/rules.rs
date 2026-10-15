@@ -6,9 +6,10 @@
 //! [`crate::archives`] (#497). Meshes (#504), Animations (#502) and Loading
 //! Plugins (#498) have no rule, so their files must be byte-identical, which is
 //! their final rule. For Meshes that holds even though the oracle builds nifly
-//! with vcpkg and CMake and `nifly-sys` with `cc`: if nifly's float output
-//! drifts between the two, the builds' compiler flags are aligned rather than
-//! the rule loosened. A structural comparator with ulp tolerance is only the
+//! with vcpkg and CMake (its build files were deleted with the C++ tree, #515,
+//! and are kept at the oracle's commit; see `docs/parity-oracle.md`) and
+//! `nifly-sys` with `cc`: if nifly's float output drifts between the two, the
+//! builds' compiler flags are aligned rather than the rule loosened. A structural comparator with ulp tolerance is only the
 //! recorded fallback, and needs the maintainer's agreement.
 
 use crate::archives::ArchiveRule;

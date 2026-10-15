@@ -1,12 +1,10 @@
 # Rust port of Cathedral Assets Optimizer (ADR 0003).
 #
-# This virtual workspace grows beside the C++ tree: its members live under
-# `crates/`, CMake never looks there, and Cargo never looks at `src/` or `tests/`,
-# so nothing has to move when the C++ tree is deleted.
+# This virtual workspace grew beside the C++ tree, with its members under
+# `crates/`, so nothing had to move when the C++ tree was deleted (#515).
 #
 # Minimum native toolchain (documented, not enforced): Visual Studio 2026 (v145)
-# Build Tools and Windows SDK 10.0.26100. That is the same install the C++
-# `vs2026-windows` preset needs, so one setup builds both trees. Rust cannot pin
+# Build Tools and Windows SDK 10.0.26100. Rust cannot pin
 # MSVC; `cc` and `embed-resource` find the installed Visual Studio or use a
 # Developer Command Prompt's environment.
 #
@@ -23,8 +21,10 @@ rust-version = "1.99"
 license = "MPL-2.0"
 publish = false
 
-# `unsafe` is forbidden everywhere except `cao-winfs`, `nifly-sys` and the D3D11
-# device module of `cao-optimizers`. Members opt in with `lints.workspace = true`.
+# `unsafe` is forbidden everywhere except `cao-winfs`, `nifly-sys`, the D3D11
+# device module of `cao-optimizers`, and two GUI crates (#508): `cao-gui-unsafe`
+# (the GUI's one environment write) and `cao-gui-ui` (Slint's generated code,
+# at `deny`). Members opt in with `lints.workspace = true`.
 # Cargo cannot mix `workspace = true` with local lint keys, and `forbid` cannot be
 # lowered by an `#[allow]` in source (E0453), so an overriding crate declares its
 # own `[lints]` table instead and must copy every other lint from here. The same
@@ -39,6 +39,8 @@ unsafe_code = "forbid"
 # Workspace members other members depend on.
 cao-archive = { path = "crates/cao-archive" }
 cao-core = { path = "crates/cao-core" }
+cao-gui-ui = { path = "crates/cao-gui-ui" }
+cao-gui-unsafe = { path = "crates/cao-gui-unsafe" }
 cao-optimizers = { path = "crates/cao-optimizers" }
 cao-profiles = { path = "crates/cao-profiles" }
 cao-winfs = { path = "crates/cao-winfs" }
@@ -60,6 +62,11 @@ flate2 = { version = "1", default-features = false, features = ["zlib"] }
 # GUI (#462, #466). `~1.18` because `unstable-winit-030` and the undocumented
 # `SLINT_NO_MUDA` may change in any minor release.
 slint = { version = "~1.18", features = ["unstable-winit-030", "raw-window-handle-06"] }
+# Compiles `cao-gui`'s `.slint` files; same minor as `slint` (#508).
+slint-build = "~1.18"
+# `cao-gui`'s headless test backend (#508). It is unversioned internals, so it
+# must equal the resolved `slint` exactly; move both together.
+i-slint-backend-testing = "=1.18.1"
 # `common-controls-v6` stays off; the manifest carries no ComCtl32 v6 entry (#471).
 rfd = "0.17"
 raw-window-handle = "0.6"

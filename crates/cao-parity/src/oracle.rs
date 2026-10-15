@@ -1,6 +1,8 @@
 //! The oracle parser: the C++ CLI's stdout and exit code to raw [`RunFacts`].
 //!
-//! The grammar is the one `src/CliRun.cpp` renders and `docs/cli.md` documents.
+//! The grammar is the one `src/CliRun.cpp` renders and `docs/cli.md` documents,
+//! both deleted with the C++ tree (#515) and kept at the oracle's commit
+//! (`docs/parity-oracle.md`).
 //! Every record ends at a newline (CRLF, since the oracle writes stdout in text
 //! mode). Fields are separated by `|`, and text fields escape `\`, `|`, CR and
 //! LF as `\\`, `\p`, `\r` and `\n`, so a line is split on every raw `|` first

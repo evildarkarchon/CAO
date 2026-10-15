@@ -1,0 +1,63 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/Mod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": true,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "archive",
+        "path": "mods/Mod/source.bsa",
+        "game": "sse",
+        "type": "standard",
+        "compress": false,
+        "content": [
+          {
+            "kind": "text",
+            "path": "scripts/a.pex",
+            "text": "linked"
+          }
+        ]
+      }
+    ],
+    "fs_shape": [
+      {
+        "op": "hardlink",
+        "path": "store/source.bsa",
+        "target": "mods/Mod/source.bsa",
+        "note": "The Archive has a second hard link outside the Mod Root, so backing it up or deleting it would change that file too."
+      }
+    ]
+  }
+}

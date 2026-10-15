@@ -1,0 +1,75 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/mod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "text",
+        "path": "mods/mod/.cao-staging/owner.lock",
+        "text": ""
+      },
+      {
+        "kind": "text",
+        "path": "mods/mod/.cao-staging/run-407-0123456789abcdef0123456789abcdef/temporary.dds",
+        "text": "temporary",
+        "note": "Staged by the run that left this staging behind; not a Texture discovery sees."
+      },
+      {
+        "kind": "text",
+        "path": "mods/outside/keep.dds",
+        "text": "external"
+      }
+    ],
+    "fs_shape": [
+      {
+        "op": "mod_root_text",
+        "path": "mods/mod/.cao-staging/ownership.manifest",
+        "mod_root": "mods/mod",
+        "text": "CAO-STAGING 1\n\"{mod_root}\"\n\"407\" \"run-407-0123456789abcdef0123456789abcdef\"\n2\nD \"run-407-0123456789abcdef0123456789abcdef\"\nF \"run-407-0123456789abcdef0123456789abcdef/temporary.dds\"\n",
+        "note": "The leftover manifest names this copy's own Mod Root, as C++ writes it."
+      },
+      {
+        "op": "junction",
+        "path": "mods/mod/.cao-staging/run-407-0123456789abcdef0123456789abcdef/linked",
+        "target": "mods/outside",
+        "note": "A link in the staging area (a junction for the C++ directory symlink): unverified, and nothing is followed or deleted."
+      }
+    ]
+  },
+  "origin": [
+    "RunExecutorTests::linkedStagingIsPreserved"
+  ]
+}

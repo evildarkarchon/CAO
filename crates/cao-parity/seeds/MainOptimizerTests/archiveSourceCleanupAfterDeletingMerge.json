@@ -1,0 +1,95 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": true,
+      "create": false,
+      "delete_backup": true,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "directory",
+        "path": "mods",
+        "note": "One Mod Root per transcribed scenario, named after it. Each scenario's work and evidence belong to its own Mod Root, so they cannot disturb each other."
+      },
+      {
+        "kind": "archive",
+        "path": "mods/archiveSourceCleanupRequiresSuccessfulMerge-successful-delete/assets.bsa",
+        "game": "sse",
+        "type": "textures",
+        "content": [
+          {
+            "kind": "text",
+            "path": "fixture.dds",
+            "text": "archived bytes"
+          }
+        ]
+      },
+      {
+        "kind": "text",
+        "path": "mods/archiveSourceCleanupRequiresSuccessfulMerge-successful-delete/assets.bsa.bak",
+        "text": "existing backup bytes",
+        "note": "An earlier backup is never overwritten."
+      },
+      {
+        "kind": "archive",
+        "path": "mods/archiveSourceCleanupRequiresSuccessfulMerge-blocked-delete/assets.bsa",
+        "game": "sse",
+        "type": "textures",
+        "content": [
+          {
+            "kind": "text",
+            "path": "fixture.dds",
+            "text": "archived bytes"
+          }
+        ]
+      },
+      {
+        "kind": "text",
+        "path": "mods/archiveSourceCleanupRequiresSuccessfulMerge-blocked-delete/assets.bsa.bak",
+        "text": "existing backup bytes",
+        "note": "An earlier backup is never overwritten."
+      }
+    ],
+    "fs_shape": [
+      {
+        "op": "readonly",
+        "path": "mods/archiveSourceCleanupRequiresSuccessfulMerge-blocked-delete/assets.bsa",
+        "note": "Read-only in place of the C++ test's held handle: the merge commits, the source cannot be deleted."
+      }
+    ]
+  },
+  "origin": [
+    "MainOptimizerTests::archiveSourceCleanupRequiresSuccessfulMerge [successful-delete]",
+    "MainOptimizerTests::archiveSourceCleanupRequiresSuccessfulMerge [blocked-delete]"
+  ]
+}

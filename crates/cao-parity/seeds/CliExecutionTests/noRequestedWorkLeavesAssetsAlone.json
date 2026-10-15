@@ -1,0 +1,72 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "several_mods",
+      "folder": "mods"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": false,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 0,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "directory",
+        "path": "mods",
+        "note": "One Mod Root per transcribed scenario, named after it. Each scenario's work and evidence belong to its own Mod Root, so they cannot disturb each other."
+      },
+      {
+        "kind": "text",
+        "path": "mods/reportsAssetExecutionStatus-disabled-assets-succeed/first.hkx",
+        "text": "malformed",
+        "note": "No work is requested: Succeeded, nothing touched."
+      },
+      {
+        "kind": "text",
+        "path": "mods/reportsAssetExecutionStatus-disabled-assets-succeed/second.hkx",
+        "text": "malformed"
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/meshWorkRoutesStandardAndTerrainMeshes-disabled/meshes/armor.nif",
+        "version": "sse",
+        "note": "Standard and Terrain Meshes are routed together, or not at all."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/meshWorkRoutesStandardAndTerrainMeshes-disabled/meshes/terrain.btr",
+        "version": "sse"
+      }
+    ]
+  },
+  "origin": [
+    "CliExecutionTests::reportsAssetExecutionStatus [disabled-assets-succeed]",
+    "ApplicationRunSetupTests::meshWorkRoutesStandardAndTerrainMeshes [disabled]"
+  ]
+}

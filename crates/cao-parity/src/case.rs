@@ -70,6 +70,13 @@ pub struct CaseFile {
     /// generator's, because another version may build different bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generator_version: Option<u32>,
+    /// The C++ scenarios a transcribed seed was written from (#507), each as
+    /// `<Suite>::<slot>`, or `<Suite>::<slot> [<row>]` for one `QTest::newRow`
+    /// row of a data-driven slot. Exact duplicates are merged into one seed,
+    /// which then names every scenario it stands for. Empty for a generated
+    /// case and for a seed with no C++ counterpart, such as a fault seed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub origin: Vec<String>,
 }
 
 impl CaseFile {
@@ -80,6 +87,7 @@ impl CaseFile {
             profile_overrides: ProfileOverrides::default(),
             tree: TreeRecipe::default(),
             generator_version: None,
+            origin: Vec::new(),
         }
     }
 }
@@ -607,10 +615,7 @@ fn evaluate(
     timeout: Duration,
 ) -> Result<CaseResult, HarnessError> {
     let spec = layout.read_case()?.spec;
-    let deadline = Deadline {
-        at: Instant::now() + timeout,
-        budget: timeout,
-    };
+    let deadline = Deadline::after(timeout);
     // The oracle always runs first, so a Rust driver crash cannot disturb it.
     let oracle_exit = run_side(
         layout,
@@ -733,9 +738,19 @@ fn run_id(facts: &RunFacts) -> Option<&str> {
 
 /// The instant a case's time runs out, and the budget it was given.
 #[derive(Clone, Copy)]
-struct Deadline {
+pub(crate) struct Deadline {
     at: Instant,
     budget: Duration,
+}
+
+impl Deadline {
+    /// The deadline `budget` from now.
+    pub(crate) fn after(budget: Duration) -> Self {
+        Self {
+            at: Instant::now() + budget,
+            budget,
+        }
+    }
 }
 
 /// How often a running side is checked against the deadline.
@@ -750,17 +765,37 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 fn run_side(
     layout: &CaseLayout,
     side: Side,
-    mut command: Command,
+    command: Command,
     deadline: Deadline,
 ) -> Result<i32, HarnessError> {
-    let capture = |path: PathBuf| {
-        std::fs::File::create(&path)
+    run_captured(
+        command,
+        &layout.stdout(side),
+        &layout.stderr(side),
+        side,
+        deadline,
+    )
+}
+
+/// Runs `command` to completion with stdin closed and its stdout and stderr
+/// written to the given files, as [`run_side`] runs a side; `side` names it in
+/// a timeout. Returns the exit code, or [`HarnessError::Timeout`] after
+/// killing a process still running at the deadline.
+pub(crate) fn run_captured(
+    mut command: Command,
+    stdout: &Path,
+    stderr: &Path,
+    side: Side,
+    deadline: Deadline,
+) -> Result<i32, HarnessError> {
+    let capture = |path: &Path| {
+        std::fs::File::create(path)
             .map_err(|error| HarnessError::io(format!("creating {}", path.display()), error))
     };
     command
         .stdin(Stdio::null())
-        .stdout(capture(layout.stdout(side))?)
-        .stderr(capture(layout.stderr(side))?);
+        .stdout(capture(stdout)?)
+        .stderr(capture(stderr)?);
     let mut child = command
         .spawn()
         .map_err(|error| HarnessError::io(format!("starting the {side} side"), error))?;

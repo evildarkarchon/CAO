@@ -27,6 +27,9 @@ cao-archive.workspace = true
 cao-core.workspace = true
 cao-optimizers.workspace = true
 cao-profiles.workspace = true
+# `mod_root_text` spells each copy's Mod Root as C++ writes it into a staging
+# manifest (#507): MSVC `canonical`, which only this crate ports.
+cao-winfs.workspace = true
 # Hand-written cases build their Textures synthetically (#473).
 directxtex.workspace = true
 log.workspace = true

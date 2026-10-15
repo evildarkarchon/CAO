@@ -86,6 +86,12 @@ pub enum HarnessError {
     #[error("the Rust driver could not set up the run: {0}")]
     Driver(String),
 
+    /// `cao-parity calibrate` could not trust a case's measurement, such as
+    /// a BC7 Texture whose two runs wrote different headers, or a run that
+    /// did not use the encoder it was meant to.
+    #[error("calibration: {0}")]
+    Calibration(String),
+
     /// A filesystem or process operation failed.
     #[error("{context}: {source}")]
     Io {

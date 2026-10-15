@@ -1,0 +1,92 @@
+// The Log tab (#511): the current Application Log's rows, coloured by severity, then
+// the run-detail rows (#510) pinned below them. Rust fills `LogTab.rows` from the
+// sink's feed (`cao-gui`'s `src/log_tab.rs`); the C++ tab re-read the HTML file into
+// a 25-block QPlainTextEdit instead, which the feed replaces (deviation 24).
+
+import { ListView, Palette } from "std-widgets.slint";
+
+// A Log tab row's kind: the Application Log's severities, where `trace` is plog's
+// verbose (written `VERB`), and `detail` for a run-detail row, which is GUI-only and
+// never written to the file.
+export enum LogSeverity {
+    error,
+    warn,
+    info,
+    debug,
+    trace,
+    detail,
+}
+
+export struct LogRow {
+    text: string,
+    severity: LogSeverity,
+}
+
+// The Log tab's rows: at most 10,000 of the current log file's, oldest first, then
+// the run-detail rows, which are never dropped.
+export global LogTab {
+    in property <[LogRow]> rows;
+}
+
+export component LogPage inherits VerticalLayout {
+    padding: 6px;
+
+    // plog's colour table (ERROR Red, WARN Orange, INFO Green, DEBUG Blue, VERB
+    // Purple). On the dark palette the named colours are lightened: pure blue,
+    // purple and green on a near-black background are barely legible.
+    property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+
+    pure function colour(severity: LogSeverity) -> color {
+        if severity == LogSeverity.error {
+            return root.dark ? #ff6b6b : Colors.red;
+        }
+        if severity == LogSeverity.warn {
+            return root.dark ? #ffb347 : Colors.orange;
+        }
+        if severity == LogSeverity.info {
+            return root.dark ? #6fcf6f : Colors.green;
+        }
+        if severity == LogSeverity.debug {
+            return root.dark ? #7aa7ff : Colors.blue;
+        }
+        if severity == LogSeverity.trace {
+            return root.dark ? #c792ea : Colors.purple;
+        }
+        return Palette.foreground;
+    }
+
+    list := ListView {
+        // Tail-follow: while the view is at the bottom, it stays there as rows
+        // arrive. Scrolling up stops following; scrolling back down resumes it.
+        property <int> count: LogTab.rows.length;
+        property <bool> follow: true;
+
+        function to-bottom() {
+            self.content-y = min(0px, self.visible-height - self.content-height);
+        }
+
+        init => {
+            self.to-bottom();
+        }
+        changed count => {
+            if self.follow {
+                self.to-bottom();
+            }
+        }
+        scrolled => {
+            self.follow = self.content-y <= self.visible-height - self.content-height + 1px;
+        }
+
+        // Plain `Text`, so rows cannot be selected or edited. No fixed height: a
+        // message may span lines ("Profiles found" lists one profile per line).
+        for row in LogTab.rows: Text {
+            x: 4px;
+            min-height: 18px;
+            text: row.text;
+            font-family: "Consolas";
+            font-size: 12px;
+            vertical-alignment: center;
+            color: root.colour(row.severity);
+        }
+    }
+}

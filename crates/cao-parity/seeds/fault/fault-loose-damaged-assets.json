@@ -1,0 +1,98 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/Mod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 1,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "texture",
+        "path": "mods/Mod/textures/zero.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "fault": "zero",
+        "note": "Each damaged Asset fails to load and is quarantined; the run continues past every one."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/Mod/textures/truncated.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "fault": {
+          "truncate": 1000
+        }
+      },
+      {
+        "kind": "texture",
+        "path": "mods/Mod/textures/zero.tga",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "fault": "zero"
+      },
+      {
+        "kind": "texture",
+        "path": "mods/Mod/textures/truncated.tga",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "fault": {
+          "truncate": 100
+        }
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/Mod/meshes/zero.nif",
+        "version": "sse",
+        "fault": "zero"
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/Mod/meshes/truncated.nif",
+        "version": "sse",
+        "fault": {
+          "truncate": 40
+        }
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/Mod/meshes/garbage.nif",
+        "version": "sse",
+        "fault": "garbage"
+      }
+    ]
+  }
+}

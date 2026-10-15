@@ -1,0 +1,908 @@
+// CAO's main window: a structural port of the C++ `src/MainWindow.ui` (#508), from the
+// `prototype/slint-main-window` branch (#466).
+//
+// The settings each tab edits live in one global per tab (`BsaTab`, `MeshesTab`,
+// `TexturesTab`, `AnimationsTab`), and the top rows and menu on `MainWindow`. Rust
+// fills them from the profile's models and reads them back (`src/form.rs`).
+//
+// Slint has no enabled cascade: every tab-page control ANDs in `root.ed` (the run
+// lock, #510) and its group's `checked` by hand. Text does not grey out by itself.
+
+import { Button, CheckBox, ComboBox, GroupBox, LineEdit, ListView, SpinBox, RadioGroup, Palette } from "std-widgets.slint";
+import { TabInfo, CaoTabBar, CheckableGroupBox, HelpArea, HelpCheckBox, HelpLabel, HelpRadio, DoubleSpinBox, CaoProgressBar, HelpTipLayer } from "widgets.slint";
+import { TextInputDialog, ChoiceDialog, AboutSlintDialog } from "dialogs.slint";
+import { FormatItem, FormatsDialog } from "dialogs.slint";
+
+export { TabInfo, TextInputDialog, ChoiceDialog, AboutSlintDialog }
+export { FormatItem, FormatsDialog }
+// Exported so headless tests can place a tip where no help control reaches, such as
+// the bottom edge (#512). The app itself never sets it from Rust.
+export { HelpTip } from "widgets.slint";
+import { LogPage } from "log.slint";
+export { LogTab, LogRow, LogSeverity } from "log.slint";
+
+// The BSA tab (`bsaTab`). `separate-*` are the C++ `bBsaCreate*` checkboxes, which
+// show the inverse of `bBsaMerge*`.
+export global BsaTab {
+    in-out property <bool> extract;
+    in-out property <bool> create;
+    in-out property <bool> delete-backups;
+    in-out property <bool> delete-source: true;
+    in-out property <bool> create-dummies: true;
+    in-out property <bool> compress: true;
+    in-out property <bool> separate-textures: true;
+    in-out property <bool> separate-incompressible: true;
+    // Advanced: the maximum uncompressed size in GB, and the game (0 Skyrim LE, 1 SSE, 2 FO4).
+    in-out property <float> max-size: 1.96;
+    in-out property <int> game-index: 1;
+}
+
+// The Meshes tab (`meshesTab`). `process` is the checkable "Process meshes" group.
+export global MeshesTab {
+    in-out property <bool> process: true;
+    // The level radios. Rust always sets all three, so they stay exclusive even
+    // while the page (and the RadioGroup that keeps them exclusive) does not exist.
+    in-out property <bool> necessary: true;
+    in-out property <bool> medium;
+    in-out property <bool> full;
+    in-out property <bool> headparts;
+    in-out property <bool> resave;
+    // Expert: indexes into the Version, User and Stream combos.
+    in-out property <int> version-index: 1;
+    in-out property <int> user-index: 1;
+    in-out property <int> stream-index: 2;
+}
+
+// The Textures tab (`texturesTab`).
+export global TexturesTab {
+    in-out property <bool> process: true;
+    in-out property <bool> necessary: true;
+    in-out property <bool> compress;
+    in-out property <bool> mipmaps;
+    // The checkable "Downsizing" group, and which of its radios is checked:
+    // 0 by ratio, 1 by fixed size, -1 neither (the `.ui` checks neither).
+    in-out property <bool> resize: true;
+    in-out property <int> resize-mode: -1;
+    in-out property <int> ratio-height: 2;
+    in-out property <int> ratio-width: 2;
+    in-out property <int> size-height: 2048;
+    in-out property <int> size-width: 2048;
+    // Advanced.
+    in-out property <bool> tga-conversion;
+    in-out property <int> output-format-index;
+    in-out property <bool> compress-interface;
+    in property <[string]> unwanted;
+}
+
+// The Animations tab (`AnimationsTab`).
+export global AnimationsTab {
+    in-out property <bool> necessary: true;
+}
+
+// What the UI rules (#509) leave enabled. Rust's `rules.rs` is the one place the
+// rules live: it sets these together with the checked state the rules force,
+// both when the user changes a control and when settings load (deviations 3
+// and 21). The controls AND them in with the run lock and their group.
+export global UiRules {
+    // Dry Run: the Base group of the BSA tab and its three checkboxes.
+    in property <bool> bsa-base-enabled: true;
+    // Several Mods: the Medium and Full mesh optimization radios.
+    in property <bool> heavy-mesh-levels-enabled: true;
+    // FO4: "Separate textures BSA", which FO4 forces on.
+    in property <bool> separate-textures-enabled: true;
+}
+
+export component MainWindow inherits Window {
+    title: @tr("Cathedral Assets Optimizer");
+    preferred-width: 676px;
+    preferred-height: 700px;
+    min-width: 600px;
+    min-height: 520px;
+
+    // ---- Profile and top rows
+    in property <[string]> profiles;
+    in-out property <int> profile-index;
+    // Base profiles ship with CAO; their advanced groups are read-only.
+    in property <bool> base-profile: true;
+    in-out property <string> user-path;
+    in-out property <bool> dry-run;
+    in-out property <bool> show-advanced;
+    // 0 One mod, 1 Several mods.
+    in-out property <int> mode-index;
+    in property <[TabInfo]> tabs;
+    in-out property <string> current-tab: "bsa";
+
+    // ---- Run state (driven from Rust by #510)
+    in property <bool> running;
+    in property <bool> cancelling;
+    in property <bool> progress-indeterminate;
+    in property <float> progress;
+    in property <string> progress-text;
+    in property <string> status-text;
+
+    // ---- Menu state
+    in-out property <bool> dark: true;
+    in-out property <bool> debug-log;
+    in-out property <bool> show-tutorials: true;
+
+    // ---- Modal state: true while a Slint dialog is open over this window. The real
+    // window is also disabled through winit; this blocks pointer input to the content
+    // in-tree as well, so the headless tests see what a user sees.
+    in property <bool> modal-blocked;
+
+    // ---- Folder drop: true while Explorer drags something over the window (winit
+    // `HoveredFile`), which shows the drop hint (#512).
+    in property <bool> drop-hover;
+
+    // Whether the std-widgets palette is dark: the whole window, menu bar included,
+    // is drawn from it.
+    out property <bool> palette-dark: Palette.color-scheme == ColorScheme.dark;
+
+    callback profile-selected(int);
+    callback new-profile();
+    callback open-directory();
+    callback run-clicked();
+    callback mode-activated(int);
+    callback dry-run-clicked(bool);
+    callback advanced-clicked(bool);
+    callback move-tab(int, int);
+    callback edit-unwanted();
+    callback debug-log-toggled(bool);
+    callback open-log();
+    callback open-docs();
+    callback open-discord();
+    callback about();
+    callback about-slint();
+    // UI rule triggers (#509), besides `mode-activated` and `dry-run-clicked`.
+    callback meshes-process-toggled();
+    callback game-selected(int);
+
+    // Qt's QTabWidget::setEnabled(false) disables every descendant. Slint has no enabled
+    // cascade, so every control in the tab pages ANDs this in by hand.
+    property <bool> ed: !root.running;
+    // Advanced groups are read-only for base profiles (setAdvancedSettingsEnabled).
+    property <bool> adv-ed: root.ed && !root.base-profile;
+
+    init => {
+        Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed dark => {
+        Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    MenuBar {
+        Menu {
+            title: @tr("Tools");
+            MenuItem {
+                title: @tr("Enable dark theme");
+                checkable: true;
+                checked <=> root.dark;
+            }
+
+            MenuItem {
+                title: @tr("Enable debug log");
+                checkable: true;
+                checked <=> root.debug-log;
+                activated => {
+                    root.debug-log-toggled(root.debug-log);
+                }
+            }
+
+            MenuItem {
+                title: @tr("Show tutorials");
+                checkable: true;
+                checked <=> root.show-tutorials;
+            }
+
+            MenuItem {
+                title: @tr("Open log file");
+                activated => {
+                    root.open-log();
+                }
+            }
+        }
+
+        Menu {
+            title: @tr("Help");
+            MenuItem {
+                title: @tr("Documentation");
+                activated => {
+                    root.open-docs();
+                }
+            }
+
+            MenuItem {
+                title: @tr("Discord");
+                activated => {
+                    root.open-discord();
+                }
+            }
+
+            MenuItem {
+                title: @tr("About");
+                activated => {
+                    root.about();
+                }
+            }
+
+            MenuItem {
+                title: @tr("About Slint");
+                activated => {
+                    root.about-slint();
+                }
+            }
+        }
+    }
+
+    VerticalLayout {
+        padding: 9px;
+        padding-bottom: 0px;
+        spacing: 6px;
+
+        // groupBox: Profile | presets | New
+        GroupBox {
+            vertical-stretch: 0;
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: @tr("Profile");
+                    vertical-alignment: center;
+                }
+
+                ComboBox {
+                    accessible-label: @tr("Profile");
+                    horizontal-stretch: 1;
+                    model: root.profiles;
+                    current-index <=> root.profile-index;
+                    enabled: root.ed;
+                    selected => {
+                        root.profile-selected(self.current-index);
+                    }
+                }
+
+                Button {
+                    text: @tr("New");
+                    enabled: root.ed;
+                    clicked => {
+                        root.new-profile();
+                    }
+                }
+            }
+        }
+
+        // userPathTextEdit
+        LineEdit {
+            accessible-label: @tr("Mod folder");
+            text <=> root.user-path;
+            placeholder-text: @tr("Mod folder (or drop a folder onto the window)");
+        }
+
+        // mainGroupBox
+        GroupBox {
+            vertical-stretch: 0;
+            GridLayout {
+                spacing: 6px;
+                Row {
+                    Button {
+                        text: @tr("Open Directory");
+                        clicked => {
+                            root.open-directory();
+                        }
+                    }
+
+                    Button {
+                        text: root.running ? @tr("Cancel") : @tr("Run");
+                        primary: !root.running;
+                        enabled: !root.cancelling;
+                        clicked => {
+                            root.run-clicked();
+                        }
+                    }
+
+                    ComboBox {
+                        accessible-label: @tr("Optimization mode");
+                        model: [@tr("One mod"), @tr("Several mods")];
+                        current-index <=> root.mode-index;
+                        selected => {
+                            root.mode-activated(self.current-index);
+                        }
+                    }
+                }
+
+                Row {
+                    HelpCheckBox {
+                        text: @tr("Dry run");
+                        help: @tr("Will list all files that would be modified, without actually processing them. Will ignore files in BSAs.");
+                        checked <=> root.dry-run;
+                        toggled => {
+                            root.dry-run-clicked(root.dry-run);
+                        }
+                    }
+
+                    Rectangle { }
+
+                    CheckBox {
+                        text: @tr("Show advanced settings");
+                        checked <=> root.show-advanced;
+                        toggled => {
+                            root.advanced-clicked(self.checked);
+                        }
+                    }
+                }
+            }
+        }
+
+        // tabWidget
+        VerticalLayout {
+            vertical-stretch: 1;
+            spacing: 0px;
+            CaoTabBar {
+                tabs: root.tabs;
+                current-id <=> root.current-tab;
+                enabled: root.ed;
+                move-tab(from, to) => {
+                    root.move-tab(from, to);
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+                border-width: 1px;
+                border-color: Palette.border;
+                background: Palette.background;
+                // A layout, not bare `if` children, so the active page's min-height reaches the window.
+                VerticalLayout {
+
+                    if root.current-tab == "bsa": VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        alignment: start;
+                        // C++ disables the base group while Dry Run is on, and reads
+                        // its options as off then (`OptionsCAO::readFromUi`). The
+                        // Dry Run rule (`UiRules`) also clears them.
+                        GroupBox {
+                            title: @tr("Base");
+                            enabled: root.ed && UiRules.bsa-base-enabled;
+                            HorizontalLayout {
+                                spacing: 12px;
+                                HelpCheckBox {
+                                    text: @tr("Extract BSA");
+                                    help: @tr("Extracts any BSAs present in the mod folder.");
+                                    warning: @tr("Warning. If you enable this option, the process will be considerably slowed down.");
+                                    enabled: root.ed && UiRules.bsa-base-enabled;
+                                    checked <=> BsaTab.extract;
+                                }
+
+                                HelpCheckBox {
+                                    text: @tr("Create BSA");
+                                    help: @tr("Creates a new BSA, packing the existing loose files.");
+                                    warning: @tr("Warning. If you enable this option, the process will be considerably slowed down.");
+                                    enabled: root.ed && UiRules.bsa-base-enabled;
+                                    checked <=> BsaTab.create;
+                                }
+
+                                HelpCheckBox {
+                                    text: @tr("Delete backups");
+                                    help: @tr("By default, a backup of existing bsa is created. Enabling this option will disable those backups.");
+                                    enabled: root.ed && UiRules.bsa-base-enabled;
+                                    checked <=> BsaTab.delete-backups;
+                                }
+                            }
+                        }
+
+                        GroupBox {
+                            title: @tr("Extra");
+                            enabled: root.ed;
+                            GridLayout {
+                                spacing: 6px;
+                                Row {
+                                    HelpCheckBox {
+                                        text: @tr("Delete source files");
+                                        help: @tr("Whether CAO will delete the files it packed into BSAs or leave them.");
+                                        enabled: root.ed;
+                                        checked <=> BsaTab.delete-source;
+                                    }
+
+                                    HelpCheckBox {
+                                        text: @tr("Create dummy plugins");
+                                        help: @tr("Dummy plugins are almost always necessary. Disabling creation also removes existing Dummy Plugins whose bytes exactly match the selected game profile's canonical dummy content.");
+                                        enabled: root.ed;
+                                        checked <=> BsaTab.create-dummies;
+                                    }
+
+                                    HelpCheckBox {
+                                        text: @tr("Allow compression");
+                                        help: @tr("Compressed BSAs use less space on disk, but they might perform slightly worse in game");
+                                        enabled: root.ed;
+                                        checked <=> BsaTab.compress;
+                                    }
+                                }
+
+                                Row {
+                                    HelpCheckBox {
+                                        text: @tr("Separate textures BSA");
+                                        help: @tr("There are three types of BSAs CAO can create : incompressible, textures and standard. If enabled, this option will always separate textures into their own BSAs. Otherwise, they will be merged into the standard one if possible.");
+                                        // FO4 forces it on (`UiRules`, deviation 21).
+                                        enabled: root.ed && UiRules.separate-textures-enabled;
+                                        checked <=> BsaTab.separate-textures;
+                                    }
+
+                                    HelpCheckBox {
+                                        text: @tr("Separate incompressible BSA");
+                                        help: @tr("There are three types of BSAs CAO can create : incompressible, textures and standard. If enabled, this option will always separate incompressible files into their own BSAs. Otherwise, they will be merged into the standard one if possible.");
+                                        enabled: root.ed;
+                                        checked <=> BsaTab.separate-incompressible;
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.show-advanced: GroupBox {
+                            title: @tr("Advanced");
+                            enabled: root.adv-ed;
+                            GridLayout {
+                                spacing: 6px;
+                                Row {
+                                    HelpLabel {
+                                        text: @tr("Maximum size");
+                                        help: @tr("The maximum uncompressed size of the files in GB. Increasing it will increase the number of files stored per BSA, but you might reach the hard limit of BSA size, causing the game to crash.");
+                                        enabled: root.adv-ed;
+                                    }
+
+                                    DoubleSpinBox {
+                                        label: @tr("Maximum size");
+                                        enabled: root.adv-ed;
+                                        value <=> BsaTab.max-size;
+                                    }
+                                }
+
+                                Row {
+                                    Text {
+                                        text: @tr("Game");
+                                        vertical-alignment: center;
+                                    }
+
+                                    ComboBox {
+                                        accessible-label: @tr("Game");
+                                        enabled: root.adv-ed;
+                                        model: [@tr("Skyrim LE"), @tr("SSE"), @tr("FO4")];
+                                        current-index <=> BsaTab.game-index;
+                                        selected => {
+                                            root.game-selected(self.current-index);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.current-tab == "meshes": VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        alignment: start;
+                        CheckableGroupBox {
+                            title: @tr("Process meshes");
+                            enabled: root.ed;
+                            checked <=> MeshesTab.process;
+                            // The radios are disabled with the group, which keeps a
+                            // rule from moving their selection; it re-applies here.
+                            toggled => {
+                                root.meshes-process-toggled();
+                            }
+                            // RadioGroup has no settable selection index; programmatic selection
+                            // goes through each button's `checked`, and a plain `checked: expr`
+                            // binding is dropped on the first click. Two-way bindings survive.
+                            // The group resyncs them through change handlers, which run on the
+                            // next turn of the event loop.
+                            levels := RadioGroup {
+                                orientation: horizontal;
+                                enabled: root.ed && MeshesTab.process;
+                                RadioButton {
+                                    text: @tr("Necessary optimization");
+                                    checked <=> MeshesTab.necessary;
+                                    // The help overlay owns the pointer (shared tooltip layer,
+                                    // help cursor, tips on a disabled radio); it forwards the
+                                    // click by checking the radio, which the group then
+                                    // selects. See `HelpArea` in widgets.slint.
+                                    HelpArea {
+                                        help: @tr("Attempts to repair meshes which are guaranteed to crash the game. Headparts are included.");
+                                        clicked => {
+                                            if parent.enabled && levels.enabled {
+                                                MeshesTab.necessary = true;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Several Mods disables the two heavier levels (`UiRules`).
+                                RadioButton {
+                                    text: @tr("Medium optimization");
+                                    enabled: UiRules.heavy-mesh-levels-enabled;
+                                    checked <=> MeshesTab.medium;
+                                    HelpArea {
+                                        help: @tr("Perform necessary optimization, and also lightly optimizes other meshes. This may fix some visual issues, but may also lower quality.");
+                                        clicked => {
+                                            if parent.enabled && levels.enabled {
+                                                MeshesTab.medium = true;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                RadioButton {
+                                    text: @tr("Full optimization");
+                                    enabled: UiRules.heavy-mesh-levels-enabled;
+                                    checked <=> MeshesTab.full;
+                                    HelpArea {
+                                        help: @tr("Fully optimize all meshes. Only apply if standard mesh optimization ignored necessary files. May lower visual quality.");
+                                        clicked => {
+                                            if parent.enabled && levels.enabled {
+                                                MeshesTab.full = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        GroupBox {
+                            title: @tr("Advanced");
+                            enabled: root.ed;
+                            HorizontalLayout {
+                                spacing: 12px;
+                                HelpCheckBox {
+                                    text: @tr("Always process headparts");
+                                    help: @tr("When this option is disabled, headparts are ignored. It is recommended to keep it disabled when processing several mods.");
+                                    enabled: root.ed;
+                                    checked <=> MeshesTab.headparts;
+                                }
+
+                                HelpCheckBox {
+                                    text: @tr("Resave meshes");
+                                    help: @tr("Will resave meshes even if optimization is disabled. Will perform the same optimization as opening a mesh in NifSkope.");
+                                    enabled: root.ed;
+                                    checked <=> MeshesTab.resave;
+                                }
+                            }
+                        }
+
+                        if root.show-advanced: GroupBox {
+                            title: @tr("Expert");
+                            enabled: root.adv-ed;
+                            GridLayout {
+                                spacing: 6px;
+                                Row {
+                                    Text {
+                                        text: @tr("Version");
+                                        vertical-alignment: center;
+                                    }
+
+                                    ComboBox {
+                                        accessible-label: @tr("Version");
+                                        enabled: root.adv-ed;
+                                        model: [@tr("Oblivion (V20_0_0_5)"), @tr("Fallout 3 / Skyrim / Skyrim SE / Fallout 4 (V20_2_0_7)")];
+                                        current-index <=> MeshesTab.version-index;
+                                    }
+                                }
+
+                                Row {
+                                    Text {
+                                        text: @tr("User");
+                                        vertical-alignment: center;
+                                    }
+
+                                    ComboBox {
+                                        accessible-label: @tr("User");
+                                        enabled: root.adv-ed;
+                                        model: [@tr("Oblivion (11)"), @tr("Fallout 3 / Skyrim / Skyrim SE / Fallout 4 (12)")];
+                                        current-index <=> MeshesTab.user-index;
+                                    }
+                                }
+
+                                Row {
+                                    Text {
+                                        text: @tr("Stream");
+                                        vertical-alignment: center;
+                                    }
+
+                                    ComboBox {
+                                        accessible-label: @tr("Stream");
+                                        enabled: root.adv-ed;
+                                        model: [@tr("Oblivion / Fallout 3 (82)"), @tr("Skyrim (83)"), @tr("Skyrim SE (100)"), @tr("Fallout 4 (130)")];
+                                        current-index <=> MeshesTab.stream-index;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.current-tab == "textures": VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        alignment: start;
+                        CheckableGroupBox {
+                            title: @tr("Process textures");
+                            enabled: root.ed;
+                            checked <=> TexturesTab.process;
+                            HorizontalLayout {
+                                spacing: 12px;
+                                HelpCheckBox {
+                                    text: @tr("Necessary optimization");
+                                    help: @tr("Converts any TGA files into DDS, as SSE cannot read these. Attempts to convert and fix any textures that would crash the game, as some older formats are incompatible with SSE.");
+                                    enabled: root.ed && TexturesTab.process;
+                                    checked <=> TexturesTab.necessary;
+                                }
+
+                                HelpCheckBox {
+                                    text: @tr("Compress textures");
+                                    help: @tr("Compresses uncompressed textures to the configured output format. It is recommended for SSE and FO4, but may highly decrease quality for other games.");
+                                    enabled: root.ed && TexturesTab.process;
+                                    checked <=> TexturesTab.compress;
+                                }
+
+                                HelpCheckBox {
+                                    text: @tr("Generate mipmaps");
+                                    help: @tr("Recommended. Mipmaps are smaller copies of textures embedded in the same file which get used when things are small or far away and a pixel on screen covers several pixels in the texture. They improve visual quality with a small performance cost.");
+                                    enabled: root.ed && TexturesTab.process;
+                                    checked <=> TexturesTab.mipmaps;
+                                }
+                            }
+                        }
+
+                        CheckableGroupBox {
+                            title: @tr("Downsizing");
+                            enabled: root.ed;
+                            checked <=> TexturesTab.resize;
+                            GridLayout {
+                                spacing: 6px;
+                                Row {
+                                    HelpRadio {
+                                        text: @tr("By ratio");
+                                        help: @tr("Resizes textures, dividing the current width and height by the values given. Must result in texture dimensions expressed in powers of two, no less than 4x4.");
+                                        enabled: root.ed && TexturesTab.resize;
+                                        checked: TexturesTab.resize-mode == 0;
+                                        clicked => {
+                                            TexturesTab.resize-mode = 0;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: @tr("Height:");
+                                        vertical-alignment: center;
+                                    }
+
+                                    SpinBox {
+                                        accessible-label: @tr("Height ratio");
+                                        enabled: root.ed && TexturesTab.resize;
+                                        minimum: 2;
+                                        maximum: 10;
+                                        value <=> TexturesTab.ratio-height;
+                                    }
+
+                                    Text {
+                                        text: @tr("Width:");
+                                        vertical-alignment: center;
+                                    }
+
+                                    SpinBox {
+                                        accessible-label: @tr("Width ratio");
+                                        enabled: root.ed && TexturesTab.resize;
+                                        minimum: 2;
+                                        maximum: 10;
+                                        value <=> TexturesTab.ratio-width;
+                                    }
+                                }
+
+                                Row {
+                                    HelpRadio {
+                                        text: @tr("By fixed size");
+                                        help: @tr("Resizes texture dimensions to the given sizes. Must result in texture dimensions expressed in powers of two, no less than 4x4.");
+                                        enabled: root.ed && TexturesTab.resize;
+                                        checked: TexturesTab.resize-mode == 1;
+                                        clicked => {
+                                            TexturesTab.resize-mode = 1;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: @tr("Height:");
+                                        vertical-alignment: center;
+                                    }
+
+                                    SpinBox {
+                                        accessible-label: @tr("Fixed height");
+                                        enabled: root.ed && TexturesTab.resize;
+                                        minimum: 4;
+                                        maximum: 4096;
+                                        value <=> TexturesTab.size-height;
+                                    }
+
+                                    Text {
+                                        text: @tr("Width:");
+                                        vertical-alignment: center;
+                                    }
+
+                                    SpinBox {
+                                        accessible-label: @tr("Fixed width");
+                                        enabled: root.ed && TexturesTab.resize;
+                                        minimum: 4;
+                                        maximum: 4096;
+                                        value <=> TexturesTab.size-width;
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.show-advanced: GroupBox {
+                            title: @tr("Advanced");
+                            enabled: root.adv-ed;
+                            GridLayout {
+                                spacing: 6px;
+                                Row {
+                                    HelpLabel {
+                                        text: @tr("TGA");
+                                        help: @tr("Will convert TGAs to a compatible DDS format if option is selected.");
+                                        enabled: root.adv-ed;
+                                    }
+
+                                    CheckBox {
+                                        colspan: 2;
+                                        text: @tr("Enable TGA conversion");
+                                        enabled: root.adv-ed;
+                                        checked <=> TexturesTab.tga-conversion;
+                                    }
+                                }
+
+                                Row {
+                                    HelpLabel {
+                                        text: @tr("Output format");
+                                        help: @tr("Output format for uncompressed textures, modified textures, and converted TGA files. BC7 should only be used for SSE or FO4.");
+                                        enabled: root.adv-ed;
+                                    }
+
+                                    ComboBox {
+                                        colspan: 2;
+                                        accessible-label: @tr("Output format");
+                                        enabled: root.adv-ed;
+                                        model: [@tr("BC7 (BC7_UNORM)"), "BC5 (BC5_UNORM)", @tr("BC3 (BC3_UNORM)"), @tr("BC1 (BC1_UNORM)"), @tr("Uncompressed (R8G8B8A8_UNORM)")];
+                                        current-index <=> TexturesTab.output-format-index;
+                                    }
+                                }
+
+                                Row {
+                                    HelpLabel {
+                                        text: @tr("Interface");
+                                        help: @tr("Some games do not support compressed interface textures.");
+                                        enabled: root.adv-ed;
+                                    }
+
+                                    CheckBox {
+                                        colspan: 2;
+                                        text: @tr("Compress interface textures");
+                                        enabled: root.adv-ed;
+                                        checked <=> TexturesTab.compress-interface;
+                                    }
+                                }
+
+                                Row {
+                                    HelpLabel {
+                                        text: @tr("Unwanted formats");
+                                        help: @tr("Textures using these formats will be converted to a supported format.");
+                                        enabled: root.adv-ed;
+                                    }
+
+                                    // texturesUnwantedFormatsList: read-only here; the Edit
+                                    // dialog changes it.
+                                    Rectangle {
+                                        height: 84px;
+                                        horizontal-stretch: 1;
+                                        border-width: 1px;
+                                        border-radius: 3px;
+                                        border-color: Palette.border;
+                                        accessible-role: list;
+                                        accessible-label: @tr("Unwanted formats");
+                                        accessible-enabled: root.adv-ed;
+                                        accessible-item-count: TexturesTab.unwanted.length;
+                                        ListView {
+                                            for name in TexturesTab.unwanted: Text {
+                                                text: name;
+                                                height: 20px;
+                                                x: 6px;
+                                                vertical-alignment: center;
+                                                color: root.adv-ed ? Palette.foreground : Palette.foreground.transparentize(0.55);
+                                            }
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        alignment: start;
+                                        Button {
+                                            text: @tr("Edit");
+                                            enabled: root.adv-ed;
+                                            clicked => {
+                                                root.edit-unwanted();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.current-tab == "animations": VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        alignment: start;
+                        GroupBox {
+                            title: @tr("Process animations");
+                            enabled: root.ed;
+                            HelpCheckBox {
+                                text: @tr("Necessary optimization");
+                                help: @tr("Converts animations to the appropriate format. If an animation is already compatible, no change will be made.");
+                                enabled: root.ed;
+                                checked <=> AnimationsTab.necessary;
+                            }
+                        }
+
+                        // Empty in MainWindow.ui too; kept for structural parity.
+                        if root.show-advanced: GroupBox {
+                            title: @tr("Advanced");
+                            enabled: root.adv-ed;
+                            Rectangle {
+                                height: 16px;
+                            }
+                        }
+                    }
+
+                    // The Log tab's page, filled from the Application Log feed (#511).
+                    if root.current-tab == "log": LogPage { }
+                }
+            }
+        }
+
+        // progressBar: QProgressBar draws its format text inside the bar.
+        CaoProgressBar {
+            label: @tr("Progress");
+            indeterminate: root.progress-indeterminate;
+            progress: root.progress;
+            text: root.progress-text;
+        }
+
+        // QMainWindow::statusBar()
+        Rectangle {
+            height: 22px;
+            Text {
+                x: 2px;
+                text: root.status-text;
+                vertical-alignment: center;
+                font-size: 11px;
+                color: Palette.foreground.transparentize(0.25);
+            }
+        }
+    }
+
+    // Swallows pointer input to the content while a modal dialog is open. Declared
+    // after the content so it is on top; the menu bar is outside it, and the real
+    // window is disabled through winit anyway.
+    if root.modal-blocked: TouchArea { }
+
+    // The drop hint. No TouchArea: the drag is an OS one that Slint's pointer
+    // handling never sees, so there is nothing to intercept.
+    if root.drop-hover: Rectangle {
+        background: Palette.accent-background.with-alpha(0.18);
+        border-width: 3px;
+        border-color: Palette.accent-background;
+        Text {
+            text: @tr("Drop a folder to set the mod path");
+            font-size: 20px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    HelpTipLayer {
+        width: 100%;
+        height: 100%;
+    }
+}

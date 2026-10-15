@@ -209,10 +209,17 @@ fn a_plain_case_passes_under_every_shipped_profile() {
 #[test]
 fn every_committed_seed_passes_the_guard() {
     let work = std::env::temp_dir().join("cao-parity-guard");
-    for (id, case) in seeds().unwrap() {
-        let rejected = Host::shipped().at(work.join(&id)).rejections(&case);
-        assert!(rejected.is_empty(), "seed `{id}`: {rejected:?}");
-    }
+    // Every rejected seed is reported at once, so a batch of transcribed
+    // seeds (#507) is fixed in one pass rather than one seed per run.
+    let rejected: Vec<String> = seeds()
+        .unwrap()
+        .into_iter()
+        .filter_map(|(id, case)| {
+            let rejected = Host::shipped().at(work.join(&id)).rejections(&case);
+            (!rejected.is_empty()).then(|| format!("seed `{id}`: {rejected:?}"))
+        })
+        .collect();
+    assert!(rejected.is_empty(), "{}", rejected.join("\n"));
 }
 
 #[test]

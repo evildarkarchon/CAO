@@ -1,0 +1,32 @@
+[package]
+name = "cao-gui-ui"
+description = "CAO's `.slint` window and dialogs, compiled to Rust. Only Slint's generated code lives here."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Slint's generated Rust uses `unsafe` internally and marks those items
+# `#[allow(unsafe_code)]`, which the workspace's `forbid` rejects (E0453). This
+# crate therefore lowers the level to `deny` (#508): the generated code's own
+# `allow`s apply, and any hand-written `unsafe` here is still an error. It holds
+# nothing but the compiled `.slint` files, so `cao-gui`, which holds the
+# window's logic, keeps `forbid`. Cargo cannot combine `workspace = true` with a
+# local key, so this table replaces `[workspace.lints]` entirely; keep every
+# other lint in step with the root.
+[lints.rust]
+unsafe_code = "deny"
+
+[features]
+# Emits the element metadata the headless tests' `ElementHandle` queries need
+# (#508). `cao-gui` enables it from its dev-dependencies only, so the shipped
+# exe is built without it.
+debug-info = []
+
+[dependencies]
+# The generated code's runtime (#462, #466).
+slint.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true

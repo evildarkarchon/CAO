@@ -41,7 +41,7 @@ The internal synchronous component that traverses the Run Phase sequence for one
 _Avoid_: Runner, engine, worker
 
 **Optimization Run Service**:
-The public component that validates a Run Request, starts one Optimization Run, and hands it back as an owning Run Handle. It owns scheduling and the run services, so GUI and CLI adapters supply intent rather than orchestrating a run.
+The public component that validates a Run Request, starts one Optimization Run, and hands it back as an owning Run Handle. It owns scheduling and the run services, so the GUI and the parity driver supply intent rather than orchestrating a run.
 _Avoid_: Manager, runner, job queue
 
 **Run Handle**:
@@ -49,7 +49,7 @@ The movable, non-copyable owner of one started Optimization Run. It exposes term
 _Avoid_: Future, task, thread handle
 
 **Run Scheduler**:
-The injectable seam that starts the single Run Worker of one Optimization Run, keeping scheduling in standard C++ and outside presentation code. A scheduler that cannot start a Run Worker produces a terminal Failed result rather than a Start Error, because the run already exists.
+The injectable seam that starts the single Run Worker of one Optimization Run, keeping scheduling on a plain `std::thread` and outside presentation code. A scheduler that cannot start a Run Worker produces a terminal Failed result rather than a Start Error, because the run already exists.
 _Avoid_: Thread pool, task runner, worker pool
 
 **Run Worker**:

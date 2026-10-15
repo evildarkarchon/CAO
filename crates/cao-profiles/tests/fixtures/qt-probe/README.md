@@ -1,8 +1,10 @@
 # Qt 5.15 QSettings probe
 
 The fixtures beside this folder come from Qt itself, not from a reading of its source.
-`qsettings_probe.cpp` is built against the same Qt 5.15 as the C++ CAO build (vcpkg,
-`x64-windows`) and the MSVC that builds CAO. It goes when the C++ tree goes.
+`qsettings_probe.cpp` was built against the same Qt 5.15 as the C++ CAO build (vcpkg,
+`x64-windows`) and the MSVC that built CAO. It is the reference source the captured
+fixtures were recorded with, kept for provenance; it is not part of the build, and no
+crate compiles it.
 
 - `../qt-written/*.ini`: written by `qsettings_probe write`. The probe makes the same
   `setValue` calls as `Profiles::saveToIni` and `OptionsCAO::saveToIni`, appending
@@ -22,7 +24,8 @@ All fixture bytes are exact (CRLF, Latin-1, trailing spaces); `.gitattributes` m
 
 From a Developer Command Prompt for VS 2026 x64, with `QT` set to a vcpkg
 `vcpkg_installed\x64-windows` tree from a C++ CAO configure (for example
-`build\oracle\vcpkg_installed\x64-windows`):
+`build\oracle\vcpkg_installed\x64-windows`; the C++ tree was deleted with #515 and is kept
+at the oracle's commit, see `docs/parity-oracle.md`):
 
 ```
 cl /nologo /std:c++17 /EHsc /MD /O2 /Zc:__cplusplus /permissive- ^

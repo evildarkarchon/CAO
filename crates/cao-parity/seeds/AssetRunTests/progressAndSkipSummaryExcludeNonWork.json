@@ -1,0 +1,92 @@
+{
+  "spec": {
+    "profile": "SSE",
+    "mod_selection": {
+      "kind": "one_mod",
+      "folder": "mods/Mod"
+    },
+    "dry_run": false,
+    "textures": {
+      "necessary": true,
+      "compress": false,
+      "mipmaps": false,
+      "resize_by_ratio": false,
+      "ratio_width": 2,
+      "ratio_height": 2,
+      "resize_by_size": false,
+      "target_width": 256,
+      "target_height": 256
+    },
+    "meshes": {
+      "level": 1,
+      "headparts": false,
+      "resave": false
+    },
+    "animations": false,
+    "archives": {
+      "extract": false,
+      "create": false,
+      "delete_backup": false,
+      "compress": true,
+      "create_dummies": true,
+      "merge_incompressible": true,
+      "merge_textures": false,
+      "delete_sources": true
+    }
+  },
+  "profile_overrides": {
+    "convert_tga": false
+  },
+  "tree": {
+    "content": [
+      {
+        "kind": "text",
+        "path": "mods/Mod/textures/convertible.tga",
+        "text": "fixture",
+        "note": "TGA conversion is off: ExcludedAssetVariant."
+      },
+      {
+        "kind": "texture",
+        "path": "mods/Mod/textures/excluded.dds",
+        "format": "R8G8B8A8_UNORM",
+        "width": 64,
+        "height": 64,
+        "note": "Routed, so the progress total is 2."
+      },
+      {
+        "kind": "mesh",
+        "path": "mods/Mod/meshes/both-operations.nif",
+        "version": "sse",
+        "shapes": [
+          {
+            "name": "Shape",
+            "textures": [
+              "textures\\excluded.dds"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "text",
+        "path": "mods/Mod/animations/disabled.hkx",
+        "text": "fixture",
+        "note": "DisabledAssetKind."
+      },
+      {
+        "kind": "text",
+        "path": "mods/Mod/archives/disabled.bsa",
+        "text": "fixture",
+        "note": "DisabledAssetKind: extraction is off."
+      },
+      {
+        "kind": "text",
+        "path": "mods/Mod/docs/unsupported.txt",
+        "text": "fixture",
+        "note": "Unsupported, so never counted."
+      }
+    ]
+  },
+  "origin": [
+    "AssetRunTests::progressAndSkipSummaryExcludeNonWork"
+  ]
+}
