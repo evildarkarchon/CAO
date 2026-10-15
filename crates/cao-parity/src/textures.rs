@@ -38,10 +38,21 @@ use crate::tree::{ArtifactRule, RuleOutcome};
 
 /// The PSNR every decoded BC7 or BC6H image must reach, in decibels.
 ///
-/// Provisional: #513 calibrates it once by running the oracle against itself,
-/// GPU against forced CPU, and lowers it to the observed floor minus 1 dB if
-/// that floor is below 40 dB.
-pub const MIN_BC7_BC6H_PSNR_DB: f64 = 40.0;
+/// Calibrated once by `cao-parity calibrate` (#513) on [`CALIBRATION_HOST`]:
+/// the oracle's GPU encoder against its forced CPU codec, over the corpus's
+/// BC7/BC6H cases (generator version 2), reached 15.52 dB at worst, below the
+/// provisional 40 dB, so the threshold is that floor minus 1 dB, rounded down
+/// to 0.01 dB. The two encoders drift apart as mips shrink: mip 0 reached
+/// 31-51 dB, 4x4 mips about 22 dB, and the lowest images were 2x2 mips of
+/// synthetic gradients (the BC6H `env_hdr` cubemap and the BC7 `rgb565`,
+/// `plain` and `sky` Textures of the BC6H and BC7 seeds).
+pub const MIN_BC7_BC6H_PSNR_DB: f64 = 14.51;
+
+/// The host, GPU adapter and driver [`MIN_BC7_BC6H_PSNR_DB`] was calibrated
+/// on. The GPU encoder's output depends on them, so a recalibration elsewhere
+/// may observe another floor.
+pub const CALIBRATION_HOST: &str = "ENTERPRISE-J; NVIDIA GeForce RTX 4070 (vendor 10de, \
+                                    device 2786); driver 32.0.16.1692";
 
 /// The format PSNR is measured in.
 const FLOAT: DXGI_FORMAT = DXGI_FORMAT::DXGI_FORMAT_R32G32B32A32_FLOAT;
@@ -118,7 +129,7 @@ fn try_compare_dds(oracle: &[u8], rust: &[u8]) -> Result<(), String> {
 
 /// The length of a DDS file's header: the magic and `DDS_HEADER`, plus the
 /// DX10 extension when the pixel format's FourCC asks for one.
-fn header_len(bytes: &[u8]) -> Result<usize, String> {
+pub(crate) fn header_len(bytes: &[u8]) -> Result<usize, String> {
     const MAGIC: &[u8] = b"DDS ";
     // The magic, then `DDS_HEADER`'s 124 bytes.
     const LEGACY: usize = 4 + 124;
@@ -151,7 +162,7 @@ fn header_len(bytes: &[u8]) -> Result<usize, String> {
 
 /// Loads a DDS file, reading a typeless format as its UNORM equivalent so it
 /// can be decoded.
-fn load(bytes: &[u8]) -> Result<ScratchImage, String> {
+pub(crate) fn load(bytes: &[u8]) -> Result<ScratchImage, String> {
     let mut image = ScratchImage::load_dds(bytes, DDS_FLAGS_NONE, None, None)
         .map_err(|error| format!("DirectXTex cannot load the DDS file: {error}"))?;
     let format = image.metadata().format;
@@ -163,7 +174,7 @@ fn load(bytes: &[u8]) -> Result<ScratchImage, String> {
 }
 
 /// Whether `format` is one of the formats the PSNR rule applies to.
-fn is_bc7_or_bc6h(format: DXGI_FORMAT) -> bool {
+pub(crate) fn is_bc7_or_bc6h(format: DXGI_FORMAT) -> bool {
     matches!(
         format,
         DXGI_FORMAT::DXGI_FORMAT_BC7_TYPELESS

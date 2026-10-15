@@ -1,6 +1,7 @@
 //! The texture backend's per-thread native setup, ported from the C++
 //! `TexturesOptimizer` constructor: COM, and the D3D11 device for GPU BC7 and
-//! BC6H encoding (#495).
+//! BC6H encoding (#495). It also describes the device's adapter and driver,
+//! which the parity harness's threshold calibration records (#513).
 //!
 //! This is the one module of `cao-optimizers` allowed `unsafe` (spec #476); the
 //! crate denies it everywhere else.
@@ -215,6 +216,60 @@ impl GpuDevice {
             )
         }
     }
+}
+
+/// A DXGI adapter as the BC7/BC6H threshold calibration records it (#513):
+/// the GPU encoder's output depends on the adapter and its driver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterDescription {
+    /// The adapter's description string, such as its marketing name.
+    pub name: String,
+    /// The PCI vendor id.
+    pub vendor_id: u32,
+    /// The PCI device id.
+    pub device_id: u32,
+    /// The user-mode driver version, as four dotted parts
+    /// (`32.0.15.6614`, say), the form Device Manager shows.
+    pub driver_version: String,
+}
+
+/// Describes the DXGI adapter at index `adapter`, the one [`GpuDevice::create`]
+/// would create its device on.
+///
+/// # Errors
+/// [`DeviceUnavailable::NoAdapter`] when the host has no adapter at that
+/// index, and [`DeviceUnavailable::Creation`] when no DXGI factory can be
+/// created or the adapter does not report its description or driver.
+pub fn describe_adapter(adapter: u32) -> Result<AdapterDescription, DeviceUnavailable> {
+    // Unlike `dxgi_adapter`, a missing factory is an error here: there is no
+    // default adapter to fall back to describing.
+    // SAFETY: `CreateDXGIFactory1` has no preconditions.
+    let factory =
+        unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }.map_err(DeviceUnavailable::Creation)?;
+    // SAFETY: `factory` is a live COM reference.
+    let chosen = unsafe { factory.EnumAdapters(adapter) }
+        .map_err(|source| DeviceUnavailable::NoAdapter { adapter, source })?;
+    // SAFETY: `chosen` is a live COM reference; `GetDesc` writes only the
+    // returned value.
+    let description = unsafe { chosen.GetDesc() }.map_err(DeviceUnavailable::Creation)?;
+    // SAFETY: `chosen` is a live COM reference, and the GUID pointer refers to
+    // a static that outlives the call. For `IDXGIDevice` the call reports the
+    // user-mode driver version rather than any support decision.
+    let version = unsafe { chosen.CheckInterfaceSupport(&IDXGIDevice::IID) }
+        .map_err(DeviceUnavailable::Creation)?;
+    let name_length = description
+        .Description
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(description.Description.len());
+    // The version packs four 16-bit parts, most significant first.
+    let part = |shift: u32| (version >> shift) & 0xFFFF;
+    Ok(AdapterDescription {
+        name: String::from_utf16_lossy(&description.Description[..name_length]),
+        vendor_id: description.VendorId,
+        device_id: description.DeviceId,
+        driver_version: format!("{}.{}.{}.{}", part(48), part(32), part(16), part(0)),
+    })
 }
 
 /// The DXGI adapter at index `adapter`, or `None` when no DXGI factory can be

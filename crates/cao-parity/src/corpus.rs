@@ -313,7 +313,7 @@ fn tree_size(directory: &Path) -> Result<(usize, u64), HarnessError> {
 }
 
 /// Removes a file or a whole directory tree, if anything is at `path`.
-fn remove_if_present(path: &Path) -> Result<(), HarnessError> {
+pub(crate) fn remove_if_present(path: &Path) -> Result<(), HarnessError> {
     let removed = if path.is_dir() {
         std::fs::remove_dir_all(path)
     } else if path.exists() {
