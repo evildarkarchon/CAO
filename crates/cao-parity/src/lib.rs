@@ -11,12 +11,14 @@
 //! building plugins and input Archives itself, and
 //! [`cases`] loads the committed seed cases `cao-parity case` can run by name.
 //! The deviation [`guard`] rejects any case that would trigger a deliberate
-//! fix before it is materialised.
+//! fix before it is materialised. [`calibrate`] measures the BC7/BC6H PSNR
+//! threshold the Texture rule applies, by running the oracle against itself.
 //!
 //! The library exists so the `cao-parity` binary and its tests share one
 //! implementation; it is never shipped.
 
 pub mod archives;
+pub mod calibrate;
 pub mod case;
 pub mod cases;
 pub mod compare;

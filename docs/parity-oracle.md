@@ -215,6 +215,35 @@ path, which only Rust treats as a Headpart Mesh, is left out.
 A pin is the SHA-256 of an entry's extracted bytes, so an entry can be hashed from a loose
 copy extracted from the same BSA. The pool itself still has to hold the BSA.
 
+## Calibrating the BC7/BC6H threshold
+
+The Texture rule lets BC7 and BC6H pixels differ, as long as every decoded mip and face
+reaches `MIN_BC7_BC6H_PSNR_DB` (`crates/cao-parity/src/textures.rs`). The constant is set by
+calibrating the oracle against itself (#513):
+
+```
+cargo run -p cao-parity -- calibrate --oracle <exe>
+```
+
+- **What runs.** Every corpus case (seeds and generated) that is not a Dry Run, turns on a
+  texture option and holds a `texture` entry, loose or packed. Each runs through the oracle
+  twice: over its `oracle/` copy on the GPU, and over its `rust/` copy with
+  `CAO_ORACLE_FORCE_CPU_BC` set. The Rust driver never runs.
+- **What is measured.** Every BC7 and BC6H Texture both runs wrote at the same path, loose or
+  inside a `.bsa` or `.ba2`, image by image, with the same PSNR the Texture rule applies.
+- **Checks.** The host needs a D3D11 device on adapter 0. The GPU run must not log
+  "DirectCompute is not available", and the CPU run must log it once any BC7 or BC6H
+  Texture was measured; otherwise the oracle predates the override and must be rebuilt.
+- **Output.** Each case's floor, then the observed floor and the threshold: 40 dB if the floor
+  is not below it, otherwise the floor minus 1 dB, rounded down to 0.01 dB. The host, adapter
+  and driver are printed with it. The summary is also written to
+  `<work>/calibration-report.md`. Measured cases are deleted; a case with an error keeps its
+  directory, with `gpu.*` and `cpu.*` captures.
+- **Exit code.** 0 when calibrated, 2 when any case hit an error (the floor may be
+  incomplete), 3 when no BC7 or BC6H Texture was measured.
+- **Recording.** Set `MIN_BC7_BC6H_PSNR_DB` to the printed threshold, and record the host,
+  adapter and driver beside it in `CALIBRATION_HOST`.
+
 ## Oracle-only behaviour
 
 - **Archive options.** `--bcomp`, `--bdum`, `--bmi`, `--bmt` and `--bds` set the archive
