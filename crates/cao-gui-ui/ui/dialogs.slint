@@ -5,7 +5,7 @@
 // Gotchas (#466): a callback named `ok` would shadow `StandardButton { kind: ok }`,
 // and a Dialog's `title` must be re-exposed as an `in` property to be set from Rust.
 
-import { AboutSlint, ComboBox, LineEdit, StandardButton } from "std-widgets.slint";
+import { AboutSlint, CheckBox, ComboBox, LineEdit, ListView, StandardButton } from "std-widgets.slint";
 
 // QInputDialog::getText
 export component TextInputDialog inherits Dialog {
@@ -74,6 +74,72 @@ export component ChoiceDialog inherits Dialog {
             accessible-label: root.label;
             model: root.choices;
             current-index <=> root.current-index;
+        }
+    }
+
+    StandardButton {
+        kind: ok;
+        clicked => {
+            root.confirm();
+        }
+    }
+
+    StandardButton {
+        kind: cancel;
+        clicked => {
+            root.dismiss();
+        }
+    }
+}
+
+// One row of the unwanted-formats dialog.
+export struct FormatItem {
+    name: string,
+    checked: bool,
+}
+
+// TexturesFormatSelectDialog (#509). Qt's title is literally "Dialog"; this one is
+// titled (an accepted visual deviation). Rust hands it a filter model over a scratch
+// copy of the formats: each checkbox's two-way binding writes through the filter to
+// the scratch row, so the search hides rows without losing their checked state. OK
+// commits the scratch copy; Cancel and the title bar discard it (deviation 2).
+export component FormatsDialog inherits Dialog {
+    title: @tr("Unwanted formats");
+    preferred-width: 320px;
+    preferred-height: 742px;
+
+    in property <[FormatItem]> items;
+    in-out property <string> search;
+    callback search-edited(string);
+    callback confirm();
+    callback dismiss();
+
+    VerticalLayout {
+        padding: 9px;
+        spacing: 6px;
+        Text {
+            text: @tr("Search");
+        }
+
+        LineEdit {
+            accessible-label: @tr("Search");
+            text <=> root.search;
+            edited(text) => {
+                root.search-edited(text);
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            accessible-role: list;
+            accessible-label: @tr("Formats");
+            accessible-item-count: root.items.length;
+            ListView {
+                for item in root.items: CheckBox {
+                    text: item.name;
+                    checked <=> item.checked;
+                }
+            }
         }
     }
 

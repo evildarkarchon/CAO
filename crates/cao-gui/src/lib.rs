@@ -23,6 +23,7 @@ mod form;
 pub mod formats;
 mod log_tab;
 mod modal;
+mod rules;
 mod run_view;
 mod startup;
 
