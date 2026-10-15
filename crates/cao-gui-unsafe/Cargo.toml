@@ -1,0 +1,21 @@
+[package]
+name = "cao-gui-unsafe"
+description = "The one `unsafe` call cao-gui needs, behind a documented safe wrapper, so cao-gui itself keeps `unsafe_code = \"forbid\"`."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# This crate overrides the workspace's `unsafe_code = "forbid"` (#508). Cargo
+# cannot combine `workspace = true` with a local key, so this table replaces
+# `[workspace.lints]` entirely; keep every other lint in step with the root.
+#
+# It exists so the GUI's unsafe surface is not mixed into `cao-winfs`, which is
+# the file-safety layer. Keep it to calls that have no safe equivalent: the
+# dialog owner window, for example, is set through winit's safe
+# `WindowAttributesExtWindows::with_owner_window` in cao-gui, not here.
+[lints.rust]
+unsafe_code = "allow"
+
+# No dependencies: `std` is all the wrapped calls need.

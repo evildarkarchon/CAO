@@ -1,0 +1,7 @@
+// Resource script for the cao-gui exe (#471, #508): the shared application
+// manifest plus the window and Explorer icon.
+// 1 = CREATEPROCESS_MANIFEST_RESOURCE_ID, 24 = RT_MANIFEST. The icon keeps the
+// C++ build's resource name, IDI_ICON1; `cao.ico` is a copy of the C++ tree's
+// `src/styles/cao.ico`, kept here so it survives the C++ deletion (#515).
+1 24 "Cathedral_Assets_Optimizer.manifest"
+IDI_ICON1 ICON "cao.ico"
