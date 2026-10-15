@@ -61,9 +61,8 @@ fn staging_debris(root: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
             let in_staging = directory.file_name().is_some_and(|dir| dir == ".cao-staging");
-            if in_staging && !STAGING_CONTROL_FILES.contains(&name.as_str()) {
-                debris.push(path.clone());
-            } else if name.starts_with(".cao-staging-") {
+            let control_file = in_staging && STAGING_CONTROL_FILES.contains(&name.as_str());
+            if (in_staging && !control_file) || name.starts_with(".cao-staging-") {
                 debris.push(path.clone());
             }
             if entry.file_type().unwrap().is_dir() {
