@@ -14,9 +14,8 @@ use std::path::PathBuf;
 use std::rc::Weak;
 
 use cao_core::run::{RunEvent, RunEventDispatcher, RunHandle, RunId, RunOutcome, StartError};
-use cao_gui_ui::{LogRow, LogSeverity};
 use cao_optimizers::composition::ApplicationRun;
-use slint::{ComponentHandle, Model, SharedString};
+use slint::{ComponentHandle, SharedString};
 
 use super::App;
 use crate::desktop::MessageLevel;
@@ -210,7 +209,7 @@ impl App {
         ui.set_progress(view.fraction());
         ui.set_progress_text(text.clone());
         ui.set_status_text(text);
-        show_details(ui, &view.state().details);
+        log_tab::show_details(ui, &view.state().details);
     }
 
     /// A message box naming the Run Outcome, over the window.
@@ -264,35 +263,6 @@ fn deliver(event: RunEvent) {
     if let Some(app) = app {
         app.on_run_event(&event);
     }
-}
-
-/// Shows the latest run's detail rows pinned below the Log tab's log rows,
-/// replacing the previous run's. Rows only grow during a run, so only the new
-/// ones are appended; a run that has just begun has none, which clears the
-/// previous run's.
-fn show_details(ui: &cao_gui_ui::MainWindow, details: &[String]) {
-    log_tab::with_rows(ui, |rows| {
-        let total = rows.row_count();
-        let mut shown = (0..total)
-            .rev()
-            .take_while(|&row| {
-                rows.row_data(row)
-                    .is_some_and(|row| row.severity == LogSeverity::Detail)
-            })
-            .count();
-        if shown > details.len() {
-            for row in (total - shown..total).rev() {
-                rows.remove(row);
-            }
-            shown = 0;
-        }
-        for detail in &details[shown..] {
-            rows.push(LogRow {
-                text: SharedString::from(detail.as_str()),
-                severity: LogSeverity::Detail,
-            });
-        }
-    });
 }
 
 /// The message for a run the service refused to start.

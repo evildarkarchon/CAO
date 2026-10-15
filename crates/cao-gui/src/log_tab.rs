@@ -119,7 +119,7 @@ fn drain(window: &slint::Weak<MainWindow>, feed: &Weak<OnceLock<LogFeed>>) {
 
 /// Runs `action` over the Log tab's model, first installing a [`VecModel`] in
 /// place of the empty default.
-pub(crate) fn with_rows<R>(window: &MainWindow, action: impl FnOnce(&VecModel<LogRow>) -> R) -> R {
+fn with_rows<R>(window: &MainWindow, action: impl FnOnce(&VecModel<LogRow>) -> R) -> R {
     let tab = window.global::<LogTab>();
     let mut model = tab.get_rows();
     if model.as_any().downcast_ref::<VecModel<LogRow>>().is_none() {
@@ -138,14 +138,7 @@ pub(crate) fn with_rows<R>(window: &MainWindow, action: impl FnOnce(&VecModel<Lo
 /// beyond [`MAX_FEED_ROWS`].
 fn apply(rows: &VecModel<LogRow>, update: FeedUpdate) {
     let total = rows.row_count();
-    let details = (0..total)
-        .rev()
-        .take_while(|&row| {
-            rows.row_data(row)
-                .is_some_and(|row| row.severity == LogSeverity::Detail)
-        })
-        .count();
-    let logged = total - details;
+    let logged = total - trailing_details(rows);
     let new: Vec<LogRow> = update.lines.into_iter().map(row).collect();
 
     if !update.reset && logged + new.len() <= MAX_FEED_ROWS {
@@ -169,6 +162,41 @@ fn apply(rows: &VecModel<LogRow>, update: FeedUpdate) {
     all.extend_from_slice(new);
     all.extend((logged..total).filter_map(|row| rows.row_data(row)));
     rows.set_vec(all);
+}
+
+/// Shows the latest run's detail rows pinned below the Log tab's log rows,
+/// replacing the previous run's. Rows only grow during a run, so only the new
+/// ones are appended; a run that has just begun has none, which clears the
+/// previous run's.
+pub(crate) fn show_details(window: &MainWindow, details: &[String]) {
+    with_rows(window, |rows| {
+        let total = rows.row_count();
+        let mut shown = trailing_details(rows);
+        if shown > details.len() {
+            for row in (total - shown..total).rev() {
+                rows.remove(row);
+            }
+            shown = 0;
+        }
+        for detail in &details[shown..] {
+            rows.push(LogRow {
+                text: detail.as_str().into(),
+                severity: LogSeverity::Detail,
+            });
+        }
+    });
+}
+
+/// How many run-detail rows end the model: they always come after every log
+/// row.
+fn trailing_details(rows: &VecModel<LogRow>) -> usize {
+    (0..rows.row_count())
+        .rev()
+        .take_while(|&row| {
+            rows.row_data(row)
+                .is_some_and(|row| row.severity == LogSeverity::Detail)
+        })
+        .count()
 }
 
 /// A sink row as the Log tab shows it.
