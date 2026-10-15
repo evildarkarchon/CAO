@@ -3,8 +3,8 @@
 //!
 //! Each direction follows C++ rule for rule, including its quirks, so a profile
 //! the C++ build saved reloads the same, and what the window saves reloads the
-//! same. #509's UI rules (Dry Run, Several Mods, FO4 textures) are not applied
-//! here; they run after [`show_options`] and [`show_settings`].
+//! same. #509's UI rules (Dry Run, Several Mods, FO4 textures; `rules.rs`) are
+//! not applied here; they run after [`show_options`] and [`show_settings`].
 
 use cao_gui_ui::{AnimationsTab, BsaTab, MainWindow, MeshesTab, TexturesTab};
 use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileSettings};
@@ -130,7 +130,7 @@ pub(crate) fn read_options(ui: &MainWindow, current: &Options) -> Options {
     let tabs = EnabledTabs::of(ui);
     let mut options = current.clone();
 
-    // The base group is disabled while Dry Run is on (`main.slint`), and C++
+    // The base group is disabled while Dry Run is on (`rules.rs`), and C++
     // reads every BSA option as off while the tab or that group is disabled.
     let bsa = ui.global::<BsaTab>();
     let bsa_enabled = tabs.bsa && !ui.get_dry_run();

@@ -247,3 +247,24 @@ pub fn enabled(component: &impl ComponentHandle, label: &str) -> bool {
         .accessible_enabled()
         .unwrap_or(true)
 }
+
+/// Picks `item` in the combo box labelled `combo`, as a user would: opens its
+/// popup and clicks the item, which raises the combo's `selected`.
+///
+/// # Panics
+/// When the popup shows no item, or more than one, labelled `item`.
+pub fn choose(component: &impl ComponentHandle, combo: &str, item: &str) {
+    control(component, combo).invoke_accessible_expand_action();
+    next_turn();
+    let found: Vec<ElementHandle> = ElementHandle::find_by_accessible_label(component, item)
+        .filter(|element| element.accessible_role() == Some(AccessibleRole::ListItem))
+        .collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "expected one {combo:?} item {item:?}, found {}",
+        found.len()
+    );
+    found[0].mock_single_click(slint::platform::PointerEventButton::Left);
+    next_turn();
+}

@@ -6,12 +6,17 @@ use std::path::Path;
 use std::rc::{Rc, Weak};
 
 use cao_gui_ui::{AboutSlintDialog, ChoiceDialog, MainWindow, TabInfo, TextInputDialog};
+use cao_gui_ui::{FormatItem, FormatsDialog, TexturesTab};
 use cao_profiles::{CommonSettings, Options, Profile, ProfileError, ProfileSettings, Profiles};
-use slint::{CloseRequestResponse, ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use slint::{
+    CloseRequestResponse, ComponentHandle, FilterModel, Model, ModelRc, SharedString, VecModel,
+};
 
 use crate::desktop::{Desktop, MessageLevel};
 use crate::form::{self, EnabledTabs};
+use crate::formats;
 use crate::modal::ModalSlot;
+use crate::rules;
 
 const DOCUMENTATION_URL: &str = "https://www.nexusmods.com/skyrimspecialedition/mods/23316";
 const DISCORD_URL: &str = "https://discordapp.com/invite/B9abN8d";
@@ -61,6 +66,7 @@ pub struct App {
     name_dialog: ModalSlot<TextInputDialog>,
     base_dialog: ModalSlot<ChoiceDialog>,
     about_slint_dialog: ModalSlot<AboutSlintDialog>,
+    formats_dialog: ModalSlot<FormatsDialog>,
 }
 
 impl App {
@@ -116,6 +122,7 @@ impl App {
             name_dialog: ModalSlot::default(),
             base_dialog: ModalSlot::default(),
             about_slint_dialog: ModalSlot::default(),
+            formats_dialog: ModalSlot::default(),
             window,
         });
 
@@ -158,6 +165,11 @@ impl App {
     /// The open About Slint dialog, if any.
     pub fn about_slint_dialog(&self) -> Option<AboutSlintDialog> {
         self.about_slint_dialog.dialog()
+    }
+
+    /// The open unwanted-formats dialog, if any.
+    pub fn formats_dialog(&self) -> Option<FormatsDialog> {
+        self.formats_dialog.dialog()
     }
 
     /// Connects the window's callbacks. Each holds the app weakly: the window
@@ -209,6 +221,8 @@ impl App {
         ui.on_open_discord(with(|app| app.desktop.open(DISCORD_URL)));
         ui.on_about(with(Self::about));
         ui.on_about_slint(with(Self::about_slint));
+        ui.on_edit_unwanted(with(Self::edit_unwanted));
+        self.wire_rules();
         ui.window().on_close_requested({
             let app = app.clone();
             move || {
@@ -291,6 +305,8 @@ impl App {
             form::show_settings(ui, settings);
         }
         form::show_options(ui, &options);
+        // The UI rules also hold for what was loaded (deviations 3 and 21).
+        rules::apply(ui);
         // An unreadable profile enables no asset tab.
         self.enable_tabs(match &settings {
             Some(settings) => EnabledTabs {
@@ -581,6 +597,128 @@ impl App {
     fn report_dialog_error(&self, opened: Result<(), slint::PlatformError>) {
         if let Err(error) = opened {
             self.error("Error", &format!("The dialog could not be opened: {error}"));
+        }
+    }
+}
+
+// ---- UI rules (#509)
+
+impl App {
+    /// Connects the controls that trigger a UI rule to [`rules::apply`], the
+    /// same call `load_profile` makes after loading settings.
+    fn wire_rules(&self) {
+        let ui = &self.window;
+        let app = &self.me;
+        ui.on_dry_run_clicked({
+            let app = app.clone();
+            move |_| {
+                if let Some(app) = app.upgrade() {
+                    rules::apply(&app.window);
+                }
+            }
+        });
+        // A RadioGroup disabled with its unchecked group reverts what a rule
+        // writes to its radios, so the rules re-apply once the group is back.
+        ui.on_meshes_process_toggled({
+            let app = app.clone();
+            move || {
+                if let Some(app) = app.upgrade() {
+                    rules::apply(&app.window);
+                }
+            }
+        });
+        ui.on_game_selected({
+            let app = app.clone();
+            move |_| {
+                if let Some(app) = app.upgrade() {
+                    rules::apply(&app.window);
+                }
+            }
+        });
+        ui.on_mode_activated({
+            let app = app.clone();
+            move |_| {
+                if let Some(app) = app.upgrade() {
+                    app.mode_activated();
+                }
+            }
+        });
+    }
+
+    /// The Textures tab's Edit button (C++ `TexturesFormatSelectDialog`): opens
+    /// the unwanted-formats dialog over a scratch copy of every format, checked
+    /// where the tab lists it.
+    ///
+    /// The dialog shows the scratch rows through a filter model; a checkbox's
+    /// two-way binding writes through the filter into its scratch row, so the
+    /// search hides rows without losing their state. OK replaces the tab's list
+    /// with the checked rows, in C++'s order; Cancel and the title bar drop the
+    /// scratch copy, where C++ committed on any close (deviation 2).
+    fn edit_unwanted(&self) {
+        let listed: Vec<SharedString> = self
+            .window
+            .global::<TexturesTab>()
+            .get_unwanted()
+            .iter()
+            .collect();
+        let scratch = Rc::new(VecModel::from(
+            formats::UNWANTED_FORMAT_CHOICES
+                .iter()
+                .map(|&(name, _)| FormatItem {
+                    name: name.into(),
+                    checked: listed.iter().any(|listed| listed == name),
+                })
+                .collect::<Vec<_>>(),
+        ));
+        // Lowercased, as C++'s `Qt::MatchContains` search ignores case.
+        let search = Rc::new(RefCell::new(String::new()));
+        let filtered = Rc::new(FilterModel::new(scratch.clone(), {
+            let search = search.clone();
+            move |item: &FormatItem| item.name.to_lowercase().contains(search.borrow().as_str())
+        }));
+
+        let app = self.weak();
+        let opened = self.formats_dialog.open(&self.window, || {
+            let dialog = FormatsDialog::new()?;
+            dialog.set_items(ModelRc::from(filtered.clone()));
+            dialog.on_search_edited(move |text| {
+                *search.borrow_mut() = text.to_lowercase();
+                filtered.reset();
+            });
+            let confirm = app.clone();
+            dialog.on_confirm(move || {
+                let Some(app) = confirm.upgrade() else { return };
+                let chosen: Vec<SharedString> = scratch
+                    .iter()
+                    .filter(|item| item.checked)
+                    .map(|item| item.name)
+                    .collect();
+                app.window
+                    .global::<TexturesTab>()
+                    .set_unwanted(ModelRc::new(VecModel::from(chosen)));
+                app.formats_dialog.close();
+            });
+            let dismiss = app.clone();
+            dialog.on_dismiss(move || {
+                if let Some(app) = dismiss.upgrade() {
+                    app.formats_dialog.close();
+                }
+            });
+            Ok(dialog)
+        });
+        self.report_dialog_error(opened);
+    }
+
+    /// The mode combo's `activated`: applies the Several Mods rule and, for
+    /// Several Mods, shows C++'s tutorial box.
+    fn mode_activated(&self) {
+        rules::apply(&self.window);
+        if rules::several_mods_chosen(&self.window) {
+            self.tutorial(
+                "Several mods option",
+                "You have selected the several mods option. This process may take a very long time, especially if you process BSA. \nThis process has only been tested on the Mod Organizer mods folder.",
+                Box::new(|| {}),
+            );
         }
     }
 }

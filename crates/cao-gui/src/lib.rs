@@ -17,6 +17,7 @@ mod desktop;
 mod form;
 pub mod formats;
 mod modal;
+mod rules;
 
 pub use app::{App, StartupError};
 pub use cao_gui_ui as ui;
