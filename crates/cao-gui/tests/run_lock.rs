@@ -10,7 +10,6 @@ mod common;
 
 use cao_gui::MessageLevel;
 use common::*;
-use slint::Model;
 
 /// Controls the run lock never touches, as in C++, which disabled only the
 /// tab widget, the profile combo and New.
@@ -115,16 +114,21 @@ fn a_run_locks_the_profile_new_and_tab_pages_until_it_reports_its_outcome() {
             "Done".to_owned()
         ))
     );
+    let details = detail_rows(ui);
     assert!(
-        ui.get_run_details()
+        details
             .iter()
             .any(|row| row == "Final Phase: Archive Finalization"),
-        "the terminal evidence reaches the detail rows"
+        "the terminal evidence reaches the Log tab's detail rows: {details:?}"
     );
 
     // A cancelled run: Cancel disables itself at once, and the lock holds
     // until the outcome arrives, whichever it turns out to be.
     click(ui, "Run");
+    assert!(
+        detail_rows(ui).is_empty(),
+        "a new run replaces the last run's detail rows"
+    );
     click(ui, "Cancel");
     assert!(ui.get_running() && ui.get_cancelling());
     assert!(

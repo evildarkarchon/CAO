@@ -9,8 +9,8 @@
 mod common;
 
 use common::*;
+use slint::ComponentHandle;
 use slint::platform::WindowEvent;
-use slint::{ComponentHandle, Model};
 
 #[test]
 fn closing_mid_run_cancels_it_and_closes_once_safety_cleanup_has_reported() {
@@ -44,7 +44,7 @@ fn closing_mid_run_cancels_it_and_closes_once_safety_cleanup_has_reported() {
     run_event_loop_until(|| !ui.window().is_visible());
     // The terminal result, published only after Safety Cleanup, was delivered
     // before the window closed.
-    let details: Vec<String> = ui.get_run_details().iter().map(Into::into).collect();
+    let details = detail_rows(ui);
     assert!(
         details.iter().any(|row| row.starts_with("Final Phase: ")),
         "{details:?}"

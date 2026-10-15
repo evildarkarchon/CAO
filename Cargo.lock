@@ -692,6 +692,7 @@ dependencies = [
  "directxtex",
  "embed-resource",
  "i-slint-backend-testing",
+ "log",
  "raw-window-handle",
  "rfd",
  "slint",

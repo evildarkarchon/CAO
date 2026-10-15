@@ -51,19 +51,26 @@ fn a_log_file_that_cannot_be_opened_shows_an_error_and_starts_no_run() {
     let (app_dir, mods) = sse_app("run_log_unopenable");
     let (app, desktop) = open(&app_dir);
     let log = ApplicationLog::open(&app_dir.join("startup.html"), false).unwrap();
-    app.use_application_log(Box::leak(Box::new(log)));
-    // A file where the `logs` folder belongs: the run's
-    // `logs/SSE/<stamp>.html` cannot be created.
+    app.attach_log(Box::leak(Box::new(log)));
+    // A file where the `logs` folder belongs: the newly selected profile's
+    // `logs/TES5/<stamp>.html` cannot be created, so the log stays on the
+    // startup file, and the profile's runs have no log file.
     std::fs::write(app_dir.join("logs"), "").unwrap();
     let ui = app.window();
+    choose_profile(ui, "TES5");
+    assert_eq!(
+        desktop.message_titles(),
+        ["Profile"],
+        "the failed stamp is reported"
+    );
     ui.set_user_path(mods.display().to_string().into());
     ui.set_dry_run(true);
 
     click(ui, "Run");
 
     let shown = messages(&desktop);
-    assert_eq!(shown.len(), 1, "{shown:?}");
-    let (level, title, text) = &shown[0];
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    let (level, title, text) = &shown[1];
     assert_eq!((*level, title.as_str()), (MessageLevel::Error, "Error"));
     assert!(
         text.starts_with("The log file for this run could not be opened: "),
@@ -71,6 +78,25 @@ fn a_log_file_that_cannot_be_opened_shows_an_error_and_starts_no_run() {
     );
     assert_unlocked(ui);
     assert_eq!(ui.get_status_text(), "", "no run was presented");
+
+    // Once the profile's log file can be opened, the same run starts.
+    std::fs::remove_file(app_dir.join("logs")).unwrap();
+    click(ui, "Run");
+    assert!(ui.get_running());
+    assert_eq!(messages(&desktop).len(), 2);
+}
+
+/// Picks `name` in the profile combo, as choosing it from the list would.
+fn choose_profile(ui: &cao_gui::ui::MainWindow, name: &str) {
+    use slint::Model;
+    let index = ui
+        .get_profiles()
+        .iter()
+        .position(|profile| profile == name)
+        .unwrap() as i32;
+    ui.set_profile_index(index);
+    ui.invoke_profile_selected(index);
+    next_turn();
 }
 
 #[test]

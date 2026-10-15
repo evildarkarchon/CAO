@@ -25,12 +25,15 @@ cao-gui-unsafe.workspace = true
 cao-gui-ui.workspace = true
 # The Run Events, Run Handle and terminal result the window presents (#510).
 cao-core.workspace = true
-# The composition root that starts runs, and the Application Log each run start redirects (#510).
-cao-optimizers.workspace = true
 # `exe_directory`, the app directory only `main` derives (deviation 1, #463).
 cao-winfs.workspace = true
+# The Application Log sink the window bootstraps, stamps and shows (#470, #511),
+# and the composition root that starts runs (#510).
+cao-optimizers.workspace = true
 # The `DXGI_FORMAT` numbers behind the unwanted-format names the window shows (#508, #509).
 directxtex.workspace = true
+# The startup records the window logs, and the sink's install error (#470, #511).
+log.workspace = true
 # The dialog owner's HWND, read from Slint's window handle (#462).
 raw-window-handle.workspace = true
 # Native message and folder dialogs, parented to the main window (#462).

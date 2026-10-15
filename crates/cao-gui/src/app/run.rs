@@ -8,35 +8,32 @@
 //! event loop has ended is dropped. On the UI thread, [`RunView`] orders them
 //! and the window renders the result.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::rc::{Rc, Weak};
+use std::rc::Weak;
 
 use cao_core::run::{RunEvent, RunEventDispatcher, RunHandle, RunId, RunOutcome, StartError};
-use cao_optimizers::application_log::{ApplicationLog, stamp_log_path};
+use cao_gui_ui::{LogRow, LogSeverity};
 use cao_optimizers::composition::ApplicationRun;
-use slint::{ComponentHandle, Model, SharedString, VecModel};
+use slint::{ComponentHandle, Model, SharedString};
 
 use super::App;
 use crate::desktop::MessageLevel;
+use crate::log_tab;
 use crate::run_view::RunView;
 
 /// The window's run state.
 #[derive(Default)]
 pub(super) struct Runs {
-    /// The Application Log each run start redirects; `None` until `main`
-    /// hands it over (tests may run without one).
-    log: Cell<Option<&'static ApplicationLog>>,
-    /// The selected profile's log file, stamped when the profile was selected
-    /// (C++ `Profiles::logPath`). Each run start redirects the log to it.
-    log_path: RefCell<PathBuf>,
+    /// The log file of the profile selected in this session, stamped when it
+    /// was selected (C++ `Profiles::logPath`), even if it could not be opened
+    /// then. `None` for the startup profile, whose file `main` opened.
+    log_path: RefCell<Option<PathBuf>>,
     /// The run in flight, from its start until its terminal result arrives.
     active: RefCell<Option<ActiveRun>>,
     /// What the window shows of the latest run.
     view: RefCell<RunView>,
-    /// The latest run's detail rows, for the Log tab (#511 shows them).
-    pub(super) details: Rc<VecModel<SharedString>>,
 }
 
 /// A started run and the composition root that wired it.
@@ -55,17 +52,10 @@ thread_local! {
 }
 
 impl App {
-    /// Hands the window the process's Application Log, which each run start
-    /// then points at the selected profile's log file and debug choice.
-    pub fn use_application_log(&self, log: &'static ApplicationLog) {
-        self.runs.log.set(Some(log));
-    }
-
-    /// Stamps the log file of profile `name`, selected now:
-    /// `logs/<name>/yy.MM.dd.hh.mm.html` in the app directory. Runs of this
-    /// profile session log to it.
-    pub(super) fn stamp_run_log(&self, name: &str) {
-        *self.runs.log_path.borrow_mut() = stamp_log_path(&self.app_dir, name);
+    /// Remembers `path`, the log file just stamped for a newly selected
+    /// profile, as the file this profile session's runs log to.
+    pub(super) fn remember_run_log(&self, path: PathBuf) {
+        *self.runs.log_path.borrow_mut() = Some(path);
     }
 
     /// Run, or Cancel while a run is active (C++ `initProcess`).
@@ -93,8 +83,13 @@ impl App {
             (loaded.profile.name().to_owned(), loaded.options.clone())
         };
 
-        if let Some(log) = self.runs.log.get() {
+        // The profile session's file, at the run's debug choice (C++
+        // `applyRunLogging`). It is normally the file the log already writes
+        // to; it differs only when the profile's stamp could not be opened,
+        // and then the run must not start without it.
+        if let Some(log) = self.application_log() {
             let path = self.runs.log_path.borrow().clone();
+            let path = path.unwrap_or_else(|| log.path());
             if let Err(error) = log.redirect(&path, options.debug_log) {
                 self.error(
                     "Error",
@@ -124,7 +119,6 @@ impl App {
         let run_id = handle.run_id().to_owned();
         RUN_WINDOWS.with(|windows| windows.borrow_mut().insert(run_id.clone(), self.weak()));
         self.runs.view.borrow_mut().begin(run_id);
-        self.runs.details.set_vec(Vec::new());
         *self.runs.active.borrow_mut() = Some(ActiveRun {
             handle,
             _setup: setup,
@@ -216,11 +210,7 @@ impl App {
         ui.set_progress(view.fraction());
         ui.set_progress_text(text.clone());
         ui.set_status_text(text);
-        // Rows only grow during a run; `start_run` clears them.
-        let details = &view.state().details;
-        for row in details.iter().skip(self.runs.details.row_count()) {
-            self.runs.details.push(row.into());
-        }
+        show_details(ui, &view.state().details);
     }
 
     /// A message box naming the Run Outcome, over the window.
@@ -274,6 +264,35 @@ fn deliver(event: RunEvent) {
     if let Some(app) = app {
         app.on_run_event(&event);
     }
+}
+
+/// Shows the latest run's detail rows pinned below the Log tab's log rows,
+/// replacing the previous run's. Rows only grow during a run, so only the new
+/// ones are appended; a run that has just begun has none, which clears the
+/// previous run's.
+fn show_details(ui: &cao_gui_ui::MainWindow, details: &[String]) {
+    log_tab::with_rows(ui, |rows| {
+        let total = rows.row_count();
+        let mut shown = (0..total)
+            .rev()
+            .take_while(|&row| {
+                rows.row_data(row)
+                    .is_some_and(|row| row.severity == LogSeverity::Detail)
+            })
+            .count();
+        if shown > details.len() {
+            for row in (total - shown..total).rev() {
+                rows.remove(row);
+            }
+            shown = 0;
+        }
+        for detail in &details[shown..] {
+            rows.push(LogRow {
+                text: SharedString::from(detail.as_str()),
+                severity: LogSeverity::Detail,
+            });
+        }
+    });
 }
 
 /// The message for a run the service refused to start.

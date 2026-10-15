@@ -4,16 +4,18 @@
 
 mod run;
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
 use cao_gui_ui::{AboutSlintDialog, ChoiceDialog, MainWindow, TabInfo, TextInputDialog};
+use cao_optimizers::application_log::ApplicationLog;
 use cao_profiles::{CommonSettings, Options, Profile, ProfileError, ProfileSettings, Profiles};
 use slint::{CloseRequestResponse, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::desktop::{Desktop, MessageLevel};
 use crate::form::{self, EnabledTabs};
+use crate::log_tab::AttachedLog;
 use crate::modal::ModalSlot;
 
 const DOCUMENTATION_URL: &str = "https://www.nexusmods.com/skyrimspecialedition/mods/23316";
@@ -68,6 +70,8 @@ pub struct App {
     name_dialog: ModalSlot<TextInputDialog>,
     base_dialog: ModalSlot<ChoiceDialog>,
     about_slint_dialog: ModalSlot<AboutSlintDialog>,
+    /// The Application Log, once `main` has attached it (#511).
+    log: OnceCell<AttachedLog>,
 }
 
 impl App {
@@ -125,13 +129,13 @@ impl App {
             name_dialog: ModalSlot::default(),
             base_dialog: ModalSlot::default(),
             about_slint_dialog: ModalSlot::default(),
+            log: OnceCell::new(),
             window,
         });
 
         let ui = &app.window;
         ui.set_profiles(ModelRc::from(app.profile_names.clone()));
         ui.set_tabs(ModelRc::from(app.tabs.clone()));
-        ui.set_run_details(ModelRc::from(app.runs.details.clone()));
         // C++ `loadUi`: the common settings first.
         ui.set_dark(common.dark_mode);
         ui.set_show_advanced(common.show_advanced_settings);
@@ -209,12 +213,14 @@ impl App {
         // C++ saves the window when debug logging is toggled.
         ui.on_debug_log_toggled({
             let app = app.clone();
-            move |_| {
+            move |debug| {
                 if let Some(app) = app.upgrade() {
                     app.save();
+                    app.debug_log_toggled(debug);
                 }
             }
         });
+        ui.on_open_log(with(Self::open_log));
         ui.on_open_docs(with(|app| app.desktop.open(DOCUMENTATION_URL)));
         ui.on_open_discord(with(|app| app.desktop.open(DISCORD_URL)));
         ui.on_about(with(Self::about));
@@ -252,10 +258,11 @@ impl App {
     }
 
     /// C++ `setGameMode`: saves the window into the current profile, then loads
-    /// `name` into it.
+    /// `name` into it, and stamps a new Application Log for it.
     fn select_profile(&self, name: &str) {
         self.save();
         self.load_profile(name);
+        self.stamp_log(name);
     }
 
     /// Loads profile `name` into the window: remembers it in `common.ini`, shows
@@ -266,10 +273,8 @@ impl App {
         let profile = self.profiles.open(name);
         let mut loaded = self.loaded.borrow_mut();
 
-        // C++ `Profiles::setCurrentProfile` writes the choice at once, and
-        // stamps the profile session's log file.
+        // C++ `Profiles::setCurrentProfile` writes the choice at once.
         loaded.common.profile = name.to_owned();
-        self.stamp_run_log(name);
         if let Err(error) = self.profiles.save_common(&loaded.common) {
             self.error(
                 "Profile",
@@ -599,6 +604,82 @@ impl App {
     fn report_dialog_error(&self, opened: Result<(), slint::PlatformError>) {
         if let Err(error) = opened {
             self.error("Error", &format!("The dialog could not be opened: {error}"));
+        }
+    }
+}
+
+// ---- Application Log (#511)
+impl App {
+    /// Shows the process's Application Log in the Log tab, from the records
+    /// logged since [`bootstrap_log`](crate::bootstrap_log) on; from here on,
+    /// selecting a profile stamps a new log file, toggling debug logging
+    /// switches the level in the current one, and Tools → Open log file opens
+    /// it. `main` calls this once, right after [`App::new`]; later calls are
+    /// ignored.
+    ///
+    /// The rows arrive on the event loop's next turns, so they show once the
+    /// window runs.
+    pub fn attach_log(&self, log: &'static ApplicationLog) {
+        if self.log.get().is_some() {
+            return;
+        }
+        // `Profiles::new(app_dir)` keeps `<app_dir>/profiles`; the log goes
+        // beside it, under `<app_dir>/logs`.
+        let app_dir = self.profiles.root().parent().unwrap_or(Path::new(""));
+        let attached = AttachedLog::attach(&self.window, log, app_dir);
+        let _ = self.log.set(attached);
+    }
+
+    /// The Application Log [`App::attach_log`] attached, if any; a run start
+    /// redirects it (#510).
+    pub fn application_log(&self) -> Option<&'static ApplicationLog> {
+        self.log.get().map(AttachedLog::sink)
+    }
+
+    /// Moves the log to a fresh `logs/<profile>/yy.MM.dd.hh.mm.html` for the
+    /// newly selected `profile`, at its debug choice. The startup profile is
+    /// not stamped here: `main` bootstrapped the log for it, and a second stamp
+    /// a minute later would drop the startup records from the tab.
+    fn stamp_log(&self, profile: &str) {
+        let Some(log) = self.log.get() else {
+            return;
+        };
+        let debug = self.loaded.borrow().options.debug_log;
+        let path = log.stamp_path(profile);
+        // The profile session's runs log to this file even when it cannot be
+        // opened now: each run start retries it, and refuses to start without it.
+        self.remember_run_log(path.clone());
+        if let Err(error) = log.stamp(&path, debug) {
+            self.error(
+                "Profile",
+                &format!("The profile's log file could not be opened: {error}"),
+            );
+        }
+    }
+
+    /// Tools → Enable debug log: the level and layout switch at once, in the
+    /// same file, so logging carries on either way (deviation 23). While a run
+    /// holds the controls the running log is left alone, as C++ left it; the
+    /// next run start applies the choice.
+    fn debug_log_toggled(&self, debug: bool) {
+        if self.locked.get() {
+            return;
+        }
+        if let Some(log) = self.log.get()
+            && let Err(error) = log.set_debug(debug)
+        {
+            self.error(
+                "Error",
+                &format!("The log file could not be reopened: {error}"),
+            );
+        }
+    }
+
+    /// Tools → Open log file: the file the log is writing to now. Every record
+    /// is written unbuffered, so it holds everything up to the click.
+    fn open_log(&self) {
+        if let Some(log) = self.log.get() {
+            self.desktop.open(&log.path().display().to_string());
         }
     }
 }

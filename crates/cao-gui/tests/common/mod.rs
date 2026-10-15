@@ -183,6 +183,18 @@ pub fn run_event_loop_until(mut done: impl FnMut() -> bool) {
     }
 }
 
+/// The run-detail rows the Log tab shows below its log rows (#510).
+pub fn detail_rows(ui: &cao_gui::ui::MainWindow) -> Vec<String> {
+    use cao_gui::ui::{LogSeverity, LogTab};
+    use slint::Model;
+    ui.global::<LogTab>()
+        .get_rows()
+        .iter()
+        .filter(|row| row.severity == LogSeverity::Detail)
+        .map(|row| row.text.into())
+        .collect()
+}
+
 /// Lets one turn of the event loop pass: zero-delay timers, such as a modal
 /// dialog's deferred teardown, run now.
 pub fn next_turn() {
