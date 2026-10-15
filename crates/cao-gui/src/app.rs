@@ -20,6 +20,8 @@ use crate::log_tab::AttachedLog;
 use crate::modal::ModalSlot;
 use crate::rules;
 
+mod input;
+
 const DOCUMENTATION_URL: &str = "https://www.nexusmods.com/skyrimspecialedition/mods/23316";
 const DISCORD_URL: &str = "https://discordapp.com/invite/B9abN8d";
 
@@ -71,6 +73,8 @@ pub struct App {
     formats_dialog: ModalSlot<FormatsDialog>,
     /// The Application Log, once `main` has attached it (#511).
     log: OnceCell<AttachedLog>,
+    /// Whether the current folder drop's first path has been handled (#512).
+    drop_handled: std::cell::Cell<bool>,
 }
 
 impl App {
@@ -128,6 +132,7 @@ impl App {
             about_slint_dialog: ModalSlot::default(),
             formats_dialog: ModalSlot::default(),
             log: OnceCell::new(),
+            drop_handled: Default::default(),
             window,
         });
 
@@ -242,6 +247,7 @@ impl App {
                 CloseRequestResponse::HideWindow
             }
         });
+        self.wire_tabs_and_drop();
     }
 
     // ---- Profiles
