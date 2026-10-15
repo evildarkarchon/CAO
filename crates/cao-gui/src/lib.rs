@@ -6,6 +6,9 @@
 //!   [`NativeDesktop`] is the real one.
 //! - [`owned_window_attributes`] is the winit hook `main` installs so modal
 //!   dialogs are created owned by the main window.
+//! - [`bootstrap_log`] installs the Application Log before the window exists,
+//!   and [`fail_startup`] reports a startup failure with a critical box and
+//!   exit code 1; [`App::attach_log`] shows the log in the Log tab.
 //! - [`formats`] maps the unwanted-format names the window shows to
 //!   `DXGI_FORMAT` numbers.
 //!
@@ -16,9 +19,12 @@ mod app;
 mod desktop;
 mod form;
 pub mod formats;
+mod log_tab;
 mod modal;
+mod startup;
 
 pub use app::{App, StartupError};
 pub use cao_gui_ui as ui;
 pub use desktop::{Desktop, MessageLevel, NativeDesktop};
 pub use modal::{depth as modal_depth, owned_window_attributes};
+pub use startup::{BootstrapError, bootstrap_log, fail_startup};

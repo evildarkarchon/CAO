@@ -6,7 +6,8 @@
 //!
 //! What it exports: `MainWindow` with the top rows, menu and run state; the
 //! per-tab globals `BsaTab`, `MeshesTab`, `TexturesTab` and `AnimationsTab`;
-//! `TabInfo`; and the modal dialogs `TextInputDialog`, `ChoiceDialog` and
+//! `TabInfo`; the Log tab's `LogTab` global with its `LogRow` and
+//! `LogSeverity` (#511); and the modal dialogs `TextInputDialog`, `ChoiceDialog` and
 //! `AboutSlintDialog`.
 
 slint::include_modules!();
