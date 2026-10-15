@@ -13,6 +13,8 @@ import { TabInfo, CaoTabBar, CheckableGroupBox, HelpArea, HelpCheckBox, HelpLabe
 import { TextInputDialog, ChoiceDialog, AboutSlintDialog } from "dialogs.slint";
 
 export { TabInfo, TextInputDialog, ChoiceDialog, AboutSlintDialog }
+import { LogPage } from "log.slint";
+export { LogTab, LogRow, LogSeverity } from "log.slint";
 
 // The BSA tab (`bsaTab`). `separate-*` are the C++ `bBsaCreate*` checkboxes, which
 // show the inverse of `bBsaMerge*`.
@@ -818,11 +820,8 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    // The Log tab's page. #511 fills it from the Application Log feed.
-                    if root.current-tab == "log": VerticalLayout {
-                        padding: 6px;
-                        Rectangle { }
-                    }
+                    // The Log tab's page, filled from the Application Log feed (#511).
+                    if root.current-tab == "log": LogPage { }
                 }
             }
         }
