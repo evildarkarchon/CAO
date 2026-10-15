@@ -39,7 +39,7 @@ fn run() -> anyhow::Result<()> {
 
     // Deviation 1: the app directory is the exe's, never the working directory,
     // and only here is it derived; everything else is handed it.
-    let app_dir = cao_winfs::exe_directory().context("the exe's directory could not be found")?;
+    let app_dir = cao_gui::app_directory().context("the exe's directory could not be found")?;
     // Before the window, as C++ `configureLogging` was, so the Log tab replays
     // everything logged from here on (deviation 24).
     let log =

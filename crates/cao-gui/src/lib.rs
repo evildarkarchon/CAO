@@ -32,4 +32,4 @@ pub use cao_gui_ui as ui;
 pub use desktop::{Desktop, MessageLevel, NativeDesktop};
 pub use modal::{depth as modal_depth, owned_window_attributes};
 pub use run_view::{RunView, RunViewState};
-pub use startup::{BootstrapError, bootstrap_log, fail_startup};
+pub use startup::{BootstrapError, app_directory, bootstrap_log, fail_startup};
