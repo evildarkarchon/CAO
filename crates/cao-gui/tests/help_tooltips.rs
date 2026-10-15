@@ -5,6 +5,7 @@ mod common;
 
 use std::time::Duration;
 
+use cao_gui::ui::HelpTip;
 use common::*;
 use i_slint_backend_testing::{AccessibleRole, ElementHandle};
 use slint::platform::WindowEvent;
@@ -200,11 +201,48 @@ fn a_tip_at_the_right_edge_is_shifted_back_inside_the_window() {
     assert!(tip.left < pointer.x, "the tip {tip:?} was not shifted left");
 }
 
-// Flipping above the pointer at the bottom edge is not covered here: the
-// testing backend does not apply the layout's minimum window size, and at that
-// size the lowest help control ("Unwanted formats") leaves room for its tip
-// below it with the backend's fixed font metrics. It is in the #512 manual
-// checklist instead.
+/// Publishes a tip for `text` with the pointer at `pointer`, as a `HelpArea`
+/// does when its hover delay elapses.
+fn publish_tip(ui: &cao_gui::ui::MainWindow, text: &str, pointer: LogicalPosition) {
+    let tip = ui.global::<HelpTip>();
+    tip.set_text(text.into());
+    tip.set_warning("".into());
+    tip.set_px(pointer.x);
+    tip.set_py(pointer.y);
+    tip.set_visible(true);
+    next_turn();
+}
+
+#[test]
+fn a_tip_at_the_bottom_edge_flips_above_the_pointer() {
+    headless();
+    let (app, _desktop) = open_sse("tip_bottom_edge");
+    let ui = app.window();
+    // The tip layer must end at the window's bottom edge, or the flip is measured
+    // against a layer that overflows the window. The BSA page fits the design size.
+    select_tab(ui, "BSA");
+    let layer = ElementHandle::find_by_element_type_name(ui, "HelpTipLayer")
+        .next()
+        .unwrap();
+    assert_eq!(
+        layer.absolute_position().y + layer.size().height,
+        WINDOW.height
+    );
+    // No help control reaches the bottom edge: with the backend's font metrics, at
+    // every page's minimum window size the lowest one ("Unwanted formats") leaves
+    // room for its tip below it. So this publishes the pointer position the way a
+    // `HelpArea` does, as if a control sat at the bottom edge, and checks the layer.
+    let pointer = LogicalPosition::new(40.0, WINDOW.height - 6.0);
+
+    publish_tip(ui, EXTRACT_HELP, pointer);
+
+    let tip = tip_box(ui);
+    assert_inside_window(tip);
+    assert!(
+        tip.bottom <= pointer.y,
+        "the tip {tip:?} did not flip above the pointer at {pointer:?}"
+    );
+}
 
 #[test]
 fn a_long_tip_wraps_within_its_width_cap() {
