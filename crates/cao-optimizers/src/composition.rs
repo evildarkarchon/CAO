@@ -510,6 +510,7 @@ fn mesh_target(settings: &ProfileSettings) -> NifVersion {
 
 /// The per-run choices the production Run Toolset is built with, ported from
 /// what C++ `ApplicationRunWork` held.
+#[derive(Clone)]
 struct RunWorkSettings {
     settings: OptimizerSettings,
     /// The selected folder, which the headpart scan walks whole: C++ scanned
@@ -544,9 +545,7 @@ impl RunWorkSettings {
             // creates its MainOptimizer, so a run with nothing to process
             // never sets up an optimizer.
             asset_attempt: Box::new(AssetAttemptAdapter::new(OptimizerBackendFactory {
-                settings: self.settings,
-                selected_folder: self.selected_folder.clone(),
-                hkxcmd: self.hkxcmd.clone(),
+                work: self.clone(),
                 profile,
             })),
             archive_extraction: Box::new(ArchiveExtractionAdapter::new(
@@ -568,11 +567,10 @@ impl RunWorkSettings {
 /// The Asset attempt adapter calls it on the first Routed Asset, after
 /// Archive extraction, so the scan sees any plugin extraction produced.
 struct OptimizerBackendFactory {
-    settings: OptimizerSettings,
-    /// The selected folder, which the headpart scan walks whole.
-    selected_folder: PathBuf,
-    /// This run's copy of the app directory's `hkxcmd.exe`.
-    hkxcmd: Hkxcmd,
+    /// This run's copy of the per-run choices: the selected folder, which the
+    /// headpart scan walks whole, and this run's copy of the app directory's
+    /// `hkxcmd.exe`.
+    work: RunWorkSettings,
     /// The profile Preparing read, which the backend's Texture profile, Mesh
     /// target and custom Headpart Meshes come from.
     profile: Arc<PreparedProfile>,
@@ -596,14 +594,14 @@ impl OptimizerBackendFactory {
         &self,
         stop: &CancellationToken,
     ) -> Result<(HeadpartList, Vec<RunDiagnostic>), ScanCancelled> {
-        if !self.settings.meshes.recognises_headparts() {
+        if !self.work.settings.meshes.recognises_headparts() {
             return Ok((HeadpartList::default(), Vec::new()));
         }
         let profile = &self.profile;
         let extensions = Settings::get(archive_game(profile.settings.bsa_game)).plugin_extensions;
         let scan = scan_headparts(
             &profile.custom_headparts,
-            &self.selected_folder,
+            &self.work.selected_folder,
             extensions,
             &|| stop.is_cancelled(),
         )?;
@@ -640,7 +638,7 @@ impl AssetBackendFactory for OptimizerBackendFactory {
             return Ok(BackendCreation::Cancelled);
         };
         let settings = &self.profile.settings;
-        let meshes = MeshOptimizer::new(self.settings.meshes, mesh_target(settings))
+        let meshes = MeshOptimizer::new(self.work.settings.meshes, mesh_target(settings))
             .with_headparts(headparts);
         // The adapter calls this on the Run Worker, the thread that must join
         // COM. C++'s texture optimizer threw when it could not, and its run
@@ -648,10 +646,10 @@ impl AssetBackendFactory for OptimizerBackendFactory {
         // contains this error the same way. The scan's diagnostics travel with
         // the error, so the run still retains the plugins it could not read.
         let backend = match OptimizerBackend::new(
-            self.settings.textures,
+            self.work.settings.textures,
             texture_profile(settings),
             meshes,
-            self.hkxcmd.clone(),
+            self.work.hkxcmd.clone(),
         ) {
             Ok(backend) => backend,
             Err(error) => {
@@ -701,9 +699,11 @@ mod tests {
         std::fs::create_dir_all(&selection).unwrap();
         std::fs::write(selection.join("Broken.esp"), truncated_headpart_plugin()).unwrap();
         let mut factory = OptimizerBackendFactory {
-            settings: OptimizerSettings::from_options(&options),
-            selected_folder: selection.clone(),
-            hkxcmd: Hkxcmd::in_app_dir(&app_dir),
+            work: RunWorkSettings {
+                settings: OptimizerSettings::from_options(&options),
+                selected_folder: selection.clone(),
+                hkxcmd: Hkxcmd::in_app_dir(&app_dir),
+            },
             profile: Arc::new(PreparedProfile {
                 settings: Arc::new(profile.load_settings_checked().unwrap()),
                 files_to_not_pack: Vec::new(),
