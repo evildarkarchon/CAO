@@ -326,6 +326,15 @@ pub trait AssetExecutionBackend {
         output_path: Option<&Path>,
         mode: ExecutionMode,
     ) -> OperationResult;
+
+    /// Notes that the attempt at `asset` finished with the executor's own
+    /// `result`, before any Quarantine changes it and before the next Asset
+    /// executes. Does nothing by default.
+    ///
+    /// A backend whose later attempts depend on earlier outcomes, such as one
+    /// withholding Mesh reference rewrites to a Texture whose conversion
+    /// failed, records them here.
+    fn attempt_finished(&mut self, _asset: &RoutedAsset, _result: &AssetExecutionResult) {}
 }
 
 /// The `StagingFailed` result of a producer whose staging boundary failed.

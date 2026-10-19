@@ -17,17 +17,17 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use cao_archive::{Game, Settings};
 use cao_core::Error;
-use cao_core::execution::{AssetExecutor, quarantine_failed_load};
 use cao_core::routing::{
     ExecutionMode, PolicyValidationError, RequestedWork, RoutingPolicyRequest,
 };
 use cao_core::run::{
     ArchiveAdapters, ArchiveExtractor, ArchiveFinalization, ArchiveFinalizationSettings,
-    AssetInitializationCancelled, AssetRunAdapters, CancellationToken, ModSelection,
-    OptimizationRunService, RunConfiguration, RunConfigurationProvider, RunDiagnostic,
-    RunDiagnosticCode, RunEventDispatcher, RunHandle, RunPhase, RunPreparation, RunRequest,
-    RunWorkEvidence, RunWorkMilestones, RunWorkService, SelectedProfileFacts, SourceCleanup,
-    StartError, TemporaryArtifactRegistry, execute_asset_run,
+    AssetAttemptAdapter, AssetBackendFactory, AssetRunAdapters, BackendCreation,
+    BackendCreationError, CancellationToken, ModSelection, OptimizationRunService,
+    RunConfiguration, RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode,
+    RunEventDispatcher, RunHandle, RunPhase, RunPreparation, RunRequest, RunWorkEvidence,
+    RunWorkMilestones, RunWorkService, SelectedProfileFacts, SourceCleanup, StartError,
+    TemporaryArtifactRegistry, execute_asset_run,
 };
 use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
 use directxtex::DXGI_FORMAT;
@@ -502,39 +502,55 @@ struct ApplicationRunWork {
     profile: Mutex<Option<Arc<PreparedProfile>>>,
 }
 
-impl ApplicationRunWork {
-    /// The run's Headpart Meshes, from `profile`'s `customHeadparts.txt` and
+/// The production backend factory: it lists the run's Headpart Meshes, then
+/// creates the [`OptimizerBackend`] on the Run Worker.
+///
+/// The Asset attempt adapter calls it on the first Routed Asset, after
+/// Archive extraction, so the scan sees any plugin extraction produced.
+struct OptimizerBackendFactory {
+    settings: OptimizerSettings,
+    /// The selected folder, which the headpart scan walks whole.
+    selected_folder: PathBuf,
+    /// This run's copy of the app directory's `hkxcmd.exe`.
+    hkxcmd: Hkxcmd,
+    /// The profile Preparing read, which the backend's Texture profile, Mesh
+    /// target and custom Headpart Meshes come from.
+    profile: Arc<PreparedProfile>,
+}
+
+impl OptimizerBackendFactory {
+    /// The run's Headpart Meshes, from the profile's `customHeadparts.txt` and
     /// every plugin under the selected folder, as C++ `listHeadparts` gathered
     /// them.
     ///
     /// Only the necessary mesh level and above consult the list, so a run
     /// below it scans nothing; C++ scanned regardless, which no run fact
-    /// showed. Each plugin that cannot be read is retained in `evidence` as a
-    /// `PluginUnreadable` Run Diagnostic, and the scan carries on (deviation
-    /// 17).
+    /// showed. Each plugin that cannot be read is returned as a
+    /// `PluginUnreadable` Run Diagnostic for the run to retain, and the scan
+    /// carries on (deviation 17).
     ///
     /// # Errors
-    /// [`AssetInitializationCancelled`] when `stop` is cancelled during the
-    /// scan, as C++'s scan threw it.
+    /// [`ScanCancelled`] when `stop` is cancelled during the scan, as C++'s
+    /// scan threw it.
     fn list_headparts(
         &self,
-        profile: &PreparedProfile,
-        evidence: &RunWorkEvidence<'_, '_>,
         stop: &CancellationToken,
-    ) -> Result<HeadpartList, AssetInitializationCancelled> {
+    ) -> Result<(HeadpartList, Vec<RunDiagnostic>), ScanCancelled> {
         if !self.settings.meshes.recognises_headparts() {
-            return Ok(HeadpartList::default());
+            return Ok((HeadpartList::default(), Vec::new()));
         }
+        let profile = &self.profile;
         let extensions = Settings::get(archive_game(profile.settings.bsa_game)).plugin_extensions;
         let scan = scan_headparts(
             &profile.custom_headparts,
             &self.selected_folder,
             extensions,
             &|| stop.is_cancelled(),
-        )
-        .map_err(|ScanCancelled| AssetInitializationCancelled)?;
-        for plugin in scan.unreadable {
-            evidence.retain_diagnostic(
+        )?;
+        let diagnostics = scan
+            .unreadable
+            .into_iter()
+            .map(|plugin| {
                 RunDiagnostic::new(
                     RunDiagnosticCode::PluginUnreadable,
                     RunPhase::ProcessingAssets,
@@ -543,10 +559,43 @@ impl ApplicationRunWork {
                         plugin.error
                     ),
                 )
-                .with_path(plugin.path),
-            );
-        }
-        Ok(scan.headparts)
+                .with_path(plugin.path)
+            })
+            .collect();
+        Ok((scan.headparts, diagnostics))
+    }
+}
+
+impl AssetBackendFactory for OptimizerBackendFactory {
+    type Backend = OptimizerBackend;
+
+    /// Lists the Headpart Meshes, then creates the backend that recognises them.
+    fn create(
+        &mut self,
+        stop: &CancellationToken,
+    ) -> Result<BackendCreation<OptimizerBackend>, BackendCreationError> {
+        // C++ listed Headpart Meshes as it built its MainOptimizer for the
+        // first Asset, so the scan sees any plugin extraction produced.
+        let Ok((headparts, diagnostics)) = self.list_headparts(stop) else {
+            return Ok(BackendCreation::Cancelled);
+        };
+        let settings = &self.profile.settings;
+        let meshes = MeshOptimizer::new(self.settings.meshes, mesh_target(settings))
+            .with_headparts(headparts);
+        // The adapter calls this on the Run Worker, the thread that must join
+        // COM. C++'s texture optimizer threw when it could not, and its run
+        // contained the exception as an unsafe Operation Failure; the adapter
+        // contains this error the same way.
+        let backend = OptimizerBackend::new(
+            self.settings.textures,
+            texture_profile(settings),
+            meshes,
+            self.hkxcmd.clone(),
+        )?;
+        Ok(BackendCreation::Created {
+            backend,
+            diagnostics,
+        })
     }
 }
 
@@ -570,11 +619,15 @@ impl RunWorkService for ApplicationRunWork {
         let profile = lock(&self.profile)
             .clone()
             .ok_or_else(|| Error::WorkService("The run's profile was not prepared".to_owned()))?;
-        let texture_profile = texture_profile(&profile.settings);
-        let meshes = MeshOptimizer::new(self.settings.meshes, mesh_target(&profile.settings));
-        // Created on the first Asset, as C++ creates its MainOptimizer, so a run
-        // with nothing to process never sets up an optimizer.
-        let mut backend: Option<OptimizerBackend> = None;
+        // The adapter creates the backend on the first Asset, as C++ creates
+        // its MainOptimizer, so a run with nothing to process never sets up an
+        // optimizer.
+        let mut attempt = AssetAttemptAdapter::new(OptimizerBackendFactory {
+            settings: self.settings,
+            selected_folder: self.selected_folder.clone(),
+            hkxcmd: self.hkxcmd.clone(),
+            profile: Arc::clone(&profile),
+        });
         // Declared before `adapters`, which borrows them, so they outlive it.
         let reader = ArchiveFileReader::default();
         let packer = archive_packer(&profile.settings);
@@ -590,32 +643,12 @@ impl RunWorkService for ApplicationRunWork {
             &profile.files_to_not_pack,
         );
         let cleanup = self.settings.extracted_archive_cleanup;
+        // The factory's diagnostics are retained, not published, so they
+        // publish with the run's other deferred diagnostics.
         let mut adapters = AssetRunAdapters::new(Box::new(|asset, mod_root, artifacts| {
-            if backend.is_none() {
-                // C++ listed Headpart Meshes as it built its MainOptimizer for
-                // the first Asset, so the scan sees any plugin extraction
-                // produced.
-                let headparts = self.list_headparts(&profile, evidence, stop)?;
-                // This closure runs on the Run Worker, the thread that must
-                // join COM. C++'s texture optimizer threw when it could not,
-                // and the Asset Run contained the exception as an unsafe
-                // Operation Failure; it contains this panic the same way.
-                backend = Some(
-                    OptimizerBackend::new(
-                        self.settings.textures,
-                        texture_profile.clone(),
-                        meshes.clone().with_headparts(headparts),
-                        self.hkxcmd.clone(),
-                    )
-                    .unwrap_or_else(|error| panic!("{error}")),
-                );
-            }
-            let backend = backend.as_mut().expect("the backend was created above");
-            let result = AssetExecutor::new(backend).execute(asset, artifacts, mod_root);
-            // Recorded before quarantine, as C++ `finishAttempt` did, so the
-            // failed conversion is judged by the executor's own result.
-            backend.record_attempt(asset, &result);
-            Ok(quarantine_failed_load(asset, result))
+            attempt.attempt(asset, mod_root, artifacts, stop, &mut |diagnostic| {
+                evidence.retain_diagnostic(diagnostic)
+            })
         }));
         adapters.finalize_archive_lifecycle = Some(Box::new(|evidence, artifacts| {
             finalization.run(preparation, evidence, artifacts, &|| stop.is_cancelled())

@@ -6,6 +6,7 @@
 
 mod archives;
 mod artifacts;
+mod asset_attempt;
 mod asset_run;
 mod evidence;
 mod executor;
@@ -26,6 +27,9 @@ pub use archives::{
 pub use artifacts::{
     PublicationPolicy, PublicationReceipt, PublicationResult, PublicationState, PublicationTarget,
     Registration, StagedFile, TemporaryArtifactRegistry,
+};
+pub use asset_attempt::{
+    AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
 };
 pub use asset_run::{
     ArchiveAdapters, AssetInitializationCancelled, AssetRunAdapters, AssetRunProgress,
