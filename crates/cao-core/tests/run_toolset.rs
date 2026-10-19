@@ -318,12 +318,16 @@ fn a_fake_backend_runs_behind_the_production_asset_attempt_adapter() {
     );
 }
 
+/// The executor's own containment: a finalization port that breaks its
+/// contract by returning an error other than a Run Evidence invariant
+/// violation simulates the run's work escaping. The run fails with Run Work
+/// Escaped at Archive Finalization and keeps every earlier fact.
 #[test]
 fn a_finalization_port_error_escapes_the_work_and_fails_the_run() {
     let root = scratch_dir("toolset-finalization-error");
     write_tree(&root, &["textures/a.dds"]);
     let toolset =
-        Arc::new(ScriptedToolset::default().with_finalization_error("the packer is gone"));
+        Arc::new(ScriptedToolset::default().with_escaping_finalization_work("the packer is gone"));
     let mut cleanup = CountingCleanup::default();
 
     let result = execute(

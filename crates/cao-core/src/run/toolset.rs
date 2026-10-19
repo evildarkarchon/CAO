@@ -98,9 +98,9 @@ pub trait ArchiveFinalizationPort {
     /// the call. `stop` is polled between atomic outputs.
     ///
     /// # Errors
-    /// A Run Evidence invariant violation, which the executor raises after
-    /// Safety Cleanup. Any other error escapes the run's work and fails the
-    /// run at Archive Finalization.
+    /// Only a Run Evidence invariant violation, which the executor raises
+    /// after Safety Cleanup. Every other failure of the phase is recorded
+    /// through `recorder` as the phase's result.
     fn finalize(
         &mut self,
         preparation: &RunPreparation,

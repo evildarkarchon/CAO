@@ -169,8 +169,9 @@ fn attributed_mod_root<'p>(path: &Path, mod_roots: &'p [PathBuf]) -> Option<&'p 
 /// mutation, and Archive Finalization's an Unexpected Exception. Archive
 /// Finalization is called only in Apply, once its executed phase is
 /// recorded. Errors are Run Evidence invariant violations, which the executor
-/// raises after Safety Cleanup, or an error the Archive Finalization port
-/// returned, which reaches the executor unchanged and escapes the run's work.
+/// raises after Safety Cleanup, or any other error an Archive Finalization
+/// port returned against its contract, which reaches the executor unchanged
+/// and escapes the run's work.
 pub(super) fn run_work_phases(
     preparation: &RunPreparation,
     toolset: &mut RunToolset,
@@ -455,6 +456,11 @@ pub(super) fn run_work_phases(
 /// Runs the Archive Finalization port, containing its panic as the phase's
 /// Unexpected Exception, which keeps every attempt already recorded and
 /// forbids continuation, as production Archive Finalization contains its own.
+///
+/// The port returns only Run Evidence invariant violations. Should it break
+/// that contract and return any other error, the error is passed on, and the
+/// executor's own containment fails the run with Run Work Escaped rather than
+/// lose it.
 fn finalize_contained(
     port: &mut dyn ArchiveFinalizationPort,
     preparation: &RunPreparation,

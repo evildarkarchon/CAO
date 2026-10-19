@@ -811,7 +811,8 @@ fn a_failing_finalizer_fails_the_run_at_archive_finalization() {
             ScriptedToolset::default()
                 .with_finalization(|_, _, _| panic!("Archive Finalization failed"))
         } else {
-            ScriptedToolset::default().with_finalization_error("Archive Finalization failed")
+            ScriptedToolset::default()
+                .with_escaping_finalization_work("Archive Finalization failed")
         };
 
         let (result, _) = run(&Arc::new(toolset), archive_and_textures(&root));

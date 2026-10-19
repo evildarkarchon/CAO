@@ -117,7 +117,7 @@ enum Scenario {
 /// - cancelled: the run covers eight Textures and is cancelled once the
 ///   Processing Assets record counts three attempts, leaving five unattempted;
 /// - failing finalizer: Archive Finalization plans three outputs, packs one,
-///   then fails outside any attempt.
+///   then fails outside any attempt with an Unexpected Exception.
 ///
 /// Each is an Apply run because a completed Dry Run ends at a skipped Archive
 /// Finalization, which has no counts for the terminal view to show.
@@ -135,11 +135,20 @@ fn classified_run(scenario: Scenario) -> Arc<OptimizationRunResult> {
             ..ArchiveFinalizationAttempt::new(root.join("output.bsa"), root)
         };
         if scenario == Scenario::FailingFinalizer {
-            recorder.record_output_total(3)?;
-            recorder.record_attempt(packed)?;
-            // Not a Run Evidence invariant violation, so it escapes the run's
-            // work and fails the run at Archive Finalization.
-            return Err(Error::RunWorkEscaped("the packer is gone".to_owned()));
+            // As production Archive Finalization records its own work's
+            // failure: an Unexpected Exception keeping the attempt already
+            // made, which forbids continuation and so fails the run.
+            return record_finalization_result(
+                recorder,
+                ArchiveFinalizationResult {
+                    attempts: vec![packed],
+                    failure: Some(ArchiveFinalizationFailure::UnexpectedException),
+                    safe_to_continue: false,
+                    detail: "the packer is gone".to_owned(),
+                    ..ArchiveFinalizationResult::default()
+                },
+                Some(3),
+            );
         }
         record_finalization_result(
             recorder,
@@ -403,7 +412,8 @@ fn a_close_during_a_run_waits_for_its_terminal_result() {
 /// show: an Archive Collision a Loose Asset wins, a committed and a failed
 /// extraction, a committed failed Asset save, a finalization whose source
 /// cleanup failed beside an output left partial, and the primary Run Failure
-/// of a finalizer that then fails. Safety Cleanup reports `cleanup`.
+/// of a finalizer whose work then escapes (simulated, as no real run reaches
+/// a Run Failure here). Safety Cleanup reports `cleanup`.
 fn evidence_run(cleanup: Vec<RunFailure>) -> Arc<OptimizationRunResult> {
     let root = scratch_dir("evidence");
     for name in ["winner", "shadowed"] {
@@ -471,8 +481,11 @@ fn evidence_run(cleanup: Vec<RunFailure>) -> Arc<OptimizationRunResult> {
                     },
                     Some(5),
                 )?;
-                // Not a Run Evidence invariant violation, so it escapes the run's
-                // work as the run's primary Run Failure.
+                // Simulates the run's work escaping after the phase recorded
+                // its result: no real port returns an error that is not a Run
+                // Evidence invariant violation, but the executor contains one
+                // as Run Work Escaped, which gives the view the primary Run
+                // Failure row this scenario needs.
                 Err(Error::RunWorkEscaped("primary failure".to_owned()))
             });
     let request = RunRequest::new(

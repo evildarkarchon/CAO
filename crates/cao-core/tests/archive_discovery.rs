@@ -1608,7 +1608,7 @@ fn discovery_diagnostics_survive_an_interruption_after_extraction() {
                     ..ArchiveExtractionResult::new(plan)
                 }
             })
-            .with_finalization_error("interrupted after exclusion"),
+            .with_escaping_finalization_work("interrupted after exclusion"),
     );
 
     let result = execute(
@@ -2057,7 +2057,7 @@ fn a_committed_extraction_survives_a_later_interruption() {
             }
         });
         let toolset = Arc::new(if escapes {
-            toolset.with_finalization_error("interrupted after extraction")
+            toolset.with_escaping_finalization_work("interrupted after extraction")
         } else {
             toolset
         });

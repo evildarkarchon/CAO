@@ -218,8 +218,9 @@ fn prepare_run(
 ///
 /// Phases are observed only through the run's Run Observation Sink and
 /// cancellation only through `stop`. Each port's panics are contained at
-/// that port. Errors are Run Evidence invariant violations, or an error the
-/// Archive Finalization port returned, which escape the run's work.
+/// that port. Errors are Run Evidence invariant violations, or any other
+/// error an Archive Finalization port returned against its contract, which
+/// escapes the run's work.
 fn execute_toolset(
     preparation: &RunPreparation,
     mut toolset: RunToolset,

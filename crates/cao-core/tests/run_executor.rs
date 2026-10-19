@@ -801,7 +801,7 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
         let toolset = Arc::new(if cancels {
             toolset
         } else {
-            toolset.with_finalization_error("later orchestration failure")
+            toolset.with_escaping_finalization_work("later orchestration failure")
         });
         let request = RunRequest::new(
             "SkyrimSE",
@@ -1808,7 +1808,7 @@ fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
             }
         });
         let toolset = Arc::new(if fails {
-            toolset.with_finalization_error("orchestration failed after the commit")
+            toolset.with_escaping_finalization_work("orchestration failed after the commit")
         } else {
             toolset
         });
@@ -2011,7 +2011,7 @@ fn terminal_precedence_classifies_every_combination_and_keeps_every_fact() {
                 })
             });
             let toolset = Arc::new(if fact == WorkFact::FatalFailure {
-                toolset.with_finalization_error("fatal work failure")
+                toolset.with_escaping_finalization_work("fatal work failure")
             } else {
                 toolset
             });

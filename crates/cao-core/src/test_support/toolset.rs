@@ -190,9 +190,14 @@ impl ScriptedToolset {
         })
     }
 
-    /// Archive Finalization returns an error that is not a Run Evidence
-    /// invariant violation, so it escapes the run's work and fails the run.
-    pub fn with_finalization_error(self, detail: impl Into<String>) -> Self {
+    /// Simulates the run's work escaping at Archive Finalization: the port
+    /// returns an error that is not a Run Evidence invariant violation.
+    ///
+    /// No real port does this, since the port contract allows only invariant
+    /// violations; it exercises the executor's own containment, which fails
+    /// the run with Run Work Escaped. A scenario that needs a failed phase a
+    /// real run can produce records it with [`Self::with_finalization_result`].
+    pub fn with_escaping_finalization_work(self, detail: impl Into<String>) -> Self {
         let detail = detail.into();
         self.with_finalization(move |_, _, _| Err(Error::RunWorkEscaped(detail.clone())))
     }
