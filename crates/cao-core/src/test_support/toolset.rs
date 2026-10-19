@@ -52,13 +52,28 @@ pub type FinalizationScript = Box<
 /// [`AssetAttemptAdapter`] over a scenario's own backend factory.
 pub type AssetAdapterMaker = Box<dyn Fn() -> Box<dyn AssetAttemptPort> + Send + Sync>;
 
+/// How a [`ScriptedToolset`]'s Asset attempts are produced.
+#[derive(Default)]
+pub enum AssetAttempts {
+    /// Every attempt succeeds with no mutation.
+    #[default]
+    Succeeding,
+    /// Every attempt returns what this script returns.
+    Scripted(AssetAttemptScript),
+    /// Attempts go through the production [`AssetAttemptAdapter`] over a
+    /// clone of this fake backend factory, which each run's Toolset creates
+    /// its backend from afresh.
+    FakeBackend(FakeBackendFactory),
+    /// Attempts go through the production [`AssetAttemptAdapter`] this makes
+    /// afresh for each run's Toolset, over a scenario's own backend factory.
+    Adapter(AssetAdapterMaker),
+}
+
 /// A Run Toolset scripted per scenario, shared between the scenario and the
 /// provider that hands a fresh [`RunToolset`] over it to each run.
 ///
-/// Each script left `None` keeps its default:
-/// - an Asset attempt succeeds with no mutation, unless `backend` or
-///   `backend_factory` is set, when the production [`AssetAttemptAdapter`]
-///   drives a backend that each run's Toolset creates afresh;
+/// Asset attempts are produced as `assets` says. Each other script left
+/// `None` keeps its default:
 /// - extraction is the real [`ArchiveExtractor`] over `reader` and
 ///   `capacity`, without source cleanup;
 /// - Archive Finalization records an output total of zero and an empty
@@ -68,13 +83,9 @@ pub type AssetAdapterMaker = Box<dyn Fn() -> Box<dyn AssetAttemptPort> + Send + 
 /// probes. Every port call is logged, whatever its script.
 #[derive(Default)]
 pub struct ScriptedToolset {
-    pub assets: Option<AssetAttemptScript>,
-    /// When set, Asset attempts go through the production adapter over this
-    /// fake backend factory instead of `assets`.
-    pub backend: Option<FakeBackendFactory>,
-    /// When set, Asset attempts go through the production adapter over the
-    /// backend factory this makes, instead of `assets` or `backend`.
-    pub backend_factory: Option<AssetAdapterMaker>,
+    /// How each Asset attempt is produced; by default it succeeds with no
+    /// mutation.
+    pub assets: AssetAttempts,
     /// Cancels the run's token as this Asset attempt (counting from 1)
     /// starts, as a user clicking Cancel mid-attempt would; the attempt
     /// itself still runs and completes.
@@ -106,7 +117,7 @@ impl ScriptedToolset {
         + 'static,
     ) -> Self {
         Self {
-            assets: Some(Box::new(script)),
+            assets: AssetAttempts::Scripted(Box::new(script)),
             ..self
         }
     }
@@ -116,7 +127,7 @@ impl ScriptedToolset {
     /// observe it.
     pub fn with_backend(self, factory: FakeBackendFactory) -> Self {
         Self {
-            backend: Some(factory),
+            assets: AssetAttempts::FakeBackend(factory),
             ..self
         }
     }
@@ -129,7 +140,9 @@ impl ScriptedToolset {
         F: AssetBackendFactory + 'static,
     {
         Self {
-            backend_factory: Some(Box::new(move || Box::new(AssetAttemptAdapter::new(make())))),
+            assets: AssetAttempts::Adapter(Box::new(move || {
+                Box::new(AssetAttemptAdapter::new(make()))
+            })),
             ..self
         }
     }
@@ -203,14 +216,15 @@ impl ScriptedToolset {
     }
 
     /// A fresh Run Toolset over this script, as a provider returns for one
-    /// run. A scripted fake backend, or a scripted backend factory, is
-    /// created afresh for each Toolset.
+    /// run. A scripted fake backend, or a scripted adapter, is created afresh
+    /// for each Toolset.
     pub fn toolset(self: &Arc<Self>) -> RunToolset {
-        let backend: Option<Box<dyn AssetAttemptPort>> = match &self.backend_factory {
-            Some(make) => Some(make()),
-            None => self.backend.clone().map(|factory| {
-                Box::new(AssetAttemptAdapter::new(factory)) as Box<dyn AssetAttemptPort>
-            }),
+        let backend: Option<Box<dyn AssetAttemptPort>> = match &self.assets {
+            AssetAttempts::FakeBackend(factory) => {
+                Some(Box::new(AssetAttemptAdapter::new(factory.clone())))
+            }
+            AssetAttempts::Adapter(make) => Some(make()),
+            AssetAttempts::Succeeding | AssetAttempts::Scripted(_) => None,
         };
         RunToolset {
             asset_attempt: Box::new(ScriptedAssetAttempt {
@@ -251,8 +265,8 @@ impl ScriptedToolset {
 /// The scripted Asset attempt port.
 struct ScriptedAssetAttempt {
     script: Arc<ScriptedToolset>,
-    /// The production adapter over a fake backend or a scripted backend
-    /// factory, when one is scripted.
+    /// The production adapter over a fake backend or a scenario's own
+    /// backend factory, when [`ScriptedToolset::assets`] scripts one.
     backend: Option<Box<dyn AssetAttemptPort>>,
 }
 
@@ -277,8 +291,8 @@ impl AssetAttemptPort for ScriptedAssetAttempt {
             return backend.attempt(asset, mod_root, artifacts, stop, retain);
         }
         match &self.script.assets {
-            Some(script) => script(asset, mod_root, artifacts),
-            None => Ok(AssetExecutionResult::success(MutationState::None)),
+            AssetAttempts::Scripted(script) => script(asset, mod_root, artifacts),
+            _ => Ok(AssetExecutionResult::success(MutationState::None)),
         }
     }
 }
