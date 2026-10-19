@@ -39,6 +39,6 @@ pub use scheduling::{
     CountingInlineScheduler, DeferredScheduler, ExhaustedScheduler, GatedScheduler, WorkerHook,
 };
 pub use toolset::{
-    AssetAttemptScript, ExtractionScript, FinalizationScript, ScriptedToolset,
+    AssetAdapterMaker, AssetAttemptScript, ExtractionScript, FinalizationScript, ScriptedToolset,
     ToolsetConfiguration, record_finalization_result,
 };

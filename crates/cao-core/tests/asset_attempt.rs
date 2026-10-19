@@ -6,7 +6,8 @@
 //! then performs Quarantine of a failed load. Each scenario drives the adapter
 //! at its interface with the fake backend and its factory from
 //! `cao_core::test_support`, on real Mod Roots under the target directory;
-//! the one run-level scenario drives it through the shared `BackendWork`.
+//! the one run-level scenario drives it through the shared
+//! `backend_toolset`, a scripted Run Toolset over the same fake backend.
 
 mod common;
 
@@ -24,7 +25,7 @@ use cao_core::run::{
     create_run_id,
 };
 use cao_core::test_support::{CountingCleanup, FakeBackendFactory};
-use common::{BackendWork, canonical, request, scratch_dir, test_configuration};
+use common::{backend_toolset, canonical, request, scratch_dir, toolset_configuration};
 
 /// Every capability a routed scenario needs.
 const CAPABILITIES: &[ProfileCapability] = &[
@@ -130,7 +131,8 @@ fn the_backend_is_created_once_on_the_first_routed_asset() {
 fn a_run_with_nothing_to_process_creates_no_backend() {
     let root = mod_root("nothing-to-process", &[]);
     std::fs::write(root.join("readme.txt"), "not an Asset").unwrap();
-    let work = BackendWork::new();
+    let factory = FakeBackendFactory::default();
+    let (creations, calls) = (factory.creations.clone(), factory.calls.clone());
     let mut cleanup = CountingCleanup::default();
 
     let result = RunExecutor.execute(
@@ -142,8 +144,8 @@ fn a_run_with_nothing_to_process_creates_no_backend() {
         RunServices {
             safety_cleanup: &mut cleanup,
             observations: None,
-            configuration: Some(&*test_configuration()),
-            work: Some(&work),
+            configuration: Some(&*toolset_configuration(Some(backend_toolset(factory)))),
+            work: None,
         },
         &CancellationToken::new(),
         create_run_id(),
@@ -151,8 +153,8 @@ fn a_run_with_nothing_to_process_creates_no_backend() {
 
     assert_eq!(result.outcome(), RunOutcome::Succeeded);
     assert!(result.asset_attempts().is_empty());
-    assert_eq!(work.creations.load(Ordering::SeqCst), 0);
-    assert!(work.calls().is_empty());
+    assert_eq!(creations.load(Ordering::SeqCst), 0);
+    assert!(calls.lock().unwrap().is_empty());
 }
 
 #[test]
