@@ -10,13 +10,13 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::{RunEvidenceInvariantPanic, RunExecutor, RunServices};
+use super::{RunEvidenceInvariantPanic, RunExecutor, RunServices, RunWork};
 use crate::Error;
 use crate::routing::{ExecutionMode, RequestedWork};
 use crate::run::{
     CancellationToken, ModSelection, MutableRunEvidence, OptimizationRunResult, RunConfiguration,
-    RunFailureCode, RunOutcome, RunPhase, RunPreparation, RunRequest, RunToolset,
-    SelectedProfileFacts, TemporaryArtifactRegistry, create_run_id,
+    RunFailureCode, RunOutcome, RunPhase, RunPreparation, RunRequest, SelectedProfileFacts,
+    TemporaryArtifactRegistry, create_run_id,
 };
 use crate::test_support::{CountingCleanup, ScriptedToolset, ToolsetConfiguration};
 
@@ -75,13 +75,7 @@ fn provider() -> ToolsetConfiguration {
 fn execute(
     request: &RunRequest,
     cleanup: &mut CountingCleanup,
-    work: impl FnOnce(
-        &RunPreparation,
-        RunToolset,
-        &RefCell<MutableRunEvidence<'_>>,
-        &mut TemporaryArtifactRegistry,
-        &CancellationToken,
-    ) -> Result<(), Error>,
+    work: impl RunWork,
 ) -> OptimizationRunResult {
     let provider = provider();
     RunExecutor.execute_with_work(

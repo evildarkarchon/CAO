@@ -92,6 +92,19 @@ pub(crate) fn take_panic_message(payload: Box<dyn std::any::Any + Send>) -> Stri
     message
 }
 
+/// The Run Work Escaped detail of a panic that escaped onto the Run Worker
+/// past every narrower containment boundary, logged to the Application Log
+/// before it is returned. The payload is discarded as
+/// [`take_panic_message`] discards it.
+pub(crate) fn run_worker_panic_detail(payload: Box<dyn std::any::Any + Send>) -> String {
+    let detail = format!(
+        "The run's work escaped with a Run Worker panic: {}",
+        take_panic_message(payload)
+    );
+    log::error!("{detail}");
+    detail
+}
+
 /// Drops a caught panic payload without letting a payload whose own `Drop`
 /// panics unwind out of the boundary that caught it.
 ///

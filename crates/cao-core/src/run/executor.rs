@@ -29,10 +29,40 @@ use crate::run::{
     CancellationToken, MutableRunEvidence, OptimizationRunResult, PhaseSkipReason,
     RunConfiguration, RunConfigurationProvider, RunEvidence, RunFailure, RunFailureCode, RunId,
     RunObservationSink, RunOutcome, RunPhase, RunPhaseRecord, RunPreparation, RunRequest,
-    RunToolset, TemporaryArtifactRegistry, take_panic_message,
+    RunToolset, TemporaryArtifactRegistry, run_worker_panic_detail, take_panic_message,
 };
 
 mod work_phases;
+
+/// The work phases of one run, as the executor's traversal calls them: with
+/// the run's preparation, its Run Toolset, its evidence, its Temporary
+/// Ownership registry and its token.
+///
+/// Production work is the Run Toolset's work phases; the executor's own unit
+/// tests inject work that escapes as an error or a panic through
+/// [`RunExecutor::execute_with_work`]. An error is a Run Evidence invariant
+/// violation or escaped work.
+pub(crate) trait RunWork:
+    FnOnce(
+    &RunPreparation,
+    RunToolset,
+    &RefCell<MutableRunEvidence<'_>>,
+    &mut TemporaryArtifactRegistry,
+    &CancellationToken,
+) -> Result<(), Error>
+{
+}
+
+impl<F> RunWork for F where
+    F: FnOnce(
+        &RunPreparation,
+        RunToolset,
+        &RefCell<MutableRunEvidence<'_>>,
+        &mut TemporaryArtifactRegistry,
+        &CancellationToken,
+    ) -> Result<(), Error>
+{
+}
 
 /// Removes the temporary artifacts one Optimization Run registered.
 ///
@@ -410,13 +440,7 @@ impl RunExecutor {
         services: RunServices<'_>,
         stop: &CancellationToken,
         run_id: RunId,
-        run_work: impl FnOnce(
-            &RunPreparation,
-            RunToolset,
-            &RefCell<MutableRunEvidence<'_>>,
-            &mut TemporaryArtifactRegistry,
-            &CancellationToken,
-        ) -> Result<(), Error>,
+        run_work: impl RunWork,
     ) -> OptimizationRunResult {
         let RunServices {
             safety_cleanup,
@@ -446,21 +470,8 @@ impl RunExecutor {
             )
         }));
         if let Err(payload) = traversal {
-            let detail = format!(
-                "The run's work escaped with a Run Worker panic: {}",
-                take_panic_message(payload)
-            );
-            log::error!("{detail}");
             // Any evidence borrow the panic interrupted was released by unwinding.
-            let mut evidence = evidence.borrow_mut();
-            let phase = evidence
-                .current_phase()
-                .map_or(RunPhase::Preparing, RunPhaseRecord::phase);
-            evidence.record_failure(RunFailure::new(
-                RunFailureCode::RunWorkEscaped,
-                phase,
-                detail,
-            ));
+            Self::fail_at_current_phase(&evidence, run_worker_panic_detail(payload));
         }
 
         // Safety Cleanup runs exactly once on every terminal path, before the
@@ -511,13 +522,7 @@ impl RunExecutor {
         artifacts: &mut TemporaryArtifactRegistry,
         invariant: &mut DeferredInvariant,
         stop: &CancellationToken,
-        run_work: impl FnOnce(
-            &RunPreparation,
-            RunToolset,
-            &RefCell<MutableRunEvidence<'_>>,
-            &mut TemporaryArtifactRegistry,
-            &CancellationToken,
-        ) -> Result<(), Error>,
+        run_work: impl RunWork,
     ) {
         let mut failed = false;
 

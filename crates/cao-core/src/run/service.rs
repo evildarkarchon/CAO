@@ -23,7 +23,7 @@ use crate::run::{
     RunDiagnosticCode, RunEvent, RunEventPayload, RunEvidenceInvariantPanic, RunExecutor,
     RunFailure, RunFailureCode, RunId, RunObservationSink, RunPhase, RunPhaseRecord, RunProgress,
     RunRequest, RunScheduler, RunServices, RunSnapshot, SafetyCleanupService, ScheduledRunWorker,
-    StandardRunScheduler, create_run_id, take_panic_message,
+    StandardRunScheduler, create_run_id, run_worker_panic_detail, take_panic_message,
 };
 
 /// Receives every Run Event of one run, in sequence order, on the Run Worker.
@@ -206,11 +206,7 @@ impl RunShared {
                 Ok(sealed) => return sealed.result,
                 Err(payload) => payload,
             };
-            let detail = format!(
-                "The run's work escaped with a Run Worker panic: {}",
-                take_panic_message(payload)
-            );
-            log::error!("{detail}");
+            let detail = run_worker_panic_detail(payload);
             let work_phase = lock(&self.published).work_phase;
             let mut cleanup = lock(&self.cleanup);
             // If the executor already performed and published Safety Cleanup,
