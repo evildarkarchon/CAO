@@ -94,7 +94,6 @@ fn execute_with(
             safety_cleanup: &mut cleanup,
             observations,
             configuration: Some(&provider),
-            work: None,
         },
         stop,
         create_run_id(),

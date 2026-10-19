@@ -44,7 +44,7 @@ fn equipped() -> Arc<ToolsetConfiguration> {
 /// A service on an injected scheduler with the SSE-like configuration and an
 /// unscripted Run Toolset.
 fn service_on(scheduler: Arc<dyn cao_core::run::RunScheduler>) -> OptimizationRunService {
-    OptimizationRunService::with_scheduler(scheduler, Some(equipped()), None)
+    OptimizationRunService::with_scheduler(scheduler, Some(equipped()))
 }
 
 /// Origin: OptimizationRunServiceTests::aRequestWithoutAProfileIdentityIsRejectedWithoutCreatingAWorker.
@@ -189,7 +189,7 @@ fn waiting_repeatedly_observes_the_same_committed_result() {
 #[test]
 fn a_production_run_owns_its_request_after_start_returns() {
     let _serial = serial();
-    let service = OptimizationRunService::new(Some(equipped()), None);
+    let service = OptimizationRunService::new(Some(equipped()));
 
     // The request is moved into the run while its worker is still running on
     // another thread; the run must own it, not borrow it.
@@ -405,7 +405,7 @@ fn terminal_commit_releases_the_slot_before_the_worker_is_joined() {
     committed_rx.recv().unwrap();
 
     // The first worker has not returned yet, but its run has committed.
-    let next_service = OptimizationRunService::new(Some(equipped()), None);
+    let next_service = OptimizationRunService::new(Some(equipped()));
     let next = next_service.start(no_work_request(), None);
     finish_tx.send(()).unwrap();
 
@@ -488,7 +488,7 @@ fn a_scheduling_failure_releases_the_active_slot() {
         .terminal_result()
         .expect("a scheduling failure commits at once");
 
-    let next_service = OptimizationRunService::new(Some(equipped()), None);
+    let next_service = OptimizationRunService::new(Some(equipped()));
     let next = next_service
         .start(no_work_request(), None)
         .expect("the slot was released");
@@ -618,11 +618,8 @@ fn failure_events_precede_safety_cleanup_and_the_terminal_event() {
         } else {
             Arc::new(CountingInlineScheduler::default())
         };
-        let service = OptimizationRunService::with_scheduler(
-            scheduler,
-            Some(toolset_configuration(None)),
-            None,
-        );
+        let service =
+            OptimizationRunService::with_scheduler(scheduler, Some(toolset_configuration(None)));
         let events = EventLog::default();
         let request = RunRequest::new(
             "SkyrimSE",
@@ -669,7 +666,7 @@ fn a_failure_keeps_cancellation_observed_during_it_and_one_terminal_event() {
             "Configuration could not be loaded".to_owned(),
         ))
     })));
-    let service = OptimizationRunService::with_scheduler(scheduler.clone(), Some(provider), None);
+    let service = OptimizationRunService::with_scheduler(scheduler.clone(), Some(provider));
     let slot: HandleSlot = Arc::new(OnceLock::new());
     let events = EventLog::default();
     let dispatcher = {

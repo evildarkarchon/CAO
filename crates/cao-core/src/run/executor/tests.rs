@@ -90,7 +90,6 @@ fn execute(
             safety_cleanup: cleanup,
             observations: None,
             configuration: Some(&provider),
-            work: None,
         },
         &CancellationToken::new(),
         create_run_id(),

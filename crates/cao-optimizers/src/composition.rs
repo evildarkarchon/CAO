@@ -116,8 +116,8 @@ impl ApplicationRun {
             },
         ));
         Ok(Self {
-            // The provider's Run Toolset does the work, so no work service.
-            service: OptimizationRunService::new(Some(configuration), None),
+            // The provider's Run Toolset does the work.
+            service: OptimizationRunService::new(Some(configuration)),
             request,
         })
     }
@@ -421,15 +421,10 @@ impl ProfileConfigurationProvider {
 }
 
 impl RunConfigurationProvider for ProfileConfigurationProvider {
-    fn load(&self, profile_identity: &str) -> Result<RunConfiguration, Error> {
-        self.read_profile(profile_identity)
-            .map(|(configuration, _)| configuration)
-    }
-
     /// Reads the profile once and, when set up for runs, builds the run's
     /// production Run Toolset from that read. Built only after every read
     /// succeeded, so work never sees a partial profile.
-    fn load_with_toolset(
+    fn load(
         &self,
         profile_identity: &str,
     ) -> Result<(RunConfiguration, Option<RunToolset>), Error> {

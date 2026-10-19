@@ -32,17 +32,12 @@ pub use artifacts::{
 pub use asset_attempt::{
     AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
 };
-pub use asset_run::{
-    ArchiveAdapters, AssetInitializationCancelled, AssetRunAdapters, AssetRunProgress,
-    ExecuteAsset, ExtractArchive, FinalizeArchiveLifecycle, ReportArchiveCollisions, ReportPhase,
-    RoutedAssetAttempt, execute_asset_run, is_staging_name,
-};
-pub use evidence::{
-    ArchiveDiscoveryEvidence, MutableRunEvidence, RunEvidence, RunObservationSink, RunWorkEvidence,
-};
+pub(crate) use asset_run::ArchiveAdapters;
+pub use asset_run::{AssetInitializationCancelled, RoutedAssetAttempt, is_staging_name};
+pub use evidence::{ArchiveDiscoveryEvidence, MutableRunEvidence, RunEvidence, RunObservationSink};
 pub use executor::{
-    RunEvidenceInvariantPanic, RunExecutor, RunServices, RunWorkMilestones, RunWorkService,
-    SafetyCleanupService, collect_safety_cleanup_failures,
+    RunEvidenceInvariantPanic, RunExecutor, RunServices, SafetyCleanupService,
+    collect_safety_cleanup_failures,
 };
 pub use finalization::{
     ArchiveFinalization, ArchiveFinalizationAttempt, ArchiveFinalizationFailure,

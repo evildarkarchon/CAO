@@ -56,7 +56,6 @@ fn run(
     let service = OptimizationRunService::with_scheduler(
         Arc::new(InlineRunScheduler),
         Some(Arc::new(ToolsetConfiguration::new(configuration, toolset))),
-        None,
     );
     let events = EventLog::default();
     let handle = service
@@ -412,7 +411,6 @@ fn cancelling_from_an_exclusion_diagnostic_stops_preparing() {
             exclusions(&["a_ignored", "b_ignored"], &[]),
             None,
         ))),
-        None,
     );
     let slot: HandleSlot = Arc::new(OnceLock::new());
     let snapshots: Arc<Mutex<Vec<RunSnapshot>>> = Arc::default();

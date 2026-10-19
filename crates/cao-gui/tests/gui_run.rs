@@ -86,7 +86,6 @@ fn execute(
             safety_cleanup: &mut cleanup,
             observations: Some(sink),
             configuration: Some(&provider),
-            work: None,
         },
         stop,
         "run".to_owned(),

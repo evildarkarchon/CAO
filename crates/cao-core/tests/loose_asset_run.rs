@@ -84,7 +84,6 @@ fn run(
     let service = OptimizationRunService::with_scheduler(
         Arc::new(InlineRunScheduler),
         Some(toolset_configuration(Some(Arc::clone(toolset)))),
-        None,
     );
     let events = EventLog::default();
     let handle = service
@@ -108,7 +107,6 @@ fn execute_observed(
             safety_cleanup: &mut cleanup,
             observations: Some(sink),
             configuration: Some(&*toolset_configuration(Some(Arc::clone(toolset)))),
-            work: None,
         },
         stop,
         create_run_id(),
@@ -401,7 +399,6 @@ fn cancelling_between_assets_is_cancelled_keeps_committed_mutations_and_still_cl
     let service = OptimizationRunService::with_scheduler(
         scheduler.clone(),
         Some(toolset_configuration(Some(toolset.clone()))),
-        None,
     );
     let slot: HandleSlot = Arc::new(OnceLock::new());
     let events = EventLog::default();
@@ -1134,7 +1131,6 @@ fn apply_publishes_diagnostics_between_execution_and_finalization() {
     let service = OptimizationRunService::with_scheduler(
         Arc::new(InlineRunScheduler),
         Some(toolset_configuration(Some(Arc::new(toolset)))),
-        None,
     );
     let dispatcher = {
         let order = order.clone();

@@ -5,12 +5,12 @@
 //! schedules nothing and dispatches nothing; the Optimization Run Service and
 //! its Run Worker sit above it.
 //!
-//! When the configuration provider returns a Run Toolset, the executor runs
-//! every work phase itself through the Toolset's ports. Otherwise it falls
-//! back to the Run Work Service.
+//! The configuration provider returns a Run Toolset with the run's
+//! configuration, and the executor runs every work phase itself through the
+//! Toolset's ports. A request with work but no Toolset fails Preparing.
 //!
 //! C++ caught exceptions at three boundaries here; they are `Result`s and
-//! `catch_unwind` now. A panic in the configuration provider, the work service
+//! `catch_unwind` now. A panic in the configuration provider, the run's work
 //! or the cleanup service becomes the same Run Failure an exception did. A
 //! panic that escapes those boundaries is caught around the whole traversal,
 //! so it still fails the run before Safety Cleanup rather than skipping it. A Run
@@ -23,68 +23,16 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use crate::Error;
 use crate::execution::MutationState;
 use crate::routing::{ExecutionMode, RoutingPolicyRequest};
+use crate::run::asset_run::{AssetRunAdapters, execute_asset_run};
+use crate::run::evidence::RunWorkEvidence;
 use crate::run::mod_selection::resolve_mod_roots;
 use crate::run::{
-    ArchiveAdapters, ArchiveFinalizationPort, ArchiveFinalizationRecorder, AssetRunAdapters,
-    CancellationToken, MutableRunEvidence, OptimizationRunResult, PhaseSkipReason,
-    RunConfiguration, RunConfigurationProvider, RunEvidence, RunFailure, RunFailureCode, RunId,
-    RunObservationSink, RunOutcome, RunPhase, RunPhaseRecord, RunPreparation, RunRequest,
-    RunToolset, RunWorkEvidence, TemporaryArtifactRegistry, execute_asset_run, take_panic_message,
+    ArchiveAdapters, ArchiveFinalizationPort, ArchiveFinalizationRecorder, CancellationToken,
+    MutableRunEvidence, OptimizationRunResult, PhaseSkipReason, RunConfiguration,
+    RunConfigurationProvider, RunEvidence, RunFailure, RunFailureCode, RunId, RunObservationSink,
+    RunOutcome, RunPhase, RunPhaseRecord, RunPreparation, RunRequest, RunToolset,
+    TemporaryArtifactRegistry, take_panic_message,
 };
-
-/// The typed work milestones through which a Run Work Service moves the lifecycle.
-///
-/// The executor alone selects Run Phases; work reports where it has got to.
-/// Each method returns the accepted current phase for optional presentation.
-pub trait RunWorkMilestones {
-    /// Enters Archive discovery, before any collision or extraction facts.
-    fn archive_discovery_started(&self) -> Result<RunPhaseRecord, Error>;
-    /// Starts Archive extraction with its immutable attempt total.
-    fn archive_extraction_planned(&self, total: usize) -> Result<RunPhaseRecord, Error>;
-    /// Records that Dry Run excluded Archive extraction.
-    fn dry_run_archive_extraction(&self) -> Result<RunPhaseRecord, Error>;
-    /// Enters definitive Effective Asset Tree discovery after Archive work.
-    fn effective_asset_tree_started(&self) -> Result<RunPhaseRecord, Error>;
-    /// Starts Asset processing with the retained Routing Ledger's routed total.
-    fn asset_processing_planned(&self, total: usize) -> Result<RunPhaseRecord, Error>;
-    /// Selects the final work phase from the execution mode and whether a
-    /// finalizer exists. A mode that differs from the request's is an invariant
-    /// violation.
-    fn archive_finalization_available(
-        &self,
-        mode: ExecutionMode,
-        has_finalizer: bool,
-    ) -> Result<RunPhaseRecord, Error>;
-}
-
-/// Performs a run's requested work, recording owned evidence as it goes.
-///
-/// The executor retains every completed fact if the work later fails, and
-/// always owns Safety Cleanup: work never cleans up after itself.
-pub trait RunWorkService: Send + Sync {
-    /// Loads work-specific configuration during Preparing, before any mutation.
-    /// An error fails Preparing with `ConfigurationLoadingFailed`.
-    fn prepare(&self) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Performs the work, submitting facts through `evidence` and moving the
-    /// lifecycle through `milestones`, and checking `stop` between atomic
-    /// attempts. An error, or a panic, becomes a fatal `WorkServiceFailed` Run
-    /// Failure without discarding earlier evidence.
-    ///
-    /// Every temporary artifact goes through `artifacts`, the run's Temporary
-    /// Ownership scope. The executor owns it and performs its Safety Cleanup;
-    /// work never cleans the registry itself.
-    fn execute(
-        &self,
-        preparation: &RunPreparation,
-        evidence: &RunWorkEvidence<'_, '_>,
-        artifacts: &mut TemporaryArtifactRegistry,
-        milestones: &dyn RunWorkMilestones,
-        stop: &CancellationToken,
-    ) -> Result<(), Error>;
-}
 
 /// Removes the temporary artifacts one Optimization Run registered.
 ///
@@ -125,15 +73,17 @@ pub struct RunServices<'a> {
     pub safety_cleanup: &'a mut dyn SafetyCleanupService,
     pub observations: Option<&'a dyn RunObservationSink>,
     /// A missing provider fails Preparing, including for requests with no work.
+    /// Requested work fails Preparing with `RequestedWorkUnavailable` unless
+    /// the provider returns a Run Toolset.
     pub configuration: Option<&'a dyn RunConfigurationProvider>,
-    /// Requested work fails Preparing with `RequestedWorkUnavailable` without
-    /// one, unless the provider returns a Run Toolset. A Toolset supersedes
-    /// it: the executor then never calls the work service.
-    pub work: Option<&'a dyn RunWorkService>,
 }
 
-/// Translates work milestones into the executor's lifecycle account.
-struct ExecutorMilestones<'e, 'a> {
+/// Translates the run's work milestones into the executor's lifecycle account.
+///
+/// These are private steps of the Run Executor: the executor alone selects
+/// Run Phases, and its work reports where it has got to. Each method
+/// returns the accepted current phase.
+pub(crate) struct ExecutorMilestones<'e, 'a> {
     evidence: &'e RefCell<MutableRunEvidence<'a>>,
     mode: ExecutionMode,
 }
@@ -148,45 +98,51 @@ impl ExecutorMilestones<'_, '_> {
                 "A milestone was accepted without a current phase",
             ))
     }
-}
 
-impl RunWorkMilestones for ExecutorMilestones<'_, '_> {
-    fn archive_discovery_started(&self) -> Result<RunPhaseRecord, Error> {
+    /// Enters Archive discovery, before any collision or extraction facts.
+    pub(crate) fn archive_discovery_started(&self) -> Result<RunPhaseRecord, Error> {
         self.evidence
             .borrow_mut()
             .record_archive_discovery_started()?;
         self.current()
     }
 
-    fn archive_extraction_planned(&self, total: usize) -> Result<RunPhaseRecord, Error> {
+    /// Starts Archive extraction with its immutable attempt total.
+    pub(crate) fn archive_extraction_planned(&self, total: usize) -> Result<RunPhaseRecord, Error> {
         self.evidence
             .borrow_mut()
             .record_archive_extraction_plan(total)?;
         self.current()
     }
 
-    fn dry_run_archive_extraction(&self) -> Result<RunPhaseRecord, Error> {
+    /// Records that Dry Run excluded Archive extraction.
+    pub(crate) fn dry_run_archive_extraction(&self) -> Result<RunPhaseRecord, Error> {
         self.evidence
             .borrow_mut()
             .record_dry_run_archive_extraction()?;
         self.current()
     }
 
-    fn effective_asset_tree_started(&self) -> Result<RunPhaseRecord, Error> {
+    /// Enters definitive Effective Asset Tree discovery after Archive work.
+    pub(crate) fn effective_asset_tree_started(&self) -> Result<RunPhaseRecord, Error> {
         self.evidence
             .borrow_mut()
             .record_effective_asset_tree_started()?;
         self.current()
     }
 
-    fn asset_processing_planned(&self, total: usize) -> Result<RunPhaseRecord, Error> {
+    /// Starts Asset processing with the retained Routing Ledger's routed total.
+    pub(crate) fn asset_processing_planned(&self, total: usize) -> Result<RunPhaseRecord, Error> {
         self.evidence
             .borrow_mut()
             .record_asset_processing_plan(total)?;
         self.current()
     }
 
-    fn archive_finalization_available(
+    /// Selects the final work phase from the execution mode and whether a
+    /// finalizer exists. A mode that differs from the request's is an invariant
+    /// violation.
+    pub(crate) fn archive_finalization_available(
         &self,
         mode: ExecutionMode,
         has_finalizer: bool,
@@ -229,7 +185,7 @@ fn load_configuration(
     let provider =
         provider.ok_or_else(|| failure("No run configuration provider is available".to_owned()))?;
     match catch_unwind(AssertUnwindSafe(|| {
-        provider.load_with_toolset(request.profile_identity())
+        provider.load(request.profile_identity())
     })) {
         Ok(Ok(loaded)) => Ok(loaded),
         Ok(Err(error)) => Err(failure(error.to_string())),
@@ -546,7 +502,6 @@ impl RunExecutor {
             safety_cleanup,
             observations,
             configuration,
-            work,
         } = services;
         let evidence = RefCell::new(MutableRunEvidence::new(observations));
         let mut invariant = DeferredInvariant::default();
@@ -563,7 +518,6 @@ impl RunExecutor {
             Self::traverse(
                 request,
                 configuration,
-                work,
                 &evidence,
                 &mut artifacts,
                 &mut invariant,
@@ -627,13 +581,9 @@ impl RunExecutor {
     /// cleanup. `artifacts` is the run's Temporary Ownership scope, which the
     /// caller cleans up whatever happens here. `run_work` runs the work
     /// phases when Preparing produced a Run Toolset.
-    // Eight arguments only while the Run Work Service fallback remains
-    // beside `run_work`; removing `work` brings it back within the lint.
-    #[allow(clippy::too_many_arguments)]
     fn traverse(
         request: &RunRequest,
         configuration: Option<&dyn RunConfigurationProvider>,
-        work: Option<&dyn RunWorkService>,
         evidence: &RefCell<MutableRunEvidence<'_>>,
         artifacts: &mut TemporaryArtifactRegistry,
         invariant: &mut DeferredInvariant,
@@ -658,8 +608,7 @@ impl RunExecutor {
 
         let mut preparation = None;
         // The work ports the provider built from Preparing's profile read.
-        // With one, the executor runs the work phases itself and the work
-        // service is never consulted.
+        // With one, the executor runs the work phases itself.
         let mut toolset = None;
         if !stop.is_cancelled() {
             match prepare_run(request, configuration, evidence, stop) {
@@ -675,31 +624,6 @@ impl RunExecutor {
                 }
             }
         }
-        // A Toolset supersedes the work service, so its `prepare` hook never runs.
-        let work = work.filter(|_| toolset.is_none());
-
-        if let (Some(_), true, Some(work)) = (&preparation, request.has_requested_work(), work)
-            && !stop.is_cancelled()
-        {
-            let prepared = catch_unwind(AssertUnwindSafe(|| work.prepare()));
-            let detail = match prepared {
-                Ok(Ok(())) => None,
-                Ok(Err(error)) => Some(error.to_string()),
-                Err(payload) => Some(format!(
-                    "Work configuration panicked: {}",
-                    take_panic_message(payload)
-                )),
-            };
-            if let Some(detail) = detail {
-                failed = true;
-                evidence.borrow_mut().record_failure(RunFailure::new(
-                    RunFailureCode::ConfigurationLoadingFailed,
-                    RunPhase::Preparing,
-                    detail,
-                ));
-            }
-        }
-
         // Apply Preparing recovers each Mod Root's leftover staging before any
         // work, and pins the root. Dry Run never inspects, creates, recovers or
         // cleans staging.
@@ -729,7 +653,6 @@ impl RunExecutor {
         if preparation.is_some()
             && !failed
             && request.has_requested_work()
-            && work.is_none()
             && toolset.is_none()
             && !stop.is_cancelled()
         {
@@ -759,20 +682,6 @@ impl RunExecutor {
                 run_work(prepared, toolset, evidence, artifacts, stop)
             }));
             if let Some(detail) = escaped_work_detail(outcome, "The run's work", invariant) {
-                Self::fail_at_current_phase(evidence, detail);
-            }
-        } else if let (Some(prepared), true, Some(work)) =
-            (&preparation, request.has_requested_work(), work)
-        {
-            let milestones = ExecutorMilestones {
-                evidence,
-                mode: request.execution_mode(),
-            };
-            let work_evidence = RunWorkEvidence::new(evidence);
-            let outcome = catch_unwind(AssertUnwindSafe(|| {
-                work.execute(prepared, &work_evidence, artifacts, &milestones, stop)
-            }));
-            if let Some(detail) = escaped_work_detail(outcome, "The work service", invariant) {
                 Self::fail_at_current_phase(evidence, detail);
             }
         } else {

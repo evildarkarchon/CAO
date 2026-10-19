@@ -22,8 +22,8 @@ use crate::run::{
     CancellationToken, OptimizationRunResult, RunConfigurationProvider, RunDiagnostic,
     RunDiagnosticCode, RunEvent, RunEventPayload, RunEvidenceInvariantPanic, RunExecutor,
     RunFailure, RunFailureCode, RunId, RunObservationSink, RunPhase, RunPhaseRecord, RunProgress,
-    RunRequest, RunScheduler, RunServices, RunSnapshot, RunWorkService, SafetyCleanupService,
-    ScheduledRunWorker, StandardRunScheduler, create_run_id, take_panic_message,
+    RunRequest, RunScheduler, RunServices, RunSnapshot, SafetyCleanupService, ScheduledRunWorker,
+    StandardRunScheduler, create_run_id, take_panic_message,
 };
 
 /// Receives every Run Event of one run, in sequence order, on the Run Worker.
@@ -144,7 +144,6 @@ struct RunShared {
     run_id: RunId,
     request: RunRequest,
     configuration: Option<Arc<dyn RunConfigurationProvider>>,
-    work: Option<Arc<dyn RunWorkService>>,
     cancellation: CancellationToken,
     cleanup: Mutex<TrackedCleanup>,
     published: Mutex<Published>,
@@ -195,7 +194,6 @@ impl RunShared {
                     safety_cleanup: &mut *cleanup,
                     observations: Some(self.as_ref()),
                     configuration: self.configuration.as_deref(),
-                    work: self.work.as_deref(),
                 },
                 &self.cancellation,
                 self.run_id.clone(),
@@ -447,7 +445,6 @@ impl std::fmt::Debug for RunHandle {
 pub struct OptimizationRunService {
     scheduler: Arc<dyn RunScheduler>,
     configuration: Option<Arc<dyn RunConfigurationProvider>>,
-    work: Option<Arc<dyn RunWorkService>>,
     runs: Mutex<Vec<Weak<RunWorkerLifetime>>>,
 }
 
@@ -455,24 +452,19 @@ impl OptimizationRunService {
     /// A service running each run on its own production thread.
     ///
     /// A missing provider fails each run's Preparing rather than its start; a
-    /// missing work service fails runs that request work.
-    pub fn new(
-        configuration: Option<Arc<dyn RunConfigurationProvider>>,
-        work: Option<Arc<dyn RunWorkService>>,
-    ) -> Self {
-        Self::with_scheduler(Arc::new(StandardRunScheduler), configuration, work)
+    /// provider that supplies no Run Toolset fails runs that request work.
+    pub fn new(configuration: Option<Arc<dyn RunConfigurationProvider>>) -> Self {
+        Self::with_scheduler(Arc::new(StandardRunScheduler), configuration)
     }
 
     /// A service starting runs on an injected scheduler.
     pub fn with_scheduler(
         scheduler: Arc<dyn RunScheduler>,
         configuration: Option<Arc<dyn RunConfigurationProvider>>,
-        work: Option<Arc<dyn RunWorkService>>,
     ) -> Self {
         Self {
             scheduler,
             configuration,
-            work,
             runs: Mutex::new(Vec::new()),
         }
     }
@@ -506,7 +498,6 @@ impl OptimizationRunService {
                 run_id: create_run_id(),
                 request,
                 configuration: self.configuration.clone(),
-                work: self.work.clone(),
                 cancellation: CancellationToken::new(),
                 cleanup: Mutex::new(TrackedCleanup {
                     service: Box::new(NoTemporaryArtifacts),

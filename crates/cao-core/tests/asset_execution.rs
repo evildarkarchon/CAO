@@ -431,7 +431,6 @@ fn run(
             safety_cleanup: &mut cleanup,
             observations: None,
             configuration: Some(&*toolset_configuration(Some(Arc::new(toolset)))),
-            work: None,
         },
         &CancellationToken::new(),
         create_run_id(),

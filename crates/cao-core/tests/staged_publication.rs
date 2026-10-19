@@ -36,7 +36,6 @@ fn run(request: RunRequest) -> Arc<OptimizationRunResult> {
         Some(toolset_configuration(Some(backend_toolset(
             FakeBackendFactory::default(),
         )))),
-        None,
     );
     service.start(request, None).expect("the run starts").wait()
 }

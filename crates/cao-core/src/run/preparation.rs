@@ -112,27 +112,17 @@ pub struct RunConfiguration {
 /// Implementations return owned facts and never borrow application state. An
 /// error becomes a `ConfigurationLoadingFailed` Run Failure, never a Start Error.
 pub trait RunConfigurationProvider: Send + Sync {
-    /// Loads the named profile's facts.
-    fn load(&self, profile_identity: &str) -> Result<RunConfiguration, Error>;
-
     /// Loads the named profile's facts together with the Run Toolset built
     /// from that same read, so the run's work uses exactly the profile facts
     /// its Routing Policy is compiled from.
     ///
     /// `None` means the provider supplies no means to do work: a request with
-    /// work then falls back to the run's Run Work Service, if any, and
-    /// otherwise fails Preparing with `RequestedWorkUnavailable`. The default
-    /// supplies none, over [`Self::load`].
+    /// work then fails Preparing with `RequestedWorkUnavailable`.
     ///
     /// # Errors
-    /// As [`Self::load`]; it becomes a `ConfigurationLoadingFailed` Run Failure.
-    fn load_with_toolset(
-        &self,
-        profile_identity: &str,
-    ) -> Result<(RunConfiguration, Option<RunToolset>), Error> {
-        self.load(profile_identity)
-            .map(|configuration| (configuration, None))
-    }
+    /// Any error becomes a `ConfigurationLoadingFailed` Run Failure.
+    fn load(&self, profile_identity: &str)
+    -> Result<(RunConfiguration, Option<RunToolset>), Error>;
 }
 
 /// The immutable facts a successful Preparing establishes, retained by the terminal result.

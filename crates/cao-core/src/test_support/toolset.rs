@@ -344,7 +344,7 @@ pub fn record_finalization_result(
 /// Run Toolset over `toolset` for each run. It counts its loads.
 ///
 /// Without a Toolset, requested work has no means to run, so Preparing fails
-/// with `RequestedWorkUnavailable` unless a Run Work Service stands in.
+/// with `RequestedWorkUnavailable`.
 pub struct ToolsetConfiguration {
     pub configuration: RunConfiguration,
     pub toolset: Option<Arc<ScriptedToolset>>,
@@ -363,18 +363,13 @@ impl ToolsetConfiguration {
 }
 
 impl RunConfigurationProvider for ToolsetConfiguration {
-    fn load(&self, _profile_identity: &str) -> Result<RunConfiguration, Error> {
-        self.loads.fetch_add(1, Ordering::SeqCst);
-        Ok(self.configuration.clone())
-    }
-
-    fn load_with_toolset(
+    fn load(
         &self,
-        profile_identity: &str,
+        _profile_identity: &str,
     ) -> Result<(RunConfiguration, Option<RunToolset>), Error> {
-        let configuration = self.load(profile_identity)?;
+        self.loads.fetch_add(1, Ordering::SeqCst);
         Ok((
-            configuration,
+            self.configuration.clone(),
             self.toolset.as_ref().map(ScriptedToolset::toolset),
         ))
     }

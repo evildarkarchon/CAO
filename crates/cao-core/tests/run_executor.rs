@@ -84,7 +84,6 @@ fn execute_with(
             safety_cleanup: cleanup,
             observations,
             configuration,
-            work: None,
         },
         stop,
         create_run_id(),

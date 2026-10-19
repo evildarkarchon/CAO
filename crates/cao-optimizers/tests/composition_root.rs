@@ -299,7 +299,7 @@ fn the_provider_loads_owned_configuration() {
         prepared.settings.textures_format, 98,
         "the backend sees the profile routing used"
     );
-    assert_eq!(provider.load("FO4").unwrap(), configuration);
+    assert_eq!(provider.load("FO4").unwrap().0, configuration);
 
     assert!(provider.load("MissingProfile").is_err());
 }
@@ -308,7 +308,7 @@ fn the_provider_loads_owned_configuration() {
 fn routing_and_the_backend_load_from_the_same_updated_profile() {
     let app = app_dir("provider-updated");
     let provider = ProfileConfigurationProvider::new(&app);
-    let first = provider.load("FO4").unwrap();
+    let (first, _) = provider.load("FO4").unwrap();
     assert_eq!(first.profile.archive_extension.as_deref(), Some(".ba2"));
 
     // Edited between two loads, as between two runs' Preparing.

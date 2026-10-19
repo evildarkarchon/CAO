@@ -1,10 +1,8 @@
 //! The Run Executor driven through a Run Toolset: the configuration provider
 //! returns the run's work ports beside its Run Configuration, and the
-//! executor runs every work phase itself, with no Run Work Service (#550).
+//! executor runs every work phase itself (#550).
 //!
-//! These scenarios prove the Toolset path at the executor's interface. The
-//! existing suites still drive the work-service path until their own
-//! migration tickets (#551 to #555) move them here.
+//! These scenarios prove the Toolset path at the executor's interface.
 
 mod common;
 
@@ -37,8 +35,8 @@ fn provider(toolset: Option<&Arc<ScriptedToolset>>) -> ToolsetConfiguration {
     )
 }
 
-/// Executes `request` through `configuration`, with no work service,
-/// observing every fact through `sink`.
+/// Executes `request` through `configuration`, observing every fact through
+/// `sink`.
 fn execute(
     request: &RunRequest,
     configuration: &ToolsetConfiguration,
@@ -52,7 +50,6 @@ fn execute(
             safety_cleanup: cleanup,
             observations: Some(sink),
             configuration: Some(configuration),
-            work: None,
         },
         stop,
         create_run_id(),

@@ -1,4 +1,4 @@
-//! Scenario helpers and the scripted work shared by `cao-core`'s run scenarios.
+//! Scenario helpers shared by `cao-core`'s run scenarios.
 //!
 //! The fakes of `cao-core`'s seams live in `cao_core::test_support` (#547);
 //! this fixture keeps what is not a fake. Fixture trees are real directories
@@ -8,22 +8,16 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use cao_core::Error;
-use cao_core::execution::{AssetExecutionResult, MutationState};
-use cao_core::routing::{ExecutionMode, RequestedWork, RoutedAsset};
+use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
-    ArchiveAdapters, ArchiveCollision, ArchiveExtractionPlan, ArchiveExtractionResult,
-    ArchiveExtractor, ArchiveFinalizationResult, AssetInitializationCancelled, AssetRunAdapters,
-    AssetRunProgress, CancellationToken, ModSelection, RunConfiguration, RunHandle, RunPhaseRecord,
-    RunPreparation, RunRequest, RunWorkEvidence, RunWorkMilestones, RunWorkService,
-    SelectedProfileFacts, TemporaryArtifactRegistry, execute_asset_run,
+    ModSelection, RunConfiguration, RunHandle, RunRequest, SelectedProfileFacts,
+    TemporaryArtifactRegistry,
 };
 use cao_core::test_support::{
-    FakeArchiveReader, FakeBackendFactory, FakeCapacity, FakeVolumes, FixedConfiguration,
-    ScriptedToolset, ToolsetConfiguration,
+    FakeBackendFactory, FixedConfiguration, ScriptedToolset, ToolsetConfiguration,
 };
 
 /// Serializes scenarios that start runs: one active run is allowed per
@@ -179,167 +173,6 @@ pub fn reclaim(slot: HandleSlot) -> RunHandle {
         .expect("the handle was stored")
 }
 
-/// What a controlled attempt does, given the Routed Asset and its frozen Mod Root.
-pub type AssetScript = Box<
-    dyn Fn(&RoutedAsset, &Path) -> Result<AssetExecutionResult, AssetInitializationCancelled>
-        + Send
-        + Sync,
->;
-
-/// A hook a controlled run calls without arguments.
-pub type Hook<T> = Box<dyn Fn() -> T + Send + Sync>;
-
-/// A hook observing one Asset Run lifecycle boundary.
-pub type PhaseHook = Box<dyn Fn(&RunPhaseRecord) + Send + Sync>;
-
-/// A hook observing one Asset Run progress update.
-pub type ProgressHook = Box<dyn Fn(AssetRunProgress) + Send + Sync>;
-
-/// A hook observing the Archive Collision plan.
-pub type CollisionHook = Box<dyn Fn(&[ArchiveCollision]) + Send + Sync>;
-
-/// The production `execute_asset_run` driven by scripted adapters, as C++
-/// `ControlledAssetWork` drove `executeAssetRun`.
-///
-/// Discovery, routing, phase publication and Run Evidence are all real. Each
-/// field left `None` keeps the adapter's default: attempts succeed without
-/// mutation, nothing extra cancels, and no Archive Finalization adapter
-/// exists. In Apply, `stage_temporary` stages `temporary.dds` beside the
-/// first Mod Root under the run's Temporary Ownership before any Asset runs,
-/// so a scenario can prove Safety Cleanup removed it.
-#[derive(Default)]
-pub struct ControlledWork {
-    pub execute: Option<AssetScript>,
-    /// Polled wherever the Asset Run checks cancellation; it may panic to
-    /// stand in for a later orchestration failure.
-    pub is_cancelled: Option<Hook<bool>>,
-    pub report_phase: Option<PhaseHook>,
-    pub report_progress: Option<ProgressHook>,
-    /// The Archive Finalization adapter; its calls are counted.
-    pub finalize: Option<Hook<Result<(), Error>>>,
-    /// A scripted Archive Finalization result, recorded as the real phase
-    /// records one; it takes the place of `finalize`, and its calls are
-    /// counted too.
-    pub finalization: Option<Hook<ArchiveFinalizationResult>>,
-    /// Work-specific configuration loaded during Preparing.
-    pub prepare: Option<Hook<Result<(), Error>>>,
-    pub stage_temporary: bool,
-    /// The Archive seams; without them an Apply run selecting an Archive fails.
-    pub archives: Option<ArchiveFakes>,
-    /// Observes the collision plan; it may panic or cancel.
-    pub report_collisions: Option<CollisionHook>,
-    /// Each extraction plan handed to the extraction adapter, in order.
-    pub extracted: Mutex<Vec<ArchiveExtractionPlan>>,
-    /// Each attempt's execution path and the Mod Root it was handed.
-    pub attempts: Mutex<Vec<(PathBuf, PathBuf)>>,
-    pub executions: AtomicUsize,
-    pub finalizations: AtomicUsize,
-    pub staged: Mutex<Option<PathBuf>>,
-}
-
-impl ControlledWork {
-    /// The Mod Roots handed to each attempt, in attempt order.
-    pub fn attempted_roots(&self) -> Vec<PathBuf> {
-        let attempts = self.attempts.lock().unwrap();
-        attempts.iter().map(|(_, root)| root.clone()).collect()
-    }
-
-    /// The temporary file staged in Apply, which must not survive the run.
-    pub fn staged_temporary(&self) -> Option<PathBuf> {
-        self.staged.lock().unwrap().clone()
-    }
-}
-
-impl RunWorkService for ControlledWork {
-    fn prepare(&self) -> Result<(), Error> {
-        self.prepare.as_ref().map_or(Ok(()), |prepare| prepare())
-    }
-
-    fn execute(
-        &self,
-        preparation: &RunPreparation,
-        evidence: &RunWorkEvidence<'_, '_>,
-        artifacts: &mut TemporaryArtifactRegistry,
-        milestones: &dyn RunWorkMilestones,
-        stop: &CancellationToken,
-    ) -> Result<(), Error> {
-        if self.stage_temporary
-            && preparation.policy().execution_mode() == ExecutionMode::Apply
-            && let Some(root) = preparation.mod_roots().first()
-        {
-            let staged = artifacts
-                .stage_file(root, &root.join("temporary.dds"))
-                .expect("the scenario's temporary is staged");
-            std::fs::write(&staged.path, "temporary").unwrap();
-            *self.staged.lock().unwrap() = Some(staged.path);
-        }
-        let mut adapters =
-            AssetRunAdapters::new(Box::new(|asset: &RoutedAsset, mod_root: &Path, _| {
-                self.attempts
-                    .lock()
-                    .unwrap()
-                    .push((asset.execution_path().to_path_buf(), mod_root.to_path_buf()));
-                self.executions.fetch_add(1, Ordering::SeqCst);
-                match &self.execute {
-                    Some(execute) => execute(asset, mod_root),
-                    None => Ok(AssetExecutionResult::success(MutationState::None)),
-                }
-            }));
-        if let Some(is_cancelled) = &self.is_cancelled {
-            adapters.is_cancelled = Some(Box::new(is_cancelled));
-        }
-        if let Some(report_phase) = &self.report_phase {
-            adapters.report_phase = Some(Box::new(move |record| report_phase(record)));
-        }
-        if let Some(report_progress) = &self.report_progress {
-            adapters.report_progress = Some(Box::new(report_progress));
-        }
-        if let Some(finalize) = &self.finalize {
-            adapters.finalize_archive_lifecycle = Some(Box::new(move |_, _| {
-                self.finalizations.fetch_add(1, Ordering::SeqCst);
-                finalize()
-            }));
-        }
-        if let Some(finalization) = &self.finalization {
-            adapters.finalize_archive_lifecycle = Some(Box::new(move |recorder, _| {
-                self.finalizations.fetch_add(1, Ordering::SeqCst);
-                record_finalization_result(recorder, finalization(), None)
-            }));
-        }
-        if let Some(fakes) = &self.archives {
-            let extractor = ArchiveExtractor::new(&fakes.reader, &fakes.capacity);
-            adapters.archives = Some(ArchiveAdapters {
-                reader: &fakes.reader,
-                capacity: &fakes.capacity,
-                volume_identity: &fakes.volumes,
-                extract: Box::new(move |plan, artifacts| {
-                    self.extracted.lock().unwrap().push(plan.clone());
-                    match &fakes.extract {
-                        Some(script) => script(plan),
-                        None => extractor.extract(plan, artifacts),
-                    }
-                }),
-            });
-        }
-        if let Some(report_collisions) = &self.report_collisions {
-            adapters.report_archive_collisions =
-                Some(Box::new(move |collisions| report_collisions(collisions)));
-        }
-        execute_asset_run(
-            preparation,
-            evidence,
-            artifacts,
-            milestones,
-            stop,
-            &mut adapters,
-        )
-    }
-}
-
-// Moved into `test_support`, where the scripted Run Toolset records its
-// scripted results the same way.
-pub use cao_core::test_support::record_finalization_result;
-
 /// `target` relative to the working directory, without changing it: the
 /// harness runs tests on parallel threads, so the process-wide working
 /// directory must stay put. Both paths must be on one volume.
@@ -374,20 +207,6 @@ pub fn crashed_run_leftover(root: &Path, destination: &str) -> PathBuf {
     sibling.path
 }
 
-/// Replaces real extraction with a scripted result for one plan.
-pub type ExtractScript =
-    Box<dyn Fn(&ArchiveExtractionPlan) -> ArchiveExtractionResult + Send + Sync>;
-
-/// The Archive seams a [`ControlledWork`] wires into its Asset Run. By
-/// default extraction is the real [`ArchiveExtractor`] over these fakes.
-#[derive(Default)]
-pub struct ArchiveFakes {
-    pub reader: FakeArchiveReader,
-    pub capacity: FakeCapacity,
-    pub volumes: FakeVolumes,
-    pub extract: Option<ExtractScript>,
-}
-
 /// The Archives directly in `root`, by the fake game's two extensions.
 pub fn archives_in(root: &Path) -> Vec<PathBuf> {
     let mut archives: Vec<PathBuf> = std::fs::read_dir(root)
@@ -402,14 +221,4 @@ pub fn archives_in(root: &Path) -> Vec<PathBuf> {
         .collect();
     archives.sort();
     archives
-}
-
-impl ArchiveFakes {
-    /// Fakes whose capacity probe answers `capacity` for every Mod Root.
-    pub fn with_capacity(capacity: impl Fn(&Path) -> Option<u64> + Send + Sync + 'static) -> Self {
-        Self {
-            capacity: FakeCapacity(Some(Box::new(capacity))),
-            ..Self::default()
-        }
-    }
 }

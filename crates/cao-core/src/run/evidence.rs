@@ -917,22 +917,19 @@ fn derive_mutation_summaries(
     grouped.into_values().collect()
 }
 
-/// The phase-restricted view of Run Evidence that a Run Work Service writes through.
+/// The phase-restricted view of Run Evidence that the run's work writes through.
 ///
 /// Work submits complete facts here but cannot choose Run Phases; the executor
-/// advances the lifecycle through [`super::RunWorkMilestones`]. Both share one
-/// evidence owner for the duration of the synchronous work call.
-pub struct RunWorkEvidence<'e, 'a> {
+/// advances the lifecycle through its own milestones. Both share one evidence
+/// owner for the duration of the synchronous work call. Crate-private: the
+/// view grants nothing its owner could not already do.
+pub(crate) struct RunWorkEvidence<'e, 'a> {
     evidence: &'e RefCell<MutableRunEvidence<'a>>,
 }
 
 impl<'e, 'a> RunWorkEvidence<'e, 'a> {
     /// Borrows the executor's evidence owner for one work call.
-    ///
-    /// Public so a phase can be driven against evidence its caller owns, as
-    /// the Archive Finalization scenarios do; the view grants nothing its
-    /// owner could not already do.
-    pub fn new(evidence: &'e RefCell<MutableRunEvidence<'a>>) -> Self {
+    pub(crate) fn new(evidence: &'e RefCell<MutableRunEvidence<'a>>) -> Self {
         Self { evidence }
     }
 
@@ -980,44 +977,10 @@ impl<'e, 'a> RunWorkEvidence<'e, 'a> {
             .record_asset_attempt(attempt, total)
     }
 
-    /// Records Archive Finalization's immutable output total, once, after the
-    /// executor accepted the executed phase.
-    pub fn record_archive_finalization_plan(&self, total: usize) -> Result<(), Error> {
-        self.evidence
-            .borrow_mut()
-            .record_archive_finalization_plan(total)
-    }
-
-    /// Retains one completed finalization attempt and advances its progress.
-    pub fn record_archive_finalization_attempt(
-        &self,
-        attempt: ArchiveFinalizationAttempt,
-        total: usize,
-    ) -> Result<(), Error> {
-        self.evidence
-            .borrow_mut()
-            .record_archive_finalization_attempt(attempt, total)
-    }
-
-    /// Retains Archive Finalization's one returned result.
-    pub fn record_archive_finalization(
-        &self,
-        result: ArchiveFinalizationResult,
-    ) -> Result<(), Error> {
-        self.evidence
-            .borrow_mut()
-            .record_archive_finalization(result)
-    }
-
     /// The finalization recorder over the same evidence owner, which the run
     /// hands to Archive Finalization in place of this whole view.
     pub(crate) fn finalization_recorder(&self) -> ArchiveFinalizationRecorder<'e, 'a> {
         ArchiveFinalizationRecorder::new(self.evidence)
-    }
-
-    /// A copy of Archive Finalization's attempts and result so far.
-    pub fn archive_finalization(&self) -> Option<ArchiveFinalizationResult> {
-        self.evidence.borrow().archive_finalization().cloned()
     }
 
     /// Retains and publishes a Run Failure.
@@ -1040,44 +1003,9 @@ impl<'e, 'a> RunWorkEvidence<'e, 'a> {
         self.evidence.borrow_mut().record_cancellation_observation();
     }
 
-    /// Runs a work presentation callback, retaining a panic as a diagnostic.
-    ///
-    /// The evidence is not borrowed while the callback runs, so the callback
-    /// may read the evidence through this view.
-    pub fn report_safely(&self, phase: RunPhase, publication: impl FnOnce()) {
-        if let Err(payload) = catch_unwind(AssertUnwindSafe(publication)) {
-            self.evidence
-                .borrow_mut()
-                .retain_observer_failure(phase, take_panic_message(payload));
-        }
-    }
-
-    /// The current executor-owned phase.
-    pub fn current_phase(&self) -> Option<RunPhaseRecord> {
-        self.evidence.borrow().current_phase().copied()
-    }
-
-    /// The diagnostics accepted so far.
-    pub fn diagnostics(&self) -> Vec<RunDiagnostic> {
-        self.evidence.borrow().diagnostics().to_vec()
-    }
-
     /// A copy of the definitive Routing Ledger, once routing has completed. A
     /// copy, so the work can iterate it while recording attempts.
     pub fn routing_ledger(&self) -> Option<RoutingLedger> {
         self.evidence.borrow().routing_ledger().cloned()
-    }
-
-    /// Recognized exclusions accepted so far.
-    pub fn skipped_asset_count(&self, reason: SkipReason) -> usize {
-        self.evidence.borrow().skipped_asset_count(reason)
-    }
-
-    /// Reports whether a phase was executed rather than skipped, if traversed.
-    pub fn phase_status(&self, phase: RunPhase) -> Option<RunPhaseStatus> {
-        self.evidence
-            .borrow()
-            .phase(phase)
-            .map(RunPhaseRecord::status)
     }
 }
