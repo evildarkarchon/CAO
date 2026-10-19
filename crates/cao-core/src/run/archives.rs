@@ -29,8 +29,8 @@ use crate::run::artifacts::reserved_device_name;
 use crate::run::source_pin::SourceFilePin;
 use crate::run::staging::{has_staging_component, pin_directory};
 use crate::run::{
-    ArchiveEntry, ArchivePrecedence, ArchiveReader, CapacityProbe, PublicationPolicy,
-    PublicationReceipt, PublicationState, RunFailure, RunFailureCode, RunPhase,
+    ArchiveEntry, ArchivePrecedence, ArchiveReader, CancellationToken, CapacityProbe,
+    PublicationPolicy, PublicationReceipt, PublicationState, RunFailure, RunFailureCode, RunPhase,
     TemporaryArtifactRegistry, VolumeIdentityProbe, is_staging_name, take_panic_message,
 };
 
@@ -697,7 +697,7 @@ pub(crate) fn preflight(
     reader: &dyn ArchiveReader,
     capacity: &dyn CapacityProbe,
     volume_identity: &dyn VolumeIdentityProbe,
-    cancelled: &dyn Fn() -> bool,
+    stop: &CancellationToken,
 ) -> Preflight {
     let mut roots = roots;
     if let ArchivePrecedence::ExplicitOrder(order) = precedence {
@@ -717,7 +717,7 @@ pub(crate) fn preflight(
     for (index, root) in roots.iter().enumerate() {
         let mut provided: BTreeMap<GamePathKey, Vec<PathBuf>> = BTreeMap::new();
         for archive in &root.archives {
-            if cancelled() {
+            if stop.is_cancelled() {
                 return Preflight::Cancelled;
             }
             let listed = catch_unwind(AssertUnwindSafe(|| reader.list_entries(archive)));
@@ -751,7 +751,7 @@ pub(crate) fn preflight(
             let mut own: BTreeSet<GamePathKey> = BTreeSet::new();
             let mut game_paths = Vec::with_capacity(entries.len());
             for entry in &entries {
-                if cancelled() {
+                if stop.is_cancelled() {
                     return Preflight::Cancelled;
                 }
                 let invalid = |detail: &str| {

@@ -42,7 +42,7 @@ use crate::run::{
 /// Walks Mod Roots for regular files under the scope rules both discovery passes share.
 struct Discovery<'r, 'e, 'x, 'y> {
     evidence: &'e RunWorkEvidence<'x, 'y>,
-    stop: &'r dyn Fn() -> bool,
+    stop: &'r CancellationToken,
     /// The phase linked-entry diagnostics are attributed to.
     phase: RunPhase,
     /// Each excluded linked entry is diagnosed once, across both passes.
@@ -122,7 +122,7 @@ impl Discovery<'_, '_, '_, '_> {
         for entry in entries {
             // Poll for every entry: directories and unsupported files may be the
             // whole tree, so no other seam is guaranteed to observe cancellation.
-            if (self.stop)() {
+            if self.stop.is_cancelled() {
                 return false;
             }
             let Ok(entry) = entry else { continue };
@@ -183,7 +183,6 @@ pub(super) fn run_work_phases(
     let policy = preparation.policy();
     let mode = policy.execution_mode();
     let router = AssetRouter::new(policy.clone());
-    let cancelled = || stop.is_cancelled();
     // Every return publishes the diagnostics discovery retained, exactly once.
     let finish = |cancellation_observed: bool| -> Result<(), Error> {
         if cancellation_observed {
@@ -206,7 +205,7 @@ pub(super) fn run_work_phases(
 
     let mut discovery = Discovery {
         evidence,
-        stop: &cancelled,
+        stop,
         phase: RunPhase::DiscoveringArchives,
         diagnosed: HashSet::new(),
     };
@@ -259,7 +258,7 @@ pub(super) fn run_work_phases(
             &*toolset.archive_reader,
             &*toolset.capacity,
             &*toolset.volume_identity,
-            &cancelled,
+            stop,
         ) {
             Preflight::Failed(failure) => {
                 // A failed preflight has no trustworthy tree, so the run stops
@@ -284,25 +283,25 @@ pub(super) fn run_work_phases(
         }
     }
 
-    if cancelled() {
+    if stop.is_cancelled() {
         return interrupted(skipped_archive_counts);
     }
     match mode {
         ExecutionMode::DryRun => milestones.dry_run_archive_extraction()?,
         ExecutionMode::Apply => milestones.archive_extraction_planned(plans.len())?,
     };
-    if cancelled() {
+    if stop.is_cancelled() {
         return interrupted(skipped_archive_counts);
     }
 
-    if let Some(stop) = extract_archives(
+    if let Some(halt) = extract_archives(
         &plans,
         &mut *toolset.archive_extraction,
         evidence,
         artifacts,
-        &cancelled,
+        stop,
     )? {
-        return match stop {
+        return match halt {
             ExtractionStop::Cancelled => interrupted(skipped_archive_counts),
             // An unsafe attempt never reaches routing or finalization; only
             // separately observed cancellation is retained alongside it.
@@ -317,7 +316,7 @@ pub(super) fn run_work_phases(
     }
 
     milestones.effective_asset_tree_started()?;
-    if cancelled() {
+    if stop.is_cancelled() {
         return interrupted(skipped_archive_counts);
     }
 
@@ -364,7 +363,7 @@ pub(super) fn run_work_phases(
         OptimizerTarget::Animation,
     ] {
         for asset in ledger.routed_assets_for(target) {
-            if cancelled() {
+            if stop.is_cancelled() {
                 return finish(true);
             }
             let path = asset.execution_path();
@@ -418,25 +417,25 @@ pub(super) fn run_work_phases(
             // A failed attempt still completes progress, but uncertain mutation
             // makes every later attempt and Archive Finalization unsafe.
             if !safe_to_continue {
-                return finish(cancelled());
+                return finish(stop.is_cancelled());
             }
         }
     }
     // Cancellation raised during the last attempt has no later loop head to
     // observe it, and a finalizer need not check it either.
-    if cancelled() {
+    if stop.is_cancelled() {
         return finish(true);
     }
     evidence.publish_diagnostics();
     // An observer of those diagnostics may cancel; the run then stops before
     // entering Archive Finalization rather than recording a phase it skips.
-    if cancelled() {
+    if stop.is_cancelled() {
         return finish(true);
     }
 
     milestones.archive_finalization_available()?;
     // Archive Finalization is a separate mutation boundary: observe cancellation before it.
-    if cancelled() {
+    if stop.is_cancelled() {
         return finish(true);
     }
     // The immutable policy decides: Dry Run never finalizes, whatever the Toolset holds.
@@ -450,7 +449,7 @@ pub(super) fn run_work_phases(
             stop,
         )?;
     }
-    finish(cancelled())
+    finish(stop.is_cancelled())
 }
 
 /// Runs the Archive Finalization port, containing its panic as the phase's
@@ -498,7 +497,7 @@ fn extract_archives(
     port: &mut dyn ArchiveExtractionPort,
     evidence: &RunWorkEvidence<'_, '_>,
     artifacts: &mut TemporaryArtifactRegistry,
-    cancelled: &dyn Fn() -> bool,
+    stop: &CancellationToken,
 ) -> Result<Option<ExtractionStop>, Error> {
     if plans.is_empty() {
         // No attempt ran, so there is none to re-sample cancellation after:
@@ -507,7 +506,7 @@ fn extract_archives(
     }
     let total = plans.len();
     for plan in plans {
-        if cancelled() {
+        if stop.is_cancelled() {
             return Ok(Some(ExtractionStop::Cancelled));
         }
         let mut attempt = match catch_unwind(AssertUnwindSafe(|| port.extract(plan, artifacts))) {
@@ -521,20 +520,20 @@ fn extract_archives(
                 ..ArchiveExtractionResult::new(plan)
             },
         };
-        // The adapter's own claim is retained for diagnosis, but partial
-        // mutation stops the run regardless.
+        // The extraction port's own claim is retained for diagnosis, but
+        // partial mutation stops the run regardless.
         let unsafe_attempt = attempt.is_unsafe();
         attempt.mod_root = plan.mod_root.clone();
         evidence.record_archive_extraction_attempt(attempt, total)?;
         if unsafe_attempt {
             return Ok(Some(ExtractionStop::Unsafe {
-                cancellation: cancelled(),
+                cancellation: stop.is_cancelled(),
             }));
         }
     }
     // Re-sampled after the final attempt and its progress record, so
     // cancellation during the last Archive still skips the definitive pass.
-    Ok(cancelled().then_some(ExtractionStop::Cancelled))
+    Ok(stop.is_cancelled().then_some(ExtractionStop::Cancelled))
 }
 
 /// Reports whether routing recognizes the path as an Archive, enabled or not.
