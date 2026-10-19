@@ -98,7 +98,7 @@ impl FakeBackend {
 ///
 /// Every handle is shared, so a scenario can keep a clone after handing the
 /// factory to an [`AssetAttemptAdapter`](crate::run::AssetAttemptAdapter).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct FakeBackendFactory {
     /// The call log every created backend appends to.
     pub calls: Arc<Mutex<Vec<String>>>,

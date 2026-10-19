@@ -11,6 +11,11 @@
 //! [`ArchiveFinalizationEvidence`] is not a fake: it opens the real
 //! finalization recorder over fresh evidence already in the Archive
 //! Finalization phase, so that phase is tested at its own interface (#548).
+//!
+//! [`ScriptedToolset`] scripts a run's Asset attempt, extraction and Archive
+//! Finalization results, and [`ToolsetConfiguration`] returns a fresh Run
+//! Toolset over it to each run, so a scenario drives the real Run Executor
+//! through its Toolset path (#550).
 
 mod archives;
 mod backend;
@@ -19,6 +24,7 @@ mod configuration;
 mod finalization;
 mod observation;
 mod scheduling;
+mod toolset;
 
 pub use archives::{
     AfterWrite, ExtractHook, FakeArchivePacker, FakeArchiveReader, FakeCapacity, FakeEntry,
@@ -31,4 +37,8 @@ pub use finalization::ArchiveFinalizationEvidence;
 pub use observation::{EventLog, ObservationHook, Observed, RecordingSink};
 pub use scheduling::{
     CountingInlineScheduler, DeferredScheduler, ExhaustedScheduler, GatedScheduler, WorkerHook,
+};
+pub use toolset::{
+    AssetAttemptScript, ExtractionScript, FinalizationScript, ScriptedToolset,
+    ToolsetConfiguration, record_finalization_result,
 };

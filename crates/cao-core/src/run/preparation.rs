@@ -9,6 +9,7 @@ use crate::routing::{
     PolicyValidationError, ProfileCapabilities, ProfileCapability, RoutingPolicy,
     RoutingPolicyRequest,
 };
+use crate::run::RunToolset;
 
 /// How Archives within one Mod Root are ordered.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -113,6 +114,25 @@ pub struct RunConfiguration {
 pub trait RunConfigurationProvider: Send + Sync {
     /// Loads the named profile's facts.
     fn load(&self, profile_identity: &str) -> Result<RunConfiguration, Error>;
+
+    /// Loads the named profile's facts together with the Run Toolset built
+    /// from that same read, so the run's work uses exactly the profile facts
+    /// its Routing Policy is compiled from.
+    ///
+    /// `None` means the provider supplies no means to do work: a request with
+    /// work then falls back to the run's Run Work Service, if any, and
+    /// otherwise fails Preparing with `RequestedWorkUnavailable`. The default
+    /// supplies none, over [`Self::load`].
+    ///
+    /// # Errors
+    /// As [`Self::load`]; it becomes a `ConfigurationLoadingFailed` Run Failure.
+    fn load_with_toolset(
+        &self,
+        profile_identity: &str,
+    ) -> Result<(RunConfiguration, Option<RunToolset>), Error> {
+        self.load(profile_identity)
+            .map(|configuration| (configuration, None))
+    }
 }
 
 /// The immutable facts a successful Preparing establishes, retained by the terminal result.

@@ -16,11 +16,10 @@ use cao_core::execution::{AssetExecutionResult, MutationState};
 use cao_core::routing::{ExecutionMode, RequestedWork, RoutedAsset};
 use cao_core::run::{
     ArchiveAdapters, ArchiveCollision, ArchiveExtractionPlan, ArchiveExtractionResult,
-    ArchiveExtractor, ArchiveFinalizationRecorder, ArchiveFinalizationResult, AssetAttemptAdapter,
-    AssetInitializationCancelled, AssetRunAdapters, AssetRunProgress, CancellationToken,
-    ModSelection, RunConfiguration, RunHandle, RunPhaseRecord, RunPreparation, RunRequest,
-    RunWorkEvidence, RunWorkMilestones, RunWorkService, SelectedProfileFacts,
-    TemporaryArtifactRegistry, execute_asset_run,
+    ArchiveExtractor, ArchiveFinalizationResult, AssetAttemptAdapter, AssetInitializationCancelled,
+    AssetRunAdapters, AssetRunProgress, CancellationToken, ModSelection, RunConfiguration,
+    RunHandle, RunPhaseRecord, RunPreparation, RunRequest, RunWorkEvidence, RunWorkMilestones,
+    RunWorkService, SelectedProfileFacts, TemporaryArtifactRegistry, execute_asset_run,
 };
 use cao_core::test_support::{
     FakeArchiveReader, FakeBackendFactory, FakeCapacity, FakeVolumes, FixedConfiguration,
@@ -385,22 +384,9 @@ impl RunWorkService for ControlledWork {
     }
 }
 
-/// Records a scripted finalizer's result the way Archive Finalization does:
-/// the output total, each attempt in order, then the complete result (C++
-/// `recordArchiveFinalizationResult`). The total defaults to the attempt
-/// count; pass a larger one for a result that stopped before every planned
-/// output.
-pub fn record_finalization_result(
-    recorder: &ArchiveFinalizationRecorder<'_, '_>,
-    result: ArchiveFinalizationResult,
-    total: Option<usize>,
-) -> Result<(), Error> {
-    recorder.record_output_total(total.unwrap_or(result.attempts.len()))?;
-    for attempt in &result.attempts {
-        recorder.record_attempt(attempt.clone())?;
-    }
-    recorder.record_result(result)
-}
+// Moved into `test_support`, where the scripted Run Toolset records its
+// scripted results the same way.
+pub use cao_core::test_support::record_finalization_result;
 
 /// `target` relative to the working directory, without changing it: the
 /// harness runs tests on parallel threads, so the process-wide working

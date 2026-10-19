@@ -4,7 +4,10 @@
 use std::cell::RefCell;
 
 use crate::Error;
-use crate::run::{ArchiveFinalizationAttempt, ArchiveFinalizationResult, MutableRunEvidence};
+use crate::run::{
+    ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationResult,
+    MutableRunEvidence,
+};
 
 /// Records Archive Finalization's facts into the run's evidence: its output
 /// total, each completed attempt, and its one complete result.
@@ -64,5 +67,33 @@ impl<'e, 'a> ArchiveFinalizationRecorder<'e, 'a> {
         self.evidence
             .borrow_mut()
             .record_archive_finalization(result)
+    }
+
+    /// Records the phase's Unexpected Exception after its port panicked with
+    /// `detail`: a result keeping every attempt already recorded, which
+    /// forbids continuation.
+    ///
+    /// # Errors
+    /// [`Error::WorkService`] when the phase had already recorded its result,
+    /// so the panic has no result left to fail and escapes the run's work
+    /// instead; or a Run Evidence invariant violation.
+    pub(crate) fn record_unexpected_exception(&self, detail: String) -> Result<(), Error> {
+        let mut evidence = self.evidence.borrow_mut();
+        if evidence.archive_finalization_completed() {
+            return Err(Error::WorkService(format!(
+                "Archive Finalization panicked after recording its result: {detail}"
+            )));
+        }
+        let attempts = evidence
+            .archive_finalization()
+            .map(|recorded| recorded.attempts.clone())
+            .unwrap_or_default();
+        evidence.record_archive_finalization(ArchiveFinalizationResult {
+            attempts,
+            failure: Some(ArchiveFinalizationFailure::UnexpectedException),
+            safe_to_continue: false,
+            detail,
+            ..ArchiveFinalizationResult::default()
+        })
     }
 }

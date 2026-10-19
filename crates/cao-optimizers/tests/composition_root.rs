@@ -282,7 +282,9 @@ fn the_provider_loads_owned_configuration() {
     let provider = ProfileConfigurationProvider::new(&app);
 
     // FO4 has no ignoredMods.txt of its own, so it falls back to SSE's.
-    let configuration = provider.load("FO4").unwrap();
+    // One read yields both the routing facts and what the run's work is
+    // built from.
+    let (configuration, prepared) = provider.read_profile("FO4").unwrap();
     assert_eq!(
         configuration.profile.archive_extension.as_deref(),
         Some(".ba2")
@@ -294,10 +296,10 @@ fn the_provider_loads_owned_configuration() {
         vec!["_separator".to_owned()]
     );
     assert_eq!(
-        provider.prepared_settings().unwrap().textures_format,
-        98,
+        prepared.settings.textures_format, 98,
         "the backend sees the profile routing used"
     );
+    assert_eq!(provider.load("FO4").unwrap(), configuration);
 
     assert!(provider.load("MissingProfile").is_err());
 }
@@ -313,10 +315,10 @@ fn routing_and_the_backend_load_from_the_same_updated_profile() {
     edit_profile(&app, "FO4", "bsaGame", "4");
     edit_profile(&app, "FO4", "texturesFormat", "87");
     edit_profile(&app, "FO4", "texturesUnwantedFormats", "85");
-    let second = provider.load("FO4").unwrap();
+    let (second, prepared) = provider.read_profile("FO4").unwrap();
 
     assert_eq!(second.profile.archive_extension.as_deref(), Some(".bsa"));
-    let backend = provider.prepared_settings().unwrap();
+    let backend = prepared.settings;
     assert_eq!(backend.textures_format, 87);
     assert_eq!(backend.textures_unwanted_formats, vec![85]);
 }

@@ -4,16 +4,17 @@
 //! directory, the selected profile and the options model, [`ApplicationRun::new`]
 //! validates the options, builds the Run Request, refuses one that contradicts
 //! the profile's Profile Capabilities, and wires a profile-backed Run
-//! Configuration Provider and the production Run Work Service into an
-//! Optimization Run Service. Both binaries go through it, so the parity driver
-//! exercises the wiring users run.
+//! Configuration Provider into an Optimization Run Service. During each run's
+//! Preparing, that provider builds the production Run Toolset from the same
+//! profile read as the run's Routing Policy. Both binaries go through it, so
+//! the parity driver exercises the wiring users run.
 //!
 //! Everything resolves against the app directory the caller passes: `profiles/`
 //! and `bin/hkxcmd.exe` here, and later `logs/` (deviation 1). Only `cao-gui`'s
 //! `main` derives that directory from the exe.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use cao_archive::{Game, Settings};
 use cao_core::Error;
@@ -21,13 +22,11 @@ use cao_core::routing::{
     ExecutionMode, PolicyValidationError, RequestedWork, RoutingPolicyRequest,
 };
 use cao_core::run::{
-    ArchiveAdapters, ArchiveExtractor, ArchiveFinalization, ArchiveFinalizationSettings,
-    AssetAttemptAdapter, AssetBackendFactory, AssetRunAdapters, BackendCreation,
-    BackendCreationError, CancellationToken, ModSelection, OptimizationRunService,
-    RunConfiguration, RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode,
-    RunEventDispatcher, RunHandle, RunPhase, RunPreparation, RunRequest, RunWorkEvidence,
-    RunWorkMilestones, RunWorkService, SelectedProfileFacts, SourceCleanup, StartError,
-    TemporaryArtifactRegistry, execute_asset_run,
+    ArchiveExtractionAdapter, ArchiveFinalizationAdapter, ArchiveFinalizationSettings,
+    AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
+    CancellationToken, ModSelection, OptimizationRunService, RunConfiguration,
+    RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode, RunEventDispatcher, RunHandle,
+    RunPhase, RunRequest, RunToolset, SelectedProfileFacts, SourceCleanup, StartError,
 };
 use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
 use directxtex::DXGI_FORMAT;
@@ -108,17 +107,17 @@ impl ApplicationRun {
     pub fn new(app_dir: &Path, profile: &str, options: &Options) -> Result<Self, RunSetupError> {
         let request = run_request(app_dir, profile, options)?;
         check_profile_capabilities(app_dir, profile, &request)?;
-        let settings = OptimizerSettings::from_options(options);
-        let configuration = Arc::new(ProfileConfigurationProvider::new(app_dir));
-        let work = Arc::new(ApplicationRunWork {
-            settings,
-            selected_folder: request.mod_selection().directory().to_path_buf(),
-            hkxcmd: Hkxcmd::in_app_dir(app_dir),
-            configuration: Arc::clone(&configuration),
-            profile: Mutex::new(None),
-        });
+        let configuration = Arc::new(ProfileConfigurationProvider::for_runs(
+            app_dir,
+            RunWorkSettings {
+                settings: OptimizerSettings::from_options(options),
+                selected_folder: request.mod_selection().directory().to_path_buf(),
+                hkxcmd: Hkxcmd::in_app_dir(app_dir),
+            },
+        ));
         Ok(Self {
-            service: OptimizationRunService::new(Some(configuration), Some(work)),
+            // The provider's Run Toolset does the work, so no work service.
+            service: OptimizationRunService::new(Some(configuration), None),
             request,
         })
     }
@@ -334,14 +333,6 @@ impl OptimizerSettings {
     }
 }
 
-/// Locks a mutex, recovering the data if a panicking holder poisoned it. Each
-/// holder here writes one whole value, so the data is always consistent.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 /// What Preparing read from the selected profile, pinned for the whole run.
 #[derive(Debug)]
 pub struct PreparedProfile {
@@ -360,36 +351,47 @@ pub struct PreparedProfile {
 ///
 /// Each load re-reads the named profile's `profile.ini`, `ignoredMods.txt`,
 /// `FilesToNotPack.txt` and `customHeadparts.txt` during Preparing, on the
-/// Run Worker, and publishes what it read so the run's work uses the very same
-/// profile facts its routing did.
+/// Run Worker. A provider set up for runs builds the run's production Run
+/// Toolset from that same read, so the run's work uses the very same profile
+/// facts its routing did.
 pub struct ProfileConfigurationProvider {
     profiles: Profiles,
-    prepared: Mutex<Option<Arc<PreparedProfile>>>,
+    /// The per-run choices the Run Toolset is built with; `None` when the
+    /// provider loads configuration only.
+    work: Option<RunWorkSettings>,
 }
 
 impl ProfileConfigurationProvider {
-    /// A provider for the profiles of the install in `app_dir`.
+    /// A provider for the profiles of the install in `app_dir` that loads
+    /// configuration only: it builds no Run Toolset, so a request with work
+    /// fails Preparing as unavailable.
     pub fn new(app_dir: &Path) -> Self {
         Self {
             profiles: Profiles::new(app_dir),
-            prepared: Mutex::new(None),
+            work: None,
         }
     }
 
-    /// The settings the last successful load read, or `None` before one.
-    pub fn prepared_settings(&self) -> Option<Arc<ProfileSettings>> {
-        self.prepared_profile()
-            .map(|prepared| Arc::clone(&prepared.settings))
+    /// A provider for the profiles of the install in `app_dir` that builds
+    /// each run's production Run Toolset with `work`.
+    fn for_runs(app_dir: &Path, work: RunWorkSettings) -> Self {
+        Self {
+            profiles: Profiles::new(app_dir),
+            work: Some(work),
+        }
     }
 
-    /// Everything the last successful load read, or `None` before one.
-    pub fn prepared_profile(&self) -> Option<Arc<PreparedProfile>> {
-        lock(&self.prepared).clone()
-    }
-}
-
-impl RunConfigurationProvider for ProfileConfigurationProvider {
-    fn load(&self, profile_identity: &str) -> Result<RunConfiguration, Error> {
+    /// Reads the named profile once, returning the Run Configuration its
+    /// routing compiles from and everything else the run's work is built
+    /// from.
+    ///
+    /// # Errors
+    /// [`Error::ConfigurationLoading`] when `profile.ini` or
+    /// `ignoredMods.txt` cannot be read.
+    pub fn read_profile(
+        &self,
+        profile_identity: &str,
+    ) -> Result<(RunConfiguration, PreparedProfile), Error> {
         let failed = |error: ProfileError| Error::ConfigurationLoading(error.to_string());
         let profile = self.profiles.open(profile_identity);
         // Strict, as C++ run setup rejected any QSettings status but NoError.
@@ -400,20 +402,43 @@ impl RunConfigurationProvider for ProfileConfigurationProvider {
         // The same holds here; the headpart scan logs it.
         let custom_headparts = profile.custom_headparts();
         let facts = profile_facts(&settings);
-        // Published only after every read succeeded, so work never sees a
-        // partial profile.
-        *lock(&self.prepared) = Some(Arc::new(PreparedProfile {
-            settings: Arc::new(settings),
-            files_to_not_pack,
-            custom_headparts,
-        }));
-        Ok(RunConfiguration {
+        let configuration = RunConfiguration {
             profile: facts,
             ignored_mods,
             // Deviation 20: MO2 names its separators `<name>_separator`. C++
             // passed the marker "separator" and excluded any child containing it.
             separator_suffixes: vec![SEPARATOR_SUFFIX.to_owned()],
-        })
+        };
+        Ok((
+            configuration,
+            PreparedProfile {
+                settings: Arc::new(settings),
+                files_to_not_pack,
+                custom_headparts,
+            },
+        ))
+    }
+}
+
+impl RunConfigurationProvider for ProfileConfigurationProvider {
+    fn load(&self, profile_identity: &str) -> Result<RunConfiguration, Error> {
+        self.read_profile(profile_identity)
+            .map(|(configuration, _)| configuration)
+    }
+
+    /// Reads the profile once and, when set up for runs, builds the run's
+    /// production Run Toolset from that read. Built only after every read
+    /// succeeded, so work never sees a partial profile.
+    fn load_with_toolset(
+        &self,
+        profile_identity: &str,
+    ) -> Result<(RunConfiguration, Option<RunToolset>), Error> {
+        let (configuration, profile) = self.read_profile(profile_identity)?;
+        let toolset = self
+            .work
+            .as_ref()
+            .map(|work| work.toolset(Arc::new(profile)));
+        Ok((configuration, toolset))
     }
 }
 
@@ -488,8 +513,9 @@ fn mesh_target(settings: &ProfileSettings) -> NifVersion {
     }
 }
 
-/// The production Run Work Service, ported from C++ `ApplicationRunWork`.
-struct ApplicationRunWork {
+/// The per-run choices the production Run Toolset is built with, ported from
+/// what C++ `ApplicationRunWork` held.
+struct RunWorkSettings {
     settings: OptimizerSettings,
     /// The selected folder, which the headpart scan walks whole: C++ scanned
     /// `userPath`, so mods with a Mod Exclusion are scanned too.
@@ -497,9 +523,48 @@ struct ApplicationRunWork {
     /// The app directory's `bin/hkxcmd.exe`; each run's backend gets a fresh
     /// copy, so each run checks for the exe once, as each C++ run did.
     hkxcmd: Hkxcmd,
-    configuration: Arc<ProfileConfigurationProvider>,
-    /// The provider's Preparing snapshot, pinned for the whole run.
-    profile: Mutex<Option<Arc<PreparedProfile>>>,
+}
+
+impl RunWorkSettings {
+    /// The production Run Toolset of one run, over the profile its Preparing
+    /// read.
+    fn toolset(&self, profile: Arc<PreparedProfile>) -> RunToolset {
+        // One reader serves discovery, extraction and finalization for the
+        // whole run.
+        let reader = Arc::new(ArchiveFileReader::default());
+        let probes = Arc::new(VolumeProbes);
+        // C++ always wires Archive Finalization, so Apply executes the phase:
+        // it packs only when the Routing Policy requests Archive creation, and
+        // prunes empty directories either way.
+        let finalization = ArchiveFinalizationAdapter::new(
+            Box::new(archive_packer(&profile.settings)),
+            reader.clone(),
+            probes.clone(),
+            probes.clone(),
+            self.settings.finalization,
+            profile.files_to_not_pack.clone(),
+        );
+        RunToolset {
+            // The adapter creates the backend on the first Asset, as C++
+            // creates its MainOptimizer, so a run with nothing to process
+            // never sets up an optimizer.
+            asset_attempt: Box::new(AssetAttemptAdapter::new(OptimizerBackendFactory {
+                settings: self.settings,
+                selected_folder: self.selected_folder.clone(),
+                hkxcmd: self.hkxcmd.clone(),
+                profile,
+            })),
+            archive_extraction: Box::new(ArchiveExtractionAdapter::new(
+                reader.clone(),
+                probes.clone(),
+                self.settings.extracted_archive_cleanup,
+            )),
+            archive_finalization: Box::new(finalization),
+            archive_reader: reader,
+            capacity: probes.clone(),
+            volume_identity: probes,
+        }
+    }
 }
 
 /// The production backend factory: it lists the run's Headpart Meshes, then
@@ -596,88 +661,5 @@ impl AssetBackendFactory for OptimizerBackendFactory {
             backend,
             diagnostics,
         })
-    }
-}
-
-impl RunWorkService for ApplicationRunWork {
-    fn prepare(&self) -> Result<(), Error> {
-        let prepared = self.configuration.prepared_profile().ok_or_else(|| {
-            Error::ConfigurationLoading("The selected profile was not prepared".to_owned())
-        })?;
-        *lock(&self.profile) = Some(prepared);
-        Ok(())
-    }
-
-    fn execute(
-        &self,
-        preparation: &RunPreparation,
-        evidence: &RunWorkEvidence<'_, '_>,
-        artifacts: &mut TemporaryArtifactRegistry,
-        milestones: &dyn RunWorkMilestones,
-        stop: &CancellationToken,
-    ) -> Result<(), Error> {
-        let profile = lock(&self.profile)
-            .clone()
-            .ok_or_else(|| Error::WorkService("The run's profile was not prepared".to_owned()))?;
-        // The adapter creates the backend on the first Asset, as C++ creates
-        // its MainOptimizer, so a run with nothing to process never sets up an
-        // optimizer.
-        let mut attempt = AssetAttemptAdapter::new(OptimizerBackendFactory {
-            settings: self.settings,
-            selected_folder: self.selected_folder.clone(),
-            hkxcmd: self.hkxcmd.clone(),
-            profile: Arc::clone(&profile),
-        });
-        // Declared before `adapters`, which borrows them, so they outlive it.
-        let reader = ArchiveFileReader::default();
-        let packer = archive_packer(&profile.settings);
-        // C++ always wires Archive Finalization, so Apply executes the phase:
-        // it packs only when the Routing Policy requests Archive creation, and
-        // prunes empty directories either way.
-        let finalization = ArchiveFinalization::new(
-            &packer,
-            &reader,
-            &VolumeProbes,
-            &VolumeProbes,
-            self.settings.finalization,
-            &profile.files_to_not_pack,
-        );
-        let cleanup = self.settings.extracted_archive_cleanup;
-        // The factory's diagnostics are retained, not published, so they
-        // publish with the run's other deferred diagnostics.
-        let mut adapters = AssetRunAdapters::new(Box::new(|asset, mod_root, artifacts| {
-            attempt.attempt(asset, mod_root, artifacts, stop, &mut |diagnostic| {
-                evidence.retain_diagnostic(diagnostic)
-            })
-        }));
-        adapters.finalize_archive_lifecycle = Some(Box::new(|evidence, artifacts| {
-            finalization.run(preparation, evidence, artifacts, &|| stop.is_cancelled())
-        }));
-        // Dry Run never reads a manifest, so wiring the Archive seams
-        // unconditionally is harmless.
-        adapters.archives = Some(ArchiveAdapters {
-            reader: &reader,
-            capacity: &VolumeProbes,
-            volume_identity: &VolumeProbes,
-            extract: Box::new(|plan, artifacts| {
-                let result = ArchiveExtractor::new(&reader, &VolumeProbes)
-                    .extract_with_source_cleanup(plan, cleanup, artifacts);
-                if result.succeeded() {
-                    log::info!(
-                        "BSA successfully extracted: {}",
-                        plan.archive_path.display()
-                    );
-                }
-                result
-            }),
-        });
-        execute_asset_run(
-            preparation,
-            evidence,
-            artifacts,
-            milestones,
-            stop,
-            &mut adapters,
-        )
     }
 }

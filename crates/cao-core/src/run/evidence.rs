@@ -539,6 +539,12 @@ impl<'a> MutableRunEvidence<'a> {
         self.storage.archive_finalization_total
     }
 
+    /// Whether Archive Finalization's one result is already recorded, so a
+    /// contained port panic knows no further result may be recorded.
+    pub(crate) fn archive_finalization_completed(&self) -> bool {
+        self.storage.archive_finalization_completed
+    }
+
     /// Retains the phase's final result, once.
     fn complete_archive_finalization(&mut self, result: ArchiveFinalizationResult) {
         if result.cancelled {

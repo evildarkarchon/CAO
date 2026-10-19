@@ -19,6 +19,7 @@ mod scheduler;
 mod service;
 mod source_pin;
 mod staging;
+mod toolset;
 
 pub use archives::{
     ArchiveCollision, ArchiveExtractionFailure, ArchiveExtractionPlan, ArchiveExtractionResult,
@@ -69,6 +70,10 @@ pub use scheduler::{
 pub use service::{OptimizationRunService, RunEventDispatcher, RunHandle, StartError};
 pub use source_pin::{LoadingPluginPin, SourceDirectoryPins, SourceFilePin, SourcePinError};
 pub use staging::StagingError;
+pub use toolset::{
+    ArchiveExtractionAdapter, ArchiveExtractionPort, ArchiveFinalizationAdapter,
+    ArchiveFinalizationPort, AssetAttemptPort, RunToolset,
+};
 
 pub(crate) use artifacts::fingerprint;
 
