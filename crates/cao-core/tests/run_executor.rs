@@ -2,10 +2,12 @@
 //! and terminal classification at the synchronous seam beneath the service.
 //!
 //! Each scenario names the C++ test whose intent it ports, mostly from
-//! `tests/RunExecutorTests.cpp`. Asset work runs the production
-//! `execute_asset_run` through [`ControlledWork`], the Rust stand-in for C++
-//! `ControlledAssetWork`; a junction stands in wherever C++ needed a symlink,
-//! which takes a privilege a junction does not.
+//! `tests/RunExecutorTests.cpp`. Work runs through a [`ScriptedToolset`], the
+//! Rust stand-in for C++ `ControlledAssetWork`: the executor runs every work
+//! phase itself, and a scenario scripts only the ports. Phase-timed triggers
+//! observe phase records through a [`RecordingSink`], and cancellation goes
+//! through the run's token. A junction stands in wherever C++ needed a
+//! symlink, which takes a privilege a junction does not.
 //!
 //! Ported elsewhere:
 //! - The Several Mods exclusion and resolution scenarios: `several_mods.rs`.
@@ -43,22 +45,19 @@ use cao_core::Error;
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use cao_core::routing::{AssetOperation, ExecutionMode, PolicyValidationError, RequestedWork};
 use cao_core::run::{
-    ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationResult,
-    ArchivePrecedence, CancellationToken, ModSelection, MutationKind, OptimizationRunResult,
-    PhaseSkipReason, RunConfiguration, RunConfigurationProvider, RunDiagnosticCode,
-    RunEvidenceInvariantPanic, RunExecutor, RunFailure, RunFailureCode, RunObservationSink,
-    RunOutcome, RunPhase, RunPhaseRecord, RunPhaseStatus, RunPreparation, RunProgress, RunRequest,
-    RunServices, RunWorkEvidence, RunWorkMilestones, RunWorkService, SafetyCleanupService,
-    SelectedProfileFacts, TemporaryArtifactRegistry, create_run_id,
+    ArchiveExtractionResult, ArchiveFinalizationAttempt, ArchiveFinalizationFailure,
+    ArchiveFinalizationResult, ArchivePrecedence, CancellationToken, ModSelection, MutationKind,
+    OptimizationRunResult, PhaseSkipReason, RunConfiguration, RunConfigurationProvider,
+    RunDiagnosticCode, RunExecutor, RunFailure, RunFailureCode, RunObservationSink, RunOutcome,
+    RunPhase, RunPhaseRecord, RunPhaseStatus, RunPreparation, RunProgress, RunRequest, RunServices,
+    RunWorkEvidence, RunWorkMilestones, RunWorkService, SafetyCleanupService, SelectedProfileFacts,
+    TemporaryArtifactRegistry, create_run_id,
 };
 use cao_core::test_support::{
-    CallbackConfiguration, CountingCleanup, FixedConfiguration, Observed, RecordingSink,
-    ScriptedCleanup,
+    CallbackConfiguration, CountingCleanup, FakeCapacity, Observed, RecordingSink, ScriptedCleanup,
+    ScriptedToolset, ToolsetConfiguration, entry, record_finalization_result, write_archive,
 };
-use common::{
-    ControlledWork, ScriptedWork, canonical, no_work_request, request, scratch_dir,
-    test_configuration,
-};
+use common::{canonical, no_work_request, request, scratch_dir, test_configuration};
 
 /// Executes one request with the given services and a fresh run identity.
 fn execute(
@@ -81,6 +80,88 @@ fn execute(
     )
 }
 
+/// Executes one request with no observer and a fresh run identity. Requested
+/// work runs only through the Run Toolset `configuration` returns, if any.
+fn run(
+    request: &RunRequest,
+    cleanup: &mut CountingCleanup,
+    configuration: Option<&dyn RunConfigurationProvider>,
+    stop: &CancellationToken,
+) -> OptimizationRunResult {
+    run_with(request, cleanup, None, configuration, stop)
+}
+
+/// Executes one request with every service supplied by the scenario.
+/// Requested work runs only through the Run Toolset `configuration`
+/// returns, if any.
+fn run_with(
+    request: &RunRequest,
+    cleanup: &mut dyn SafetyCleanupService,
+    observations: Option<&dyn RunObservationSink>,
+    configuration: Option<&dyn RunConfigurationProvider>,
+    stop: &CancellationToken,
+) -> OptimizationRunResult {
+    RunExecutor.execute(
+        request,
+        RunServices {
+            safety_cleanup: cleanup,
+            observations,
+            configuration,
+            work: None,
+        },
+        stop,
+        create_run_id(),
+    )
+}
+
+/// A provider of the SSE-like profile whose runs work through `toolset`.
+fn scripted(toolset: &Arc<ScriptedToolset>) -> ToolsetConfiguration {
+    ToolsetConfiguration::new(
+        RunConfiguration {
+            profile: common::sse_profile(),
+            ..RunConfiguration::default()
+        },
+        Some(Arc::clone(toolset)),
+    )
+}
+
+/// The temporary a scripted port staged under the run's Temporary Ownership,
+/// shared between a scenario and its scripts so the scenario can prove
+/// Safety Cleanup removed it.
+///
+/// It stands in for the temporary C++ `ControlledAssetWork` staged before
+/// any Asset ran; a Toolset lends the registry only to its ports, so a
+/// scenario stages from whichever port its run reaches.
+#[derive(Clone, Default)]
+struct StagedTemporary(Arc<Mutex<Option<PathBuf>>>);
+
+impl StagedTemporary {
+    /// Stages `temporary.dds` beside `root` through the lent `artifacts`, the
+    /// first time any script asks; later calls stage nothing more.
+    fn stage(&self, root: &Path, artifacts: &mut TemporaryArtifactRegistry) {
+        let mut staged = self.0.lock().unwrap();
+        if staged.is_some() {
+            return;
+        }
+        let file = artifacts
+            .stage_file(root, &root.join("temporary.dds"))
+            .expect("the scenario's temporary is staged");
+        std::fs::write(&file.path, "temporary").unwrap();
+        *staged = Some(file.path);
+    }
+
+    /// The staged temporary, if a script staged one.
+    fn path(&self) -> Option<PathBuf> {
+        self.0.lock().unwrap().clone()
+    }
+
+    /// Asserts a script staged the temporary and Safety Cleanup removed it.
+    fn assert_removed(&self) {
+        let staged = self.path().expect("a port staged a temporary");
+        assert!(!staged.exists(), "{} survived the run", staged.display());
+    }
+}
+
 /// Origin: RunExecutorTests::noWorkApplyRunTraversesTheStablePhaseSequence,
 /// noWorkRunReportsTheSameReasonsInEveryExecutionMode and
 /// noWorkRunSucceedsWithoutInventingProgressTotals.
@@ -94,11 +175,10 @@ fn a_no_work_run_traverses_every_phase_skipping_work_for_the_one_known_reason() 
             Vec::new(),
         );
         let mut cleanup = CountingCleanup::default();
-        let result = execute(
+        let result = run(
             &request,
             &mut cleanup,
             Some(&*test_configuration()),
-            None,
             &CancellationToken::new(),
         );
 
@@ -189,7 +269,7 @@ fn safety_cleanup_runs_exactly_once_on_every_terminal_path() {
     ];
     for (name, request, configuration, stop, outcome) in paths {
         let mut cleanup = CountingCleanup::default();
-        let result = execute(&request, &mut cleanup, Some(configuration), None, &stop);
+        let result = run(&request, &mut cleanup, Some(configuration), &stop);
 
         assert_eq!(result.outcome(), outcome, "{name}");
         assert_eq!(cleanup.passes, 1, "{name}: one cleanup pass");
@@ -212,11 +292,10 @@ fn a_configuration_loading_failure_fails_preparing_with_its_detail() {
         ))
     }));
     let mut cleanup = CountingCleanup::default();
-    let result = execute(
+    let result = run(
         &no_work_request(),
         &mut cleanup,
         Some(&provider),
-        None,
         &CancellationToken::new(),
     );
 
@@ -239,11 +318,10 @@ fn a_configuration_loading_failure_fails_preparing_with_its_detail() {
 fn a_panicking_configuration_provider_fails_preparing() {
     let provider = CallbackConfiguration(Box::new(|_| panic!("the provider exploded")));
     let mut cleanup = CountingCleanup::default();
-    let result = execute(
+    let result = run(
         &no_work_request(),
         &mut cleanup,
         Some(&provider),
-        None,
         &CancellationToken::new(),
     );
 
@@ -264,10 +342,9 @@ fn a_panicking_configuration_provider_fails_preparing() {
 #[test]
 fn a_missing_configuration_provider_fails_preparing() {
     let mut cleanup = CountingCleanup::default();
-    let result = execute(
+    let result = run(
         &no_work_request(),
         &mut cleanup,
-        None,
         None,
         &CancellationToken::new(),
     );
@@ -298,11 +375,10 @@ fn a_request_contradicting_the_profile_fails_preparing_with_every_conflict() {
         &[RequestedWork::StandardMeshOptimization],
     );
     let mut cleanup = CountingCleanup::default();
-    let result = execute(
+    let result = run(
         &request,
         &mut cleanup,
         Some(&provider),
-        None,
         &CancellationToken::new(),
     );
 
@@ -332,11 +408,10 @@ fn a_selection_that_is_not_an_existing_directory_fails_preparing() {
             Vec::new(),
         );
         let mut cleanup = CountingCleanup::default();
-        let result = execute(
+        let result = run(
             &request,
             &mut cleanup,
             Some(&*test_configuration()),
-            None,
             &CancellationToken::new(),
         );
 
@@ -361,11 +436,10 @@ fn a_filesystem_root_cannot_be_a_mod_root() {
             Vec::new(),
         );
         let mut cleanup = CountingCleanup::default();
-        let result = execute(
+        let result = run(
             &request,
             &mut cleanup,
             Some(&*test_configuration()),
-            None,
             &CancellationToken::new(),
         );
 
@@ -388,19 +462,18 @@ fn a_filesystem_root_cannot_be_a_mod_root() {
 /// Origin: OptimizationRunServiceTests::failureEventsPrecedeCleanupAndTerminal
 /// (the RequestedWorkUnavailable row).
 #[test]
-fn requested_work_without_a_work_service_fails_preparing() {
-    let root = scratch_dir("executor-no-work-service");
+fn requested_work_without_a_run_toolset_fails_preparing() {
+    let root = scratch_dir("executor-no-run-toolset");
     let request = request(
         ExecutionMode::Apply,
         &root,
         &[RequestedWork::NativeTextureOptimization],
     );
     let mut cleanup = CountingCleanup::default();
-    let result = execute(
+    let result = run(
         &request,
         &mut cleanup,
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
 
@@ -429,13 +502,7 @@ fn cancellation_during_preparing_publishes_no_preparation() {
         }))
     };
     let mut cleanup = CountingCleanup::default();
-    let result = execute(
-        &no_work_request(),
-        &mut cleanup,
-        Some(&cancelling),
-        None,
-        &token,
-    );
+    let result = run(&no_work_request(), &mut cleanup, Some(&cancelling), &token);
 
     assert_eq!(result.outcome(), RunOutcome::Cancelled);
     assert!(result.cancellation_observed());
@@ -462,11 +529,10 @@ fn cleanup_failures_complete_with_failures_but_a_failed_cleanup_service_is_fatal
         failures: vec![artifact_failure.clone()],
         ..CountingCleanup::default()
     };
-    let result = execute(
+    let result = run(
         &no_work_request(),
         &mut cleanup,
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
     assert_eq!(result.outcome(), RunOutcome::CompletedWithFailures);
@@ -480,11 +546,10 @@ fn cleanup_failures_complete_with_failures_but_a_failed_cleanup_service_is_fatal
         service_error: Some("the registry is gone".to_owned()),
         ..CountingCleanup::default()
     };
-    let result = execute(
+    let result = run(
         &no_work_request(),
         &mut broken,
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
     assert_eq!(result.outcome(), RunOutcome::Failed);
@@ -507,11 +572,10 @@ fn cancellation_wins_over_cleanup_failures() {
         )],
         ..CountingCleanup::default()
     };
-    let result = execute(
+    let result = run(
         &no_work_request(),
         &mut cleanup,
         Some(&*test_configuration()),
-        None,
         &token,
     );
     assert_eq!(result.outcome(), RunOutcome::Cancelled);
@@ -693,65 +757,6 @@ fn a_run_worker_panic_fails_the_run_and_safety_cleanup_still_removes_its_staging
     }
 }
 
-/// Origin: RunExecutorTests::evidenceInvariantViolationsRemainProgrammingDefects.
-#[test]
-fn an_evidence_invariant_violation_panics_only_after_safety_cleanup() {
-    let root = scratch_dir("executor-invariant");
-    let request = request(
-        ExecutionMode::DryRun,
-        &root,
-        &[RequestedWork::NativeTextureOptimization],
-    );
-    // Planning Processing Assets before any routing is a producer bug.
-    struct OutOfOrder;
-    impl RunWorkService for OutOfOrder {
-        fn execute(
-            &self,
-            _preparation: &RunPreparation,
-            _evidence: &RunWorkEvidence<'_, '_>,
-            _artifacts: &mut TemporaryArtifactRegistry,
-            milestones: &dyn RunWorkMilestones,
-            _stop: &CancellationToken,
-        ) -> Result<(), Error> {
-            milestones.asset_processing_planned(3)?;
-            Ok(())
-        }
-    }
-    let mut cleanup = CountingCleanup::default();
-    let configuration = test_configuration();
-    let outcome = catch_unwind(AssertUnwindSafe(|| {
-        execute(
-            &request,
-            &mut cleanup,
-            Some(&*configuration),
-            Some(&OutOfOrder),
-            &CancellationToken::new(),
-        )
-    }));
-
-    let payload = outcome.expect_err("the violation panics");
-    let sealed = payload
-        .downcast::<RunEvidenceInvariantPanic>()
-        .expect("the panic carries the sealed result");
-    assert!(
-        sealed.violation.contains("Run Evidence invariant violated"),
-        "{}",
-        sealed.violation
-    );
-    assert_eq!(cleanup.passes, 1, "Safety Cleanup ran before the panic");
-    // The sealed result keeps every earlier fact and records the violation.
-    let result = &sealed.result;
-    assert_eq!(result.outcome(), RunOutcome::Failed);
-    assert!(result.preparation().is_some());
-    assert_eq!(result.failures().len(), 1);
-    assert_eq!(result.failures()[0].code, RunFailureCode::WorkServiceFailed);
-    assert_eq!(result.failures()[0].detail, sealed.violation);
-    assert_eq!(
-        result.phases().last().unwrap().phase(),
-        RunPhase::SafetyCleanup
-    );
-}
-
 /// Origin: RunExecutorTests::cancellationAfterAtomicAssetAttempt (cancellation
 /// between Assets keeps what was committed).
 #[test]
@@ -762,28 +767,27 @@ fn cancelling_between_assets_keeps_committed_mutations_and_cleans_up() {
         &["textures/a.dds", "textures/b.dds", "textures/c.dds"],
     );
     let token = CancellationToken::new();
-    let work = ScriptedWork {
-        cancel_during: Some((1, token.clone())),
-        ..ScriptedWork::committing()
-    };
+    // Every attempt commits; the first cancels the run before it returns,
+    // as a user clicking Cancel mid-attempt would.
+    let toolset = Arc::new(ScriptedToolset::default().with_assets({
+        let token = token.clone();
+        move |_, _, _| {
+            token.cancel();
+            Ok(AssetExecutionResult::success(MutationState::Committed))
+        }
+    }));
     let request = request(
         ExecutionMode::Apply,
         &root,
         &[RequestedWork::NativeTextureOptimization],
     );
     let mut cleanup = CountingCleanup::default();
-    let result = execute(
-        &request,
-        &mut cleanup,
-        Some(&*test_configuration()),
-        Some(&work),
-        &CancellationToken::new(),
-    );
+    let result = run(&request, &mut cleanup, Some(&scripted(&toolset)), &token);
 
     assert_eq!(result.outcome(), RunOutcome::Cancelled);
     assert!(result.cancellation_observed());
     assert_eq!(
-        work.attempted.lock().unwrap().len(),
+        toolset.attempted().len(),
         1,
         "the in-flight attempt finished; no other started"
     );
@@ -872,28 +876,6 @@ fn requested_work_is_a_deduplicated_set_in_enumeration_order() {
     assert!(!request.requests(RequestedWork::ArchiveCreation));
 }
 
-/// Executes one request with every service supplied by the scenario.
-fn execute_with(
-    request: &RunRequest,
-    cleanup: &mut dyn SafetyCleanupService,
-    observations: Option<&dyn RunObservationSink>,
-    configuration: Option<&dyn RunConfigurationProvider>,
-    work: Option<&dyn RunWorkService>,
-    stop: &CancellationToken,
-) -> OptimizationRunResult {
-    RunExecutor.execute(
-        request,
-        RunServices {
-            safety_cleanup: cleanup,
-            observations,
-            configuration,
-            work,
-        },
-        stop,
-        create_run_id(),
-    )
-}
-
 /// A fresh, canonical Mod Root holding `files`.
 fn mod_root(name: &str, files: &[&str]) -> PathBuf {
     let root = canonical(&scratch_dir(&format!("executor/{name}")));
@@ -905,12 +887,6 @@ fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap()
 }
 
-/// Asserts the work's staged temporary existed and Safety Cleanup removed it.
-fn assert_temporary_removed(work: &ControlledWork) {
-    let staged = work.staged_temporary().expect("Apply staged a temporary");
-    assert!(!staged.exists(), "{} survived the run", staged.display());
-}
-
 fn diagnostic_count(result: &OptimizationRunResult, code: RunDiagnosticCode) -> usize {
     result
         .diagnostics()
@@ -919,16 +895,17 @@ fn diagnostic_count(result: &OptimizationRunResult, code: RunDiagnosticCode) -> 
         .count()
 }
 
-/// A provider that ignores the named mods under the SSE-like profile.
-fn ignoring(mods: &[&str]) -> FixedConfiguration {
-    FixedConfiguration {
-        configuration: RunConfiguration {
+/// A provider that ignores the named mods under the SSE-like profile, whose
+/// runs work through `toolset`.
+fn ignoring(mods: &[&str], toolset: &Arc<ScriptedToolset>) -> ToolsetConfiguration {
+    ToolsetConfiguration::new(
+        RunConfiguration {
             profile: common::sse_profile(),
             ignored_mods: mods.iter().map(|name| (*name).to_owned()).collect(),
             ..RunConfiguration::default()
         },
-        loads: Default::default(),
-    }
+        Some(Arc::clone(toolset)),
+    )
 }
 
 /// Origin: RunExecutorTests::processingAndEvidenceShareModRoot (all four
@@ -968,19 +945,18 @@ fn processing_and_evidence_share_the_canonical_mod_root() {
             selection,
             vec![RequestedWork::NativeTextureOptimization],
         );
-        let work = ControlledWork::default();
+        let toolset = Arc::new(ScriptedToolset::default());
         let mut cleanup = CountingCleanup::default();
 
-        let result = execute(
+        let result = run(
             &request,
             &mut cleanup,
-            Some(&*test_configuration()),
-            Some(&work),
+            Some(&scripted(&toolset)),
             &CancellationToken::new(),
         );
 
         assert_eq!(result.outcome(), RunOutcome::Succeeded, "{row}");
-        assert_eq!(work.attempted_roots(), roots, "{row}");
+        assert_eq!(toolset.attempted_roots(), roots, "{row}");
         assert_eq!(result.asset_attempts().len(), roots.len(), "{row}");
         for (attempt, root) in result.asset_attempts().iter().zip(&roots) {
             assert_eq!(&attempt.mod_root, root, "{row}");
@@ -996,8 +972,9 @@ fn processing_and_evidence_share_the_canonical_mod_root() {
 
 /// Origin: RunExecutorTests::removedConversionRetainsModRoot (both rows). A
 /// conversion that removed its source keeps its committed attempt and Mod
-/// Root when a later checkpoint fails or cancels, and Archive Finalization is
-/// never reached.
+/// Root when a later checkpoint fails or cancels. Cancellation stops before
+/// Archive Finalization; the later failure is the Archive Finalization port
+/// failing, the only checkpoint after the last attempt a Toolset can fail.
 #[test]
 fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
     for cancels in [false, true] {
@@ -1007,35 +984,25 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
         let root = selected.join("mod");
         common::write_tree(&root, &["original.tga"]);
         let token = CancellationToken::new();
-        let converted = Arc::new(AtomicBool::new(false));
-        let work = ControlledWork {
-            execute: Some(Box::new({
-                let converted = converted.clone();
-                move |asset, _| {
-                    let source = asset.execution_path();
-                    std::fs::write(source.with_extension("dds"), "converted").unwrap();
-                    std::fs::remove_file(source).unwrap();
-                    converted.store(true, Ordering::SeqCst);
-                    Ok(AssetExecutionResult::success(MutationState::Committed))
-                }
-            })),
-            is_cancelled: Some(Box::new({
-                let token = token.clone();
-                move || {
-                    if !converted.load(Ordering::SeqCst) {
-                        return false;
-                    }
-                    if !cancels {
-                        panic!("later orchestration failure");
-                    }
+        let staged = StagedTemporary::default();
+        let toolset = ScriptedToolset::default().with_assets({
+            let (token, staged) = (token.clone(), staged.clone());
+            move |asset, mod_root, artifacts| {
+                staged.stage(mod_root, artifacts);
+                let source = asset.execution_path();
+                std::fs::write(source.with_extension("dds"), "converted").unwrap();
+                std::fs::remove_file(source).unwrap();
+                if cancels {
                     token.cancel();
-                    true
                 }
-            })),
-            finalize: Some(Box::new(|| Ok(()))),
-            stage_temporary: true,
-            ..ControlledWork::default()
-        };
+                Ok(AssetExecutionResult::success(MutationState::Committed))
+            }
+        });
+        let toolset = Arc::new(if cancels {
+            toolset
+        } else {
+            toolset.with_finalization_error("later orchestration failure")
+        });
         let request = RunRequest::new(
             "SkyrimSE",
             ExecutionMode::Apply,
@@ -1044,13 +1011,7 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
         );
         let mut cleanup = CountingCleanup::default();
 
-        let result = execute(
-            &request,
-            &mut cleanup,
-            Some(&*test_configuration()),
-            Some(&work),
-            &token,
-        );
+        let result = run(&request, &mut cleanup, Some(&scripted(&toolset)), &token);
 
         let row = if cancels {
             "later cancellation"
@@ -1065,15 +1026,16 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
         assert_eq!(result.outcome(), expected, "{row}");
         if !cancels {
             assert_eq!(result.failures()[0].code, RunFailureCode::WorkServiceFailed);
+            assert_eq!(result.failures()[0].phase, RunPhase::ArchiveFinalization);
             assert!(
                 result.failures()[0]
                     .detail
                     .contains("later orchestration failure")
             );
         }
-        assert_eq!(work.finalizations.load(Ordering::SeqCst), 0, "{row}");
+        assert_eq!(toolset.finalizations(), usize::from(!cancels), "{row}");
         assert_eq!(cleanup.passes, 1, "{row}");
-        assert_temporary_removed(&work);
+        staged.assert_removed();
         let attempts = result.asset_attempts();
         assert_eq!(attempts.len(), 1, "{row}");
         assert_eq!(attempts[0].mod_root, root, "{row}");
@@ -1100,8 +1062,9 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
         );
         let progress = result.phase(RunPhase::ProcessingAssets).unwrap().progress();
         assert_eq!(progress.unwrap().completed(), 1, "{row}");
-        assert!(
+        assert_eq!(
             result.phase(RunPhase::ArchiveFinalization).is_none(),
+            cancels,
             "{row}"
         );
         assert!(!root.join("original.tga").exists());
@@ -1133,20 +1096,21 @@ fn an_asset_retargeted_after_discovery_is_attributed_to_the_root_containing_it()
         std::fs::write(target.join("asset.dds"), "target bytes").unwrap();
         let link = first.join("textures");
         let retargeted = Arc::new(AtomicBool::new(false));
-        let work = ControlledWork {
-            report_phase: Some(Box::new({
-                let (link, target, retargeted) = (link.clone(), target.clone(), retargeted.clone());
-                move |record| {
-                    if record.phase() == RunPhase::ProcessingAssets
-                        && !retargeted.swap(true, Ordering::SeqCst)
-                    {
-                        std::fs::rename(&link, link.with_file_name("moved")).unwrap();
-                        common::junction(&link, &target);
-                    }
+        // Swaps the folder once Processing Assets is recorded, after routing
+        // and before the first attempt.
+        let sink = RecordingSink::with_hook({
+            let (link, target, retargeted) = (link.clone(), target.clone(), retargeted.clone());
+            move |observed| {
+                if let Observed::Phase(record) = observed
+                    && record.phase() == RunPhase::ProcessingAssets
+                    && !retargeted.swap(true, Ordering::SeqCst)
+                {
+                    std::fs::rename(&link, link.with_file_name("moved")).unwrap();
+                    common::junction(&link, &target);
                 }
-            })),
-            ..ControlledWork::default()
-        };
+            }
+        });
+        let toolset = Arc::new(ScriptedToolset::default());
         let request = RunRequest::new(
             "SkyrimSE",
             ExecutionMode::Apply,
@@ -1155,11 +1119,11 @@ fn an_asset_retargeted_after_discovery_is_attributed_to_the_root_containing_it()
         );
         let mut cleanup = CountingCleanup::default();
 
-        let result = execute(
+        let result = run_with(
             &request,
             &mut cleanup,
-            Some(&*test_configuration()),
-            Some(&work),
+            Some(&sink),
+            Some(&scripted(&toolset)),
             &CancellationToken::new(),
         );
         std::fs::remove_dir(&link).unwrap();
@@ -1174,12 +1138,12 @@ fn an_asset_retargeted_after_discovery_is_attributed_to_the_root_containing_it()
         if outside {
             assert_eq!(result.outcome(), RunOutcome::Failed, "{row}");
             assert_eq!(result.asset_attempts().len(), 1, "{row}");
-            assert!(work.attempted_roots().is_empty(), "{row}: never offered");
+            assert!(toolset.attempted_roots().is_empty(), "{row}: never offered");
             assert_eq!(attempt.mod_root, PathBuf::new(), "{row}");
             assert!(!attempt.result.safe_to_continue(), "{row}");
         } else {
             assert_eq!(result.outcome(), RunOutcome::Succeeded, "{row}");
-            assert_eq!(work.attempted_roots()[0], second, "{row}");
+            assert_eq!(toolset.attempted_roots()[0], second, "{row}");
             assert_eq!(attempt.mod_root, second, "{row}");
         }
         assert_eq!(read(&target.join("asset.dds")), "target bytes", "{row}");
@@ -1191,25 +1155,31 @@ fn an_asset_retargeted_after_discovery_is_attributed_to_the_root_containing_it()
 /// requested work, Dry Run evaluation and empty Dry Run rows). Applicable
 /// work with nothing to do still processes Assets against a 0/0 account; Dry
 /// Run evaluates Assets but skips extraction and finalization; nothing is
-/// extracted or finalized, and only Apply stages anything.
+/// extracted, and only Apply stages anything. A Run Toolset always carries
+/// an Archive Finalization port, so Apply always executes that phase: the
+/// C++ row without a finalizer, skipped for no requested work, has no
+/// Toolset equivalent.
 #[test]
 fn applicable_work_reports_its_phases_whether_or_not_there_is_anything_to_do() {
-    // (row, mode, has an Asset, has a finalizer)
+    // (row, mode, has an Asset)
     let rows = [
-        ("empty requested work", ExecutionMode::Apply, false, false),
-        ("dry run evaluation", ExecutionMode::DryRun, true, true),
-        ("empty dry run", ExecutionMode::DryRun, false, false),
+        ("empty requested work", ExecutionMode::Apply, false),
+        ("dry run evaluation", ExecutionMode::DryRun, true),
+        ("empty dry run", ExecutionMode::DryRun, false),
     ];
-    for (index, (row, mode, has_asset, has_finalizer)) in rows.into_iter().enumerate() {
+    for (index, (row, mode, has_asset)) in rows.into_iter().enumerate() {
         let root = mod_root(&format!("applicability-{index}"), &[]);
         if has_asset {
             std::fs::write(root.join("asset.dds"), "untouched").unwrap();
         }
-        let work = ControlledWork {
-            finalize: has_finalizer.then(|| Box::new(|| Ok(())) as common::Hook<_>),
-            stage_temporary: true,
-            ..ControlledWork::default()
-        };
+        let staged = StagedTemporary::default();
+        let toolset = Arc::new(ScriptedToolset::default().with_finalization({
+            let staged = staged.clone();
+            move |preparation, recorder, artifacts| {
+                staged.stage(&preparation.mod_roots()[0], artifacts);
+                record_finalization_result(recorder, ArchiveFinalizationResult::default(), None)
+            }
+        }));
         let request = request(
             mode,
             &root,
@@ -1220,18 +1190,22 @@ fn applicable_work_reports_its_phases_whether_or_not_there_is_anything_to_do() {
         );
         let mut cleanup = CountingCleanup::default();
 
-        let result = execute(
+        let result = run(
             &request,
             &mut cleanup,
-            Some(&*test_configuration()),
-            Some(&work),
+            Some(&scripted(&toolset)),
             &CancellationToken::new(),
         );
 
         assert_eq!(result.outcome(), RunOutcome::Succeeded, "{row}");
         let total = usize::from(has_asset);
-        assert_eq!(work.executions.load(Ordering::SeqCst), total, "{row}");
-        assert_eq!(work.finalizations.load(Ordering::SeqCst), 0, "{row}");
+        assert_eq!(toolset.attempted().len(), total, "{row}");
+        assert!(toolset.extracted().is_empty(), "{row}");
+        assert_eq!(
+            toolset.finalizations(),
+            usize::from(mode == ExecutionMode::Apply),
+            "{row}"
+        );
         assert!(result.mutation_summaries().is_empty(), "{row}");
         assert_eq!(cleanup.passes, 1, "{row}");
         assert!(result.routing_ledger().is_some(), "{row}");
@@ -1243,7 +1217,8 @@ fn applicable_work_reports_its_phases_whether_or_not_there_is_anything_to_do() {
             )),
             "{row}"
         );
-        let finalization_skip = if mode == ExecutionMode::DryRun {
+        let finalization = result.phase(RunPhase::ArchiveFinalization).unwrap();
+        if mode == ExecutionMode::DryRun {
             assert_eq!(
                 result.phase(RunPhase::ExtractingArchives),
                 Some(&RunPhaseRecord::skipped(
@@ -1252,21 +1227,18 @@ fn applicable_work_reports_its_phases_whether_or_not_there_is_anything_to_do() {
                 )),
                 "{row}"
             );
-            assert!(work.staged_temporary().is_none(), "{row}");
+            assert!(staged.path().is_none(), "{row}");
             assert!(!root.join(".cao-staging").exists(), "{row}");
-            PhaseSkipReason::DryRun
+            assert_eq!(
+                finalization.skip_reason(),
+                Some(PhaseSkipReason::DryRun),
+                "{row}"
+            );
         } else {
-            assert_temporary_removed(&work);
-            PhaseSkipReason::NoRequestedWork
-        };
-        assert_eq!(
-            result
-                .phase(RunPhase::ArchiveFinalization)
-                .unwrap()
-                .skip_reason(),
-            Some(finalization_skip),
-            "{row}"
-        );
+            staged.assert_removed();
+            assert_eq!(finalization.status(), RunPhaseStatus::Executed, "{row}");
+            assert_eq!(finalization.skip_reason(), None, "{row}");
+        }
         if has_asset {
             assert_eq!(read(&root.join("asset.dds")), "untouched", "{row}");
         }
@@ -1296,23 +1268,25 @@ fn each_work_phase_is_published_before_its_work_starts() {
         let published = published.clone();
         move || published.lock().unwrap().last().copied()
     };
-    let work = ControlledWork {
-        execute: Some(Box::new({
-            let last_published = last_published.clone();
-            move |_, _| {
-                assert_eq!(last_published(), Some(RunPhase::ProcessingAssets));
-                Ok(AssetExecutionResult::success(MutationState::None))
-            }
-        })),
-        finalize: Some(Box::new(move || {
-            assert_eq!(last_published(), Some(RunPhase::ArchiveFinalization));
-            Ok(())
-        })),
-        ..ControlledWork::default()
-    };
+    // A failed assertion in a port is contained there, so it surfaces as an
+    // unsafe attempt or a failed finalization, and the run is not Succeeded.
+    let toolset = Arc::new(
+        ScriptedToolset::default()
+            .with_assets({
+                let last_published = last_published.clone();
+                move |_, _, _| {
+                    assert_eq!(last_published(), Some(RunPhase::ProcessingAssets));
+                    Ok(AssetExecutionResult::success(MutationState::None))
+                }
+            })
+            .with_finalization(move |_, recorder, _| {
+                assert_eq!(last_published(), Some(RunPhase::ArchiveFinalization));
+                record_finalization_result(recorder, ArchiveFinalizationResult::default(), None)
+            }),
+    );
     let mut cleanup = CountingCleanup::default();
 
-    let result = execute_with(
+    let result = run_with(
         &request(
             ExecutionMode::Apply,
             &root,
@@ -1320,19 +1294,19 @@ fn each_work_phase_is_published_before_its_work_starts() {
         ),
         &mut cleanup,
         Some(&sink),
-        Some(&*test_configuration()),
-        Some(&work),
+        Some(&scripted(&toolset)),
         &CancellationToken::new(),
     );
 
     assert_eq!(
         result.outcome(),
         RunOutcome::Succeeded,
-        "{:?}",
-        result.failures()
+        "{:?} {:?}",
+        result.failures(),
+        result.archive_finalization()
     );
     assert_eq!(result.asset_attempts().len(), 1);
-    assert_eq!(work.finalizations.load(Ordering::SeqCst), 1);
+    assert_eq!(toolset.finalizations(), 1);
     assert_eq!(*published.lock().unwrap(), RunPhase::SEQUENCE);
 }
 
@@ -1350,14 +1324,13 @@ fn a_preparing_diagnostic_survives_work_without_an_observer() {
         ModSelection::ChildModRoots(mods.clone()),
         vec![RequestedWork::NativeTextureOptimization],
     );
-    let work = ControlledWork::default();
+    let toolset = Arc::new(ScriptedToolset::default());
     let mut cleanup = CountingCleanup::default();
 
-    let result = execute(
+    let result = run(
         &request,
         &mut cleanup,
-        Some(&ignoring(&["ignored"])),
-        Some(&work),
+        Some(&ignoring(&["ignored"], &toolset)),
         &CancellationToken::new(),
     );
 
@@ -1422,18 +1395,15 @@ fn a_discovery_diagnostic_follows_the_attempt_and_can_cancel_finalization() {
                 _ => {}
             }
         });
-        let work = ControlledWork {
-            execute: Some(Box::new({
-                let order = order.clone();
-                move |_, _| {
-                    order.lock().unwrap().push("asset");
-                    Ok(AssetExecutionResult::success(MutationState::None))
-                }
-            })),
-            finalize: Some(Box::new(|| Ok(()))),
-            stage_temporary: true,
-            ..ControlledWork::default()
-        };
+        let staged = StagedTemporary::default();
+        let toolset = Arc::new(ScriptedToolset::default().with_assets({
+            let (order, staged) = (order.clone(), staged.clone());
+            move |_, mod_root, artifacts| {
+                staged.stage(mod_root, artifacts);
+                order.lock().unwrap().push("asset");
+                Ok(AssetExecutionResult::success(MutationState::None))
+            }
+        }));
         let request = RunRequest::new(
             "SkyrimSE",
             ExecutionMode::Apply,
@@ -1442,12 +1412,11 @@ fn a_discovery_diagnostic_follows_the_attempt_and_can_cancel_finalization() {
         );
         let mut cleanup = CountingCleanup::default();
 
-        let result = execute_with(
+        let result = run_with(
             &request,
             &mut cleanup,
             Some(&sink),
-            Some(&ignoring(&["ignored"])),
-            Some(&work),
+            Some(&ignoring(&["ignored"], &toolset)),
             &token,
         );
         std::fs::remove_dir(&link).unwrap();
@@ -1464,11 +1433,7 @@ fn a_discovery_diagnostic_follows_the_attempt_and_can_cancel_finalization() {
             "{row}"
         );
         assert_eq!(result.asset_attempts().len(), 1, "{row}");
-        assert_eq!(
-            work.finalizations.load(Ordering::SeqCst),
-            usize::from(!cancels),
-            "{row}"
-        );
+        assert_eq!(toolset.finalizations(), usize::from(!cancels), "{row}");
         assert_eq!(
             result.phase(RunPhase::ArchiveFinalization).is_none(),
             cancels,
@@ -1489,7 +1454,7 @@ fn a_discovery_diagnostic_follows_the_attempt_and_can_cancel_finalization() {
         );
         assert!(result.failures().is_empty(), "{row}");
         assert_eq!(cleanup.passes, 1, "{row}");
-        assert_temporary_removed(&work);
+        staged.assert_removed();
     }
 }
 
@@ -1524,20 +1489,20 @@ fn a_panicking_progress_observer_keeps_the_failed_attempt() {
                 }
             }
         });
-        let work = ControlledWork {
-            execute: Some(Box::new(|_, _| {
+        let staged = StagedTemporary::default();
+        let toolset = Arc::new(ScriptedToolset::default().with_assets({
+            let staged = staged.clone();
+            move |_, mod_root, artifacts| {
+                staged.stage(mod_root, artifacts);
                 Ok(AssetExecutionResult::failed(
                     AssetExecutionFailure::CommitFailed,
                     "controlled recoverable failure",
                 ))
-            })),
-            finalize: Some(Box::new(|| Ok(()))),
-            stage_temporary: true,
-            ..ControlledWork::default()
-        };
+            }
+        }));
         let mut cleanup = CountingCleanup::default();
 
-        let result = execute_with(
+        let result = run_with(
             &request(
                 ExecutionMode::Apply,
                 &root,
@@ -1545,8 +1510,7 @@ fn a_panicking_progress_observer_keeps_the_failed_attempt() {
             ),
             &mut cleanup,
             Some(&sink),
-            Some(&*test_configuration()),
-            Some(&work),
+            Some(&scripted(&toolset)),
             &token,
         );
 
@@ -1578,13 +1542,9 @@ fn a_panicking_progress_observer_keeps_the_failed_attempt() {
             1,
             "{row}"
         );
-        assert_eq!(
-            work.finalizations.load(Ordering::SeqCst),
-            usize::from(!cancels),
-            "{row}"
-        );
+        assert_eq!(toolset.finalizations(), usize::from(!cancels), "{row}");
         assert_eq!(cleanup.passes, 1, "{row}");
-        assert_temporary_removed(&work);
+        staged.assert_removed();
         assert_eq!(read(&root.join("asset.dds")), "original", "{row}");
     }
 }
@@ -1602,45 +1562,50 @@ fn mixed_asset_evidence_outlives_every_service() {
     let result = {
         let packed = output.clone();
         let failed_root = root.clone();
-        let work = ControlledWork {
-            execute: Some(Box::new(|asset, _| {
-                let path = asset.execution_path();
-                Ok(if path.ends_with("a.dds") {
-                    std::fs::write(path, "committed").unwrap();
-                    AssetExecutionResult::success(MutationState::Committed)
-                } else {
-                    AssetExecutionResult::failed(
-                        AssetExecutionFailure::LoadFailed,
-                        "controlled load failure",
-                    )
-                    .with_path(path)
-                    .with_operation("load_texture")
-                    .with_service_detail("raw detail")
-                })
-            })),
-            finalization: Some(Box::new(move || {
-                std::fs::write(&packed, "packed").unwrap();
-                ArchiveFinalizationResult {
-                    attempts: vec![
-                        finalization_attempt(&packed, &failed_root, MutationState::Committed),
-                        ArchiveFinalizationAttempt {
-                            failure: Some(ArchiveFinalizationFailure::WriteFailed),
-                            detail: "write detail".to_owned(),
-                            ..finalization_attempt(
-                                &failed_root.join("failed.bsa"),
-                                &failed_root,
-                                MutationState::None,
+        let staged = StagedTemporary::default();
+        let toolset = Arc::new(
+            ScriptedToolset::default()
+                .with_assets({
+                    let staged = staged.clone();
+                    move |asset, mod_root, artifacts| {
+                        staged.stage(mod_root, artifacts);
+                        let path = asset.execution_path();
+                        Ok(if path.ends_with("a.dds") {
+                            std::fs::write(path, "committed").unwrap();
+                            AssetExecutionResult::success(MutationState::Committed)
+                        } else {
+                            AssetExecutionResult::failed(
+                                AssetExecutionFailure::LoadFailed,
+                                "controlled load failure",
                             )
-                        },
-                    ],
-                    ..ArchiveFinalizationResult::default()
-                }
-            })),
-            stage_temporary: true,
-            ..ControlledWork::default()
-        };
+                            .with_path(path)
+                            .with_operation("load_texture")
+                            .with_service_detail("raw detail")
+                        })
+                    }
+                })
+                .with_finalization(move |_, recorder, _| {
+                    std::fs::write(&packed, "packed").unwrap();
+                    let result = ArchiveFinalizationResult {
+                        attempts: vec![
+                            finalization_attempt(&packed, &failed_root, MutationState::Committed),
+                            ArchiveFinalizationAttempt {
+                                failure: Some(ArchiveFinalizationFailure::WriteFailed),
+                                detail: "write detail".to_owned(),
+                                ..finalization_attempt(
+                                    &failed_root.join("failed.bsa"),
+                                    &failed_root,
+                                    MutationState::None,
+                                )
+                            },
+                        ],
+                        ..ArchiveFinalizationResult::default()
+                    };
+                    record_finalization_result(recorder, result, None)
+                }),
+        );
         let mut cleanup = CountingCleanup::default();
-        let result = execute(
+        let result = run(
             &request(
                 ExecutionMode::Apply,
                 &root,
@@ -1650,13 +1615,12 @@ fn mixed_asset_evidence_outlives_every_service() {
                 ],
             ),
             &mut cleanup,
-            Some(&*test_configuration()),
-            Some(&work),
+            Some(&scripted(&toolset)),
             &CancellationToken::new(),
         );
-        assert_eq!(work.finalizations.load(Ordering::SeqCst), 1);
+        assert_eq!(toolset.finalizations(), 1);
         assert_eq!(cleanup.passes, 1);
-        assert_temporary_removed(&work);
+        staged.assert_removed();
         result
     };
 
@@ -1748,10 +1712,13 @@ fn a_cancelled_finalization_keeps_its_committed_output() {
     let root = mod_root("finalization-cancelled", &[]);
     let output = root.join("committed.bsa");
     let (packed, packed_root) = (output.clone(), root.clone());
-    let work = ControlledWork {
-        finalization: Some(Box::new(move || {
+    let staged = StagedTemporary::default();
+    let toolset = Arc::new(ScriptedToolset::default().with_finalization({
+        let staged = staged.clone();
+        move |_, recorder, artifacts| {
+            staged.stage(&packed_root, artifacts);
             std::fs::write(&packed, "committed output").unwrap();
-            ArchiveFinalizationResult {
+            let result = ArchiveFinalizationResult {
                 attempts: vec![finalization_attempt(
                     &packed,
                     &packed_root,
@@ -1759,25 +1726,23 @@ fn a_cancelled_finalization_keeps_its_committed_output() {
                 )],
                 cancelled: true,
                 ..ArchiveFinalizationResult::default()
-            }
-        })),
-        stage_temporary: true,
-        ..ControlledWork::default()
-    };
+            };
+            record_finalization_result(recorder, result, None)
+        }
+    }));
     let mut cleanup = CountingCleanup::default();
-    let result = execute(
+    let result = run(
         &request(
             ExecutionMode::Apply,
             &root,
             &[RequestedWork::ArchiveCreation],
         ),
         &mut cleanup,
-        Some(&*test_configuration()),
-        Some(&work),
+        Some(&scripted(&toolset)),
         &CancellationToken::new(),
     );
 
-    assert_eq!(work.finalizations.load(Ordering::SeqCst), 1);
+    assert_eq!(toolset.finalizations(), 1);
     assert_eq!(cleanup.passes, 1);
     assert_eq!(result.outcome(), RunOutcome::Cancelled);
     assert_eq!(result.final_phase(), RunPhase::ArchiveFinalization);
@@ -1796,7 +1761,7 @@ fn a_cancelled_finalization_keeps_its_committed_output() {
         .unwrap();
     assert_eq!(progress.completed(), 1);
     assert!(result.cleanup_failures().is_empty());
-    assert_temporary_removed(&work);
+    staged.assert_removed();
     assert_eq!(read(&output), "committed output");
 }
 
@@ -1809,10 +1774,10 @@ fn a_committed_archive_without_its_loading_plugin_fails_the_run() {
     let source = root.join("textures/asset.dds");
     let output = root.join("packed.bsa");
     let (packed, packed_root) = (output.clone(), root.clone());
-    let work = ControlledWork {
-        finalization: Some(Box::new(move || {
+    let toolset = Arc::new(
+        ScriptedToolset::default().with_finalization(move |_, recorder, _| {
             std::fs::write(&packed, "committed Archive").unwrap();
-            ArchiveFinalizationResult {
+            let result = ArchiveFinalizationResult {
                 attempts: vec![ArchiveFinalizationAttempt {
                     failure: Some(ArchiveFinalizationFailure::PluginCreationFailed),
                     safe_to_continue: false,
@@ -1821,20 +1786,19 @@ fn a_committed_archive_without_its_loading_plugin_fails_the_run() {
                 }],
                 safe_to_continue: false,
                 ..ArchiveFinalizationResult::default()
-            }
-        })),
-        ..ControlledWork::default()
-    };
+            };
+            record_finalization_result(recorder, result, None)
+        }),
+    );
     let mut cleanup = CountingCleanup::default();
-    let result = execute(
+    let result = run(
         &request(
             ExecutionMode::Apply,
             &root,
             &[RequestedWork::ArchiveCreation],
         ),
         &mut cleanup,
-        Some(&*test_configuration()),
-        Some(&work),
+        Some(&scripted(&toolset)),
         &CancellationToken::new(),
     );
 
@@ -1863,42 +1827,38 @@ fn an_unsafe_attempt_cancelled_mid_flight_fails_and_leaves_pending_work_untouche
     std::fs::write(root.join("a.dds"), "original").unwrap();
     std::fs::write(root.join("b.dds"), "unattempted").unwrap();
     let token = CancellationToken::new();
-    let work = ControlledWork {
-        execute: Some(Box::new({
-            let token = token.clone();
-            move |asset, _| {
-                token.cancel();
-                std::fs::write(asset.execution_path(), "finished atomic attempt").unwrap();
-                Ok(AssetExecutionResult::failed(
-                    AssetExecutionFailure::CommitFailed,
-                    "publication left the output unknown",
-                )
-                .with_mutation(MutationState::PartialOrUnknown)
-                .with_safe_to_continue(false))
-            }
-        })),
-        finalize: Some(Box::new(|| Ok(()))),
-        stage_temporary: true,
-        ..ControlledWork::default()
-    };
+    let staged = StagedTemporary::default();
+    let toolset = Arc::new(ScriptedToolset::default().with_assets({
+        let (token, staged) = (token.clone(), staged.clone());
+        move |asset, mod_root, artifacts| {
+            staged.stage(mod_root, artifacts);
+            token.cancel();
+            std::fs::write(asset.execution_path(), "finished atomic attempt").unwrap();
+            Ok(AssetExecutionResult::failed(
+                AssetExecutionFailure::CommitFailed,
+                "publication left the output unknown",
+            )
+            .with_mutation(MutationState::PartialOrUnknown)
+            .with_safe_to_continue(false))
+        }
+    }));
     let mut cleanup = CountingCleanup::default();
 
-    let result = execute(
+    let result = run(
         &request(
             ExecutionMode::Apply,
             &root,
             &[RequestedWork::NativeTextureOptimization],
         ),
         &mut cleanup,
-        Some(&*test_configuration()),
-        Some(&work),
+        Some(&scripted(&toolset)),
         &token,
     );
 
     assert_eq!(result.outcome(), RunOutcome::Failed);
     assert!(result.cancellation_observed());
     assert_eq!(result.asset_attempts().len(), 1);
-    assert_eq!(work.finalizations.load(Ordering::SeqCst), 0);
+    assert_eq!(toolset.finalizations(), 0);
     assert_eq!(result.routing_ledger().unwrap().routed_assets().len(), 2);
     let attempt = &result.asset_attempts()[0];
     assert_eq!(attempt.mod_root, root);
@@ -1914,50 +1874,46 @@ fn an_unsafe_attempt_cancelled_mid_flight_fails_and_leaves_pending_work_untouche
     );
     assert!(result.phase(RunPhase::ArchiveFinalization).is_none());
     assert_eq!(cleanup.passes, 1);
-    assert_temporary_removed(&work);
+    staged.assert_removed();
     assert_eq!(read(&root.join("a.dds")), "finished atomic attempt");
     assert_eq!(read(&root.join("b.dds")), "unattempted");
 }
 
-/// Origin: RunExecutorTests::discoveryDiagnosticsSurviveInterruption, without
-/// its Archive: a linked entry diagnosed by the Archive pass is retained when
-/// the definitive discovery pass then fails, and no routing is invented.
+/// Origin: RunExecutorTests::discoveryDiagnosticsSurviveInterruption: a
+/// linked entry diagnosed by the Archive pass is retained when discovery then
+/// fails, and no routing is invented. The later failure is a panicking
+/// capacity probe during the Capacity Check, the one Toolset port discovery
+/// calls after the Archive pass, so the run selects an Archive; nothing holds
+/// the run's registry that early, so no temporary is staged.
 #[test]
 fn a_discovery_diagnostic_survives_a_failure_later_in_discovery() {
     let root = mod_root("diagnostic-survives-failure", &["textures/asset.dds"]);
+    write_archive(
+        &root.join("content.bsa"),
+        &[entry("textures/archived.dds", b"archived")],
+    );
     let outside = canonical(&scratch_dir("executor/diagnostic-survives-failure-outside"));
     let link = root.join("linked");
     common::junction(&link, &outside);
-    let definitive = Arc::new(AtomicBool::new(false));
-    let work = ControlledWork {
-        report_phase: Some(Box::new({
-            let definitive = definitive.clone();
-            move |record| {
-                if record.phase() == RunPhase::BuildingEffectiveAssetTree {
-                    definitive.store(true, Ordering::SeqCst);
-                }
-            }
-        })),
-        is_cancelled: Some(Box::new(move || {
-            if definitive.load(Ordering::SeqCst) {
-                panic!("the definitive discovery pass failed");
-            }
-            false
-        })),
-        stage_temporary: true,
-        ..ControlledWork::default()
-    };
+    let toolset = Arc::new(ScriptedToolset {
+        capacity: Arc::new(FakeCapacity(Some(Box::new(|_| {
+            panic!("the Capacity Check failed")
+        })))),
+        ..ScriptedToolset::default()
+    });
     let mut cleanup = CountingCleanup::default();
 
-    let result = execute(
+    let result = run(
         &request(
             ExecutionMode::Apply,
             &root,
-            &[RequestedWork::NativeTextureOptimization],
+            &[
+                RequestedWork::NativeTextureOptimization,
+                RequestedWork::ArchiveExtraction,
+            ],
         ),
         &mut cleanup,
-        Some(&*test_configuration()),
-        Some(&work),
+        Some(&scripted(&toolset)),
         &CancellationToken::new(),
     );
     std::fs::remove_dir(&link).unwrap();
@@ -1965,6 +1921,13 @@ fn a_discovery_diagnostic_survives_a_failure_later_in_discovery() {
     assert_eq!(result.outcome(), RunOutcome::Failed);
     assert_eq!(result.failures().len(), 1);
     assert_eq!(result.failures()[0].code, RunFailureCode::WorkServiceFailed);
+    assert!(
+        result.failures()[0]
+            .detail
+            .contains("the Capacity Check failed"),
+        "{:?}",
+        result.failures()
+    );
     assert_eq!(result.diagnostics().len(), 1);
     assert_eq!(
         result.diagnostics()[0].code,
@@ -1972,39 +1935,36 @@ fn a_discovery_diagnostic_survives_a_failure_later_in_discovery() {
     );
     assert_eq!(result.diagnostics()[0].path, link);
     assert!(result.routing_ledger().is_none());
+    assert!(toolset.extracted().is_empty());
     assert!(result.phase(RunPhase::ArchiveFinalization).is_none());
     assert_eq!(cleanup.passes, 1);
-    assert_temporary_removed(&work);
 }
 
 /// Origin: RunExecutorTests::workPreparationFailurePreservesStaleArtifacts.
-/// Work configuration that fails during Preparing stops the run before
-/// staging recovery: the crashed run's leftover is kept, work never starts,
-/// and Safety Cleanup still runs once.
+/// Work configuration is read with the Run Configuration, in the same
+/// profile read that builds the Run Toolset, so work configuration that
+/// fails during Preparing fails that read and stops the run before staging
+/// recovery: the crashed run's leftover is kept, no Toolset exists for work
+/// to start through, and Safety Cleanup still runs once.
 #[test]
 fn a_failing_work_configuration_leaves_stale_staging_untouched() {
     let root = mod_root("work-preparation-failure", &["textures/a.dds"]);
     let leftover = common::crashed_run_leftover(&root, "textures/a.dds");
-    let work = ControlledWork {
-        prepare: Some(Box::new(|| {
-            Err(Error::ConfigurationLoading(
-                "FilesToNotPack.txt is unreadable".to_owned(),
-            ))
-        })),
-        stage_temporary: true,
-        ..ControlledWork::default()
-    };
+    let provider = CallbackConfiguration(Box::new(|_| {
+        Err(Error::ConfigurationLoading(
+            "FilesToNotPack.txt is unreadable".to_owned(),
+        ))
+    }));
     let mut cleanup = CountingCleanup::default();
 
-    let result = execute(
+    let result = run(
         &request(
             ExecutionMode::Apply,
             &root,
             &[RequestedWork::NativeTextureOptimization],
         ),
         &mut cleanup,
-        Some(&*test_configuration()),
-        Some(&work),
+        Some(&provider),
         &CancellationToken::new(),
     );
 
@@ -2014,7 +1974,10 @@ fn a_failing_work_configuration_leaves_stale_staging_untouched() {
         result.failures()[0].code,
         RunFailureCode::ConfigurationLoadingFailed
     );
-    assert!(work.staged_temporary().is_none(), "work never started");
+    assert_eq!(
+        result.failures()[0].detail,
+        "FilesToNotPack.txt is unreadable"
+    );
     assert!(result.preparation().is_none());
     assert_eq!(read(&leftover), "partial output");
     assert_eq!(cleanup.passes, 1);
@@ -2023,48 +1986,42 @@ fn a_failing_work_configuration_leaves_stale_staging_untouched() {
 /// Origin: RunExecutorTests::workArtifactsShareRecoveryAndAreCleanedAfterFailure
 /// (both rows). Stale staging is recovered before work, the run's own staging
 /// shares the same area, the committed Asset survives, and the run's
-/// temporaries are cleaned once whether or not the work later panics.
+/// temporaries are cleaned once whether or not the work later fails. The
+/// later failure is the Archive Finalization port failing after the commit.
 #[test]
 fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
     for fails in [false, true] {
         let row = if fails {
-            "panic after commit"
+            "failure after commit"
         } else {
             "completed"
         };
         let root = mod_root(&format!("shared-recovery-{fails}"), &["texture.dds"]);
         let leftover = common::crashed_run_leftover(&root, "texture.dds");
-        let committed = Arc::new(AtomicBool::new(false));
-        let work = ControlledWork {
-            execute: Some(Box::new({
-                let committed = committed.clone();
-                move |asset, _| {
-                    std::fs::write(asset.execution_path(), "committed asset").unwrap();
-                    committed.store(true, Ordering::SeqCst);
-                    Ok(AssetExecutionResult::success(MutationState::Committed))
-                }
-            })),
-            is_cancelled: Some(Box::new(move || {
-                if fails && committed.load(Ordering::SeqCst) {
-                    panic!("orchestration failed after the commit");
-                }
-                false
-            })),
-            finalize: Some(Box::new(|| Ok(()))),
-            stage_temporary: true,
-            ..ControlledWork::default()
-        };
+        let staged = StagedTemporary::default();
+        let toolset = ScriptedToolset::default().with_assets({
+            let staged = staged.clone();
+            move |asset, mod_root, artifacts| {
+                staged.stage(mod_root, artifacts);
+                std::fs::write(asset.execution_path(), "committed asset").unwrap();
+                Ok(AssetExecutionResult::success(MutationState::Committed))
+            }
+        });
+        let toolset = Arc::new(if fails {
+            toolset.with_finalization_error("orchestration failed after the commit")
+        } else {
+            toolset
+        });
         let mut cleanup = CountingCleanup::default();
 
-        let result = execute(
+        let result = run(
             &request(
                 ExecutionMode::Apply,
                 &root,
                 &[RequestedWork::NativeTextureOptimization],
             ),
             &mut cleanup,
-            Some(&*test_configuration()),
-            Some(&work),
+            Some(&scripted(&toolset)),
             &CancellationToken::new(),
         );
 
@@ -2087,19 +2044,14 @@ fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
             Some(RunProgress::determinate(1, 1, 0)),
             "{row}"
         );
-        assert_eq!(
-            work.finalizations.load(Ordering::SeqCst),
-            usize::from(!fails),
-            "{row}"
-        );
-        assert_eq!(
+        assert_eq!(toolset.finalizations(), 1, "{row}");
+        assert!(
             result.phase(RunPhase::ArchiveFinalization).is_some(),
-            !fails,
             "{row}"
         );
         assert_eq!(result.mutation_summaries().len(), 1, "{row}");
         assert_eq!(result.mutation_summaries()[0].committed, 1, "{row}");
-        assert_temporary_removed(&work);
+        staged.assert_removed();
         assert!(!leftover.exists(), "{row}: the stale sibling was recovered");
         assert_eq!(read(&root.join("texture.dds")), "committed asset", "{row}");
         assert_eq!(cleanup.passes, 1, "{row}");
@@ -2125,7 +2077,7 @@ fn a_fatal_preparing_failure_stays_failed_when_cleanup_cancels() {
         ..ScriptedCleanup::default()
     };
 
-    let result = execute_with(&no_work_request(), &mut cleanup, None, None, None, &token);
+    let result = run_with(&no_work_request(), &mut cleanup, None, None, &token);
 
     assert_eq!(result.outcome(), RunOutcome::Failed);
     assert!(result.cancellation_observed());
@@ -2157,12 +2109,11 @@ fn a_panicking_cleanup_service_never_replaces_cancellation() {
             ..ScriptedCleanup::default()
         };
 
-        let result = execute_with(
+        let result = run_with(
             &no_work_request(),
             &mut cleanup,
             None,
             Some(&*test_configuration()),
-            None,
             &token,
         );
 
@@ -2187,12 +2138,11 @@ fn a_panicking_cleanup_service_fails_the_run() {
         ..ScriptedCleanup::default()
     };
 
-    let result = execute_with(
+    let result = run_with(
         &no_work_request(),
         &mut cleanup,
         None,
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
 
@@ -2218,7 +2168,9 @@ enum WorkFact {
 /// Origin: RunExecutorTests::terminalPrecedenceRetainsAllEvidence (all
 /// sixteen cases). Unsafe work and fatal failures are Failed whatever else
 /// happened; otherwise cancellation is Cancelled; otherwise a contained or
-/// cleanup failure completes with failures. Every fact is retained.
+/// cleanup failure completes with failures. Every fact is retained. The runs
+/// are Apply: the fatal failure is the Archive Finalization port failing,
+/// and Dry Run never calls it.
 #[test]
 fn terminal_precedence_classifies_every_combination_and_keeps_every_fact() {
     use RunOutcome::{Cancelled, CompletedWithFailures, Failed, Succeeded};
@@ -2246,26 +2198,23 @@ fn terminal_precedence_classifies_every_combination_and_keeps_every_fact() {
             let (cleanup_fails, cancelled) = (index % 2 == 1, index >= 2);
             let case = format!("{fact:?}, cleanup failure {cleanup_fails}, cancelled {cancelled}");
             let token = CancellationToken::new();
-            let work = ControlledWork {
-                execute: Some(Box::new(move |_, _| {
-                    Ok(match fact {
-                        WorkFact::ContainedFailure => AssetExecutionResult::failed(
-                            AssetExecutionFailure::LoadFailed,
-                            "contained",
-                        ),
-                        WorkFact::UnsafeMutation => AssetExecutionResult::failed(
-                            AssetExecutionFailure::CommitFailed,
-                            "unknown",
-                        )
-                        .with_mutation(MutationState::PartialOrUnknown),
-                        _ => AssetExecutionResult::success(MutationState::None),
-                    })
-                })),
-                is_cancelled: (fact == WorkFact::FatalFailure).then(|| {
-                    Box::new(|| -> bool { panic!("fatal work failure") }) as common::Hook<bool>
-                }),
-                ..ControlledWork::default()
-            };
+            let toolset = ScriptedToolset::default().with_assets(move |_, _, _| {
+                Ok(match fact {
+                    WorkFact::ContainedFailure => {
+                        AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed, "contained")
+                    }
+                    WorkFact::UnsafeMutation => {
+                        AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed, "unknown")
+                            .with_mutation(MutationState::PartialOrUnknown)
+                    }
+                    _ => AssetExecutionResult::success(MutationState::None),
+                })
+            });
+            let toolset = Arc::new(if fact == WorkFact::FatalFailure {
+                toolset.with_finalization_error("fatal work failure")
+            } else {
+                toolset
+            });
             let mut cleanup = ScriptedCleanup {
                 cancels: cancelled.then(|| token.clone()),
                 failures: if cleanup_fails {
@@ -2280,16 +2229,15 @@ fn terminal_precedence_classifies_every_combination_and_keeps_every_fact() {
                 ..ScriptedCleanup::default()
             };
 
-            let result = execute_with(
+            let result = run_with(
                 &request(
-                    ExecutionMode::DryRun,
+                    ExecutionMode::Apply,
                     &root,
                     &[RequestedWork::NativeTextureOptimization],
                 ),
                 &mut cleanup,
                 None,
-                Some(&*test_configuration()),
-                Some(&work),
+                Some(&scripted(&toolset)),
                 &token,
             );
 
@@ -2333,11 +2281,10 @@ fn a_failed_staging_recovery_still_performs_safety_cleanup() {
     std::fs::set_permissions(&leftover, permissions.clone()).unwrap();
     let mut cleanup = CountingCleanup::default();
 
-    let result = execute(
+    let result = run(
         &request(ExecutionMode::Apply, &root, &[]),
         &mut cleanup,
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
     // Restored before asserting, so a failing assertion cannot leave a
@@ -2369,11 +2316,10 @@ fn active_staging_blocks_apply_until_its_owner_exits() {
     let owner = cao_winfs::OwnerLock::open_existing(&root.join(".cao-staging/owner.lock")).unwrap();
     let request = request(ExecutionMode::Apply, &root, &[]);
 
-    let blocked = execute(
+    let blocked = run(
         &request,
         &mut CountingCleanup::default(),
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
     assert_eq!(blocked.outcome(), RunOutcome::Failed);
@@ -2381,11 +2327,10 @@ fn active_staging_blocks_apply_until_its_owner_exits() {
     drop(owner);
     assert_eq!(common::snapshot_tree(&root), before);
 
-    let recovered = execute(
+    let recovered = run(
         &request,
         &mut CountingCleanup::default(),
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
     assert_eq!(
@@ -2406,11 +2351,10 @@ struct NestedRunCleanup {
 
 impl SafetyCleanupService for NestedRunCleanup {
     fn perform_safety_cleanup(&mut self) -> Result<Vec<RunFailure>, Error> {
-        let nested = execute(
+        let nested = run(
             &self.request,
             &mut CountingCleanup::default(),
             Some(&*test_configuration()),
-            None,
             &CancellationToken::new(),
         );
         self.blocked = Some(
@@ -2436,12 +2380,11 @@ fn the_recovery_lock_is_held_through_safety_cleanup() {
         blocked: None,
     };
 
-    let result = execute_with(
+    let result = run_with(
         &request,
         &mut cleanup,
         None,
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
 
@@ -2452,11 +2395,10 @@ fn the_recovery_lock_is_held_through_safety_cleanup() {
         result.failures()
     );
     assert_eq!(cleanup.blocked, Some(true));
-    let next = execute(
+    let next = run(
         &request,
         &mut CountingCleanup::default(),
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
     assert_eq!(next.outcome(), RunOutcome::Succeeded);
@@ -2482,12 +2424,11 @@ fn verified_stale_staging_is_recovered_before_the_first_work_phase() {
     });
     let mut cleanup = CountingCleanup::default();
 
-    let result = execute_with(
+    let result = run_with(
         &request(ExecutionMode::Apply, &root, &[]),
         &mut cleanup,
         Some(&sink),
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
 
@@ -2509,11 +2450,10 @@ fn an_unowned_staging_directory_blocks_apply_and_is_untouched() {
     std::fs::write(&user, "retain me").unwrap();
     let mut cleanup = CountingCleanup::default();
 
-    let result = execute(
+    let result = run(
         &request(ExecutionMode::Apply, &root, &[]),
         &mut cleanup,
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
 
@@ -2558,11 +2498,10 @@ fn preparing_retains_the_resolved_root_and_policy() {
     );
     let mut cleanup = CountingCleanup::default();
 
-    let result = execute(
+    let result = run(
         &request,
         &mut cleanup,
         Some(&provider),
-        None,
         &CancellationToken::new(),
     );
 
@@ -2595,11 +2534,10 @@ fn an_ambiguous_archive_extension_fails_preparing_before_any_work_phase() {
     }));
     let mut cleanup = CountingCleanup::default();
 
-    let result = execute(
+    let result = run(
         &no_work_request(),
         &mut cleanup,
         Some(&provider),
-        None,
         &CancellationToken::new(),
     );
 
@@ -2629,11 +2567,10 @@ fn explicit_archive_precedence_is_retained_through_preparing() {
     order.clear();
     let mut cleanup = CountingCleanup::default();
 
-    let result = execute(
+    let result = run(
         &request,
         &mut cleanup,
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
 
@@ -2649,7 +2586,7 @@ fn explicit_archive_precedence_is_retained_through_preparing() {
 }
 
 /// Origin: RunExecutorTests::preparingDoesNotMutateAssetsOrArchives (both
-/// modes). Requested work without a work service fails Preparing, and the
+/// modes). Requested work without a Run Toolset fails Preparing, and the
 /// Assets, Archives and directory listing are untouched, mtimes included.
 #[test]
 fn a_failed_preparing_mutates_no_asset_or_archive() {
@@ -2667,7 +2604,7 @@ fn a_failed_preparing_mutates_no_asset_or_archive() {
         let before = (modified("asset.dds"), modified("source.bsa"));
         let mut cleanup = CountingCleanup::default();
 
-        let result = execute(
+        let result = run(
             &request(
                 mode,
                 &root,
@@ -2678,7 +2615,6 @@ fn a_failed_preparing_mutates_no_asset_or_archive() {
             ),
             &mut cleanup,
             Some(&*test_configuration()),
-            None,
             &CancellationToken::new(),
         );
 
@@ -2704,7 +2640,7 @@ fn a_failed_preparing_mutates_no_asset_or_archive() {
 #[test]
 fn a_run_stopped_in_preparing_records_only_the_phases_it_traversed() {
     let mut cleanup = CountingCleanup::default();
-    let result = execute(
+    let result = run(
         &request(
             ExecutionMode::Apply,
             &common::test_mod_root(),
@@ -2712,7 +2648,6 @@ fn a_run_stopped_in_preparing_records_only_the_phases_it_traversed() {
         ),
         &mut cleanup,
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
 
@@ -2769,12 +2704,11 @@ fn registered_artifacts_are_cleaned_and_committed_output_survives() {
     std::fs::write(root.join("output.bin"), "output").unwrap();
     registry.commit(output).unwrap();
 
-    let result = execute_with(
+    let result = run_with(
         &no_work_request(),
         &mut registry,
         None,
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
 
@@ -2804,12 +2738,11 @@ fn cleanup_failures_are_aggregated_without_deleting_retained_material() {
     std::fs::write(root.join("staging/backup.bsa"), "backup").unwrap();
     std::fs::write(root.join("evidence/failed.bin"), "failed output").unwrap();
 
-    let result = execute_with(
+    let result = run_with(
         &no_work_request(),
         &mut registry,
         None,
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
 
@@ -2861,14 +2794,7 @@ fn registered_artifacts_are_cleaned_on_every_terminal_path() {
         let provider: Option<&dyn RunConfigurationProvider> =
             (expected != RunOutcome::Failed).then_some(&*configuration);
 
-        let result = execute_with(
-            &no_work_request(),
-            &mut registry,
-            None,
-            provider,
-            None,
-            &token,
-        );
+        let result = run_with(&no_work_request(), &mut registry, None, provider, &token);
 
         assert_eq!(result.outcome(), expected);
         assert!(result.cleanup_failures().is_empty(), "{expected:?}");
@@ -2912,12 +2838,11 @@ fn a_cleanup_failure_never_replaces_the_primary_outcome() {
         let configuration = test_configuration();
         let provider: Option<&dyn RunConfigurationProvider> = (!fatal).then_some(&*configuration);
 
-        let result = execute_with(
+        let result = run_with(
             &no_work_request(),
             &mut registry,
             Some(&sink),
             provider,
-            None,
             &token,
         );
 
@@ -2974,12 +2899,11 @@ fn artifact_registration_rejects_paths_it_cannot_own() {
         "a committed path"
     );
 
-    let result = execute_with(
+    let result = run_with(
         &no_work_request(),
         &mut registry,
         None,
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
 
@@ -3003,12 +2927,11 @@ fn cleanup_does_not_follow_a_replaced_parent() {
         .unwrap();
     common::junction(&staging, &root.join("unrelated"));
 
-    let result = execute_with(
+    let result = run_with(
         &no_work_request(),
         &mut registry,
         None,
         Some(&*test_configuration()),
-        None,
         &CancellationToken::new(),
     );
 
@@ -3030,6 +2953,11 @@ fn cleanup_does_not_follow_a_replaced_parent() {
 /// recorded, routing exists only once its pass completed, no Asset is
 /// attempted after the milestone, Archive Finalization never runs, and
 /// Safety Cleanup still removes what the run staged.
+///
+/// Each milestone is observed as its phase record reaches the run's sink.
+/// The run's one Archive is extracted by a scripted port that stages a
+/// temporary, so every row from the definitive pass on proves its removal;
+/// the earlier rows stop before any port has held the run's registry.
 #[test]
 fn cancelling_at_each_work_milestone_stops_at_that_phase() {
     let milestones = [
@@ -3041,31 +2969,45 @@ fn cancelling_at_each_work_milestone_stops_at_that_phase() {
     ];
     for milestone in milestones {
         let root = mod_root(&format!("milestone-{milestone:?}"), &["textures/a.dds"]);
+        write_archive(
+            &root.join("content.bsa"),
+            &[entry("meshes/archived.nif", b"archived")],
+        );
         let token = CancellationToken::new();
-        let work = ControlledWork {
-            report_phase: Some(Box::new({
-                let token = token.clone();
-                move |record| {
-                    if record.phase() == milestone {
-                        token.cancel();
-                    }
+        let sink = RecordingSink::with_hook({
+            let token = token.clone();
+            move |observed| {
+                if let Observed::Phase(record) = observed
+                    && record.phase() == milestone
+                {
+                    token.cancel();
                 }
-            })),
-            finalize: Some(Box::new(|| Ok(()))),
-            stage_temporary: true,
-            ..ControlledWork::default()
-        };
+            }
+        });
+        let staged = StagedTemporary::default();
+        // Extraction stages and succeeds without publishing, so the tree
+        // the definitive pass routes is the loose one.
+        let toolset = Arc::new(ScriptedToolset::default().with_extraction({
+            let staged = staged.clone();
+            move |plan, artifacts| {
+                staged.stage(&plan.mod_root, artifacts);
+                ArchiveExtractionResult::new(plan)
+            }
+        }));
         let mut cleanup = CountingCleanup::default();
 
-        let result = execute(
+        let result = run_with(
             &request(
                 ExecutionMode::Apply,
                 &root,
-                &[RequestedWork::NativeTextureOptimization],
+                &[
+                    RequestedWork::NativeTextureOptimization,
+                    RequestedWork::ArchiveExtraction,
+                ],
             ),
             &mut cleanup,
-            Some(&*test_configuration()),
-            Some(&work),
+            Some(&sink),
+            Some(&scripted(&toolset)),
             &token,
         );
 
@@ -3081,18 +3023,25 @@ fn cancelling_at_each_work_milestone_stops_at_that_phase() {
         );
         // Only Archive Finalization follows the Asset attempts.
         assert_eq!(
-            work.executions.load(Ordering::SeqCst),
+            toolset.attempted().len(),
             usize::from(milestone == RunPhase::ArchiveFinalization),
             "{milestone:?}"
         );
+        // Only the definitive pass and later follow extraction.
+        let extracted = milestone >= RunPhase::BuildingEffectiveAssetTree;
         assert_eq!(
-            work.finalizations.load(Ordering::SeqCst),
-            0,
+            toolset.extracted().len(),
+            usize::from(extracted),
             "{milestone:?}"
         );
+        assert_eq!(toolset.finalizations(), 0, "{milestone:?}");
         assert!(result.failures().is_empty(), "{milestone:?}");
         assert_eq!(cleanup.passes, 1, "{milestone:?}");
-        assert_temporary_removed(&work);
+        if extracted {
+            staged.assert_removed();
+        } else {
+            assert!(staged.path().is_none(), "{milestone:?}");
+        }
         assert_eq!(read(&root.join("textures/a.dds")), "textures/a.dds");
     }
 }
