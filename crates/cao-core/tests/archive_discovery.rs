@@ -39,10 +39,12 @@ use cao_core::run::{
     RunFailureCode, RunObservationSink, RunOutcome, RunPhase, RunRequest, RunServices,
     create_run_id,
 };
+use cao_core::test_support::{
+    CountingCleanup, FakeEntry, FakeVolumes, Observed, RecordingSink, entry, write_archive,
+};
 use common::{
-    ArchiveFakes, ControlledWork, CountingCleanup, FakeEntry, FakeVolumes, Observed, RecordingSink,
-    canonical, entry, junction, request, scratch_dir, snapshot_tree, test_configuration,
-    write_archive, write_tree,
+    ArchiveFakes, ControlledWork, canonical, junction, request, scratch_dir, snapshot_tree,
+    test_configuration, write_tree,
 };
 
 /// The Apply request over native Textures and Archive extraction.

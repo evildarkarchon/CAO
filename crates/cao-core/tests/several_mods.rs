@@ -17,9 +17,10 @@ use cao_core::run::{
     RunConfiguration, RunDiagnosticCode, RunEventPayload, RunFailureCode, RunHandle, RunOutcome,
     RunPhase, RunRequest, RunSnapshot, RunWorkService,
 };
+use cao_core::test_support::{EventLog, FixedConfiguration, GatedScheduler};
 use common::{
-    BackendWork, EventLog, FixedConfiguration, GatedScheduler, HandleSlot, canonical, junction,
-    reclaim, scratch_dir, serial, sse_profile, write_tree,
+    BackendWork, HandleSlot, canonical, junction, reclaim, scratch_dir, serial, sse_profile,
+    write_tree,
 };
 
 /// A provider for the SSE-like profile with the given Mod Exclusion lists.

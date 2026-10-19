@@ -51,9 +51,12 @@ use cao_core::run::{
     RunServices, RunWorkEvidence, RunWorkMilestones, RunWorkService, SafetyCleanupService,
     SelectedProfileFacts, TemporaryArtifactRegistry, create_run_id,
 };
+use cao_core::test_support::{
+    CallbackConfiguration, CountingCleanup, FixedConfiguration, Observed, RecordingSink,
+    ScriptedCleanup,
+};
 use common::{
-    CallbackConfiguration, ControlledWork, CountingCleanup, FixedConfiguration, Observed,
-    RecordingSink, ScriptedCleanup, ScriptedWork, canonical, no_work_request, request, scratch_dir,
+    ControlledWork, ScriptedWork, canonical, no_work_request, request, scratch_dir,
     test_configuration,
 };
 

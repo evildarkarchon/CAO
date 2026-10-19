@@ -50,7 +50,8 @@ use cao_core::run::{
     RunWorkMilestones, RunWorkService, TemporaryArtifactRegistry, create_run_id, execute_asset_run,
     is_staging_name,
 };
-use common::{CountingCleanup, canonical, scratch_dir, test_configuration};
+use cao_core::test_support::CountingCleanup;
+use common::{canonical, scratch_dir, test_configuration};
 
 /// Every capability a routed scenario needs.
 const CAPABILITIES: &[ProfileCapability] = &[

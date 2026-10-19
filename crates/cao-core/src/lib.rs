@@ -14,10 +14,16 @@
 //! keeps its domain records (`StartError`, `RunFailure`, `OperationFailure`
 //! state, `RunOutcome`) as plain data. [`Error`] is the crate's error type for
 //! the places where C++ threw.
+//!
+//! The `test-support` feature adds `test_support`, the fakes of these seams
+//! that the run scenarios of this crate, `cao-optimizers` and `cao-gui`
+//! share. Enable it only from `[dev-dependencies]`.
 
 mod error;
 pub mod execution;
 pub mod routing;
 pub mod run;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 
 pub use error::Error;

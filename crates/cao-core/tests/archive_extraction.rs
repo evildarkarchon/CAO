@@ -22,9 +22,8 @@ use cao_core::run::{
     ArchiveExtractionFailure, ArchiveExtractionPlan, ArchiveExtractor, TemporaryArtifactRegistry,
     create_run_id,
 };
-use common::{
-    FakeArchiveReader, FakeCapacity, canonical, entry, junction, scratch_dir, write_archive,
-};
+use cao_core::test_support::{FakeArchiveReader, FakeCapacity, entry, write_archive};
+use common::{canonical, junction, scratch_dir};
 
 /// A plan that publishes every one of `entries` from `archive`.
 fn plan(archive: &Path, root: &Path, entries: &[&str]) -> ArchiveExtractionPlan {

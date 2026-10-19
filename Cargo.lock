@@ -672,6 +672,7 @@ dependencies = [
 name = "cao-core"
 version = "0.1.0"
 dependencies = [
+ "cao-core",
  "cao-winfs",
  "getrandom 0.3.4",
  "log",

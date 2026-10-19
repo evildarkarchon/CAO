@@ -52,9 +52,10 @@ use cao_core::run::{
     RunPhase, RunPhaseRecord, RunPhaseStatus, RunPreparation, RunProgress, RunRequest,
     RunWorkEvidence, RunWorkMilestones, RunWorkService, TemporaryArtifactRegistry,
 };
+use cao_core::test_support::{EventLog, GatedScheduler};
 use common::{
-    BackendWork, ControlledWork, EventLog, GatedScheduler, HandleSlot, ScriptedWork, canonical,
-    junction, reclaim, request, scratch_dir, serial, snapshot_tree, test_configuration, write_tree,
+    BackendWork, ControlledWork, HandleSlot, ScriptedWork, canonical, junction, reclaim, request,
+    scratch_dir, serial, snapshot_tree, test_configuration, write_tree,
 };
 
 /// Runs one request to its terminal result on the inline scheduler.

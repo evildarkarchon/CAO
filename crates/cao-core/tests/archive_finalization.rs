@@ -43,10 +43,10 @@ use cao_core::run::{
     RunDiagnostic, RunEvidence, RunFailure, RunObservationSink, RunPhase, RunPhaseRecord,
     RunPreparation, RunProgress, RunWorkEvidence, TemporaryArtifactRegistry, create_run_id,
 };
-use common::{
-    FakeArchivePacker, FakeArchiveReader, FakeCapacity, FakeVolumes, archives_in, canonical,
-    fake_dummy_plugin, junction, scratch_dir, sse_profile,
+use cao_core::test_support::{
+    FakeArchivePacker, FakeArchiveReader, FakeCapacity, FakeVolumes, fake_dummy_plugin,
 };
+use common::{archives_in, canonical, junction, scratch_dir, sse_profile};
 
 /// More bytes than any scenario needs.
 const UNLIMITED: u64 = u64::MAX;

@@ -32,7 +32,7 @@ use cao_core::run::{
     PhaseSkipReason, RunConfiguration, RunDiagnostic, RunDiagnosticCode, RunEvidence, RunFailure,
     RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunProgress, SelectedProfileFacts,
 };
-use common::{Observed, RecordingSink};
+use cao_core::test_support::{Observed, RecordingSink};
 
 /// The preparation of a Dry Run with no work, as Preparing would retain it.
 fn successful_preparation() -> RunPreparation {

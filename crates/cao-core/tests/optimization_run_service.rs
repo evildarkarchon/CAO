@@ -29,11 +29,11 @@ use cao_core::run::{
     ModSelection, OptimizationRunService, PhaseSkipReason, RunDiagnosticCode, RunEventPayload,
     RunFailureCode, RunHandle, RunOutcome, RunPhase, RunPhaseStatus, RunRequest, StartError,
 };
-use common::{
+use cao_core::test_support::{
     CallbackConfiguration, CountingInlineScheduler, DeferredScheduler, EventLog,
-    ExhaustedScheduler, GatedScheduler, HandleSlot, no_work_request, reclaim, serial,
-    test_configuration, test_mod_root,
+    ExhaustedScheduler, GatedScheduler,
 };
+use common::{HandleSlot, no_work_request, reclaim, serial, test_configuration, test_mod_root};
 
 /// A service on an injected scheduler with the SSE-like configuration and no work service.
 fn service_on(scheduler: Arc<dyn cao_core::run::RunScheduler>) -> OptimizationRunService {
