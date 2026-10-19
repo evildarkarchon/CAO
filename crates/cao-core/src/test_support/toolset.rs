@@ -10,9 +10,9 @@ use crate::routing::RoutedAsset;
 use crate::run::{
     ArchiveExtractionPlan, ArchiveExtractionPort, ArchiveExtractionResult, ArchiveExtractor,
     ArchiveFinalizationPort, ArchiveFinalizationRecorder, ArchiveFinalizationResult,
-    AssetAttemptAdapter, AssetAttemptPort, AssetInitializationCancelled, CancellationToken,
-    RunConfiguration, RunConfigurationProvider, RunDiagnostic, RunPreparation, RunToolset,
-    TemporaryArtifactRegistry,
+    AssetAttemptAdapter, AssetAttemptPort, AssetBackendFactory, AssetInitializationCancelled,
+    CancellationToken, RunConfiguration, RunConfigurationProvider, RunDiagnostic, RunPreparation,
+    RunToolset, TemporaryArtifactRegistry,
 };
 use crate::test_support::{FakeArchiveReader, FakeBackendFactory, FakeCapacity, FakeVolumes};
 
@@ -48,13 +48,17 @@ pub type FinalizationScript = Box<
         + Sync,
 >;
 
+/// Makes a fresh Asset attempt port for each Toolset: the production
+/// [`AssetAttemptAdapter`] over a scenario's own backend factory.
+pub type AssetAdapterMaker = Box<dyn Fn() -> Box<dyn AssetAttemptPort> + Send + Sync>;
+
 /// A Run Toolset scripted per scenario, shared between the scenario and the
 /// provider that hands a fresh [`RunToolset`] over it to each run.
 ///
 /// Each script left `None` keeps its default:
-/// - an Asset attempt succeeds with no mutation, unless `backend` is set,
-///   when the production [`AssetAttemptAdapter`] drives a fake backend that
-///   each run's Toolset creates afresh;
+/// - an Asset attempt succeeds with no mutation, unless `backend` or
+///   `backend_factory` is set, when the production [`AssetAttemptAdapter`]
+///   drives a backend that each run's Toolset creates afresh;
 /// - extraction is the real [`ArchiveExtractor`] over `reader` and
 ///   `capacity`, without source cleanup;
 /// - Archive Finalization records an output total of zero and an empty
@@ -68,6 +72,13 @@ pub struct ScriptedToolset {
     /// When set, Asset attempts go through the production adapter over this
     /// fake backend factory instead of `assets`.
     pub backend: Option<FakeBackendFactory>,
+    /// When set, Asset attempts go through the production adapter over the
+    /// backend factory this makes, instead of `assets` or `backend`.
+    pub backend_factory: Option<AssetAdapterMaker>,
+    /// Cancels the run's token as this Asset attempt (counting from 1)
+    /// starts, as a user clicking Cancel mid-attempt would; the attempt
+    /// itself still runs and completes.
+    pub cancel_at_attempt: Option<usize>,
     pub extraction: Option<ExtractionScript>,
     pub finalization: Option<FinalizationScript>,
     pub reader: Arc<FakeArchiveReader>,
@@ -106,6 +117,28 @@ impl ScriptedToolset {
     pub fn with_backend(self, factory: FakeBackendFactory) -> Self {
         Self {
             backend: Some(factory),
+            ..self
+        }
+    }
+
+    /// Drives Asset attempts through the production Asset attempt adapter
+    /// over a backend factory `make` creates afresh for each Toolset, for a
+    /// scenario whose backend the shared fake backend cannot stand in for.
+    pub fn with_backend_factory<F>(self, make: impl Fn() -> F + Send + Sync + 'static) -> Self
+    where
+        F: AssetBackendFactory + 'static,
+    {
+        Self {
+            backend_factory: Some(Box::new(move || Box::new(AssetAttemptAdapter::new(make())))),
+            ..self
+        }
+    }
+
+    /// Cancels the run's token as the `attempt`-th Asset attempt (counting
+    /// from 1) starts; see [`ScriptedToolset::cancel_at_attempt`].
+    pub fn cancelling_at_attempt(self, attempt: usize) -> Self {
+        Self {
+            cancel_at_attempt: Some(attempt),
             ..self
         }
     }
@@ -165,9 +198,15 @@ impl ScriptedToolset {
     }
 
     /// A fresh Run Toolset over this script, as a provider returns for one
-    /// run. A scripted fake backend is created afresh for each Toolset.
+    /// run. A scripted fake backend, or a scripted backend factory, is
+    /// created afresh for each Toolset.
     pub fn toolset(self: &Arc<Self>) -> RunToolset {
-        let backend = self.backend.clone().map(AssetAttemptAdapter::new);
+        let backend: Option<Box<dyn AssetAttemptPort>> = match &self.backend_factory {
+            Some(make) => Some(make()),
+            None => self.backend.clone().map(|factory| {
+                Box::new(AssetAttemptAdapter::new(factory)) as Box<dyn AssetAttemptPort>
+            }),
+        };
         RunToolset {
             asset_attempt: Box::new(ScriptedAssetAttempt {
                 script: Arc::clone(self),
@@ -207,8 +246,9 @@ impl ScriptedToolset {
 /// The scripted Asset attempt port.
 struct ScriptedAssetAttempt {
     script: Arc<ScriptedToolset>,
-    /// The production adapter over a fake backend, when one is scripted.
-    backend: Option<AssetAttemptAdapter<FakeBackendFactory>>,
+    /// The production adapter over a fake backend or a scripted backend
+    /// factory, when one is scripted.
+    backend: Option<Box<dyn AssetAttemptPort>>,
 }
 
 impl AssetAttemptPort for ScriptedAssetAttempt {
@@ -220,11 +260,14 @@ impl AssetAttemptPort for ScriptedAssetAttempt {
         stop: &CancellationToken,
         retain: &mut dyn FnMut(RunDiagnostic),
     ) -> Result<AssetExecutionResult, AssetInitializationCancelled> {
-        self.script
-            .attempts
-            .lock()
-            .unwrap()
-            .push((asset.execution_path().to_path_buf(), mod_root.to_path_buf()));
+        let started = {
+            let mut attempts = self.script.attempts.lock().unwrap();
+            attempts.push((asset.execution_path().to_path_buf(), mod_root.to_path_buf()));
+            attempts.len()
+        };
+        if self.script.cancel_at_attempt == Some(started) {
+            stop.cancel();
+        }
         if let Some(backend) = &mut self.backend {
             return backend.attempt(asset, mod_root, artifacts, stop, retain);
         }

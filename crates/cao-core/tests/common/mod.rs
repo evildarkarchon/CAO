@@ -16,13 +16,14 @@ use cao_core::execution::{AssetExecutionResult, MutationState};
 use cao_core::routing::{ExecutionMode, RequestedWork, RoutedAsset};
 use cao_core::run::{
     ArchiveAdapters, ArchiveCollision, ArchiveExtractionPlan, ArchiveExtractionResult,
-    ArchiveExtractor, ArchiveFinalizationResult, AssetAttemptAdapter, AssetInitializationCancelled,
-    AssetRunAdapters, AssetRunProgress, CancellationToken, ModSelection, RunConfiguration,
-    RunHandle, RunPhaseRecord, RunPreparation, RunRequest, RunWorkEvidence, RunWorkMilestones,
-    RunWorkService, SelectedProfileFacts, TemporaryArtifactRegistry, execute_asset_run,
+    ArchiveExtractor, ArchiveFinalizationResult, AssetInitializationCancelled, AssetRunAdapters,
+    AssetRunProgress, CancellationToken, ModSelection, RunConfiguration, RunHandle, RunPhaseRecord,
+    RunPreparation, RunRequest, RunWorkEvidence, RunWorkMilestones, RunWorkService,
+    SelectedProfileFacts, TemporaryArtifactRegistry, execute_asset_run,
 };
 use cao_core::test_support::{
     FakeArchiveReader, FakeBackendFactory, FakeCapacity, FakeVolumes, FixedConfiguration,
+    ScriptedToolset, ToolsetConfiguration,
 };
 
 /// Serializes scenarios that start runs: one active run is allowed per
@@ -120,6 +121,26 @@ pub fn test_configuration() -> Arc<FixedConfiguration> {
     })
 }
 
+/// A provider of the SSE-like profile that returns a fresh Run Toolset over
+/// `toolset` to each run, or no Toolset at all when it is `None`.
+pub fn toolset_configuration(toolset: Option<Arc<ScriptedToolset>>) -> Arc<ToolsetConfiguration> {
+    Arc::new(ToolsetConfiguration::new(
+        RunConfiguration {
+            profile: sse_profile(),
+            ..RunConfiguration::default()
+        },
+        toolset,
+    ))
+}
+
+/// The production shape of a run's Asset attempts: a scripted Toolset whose
+/// attempts drive `factory`'s fake backend behind the production Asset
+/// attempt adapter, one backend per run. Keep clones of the factory's shared
+/// logs to observe it.
+pub fn backend_toolset(factory: FakeBackendFactory) -> Arc<ScriptedToolset> {
+    Arc::new(ScriptedToolset::default().with_backend(factory))
+}
+
 /// The shared Mod Root of scenarios that need one to exist but not to hold Assets.
 pub fn test_mod_root() -> PathBuf {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -156,75 +177,6 @@ pub fn reclaim(slot: HandleSlot) -> RunHandle {
         .expect("the dispatcher released its slot")
         .into_inner()
         .expect("the handle was stored")
-}
-
-/// The production shape of a Run Work Service: one fake backend per run,
-/// created and driven by the production Asset attempt adapter inside the
-/// Asset Run.
-pub struct BackendWork {
-    pub calls: Arc<Mutex<Vec<String>>>,
-    /// How many backends the runs' factories created.
-    pub creations: Arc<AtomicUsize>,
-    /// Cancels this token after the named number of attempts have started.
-    pub cancel_after: Option<(usize, CancellationToken)>,
-}
-
-impl BackendWork {
-    pub fn new() -> Self {
-        Self {
-            calls: Arc::default(),
-            creations: Arc::default(),
-            cancel_after: None,
-        }
-    }
-
-    /// The backend calls made so far.
-    pub fn calls(&self) -> Vec<String> {
-        self.calls.lock().unwrap().clone()
-    }
-}
-
-impl RunWorkService for BackendWork {
-    fn execute(
-        &self,
-        preparation: &RunPreparation,
-        evidence: &RunWorkEvidence<'_, '_>,
-        artifacts: &mut TemporaryArtifactRegistry,
-        milestones: &dyn RunWorkMilestones,
-        stop: &CancellationToken,
-    ) -> Result<(), Error> {
-        let mut attempt = AssetAttemptAdapter::new(FakeBackendFactory {
-            calls: Arc::clone(&self.calls),
-            creations: Arc::clone(&self.creations),
-            ..FakeBackendFactory::default()
-        });
-        let mut attempts = 0;
-        let cancel_after = self.cancel_after.clone();
-        let mut adapters = AssetRunAdapters::new(Box::new(
-            move |asset: &RoutedAsset, mod_root: &Path, artifacts| {
-                attempts += 1;
-                if let Some((after, token)) = &cancel_after
-                    && attempts == *after
-                {
-                    token.cancel();
-                }
-                attempt.attempt(asset, mod_root, artifacts, stop, &mut |diagnostic| {
-                    evidence.retain_diagnostic(diagnostic)
-                })
-            },
-        ));
-        if let Some((_, token)) = self.cancel_after.clone() {
-            adapters.is_cancelled = Some(Box::new(move || token.is_cancelled()));
-        }
-        execute_asset_run(
-            preparation,
-            evidence,
-            artifacts,
-            milestones,
-            stop,
-            &mut adapters,
-        )
-    }
 }
 
 /// What a controlled attempt does, given the Routed Asset and its frozen Mod Root.
@@ -420,75 +372,6 @@ pub fn crashed_run_leftover(root: &Path, destination: &str) -> PathBuf {
     std::fs::write(&sibling.path, "partial output").unwrap();
     // Dropping the registry without Safety Cleanup is what a crash leaves.
     sibling.path
-}
-
-/// What a scripted attempt does instead of running a backend.
-pub type Script = Box<
-    dyn Fn(&RoutedAsset) -> Result<AssetExecutionResult, AssetInitializationCancelled>
-        + Send
-        + Sync,
->;
-
-/// A Run Work Service whose Asset attempts return scripted results, for
-/// mutations and failures no Dry Run backend can produce.
-pub struct ScriptedWork {
-    pub script: Script,
-    /// Cancels the token before the named attempt returns, as a user clicking
-    /// Cancel mid-attempt would.
-    pub cancel_during: Option<(usize, CancellationToken)>,
-    pub attempted: Arc<Mutex<Vec<PathBuf>>>,
-}
-
-impl ScriptedWork {
-    pub fn new(script: Script) -> Self {
-        Self {
-            script,
-            cancel_during: None,
-            attempted: Arc::default(),
-        }
-    }
-
-    /// Scripted work that commits every attempt.
-    pub fn committing() -> Self {
-        Self::new(Box::new(|_| {
-            Ok(AssetExecutionResult::success(MutationState::Committed))
-        }))
-    }
-}
-
-impl RunWorkService for ScriptedWork {
-    fn execute(
-        &self,
-        preparation: &RunPreparation,
-        evidence: &RunWorkEvidence<'_, '_>,
-        artifacts: &mut TemporaryArtifactRegistry,
-        milestones: &dyn RunWorkMilestones,
-        stop: &CancellationToken,
-    ) -> Result<(), Error> {
-        let mut adapters =
-            AssetRunAdapters::new(Box::new(|asset: &RoutedAsset, _mod_root: &Path, _| {
-                let mut attempted = self.attempted.lock().unwrap();
-                attempted.push(asset.execution_path().to_path_buf());
-                if let Some((during, token)) = &self.cancel_during
-                    && attempted.len() == *during
-                {
-                    token.cancel();
-                }
-                drop(attempted);
-                (self.script)(asset)
-            }));
-        if let Some((_, token)) = self.cancel_during.clone() {
-            adapters.is_cancelled = Some(Box::new(move || token.is_cancelled()));
-        }
-        execute_asset_run(
-            preparation,
-            evidence,
-            artifacts,
-            milestones,
-            stop,
-            &mut adapters,
-        )
-    }
 }
 
 /// Replaces real extraction with a scripted result for one plan.
