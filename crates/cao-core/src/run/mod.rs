@@ -41,8 +41,8 @@ pub use executor::{
 };
 pub use finalization::{
     ArchiveFinalization, ArchiveFinalizationAttempt, ArchiveFinalizationFailure,
-    ArchiveFinalizationMutation, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
-    ArchiveFinalizationSettings,
+    ArchiveFinalizationMutation, ArchiveFinalizationMutationKind, ArchiveFinalizationRecorder,
+    ArchiveFinalizationResult, ArchiveFinalizationSettings,
 };
 pub use lifecycle::{
     CancellationToken, ModSelection, MutationKind, MutationSummary, OptimizationRunResult,

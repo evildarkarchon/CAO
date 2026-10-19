@@ -31,9 +31,10 @@ use crate::run::archives::{
 };
 use crate::run::{
     ArchiveCollision, ArchiveDiscoveryEvidence, ArchiveExtractionFailure, ArchiveExtractionPlan,
-    ArchiveExtractionResult, ArchiveReader, CancellationToken, CapacityProbe, RunDiagnostic,
-    RunDiagnosticCode, RunPhase, RunPhaseRecord, RunPreparation, RunWorkEvidence,
-    RunWorkMilestones, TemporaryArtifactRegistry, VolumeIdentityProbe, take_panic_message,
+    ArchiveExtractionResult, ArchiveFinalizationRecorder, ArchiveReader, CancellationToken,
+    CapacityProbe, RunDiagnostic, RunDiagnosticCode, RunPhase, RunPhaseRecord, RunPreparation,
+    RunWorkEvidence, RunWorkMilestones, TemporaryArtifactRegistry, VolumeIdentityProbe,
+    take_panic_message,
 };
 
 /// One completed attempt: its routed identity, resolved Mod Root and durable outcome.
@@ -131,11 +132,16 @@ pub struct AssetRunAdapters<'a> {
 /// Observes the complete Archive Collision plan, in Mod Root and game-path order.
 pub type ReportArchiveCollisions<'a> = Box<dyn FnMut(&[ArchiveCollision]) + 'a>;
 
-/// Runs Archive Finalization against the run's evidence, staging its outputs
-/// through the run's Temporary Ownership scope, which is lent per call like
-/// every other adapter's.
+/// Runs Archive Finalization, recording its facts through the finalization
+/// recorder the Asset Run opens over the run's evidence, and staging its
+/// outputs through the run's Temporary Ownership scope, which is lent per call
+/// like every other adapter's.
 pub type FinalizeArchiveLifecycle<'a> = Box<
-    dyn FnMut(&RunWorkEvidence<'_, '_>, &mut TemporaryArtifactRegistry) -> Result<(), Error> + 'a,
+    dyn FnMut(
+            &ArchiveFinalizationRecorder<'_, '_>,
+            &mut TemporaryArtifactRegistry,
+        ) -> Result<(), Error>
+        + 'a,
 >;
 
 impl<'a> AssetRunAdapters<'a> {
@@ -583,7 +589,8 @@ pub fn execute_asset_run(
     if mode == ExecutionMode::Apply
         && let Some(finalize) = finalizer
     {
-        finalize(evidence, artifacts)?;
+        // Finalization reaches only its own facts, never the whole view.
+        finalize(&evidence.finalization_recorder(), artifacts)?;
     }
     finish(cancelled())
 }

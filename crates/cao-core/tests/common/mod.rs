@@ -18,10 +18,11 @@ use cao_core::execution::{
 use cao_core::routing::{ExecutionMode, RequestedWork, RoutedAsset};
 use cao_core::run::{
     ArchiveAdapters, ArchiveCollision, ArchiveExtractionPlan, ArchiveExtractionResult,
-    ArchiveExtractor, ArchiveFinalizationResult, AssetInitializationCancelled, AssetRunAdapters,
-    AssetRunProgress, CancellationToken, ModSelection, RunConfiguration, RunHandle, RunPhaseRecord,
-    RunPreparation, RunRequest, RunWorkEvidence, RunWorkMilestones, RunWorkService,
-    SelectedProfileFacts, TemporaryArtifactRegistry, execute_asset_run,
+    ArchiveExtractor, ArchiveFinalizationRecorder, ArchiveFinalizationResult,
+    AssetInitializationCancelled, AssetRunAdapters, AssetRunProgress, CancellationToken,
+    ModSelection, RunConfiguration, RunHandle, RunPhaseRecord, RunPreparation, RunRequest,
+    RunWorkEvidence, RunWorkMilestones, RunWorkService, SelectedProfileFacts,
+    TemporaryArtifactRegistry, execute_asset_run,
 };
 use cao_core::test_support::{
     FakeArchiveReader, FakeBackend, FakeCapacity, FakeVolumes, FixedConfiguration,
@@ -342,9 +343,9 @@ impl RunWorkService for ControlledWork {
             }));
         }
         if let Some(finalization) = &self.finalization {
-            adapters.finalize_archive_lifecycle = Some(Box::new(move |evidence, _| {
+            adapters.finalize_archive_lifecycle = Some(Box::new(move |recorder, _| {
                 self.finalizations.fetch_add(1, Ordering::SeqCst);
-                record_finalization_result(evidence, finalization(), None)
+                record_finalization_result(recorder, finalization(), None)
             }));
         }
         if let Some(fakes) = &self.archives {
@@ -383,16 +384,15 @@ impl RunWorkService for ControlledWork {
 /// count; pass a larger one for a result that stopped before every planned
 /// output.
 pub fn record_finalization_result(
-    evidence: &RunWorkEvidence<'_, '_>,
+    recorder: &ArchiveFinalizationRecorder<'_, '_>,
     result: ArchiveFinalizationResult,
     total: Option<usize>,
 ) -> Result<(), Error> {
-    let planned = total.unwrap_or(result.attempts.len());
-    evidence.record_archive_finalization_plan(planned)?;
+    recorder.record_output_total(total.unwrap_or(result.attempts.len()))?;
     for attempt in &result.attempts {
-        evidence.record_archive_finalization_attempt(attempt.clone(), planned)?;
+        recorder.record_attempt(attempt.clone())?;
     }
-    evidence.record_archive_finalization(result)
+    recorder.record_result(result)
 }
 
 /// `target` relative to the working directory, without changing it: the

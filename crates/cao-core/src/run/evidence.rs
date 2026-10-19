@@ -20,9 +20,9 @@ use crate::execution::MutationState;
 use crate::routing::{RoutingLedger, SkipReason};
 use crate::run::{
     ArchiveCollision, ArchiveExtractionResult, ArchiveFinalizationAttempt,
-    ArchiveFinalizationResult, MutationKind, MutationSummary, RoutedAssetAttempt, RunDiagnostic,
-    RunDiagnosticCode, RunFailure, RunFailureCode, RunPhase, RunPhaseRecord, RunPhaseStatus,
-    RunPreparation, RunProgress, take_panic_message,
+    ArchiveFinalizationRecorder, ArchiveFinalizationResult, MutationKind, MutationSummary,
+    RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode, RunFailure, RunFailureCode, RunPhase,
+    RunPhaseRecord, RunPhaseStatus, RunPreparation, RunProgress, take_panic_message,
 };
 
 /// Receives live facts only after Run Evidence has retained them.
@@ -533,6 +533,12 @@ impl<'a> MutableRunEvidence<'a> {
         Ok(())
     }
 
+    /// Archive Finalization's recorded output total, once its plan is
+    /// recorded, so the finalization recorder need not track it.
+    pub(crate) fn archive_finalization_total(&self) -> Option<usize> {
+        self.storage.archive_finalization_total
+    }
+
     /// Retains the phase's final result, once.
     fn complete_archive_finalization(&mut self, result: ArchiveFinalizationResult) {
         if result.cancelled {
@@ -995,6 +1001,12 @@ impl<'e, 'a> RunWorkEvidence<'e, 'a> {
         self.evidence
             .borrow_mut()
             .record_archive_finalization(result)
+    }
+
+    /// The finalization recorder over the same evidence owner, which the run
+    /// hands to Archive Finalization in place of this whole view.
+    pub(crate) fn finalization_recorder(&self) -> ArchiveFinalizationRecorder<'e, 'a> {
+        ArchiveFinalizationRecorder::new(self.evidence)
     }
 
     /// A copy of Archive Finalization's attempts and result so far.
