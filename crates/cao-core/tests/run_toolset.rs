@@ -109,7 +109,7 @@ fn an_apply_run_through_a_toolset_traverses_every_phase_and_succeeds() {
 }
 
 #[test]
-fn requested_work_without_a_toolset_or_work_service_fails_preparing() {
+fn requested_work_without_a_toolset_fails_preparing() {
     let root = scratch_dir("toolset-unavailable");
     write_tree(&root, &["textures/a.dds"]);
     let configuration = provider(None);
