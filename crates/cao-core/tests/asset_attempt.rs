@@ -20,9 +20,9 @@ use cao_core::routing::{
     RoutingDecision, RoutingPolicy, RoutingPolicyRequest,
 };
 use cao_core::run::{
-    AssetAttemptAdapter, AssetInitializationCancelled, CancellationToken, RunDiagnostic,
-    RunDiagnosticCode, RunExecutor, RunOutcome, RunPhase, RunServices, TemporaryArtifactRegistry,
-    create_run_id,
+    AssetAttemptAdapter, AssetAttemptPort, AssetInitializationCancelled, CancellationToken,
+    RunDiagnostic, RunDiagnosticCode, RunExecutor, RunOutcome, RunPhase, RunServices,
+    TemporaryArtifactRegistry, create_run_id,
 };
 use cao_core::test_support::{CountingCleanup, FakeBackendFactory};
 use common::{backend_toolset, canonical, request, scratch_dir, toolset_configuration};

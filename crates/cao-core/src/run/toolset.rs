@@ -25,8 +25,8 @@ use crate::routing::RoutedAsset;
 use crate::run::{
     ArchiveExtractionPlan, ArchiveExtractionResult, ArchiveExtractor, ArchiveFinalization,
     ArchiveFinalizationRecorder, ArchiveFinalizationSettings, ArchivePacker, ArchiveReader,
-    AssetAttemptAdapter, AssetBackendFactory, CancellationToken, CapacityProbe, RunDiagnostic,
-    RunPreparation, SourceCleanup, TemporaryArtifactRegistry, VolumeIdentityProbe,
+    CancellationToken, CapacityProbe, RunDiagnostic, RunPreparation, SourceCleanup,
+    TemporaryArtifactRegistry, VolumeIdentityProbe,
 };
 
 /// Cancellation observed while an Asset backend initialized, before any attempt existed.
@@ -38,7 +38,8 @@ pub struct AssetInitializationCancelled;
 
 /// Executes one Routed Asset against its frozen Mod Root.
 ///
-/// The production adapter is [`AssetAttemptAdapter`]; a panic is contained
+/// The production adapter is
+/// [`AssetAttemptAdapter`](crate::run::AssetAttemptAdapter); a panic is contained
 /// by the executor as an unsafe Operation Failure with unknown mutation.
 pub trait AssetAttemptPort {
     /// Attempts `asset` against its frozen canonical `mod_root`, staging any
@@ -57,19 +58,6 @@ pub trait AssetAttemptPort {
         stop: &CancellationToken,
         retain: &mut dyn FnMut(RunDiagnostic),
     ) -> Result<AssetExecutionResult, AssetInitializationCancelled>;
-}
-
-impl<F: AssetBackendFactory> AssetAttemptPort for AssetAttemptAdapter<F> {
-    fn attempt(
-        &mut self,
-        asset: &RoutedAsset,
-        mod_root: &Path,
-        artifacts: &mut TemporaryArtifactRegistry,
-        stop: &CancellationToken,
-        retain: &mut dyn FnMut(RunDiagnostic),
-    ) -> Result<AssetExecutionResult, AssetInitializationCancelled> {
-        AssetAttemptAdapter::attempt(self, asset, mod_root, artifacts, stop, retain)
-    }
 }
 
 /// Extracts one Archive by its frozen preflight plan.

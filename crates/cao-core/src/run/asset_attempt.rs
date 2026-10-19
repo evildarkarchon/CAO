@@ -21,7 +21,8 @@ use crate::execution::{
 };
 use crate::routing::RoutedAsset;
 use crate::run::{
-    AssetInitializationCancelled, CancellationToken, RunDiagnostic, TemporaryArtifactRegistry,
+    AssetAttemptPort, AssetInitializationCancelled, CancellationToken, RunDiagnostic,
+    TemporaryArtifactRegistry,
 };
 
 /// What an [`AssetBackendFactory`] produced when it was not stopped by an error.
@@ -105,7 +106,9 @@ impl<F: AssetBackendFactory> AssetAttemptAdapter<F> {
             backend: None,
         }
     }
+}
 
+impl<F: AssetBackendFactory> AssetAttemptPort for AssetAttemptAdapter<F> {
     /// Attempts one Routed Asset against its frozen canonical `mod_root`,
     /// staging any output in `artifacts`, which is lent per call.
     ///
@@ -115,7 +118,7 @@ impl<F: AssetBackendFactory> AssetAttemptAdapter<F> {
     /// # Errors
     /// [`AssetInitializationCancelled`] when the factory observed
     /// cancellation; no attempt exists then.
-    pub fn attempt(
+    fn attempt(
         &mut self,
         asset: &RoutedAsset,
         mod_root: &Path,
