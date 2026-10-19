@@ -24,7 +24,7 @@ pub use archives::{
     AfterWrite, ExtractHook, FakeArchivePacker, FakeArchiveReader, FakeCapacity, FakeEntry,
     FakeVolumes, FakeWrite, RootProbe, entry, fake_dummy_plugin, write_archive,
 };
-pub use backend::FakeBackend;
+pub use backend::{FakeBackend, FakeBackendFactory, FinishedAttempt};
 pub use cleanup::{CountingCleanup, ScriptedCleanup};
 pub use configuration::{CallbackConfiguration, FixedConfiguration, Loader};
 pub use finalization::ArchiveFinalizationEvidence;

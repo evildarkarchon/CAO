@@ -15,8 +15,9 @@
 //! Texture conversion routes every Mesh for Mesh Reference Maintenance, which
 //! rewrites the Mesh's referenced TGA names to DDS (see
 //! [`crate::mesh_references`], #506). The backend records the run's failed
-//! conversions, through [`OptimizerBackend::record_attempt`], so a reference
-//! to a TGA that did not become a DDS keeps its name.
+//! conversions, through its
+//! [`attempt_finished`](AssetExecutionBackend::attempt_finished) notification,
+//! so a reference to a TGA that did not become a DDS keeps its name.
 
 use std::path::{Path, PathBuf};
 
@@ -120,14 +121,6 @@ impl OptimizerBackend {
             failed_conversions: FailedTextureConversions::default(),
             hkxcmd,
         })
-    }
-
-    /// Notes one finished attempt, as C++ `MainOptimizer::finishAttempt` did:
-    /// a failed Texture conversion withholds the rewrite of every reference
-    /// to that Texture in the Meshes attempted after it. Call it with each
-    /// attempt's result before the next Asset executes.
-    pub fn record_attempt(&mut self, asset: &RoutedAsset, result: &AssetExecutionResult) {
-        self.failed_conversions.record_attempt(asset, result);
     }
 
     /// The Texture request one Routed Asset's operations make of the loaded
@@ -416,5 +409,14 @@ impl AssetExecutionBackend for OptimizerBackend {
             Ok(()) => OperationResult::changed(),
             Err(error) => OperationResult::failed(error.to_string()),
         }
+    }
+
+    /// Notes one finished attempt, as C++ `MainOptimizer::finishAttempt` did:
+    /// a failed Texture conversion withholds the rewrite of every reference
+    /// to that Texture in the Meshes attempted after it. The Asset attempt
+    /// adapter calls it with each attempt's result before the next Asset
+    /// executes.
+    fn attempt_finished(&mut self, asset: &RoutedAsset, result: &AssetExecutionResult) {
+        self.failed_conversions.record_attempt(asset, result);
     }
 }

@@ -1,10 +1,14 @@
 //! The fake Asset Execution Backend.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::execution::{AssetExecutionBackend, OperationResult};
-use crate::routing::{AssetOperations, ExecutionMode, MeshVariant, TextureVariant};
+use crate::execution::{AssetExecutionBackend, AssetExecutionResult, OperationResult};
+use crate::routing::{AssetOperations, ExecutionMode, MeshVariant, RoutedAsset, TextureVariant};
+use crate::run::{
+    AssetBackendFactory, BackendCreation, BackendCreationError, CancellationToken, RunDiagnostic,
+};
 
 /// How the fake backend treats one Asset, chosen by a marker in its file name.
 ///
@@ -12,9 +16,23 @@ use crate::routing::{AssetOperations, ExecutionMode, MeshVariant, TextureVariant
 /// reports a change to persist; anything else is evaluated as unchanged. In
 /// Apply a change is saved as `optimized <name>` (an Animation's output as
 /// `converted <name>`), unless the name also contains `unsaveable`.
+///
+/// Each attempt-finished notification goes to `finished`, apart from `calls`.
 pub struct FakeBackend {
     pub calls: Arc<Mutex<Vec<String>>>,
+    pub finished: Arc<Mutex<Vec<FinishedAttempt>>>,
     loaded: Option<PathBuf>,
+}
+
+/// One attempt-finished notification the fake backend received.
+#[derive(Debug, Clone)]
+pub struct FinishedAttempt {
+    pub asset: RoutedAsset,
+    /// The result the backend was told the attempt finished with.
+    pub result: AssetExecutionResult,
+    /// Whether the Asset's execution path still existed when the backend was
+    /// notified; Quarantine renames a failed load away.
+    pub source_present: bool,
 }
 
 impl FakeBackend {
@@ -22,6 +40,7 @@ impl FakeBackend {
     pub fn new(calls: Arc<Mutex<Vec<String>>>) -> Self {
         Self {
             calls,
+            finished: Arc::default(),
             loaded: None,
         }
     }
@@ -72,6 +91,51 @@ impl FakeBackend {
         }
         std::fs::write(path, format!("optimized {name}")).unwrap();
         true
+    }
+}
+
+/// The backend factory of the fake backend, scripted per scenario.
+///
+/// Every handle is shared, so a scenario can keep a clone after handing the
+/// factory to an [`AssetAttemptAdapter`](crate::run::AssetAttemptAdapter).
+#[derive(Default)]
+pub struct FakeBackendFactory {
+    /// The call log every created backend appends to.
+    pub calls: Arc<Mutex<Vec<String>>>,
+    /// The attempt-finished log every created backend appends to.
+    pub finished: Arc<Mutex<Vec<FinishedAttempt>>>,
+    /// How many times `create` was called.
+    pub creations: Arc<AtomicUsize>,
+    /// The Run Diagnostics a successful creation returns to retain.
+    pub diagnostics: Vec<RunDiagnostic>,
+    /// When set, `create` fails with this message instead of creating a backend.
+    pub failure: Option<String>,
+}
+
+impl AssetBackendFactory for FakeBackendFactory {
+    type Backend = FakeBackend;
+
+    /// Creates a [`FakeBackend`] over the shared logs, unless `failure` is
+    /// scripted. A cancelled `stop` is observed as the production factory's
+    /// Headpart Mesh scan observes it: as cancelled initialization.
+    fn create(
+        &mut self,
+        stop: &CancellationToken,
+    ) -> Result<BackendCreation<FakeBackend>, BackendCreationError> {
+        self.creations.fetch_add(1, Ordering::SeqCst);
+        if stop.is_cancelled() {
+            return Ok(BackendCreation::Cancelled);
+        }
+        if let Some(failure) = &self.failure {
+            return Err(failure.clone().into());
+        }
+        Ok(BackendCreation::Created {
+            backend: FakeBackend {
+                finished: Arc::clone(&self.finished),
+                ..FakeBackend::new(Arc::clone(&self.calls))
+            },
+            diagnostics: self.diagnostics.clone(),
+        })
     }
 }
 
@@ -141,5 +205,13 @@ impl AssetExecutionBackend for FakeBackend {
             std::fs::write(output, format!("converted {}", self.loaded_name())).unwrap();
         }
         result
+    }
+
+    fn attempt_finished(&mut self, asset: &RoutedAsset, result: &AssetExecutionResult) {
+        self.finished.lock().unwrap().push(FinishedAttempt {
+            asset: asset.clone(),
+            result: result.clone(),
+            source_present: asset.execution_path().exists(),
+        });
     }
 }

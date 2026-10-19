@@ -12,20 +12,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use cao_core::Error;
-use cao_core::execution::{
-    AssetExecutionResult, AssetExecutor, MutationState, quarantine_failed_load,
-};
+use cao_core::execution::{AssetExecutionResult, MutationState};
 use cao_core::routing::{ExecutionMode, RequestedWork, RoutedAsset};
 use cao_core::run::{
     ArchiveAdapters, ArchiveCollision, ArchiveExtractionPlan, ArchiveExtractionResult,
-    ArchiveExtractor, ArchiveFinalizationRecorder, ArchiveFinalizationResult,
+    ArchiveExtractor, ArchiveFinalizationRecorder, ArchiveFinalizationResult, AssetAttemptAdapter,
     AssetInitializationCancelled, AssetRunAdapters, AssetRunProgress, CancellationToken,
     ModSelection, RunConfiguration, RunHandle, RunPhaseRecord, RunPreparation, RunRequest,
     RunWorkEvidence, RunWorkMilestones, RunWorkService, SelectedProfileFacts,
     TemporaryArtifactRegistry, execute_asset_run,
 };
 use cao_core::test_support::{
-    FakeArchiveReader, FakeBackend, FakeCapacity, FakeVolumes, FixedConfiguration,
+    FakeArchiveReader, FakeBackendFactory, FakeCapacity, FakeVolumes, FixedConfiguration,
 };
 
 /// Serializes scenarios that start runs: one active run is allowed per
@@ -161,10 +159,13 @@ pub fn reclaim(slot: HandleSlot) -> RunHandle {
         .expect("the handle was stored")
 }
 
-/// The production shape of a Run Work Service: one backend per run, driven
-/// through the Asset Executor inside the Asset Run.
+/// The production shape of a Run Work Service: one fake backend per run,
+/// created and driven by the production Asset attempt adapter inside the
+/// Asset Run.
 pub struct BackendWork {
     pub calls: Arc<Mutex<Vec<String>>>,
+    /// How many backends the runs' factories created.
+    pub creations: Arc<AtomicUsize>,
     /// Cancels this token after the named number of attempts have started.
     pub cancel_after: Option<(usize, CancellationToken)>,
 }
@@ -173,6 +174,7 @@ impl BackendWork {
     pub fn new() -> Self {
         Self {
             calls: Arc::default(),
+            creations: Arc::default(),
             cancel_after: None,
         }
     }
@@ -192,7 +194,11 @@ impl RunWorkService for BackendWork {
         milestones: &dyn RunWorkMilestones,
         stop: &CancellationToken,
     ) -> Result<(), Error> {
-        let mut backend = FakeBackend::new(Arc::clone(&self.calls));
+        let mut attempt = AssetAttemptAdapter::new(FakeBackendFactory {
+            calls: Arc::clone(&self.calls),
+            creations: Arc::clone(&self.creations),
+            ..FakeBackendFactory::default()
+        });
         let mut attempts = 0;
         let cancel_after = self.cancel_after.clone();
         let mut adapters = AssetRunAdapters::new(Box::new(
@@ -203,8 +209,9 @@ impl RunWorkService for BackendWork {
                 {
                     token.cancel();
                 }
-                let result = AssetExecutor::new(&mut backend).execute(asset, artifacts, mod_root);
-                Ok(quarantine_failed_load(asset, result))
+                attempt.attempt(asset, mod_root, artifacts, stop, &mut |diagnostic| {
+                    evidence.retain_diagnostic(diagnostic)
+                })
             },
         ));
         if let Some((_, token)) = self.cancel_after.clone() {
