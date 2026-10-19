@@ -304,3 +304,39 @@ fn a_factory_error_is_contained_as_an_unsafe_operation_failure() {
         "no backend loaded the Asset, so nothing is quarantined"
     );
 }
+
+/// Spec #546 review: the Run Diagnostics a factory observed before it failed,
+/// such as a plugin its Headpart Mesh scan could not read, are still handed
+/// back to be retained alongside the contained failure.
+#[test]
+fn a_factory_error_still_hands_back_its_diagnostics() {
+    let root = mod_root("factory-error-diagnostics", &["first.dds"]);
+    let unreadable = RunDiagnostic::new(
+        RunDiagnosticCode::PluginUnreadable,
+        RunPhase::ProcessingAssets,
+        "The plugin's headparts cannot be read",
+    )
+    .with_path(root.join("broken.esp"));
+    let factory = FakeBackendFactory {
+        diagnostics: vec![unreadable.clone()],
+        failure: Some("Failed to initialize COM".to_owned()),
+        ..FakeBackendFactory::default()
+    };
+    let stop = CancellationToken::new();
+    let mut adapter = AssetAttemptAdapter::new(factory);
+
+    let (outcome, retained) = attempt(
+        &mut adapter,
+        ExecutionMode::Apply,
+        &root,
+        "first.dds",
+        &stop,
+    );
+
+    let result = outcome.expect("a factory error is an attempt, not a cancellation");
+    assert_eq!(
+        result.failure(),
+        Some(AssetExecutionFailure::BackendException)
+    );
+    assert_eq!(retained, [unreadable]);
+}

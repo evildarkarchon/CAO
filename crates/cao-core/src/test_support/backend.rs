@@ -106,9 +106,11 @@ pub struct FakeBackendFactory {
     pub finished: Arc<Mutex<Vec<FinishedAttempt>>>,
     /// How many times `create` was called.
     pub creations: Arc<AtomicUsize>,
-    /// The Run Diagnostics a successful creation returns to retain.
+    /// The Run Diagnostics creation returns to retain, whether it succeeds or
+    /// fails with `failure`.
     pub diagnostics: Vec<RunDiagnostic>,
-    /// When set, `create` fails with this message instead of creating a backend.
+    /// When set, `create` fails with this message instead of creating a
+    /// backend, still carrying `diagnostics`.
     pub failure: Option<String>,
 }
 
@@ -127,7 +129,8 @@ impl AssetBackendFactory for FakeBackendFactory {
             return Ok(BackendCreation::Cancelled);
         }
         if let Some(failure) = &self.failure {
-            return Err(failure.clone().into());
+            return Err(BackendCreationError::new(failure.clone())
+                .with_diagnostics(self.diagnostics.clone()));
         }
         Ok(BackendCreation::Created {
             backend: FakeBackend {

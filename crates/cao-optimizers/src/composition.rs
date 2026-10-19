@@ -645,16 +645,96 @@ impl AssetBackendFactory for OptimizerBackendFactory {
         // The adapter calls this on the Run Worker, the thread that must join
         // COM. C++'s texture optimizer threw when it could not, and its run
         // contained the exception as an unsafe Operation Failure; the adapter
-        // contains this error the same way.
-        let backend = OptimizerBackend::new(
+        // contains this error the same way. The scan's diagnostics travel with
+        // the error, so the run still retains the plugins it could not read.
+        let backend = match OptimizerBackend::new(
             self.settings.textures,
             texture_profile(settings),
             meshes,
             self.hkxcmd.clone(),
-        )?;
+        ) {
+            Ok(backend) => backend,
+            Err(error) => {
+                return Err(BackendCreationError::new(error).with_diagnostics(diagnostics));
+            }
+        };
         Ok(BackendCreation::Created {
             backend,
             diagnostics,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::device::join_single_threaded_apartment;
+
+    /// A plugin whose HDPT group claims more bytes than the file holds: an
+    /// empty TES4 record, then a group header naming HDPT with a size of 1000.
+    fn truncated_headpart_plugin() -> Vec<u8> {
+        let mut bytes = vec![0; 48];
+        bytes[..4].copy_from_slice(b"TES4");
+        bytes[24..28].copy_from_slice(b"GRUP");
+        bytes[28..32].copy_from_slice(&1000_u32.to_le_bytes());
+        bytes[32..36].copy_from_slice(b"HDPT");
+        bytes
+    }
+
+    /// Spec #546 review: when the backend cannot be created after the
+    /// Headpart Mesh scan, the plugins the scan could not read are still
+    /// handed back with the error, so the run retains them as it did when the
+    /// backend's failure was a panic.
+    ///
+    /// COM fails on a thread that already joined a single-threaded apartment,
+    /// which is the one backend failure a test can reach. This is a unit test
+    /// because only the factory, not a run, can be put on such a thread.
+    #[test]
+    fn a_backend_failure_still_hands_back_the_unreadable_plugins() {
+        let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let profile = Profiles::new(&app_dir).open("SSE");
+        let mut options = profile.load_options(&Options::default()).unwrap();
+        options.meshes_optimization_level = 1;
+        let selection = std::env::temp_dir().join("cao-optimizers-unit/backend-failure");
+        // A missing directory is the expected case; anything else surfaces below.
+        let _ = std::fs::remove_dir_all(&selection);
+        std::fs::create_dir_all(&selection).unwrap();
+        std::fs::write(selection.join("Broken.esp"), truncated_headpart_plugin()).unwrap();
+        let mut factory = OptimizerBackendFactory {
+            settings: OptimizerSettings::from_options(&options),
+            selected_folder: selection.clone(),
+            hkxcmd: Hkxcmd::in_app_dir(&app_dir),
+            profile: Arc::new(PreparedProfile {
+                settings: Arc::new(profile.load_settings_checked().unwrap()),
+                files_to_not_pack: Vec::new(),
+                custom_headparts: Vec::new(),
+            }),
+        };
+
+        // The thread exits after the attempt, leaving its apartment; neither
+        // the backend nor the error is `Send`, so only their facts leave it.
+        let created = std::thread::spawn(move || {
+            join_single_threaded_apartment();
+            match factory.create(&CancellationToken::new()) {
+                Ok(_) => Ok(()),
+                Err(failure) => Err((failure.error.to_string(), failure.diagnostics)),
+            }
+        })
+        .join()
+        .unwrap();
+
+        let (message, diagnostics) = created.expect_err("COM cannot join the MTA on an STA thread");
+        assert!(message.contains("Failed to initialize COM"), "{message}");
+        let reported: Vec<_> = diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.code, diagnostic.path.clone()))
+            .collect();
+        assert_eq!(
+            reported,
+            [(
+                RunDiagnosticCode::PluginUnreadable,
+                selection.join("Broken.esp")
+            )]
+        );
     }
 }

@@ -38,8 +38,34 @@ pub enum BackendCreation<B> {
 }
 
 /// Why an [`AssetBackendFactory`] could not create its backend, such as COM
-/// failing to initialize. Its text becomes the attempt's failure message.
-pub type BackendCreationError = Box<dyn std::error::Error>;
+/// failing to initialize, with the Run Diagnostics creation observed before
+/// it failed.
+#[derive(Debug)]
+pub struct BackendCreationError {
+    /// The cause; its text becomes the attempt's failure message.
+    pub error: Box<dyn std::error::Error>,
+    /// The Run Diagnostics creation observed before it failed (such as an
+    /// unreadable plugin), for the caller to retain all the same.
+    pub diagnostics: Vec<RunDiagnostic>,
+}
+
+impl BackendCreationError {
+    /// A creation failure caused by `error` that observed no Run Diagnostic.
+    pub fn new(error: impl Into<Box<dyn std::error::Error>>) -> Self {
+        Self {
+            error: error.into(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    /// The same failure, carrying the Run Diagnostics creation observed
+    /// before it failed.
+    #[must_use]
+    pub fn with_diagnostics(mut self, diagnostics: Vec<RunDiagnostic>) -> Self {
+        self.diagnostics = diagnostics;
+        self
+    }
+}
 
 /// Creates the Asset Execution Backend of one run, on the Run Worker.
 ///
@@ -55,7 +81,8 @@ pub trait AssetBackendFactory {
     ///
     /// # Errors
     /// A [`BackendCreationError`] when no backend can be created; the adapter
-    /// contains it as an unsafe Operation Failure.
+    /// retains its Run Diagnostics and contains it as an unsafe Operation
+    /// Failure.
     fn create(
         &mut self,
         stop: &CancellationToken,
@@ -112,7 +139,11 @@ impl<F: AssetBackendFactory> AssetAttemptAdapter<F> {
                 // initialization touched, so it is unknown mutation that stops
                 // the run: the outcome the run gave the panic that signalled
                 // this failure before the factory returned errors.
-                Err(error) => {
+                Err(BackendCreationError { error, diagnostics }) => {
+                    // What creation observed before it failed is still true
+                    // of the run, so it is retained before the failure that
+                    // stops the run is recorded.
+                    diagnostics.into_iter().for_each(&mut *retain);
                     return Ok(AssetExecutionResult::failed(
                         AssetExecutionFailure::BackendException,
                         error.to_string(),
