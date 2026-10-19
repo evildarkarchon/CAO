@@ -7,7 +7,6 @@
 mod archives;
 mod artifacts;
 mod asset_attempt;
-mod asset_run;
 mod evidence;
 mod executor;
 mod finalization;
@@ -32,9 +31,10 @@ pub use artifacts::{
 pub use asset_attempt::{
     AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
 };
-pub(crate) use asset_run::ArchiveAdapters;
-pub use asset_run::{AssetInitializationCancelled, RoutedAssetAttempt, is_staging_name};
-pub use evidence::{ArchiveDiscoveryEvidence, MutableRunEvidence, RunEvidence, RunObservationSink};
+pub use evidence::{
+    ArchiveDiscoveryEvidence, MutableRunEvidence, RoutedAssetAttempt, RunEvidence,
+    RunObservationSink,
+};
 pub use executor::{
     RunEvidenceInvariantPanic, RunExecutor, RunServices, SafetyCleanupService,
     collect_safety_cleanup_failures,
@@ -64,10 +64,10 @@ pub use scheduler::{
 };
 pub use service::{OptimizationRunService, RunEventDispatcher, RunHandle, StartError};
 pub use source_pin::{LoadingPluginPin, SourceDirectoryPins, SourceFilePin, SourcePinError};
-pub use staging::StagingError;
+pub use staging::{StagingError, is_staging_name};
 pub use toolset::{
     ArchiveExtractionAdapter, ArchiveExtractionPort, ArchiveFinalizationAdapter,
-    ArchiveFinalizationPort, AssetAttemptPort, RunToolset,
+    ArchiveFinalizationPort, AssetAttemptPort, AssetInitializationCancelled, RunToolset,
 };
 
 pub(crate) use artifacts::fingerprint;

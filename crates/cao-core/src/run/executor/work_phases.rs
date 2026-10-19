@@ -1,12 +1,12 @@
-//! The Asset Run: Archive-first discovery, definitive routing and Asset attempts.
+//! The Run Executor's work phases: Archive-first discovery, definitive routing,
+//! Asset attempts and Archive Finalization.
 //!
 //! Ported from `src/Run/AssetRun.h` and `src/Run/ArchiveFirstAssetDiscovery.h`.
-//! The Run Executor calls [`execute_asset_run`] with adapters over its Run
-//! Toolset's ports; the
+//! The executor calls [`run_work_phases`] with its Run Toolset; the
 //! function walks each Mod Root for Archives, extracts the enabled ones in
 //! Apply, routes the Effective Asset Tree once, and offers every Routed Asset
-//! to the adapters in Texture, Mesh, Animation order, recording each completed
-//! attempt before reporting it.
+//! to the Asset attempt port in Texture, Mesh, Animation order, recording each
+//! completed attempt before reporting it.
 //!
 //! Loose Assets take precedence over Archived Assets, and Archive Precedence
 //! decides between Archives in one Mod Root. Before the first extraction, a
@@ -24,8 +24,7 @@ use std::path::{Path, PathBuf};
 use crate::Error;
 use crate::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use crate::routing::{
-    AssetKind, AssetRouter, ExecutionMode, OptimizerTarget, RoutedAsset, RoutingDecision,
-    SkipReason,
+    AssetKind, AssetRouter, ExecutionMode, OptimizerTarget, RoutingDecision, SkipReason,
 };
 use crate::run::archives::{
     Preflight, RootArchives, archive_order_key, preflight, relative_game_path,
@@ -34,117 +33,11 @@ use crate::run::evidence::RunWorkEvidence;
 use crate::run::executor::ExecutorMilestones;
 use crate::run::{
     ArchiveDiscoveryEvidence, ArchiveExtractionFailure, ArchiveExtractionPlan,
-    ArchiveExtractionResult, ArchiveFinalizationRecorder, ArchiveReader, CancellationToken,
-    CapacityProbe, RunDiagnostic, RunDiagnosticCode, RunPhase, RunPreparation,
-    TemporaryArtifactRegistry, VolumeIdentityProbe, take_panic_message,
+    ArchiveExtractionPort, ArchiveExtractionResult, ArchiveFinalizationPort,
+    ArchiveFinalizationRecorder, AssetInitializationCancelled, CancellationToken,
+    RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode, RunPhase, RunPreparation, RunToolset,
+    TemporaryArtifactRegistry, is_staging_name, take_panic_message,
 };
-
-/// One completed attempt: its routed identity, resolved Mod Root and durable outcome.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RoutedAssetAttempt {
-    /// The canonical Mod Root the attempt is attributed to, frozen before it ran.
-    pub mod_root: PathBuf,
-    pub asset: RoutedAsset,
-    pub result: AssetExecutionResult,
-}
-
-/// Cancellation observed while an Asset backend initialized, before any attempt existed.
-///
-/// Initialization is read-only, so the run records cancellation without
-/// inventing an attempt or a mutation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AssetInitializationCancelled;
-
-/// Executes one Routed Asset against its frozen canonical Mod Root, staging
-/// any output through the run's Temporary Ownership scope.
-///
-/// The registry is lent per call rather than captured: Archive extraction
-/// needs the same `&mut` registry, and two adapters cannot both hold it.
-pub(crate) type ExecuteAsset<'a> = Box<
-    dyn FnMut(
-            &RoutedAsset,
-            &Path,
-            &mut TemporaryArtifactRegistry,
-        ) -> Result<AssetExecutionResult, AssetInitializationCancelled>
-        + 'a,
->;
-
-/// Extracts one Archive by its frozen preflight plan, staging every entry
-/// through the run's Temporary Ownership scope.
-///
-/// The production adapter is [`ArchiveExtractor::extract_with_source_cleanup`],
-/// which adds source pinning and backup or removal, as C++
-/// `BSAOptimizer::extract` did. The result carries its own mutation fact; a
-/// panic is contained as unknown mutation, unsafe to continue.
-pub(crate) type ExtractArchive<'a> = Box<
-    dyn FnMut(&ArchiveExtractionPlan, &mut TemporaryArtifactRegistry) -> ArchiveExtractionResult
-        + 'a,
->;
-
-/// The Archive seams an Apply run needs once it selects an Archive.
-///
-/// Discovery reads manifests through `reader` and checks capacity through the
-/// two probes before any extraction; `extract` then performs each attempt.
-pub(crate) struct ArchiveAdapters<'a> {
-    pub reader: &'a dyn ArchiveReader,
-    pub capacity: &'a dyn CapacityProbe,
-    pub volume_identity: &'a dyn VolumeIdentityProbe,
-    pub extract: ExtractArchive<'a>,
-}
-
-/// The adapters the Run Executor supplies to one Asset Run, over its Run
-/// Toolset's ports.
-///
-/// `execute_asset` is required; the rest are optional. A panic in
-/// `execute_asset` is contained as an unsafe Operation Failure with unknown
-/// mutation, and one in `extract` as unknown mutation. Phases are observed
-/// only through the run's Run Observation Sink, and cancellation only
-/// through the run's token.
-pub(crate) struct AssetRunAdapters<'a> {
-    pub execute_asset: ExecuteAsset<'a>,
-    /// Runs Archive Finalization, which records its own output total,
-    /// attempts and result into the same evidence. It is called only in
-    /// Apply, once the executed phase is recorded; its errors reach the Run
-    /// Executor unchanged. Without one, Apply reports the phase as having no
-    /// requested work.
-    pub finalize_archive_lifecycle: Option<FinalizeArchiveLifecycle<'a>>,
-    /// The Archive seams. Without them, an Apply run that selects an Archive
-    /// fails before extraction; Dry Run never needs them.
-    pub archives: Option<ArchiveAdapters<'a>>,
-}
-
-/// Runs Archive Finalization, recording its facts through the finalization
-/// recorder the Asset Run opens over the run's evidence, and staging its
-/// outputs through the run's Temporary Ownership scope, which is lent per call
-/// like every other adapter's.
-pub(crate) type FinalizeArchiveLifecycle<'a> = Box<
-    dyn FnMut(
-            &ArchiveFinalizationRecorder<'_, '_>,
-            &mut TemporaryArtifactRegistry,
-        ) -> Result<(), Error>
-        + 'a,
->;
-
-impl<'a> AssetRunAdapters<'a> {
-    /// Adapters that only execute Assets.
-    pub(crate) fn new(execute_asset: ExecuteAsset<'a>) -> Self {
-        Self {
-            execute_asset,
-            finalize_archive_lifecycle: None,
-            archives: None,
-        }
-    }
-}
-
-/// Reserves the `.cao-staging` namespace, case-insensitively and for any suffix.
-///
-/// Discovery skips the whole namespace: stale or unverified temporary material
-/// must never become optimization input.
-pub fn is_staging_name(name: &std::ffi::OsStr) -> bool {
-    name.to_string_lossy()
-        .to_ascii_lowercase()
-        .starts_with(".cao-staging")
-}
 
 /// Walks Mod Roots for regular files under the scope rules both discovery passes share.
 struct Discovery<'r, 'e, 'x, 'y> {
@@ -262,21 +155,29 @@ fn attributed_mod_root<'p>(path: &Path, mod_roots: &'p [PathBuf]) -> Option<&'p 
         .max_by_key(|root| root.as_os_str().len())
 }
 
-/// Runs Archive-first discovery, definitive routing and Asset attempts beneath the Run Executor.
+/// Runs Archive-first discovery, definitive routing, Asset attempts and
+/// Archive Finalization through the ports of `toolset`.
 ///
 /// Completed facts enter the evidence before the run's Run Observation Sink
 /// sees them, and the milestones let the executor own phase position and
 /// progress. Cancellation, from `stop`, is observed between entries and
 /// attempts and once more after the last attempt; an attempt in flight always
-/// finishes. An unsafe attempt stops all further work. Errors are Run Evidence
-/// invariant violations, which the executor raises after Safety Cleanup.
-pub(crate) fn execute_asset_run(
+/// finishes. An unsafe attempt stops all further work.
+///
+/// Each port's panic is contained at that port: an Asset attempt's becomes an
+/// unsafe Operation Failure with unknown mutation, an extraction's unknown
+/// mutation, and Archive Finalization's an Unexpected Exception. Archive
+/// Finalization is called only in Apply, once its executed phase is
+/// recorded. Errors are Run Evidence invariant violations, which the executor
+/// raises after Safety Cleanup, or an error the Archive Finalization port
+/// returned, which reaches the executor unchanged and escapes the run's work.
+pub(super) fn run_work_phases(
     preparation: &RunPreparation,
+    toolset: &mut RunToolset,
     evidence: &RunWorkEvidence<'_, '_>,
     artifacts: &mut TemporaryArtifactRegistry,
     milestones: &ExecutorMilestones<'_, '_>,
     stop: &CancellationToken,
-    adapters: &mut AssetRunAdapters<'_>,
 ) -> Result<(), Error> {
     let policy = preparation.policy();
     let mode = policy.execution_mode();
@@ -354,7 +255,9 @@ pub(crate) fn execute_asset_run(
         match preflight(
             root_archives,
             preparation.archive_precedence(),
-            adapters.archives.as_ref(),
+            &*toolset.archive_reader,
+            &*toolset.capacity,
+            &*toolset.volume_identity,
             &cancelled,
         ) {
             Preflight::Failed(failure) => {
@@ -391,7 +294,13 @@ pub(crate) fn execute_asset_run(
         return interrupted(skipped_archive_counts);
     }
 
-    if let Some(stop) = extract_archives(&plans, adapters, evidence, artifacts, &cancelled)? {
+    if let Some(stop) = extract_archives(
+        &plans,
+        &mut *toolset.archive_extraction,
+        evidence,
+        artifacts,
+        &cancelled,
+    )? {
         return match stop {
             ExtractionStop::Cancelled => interrupted(skipped_archive_counts),
             // An unsafe attempt never reaches routing or finalization; only
@@ -470,8 +379,14 @@ pub(crate) fn execute_asset_run(
                     .with_path(path),
                 ),
                 Some(mod_root) => {
+                    // An Asset attempt's diagnostics are retained, not published,
+                    // so they publish with the run's other deferred diagnostics.
+                    let mut retain =
+                        |diagnostic: RunDiagnostic| evidence.retain_diagnostic(diagnostic);
                     match catch_unwind(AssertUnwindSafe(|| {
-                        (adapters.execute_asset)(asset, mod_root, artifacts)
+                        toolset
+                            .asset_attempt
+                            .attempt(asset, mod_root, artifacts, stop, &mut retain)
                     })) {
                         Ok(Ok(result)) => (mod_root.clone(), result),
                         Ok(Err(AssetInitializationCancelled)) => return finish(true),
@@ -518,20 +433,41 @@ pub(crate) fn execute_asset_run(
         return finish(true);
     }
 
-    let finalizer = adapters.finalize_archive_lifecycle.as_mut();
-    milestones.archive_finalization_available(mode, finalizer.is_some())?;
+    milestones.archive_finalization_available()?;
     // Archive Finalization is a separate mutation boundary: observe cancellation before it.
     if cancelled() {
         return finish(true);
     }
-    // The immutable policy decides: Dry Run never finalizes, whatever the adapters.
-    if mode == ExecutionMode::Apply
-        && let Some(finalize) = finalizer
-    {
+    // The immutable policy decides: Dry Run never finalizes, whatever the Toolset holds.
+    if mode == ExecutionMode::Apply {
         // Finalization reaches only its own facts, never the whole view.
-        finalize(&evidence.finalization_recorder(), artifacts)?;
+        finalize_contained(
+            &mut *toolset.archive_finalization,
+            preparation,
+            &evidence.finalization_recorder(),
+            artifacts,
+            stop,
+        )?;
     }
     finish(cancelled())
+}
+
+/// Runs the Archive Finalization port, containing its panic as the phase's
+/// Unexpected Exception, which keeps every attempt already recorded and
+/// forbids continuation, as production Archive Finalization contains its own.
+fn finalize_contained(
+    port: &mut dyn ArchiveFinalizationPort,
+    preparation: &RunPreparation,
+    recorder: &ArchiveFinalizationRecorder<'_, '_>,
+    artifacts: &mut TemporaryArtifactRegistry,
+    stop: &CancellationToken,
+) -> Result<(), Error> {
+    match catch_unwind(AssertUnwindSafe(|| {
+        port.finalize(preparation, recorder, artifacts, stop)
+    })) {
+        Ok(outcome) => outcome,
+        Err(payload) => recorder.record_unexpected_exception(take_panic_message(payload)),
+    }
 }
 
 /// Why Archive extraction stopped short of the definitive pass.
@@ -548,37 +484,37 @@ enum ExtractionStop {
 ///
 /// An attempt in flight always finishes, so cancellation never leaves a
 /// partial Archive. `PartialOrUnknown` mutation is unsafe even when the
-/// adapter claims otherwise, and a panicking adapter is contained as unknown
+/// port claims otherwise, and a panicking port is contained as unknown
 /// mutation; either stops extraction. Returns `None` when every plan was
 /// attempted and the run may continue.
 fn extract_archives(
     plans: &[ArchiveExtractionPlan],
-    adapters: &mut AssetRunAdapters<'_>,
+    port: &mut dyn ArchiveExtractionPort,
     evidence: &RunWorkEvidence<'_, '_>,
     artifacts: &mut TemporaryArtifactRegistry,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Option<ExtractionStop>, Error> {
-    let Some(archives) = adapters.archives.as_mut().filter(|_| !plans.is_empty()) else {
-        // The preflight only plans Archives when the Archive adapters exist.
+    if plans.is_empty() {
+        // No attempt ran, so there is none to re-sample cancellation after:
+        // the caller's own checks around this phase observe it.
         return Ok(None);
-    };
+    }
     let total = plans.len();
     for plan in plans {
         if cancelled() {
             return Ok(Some(ExtractionStop::Cancelled));
         }
-        let mut attempt =
-            match catch_unwind(AssertUnwindSafe(|| (archives.extract)(plan, artifacts))) {
-                Ok(attempt) => attempt,
-                // A panic carries no trustworthy evidence of what was published.
-                Err(payload) => ArchiveExtractionResult {
-                    mutation: MutationState::PartialOrUnknown,
-                    failure: Some(ArchiveExtractionFailure::ExtractionFailed),
-                    safe_to_continue: false,
-                    detail: take_panic_message(payload),
-                    ..ArchiveExtractionResult::new(plan)
-                },
-            };
+        let mut attempt = match catch_unwind(AssertUnwindSafe(|| port.extract(plan, artifacts))) {
+            Ok(attempt) => attempt,
+            // A panic carries no trustworthy evidence of what was published.
+            Err(payload) => ArchiveExtractionResult {
+                mutation: MutationState::PartialOrUnknown,
+                failure: Some(ArchiveExtractionFailure::ExtractionFailed),
+                safe_to_continue: false,
+                detail: take_panic_message(payload),
+                ..ArchiveExtractionResult::new(plan)
+            },
+        };
         // The adapter's own claim is retained for diagnosis, but partial
         // mutation stops the run regardless.
         let unsafe_attempt = attempt.is_unsafe();

@@ -239,8 +239,8 @@ impl MeshOptimizer {
 /// as `meshes/actors/hair.nif` (deviation 17).
 ///
 /// Discovery joins every path it finds onto its canonical Mod Root, so the
-/// prefix strips; a path spelled otherwise is resolved first, as the Asset Run
-/// resolved it to attribute the attempt. A path still outside `mod_root`, or
+/// prefix strips; a path spelled otherwise is resolved first, as the Run
+/// Executor resolved it to attribute the attempt. A path still outside `mod_root`, or
 /// any path when `mod_root` is empty (a standalone call), is matched whole.
 fn game_path(path: &Path, mod_root: &Path) -> String {
     let within = |path: &Path| {

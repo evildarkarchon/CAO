@@ -154,7 +154,7 @@ impl OptimizerBackend {
 ///
 /// C++ CAO let such an exception reach its Asset Executor, which reported a
 /// backend exception with unknown mutation that stops the run. Panicking here
-/// reaches the same outcome, since the Asset Run contains the panic; the
+/// reaches the same outcome, since the Run Executor contains the panic; the
 /// loaded Mesh's content is unspecified afterwards, and the next load
 /// replaces it.
 fn unless_exception<T>(

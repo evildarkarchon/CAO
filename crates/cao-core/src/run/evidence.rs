@@ -16,14 +16,23 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 
 use crate::Error;
-use crate::execution::MutationState;
-use crate::routing::{RoutingLedger, SkipReason};
+use crate::execution::{AssetExecutionResult, MutationState};
+use crate::routing::{RoutedAsset, RoutingLedger, SkipReason};
 use crate::run::{
     ArchiveCollision, ArchiveExtractionResult, ArchiveFinalizationAttempt,
     ArchiveFinalizationRecorder, ArchiveFinalizationResult, MutationKind, MutationSummary,
-    RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode, RunFailure, RunFailureCode, RunPhase,
-    RunPhaseRecord, RunPhaseStatus, RunPreparation, RunProgress, take_panic_message,
+    RunDiagnostic, RunDiagnosticCode, RunFailure, RunFailureCode, RunPhase, RunPhaseRecord,
+    RunPhaseStatus, RunPreparation, RunProgress, take_panic_message,
 };
+
+/// One completed attempt: its routed identity, resolved Mod Root and durable outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutedAssetAttempt {
+    /// The canonical Mod Root the attempt is attributed to, frozen before it ran.
+    pub mod_root: PathBuf,
+    pub asset: RoutedAsset,
+    pub result: AssetExecutionResult,
+}
 
 /// Receives live facts only after Run Evidence has retained them.
 ///

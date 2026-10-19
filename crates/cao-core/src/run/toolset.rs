@@ -25,10 +25,16 @@ use crate::routing::RoutedAsset;
 use crate::run::{
     ArchiveExtractionPlan, ArchiveExtractionResult, ArchiveExtractor, ArchiveFinalization,
     ArchiveFinalizationRecorder, ArchiveFinalizationSettings, ArchivePacker, ArchiveReader,
-    AssetAttemptAdapter, AssetBackendFactory, AssetInitializationCancelled, CancellationToken,
-    CapacityProbe, RunDiagnostic, RunPreparation, SourceCleanup, TemporaryArtifactRegistry,
-    VolumeIdentityProbe,
+    AssetAttemptAdapter, AssetBackendFactory, CancellationToken, CapacityProbe, RunDiagnostic,
+    RunPreparation, SourceCleanup, TemporaryArtifactRegistry, VolumeIdentityProbe,
 };
+
+/// Cancellation observed while an Asset backend initialized, before any attempt existed.
+///
+/// Initialization is read-only, so the run records cancellation without
+/// inventing an attempt or a mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AssetInitializationCancelled;
 
 /// Executes one Routed Asset against its frozen Mod Root.
 ///

@@ -35,7 +35,7 @@ use cao_winfs::{
     msvc_weakly_canonical, random_nonce, volume_guid_path,
 };
 
-use crate::run::{CancellationToken, RunFailure, RunFailureCode, RunId, RunPhase, is_staging_name};
+use crate::run::{CancellationToken, RunFailure, RunFailureCode, RunId, RunPhase};
 use recovery::Halt;
 
 /// The reserved staging directory beneath every Mod Root.
@@ -552,6 +552,16 @@ fn staging_prefix(extension: &str) -> Option<&'static str> {
         ".nif" | ".btr" | ".bto" => Some(".cao-staging-mesh-"),
         _ => None,
     }
+}
+
+/// Reserves the `.cao-staging` namespace, case-insensitively and for any suffix.
+///
+/// Discovery skips the whole namespace: stale or unverified temporary material
+/// must never become optimization input.
+pub fn is_staging_name(name: &std::ffi::OsStr) -> bool {
+    name.to_string_lossy()
+        .to_ascii_lowercase()
+        .starts_with(".cao-staging")
 }
 
 /// Whether any component of `path` is in the reserved namespace.

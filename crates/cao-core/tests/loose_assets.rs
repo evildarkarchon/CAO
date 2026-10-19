@@ -1,5 +1,5 @@
-//! Loose Asset runs through the Optimization Run Service, with a fake Asset
-//! Execution Backend over real Mod Root directories.
+//! Optimization Runs over Loose Assets through the Optimization Run Service,
+//! with a fake Asset Execution Backend over real Mod Root directories.
 //!
 //! Each run's work goes through a scripted Run Toolset (#553): its Asset
 //! attempts either drive the fake backend behind the production Asset attempt
@@ -32,7 +32,7 @@
 //! Not ported, with reasons:
 //! - The diagnostics adapter of `cancelledArchiveFinalizationIsReported`:
 //!   Rust has no such adapter; diagnostics reach the Run Observation Sink,
-//!   and the Asset Run publishes them before finalization in every path.
+//!   and the Run Executor publishes them before finalization in every path.
 //! - The explicit-Archive rows of `filesystemTraversalPollsCancellation`, and
 //!   the explicit unsupported path of
 //!   `dryRunAggregatesArchiveSkipsAndKeepsDirectoryUnsupportedPathsSilent`: a
@@ -656,7 +656,7 @@ fn a_panicking_backend_becomes_an_unsafe_operation_failure_with_unknown_mutation
 }
 
 /// The Apply request over native Textures and Archive extraction that most
-/// C++ Asset Run scenarios ran under.
+/// C++ `AssetRunTests` scenarios ran under.
 fn archive_and_textures(root: &Path) -> RunRequest {
     request(
         ExecutionMode::Apply,

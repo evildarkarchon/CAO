@@ -23,16 +23,16 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use crate::Error;
 use crate::execution::MutationState;
 use crate::routing::{ExecutionMode, RoutingPolicyRequest};
-use crate::run::asset_run::{AssetRunAdapters, execute_asset_run};
 use crate::run::evidence::RunWorkEvidence;
 use crate::run::mod_selection::resolve_mod_roots;
 use crate::run::{
-    ArchiveAdapters, ArchiveFinalizationPort, ArchiveFinalizationRecorder, CancellationToken,
-    MutableRunEvidence, OptimizationRunResult, PhaseSkipReason, RunConfiguration,
-    RunConfigurationProvider, RunEvidence, RunFailure, RunFailureCode, RunId, RunObservationSink,
-    RunOutcome, RunPhase, RunPhaseRecord, RunPreparation, RunRequest, RunToolset,
-    TemporaryArtifactRegistry, take_panic_message,
+    CancellationToken, MutableRunEvidence, OptimizationRunResult, PhaseSkipReason,
+    RunConfiguration, RunConfigurationProvider, RunEvidence, RunFailure, RunFailureCode, RunId,
+    RunObservationSink, RunOutcome, RunPhase, RunPhaseRecord, RunPreparation, RunRequest,
+    RunToolset, TemporaryArtifactRegistry, take_panic_message,
 };
+
+mod work_phases;
 
 /// Removes the temporary artifacts one Optimization Run registered.
 ///
@@ -81,91 +81,61 @@ pub struct RunServices<'a> {
 /// Translates the run's work milestones into the executor's lifecycle account.
 ///
 /// These are private steps of the Run Executor: the executor alone selects
-/// Run Phases, and its work reports where it has got to. Each method
-/// returns the accepted current phase.
-pub(crate) struct ExecutorMilestones<'e, 'a> {
+/// Run Phases, and its work phases report where they have got to.
+struct ExecutorMilestones<'e, 'a> {
     evidence: &'e RefCell<MutableRunEvidence<'a>>,
+    /// The Routing Policy's execution mode, which selects Archive
+    /// Finalization's record.
     mode: ExecutionMode,
 }
 
 impl ExecutorMilestones<'_, '_> {
-    fn current(&self) -> Result<RunPhaseRecord, Error> {
-        self.evidence
-            .borrow()
-            .current_phase()
-            .copied()
-            .ok_or(Error::EvidenceInvariant(
-                "A milestone was accepted without a current phase",
-            ))
-    }
-
     /// Enters Archive discovery, before any collision or extraction facts.
-    pub(crate) fn archive_discovery_started(&self) -> Result<RunPhaseRecord, Error> {
+    fn archive_discovery_started(&self) -> Result<(), Error> {
         self.evidence
             .borrow_mut()
-            .record_archive_discovery_started()?;
-        self.current()
+            .record_archive_discovery_started()
     }
 
     /// Starts Archive extraction with its immutable attempt total.
-    pub(crate) fn archive_extraction_planned(&self, total: usize) -> Result<RunPhaseRecord, Error> {
+    fn archive_extraction_planned(&self, total: usize) -> Result<(), Error> {
         self.evidence
             .borrow_mut()
-            .record_archive_extraction_plan(total)?;
-        self.current()
+            .record_archive_extraction_plan(total)
     }
 
     /// Records that Dry Run excluded Archive extraction.
-    pub(crate) fn dry_run_archive_extraction(&self) -> Result<RunPhaseRecord, Error> {
+    fn dry_run_archive_extraction(&self) -> Result<(), Error> {
         self.evidence
             .borrow_mut()
-            .record_dry_run_archive_extraction()?;
-        self.current()
+            .record_dry_run_archive_extraction()
     }
 
     /// Enters definitive Effective Asset Tree discovery after Archive work.
-    pub(crate) fn effective_asset_tree_started(&self) -> Result<RunPhaseRecord, Error> {
+    fn effective_asset_tree_started(&self) -> Result<(), Error> {
         self.evidence
             .borrow_mut()
-            .record_effective_asset_tree_started()?;
-        self.current()
+            .record_effective_asset_tree_started()
     }
 
     /// Starts Asset processing with the retained Routing Ledger's routed total.
-    pub(crate) fn asset_processing_planned(&self, total: usize) -> Result<RunPhaseRecord, Error> {
+    fn asset_processing_planned(&self, total: usize) -> Result<(), Error> {
         self.evidence
             .borrow_mut()
-            .record_asset_processing_plan(total)?;
-        self.current()
+            .record_asset_processing_plan(total)
     }
 
-    /// Selects the final work phase from the execution mode and whether a
-    /// finalizer exists. A mode that differs from the request's is an invariant
-    /// violation.
-    pub(crate) fn archive_finalization_available(
-        &self,
-        mode: ExecutionMode,
-        has_finalizer: bool,
-    ) -> Result<RunPhaseRecord, Error> {
-        if mode != self.mode {
-            return Err(Error::EvidenceInvariant(
-                "Work mode differs from the Run Request",
-            ));
-        }
-        let record = match (self.mode, has_finalizer) {
-            (ExecutionMode::DryRun, _) => {
+    /// Records the final work phase from the execution mode: Apply executes
+    /// Archive Finalization through the Run Toolset's port, and Dry Run
+    /// skips it.
+    fn archive_finalization_available(&self) -> Result<(), Error> {
+        let record = match self.mode {
+            ExecutionMode::DryRun => {
                 RunPhaseRecord::skipped(RunPhase::ArchiveFinalization, PhaseSkipReason::DryRun)
             }
-            (ExecutionMode::Apply, true) => {
-                RunPhaseRecord::executed(RunPhase::ArchiveFinalization, None)
-            }
-            (ExecutionMode::Apply, false) => RunPhaseRecord::skipped(
-                RunPhase::ArchiveFinalization,
-                PhaseSkipReason::NoRequestedWork,
-            ),
+            ExecutionMode::Apply => RunPhaseRecord::executed(RunPhase::ArchiveFinalization, None),
         };
-        self.evidence.borrow_mut().record_phase(record)?;
-        Ok(record)
+        self.evidence.borrow_mut().record_phase(record)
     }
 }
 
@@ -252,74 +222,24 @@ fn prepare_run(
 /// Archive Finalization port returned, which escape the run's work.
 fn execute_toolset(
     preparation: &RunPreparation,
-    toolset: RunToolset,
+    mut toolset: RunToolset,
     evidence: &RefCell<MutableRunEvidence<'_>>,
     artifacts: &mut TemporaryArtifactRegistry,
     stop: &CancellationToken,
 ) -> Result<(), Error> {
-    let RunToolset {
-        mut asset_attempt,
-        mut archive_extraction,
-        mut archive_finalization,
-        archive_reader,
-        capacity,
-        volume_identity,
-    } = toolset;
     let milestones = ExecutorMilestones {
         evidence,
         mode: preparation.policy().execution_mode(),
     };
     let work_evidence = RunWorkEvidence::new(evidence);
-    // An Asset attempt's diagnostics are retained, not published, so they
-    // publish with the run's other deferred diagnostics.
-    let mut adapters = AssetRunAdapters::new(Box::new(|asset, mod_root, artifacts| {
-        asset_attempt.attempt(asset, mod_root, artifacts, stop, &mut |diagnostic| {
-            work_evidence.retain_diagnostic(diagnostic)
-        })
-    }));
-    // Dry Run never reads a manifest or extracts, so wiring the Archive
-    // ports unconditionally is harmless.
-    adapters.archives = Some(ArchiveAdapters {
-        reader: &*archive_reader,
-        capacity: &*capacity,
-        volume_identity: &*volume_identity,
-        extract: Box::new(|plan, artifacts| archive_extraction.extract(plan, artifacts)),
-    });
-    adapters.finalize_archive_lifecycle = Some(Box::new(|recorder, artifacts| {
-        finalize_contained(
-            &mut *archive_finalization,
-            preparation,
-            recorder,
-            artifacts,
-            stop,
-        )
-    }));
-    execute_asset_run(
+    work_phases::run_work_phases(
         preparation,
+        &mut toolset,
         &work_evidence,
         artifacts,
         &milestones,
         stop,
-        &mut adapters,
     )
-}
-
-/// Runs the Archive Finalization port, containing its panic as the phase's
-/// Unexpected Exception, which keeps every attempt already recorded and
-/// forbids continuation, as production Archive Finalization contains its own.
-fn finalize_contained(
-    port: &mut dyn ArchiveFinalizationPort,
-    preparation: &RunPreparation,
-    recorder: &ArchiveFinalizationRecorder<'_, '_>,
-    artifacts: &mut TemporaryArtifactRegistry,
-    stop: &CancellationToken,
-) -> Result<(), Error> {
-    match catch_unwind(AssertUnwindSafe(|| {
-        port.finalize(preparation, recorder, artifacts, stop)
-    })) {
-        Ok(outcome) => outcome,
-        Err(payload) => recorder.record_unexpected_exception(take_panic_message(payload)),
-    }
 }
 
 /// The Run Work Escaped detail of work that escaped with `outcome`, or
