@@ -40,6 +40,10 @@ _Avoid_: Asset Run, process, job
 The internal synchronous component that traverses the Run Phase sequence for one Optimization Run and commits its terminal result. It owns no scheduling, dispatches no events, and is the deepest deterministic seam beneath the public Optimization Run.
 _Avoid_: Runner, engine, worker
 
+**Run Toolset**:
+The work ports one Optimization Run uses, built by Preparing from the same profile read as its Routing Policy.
+_Avoid_: Run Work Service, adapters
+
 **Optimization Run Service**:
 The public component that validates a Run Request, starts one Optimization Run, and hands it back as an owning Run Handle. It owns scheduling and the run services, so the GUI and the parity driver supply intent rather than orchestrating a run.
 _Avoid_: Manager, runner, job queue
