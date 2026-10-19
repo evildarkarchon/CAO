@@ -165,7 +165,10 @@ pub enum RunFailureCode {
     ArchiveUnreadable,
     ArchiveEntryInvalid,
     ArchiveInsufficientCapacity,
-    WorkServiceFailed,
+    /// The run's work escaped: an error or panic left the executor's own
+    /// work code, or the Run Worker panicked, outside any port that contains
+    /// it. The run fails at its current phase, keeping every earlier fact.
+    RunWorkEscaped,
 }
 
 /// A retained failure of run preparation or orchestration.

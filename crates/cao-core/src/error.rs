@@ -15,9 +15,10 @@ pub enum Error {
     /// A Run Configuration Provider could not load the profile's facts.
     #[error("{0}")]
     ConfigurationLoading(String),
-    /// The run's work failed outside any Asset or Archive attempt.
+    /// The run's work escaped: it failed outside any Asset or Archive
+    /// attempt, so the run fails with Run Work Escaped.
     #[error("{0}")]
-    WorkService(String),
+    RunWorkEscaped(String),
     /// A Run Scheduler could not start a Run Worker.
     #[error("{0}")]
     Scheduling(String),

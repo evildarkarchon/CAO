@@ -74,13 +74,13 @@ impl<'e, 'a> ArchiveFinalizationRecorder<'e, 'a> {
     /// forbids continuation.
     ///
     /// # Errors
-    /// [`Error::WorkService`] when the phase had already recorded its result,
+    /// [`Error::RunWorkEscaped`] when the phase had already recorded its result,
     /// so the panic has no result left to fail and escapes the run's work
     /// instead; or a Run Evidence invariant violation.
     pub(crate) fn record_unexpected_exception(&self, detail: String) -> Result<(), Error> {
         let mut evidence = self.evidence.borrow_mut();
         if evidence.archive_finalization_completed() {
-            return Err(Error::WorkService(format!(
+            return Err(Error::RunWorkEscaped(format!(
                 "Archive Finalization panicked after recording its result: {detail}"
             )));
         }

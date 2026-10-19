@@ -139,7 +139,7 @@ fn classified_run(scenario: Scenario) -> Arc<OptimizationRunResult> {
             recorder.record_attempt(packed)?;
             // Not a Run Evidence invariant violation, so it escapes the run's
             // work and fails the run at Archive Finalization.
-            return Err(Error::WorkService("the packer is gone".to_owned()));
+            return Err(Error::RunWorkEscaped("the packer is gone".to_owned()));
         }
         record_finalization_result(
             recorder,
@@ -290,7 +290,7 @@ fn detail_rows_keep_unicode_paths() {
             1,
             RunEventPayload::Failure(
                 RunFailure::new(
-                    RunFailureCode::WorkServiceFailed,
+                    RunFailureCode::RunWorkEscaped,
                     RunPhase::ExtractingArchives,
                     "archive failure",
                 )
@@ -473,7 +473,7 @@ fn evidence_run(cleanup: Vec<RunFailure>) -> Arc<OptimizationRunResult> {
                 )?;
                 // Not a Run Evidence invariant violation, so it escapes the run's
                 // work as the run's primary Run Failure.
-                Err(Error::WorkService("primary failure".to_owned()))
+                Err(Error::RunWorkEscaped("primary failure".to_owned()))
             });
     let request = RunRequest::new(
         "SkyrimSE",

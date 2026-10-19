@@ -322,12 +322,11 @@ fn finalize_contained(
     }
 }
 
-/// The Run Failure detail of work that escaped with `outcome`, or `None`
-/// when it finished or hit a Run Evidence invariant violation, which is
-/// noted in `invariant` instead. `panicked` names what panicked.
+/// The Run Work Escaped detail of work that escaped with `outcome`, or
+/// `None` when it finished or hit a Run Evidence invariant violation, which
+/// is noted in `invariant` instead. An escaped error keeps its own message.
 fn escaped_work_detail(
     outcome: std::thread::Result<Result<(), Error>>,
-    panicked: &str,
     invariant: &mut DeferredInvariant,
 ) -> Option<String> {
     match outcome {
@@ -338,7 +337,7 @@ fn escaped_work_detail(
         }
         Ok(Err(error)) => Some(error.to_string()),
         Err(payload) => Some(format!(
-            "{panicked} panicked: {}",
+            "The run's work escaped with a panic: {}",
             take_panic_message(payload)
         )),
     }
@@ -526,7 +525,10 @@ impl RunExecutor {
             )
         }));
         if let Err(payload) = traversal {
-            let detail = format!("The Run Worker panicked: {}", take_panic_message(payload));
+            let detail = format!(
+                "The run's work escaped with a Run Worker panic: {}",
+                take_panic_message(payload)
+            );
             log::error!("{detail}");
             // Any evidence borrow the panic interrupted was released by unwinding.
             let mut evidence = evidence.borrow_mut();
@@ -534,7 +536,7 @@ impl RunExecutor {
                 .current_phase()
                 .map_or(RunPhase::Preparing, RunPhaseRecord::phase);
             evidence.record_failure(RunFailure::new(
-                RunFailureCode::WorkServiceFailed,
+                RunFailureCode::RunWorkEscaped,
                 phase,
                 detail,
             ));
@@ -565,7 +567,7 @@ impl RunExecutor {
         // Retained without publishing: Safety Cleanup has already been
         // published, and no Run Failure event may follow it.
         evidence.retain_failure(RunFailure::new(
-            RunFailureCode::WorkServiceFailed,
+            RunFailureCode::RunWorkEscaped,
             final_phase,
             violation.clone(),
         ));
@@ -681,7 +683,7 @@ impl RunExecutor {
             let outcome = catch_unwind(AssertUnwindSafe(|| {
                 run_work(prepared, toolset, evidence, artifacts, stop)
             }));
-            if let Some(detail) = escaped_work_detail(outcome, "The run's work", invariant) {
+            if let Some(detail) = escaped_work_detail(outcome, invariant) {
                 Self::fail_at_current_phase(evidence, detail);
             }
         } else {
@@ -712,7 +714,7 @@ impl RunExecutor {
             .current_phase()
             .map_or(RunPhase::Preparing, RunPhaseRecord::phase);
         evidence.record_failure(RunFailure::new(
-            RunFailureCode::WorkServiceFailed,
+            RunFailureCode::RunWorkEscaped,
             phase,
             detail,
         ));

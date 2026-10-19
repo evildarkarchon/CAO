@@ -342,7 +342,7 @@ fn a_finalization_port_error_escapes_the_work_and_fails_the_run() {
     let [failure] = result.failures() else {
         panic!("one Run Failure: {:?}", result.failures());
     };
-    assert_eq!(failure.code, RunFailureCode::WorkServiceFailed);
+    assert_eq!(failure.code, RunFailureCode::RunWorkEscaped);
     assert_eq!(failure.phase, RunPhase::ArchiveFinalization);
     assert!(failure.detail.contains("the packer is gone"), "{failure:?}");
     assert_eq!(result.asset_attempts().len(), 1, "earlier facts are kept");

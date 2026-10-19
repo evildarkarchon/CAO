@@ -1624,7 +1624,7 @@ fn discovery_diagnostics_survive_an_interruption_after_extraction() {
     assert_eq!(result.outcome(), RunOutcome::Failed);
     assert_eq!(result.archive_extraction_attempts().len(), 1);
     assert_eq!(result.failures().len(), 1);
-    assert_eq!(result.failures()[0].code, RunFailureCode::WorkServiceFailed);
+    assert_eq!(result.failures()[0].code, RunFailureCode::RunWorkEscaped);
     assert_eq!(result.failures()[0].phase, RunPhase::ArchiveFinalization);
     let [diagnostic] = result.diagnostics() else {
         panic!("one diagnostic expected: {:?}", result.diagnostics());
@@ -2075,7 +2075,7 @@ fn a_committed_extraction_survives_a_later_interruption() {
 
         if escapes {
             assert_eq!(result.outcome(), RunOutcome::Failed);
-            assert_eq!(result.failures()[0].code, RunFailureCode::WorkServiceFailed);
+            assert_eq!(result.failures()[0].code, RunFailureCode::RunWorkEscaped);
         } else {
             assert_eq!(result.outcome(), RunOutcome::Cancelled);
             assert!(result.failures().is_empty());

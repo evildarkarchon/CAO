@@ -194,7 +194,7 @@ impl ScriptedToolset {
     /// invariant violation, so it escapes the run's work and fails the run.
     pub fn with_finalization_error(self, detail: impl Into<String>) -> Self {
         let detail = detail.into();
-        self.with_finalization(move |_, _, _| Err(Error::WorkService(detail.clone())))
+        self.with_finalization(move |_, _, _| Err(Error::RunWorkEscaped(detail.clone())))
     }
 
     /// A fresh Run Toolset over this script, as a provider returns for one

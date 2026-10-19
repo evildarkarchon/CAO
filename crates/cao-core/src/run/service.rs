@@ -206,8 +206,11 @@ impl RunShared {
                 Ok(sealed) => return sealed.result,
                 Err(payload) => payload,
             };
-            let detail = take_panic_message(payload);
-            log::error!("The Run Worker panicked: {detail}");
+            let detail = format!(
+                "The run's work escaped with a Run Worker panic: {}",
+                take_panic_message(payload)
+            );
+            log::error!("{detail}");
             let work_phase = lock(&self.published).work_phase;
             let mut cleanup = lock(&self.cleanup);
             // If the executor already performed and published Safety Cleanup,
@@ -215,11 +218,7 @@ impl RunShared {
             // failure is still retained in the result.
             let pending = !cleanup.performed;
             RunExecutor::terminal_failure(
-                RunFailure::new(
-                    RunFailureCode::WorkServiceFailed,
-                    work_phase,
-                    format!("The Run Worker panicked: {detail}"),
-                ),
+                RunFailure::new(RunFailureCode::RunWorkEscaped, work_phase, detail),
                 pending.then_some(&mut *cleanup as &mut dyn SafetyCleanupService),
                 pending.then_some(self.as_ref() as &dyn RunObservationSink),
                 work_phase,

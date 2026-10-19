@@ -825,7 +825,7 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
         };
         assert_eq!(result.outcome(), expected, "{row}");
         if !cancels {
-            assert_eq!(result.failures()[0].code, RunFailureCode::WorkServiceFailed);
+            assert_eq!(result.failures()[0].code, RunFailureCode::RunWorkEscaped);
             assert_eq!(result.failures()[0].phase, RunPhase::ArchiveFinalization);
             assert!(
                 result.failures()[0]
@@ -1720,7 +1720,7 @@ fn a_discovery_diagnostic_survives_a_failure_later_in_discovery() {
 
     assert_eq!(result.outcome(), RunOutcome::Failed);
     assert_eq!(result.failures().len(), 1);
-    assert_eq!(result.failures()[0].code, RunFailureCode::WorkServiceFailed);
+    assert_eq!(result.failures()[0].code, RunFailureCode::RunWorkEscaped);
     assert!(
         result.failures()[0]
             .detail
@@ -1828,7 +1828,7 @@ fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
         if fails {
             assert_eq!(result.outcome(), RunOutcome::Failed, "{row}");
             assert_eq!(result.failures().len(), 1, "{row}");
-            assert_eq!(result.failures()[0].code, RunFailureCode::WorkServiceFailed);
+            assert_eq!(result.failures()[0].code, RunFailureCode::RunWorkEscaped);
             assert!(
                 result.failures()[0]
                     .detail

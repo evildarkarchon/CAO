@@ -318,7 +318,7 @@ fn failure_code(code: CoreFailureCode) -> RunFailureCode {
         CoreFailureCode::ArchiveUnreadable => RunFailureCode::ArchiveUnreadable,
         CoreFailureCode::ArchiveEntryInvalid => RunFailureCode::ArchiveEntryInvalid,
         CoreFailureCode::ArchiveInsufficientCapacity => RunFailureCode::ArchiveInsufficientCapacity,
-        CoreFailureCode::WorkServiceFailed => RunFailureCode::WorkServiceFailed,
+        CoreFailureCode::RunWorkEscaped => RunFailureCode::WorkServiceFailed,
     }
 }
 

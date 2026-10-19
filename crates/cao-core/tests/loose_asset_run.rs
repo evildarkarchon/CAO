@@ -830,7 +830,7 @@ fn a_failing_finalizer_fails_the_run_at_archive_finalization() {
             continue;
         }
         let failure = &result.failures()[0];
-        assert_eq!(failure.code, RunFailureCode::WorkServiceFailed, "{row}");
+        assert_eq!(failure.code, RunFailureCode::RunWorkEscaped, "{row}");
         assert_eq!(failure.phase, RunPhase::ArchiveFinalization, "{row}");
         assert!(
             failure.detail.contains("Archive Finalization failed"),

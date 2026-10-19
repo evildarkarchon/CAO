@@ -150,18 +150,22 @@ fn escaped_work_fails_the_run_at_its_phase_and_safety_cleanup_still_removes_its_
     let rows: [(&str, Fault, &str); 3] = [
         (
             "error",
-            || Err(Error::WorkService("the backend is unavailable".to_owned())),
+            || {
+                Err(Error::RunWorkEscaped(
+                    "the backend is unavailable".to_owned(),
+                ))
+            },
             "the backend is unavailable",
         ),
         (
             "panic",
             || panic!("the work escaped"),
-            "The run's work panicked: the work escaped",
+            "The run's work escaped with a panic: the work escaped",
         ),
         (
             "payload panics on drop",
             || std::panic::panic_any(PanicsAgainOnDrop),
-            "The run's work panicked",
+            "The run's work escaped with a panic",
         ),
     ];
     for (name, fault, detail) in rows {
@@ -183,7 +187,7 @@ fn escaped_work_fails_the_run_at_its_phase_and_safety_cleanup_still_removes_its_
         assert_eq!(result.outcome(), RunOutcome::Failed, "{name}");
         assert_eq!(result.failures().len(), 1, "{name}");
         let failure = &result.failures()[0];
-        assert_eq!(failure.code, RunFailureCode::WorkServiceFailed, "{name}");
+        assert_eq!(failure.code, RunFailureCode::RunWorkEscaped, "{name}");
         assert_eq!(failure.phase, RunPhase::DiscoveringArchives, "{name}");
         assert!(
             failure.detail.starts_with(detail),
@@ -253,7 +257,7 @@ fn an_evidence_invariant_violation_panics_only_after_safety_cleanup() {
     assert!(result.preparation().is_some());
     assert_eq!(result.final_phase(), RunPhase::DiscoveringArchives);
     assert_eq!(result.failures().len(), 1);
-    assert_eq!(result.failures()[0].code, RunFailureCode::WorkServiceFailed);
+    assert_eq!(result.failures()[0].code, RunFailureCode::RunWorkEscaped);
     assert_eq!(result.failures()[0].detail, sealed.violation);
     assert_eq!(
         result.phases().last().unwrap().phase(),
