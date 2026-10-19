@@ -1,5 +1,6 @@
 //! Observation fakes: the Run Event log and the recording Run Observation Sink.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::run::{
@@ -74,9 +75,37 @@ impl RecordingSink {
         }
     }
 
+    /// A sink running `hook` on the first phase record of `phase`; a phase's
+    /// record fires again with every progress update, so later ones are ignored.
+    pub fn on_first_record_of(phase: RunPhase, hook: impl Fn() + 'static) -> Self {
+        let fired = AtomicBool::new(false);
+        Self::with_hook(move |observed| {
+            if let Observed::Phase(record) = observed
+                && record.phase() == phase
+                && !fired.swap(true, Ordering::SeqCst)
+            {
+                hook();
+            }
+        })
+    }
+
     /// Every observation received so far, in order.
     pub fn observed(&self) -> Vec<Observed> {
         self.observed.lock().unwrap().clone()
+    }
+
+    /// Each phase in the order this sink first observed it; a phase's
+    /// repeated progress records count once.
+    pub fn phase_order(&self) -> Vec<RunPhase> {
+        let mut phases: Vec<RunPhase> = Vec::new();
+        for observation in self.observed() {
+            if let Observed::Phase(record) = observation
+                && phases.last() != Some(&record.phase())
+            {
+                phases.push(record.phase());
+            }
+        }
+        phases
     }
 
     fn observe(&self, observation: Observed) {

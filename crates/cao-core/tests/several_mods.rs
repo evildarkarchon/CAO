@@ -18,10 +18,10 @@ use cao_core::run::{
 };
 use cao_core::test_support::{
     EventLog, FakeBackendFactory, GatedScheduler, ScriptedToolset, ToolsetConfiguration,
+    sse_profile,
 };
 use common::{
-    HandleSlot, backend_toolset, canonical, junction, reclaim, scratch_dir, serial, sse_profile,
-    write_tree,
+    HandleSlot, backend_toolset, canonical, junction, reclaim, scratch_dir, serial, write_tree,
 };
 
 /// The SSE-like profile's configuration with the given Mod Exclusion lists.

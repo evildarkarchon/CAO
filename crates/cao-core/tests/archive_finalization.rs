@@ -39,14 +39,14 @@ use cao_core::routing::{ExecutionMode, RequestedWork, RoutingPolicyRequest};
 use cao_core::run::{
     ArchiveFinalization, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
     ArchiveFinalizationSettings, ArchivePrecedence, ArchiveReader, CancellationToken, MutationKind,
-    PackedArchiveKind, RunConfiguration, RunDiagnostic, RunFailure, RunObservationSink, RunPhase,
-    RunPhaseRecord, RunPreparation, TemporaryArtifactRegistry, create_run_id,
+    PackedArchiveKind, RunDiagnostic, RunFailure, RunObservationSink, RunPhase, RunPhaseRecord,
+    RunPreparation, TemporaryArtifactRegistry, create_run_id,
 };
 use cao_core::test_support::{
     ArchiveFinalizationEvidence as Evidence, FakeArchivePacker, FakeArchiveReader, FakeCapacity,
-    FakeVolumes, fake_dummy_plugin,
+    FakeVolumes, fake_dummy_plugin, sse_configuration,
 };
-use common::{archives_in, canonical, junction, scratch_dir, sse_profile};
+use common::{archives_in, canonical, junction, scratch_dir};
 
 /// More bytes than any scenario needs.
 const UNLIMITED: u64 = u64::MAX;
@@ -80,11 +80,7 @@ fn preparation_for(roots: &[PathBuf], create_archives: bool) -> RunPreparation {
     } else {
         RequestedWork::NativeTextureOptimization
     };
-    let configuration = RunConfiguration {
-        profile: sse_profile(),
-        ignored_mods: Vec::new(),
-        separator_suffixes: Vec::new(),
-    };
+    let configuration = sse_configuration();
     let policy = configuration
         .profile
         .compile_policy(RoutingPolicyRequest::for_work(

@@ -14,26 +14,14 @@ use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationS
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ArchiveFinalizationAttempt, ArchiveFinalizationFailure, CancellationToken,
-    OptimizationRunResult, PhaseSkipReason, RunConfiguration, RunDiagnostic, RunDiagnosticCode,
-    RunExecutor, RunFailureCode, RunOutcome, RunPhase, RunPhaseStatus, RunRequest, RunServices,
-    create_run_id,
+    OptimizationRunResult, PhaseSkipReason, RunDiagnostic, RunDiagnosticCode, RunFailureCode,
+    RunOutcome, RunPhase, RunPhaseStatus, RunRequest,
 };
 use cao_core::test_support::{
     CountingCleanup, FakeBackendFactory, Observed, RecordingSink, ScriptedToolset,
-    ToolsetConfiguration, entry, write_archive,
+    ToolsetConfiguration, entry, execute_run, write_archive,
 };
-use common::{canonical, request, scratch_dir, sse_profile, write_tree};
-
-/// A provider of the SSE-like profile that returns `toolset`, if any.
-fn provider(toolset: Option<&Arc<ScriptedToolset>>) -> ToolsetConfiguration {
-    ToolsetConfiguration::new(
-        RunConfiguration {
-            profile: sse_profile(),
-            ..RunConfiguration::default()
-        },
-        toolset.cloned(),
-    )
-}
+use common::{canonical, request, scratch_dir, write_tree};
 
 /// Executes `request` through `configuration`, observing every fact through
 /// `sink`.
@@ -44,29 +32,7 @@ fn execute(
     cleanup: &mut CountingCleanup,
     stop: &CancellationToken,
 ) -> OptimizationRunResult {
-    RunExecutor.execute(
-        request,
-        RunServices {
-            safety_cleanup: cleanup,
-            observations: Some(sink),
-            configuration: Some(configuration),
-        },
-        stop,
-        create_run_id(),
-    )
-}
-
-/// Each phase in the order the sink first observed it.
-fn observed_phase_order(sink: &RecordingSink) -> Vec<RunPhase> {
-    let mut phases: Vec<RunPhase> = Vec::new();
-    for observation in sink.observed() {
-        if let Observed::Phase(record) = observation
-            && phases.last() != Some(&record.phase())
-        {
-            phases.push(record.phase());
-        }
-    }
-    phases
+    execute_run(request, cleanup, Some(sink), Some(configuration), stop)
 }
 
 #[test]
@@ -77,7 +43,7 @@ fn an_apply_run_through_a_toolset_traverses_every_phase_and_succeeds() {
         ScriptedToolset::default()
             .with_assets(|_, _, _| Ok(AssetExecutionResult::success(MutationState::Committed))),
     );
-    let configuration = provider(Some(&toolset));
+    let configuration = ToolsetConfiguration::sse(Some(Arc::clone(&toolset)));
     let sink = RecordingSink::default();
     let mut cleanup = CountingCleanup::default();
 
@@ -94,7 +60,7 @@ fn an_apply_run_through_a_toolset_traverses_every_phase_and_succeeds() {
     );
 
     assert_eq!(result.outcome(), RunOutcome::Succeeded);
-    assert_eq!(observed_phase_order(&sink), RunPhase::SEQUENCE);
+    assert_eq!(sink.phase_order(), RunPhase::SEQUENCE);
     assert_eq!(result.asset_attempts().len(), 2);
     assert_eq!(toolset.attempted().len(), 2);
     assert_eq!(
@@ -112,7 +78,7 @@ fn an_apply_run_through_a_toolset_traverses_every_phase_and_succeeds() {
 fn requested_work_without_a_toolset_fails_preparing() {
     let root = scratch_dir("toolset-unavailable");
     write_tree(&root, &["textures/a.dds"]);
-    let configuration = provider(None);
+    let configuration = ToolsetConfiguration::sse(None);
     let sink = RecordingSink::default();
     let mut cleanup = CountingCleanup::default();
 
@@ -151,7 +117,7 @@ fn a_dry_run_through_a_toolset_never_extracts_or_finalizes() {
 
     let result = execute(
         &archives_and_textures(ExecutionMode::DryRun, &root),
-        &provider(Some(&toolset)),
+        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
         &sink,
         &mut CountingCleanup::default(),
         &CancellationToken::new(),
@@ -186,7 +152,7 @@ fn an_apply_run_extracts_archives_through_the_toolset_before_routing() {
 
     let result = execute(
         &archives_and_textures(ExecutionMode::Apply, &root),
-        &provider(Some(&toolset)),
+        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
         &RecordingSink::default(),
         &mut CountingCleanup::default(),
         &CancellationToken::new(),
@@ -227,7 +193,7 @@ fn an_extraction_port_panic_is_unknown_mutation_that_stops_the_run() {
 
     let result = execute(
         &archives_and_textures(ExecutionMode::Apply, &root),
-        &provider(Some(&toolset)),
+        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
         &RecordingSink::default(),
         &mut CountingCleanup::default(),
         &CancellationToken::new(),
@@ -256,7 +222,7 @@ fn an_asset_attempt_port_panic_is_an_unsafe_operation_failure() {
             &root,
             &[RequestedWork::NativeTextureOptimization],
         ),
-        &provider(Some(&toolset)),
+        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
         &RecordingSink::default(),
         &mut CountingCleanup::default(),
         &CancellationToken::new(),
@@ -302,7 +268,7 @@ fn a_fake_backend_runs_behind_the_production_asset_attempt_adapter() {
             &root,
             &[RequestedWork::NativeTextureOptimization],
         ),
-        &provider(Some(&toolset)),
+        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
         &sink,
         &mut CountingCleanup::default(),
         &CancellationToken::new(),
@@ -336,7 +302,7 @@ fn a_finalization_port_error_escapes_the_work_and_fails_the_run() {
             &root,
             &[RequestedWork::NativeTextureOptimization],
         ),
-        &provider(Some(&toolset)),
+        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
         &RecordingSink::default(),
         &mut cleanup,
         &CancellationToken::new(),
@@ -374,7 +340,7 @@ fn a_finalization_port_panic_is_an_unexpected_exception_keeping_its_attempts() {
             &root,
             &[RequestedWork::NativeTextureOptimization],
         ),
-        &provider(Some(&toolset)),
+        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
         &RecordingSink::default(),
         &mut CountingCleanup::default(),
         &CancellationToken::new(),
@@ -412,7 +378,7 @@ fn a_sink_observer_can_cancel_once_the_extraction_phase_is_recorded() {
 
     let result = execute(
         &archives_and_textures(ExecutionMode::Apply, &root),
-        &provider(Some(&toolset)),
+        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
         &sink,
         &mut CountingCleanup::default(),
         &stop,

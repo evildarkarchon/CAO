@@ -1,4 +1,5 @@
-//! The scripted Run Toolset and the configuration provider that returns it.
+//! The scripted Run Toolset, the configuration provider that returns it, and
+//! the call that runs a request through the real Run Executor with them.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,10 +12,13 @@ use crate::run::{
     ArchiveExtractionPlan, ArchiveExtractionPort, ArchiveExtractionResult, ArchiveExtractor,
     ArchiveFinalizationPort, ArchiveFinalizationRecorder, ArchiveFinalizationResult,
     AssetAttemptAdapter, AssetAttemptPort, AssetBackendFactory, AssetInitializationCancelled,
-    CancellationToken, RunConfiguration, RunConfigurationProvider, RunDiagnostic, RunPreparation,
-    RunToolset, TemporaryArtifactRegistry,
+    CancellationToken, OptimizationRunResult, RunConfiguration, RunConfigurationProvider,
+    RunDiagnostic, RunExecutor, RunObservationSink, RunPreparation, RunRequest, RunServices,
+    RunToolset, SafetyCleanupService, TemporaryArtifactRegistry, create_run_id,
 };
-use crate::test_support::{FakeArchiveReader, FakeBackendFactory, FakeCapacity, FakeVolumes};
+use crate::test_support::{
+    FakeArchiveReader, FakeBackendFactory, FakeCapacity, FakeVolumes, sse_configuration,
+};
 
 /// What a scripted Asset attempt returns for one Routed Asset and its frozen
 /// Mod Root. It may stage through the lent registry, or panic.
@@ -379,6 +383,34 @@ impl ToolsetConfiguration {
             loads: AtomicUsize::new(0),
         }
     }
+
+    /// A provider of the SSE-like [`sse_configuration`] and of `toolset`'s
+    /// Toolsets, if any.
+    pub fn sse(toolset: Option<Arc<ScriptedToolset>>) -> Self {
+        Self::new(sse_configuration(), toolset)
+    }
+}
+
+/// Executes `request` through the real Run Executor with the services the
+/// scenario supplies and a fresh Run ID. Requested work runs only through the
+/// Run Toolset `configuration` returns, if any.
+pub fn execute_run(
+    request: &RunRequest,
+    cleanup: &mut dyn SafetyCleanupService,
+    observations: Option<&dyn RunObservationSink>,
+    configuration: Option<&dyn RunConfigurationProvider>,
+    stop: &CancellationToken,
+) -> OptimizationRunResult {
+    RunExecutor.execute(
+        request,
+        RunServices {
+            safety_cleanup: cleanup,
+            observations,
+            configuration,
+        },
+        stop,
+        create_run_id(),
+    )
 }
 
 impl RunConfigurationProvider for ToolsetConfiguration {

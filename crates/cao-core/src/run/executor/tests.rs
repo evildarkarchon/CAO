@@ -14,9 +14,8 @@ use super::{RunEvidenceInvariantPanic, RunExecutor, RunServices, RunWork};
 use crate::Error;
 use crate::routing::{ExecutionMode, RequestedWork};
 use crate::run::{
-    CancellationToken, ModSelection, MutableRunEvidence, OptimizationRunResult, RunConfiguration,
-    RunFailureCode, RunOutcome, RunPhase, RunPreparation, RunRequest, SelectedProfileFacts,
-    TemporaryArtifactRegistry, create_run_id,
+    CancellationToken, ModSelection, MutableRunEvidence, OptimizationRunResult, RunFailureCode,
+    RunOutcome, RunPhase, RunPreparation, RunRequest, TemporaryArtifactRegistry, create_run_id,
 };
 use crate::test_support::{CountingCleanup, ScriptedToolset, ToolsetConfiguration};
 
@@ -51,24 +50,7 @@ fn texture_request(name: &str) -> (RunRequest, PathBuf) {
 /// A provider of an SSE-like profile with a default scripted Run Toolset, so
 /// the traversal reaches its work phases.
 fn provider() -> ToolsetConfiguration {
-    let profile = SelectedProfileFacts {
-        archive_extension: Some(".bsa".to_owned()),
-        supports_native_texture_optimization: true,
-        supports_texture_conversion: true,
-        supports_standard_mesh_optimization: true,
-        supports_terrain_mesh_optimization: true,
-        supports_animation_optimization: true,
-        supports_archive_extraction: true,
-        supports_mesh_reference_maintenance: true,
-        supports_archive_creation: true,
-    };
-    ToolsetConfiguration::new(
-        RunConfiguration {
-            profile,
-            ..RunConfiguration::default()
-        },
-        Some(Arc::new(ScriptedToolset::default())),
-    )
+    ToolsetConfiguration::sse(Some(Arc::new(ScriptedToolset::default())))
 }
 
 /// Runs `request` with `work` in place of the Toolset's work phases.

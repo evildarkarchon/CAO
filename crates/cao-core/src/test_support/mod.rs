@@ -15,7 +15,10 @@
 //! [`ScriptedToolset`] scripts a run's Asset attempt, extraction and Archive
 //! Finalization results, and [`ToolsetConfiguration`] returns a fresh Run
 //! Toolset over it to each run, so a scenario drives the real Run Executor
-//! through its Toolset path (#550).
+//! through its Toolset path (#550). [`ToolsetConfiguration::sse`] provides
+//! the all-supported [`sse_profile`] most scenarios configure, and
+//! [`execute_run`] runs a request through the real Run Executor with the
+//! services a scenario supplies.
 
 mod archives;
 mod backend;
@@ -32,7 +35,9 @@ pub use archives::{
 };
 pub use backend::{FakeBackend, FakeBackendFactory, FinishedAttempt};
 pub use cleanup::{CountingCleanup, ScriptedCleanup};
-pub use configuration::{CallbackConfiguration, FixedConfiguration, Loader};
+pub use configuration::{
+    CallbackConfiguration, FixedConfiguration, Loader, sse_configuration, sse_profile,
+};
 pub use finalization::ArchiveFinalizationEvidence;
 pub use observation::{EventLog, ObservationHook, Observed, RecordingSink};
 pub use scheduling::{
@@ -40,5 +45,5 @@ pub use scheduling::{
 };
 pub use toolset::{
     AssetAdapterMaker, AssetAttemptScript, AssetAttempts, ExtractionScript, FinalizationScript,
-    ScriptedToolset, ToolsetConfiguration, record_finalization_result,
+    ScriptedToolset, ToolsetConfiguration, execute_run, record_finalization_result,
 };

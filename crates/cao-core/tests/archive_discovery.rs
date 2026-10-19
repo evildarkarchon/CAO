@@ -41,15 +41,14 @@ use cao_core::execution::MutationState;
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ArchiveExtractionFailure, ArchiveExtractionResult, ArchivePrecedence, CancellationToken,
-    ModSelection, MutationKind, OptimizationRunResult, RunConfiguration, RunDiagnosticCode,
-    RunExecutor, RunFailureCode, RunObservationSink, RunOutcome, RunPhase, RunRequest, RunServices,
-    create_run_id,
+    ModSelection, MutationKind, OptimizationRunResult, RunDiagnosticCode, RunFailureCode,
+    RunObservationSink, RunOutcome, RunPhase, RunRequest,
 };
 use cao_core::test_support::{
     CountingCleanup, FakeArchiveReader, FakeCapacity, FakeEntry, FakeVolumes, Observed,
-    RecordingSink, ScriptedToolset, ToolsetConfiguration, entry, write_archive,
+    RecordingSink, ScriptedToolset, ToolsetConfiguration, entry, execute_run, write_archive,
 };
-use common::{canonical, junction, request, scratch_dir, snapshot_tree, sse_profile, write_tree};
+use common::{canonical, junction, request, scratch_dir, snapshot_tree, write_tree};
 
 /// The Apply request over native Textures and Archive extraction.
 fn archives_and_textures(root: &Path) -> RunRequest {
@@ -80,24 +79,9 @@ fn execute_with(
     observations: Option<&dyn RunObservationSink>,
     stop: &CancellationToken,
 ) -> OptimizationRunResult {
-    let provider = ToolsetConfiguration::new(
-        RunConfiguration {
-            profile: sse_profile(),
-            ..RunConfiguration::default()
-        },
-        Some(Arc::clone(toolset)),
-    );
+    let provider = ToolsetConfiguration::sse(Some(Arc::clone(toolset)));
     let mut cleanup = CountingCleanup::default();
-    let result = RunExecutor.execute(
-        request,
-        RunServices {
-            safety_cleanup: &mut cleanup,
-            observations,
-            configuration: Some(&provider),
-        },
-        stop,
-        create_run_id(),
-    );
+    let result = execute_run(request, &mut cleanup, observations, Some(&provider), stop);
     assert_eq!(cleanup.passes, 1, "Safety Cleanup always runs once");
     result
 }
@@ -137,20 +121,6 @@ fn extracted_archives(toolset: &ScriptedToolset) -> Vec<PathBuf> {
         .into_iter()
         .map(|plan| plan.archive_path)
         .collect()
-}
-
-/// A sink running `hook` on the first phase record of `phase`; a phase's
-/// record fires again with every progress update, so later ones are ignored.
-fn on_first_record_of(phase: RunPhase, hook: impl Fn() + 'static) -> RecordingSink {
-    let fired = AtomicBool::new(false);
-    RecordingSink::with_hook(move |observed| {
-        if let Observed::Phase(record) = observed
-            && record.phase() == phase
-            && !fired.swap(true, Ordering::SeqCst)
-        {
-            hook();
-        }
-    })
 }
 
 /// The progress of every phase record `sink` saw for `phase` after at least
@@ -714,7 +684,7 @@ fn collisions_are_recorded_and_reported_before_the_first_extraction() {
             }
         });
         let flag = Arc::clone(&reported);
-        let sink = on_first_record_of(RunPhase::ExtractingArchives, move || {
+        let sink = RecordingSink::on_first_record_of(RunPhase::ExtractingArchives, move || {
             flag.store(true, Ordering::SeqCst)
         });
         let precedence = if explicit {
@@ -888,7 +858,8 @@ fn a_collision_observer_can_cancel_before_any_extraction() {
     let toolset = Arc::new(ScriptedToolset::default());
     let stop = CancellationToken::new();
     let raise = stop.clone();
-    let sink = on_first_record_of(RunPhase::ExtractingArchives, move || raise.cancel());
+    let sink =
+        RecordingSink::on_first_record_of(RunPhase::ExtractingArchives, move || raise.cancel());
 
     let result = execute_with(&archives_and_textures(&root), &toolset, Some(&sink), &stop);
 
@@ -1034,7 +1005,7 @@ fn a_loose_asset_created_after_preflight_blocks_the_merge() {
     let loose = root.join("Textures").join("A.DDS");
     let late = loose.clone();
     let toolset = Arc::new(ScriptedToolset::default());
-    let sink = on_first_record_of(RunPhase::ExtractingArchives, move || {
+    let sink = RecordingSink::on_first_record_of(RunPhase::ExtractingArchives, move || {
         std::fs::create_dir_all(late.parent().unwrap()).unwrap();
         std::fs::write(&late, "late loose").unwrap();
     });
@@ -1075,7 +1046,7 @@ fn frozen_precedence_survives_a_failed_winner_or_a_vanished_loose_asset() {
         }
         let (archive, asset) = (root.join("a.bsa"), root.join("textures/a.dds"));
         let toolset = Arc::new(ScriptedToolset::default());
-        let sink = on_first_record_of(RunPhase::ExtractingArchives, move || {
+        let sink = RecordingSink::on_first_record_of(RunPhase::ExtractingArchives, move || {
             if loose {
                 std::fs::remove_file(&asset).unwrap();
             } else {
@@ -1656,7 +1627,9 @@ fn cancellation_once_the_definitive_pass_begins_leaves_no_tree() {
     let toolset = Arc::new(ScriptedToolset::default());
     let stop = CancellationToken::new();
     let raise = stop.clone();
-    let sink = on_first_record_of(RunPhase::BuildingEffectiveAssetTree, move || raise.cancel());
+    let sink = RecordingSink::on_first_record_of(RunPhase::BuildingEffectiveAssetTree, move || {
+        raise.cancel()
+    });
 
     let result = execute_with(&archives_and_textures(&root), &toolset, Some(&sink), &stop);
 
@@ -1772,7 +1745,7 @@ fn a_failing_collision_observer_cannot_lose_the_retained_plan() {
     let (flag, seen) = (Arc::clone(&reported), Arc::clone(&reported));
     let order = Arc::new(std::sync::Mutex::new(Vec::new()));
     let extractions = Arc::clone(&order);
-    let sink = on_first_record_of(RunPhase::ExtractingArchives, move || {
+    let sink = RecordingSink::on_first_record_of(RunPhase::ExtractingArchives, move || {
         flag.store(true, Ordering::SeqCst);
         panic!("collision observer");
     });

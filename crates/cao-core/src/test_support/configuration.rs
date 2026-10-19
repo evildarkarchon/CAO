@@ -3,7 +3,31 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::Error;
-use crate::run::{RunConfiguration, RunConfigurationProvider, RunToolset};
+use crate::run::{RunConfiguration, RunConfigurationProvider, RunToolset, SelectedProfileFacts};
+
+/// An SSE-like profile that supports every kind of work, with `.bsa` Archives.
+pub fn sse_profile() -> SelectedProfileFacts {
+    SelectedProfileFacts {
+        archive_extension: Some(".bsa".to_owned()),
+        supports_native_texture_optimization: true,
+        supports_texture_conversion: true,
+        supports_standard_mesh_optimization: true,
+        supports_terrain_mesh_optimization: true,
+        supports_animation_optimization: true,
+        supports_archive_extraction: true,
+        supports_mesh_reference_maintenance: true,
+        supports_archive_creation: true,
+    }
+}
+
+/// The Run Configuration of [`sse_profile`], with no ignored mods and no
+/// separator suffixes.
+pub fn sse_configuration() -> RunConfiguration {
+    RunConfiguration {
+        profile: sse_profile(),
+        ..RunConfiguration::default()
+    }
+}
 
 /// A provider returning one fixed configuration and counting its loads.
 ///

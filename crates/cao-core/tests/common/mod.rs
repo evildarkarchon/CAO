@@ -12,12 +12,10 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use cao_core::routing::{ExecutionMode, RequestedWork};
-use cao_core::run::{
-    ModSelection, RunConfiguration, RunHandle, RunRequest, SelectedProfileFacts,
-    TemporaryArtifactRegistry,
-};
+use cao_core::run::{ModSelection, RunHandle, RunRequest, TemporaryArtifactRegistry};
 use cao_core::test_support::{
     FakeBackendFactory, FixedConfiguration, ScriptedToolset, ToolsetConfiguration,
+    sse_configuration,
 };
 
 /// Serializes scenarios that start runs: one active run is allowed per
@@ -89,42 +87,19 @@ pub fn junction(link: &Path, target: &Path) {
     );
 }
 
-/// An SSE-like profile that supports every kind of work, with `.bsa` Archives.
-pub fn sse_profile() -> SelectedProfileFacts {
-    SelectedProfileFacts {
-        archive_extension: Some(".bsa".to_owned()),
-        supports_native_texture_optimization: true,
-        supports_texture_conversion: true,
-        supports_standard_mesh_optimization: true,
-        supports_terrain_mesh_optimization: true,
-        supports_animation_optimization: true,
-        supports_archive_extraction: true,
-        supports_mesh_reference_maintenance: true,
-        supports_archive_creation: true,
-    }
-}
-
 /// The provider most scenarios use: the SSE-like profile.
 pub fn test_configuration() -> Arc<FixedConfiguration> {
     Arc::new(FixedConfiguration {
-        configuration: RunConfiguration {
-            profile: sse_profile(),
-            ..RunConfiguration::default()
-        },
+        configuration: sse_configuration(),
         loads: AtomicUsize::new(0),
     })
 }
 
 /// A provider of the SSE-like profile that returns a fresh Run Toolset over
-/// `toolset` to each run, or no Toolset at all when it is `None`.
+/// `toolset` to each run, or no Toolset at all when it is `None`, shared as
+/// the Optimization Run Service takes it.
 pub fn toolset_configuration(toolset: Option<Arc<ScriptedToolset>>) -> Arc<ToolsetConfiguration> {
-    Arc::new(ToolsetConfiguration::new(
-        RunConfiguration {
-            profile: sse_profile(),
-            ..RunConfiguration::default()
-        },
-        toolset,
-    ))
+    Arc::new(ToolsetConfiguration::sse(toolset))
 }
 
 /// The production shape of a run's Asset attempts: a scripted Toolset whose

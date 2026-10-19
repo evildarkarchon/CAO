@@ -22,14 +22,13 @@ use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ArchiveExtractionFailure, ArchiveExtractionResult, ArchiveFinalizationAttempt,
     ArchiveFinalizationFailure, ArchiveFinalizationResult, ArchivePrecedence, CancellationToken,
-    ModSelection, OptimizationRunResult, PhaseSkipReason, RunConfiguration, RunDiagnostic,
-    RunDiagnosticCode, RunEvent, RunEventPayload, RunExecutor, RunFailure, RunFailureCode,
-    RunOutcome, RunPhase, RunPhaseRecord, RunProgress, RunRequest, RunServices,
-    SelectedProfileFacts,
+    ModSelection, OptimizationRunResult, PhaseSkipReason, RunDiagnostic, RunDiagnosticCode,
+    RunEvent, RunEventPayload, RunFailure, RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord,
+    RunProgress, RunRequest,
 };
 use cao_core::test_support::{
     CountingCleanup, Observed, RecordingSink, ScriptedToolset, ToolsetConfiguration, entry,
-    record_finalization_result, write_archive,
+    execute_run, record_finalization_result, write_archive,
 };
 use cao_gui::RunView;
 
@@ -47,27 +46,10 @@ fn scratch_dir(name: &str) -> PathBuf {
     dir
 }
 
-/// An SSE-like profile that supports every kind of work.
-fn all_work_configuration() -> RunConfiguration {
-    RunConfiguration {
-        profile: SelectedProfileFacts {
-            archive_extension: Some(".bsa".to_owned()),
-            supports_native_texture_optimization: true,
-            supports_texture_conversion: true,
-            supports_standard_mesh_optimization: true,
-            supports_terrain_mesh_optimization: true,
-            supports_animation_optimization: true,
-            supports_archive_extraction: true,
-            supports_mesh_reference_maintenance: true,
-            supports_archive_creation: true,
-        },
-        ..RunConfiguration::default()
-    }
-}
-
-/// Executes `request` through the real Run Executor, its work done by a fresh
-/// Run Toolset over `toolset`. Live facts reach `sink`, whose hook may cancel
-/// through `stop`, and Safety Cleanup reports `cleanup`.
+/// Executes `request` through the real Run Executor under an SSE-like profile
+/// that supports every kind of work, its work done by a fresh Run Toolset
+/// over `toolset`. Live facts reach `sink`, whose hook may cancel through
+/// `stop`, and Safety Cleanup reports `cleanup`.
 fn execute(
     request: &RunRequest,
     toolset: &Arc<ScriptedToolset>,
@@ -75,20 +57,17 @@ fn execute(
     cleanup: Vec<RunFailure>,
     stop: &CancellationToken,
 ) -> Arc<OptimizationRunResult> {
-    let provider = ToolsetConfiguration::new(all_work_configuration(), Some(Arc::clone(toolset)));
+    let provider = ToolsetConfiguration::sse(Some(Arc::clone(toolset)));
     let mut cleanup = CountingCleanup {
         failures: cleanup,
         ..CountingCleanup::default()
     };
-    Arc::new(RunExecutor.execute(
+    Arc::new(execute_run(
         request,
-        RunServices {
-            safety_cleanup: &mut cleanup,
-            observations: Some(sink),
-            configuration: Some(&provider),
-        },
+        &mut cleanup,
+        Some(sink),
+        Some(&provider),
         stop,
-        "run".to_owned(),
     ))
 }
 
