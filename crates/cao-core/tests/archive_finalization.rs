@@ -25,7 +25,7 @@
 
 mod common;
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::fs::{File, OpenOptions};
 use std::os::windows::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
@@ -38,15 +38,15 @@ use cao_core::execution::MutationState;
 use cao_core::routing::{ExecutionMode, RequestedWork, RoutingPolicyRequest};
 use cao_core::run::{
     ArchiveFinalization, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
-    ArchiveFinalizationResult, ArchiveFinalizationSettings, ArchivePrecedence, ArchiveReader,
-    CancellationToken, MutableRunEvidence, MutationKind, PackedArchiveKind, RunConfiguration,
-    RunDiagnostic, RunEvidence, RunFailure, RunObservationSink, RunPhase, RunPhaseRecord,
-    RunPreparation, RunProgress, RunWorkEvidence, TemporaryArtifactRegistry, create_run_id,
+    ArchiveFinalizationSettings, ArchivePrecedence, ArchiveReader, CancellationToken, MutationKind,
+    PackedArchiveKind, RunDiagnostic, RunFailure, RunObservationSink, RunPhase, RunPhaseRecord,
+    RunPreparation, TemporaryArtifactRegistry, create_run_id,
 };
-use common::{
-    FakeArchivePacker, FakeArchiveReader, FakeCapacity, FakeVolumes, archives_in, canonical,
-    fake_dummy_plugin, junction, scratch_dir, sse_profile,
+use cao_core::test_support::{
+    ArchiveFinalizationEvidence as Evidence, FakeArchivePacker, FakeArchiveReader, FakeCapacity,
+    FakeVolumes, fake_dummy_plugin, sse_configuration,
 };
+use common::{archives_in, canonical, junction, scratch_dir};
 
 /// More bytes than any scenario needs.
 const UNLIMITED: u64 = u64::MAX;
@@ -80,11 +80,7 @@ fn preparation_for(roots: &[PathBuf], create_archives: bool) -> RunPreparation {
     } else {
         RequestedWork::NativeTextureOptimization
     };
-    let configuration = RunConfiguration {
-        profile: sse_profile(),
-        ignored_mods: Vec::new(),
-        separator_suffixes: Vec::new(),
-    };
+    let configuration = sse_configuration();
     let policy = configuration
         .profile
         .compile_policy(RoutingPolicyRequest::for_work(
@@ -98,68 +94,6 @@ fn preparation_for(roots: &[PathBuf], create_archives: bool) -> RunPreparation {
         policy,
         ArchivePrecedence::DeterministicDiscovery,
     )
-}
-
-/// Run Evidence that has reached the executed Archive Finalization phase,
-/// with the work view the phase records into (C++
-/// `ArchiveFinalizationEvidenceFixture`).
-struct Evidence<'s> {
-    owner: RefCell<MutableRunEvidence<'s>>,
-}
-
-impl<'s> Evidence<'s> {
-    fn new() -> Self {
-        Self::observed(None)
-    }
-
-    /// Evidence publishing every accepted fact to `sink`.
-    fn observed(sink: Option<&'s dyn RunObservationSink>) -> Self {
-        let mut evidence = MutableRunEvidence::new(sink);
-        for phase in [RunPhase::Preparing, RunPhase::ArchiveFinalization] {
-            evidence
-                .record_phase(RunPhaseRecord::executed(phase, None))
-                .unwrap();
-        }
-        Self {
-            owner: RefCell::new(evidence),
-        }
-    }
-
-    fn work(&self) -> RunWorkEvidence<'_, 's> {
-        RunWorkEvidence::new(&self.owner)
-    }
-
-    /// The retained result, or `None` before the phase recorded anything.
-    fn recorded(&self) -> Option<ArchiveFinalizationResult> {
-        self.owner.borrow().archive_finalization().cloned()
-    }
-
-    /// The retained result.
-    fn finalization(&self) -> ArchiveFinalizationResult {
-        self.recorded().expect("the phase recorded a result")
-    }
-
-    /// The phase's latest progress, or `None` before an output total exists.
-    fn progress(&self) -> Option<RunProgress> {
-        self.owner
-            .borrow()
-            .phase(RunPhase::ArchiveFinalization)
-            .and_then(RunPhaseRecord::progress)
-    }
-
-    /// Moves the evidence on to Safety Cleanup, out of the phase.
-    fn leave_phase(&self) {
-        self.owner
-            .borrow_mut()
-            .record_phase(RunPhaseRecord::executed(RunPhase::SafetyCleanup, None))
-            .unwrap();
-    }
-
-    /// Performs the executor's mandatory Safety Cleanup and seals the facts.
-    fn seal(self) -> RunEvidence {
-        self.leave_phase();
-        self.owner.into_inner().consume().unwrap()
-    }
 }
 
 /// A sink retaining every Archive Finalization progress account, as
@@ -261,7 +195,7 @@ impl Finalizer {
         )
         .run(
             &preparation_for(roots, !self.no_archive_creation),
-            &evidence.work(),
+            &evidence.recorder(),
             artifacts,
             cancelled,
         )
@@ -283,7 +217,7 @@ impl Finalizer {
         )
         .run(
             &preparation_for(&[root.to_path_buf()], true),
-            &evidence.work(),
+            &evidence.recorder(),
             &mut artifacts,
             &|| false,
         )
@@ -679,7 +613,7 @@ fn the_total_is_frozen_and_cancellation_falls_between_outputs() {
         }
         let log = Log::default();
         let sink = ProgressLog(log.clone());
-        let evidence = Evidence::observed(Some(&sink));
+        let evidence = Evidence::observed(&sink);
         let frozen_before_mutation = Arc::new(AtomicBool::new(false));
         let first_recorded_before_second = Arc::new(AtomicBool::new(false));
         let mut finalizer = Finalizer {
@@ -1523,7 +1457,7 @@ fn planned_names_are_distinct_and_a_late_destination_wins() {
     write_file(&sound, b"sound bytes");
     let log = Log::default();
     let sink = ProgressLog(log.clone());
-    let evidence = Evidence::observed(Some(&sink));
+    let evidence = Evidence::observed(&sink);
     // The Standard Archive takes the Mod Root's name; the Incompressible one
     // needs another.
     let first_destination = root.join("mod.bsa");

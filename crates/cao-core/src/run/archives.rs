@@ -29,7 +29,7 @@ use crate::run::artifacts::reserved_device_name;
 use crate::run::source_pin::SourceFilePin;
 use crate::run::staging::{has_staging_component, pin_directory};
 use crate::run::{
-    ArchiveAdapters, ArchiveEntry, ArchivePrecedence, ArchiveReader, CapacityProbe,
+    ArchiveEntry, ArchivePrecedence, ArchiveReader, CancellationToken, CapacityProbe,
     PublicationPolicy, PublicationReceipt, PublicationState, RunFailure, RunFailureCode, RunPhase,
     TemporaryArtifactRegistry, VolumeIdentityProbe, is_staging_name, take_panic_message,
 };
@@ -96,7 +96,7 @@ pub enum ArchiveExtractionFailure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveExtractionResult {
     pub archive_path: PathBuf,
-    /// The frozen preflight scope; the Asset Run sets it from the plan.
+    /// The frozen preflight scope; the Run Executor sets it from the plan.
     pub mod_root: PathBuf,
     pub mutation: MutationState,
     pub failure: Option<ArchiveExtractionFailure>,
@@ -689,14 +689,15 @@ fn discovery_failure(code: RunFailureCode, path: &Path, detail: impl Into<String
 /// Explicit Archive Precedence is validated per Mod Root first. Then every
 /// manifest is read and each entry checked; winners are frozen; collisions
 /// are calculated; and the Capacity Check runs. Nothing on disk changes.
-/// Only the reader and the probes of `seams` are used; extraction is the
-/// caller's. Without `seams`, the first selected Archive fails the run as
-/// requested work this build cannot perform.
+/// Manifests are read through `reader` and capacity checked through the two
+/// probes; extraction is the caller's.
 pub(crate) fn preflight(
     roots: Vec<RootArchives>,
     precedence: &ArchivePrecedence,
-    seams: Option<&ArchiveAdapters<'_>>,
-    cancelled: &dyn Fn() -> bool,
+    reader: &dyn ArchiveReader,
+    capacity: &dyn CapacityProbe,
+    volume_identity: &dyn VolumeIdentityProbe,
+    stop: &CancellationToken,
 ) -> Preflight {
     let mut roots = roots;
     if let ArchivePrecedence::ExplicitOrder(order) = precedence {
@@ -716,17 +717,10 @@ pub(crate) fn preflight(
     for (index, root) in roots.iter().enumerate() {
         let mut provided: BTreeMap<GamePathKey, Vec<PathBuf>> = BTreeMap::new();
         for archive in &root.archives {
-            if cancelled() {
+            if stop.is_cancelled() {
                 return Preflight::Cancelled;
             }
-            let Some(seams) = seams else {
-                return Preflight::Failed(discovery_failure(
-                    RunFailureCode::RequestedWorkUnavailable,
-                    archive,
-                    "Archive extraction is not available in this build",
-                ));
-            };
-            let listed = catch_unwind(AssertUnwindSafe(|| seams.reader.list_entries(archive)));
+            let listed = catch_unwind(AssertUnwindSafe(|| reader.list_entries(archive)));
             let entries = match listed {
                 Ok(Ok(entries)) => entries,
                 Ok(Err(error)) => {
@@ -757,7 +751,7 @@ pub(crate) fn preflight(
             let mut own: BTreeSet<GamePathKey> = BTreeSet::new();
             let mut game_paths = Vec::with_capacity(entries.len());
             for entry in &entries {
-                if cancelled() {
+                if stop.is_cancelled() {
                     return Preflight::Cancelled;
                 }
                 let invalid = |detail: &str| {
@@ -844,22 +838,22 @@ pub(crate) fn preflight(
         }
     }
 
-    // Every Archive read above needed the seams, so no plan exists without them.
-    let Some(seams) = seams.filter(|_| !plans.is_empty()) else {
+    // With no plan there is nothing to extract, so no volume is probed.
+    if plans.is_empty() {
         return Preflight::Planned {
             plans: Vec::new(),
             collisions,
         };
-    };
+    }
     // A volume must fit all of its roots before extraction begins. No credit
     // is taken for source deletion or for cleanup of shadowed staging.
-    let mut requirements = CapacityRequirements::new(seams.volume_identity);
+    let mut requirements = CapacityRequirements::new(volume_identity);
     for (_, plan, _) in &plans {
         requirements.add(&plan.mod_root, plan.estimated_capacity_bytes);
     }
     for (_, plan, _) in &plans {
         let required = requirements.required_at(&plan.mod_root);
-        if let Some(available) = seams.capacity.available_bytes(&plan.mod_root)
+        if let Some(available) = capacity.available_bytes(&plan.mod_root)
             && available < required
         {
             return Preflight::Failed(discovery_failure(

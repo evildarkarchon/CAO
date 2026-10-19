@@ -10,7 +10,6 @@
 
 mod common;
 
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -20,10 +19,10 @@ use cao_core::routing::{ExecutionMode, RequestedWork, RoutingPolicyRequest};
 use cao_core::run::{
     ArchiveFinalization, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
     ArchiveFinalizationSettings, ArchiveNameKind, ArchivePacker, ArchivePrecedence, CapacityProbe,
-    MutableRunEvidence, MutationKind, RunConfiguration, RunOutcome, RunPhase, RunPhaseRecord,
-    RunPreparation, RunWorkEvidence, SelectedProfileFacts, TemporaryArtifactRegistry,
-    create_run_id,
+    MutationKind, RunConfiguration, RunOutcome, RunPreparation, SelectedProfileFacts,
+    TemporaryArtifactRegistry, create_run_id,
 };
+use cao_core::test_support::ArchiveFinalizationEvidence;
 use cao_optimizers::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
 use cao_optimizers::composition::ApplicationRun;
 use common::{app_dir, profile_options, scratch_dir, serial, write, write_dds};
@@ -96,28 +95,18 @@ fn finalize_probing(
 ) -> ArchiveFinalizationResult {
     let packer = GameArchivePacker::new(Settings::get(game));
     let reader = ArchiveFileReader::default();
-    let mut evidence = MutableRunEvidence::new(None);
-    for phase in [RunPhase::Preparing, RunPhase::ArchiveFinalization] {
-        evidence
-            .record_phase(RunPhaseRecord::executed(phase, None))
-            .unwrap();
-    }
-    let evidence = RefCell::new(evidence);
+    let evidence = ArchiveFinalizationEvidence::new();
     let mut artifacts = TemporaryArtifactRegistry::new(create_run_id());
     ArchiveFinalization::new(&packer, &reader, capacity, &VolumeProbes, settings, &[])
         .run(
             &preparation(&[root.to_path_buf()], packer.rules().extension.as_str()),
-            &RunWorkEvidence::new(&evidence),
+            &evidence.recorder(),
             &mut artifacts,
             &|| false,
         )
         .unwrap();
     assert!(artifacts.cleanup().is_empty());
-    evidence
-        .into_inner()
-        .archive_finalization()
-        .unwrap()
-        .clone()
+    evidence.finalization()
 }
 
 /// The canonical Dummy Plugin of `game`.

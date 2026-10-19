@@ -4,9 +4,11 @@
 //! fail to load (and only Textures), and Dry Run never touches staging.
 //! Apply Preparing also recovers a crashed run's leftover staging (#492).
 //!
-//! These run the production shape of the work service ([`BackendWork`]) over
-//! real temporary directories; the fake backend's file-name markers choose
-//! what each Asset does.
+//! These run the production shape of a run's Asset attempts (the shared
+//! [`common::backend_toolset`]: the fake backend behind the production Asset
+//! attempt adapter, in a scripted Run Toolset) over real temporary
+//! directories; the fake backend's file-name markers choose what each Asset
+//! does.
 
 mod common;
 
@@ -17,19 +19,23 @@ use cao_core::execution::{AssetExecutionFailure, MutationState};
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     InlineRunScheduler, MutationKind, OptimizationRunResult, OptimizationRunService,
-    RunFailureCode, RunOutcome, RunPhase, RunRequest, RunWorkService, TemporaryArtifactRegistry,
-    create_run_id,
+    RunFailureCode, RunOutcome, RunPhase, RunRequest, TemporaryArtifactRegistry, create_run_id,
 };
+use cao_core::test_support::FakeBackendFactory;
 use cao_winfs::OwnerLock;
-use common::{BackendWork, canonical, scratch_dir, snapshot_tree, test_configuration, write_tree};
+use common::{
+    backend_toolset, canonical, scratch_dir, snapshot_tree, toolset_configuration, write_tree,
+};
 
-/// Runs `request` to completion on the calling thread.
-fn run(work: Arc<dyn RunWorkService>, request: RunRequest) -> Arc<OptimizationRunResult> {
+/// Runs `request` to completion on the calling thread, its Asset attempts
+/// driving a fresh fake backend.
+fn run(request: RunRequest) -> Arc<OptimizationRunResult> {
     let _serial = common::serial();
     let service = OptimizationRunService::with_scheduler(
         Arc::new(InlineRunScheduler),
-        Some(test_configuration()),
-        Some(work),
+        Some(toolset_configuration(Some(backend_toolset(
+            FakeBackendFactory::default(),
+        )))),
     );
     service.start(request, None).expect("the run starts").wait()
 }
@@ -69,10 +75,7 @@ fn an_apply_change_is_published_and_recorded_as_committed() {
         &["textures/a_changes.dds", "textures/b.dds"],
     );
 
-    let result = run(
-        Arc::new(BackendWork::new()),
-        apply(&root, &[RequestedWork::NativeTextureOptimization]),
-    );
+    let result = run(apply(&root, &[RequestedWork::NativeTextureOptimization]));
 
     assert_eq!(
         result.outcome(),
@@ -113,10 +116,7 @@ fn an_apply_change_is_published_and_recorded_as_committed() {
 fn an_apply_run_without_changes_creates_no_staging() {
     let root = mod_root("texture-unchanged", &["textures/b.dds"]);
 
-    let result = run(
-        Arc::new(BackendWork::new()),
-        apply(&root, &[RequestedWork::NativeTextureOptimization]),
-    );
+    let result = run(apply(&root, &[RequestedWork::NativeTextureOptimization]));
 
     assert_eq!(result.outcome(), RunOutcome::Succeeded);
     assert!(!root.join(".cao-staging").exists());
@@ -131,10 +131,7 @@ fn a_failed_save_publishes_nothing() {
         &["textures/a_changes_unsaveable.dds"],
     );
 
-    let result = run(
-        Arc::new(BackendWork::new()),
-        apply(&root, &[RequestedWork::NativeTextureOptimization]),
-    );
+    let result = run(apply(&root, &[RequestedWork::NativeTextureOptimization]));
 
     assert_eq!(result.outcome(), RunOutcome::CompletedWithFailures);
     let attempt = &result.asset_attempts()[0].result;
@@ -154,16 +151,13 @@ fn a_failed_save_publishes_nothing() {
 fn a_texture_conversion_publishes_the_dds_and_removes_its_source() {
     let root = mod_root("texture-conversion", &["textures/c_changes.tga"]);
 
-    let result = run(
-        Arc::new(BackendWork::new()),
-        apply(
-            &root,
-            &[
-                RequestedWork::NativeTextureOptimization,
-                RequestedWork::ConvertibleTextureConversion,
-            ],
-        ),
-    );
+    let result = run(apply(
+        &root,
+        &[
+            RequestedWork::NativeTextureOptimization,
+            RequestedWork::ConvertibleTextureConversion,
+        ],
+    ));
 
     assert_eq!(
         result.outcome(),
@@ -194,16 +188,13 @@ fn mesh_and_animation_output_is_published() {
         ],
     );
 
-    let result = run(
-        Arc::new(BackendWork::new()),
-        apply(
-            &root,
-            &[
-                RequestedWork::StandardMeshOptimization,
-                RequestedWork::AnimationOptimization,
-            ],
-        ),
-    );
+    let result = run(apply(
+        &root,
+        &[
+            RequestedWork::StandardMeshOptimization,
+            RequestedWork::AnimationOptimization,
+        ],
+    ));
 
     assert_eq!(
         result.outcome(),
@@ -245,10 +236,7 @@ fn an_unloadable_texture_is_quarantined() {
         ],
     );
 
-    let result = run(
-        Arc::new(BackendWork::new()),
-        apply(&root, &[RequestedWork::NativeTextureOptimization]),
-    );
+    let result = run(apply(&root, &[RequestedWork::NativeTextureOptimization]));
 
     assert_eq!(result.outcome(), RunOutcome::CompletedWithFailures);
     for attempt in result.asset_attempts() {
@@ -289,10 +277,7 @@ fn an_unloadable_mesh_is_quarantined() {
         &["meshes/m_unloadable.nif", "meshes/m_unloadable.nif.caobad"],
     );
 
-    let result = run(
-        Arc::new(BackendWork::new()),
-        apply(&root, &[RequestedWork::StandardMeshOptimization]),
-    );
+    let result = run(apply(&root, &[RequestedWork::StandardMeshOptimization]));
 
     assert_eq!(result.outcome(), RunOutcome::CompletedWithFailures);
     let attempt = &result.asset_attempts()[0].result;
@@ -316,14 +301,11 @@ fn a_dry_run_never_quarantines_a_mesh() {
     let root = mod_root("mesh-quarantine-dry-run", &["meshes/m_unloadable.nif"]);
     let before = snapshot_tree(&root);
 
-    let result = run(
-        Arc::new(BackendWork::new()),
-        common::request(
-            ExecutionMode::DryRun,
-            &root,
-            &[RequestedWork::StandardMeshOptimization],
-        ),
-    );
+    let result = run(common::request(
+        ExecutionMode::DryRun,
+        &root,
+        &[RequestedWork::StandardMeshOptimization],
+    ));
 
     assert_eq!(result.outcome(), RunOutcome::CompletedWithFailures);
     let attempt = &result.asset_attempts()[0].result;
@@ -338,14 +320,11 @@ fn a_dry_run_never_quarantines() {
     let root = mod_root("quarantine-dry-run", &["textures/x_unloadable.dds"]);
     let before = snapshot_tree(&root);
 
-    let result = run(
-        Arc::new(BackendWork::new()),
-        common::request(
-            ExecutionMode::DryRun,
-            &root,
-            &[RequestedWork::NativeTextureOptimization],
-        ),
-    );
+    let result = run(common::request(
+        ExecutionMode::DryRun,
+        &root,
+        &[RequestedWork::NativeTextureOptimization],
+    ));
 
     assert_eq!(result.outcome(), RunOutcome::CompletedWithFailures);
     assert_eq!(
@@ -371,14 +350,11 @@ fn a_dry_run_never_touches_existing_staging() {
     let before = snapshot_tree(&root);
     let active = OwnerLock::open_existing(&root.join(".cao-staging/owner.lock")).unwrap();
 
-    let result = run(
-        Arc::new(BackendWork::new()),
-        common::request(
-            ExecutionMode::DryRun,
-            &root,
-            &[RequestedWork::NativeTextureOptimization],
-        ),
-    );
+    let result = run(common::request(
+        ExecutionMode::DryRun,
+        &root,
+        &[RequestedWork::NativeTextureOptimization],
+    ));
 
     assert_eq!(
         result.outcome(),
@@ -402,10 +378,7 @@ fn apply_preparing_fails_on_active_staging() {
     let before = snapshot_tree(&root);
     let active = OwnerLock::open_existing(&lock).unwrap();
 
-    let result = run(
-        Arc::new(BackendWork::new()),
-        apply(&root, &[RequestedWork::NativeTextureOptimization]),
-    );
+    let result = run(apply(&root, &[RequestedWork::NativeTextureOptimization]));
 
     assert_eq!(result.outcome(), RunOutcome::Failed);
     assert_eq!(result.final_phase(), RunPhase::Preparing);
@@ -436,10 +409,7 @@ fn apply_recovers_leftover_staging_before_any_work() {
     let root = mod_root("leftover-recovered", &["textures/a_changes.dds"]);
     let abandoned = crashed_run_leftover(&root, "textures/a_changes.dds");
 
-    let result = run(
-        Arc::new(BackendWork::new()),
-        apply(&root, &[RequestedWork::NativeTextureOptimization]),
-    );
+    let result = run(apply(&root, &[RequestedWork::NativeTextureOptimization]));
 
     assert_eq!(
         result.outcome(),
@@ -468,14 +438,11 @@ fn a_dry_run_never_recovers_leftover_staging() {
     let abandoned = crashed_run_leftover(&root, "textures/a_changes.dds");
     let before = snapshot_tree(&root);
 
-    let result = run(
-        Arc::new(BackendWork::new()),
-        common::request(
-            ExecutionMode::DryRun,
-            &root,
-            &[RequestedWork::NativeTextureOptimization],
-        ),
-    );
+    let result = run(common::request(
+        ExecutionMode::DryRun,
+        &root,
+        &[RequestedWork::NativeTextureOptimization],
+    ));
 
     assert_eq!(
         result.outcome(),
@@ -502,10 +469,7 @@ fn apply_preparing_fails_closed_on_unverifiable_staging() {
     );
     let before = snapshot_tree(&root);
 
-    let result = run(
-        Arc::new(BackendWork::new()),
-        apply(&root, &[RequestedWork::NativeTextureOptimization]),
-    );
+    let result = run(apply(&root, &[RequestedWork::NativeTextureOptimization]));
 
     assert_eq!(result.outcome(), RunOutcome::Failed);
     let failure = &result.failures()[0];

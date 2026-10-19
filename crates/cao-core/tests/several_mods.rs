@@ -8,33 +8,32 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     InlineRunScheduler, ModSelection, OptimizationRunResult, OptimizationRunService,
     RunConfiguration, RunDiagnosticCode, RunEventPayload, RunFailureCode, RunHandle, RunOutcome,
-    RunPhase, RunRequest, RunSnapshot, RunWorkService,
+    RunPhase, RunRequest, RunSnapshot,
+};
+use cao_core::test_support::{
+    EventLog, FakeBackendFactory, GatedScheduler, ScriptedToolset, ToolsetConfiguration,
+    sse_profile,
 };
 use common::{
-    BackendWork, EventLog, FixedConfiguration, GatedScheduler, HandleSlot, canonical, junction,
-    reclaim, scratch_dir, serial, sse_profile, write_tree,
+    HandleSlot, backend_toolset, canonical, junction, reclaim, scratch_dir, serial, write_tree,
 };
 
-/// A provider for the SSE-like profile with the given Mod Exclusion lists.
-fn exclusions(ignored_mods: &[&str], separator_suffixes: &[&str]) -> Arc<FixedConfiguration> {
-    Arc::new(FixedConfiguration {
-        configuration: RunConfiguration {
-            profile: sse_profile(),
-            ignored_mods: ignored_mods.iter().map(|name| (*name).to_owned()).collect(),
-            separator_suffixes: separator_suffixes
-                .iter()
-                .map(|suffix| (*suffix).to_owned())
-                .collect(),
-        },
-        loads: AtomicUsize::new(0),
-    })
+/// The SSE-like profile's configuration with the given Mod Exclusion lists.
+fn exclusions(ignored_mods: &[&str], separator_suffixes: &[&str]) -> RunConfiguration {
+    RunConfiguration {
+        profile: sse_profile(),
+        ignored_mods: ignored_mods.iter().map(|name| (*name).to_owned()).collect(),
+        separator_suffixes: separator_suffixes
+            .iter()
+            .map(|suffix| (*suffix).to_owned())
+            .collect(),
+    }
 }
 
 /// A Several Mods request over `mods` asking for no work.
@@ -47,16 +46,16 @@ fn several(mode: ExecutionMode, mods: &Path) -> RunRequest {
     )
 }
 
-/// Runs `request` inline with `configuration` and `work`, collecting its events.
+/// Runs `request` inline with `configuration` and, if any, a fresh Run
+/// Toolset over `toolset`, collecting its events.
 fn run(
-    configuration: Arc<FixedConfiguration>,
-    work: Option<Arc<dyn RunWorkService>>,
+    configuration: RunConfiguration,
+    toolset: Option<Arc<ScriptedToolset>>,
     request: RunRequest,
 ) -> (Arc<OptimizationRunResult>, RunHandle, EventLog) {
     let service = OptimizationRunService::with_scheduler(
         Arc::new(InlineRunScheduler),
-        Some(configuration),
-        work,
+        Some(Arc::new(ToolsetConfiguration::new(configuration, toolset))),
     );
     let events = EventLog::default();
     let handle = service
@@ -256,7 +255,7 @@ fn a_staging_named_child_is_never_a_mod_root_and_is_skipped_silently() {
 
     let (result, _handle, events) = run(
         exclusions(&[".cao-staging"], &["staging"]),
-        Some(Arc::new(BackendWork::new())),
+        Some(backend_toolset(FakeBackendFactory::default())),
         RunRequest::new(
             "SkyrimSE",
             ExecutionMode::DryRun,
@@ -301,7 +300,7 @@ fn mod_exclusions_never_change_the_outcome_and_each_child_keeps_its_own_assets()
 
     let (result, _handle, events) = run(
         exclusions(&["ignored"], &["_separator"]),
-        Some(Arc::new(BackendWork::new())),
+        Some(backend_toolset(FakeBackendFactory::default())),
         RunRequest::new(
             "SkyrimSE",
             ExecutionMode::DryRun,
@@ -408,8 +407,10 @@ fn cancelling_from_an_exclusion_diagnostic_stops_preparing() {
     let scheduler = Arc::new(GatedScheduler::default());
     let service = OptimizationRunService::with_scheduler(
         scheduler.clone(),
-        Some(exclusions(&["a_ignored", "b_ignored"], &[])),
-        None,
+        Some(Arc::new(ToolsetConfiguration::new(
+            exclusions(&["a_ignored", "b_ignored"], &[]),
+            None,
+        ))),
     );
     let slot: HandleSlot = Arc::new(OnceLock::new());
     let snapshots: Arc<Mutex<Vec<RunSnapshot>>> = Arc::default();

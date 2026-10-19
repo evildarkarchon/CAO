@@ -32,14 +32,14 @@ use cao_core::run::{
     PhaseSkipReason, RunConfiguration, RunDiagnostic, RunDiagnosticCode, RunEvidence, RunFailure,
     RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunProgress, SelectedProfileFacts,
 };
-use common::{Observed, RecordingSink};
+use cao_core::test_support::{Observed, RecordingSink, sse_profile};
 
 /// The preparation of a Dry Run with no work, as Preparing would retain it.
 fn successful_preparation() -> RunPreparation {
     let configuration = RunConfiguration {
         profile: SelectedProfileFacts {
             archive_extension: Some(".BSA".to_owned()),
-            ..common::sse_profile()
+            ..sse_profile()
         },
         ignored_mods: vec!["ignored-mod".to_owned()],
         separator_suffixes: vec!["separator".to_owned()],

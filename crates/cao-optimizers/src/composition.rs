@@ -4,30 +4,29 @@
 //! directory, the selected profile and the options model, [`ApplicationRun::new`]
 //! validates the options, builds the Run Request, refuses one that contradicts
 //! the profile's Profile Capabilities, and wires a profile-backed Run
-//! Configuration Provider and the production Run Work Service into an
-//! Optimization Run Service. Both binaries go through it, so the parity driver
-//! exercises the wiring users run.
+//! Configuration Provider into an Optimization Run Service. During each run's
+//! Preparing, that provider builds the production Run Toolset from the same
+//! profile read as the run's Routing Policy. Both binaries go through it, so
+//! the parity driver exercises the wiring users run.
 //!
 //! Everything resolves against the app directory the caller passes: `profiles/`
 //! and `bin/hkxcmd.exe` here, and later `logs/` (deviation 1). Only `cao-gui`'s
 //! `main` derives that directory from the exe.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use cao_archive::{Game, Settings};
 use cao_core::Error;
-use cao_core::execution::{AssetExecutor, quarantine_failed_load};
 use cao_core::routing::{
     ExecutionMode, PolicyValidationError, RequestedWork, RoutingPolicyRequest,
 };
 use cao_core::run::{
-    ArchiveAdapters, ArchiveExtractor, ArchiveFinalization, ArchiveFinalizationSettings,
-    AssetInitializationCancelled, AssetRunAdapters, CancellationToken, ModSelection,
-    OptimizationRunService, RunConfiguration, RunConfigurationProvider, RunDiagnostic,
-    RunDiagnosticCode, RunEventDispatcher, RunHandle, RunPhase, RunPreparation, RunRequest,
-    RunWorkEvidence, RunWorkMilestones, RunWorkService, SelectedProfileFacts, SourceCleanup,
-    StartError, TemporaryArtifactRegistry, execute_asset_run,
+    ArchiveExtractionAdapter, ArchiveFinalizationAdapter, ArchiveFinalizationSettings,
+    AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
+    CancellationToken, ModSelection, OptimizationRunService, RunConfiguration,
+    RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode, RunEventDispatcher, RunHandle,
+    RunPhase, RunRequest, RunToolset, SelectedProfileFacts, SourceCleanup, StartError,
 };
 use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
 use directxtex::DXGI_FORMAT;
@@ -108,17 +107,17 @@ impl ApplicationRun {
     pub fn new(app_dir: &Path, profile: &str, options: &Options) -> Result<Self, RunSetupError> {
         let request = run_request(app_dir, profile, options)?;
         check_profile_capabilities(app_dir, profile, &request)?;
-        let settings = OptimizerSettings::from_options(options);
-        let configuration = Arc::new(ProfileConfigurationProvider::new(app_dir));
-        let work = Arc::new(ApplicationRunWork {
-            settings,
-            selected_folder: request.mod_selection().directory().to_path_buf(),
-            hkxcmd: Hkxcmd::in_app_dir(app_dir),
-            configuration: Arc::clone(&configuration),
-            profile: Mutex::new(None),
-        });
+        let configuration = Arc::new(ProfileConfigurationProvider::for_runs(
+            app_dir,
+            RunWorkSettings {
+                settings: OptimizerSettings::from_options(options),
+                selected_folder: request.mod_selection().directory().to_path_buf(),
+                hkxcmd: Hkxcmd::in_app_dir(app_dir),
+            },
+        ));
         Ok(Self {
-            service: OptimizationRunService::new(Some(configuration), Some(work)),
+            // The provider's Run Toolset does the work.
+            service: OptimizationRunService::new(Some(configuration)),
             request,
         })
     }
@@ -334,14 +333,6 @@ impl OptimizerSettings {
     }
 }
 
-/// Locks a mutex, recovering the data if a panicking holder poisoned it. Each
-/// holder here writes one whole value, so the data is always consistent.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 /// What Preparing read from the selected profile, pinned for the whole run.
 #[derive(Debug)]
 pub struct PreparedProfile {
@@ -360,36 +351,47 @@ pub struct PreparedProfile {
 ///
 /// Each load re-reads the named profile's `profile.ini`, `ignoredMods.txt`,
 /// `FilesToNotPack.txt` and `customHeadparts.txt` during Preparing, on the
-/// Run Worker, and publishes what it read so the run's work uses the very same
-/// profile facts its routing did.
+/// Run Worker. A provider set up for runs builds the run's production Run
+/// Toolset from that same read, so the run's work uses the very same profile
+/// facts its routing did.
 pub struct ProfileConfigurationProvider {
     profiles: Profiles,
-    prepared: Mutex<Option<Arc<PreparedProfile>>>,
+    /// The per-run choices the Run Toolset is built with; `None` when the
+    /// provider loads configuration only.
+    work: Option<RunWorkSettings>,
 }
 
 impl ProfileConfigurationProvider {
-    /// A provider for the profiles of the install in `app_dir`.
+    /// A provider for the profiles of the install in `app_dir` that loads
+    /// configuration only: it builds no Run Toolset, so a request with work
+    /// fails Preparing as unavailable.
     pub fn new(app_dir: &Path) -> Self {
         Self {
             profiles: Profiles::new(app_dir),
-            prepared: Mutex::new(None),
+            work: None,
         }
     }
 
-    /// The settings the last successful load read, or `None` before one.
-    pub fn prepared_settings(&self) -> Option<Arc<ProfileSettings>> {
-        self.prepared_profile()
-            .map(|prepared| Arc::clone(&prepared.settings))
+    /// A provider for the profiles of the install in `app_dir` that builds
+    /// each run's production Run Toolset with `work`.
+    fn for_runs(app_dir: &Path, work: RunWorkSettings) -> Self {
+        Self {
+            profiles: Profiles::new(app_dir),
+            work: Some(work),
+        }
     }
 
-    /// Everything the last successful load read, or `None` before one.
-    pub fn prepared_profile(&self) -> Option<Arc<PreparedProfile>> {
-        lock(&self.prepared).clone()
-    }
-}
-
-impl RunConfigurationProvider for ProfileConfigurationProvider {
-    fn load(&self, profile_identity: &str) -> Result<RunConfiguration, Error> {
+    /// Reads the named profile once, returning the Run Configuration its
+    /// routing compiles from and everything else the run's work is built
+    /// from.
+    ///
+    /// # Errors
+    /// [`Error::ConfigurationLoading`] when `profile.ini` or
+    /// `ignoredMods.txt` cannot be read.
+    pub fn read_profile(
+        &self,
+        profile_identity: &str,
+    ) -> Result<(RunConfiguration, PreparedProfile), Error> {
         let failed = |error: ProfileError| Error::ConfigurationLoading(error.to_string());
         let profile = self.profiles.open(profile_identity);
         // Strict, as C++ run setup rejected any QSettings status but NoError.
@@ -400,20 +402,38 @@ impl RunConfigurationProvider for ProfileConfigurationProvider {
         // The same holds here; the headpart scan logs it.
         let custom_headparts = profile.custom_headparts();
         let facts = profile_facts(&settings);
-        // Published only after every read succeeded, so work never sees a
-        // partial profile.
-        *lock(&self.prepared) = Some(Arc::new(PreparedProfile {
-            settings: Arc::new(settings),
-            files_to_not_pack,
-            custom_headparts,
-        }));
-        Ok(RunConfiguration {
+        let configuration = RunConfiguration {
             profile: facts,
             ignored_mods,
             // Deviation 20: MO2 names its separators `<name>_separator`. C++
             // passed the marker "separator" and excluded any child containing it.
             separator_suffixes: vec![SEPARATOR_SUFFIX.to_owned()],
-        })
+        };
+        Ok((
+            configuration,
+            PreparedProfile {
+                settings: Arc::new(settings),
+                files_to_not_pack,
+                custom_headparts,
+            },
+        ))
+    }
+}
+
+impl RunConfigurationProvider for ProfileConfigurationProvider {
+    /// Reads the profile once and, when set up for runs, builds the run's
+    /// production Run Toolset from that read. Built only after every read
+    /// succeeded, so work never sees a partial profile.
+    fn load(
+        &self,
+        profile_identity: &str,
+    ) -> Result<(RunConfiguration, Option<RunToolset>), Error> {
+        let (configuration, profile) = self.read_profile(profile_identity)?;
+        let toolset = self
+            .work
+            .as_ref()
+            .map(|work| work.toolset(Arc::new(profile)));
+        Ok((configuration, toolset))
     }
 }
 
@@ -488,8 +508,10 @@ fn mesh_target(settings: &ProfileSettings) -> NifVersion {
     }
 }
 
-/// The production Run Work Service, ported from C++ `ApplicationRunWork`.
-struct ApplicationRunWork {
+/// The per-run choices the production Run Toolset is built with, ported from
+/// what C++ `ApplicationRunWork` held.
+#[derive(Clone)]
+struct RunWorkSettings {
     settings: OptimizerSettings,
     /// The selected folder, which the headpart scan walks whole: C++ scanned
     /// `userPath`, so mods with a Mod Exclusion are scanned too.
@@ -497,44 +519,96 @@ struct ApplicationRunWork {
     /// The app directory's `bin/hkxcmd.exe`; each run's backend gets a fresh
     /// copy, so each run checks for the exe once, as each C++ run did.
     hkxcmd: Hkxcmd,
-    configuration: Arc<ProfileConfigurationProvider>,
-    /// The provider's Preparing snapshot, pinned for the whole run.
-    profile: Mutex<Option<Arc<PreparedProfile>>>,
 }
 
-impl ApplicationRunWork {
-    /// The run's Headpart Meshes, from `profile`'s `customHeadparts.txt` and
+impl RunWorkSettings {
+    /// The production Run Toolset of one run, over the profile its Preparing
+    /// read.
+    fn toolset(&self, profile: Arc<PreparedProfile>) -> RunToolset {
+        // One reader serves discovery, extraction and finalization for the
+        // whole run.
+        let reader = Arc::new(ArchiveFileReader::default());
+        let probes = Arc::new(VolumeProbes);
+        // C++ always wires Archive Finalization, so Apply executes the phase:
+        // it packs only when the Routing Policy requests Archive creation, and
+        // prunes empty directories either way.
+        let finalization = ArchiveFinalizationAdapter::new(
+            Box::new(archive_packer(&profile.settings)),
+            reader.clone(),
+            probes.clone(),
+            probes.clone(),
+            self.settings.finalization,
+            profile.files_to_not_pack.clone(),
+        );
+        RunToolset {
+            // The adapter creates the backend on the first Asset, as C++
+            // creates its MainOptimizer, so a run with nothing to process
+            // never sets up an optimizer.
+            asset_attempt: Box::new(AssetAttemptAdapter::new(OptimizerBackendFactory {
+                work: self.clone(),
+                profile,
+            })),
+            archive_extraction: Box::new(ArchiveExtractionAdapter::new(
+                reader.clone(),
+                probes.clone(),
+                self.settings.extracted_archive_cleanup,
+            )),
+            archive_finalization: Box::new(finalization),
+            archive_reader: reader,
+            capacity: probes.clone(),
+            volume_identity: probes,
+        }
+    }
+}
+
+/// The production backend factory: it lists the run's Headpart Meshes, then
+/// creates the [`OptimizerBackend`] on the Run Worker.
+///
+/// The Asset attempt adapter calls it on the first Routed Asset, after
+/// Archive extraction, so the scan sees any plugin extraction produced.
+struct OptimizerBackendFactory {
+    /// This run's copy of the per-run choices: the selected folder, which the
+    /// headpart scan walks whole, and this run's copy of the app directory's
+    /// `hkxcmd.exe`.
+    work: RunWorkSettings,
+    /// The profile Preparing read, which the backend's Texture profile, Mesh
+    /// target and custom Headpart Meshes come from.
+    profile: Arc<PreparedProfile>,
+}
+
+impl OptimizerBackendFactory {
+    /// The run's Headpart Meshes, from the profile's `customHeadparts.txt` and
     /// every plugin under the selected folder, as C++ `listHeadparts` gathered
     /// them.
     ///
     /// Only the necessary mesh level and above consult the list, so a run
     /// below it scans nothing; C++ scanned regardless, which no run fact
-    /// showed. Each plugin that cannot be read is retained in `evidence` as a
-    /// `PluginUnreadable` Run Diagnostic, and the scan carries on (deviation
-    /// 17).
+    /// showed. Each plugin that cannot be read is returned as a
+    /// `PluginUnreadable` Run Diagnostic for the run to retain, and the scan
+    /// carries on (deviation 17).
     ///
     /// # Errors
-    /// [`AssetInitializationCancelled`] when `stop` is cancelled during the
-    /// scan, as C++'s scan threw it.
+    /// [`ScanCancelled`] when `stop` is cancelled during the scan, as C++'s
+    /// scan threw it.
     fn list_headparts(
         &self,
-        profile: &PreparedProfile,
-        evidence: &RunWorkEvidence<'_, '_>,
         stop: &CancellationToken,
-    ) -> Result<HeadpartList, AssetInitializationCancelled> {
-        if !self.settings.meshes.recognises_headparts() {
-            return Ok(HeadpartList::default());
+    ) -> Result<(HeadpartList, Vec<RunDiagnostic>), ScanCancelled> {
+        if !self.work.settings.meshes.recognises_headparts() {
+            return Ok((HeadpartList::default(), Vec::new()));
         }
+        let profile = &self.profile;
         let extensions = Settings::get(archive_game(profile.settings.bsa_game)).plugin_extensions;
         let scan = scan_headparts(
             &profile.custom_headparts,
-            &self.selected_folder,
+            &self.work.selected_folder,
             extensions,
             &|| stop.is_cancelled(),
-        )
-        .map_err(|ScanCancelled| AssetInitializationCancelled)?;
-        for plugin in scan.unreadable {
-            evidence.retain_diagnostic(
+        )?;
+        let diagnostics = scan
+            .unreadable
+            .into_iter()
+            .map(|plugin| {
                 RunDiagnostic::new(
                     RunDiagnosticCode::PluginUnreadable,
                     RunPhase::ProcessingAssets,
@@ -543,108 +617,124 @@ impl ApplicationRunWork {
                         plugin.error
                     ),
                 )
-                .with_path(plugin.path),
-            );
-        }
-        Ok(scan.headparts)
+                .with_path(plugin.path)
+            })
+            .collect();
+        Ok((scan.headparts, diagnostics))
     }
 }
 
-impl RunWorkService for ApplicationRunWork {
-    fn prepare(&self) -> Result<(), Error> {
-        let prepared = self.configuration.prepared_profile().ok_or_else(|| {
-            Error::ConfigurationLoading("The selected profile was not prepared".to_owned())
-        })?;
-        *lock(&self.profile) = Some(prepared);
-        Ok(())
+impl AssetBackendFactory for OptimizerBackendFactory {
+    type Backend = OptimizerBackend;
+
+    /// Lists the Headpart Meshes, then creates the backend that recognises them.
+    fn create(
+        &mut self,
+        stop: &CancellationToken,
+    ) -> Result<BackendCreation<OptimizerBackend>, BackendCreationError> {
+        // C++ listed Headpart Meshes as it built its MainOptimizer for the
+        // first Asset, so the scan sees any plugin extraction produced.
+        let Ok((headparts, diagnostics)) = self.list_headparts(stop) else {
+            return Ok(BackendCreation::Cancelled);
+        };
+        let settings = &self.profile.settings;
+        let meshes = MeshOptimizer::new(self.work.settings.meshes, mesh_target(settings))
+            .with_headparts(headparts);
+        // The adapter calls this on the Run Worker, the thread that must join
+        // COM. C++'s texture optimizer threw when it could not, and its run
+        // contained the exception as an unsafe Operation Failure; the adapter
+        // contains this error the same way. The scan's diagnostics travel with
+        // the error, so the run still retains the plugins it could not read.
+        let backend = match OptimizerBackend::new(
+            self.work.settings.textures,
+            texture_profile(settings),
+            meshes,
+            self.work.hkxcmd.clone(),
+        ) {
+            Ok(backend) => backend,
+            Err(error) => {
+                return Err(BackendCreationError::new(error).with_diagnostics(diagnostics));
+            }
+        };
+        Ok(BackendCreation::Created {
+            backend,
+            diagnostics,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::device::join_single_threaded_apartment;
+
+    /// A plugin whose HDPT group claims more bytes than the file holds: an
+    /// empty TES4 record, then a group header naming HDPT with a size of 1000.
+    fn truncated_headpart_plugin() -> Vec<u8> {
+        let mut bytes = vec![0; 48];
+        bytes[..4].copy_from_slice(b"TES4");
+        bytes[24..28].copy_from_slice(b"GRUP");
+        bytes[28..32].copy_from_slice(&1000_u32.to_le_bytes());
+        bytes[32..36].copy_from_slice(b"HDPT");
+        bytes
     }
 
-    fn execute(
-        &self,
-        preparation: &RunPreparation,
-        evidence: &RunWorkEvidence<'_, '_>,
-        artifacts: &mut TemporaryArtifactRegistry,
-        milestones: &dyn RunWorkMilestones,
-        stop: &CancellationToken,
-    ) -> Result<(), Error> {
-        let profile = lock(&self.profile)
-            .clone()
-            .ok_or_else(|| Error::WorkService("The run's profile was not prepared".to_owned()))?;
-        let texture_profile = texture_profile(&profile.settings);
-        let meshes = MeshOptimizer::new(self.settings.meshes, mesh_target(&profile.settings));
-        // Created on the first Asset, as C++ creates its MainOptimizer, so a run
-        // with nothing to process never sets up an optimizer.
-        let mut backend: Option<OptimizerBackend> = None;
-        // Declared before `adapters`, which borrows them, so they outlive it.
-        let reader = ArchiveFileReader::default();
-        let packer = archive_packer(&profile.settings);
-        // C++ always wires Archive Finalization, so Apply executes the phase:
-        // it packs only when the Routing Policy requests Archive creation, and
-        // prunes empty directories either way.
-        let finalization = ArchiveFinalization::new(
-            &packer,
-            &reader,
-            &VolumeProbes,
-            &VolumeProbes,
-            self.settings.finalization,
-            &profile.files_to_not_pack,
-        );
-        let cleanup = self.settings.extracted_archive_cleanup;
-        let mut adapters = AssetRunAdapters::new(Box::new(|asset, mod_root, artifacts| {
-            if backend.is_none() {
-                // C++ listed Headpart Meshes as it built its MainOptimizer for
-                // the first Asset, so the scan sees any plugin extraction
-                // produced.
-                let headparts = self.list_headparts(&profile, evidence, stop)?;
-                // This closure runs on the Run Worker, the thread that must
-                // join COM. C++'s texture optimizer threw when it could not,
-                // and the Asset Run contained the exception as an unsafe
-                // Operation Failure; it contains this panic the same way.
-                backend = Some(
-                    OptimizerBackend::new(
-                        self.settings.textures,
-                        texture_profile.clone(),
-                        meshes.clone().with_headparts(headparts),
-                        self.hkxcmd.clone(),
-                    )
-                    .unwrap_or_else(|error| panic!("{error}")),
-                );
-            }
-            let backend = backend.as_mut().expect("the backend was created above");
-            let result = AssetExecutor::new(backend).execute(asset, artifacts, mod_root);
-            // Recorded before quarantine, as C++ `finishAttempt` did, so the
-            // failed conversion is judged by the executor's own result.
-            backend.record_attempt(asset, &result);
-            Ok(quarantine_failed_load(asset, result))
-        }));
-        adapters.finalize_archive_lifecycle = Some(Box::new(|evidence, artifacts| {
-            finalization.run(preparation, evidence, artifacts, &|| stop.is_cancelled())
-        }));
-        // Dry Run never reads a manifest, so wiring the Archive seams
-        // unconditionally is harmless.
-        adapters.archives = Some(ArchiveAdapters {
-            reader: &reader,
-            capacity: &VolumeProbes,
-            volume_identity: &VolumeProbes,
-            extract: Box::new(|plan, artifacts| {
-                let result = ArchiveExtractor::new(&reader, &VolumeProbes)
-                    .extract_with_source_cleanup(plan, cleanup, artifacts);
-                if result.succeeded() {
-                    log::info!(
-                        "BSA successfully extracted: {}",
-                        plan.archive_path.display()
-                    );
-                }
-                result
+    /// Spec #546 review: when the backend cannot be created after the
+    /// Headpart Mesh scan, the plugins the scan could not read are still
+    /// handed back with the error, so the run retains them as it did when the
+    /// backend's failure was a panic.
+    ///
+    /// COM fails on a thread that already joined a single-threaded apartment,
+    /// which is the one backend failure a test can reach. This is a unit test
+    /// because only the factory, not a run, can be put on such a thread.
+    #[test]
+    fn a_backend_failure_still_hands_back_the_unreadable_plugins() {
+        let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let profile = Profiles::new(&app_dir).open("SSE");
+        let mut options = profile.load_options(&Options::default()).unwrap();
+        options.meshes_optimization_level = 1;
+        let selection = std::env::temp_dir().join("cao-optimizers-unit/backend-failure");
+        // A missing directory is the expected case; anything else surfaces below.
+        let _ = std::fs::remove_dir_all(&selection);
+        std::fs::create_dir_all(&selection).unwrap();
+        std::fs::write(selection.join("Broken.esp"), truncated_headpart_plugin()).unwrap();
+        let mut factory = OptimizerBackendFactory {
+            work: RunWorkSettings {
+                settings: OptimizerSettings::from_options(&options),
+                selected_folder: selection.clone(),
+                hkxcmd: Hkxcmd::in_app_dir(&app_dir),
+            },
+            profile: Arc::new(PreparedProfile {
+                settings: Arc::new(profile.load_settings_checked().unwrap()),
+                files_to_not_pack: Vec::new(),
+                custom_headparts: Vec::new(),
             }),
-        });
-        execute_asset_run(
-            preparation,
-            evidence,
-            artifacts,
-            milestones,
-            stop,
-            &mut adapters,
-        )
+        };
+
+        // The thread exits after the attempt, leaving its apartment; neither
+        // the backend nor the error is `Send`, so only their facts leave it.
+        let created = std::thread::spawn(move || {
+            join_single_threaded_apartment();
+            match factory.create(&CancellationToken::new()) {
+                Ok(_) => Ok(()),
+                Err(failure) => Err((failure.error.to_string(), failure.diagnostics)),
+            }
+        })
+        .join()
+        .unwrap();
+
+        let (message, diagnostics) = created.expect_err("COM cannot join the MTA on an STA thread");
+        assert!(message.contains("Failed to initialize COM"), "{message}");
+        let reported: Vec<_> = diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.code, diagnostic.path.clone()))
+            .collect();
+        assert_eq!(
+            reported,
+            [(
+                RunDiagnosticCode::PluginUnreadable,
+                selection.join("Broken.esp")
+            )]
+        );
     }
 }

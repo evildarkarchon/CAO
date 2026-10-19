@@ -141,7 +141,7 @@ fn names_same_texture(execution_path: &str, reference: &str, mesh_path: &str) ->
 /// The run's Texture conversions that failed without committing a usable DDS,
 /// as normalized execution paths.
 ///
-/// It lives for the whole run, like C++'s `MainOptimizer`. The Asset Run
+/// It lives for the whole run, like C++'s `MainOptimizer`. The Run Executor
 /// attempts every Texture before any Mesh, so the record is complete by the
 /// time a Mesh consults it.
 #[derive(Debug, Clone, Default)]

@@ -18,3 +18,14 @@ cao-winfs.workspace = true
 getrandom.workspace = true
 log.workspace = true
 thiserror.workspace = true
+
+[features]
+# The fakes of this crate's seams that cao-core's, cao-optimizers' and
+# cao-gui's run scenarios share (#547). Enable it only from
+# `[dev-dependencies]`, so no fake is compiled into a release build.
+test-support = []
+
+[dev-dependencies]
+# Enables `test-support` for this crate's own integration tests; Cargo
+# unifies the feature onto the library those tests link.
+cao-core = { workspace = true, features = ["test-support"] }

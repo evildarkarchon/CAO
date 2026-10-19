@@ -29,6 +29,8 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIAdapter, IDXGIDevice, IDXGIFactory1,
 };
+#[cfg(test)]
+use windows::Win32::System::Com::COINIT_APARTMENTTHREADED;
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoIncrementMTAUsage, CoInitializeEx};
 use windows::core::Interface;
 
@@ -66,6 +68,24 @@ pub fn initialize_com() -> Result<(), ComUnavailable> {
         .ok()
         .map_err(ComUnavailable)?;
     keep_mta_alive()
+}
+
+/// Joins the calling thread to a single-threaded apartment, so that a later
+/// [`initialize_com`] on it fails with `RPC_E_CHANGED_MODE`.
+///
+/// Test-only: it is how a unit test reaches the backend's COM failure, which
+/// a Run Worker that never joined an apartment cannot hit. The thread should
+/// be one the test spawned and lets exit, which leaves the apartment.
+///
+/// # Panics
+/// If the thread already joined a different apartment.
+#[cfg(test)]
+pub(crate) fn join_single_threaded_apartment() {
+    // SAFETY: as in `initialize_com`, the reserved pointer is null and there
+    // is no other precondition.
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
+        .ok()
+        .expect("a fresh thread joins a single-threaded apartment");
 }
 
 /// Takes one process-lifetime reference on the MTA, the first time only.

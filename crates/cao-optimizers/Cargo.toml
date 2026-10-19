@@ -50,6 +50,9 @@ embed-resource.workspace = true
 # Builds raw TES3, TES4 and FO4 Archives with names `cao-archive` never writes,
 # as the C++ suite built them with `rsm-bsa` directly.
 ba2.workspace = true
+# The shared fakes of `cao-core`'s run seams (#547); tests only, so no fake
+# reaches a release build.
+cao-core = { workspace = true, features = ["test-support"] }
 # Writes the compressed HDPT records the plugin scenarios read (#505).
 flate2.workspace = true
 

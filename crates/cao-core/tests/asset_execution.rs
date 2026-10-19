@@ -7,8 +7,10 @@
 //! whose Safety Cleanup must leave no staging behind.
 //!
 //! A backend that panics is asserted through a whole run instead, because the
-//! panic is contained at the Asset Run's backend boundary, not inside the
-//! executor. There the spec (#476, #468) replaces C++: a backend exception was
+//! panic is contained at the run's Asset attempt port, not inside the
+//! executor. Such a run drives the backend through the production Asset
+//! attempt adapter inside a scripted Run Toolset (#553). There the spec
+//! (#476, #468) replaces C++: a backend exception was
 //! `BackendException` with no mutation, while a panic is `BackendException`
 //! with `PartialOrUnknown` mutation, unsafe to continue, because nothing can
 //! establish what the interrupted call wrote.
@@ -34,7 +36,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use cao_core::Error;
 use cao_core::execution::{
     AssetExecutionBackend, AssetExecutionFailure, AssetExecutionResult, AssetExecutor,
     ExecutionFailureCategory, MutationState, OperationResult,
@@ -45,12 +46,12 @@ use cao_core::routing::{
     RoutingPolicy, RoutingPolicyRequest, TextureVariant,
 };
 use cao_core::run::{
-    AssetRunAdapters, CancellationToken, OptimizationRunResult, RunExecutor, RunFailure,
-    RunFailureCode, RunOutcome, RunPhase, RunPreparation, RunServices, RunWorkEvidence,
-    RunWorkMilestones, RunWorkService, TemporaryArtifactRegistry, create_run_id, execute_asset_run,
-    is_staging_name,
+    AssetBackendFactory, BackendCreation, BackendCreationError, CancellationToken,
+    OptimizationRunResult, RunExecutor, RunFailure, RunFailureCode, RunOutcome, RunPhase,
+    RunServices, TemporaryArtifactRegistry, create_run_id, is_staging_name,
 };
-use common::{CountingCleanup, canonical, scratch_dir, test_configuration};
+use cao_core::test_support::{CountingCleanup, ScriptedToolset};
+use common::{canonical, scratch_dir, toolset_configuration};
 
 /// Every capability a routed scenario needs.
 const CAPABILITIES: &[ProfileCapability] = &[
@@ -317,10 +318,17 @@ fn execute_and_clean(
     result
 }
 
-/// A Run Work Service driving every Routed Asset through one shared backend.
-struct BackendRun(Mutex<HookBackend>);
+/// One [`HookBackend`] shared between a scenario and the run it drives: it is
+/// both the backend and the backend factory the production Asset attempt
+/// adapter creates it through, so the scenario can inspect it after the run.
+#[derive(Clone)]
+struct SharedBackend(Arc<Mutex<HookBackend>>);
 
-impl BackendRun {
+impl SharedBackend {
+    fn new(backend: HookBackend) -> Self {
+        Self(Arc::new(Mutex::new(backend)))
+    }
+
     fn backend(&self) -> MutexGuard<'_, HookBackend> {
         // A contained backend panic poisons the lock; its state is still whole.
         self.0
@@ -329,44 +337,100 @@ impl BackendRun {
     }
 }
 
-impl RunWorkService for BackendRun {
-    fn execute(
-        &self,
-        preparation: &RunPreparation,
-        evidence: &RunWorkEvidence<'_, '_>,
-        artifacts: &mut TemporaryArtifactRegistry,
-        milestones: &dyn RunWorkMilestones,
-        stop: &CancellationToken,
-    ) -> Result<(), Error> {
-        let mut adapters = AssetRunAdapters::new(Box::new(|asset, mod_root, artifacts| {
-            Ok(AssetExecutor::new(&mut *self.backend()).execute(asset, artifacts, mod_root))
-        }));
-        execute_asset_run(
-            preparation,
-            evidence,
-            artifacts,
-            milestones,
-            stop,
-            &mut adapters,
-        )
+impl AssetBackendFactory for SharedBackend {
+    type Backend = SharedBackend;
+
+    /// Hands the adapter the scenario's own backend, with no diagnostics.
+    fn create(
+        &mut self,
+        _stop: &CancellationToken,
+    ) -> Result<BackendCreation<SharedBackend>, BackendCreationError> {
+        Ok(BackendCreation::Created {
+            backend: self.clone(),
+            diagnostics: Vec::new(),
+        })
     }
 }
 
-/// Runs `work` over `root` through the Run Executor, Safety Cleanup included.
+/// Every call goes to the shared [`HookBackend`].
+impl AssetExecutionBackend for SharedBackend {
+    fn load_texture(&mut self, path: &Path, variant: TextureVariant) -> bool {
+        self.backend().load_texture(path, variant)
+    }
+
+    fn optimize_texture(
+        &mut self,
+        operations: AssetOperations,
+        mode: ExecutionMode,
+    ) -> OperationResult {
+        self.backend().optimize_texture(operations, mode)
+    }
+
+    fn save_texture(&mut self, path: &Path) -> bool {
+        self.backend().save_texture(path)
+    }
+
+    fn remove_texture(&mut self, path: &Path, remove_verified: &mut dyn FnMut() -> bool) -> bool {
+        self.backend().remove_texture(path, remove_verified)
+    }
+
+    fn texture_failure_detail(&self) -> String {
+        self.backend().texture_failure_detail()
+    }
+
+    fn load_mesh(&mut self, path: &Path, variant: MeshVariant) -> bool {
+        self.backend().load_mesh(path, variant)
+    }
+
+    fn optimize_mesh(
+        &mut self,
+        path: &Path,
+        mod_root: &Path,
+        mode: ExecutionMode,
+    ) -> OperationResult {
+        self.backend().optimize_mesh(path, mod_root, mode)
+    }
+
+    fn maintain_mesh_references(&mut self, mode: ExecutionMode) -> OperationResult {
+        self.backend().maintain_mesh_references(mode)
+    }
+
+    fn save_mesh(&mut self, path: &Path) -> bool {
+        self.backend().save_mesh(path)
+    }
+
+    fn optimize_animation(
+        &mut self,
+        path: &Path,
+        output_path: Option<&Path>,
+        mode: ExecutionMode,
+    ) -> OperationResult {
+        self.backend().optimize_animation(path, output_path, mode)
+    }
+
+    fn attempt_finished(&mut self, asset: &RoutedAsset, result: &AssetExecutionResult) {
+        self.backend().attempt_finished(asset, result);
+    }
+}
+
+/// Runs `backend` over `root` through the Run Executor, Safety Cleanup
+/// included: a scripted Run Toolset drives every Routed Asset through the
+/// production Asset attempt adapter over the shared backend.
 fn run(
     root: &Path,
     mode: ExecutionMode,
     requested: &[RequestedWork],
-    work: &BackendRun,
+    backend: &SharedBackend,
 ) -> OptimizationRunResult {
+    let backend = backend.clone();
+    let toolset = ScriptedToolset::default().with_backend_factory(move || backend.clone());
     let mut cleanup = CountingCleanup::default();
     RunExecutor.execute(
         &common::request(mode, root, requested),
         RunServices {
             safety_cleanup: &mut cleanup,
             observations: None,
-            configuration: Some(&*test_configuration()),
-            work: Some(work),
+            configuration: Some(&*toolset_configuration(Some(Arc::new(toolset)))),
         },
         &CancellationToken::new(),
         create_run_id(),
@@ -539,7 +603,7 @@ fn a_panicking_source_removal_is_unsafe_and_keeps_the_committed_output() {
         let source = root.join("source.tga");
         let output = root.join("source.dds");
         write(&source, "original");
-        let work = BackendRun(Mutex::new(HookBackend {
+        let shared = SharedBackend::new(HookBackend {
             remove: Some(Box::new(move |_, remove_verified| {
                 if removes_source {
                     assert!(remove_verified());
@@ -547,13 +611,13 @@ fn a_panicking_source_removal_is_unsafe_and_keeps_the_committed_output() {
                 panic!("remove_texture backend panicked")
             })),
             ..HookBackend::default()
-        }));
+        });
 
         let result = run(
             &root,
             ExecutionMode::Apply,
             &[RequestedWork::ConvertibleTextureConversion],
-            &work,
+            &shared,
         );
 
         assert_contained_panic(&result, "remove_texture", &source);
@@ -664,24 +728,24 @@ fn a_panicking_texture_save_is_unsafe_and_leaves_the_original_whole() {
     let root = mod_root("texture-save-panic");
     let source = root.join("native.dds");
     write(&source, "original");
-    let work = BackendRun(Mutex::new(HookBackend {
+    let shared = SharedBackend::new(HookBackend {
         save: Some(Box::new(|path| {
             std::fs::write(path, "partial output").unwrap();
             panic!("save_texture backend panicked")
         })),
         ..HookBackend::default()
-    }));
+    });
 
     let result = run(
         &root,
         ExecutionMode::Apply,
         &[RequestedWork::NativeTextureOptimization],
-        &work,
+        &shared,
     );
 
     assert_contained_panic(&result, "save_texture", &source);
     assert_eq!(read(&source), "original");
-    let staged = work.backend().saved.clone().unwrap();
+    let staged = shared.backend().saved.clone().unwrap();
     assert_sibling(&staged, &source);
     assert!(
         !staged.exists(),
@@ -968,20 +1032,20 @@ fn a_panicking_texture_load_or_optimization_saves_nothing() {
         let root = mod_root(&format!("texture-{boundary}-panic"));
         let source = root.join("native.dds");
         write(&source, "original");
-        let work = BackendRun(Mutex::new(HookBackend {
+        let shared = SharedBackend::new(HookBackend {
             panic_at: Some(boundary),
             ..HookBackend::default()
-        }));
+        });
 
         let result = run(
             &root,
             ExecutionMode::Apply,
             &[RequestedWork::NativeTextureOptimization],
-            &work,
+            &shared,
         );
 
         assert_contained_panic(&result, boundary, &source);
-        assert_eq!(work.backend().count("save_texture"), 0, "{boundary}");
+        assert_eq!(shared.backend().count("save_texture"), 0, "{boundary}");
         assert_eq!(read(&source), "original", "{boundary}");
     }
 }
@@ -1140,7 +1204,7 @@ fn a_panicking_mesh_call_is_unsafe_and_preserves_the_original() {
                 panic!("save_mesh backend panicked")
             }));
         }
-        let work = BackendRun(Mutex::new(backend));
+        let shared = SharedBackend::new(backend);
 
         let result = run(
             &root,
@@ -1149,12 +1213,12 @@ fn a_panicking_mesh_call_is_unsafe_and_preserves_the_original() {
                 RequestedWork::StandardMeshOptimization,
                 RequestedWork::ConvertibleTextureConversion,
             ],
-            &work,
+            &shared,
         );
 
         assert_contained_panic(&result, boundary, &source);
         assert_eq!(read(&source), "original", "{boundary}");
-        let backend = work.backend();
+        let backend = shared.backend();
         if boundary == "save_mesh" {
             assert!(!backend.saved.clone().unwrap().exists(), "{boundary}");
         } else {
@@ -1521,24 +1585,24 @@ fn a_panicking_animation_converter_is_unsafe_and_preserves_the_original() {
     let root = mod_root("animation-panic");
     let source = root.join("Walk.HKX");
     write(&source, "original");
-    let work = BackendRun(Mutex::new(HookBackend {
+    let shared = SharedBackend::new(HookBackend {
         animation: Some(Box::new(|output| {
             std::fs::write(output.unwrap(), "partial").unwrap();
             panic!("optimize_animation backend panicked")
         })),
         ..HookBackend::default()
-    }));
+    });
 
     let result = run(
         &root,
         ExecutionMode::Apply,
         &[RequestedWork::AnimationOptimization],
-        &work,
+        &shared,
     );
 
     assert_contained_panic(&result, "optimize_animation", &source);
     assert_eq!(read(&source), "original");
-    let staged = work.backend().saved.clone().unwrap();
+    let staged = shared.backend().saved.clone().unwrap();
     assert_sibling(&staged, &source);
     assert!(!staged.exists());
 }

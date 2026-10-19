@@ -15,11 +15,13 @@
 //! source cleanup. Loading Plugins of existing Archives are maintained after
 //! the last output. Empty directories are pruned whether or not Archive
 //! creation is requested. The phase records its output total, each attempt
-//! before the next output starts, and one final result into Run Evidence.
+//! before the next output starts, and one final result into Run Evidence
+//! through its [`ArchiveFinalizationRecorder`], which reaches nothing else.
 
 mod attempt;
 mod planning;
 mod plugins;
+mod recorder;
 
 use std::collections::BTreeMap;
 use std::os::windows::ffi::OsStrExt as _;
@@ -35,13 +37,15 @@ use crate::routing::RequestedWork;
 use crate::run::archives::{CapacityRequirements, capacity_detail};
 use crate::run::staging::has_staging_component;
 use crate::run::{
-    ArchivePacker, ArchiveReader, CapacityProbe, RunPreparation, RunWorkEvidence,
-    TemporaryArtifactRegistry, VolumeIdentityProbe, take_panic_message,
+    ArchivePacker, ArchiveReader, CapacityProbe, RunPreparation, TemporaryArtifactRegistry,
+    VolumeIdentityProbe, take_panic_message,
 };
 
 use attempt::attempt_output;
 use planning::{FinalizationPlan, PlanningStop, plan_finalization};
 use plugins::maintain_existing_loading_plugins;
+
+pub use recorder::ArchiveFinalizationRecorder;
 
 /// Why Archive Finalization, or one of its output attempts, failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -227,15 +231,17 @@ impl<'a> ArchiveFinalization<'a> {
         }
     }
 
-    /// Runs the phase over the preparation's Mod Roots.
+    /// Runs the phase over the preparation's Mod Roots, writing its facts
+    /// through `recorder`.
     ///
-    /// Evidence must already be in the executed Archive Finalization phase.
-    /// `cancelled` is polled between outputs and between Mod Roots, never
-    /// inside an atomic output attempt; cancelled planning records a cancelled
-    /// result without an output total. A failure or panic of the phase's own
-    /// work is recorded once as a phase-level `UnexpectedException` that keeps
-    /// every attempt already recorded and forbids continuation. The caller
-    /// owns `artifacts` through Safety Cleanup.
+    /// The recorder's evidence must already be in the executed Archive
+    /// Finalization phase. `cancelled` is polled between outputs and between
+    /// Mod Roots, never inside an atomic output attempt; cancelled planning
+    /// records a cancelled result without an output total. A failure or panic
+    /// of the phase's own work is recorded once as a phase-level
+    /// `UnexpectedException` that keeps every attempt already recorded and
+    /// forbids continuation. The caller owns `artifacts` through Safety
+    /// Cleanup.
     ///
     /// # Errors
     /// Only a Run Evidence invariant violation, returned unchanged so the Run
@@ -243,20 +249,13 @@ impl<'a> ArchiveFinalization<'a> {
     pub fn run(
         &self,
         preparation: &RunPreparation,
-        evidence: &RunWorkEvidence<'_, '_>,
+        recorder: &ArchiveFinalizationRecorder<'_, '_>,
         artifacts: &mut TemporaryArtifactRegistry,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(), Error> {
-        let mut recorder = Recorder { evidence, total: 0 };
         let mut result = ArchiveFinalizationResult::default();
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            self.run_phase(
-                preparation,
-                &mut recorder,
-                artifacts,
-                cancelled,
-                &mut result,
-            )
+            self.run_phase(preparation, recorder, artifacts, cancelled, &mut result)
         }));
         result.detail = match outcome {
             Ok(Ok(())) => return Ok(()),
@@ -269,7 +268,7 @@ impl<'a> ArchiveFinalization<'a> {
         // phase-level failure keeps that prefix.
         result.failure = Some(ArchiveFinalizationFailure::UnexpectedException);
         result.safe_to_continue = false;
-        evidence.record_archive_finalization(result)
+        recorder.record_result(result)
     }
 
     /// The phase's work. `result` accumulates in the caller, so an escaping
@@ -277,7 +276,7 @@ impl<'a> ArchiveFinalization<'a> {
     fn run_phase(
         &self,
         preparation: &RunPreparation,
-        recorder: &mut Recorder<'_, '_, '_>,
+        recorder: &ArchiveFinalizationRecorder<'_, '_>,
         artifacts: &mut TemporaryArtifactRegistry,
         cancelled: &dyn Fn() -> bool,
         result: &mut ArchiveFinalizationResult,
@@ -288,7 +287,7 @@ impl<'a> ArchiveFinalization<'a> {
         {
             // Empty-directory pruning is the legacy Apply finalization even
             // without packing.
-            recorder.plan(0)?;
+            recorder.record_output_total(0).map_err(Escape::Evidence)?;
             prune_empty_directories(preparation.mod_roots(), cancelled, result);
         } else {
             // The list only filters packing, so its absence matters only when
@@ -312,14 +311,20 @@ impl<'a> ArchiveFinalization<'a> {
                     // Planning made no mutation and has no trustworthy output
                     // total to publish.
                     result.cancelled = true;
-                    return recorder.result(std::mem::take(result));
+                    return recorder
+                        .record_result(std::mem::take(result))
+                        .map_err(Escape::Evidence);
                 }
                 Err(PlanningStop::Failed(detail)) => return Err(Escape::Work(detail)),
             };
-            recorder.plan(plan.outputs.len())?;
+            recorder
+                .record_output_total(plan.outputs.len())
+                .map_err(Escape::Evidence)?;
             self.finalize_plan(&plan, artifacts, cancelled, recorder, result)?;
         }
-        recorder.result(std::mem::take(result))
+        recorder
+            .record_result(std::mem::take(result))
+            .map_err(Escape::Evidence)
     }
 
     /// Publishes each planned output in one atomic attempt, then maintains
@@ -338,7 +343,7 @@ impl<'a> ArchiveFinalization<'a> {
         plan: &FinalizationPlan,
         artifacts: &mut TemporaryArtifactRegistry,
         cancelled: &dyn Fn() -> bool,
-        recorder: &mut Recorder<'_, '_, '_>,
+        recorder: &ArchiveFinalizationRecorder<'_, '_>,
         result: &mut ArchiveFinalizationResult,
     ) -> Result<(), Escape> {
         if cancelled() {
@@ -404,7 +409,7 @@ impl<'a> ArchiveFinalization<'a> {
             }
             result.attempts.push(attempt);
             // Evidence owns each atomic result before the next output starts.
-            recorder.attempt(result.attempts.last().expect("just pushed"))?;
+            record_last_attempt(recorder, result)?;
             if capacity_rejected {
                 return Ok(());
             }
@@ -442,7 +447,7 @@ impl<'a> ArchiveFinalization<'a> {
         volumes: &CachedVolumes,
         artifacts: &mut TemporaryArtifactRegistry,
         cancelled: &dyn Fn() -> bool,
-        recorder: &mut Recorder<'_, '_, '_>,
+        recorder: &ArchiveFinalizationRecorder<'_, '_>,
         result: &mut ArchiveFinalizationResult,
     ) -> Result<(), Escape> {
         for (index, root) in plan.roots.iter().enumerate() {
@@ -497,7 +502,7 @@ impl<'a> ArchiveFinalization<'a> {
         root: &Path,
         archive: Option<&Path>,
         required: u64,
-        recorder: &mut Recorder<'_, '_, '_>,
+        recorder: &ArchiveFinalizationRecorder<'_, '_>,
         result: &mut ArchiveFinalizationResult,
     ) -> Result<bool, Escape> {
         let Some(shortfall) = capacity_shortfall(self.seams.capacity, root, required) else {
@@ -514,7 +519,7 @@ impl<'a> ArchiveFinalization<'a> {
                 attempt.failure = Some(ArchiveFinalizationFailure::InsufficientCapacity);
                 attempt.detail = shortfall;
                 result.attempts.push(attempt);
-                recorder.attempt(result.attempts.last().expect("just pushed"))?;
+                record_last_attempt(recorder, result)?;
             }
         }
         Ok(false)
@@ -530,36 +535,16 @@ enum Escape {
     Work(String),
 }
 
-/// Submits the phase's evidence protocol (output total, attempts, one
-/// result), keeping every Run Evidence failure distinct from work failures.
-struct Recorder<'r, 'e, 'a> {
-    evidence: &'r RunWorkEvidence<'e, 'a>,
-    total: usize,
-}
-
-impl Recorder<'_, '_, '_> {
-    /// Starts determinate progress with the frozen output total.
-    fn plan(&mut self, total: usize) -> Result<(), Escape> {
-        self.evidence
-            .record_archive_finalization_plan(total)
-            .map_err(Escape::Evidence)?;
-        self.total = total;
-        Ok(())
-    }
-
-    /// Retains one completed attempt before the next output starts.
-    fn attempt(&self, attempt: &ArchiveFinalizationAttempt) -> Result<(), Escape> {
-        self.evidence
-            .record_archive_finalization_attempt(attempt.clone(), self.total)
-            .map_err(Escape::Evidence)
-    }
-
-    /// Retains the phase's single result, whose attempts match those recorded.
-    fn result(&self, result: ArchiveFinalizationResult) -> Result<(), Escape> {
-        self.evidence
-            .record_archive_finalization(result)
-            .map_err(Escape::Evidence)
-    }
+/// Retains the attempt just pushed onto `result` before the next output
+/// starts. The phase submits every fact through `recorder` with
+/// `Escape::Evidence`, keeping each Run Evidence failure distinct from work
+/// failures.
+fn record_last_attempt(
+    recorder: &ArchiveFinalizationRecorder<'_, '_>,
+    result: &ArchiveFinalizationResult,
+) -> Result<(), Escape> {
+    let attempt = result.attempts.last().expect("just pushed").clone();
+    recorder.record_attempt(attempt).map_err(Escape::Evidence)
 }
 
 /// Volume identities frozen once per Mod Root for the whole phase.

@@ -29,15 +29,22 @@ use cao_core::run::{
     ModSelection, OptimizationRunService, PhaseSkipReason, RunDiagnosticCode, RunEventPayload,
     RunFailureCode, RunHandle, RunOutcome, RunPhase, RunPhaseStatus, RunRequest, StartError,
 };
-use common::{
+use cao_core::test_support::{
     CallbackConfiguration, CountingInlineScheduler, DeferredScheduler, EventLog,
-    ExhaustedScheduler, GatedScheduler, HandleSlot, no_work_request, reclaim, serial,
-    test_configuration, test_mod_root,
+    ExhaustedScheduler, GatedScheduler, ScriptedToolset, ToolsetConfiguration,
 };
+use common::{HandleSlot, no_work_request, reclaim, serial, test_mod_root, toolset_configuration};
 
-/// A service on an injected scheduler with the SSE-like configuration and no work service.
+/// A provider of the SSE-like configuration and an unscripted Run Toolset,
+/// the means to do any requested work.
+fn equipped() -> Arc<ToolsetConfiguration> {
+    toolset_configuration(Some(Arc::new(ScriptedToolset::default())))
+}
+
+/// A service on an injected scheduler with the SSE-like configuration and an
+/// unscripted Run Toolset.
 fn service_on(scheduler: Arc<dyn cao_core::run::RunScheduler>) -> OptimizationRunService {
-    OptimizationRunService::with_scheduler(scheduler, Some(test_configuration()), None)
+    OptimizationRunService::with_scheduler(scheduler, Some(equipped()))
 }
 
 /// Origin: OptimizationRunServiceTests::aRequestWithoutAProfileIdentityIsRejectedWithoutCreatingAWorker.
@@ -182,7 +189,7 @@ fn waiting_repeatedly_observes_the_same_committed_result() {
 #[test]
 fn a_production_run_owns_its_request_after_start_returns() {
     let _serial = serial();
-    let service = OptimizationRunService::new(Some(test_configuration()), None);
+    let service = OptimizationRunService::new(Some(equipped()));
 
     // The request is moved into the run while its worker is still running on
     // another thread; the run must own it, not borrow it.
@@ -398,7 +405,7 @@ fn terminal_commit_releases_the_slot_before_the_worker_is_joined() {
     committed_rx.recv().unwrap();
 
     // The first worker has not returned yet, but its run has committed.
-    let next_service = OptimizationRunService::new(Some(test_configuration()), None);
+    let next_service = OptimizationRunService::new(Some(equipped()));
     let next = next_service.start(no_work_request(), None);
     finish_tx.send(()).unwrap();
 
@@ -481,7 +488,7 @@ fn a_scheduling_failure_releases_the_active_slot() {
         .terminal_result()
         .expect("a scheduling failure commits at once");
 
-    let next_service = OptimizationRunService::new(Some(test_configuration()), None);
+    let next_service = OptimizationRunService::new(Some(equipped()));
     let next = next_service
         .start(no_work_request(), None)
         .expect("the slot was released");
@@ -600,6 +607,8 @@ fn events_form_one_ordered_history_ending_in_one_terminal_event() {
 }
 
 /// Origin: OptimizationRunServiceTests::failureEventsPrecedeCleanupAndTerminal.
+/// The provider returns no Run Toolset, so the requested work has no means
+/// to run and Preparing fails with Requested Work Unavailable.
 #[test]
 fn failure_events_precede_safety_cleanup_and_the_terminal_event() {
     let _serial = serial();
@@ -609,7 +618,8 @@ fn failure_events_precede_safety_cleanup_and_the_terminal_event() {
         } else {
             Arc::new(CountingInlineScheduler::default())
         };
-        let service = service_on(scheduler);
+        let service =
+            OptimizationRunService::with_scheduler(scheduler, Some(toolset_configuration(None)));
         let events = EventLog::default();
         let request = RunRequest::new(
             "SkyrimSE",
@@ -656,7 +666,7 @@ fn a_failure_keeps_cancellation_observed_during_it_and_one_terminal_event() {
             "Configuration could not be loaded".to_owned(),
         ))
     })));
-    let service = OptimizationRunService::with_scheduler(scheduler.clone(), Some(provider), None);
+    let service = OptimizationRunService::with_scheduler(scheduler.clone(), Some(provider));
     let slot: HandleSlot = Arc::new(OnceLock::new());
     let events = EventLog::default();
     let dispatcher = {

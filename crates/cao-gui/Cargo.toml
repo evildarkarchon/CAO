@@ -44,6 +44,9 @@ slint.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# The shared fakes of `cao-core`'s run seams (#547); tests only, so no fake
+# reaches a release build.
+cao-core = { workspace = true, features = ["test-support"] }
 # The element metadata `ElementHandle` queries need; tests only (#508).
 cao-gui-ui = { workspace = true, features = ["debug-info"] }
 # Seam 4: drives the real components headlessly by accessible label (#476).

@@ -22,8 +22,8 @@ pub struct ArchiveEntry {
 
 /// Reads Archives without CAO depending on the archive library.
 ///
-/// It replaces the C++ `ArchiveExtractionOperation` and the Archive closures of
-/// `AssetRunAdapters`.
+/// It replaces the C++ `ArchiveExtractionOperation`; the Run Toolset carries
+/// it to Archive discovery and extraction.
 ///
 /// On Windows an open memory map stops its file from being deleted, so when
 /// an Archive's handles and maps are released is part of the contract:

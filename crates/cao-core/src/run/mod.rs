@@ -6,7 +6,7 @@
 
 mod archives;
 mod artifacts;
-mod asset_run;
+mod asset_attempt;
 mod evidence;
 mod executor;
 mod finalization;
@@ -18,6 +18,7 @@ mod scheduler;
 mod service;
 mod source_pin;
 mod staging;
+mod toolset;
 
 pub use archives::{
     ArchiveCollision, ArchiveExtractionFailure, ArchiveExtractionPlan, ArchiveExtractionResult,
@@ -27,22 +28,21 @@ pub use artifacts::{
     PublicationPolicy, PublicationReceipt, PublicationResult, PublicationState, PublicationTarget,
     Registration, StagedFile, TemporaryArtifactRegistry,
 };
-pub use asset_run::{
-    ArchiveAdapters, AssetInitializationCancelled, AssetRunAdapters, AssetRunProgress,
-    ExecuteAsset, ExtractArchive, FinalizeArchiveLifecycle, ReportArchiveCollisions, ReportPhase,
-    RoutedAssetAttempt, execute_asset_run, is_staging_name,
+pub use asset_attempt::{
+    AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
 };
 pub use evidence::{
-    ArchiveDiscoveryEvidence, MutableRunEvidence, RunEvidence, RunObservationSink, RunWorkEvidence,
+    ArchiveDiscoveryEvidence, MutableRunEvidence, RoutedAssetAttempt, RunEvidence,
+    RunObservationSink,
 };
 pub use executor::{
-    RunEvidenceInvariantPanic, RunExecutor, RunServices, RunWorkMilestones, RunWorkService,
-    SafetyCleanupService, collect_safety_cleanup_failures,
+    RunEvidenceInvariantPanic, RunExecutor, RunServices, SafetyCleanupService,
+    collect_safety_cleanup_failures,
 };
 pub use finalization::{
     ArchiveFinalization, ArchiveFinalizationAttempt, ArchiveFinalizationFailure,
-    ArchiveFinalizationMutation, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
-    ArchiveFinalizationSettings,
+    ArchiveFinalizationMutation, ArchiveFinalizationMutationKind, ArchiveFinalizationRecorder,
+    ArchiveFinalizationResult, ArchiveFinalizationSettings,
 };
 pub use lifecycle::{
     CancellationToken, ModSelection, MutationKind, MutationSummary, OptimizationRunResult,
@@ -64,7 +64,11 @@ pub use scheduler::{
 };
 pub use service::{OptimizationRunService, RunEventDispatcher, RunHandle, StartError};
 pub use source_pin::{LoadingPluginPin, SourceDirectoryPins, SourceFilePin, SourcePinError};
-pub use staging::StagingError;
+pub use staging::{StagingError, is_staging_name};
+pub use toolset::{
+    ArchiveExtractionAdapter, ArchiveExtractionPort, ArchiveFinalizationAdapter,
+    ArchiveFinalizationPort, AssetAttemptPort, AssetInitializationCancelled, RunToolset,
+};
 
 pub(crate) use artifacts::fingerprint;
 
@@ -86,6 +90,19 @@ pub(crate) fn take_panic_message(payload: Box<dyn std::any::Any + Send>) -> Stri
     let message = panic_message(payload.as_ref());
     discard_panic(payload);
     message
+}
+
+/// The Run Work Escaped detail of a panic that escaped onto the Run Worker
+/// past every narrower containment boundary, logged to the Application Log
+/// before it is returned. The payload is discarded as
+/// [`take_panic_message`] discards it.
+pub(crate) fn run_worker_panic_detail(payload: Box<dyn std::any::Any + Send>) -> String {
+    let detail = format!(
+        "The run's work escaped with a Run Worker panic: {}",
+        take_panic_message(payload)
+    );
+    log::error!("{detail}");
+    detail
 }
 
 /// Drops a caught panic payload without letting a payload whose own `Drop`

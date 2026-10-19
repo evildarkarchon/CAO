@@ -5,7 +5,9 @@
 //! the real lifecycle types, and checks what the window would show: the
 //! progress label and counts, the terminal label, the run-detail rows, and
 //! whether a close or a new run may proceed. Terminal results come from the
-//! real [`RunExecutor`] over fake work, as the C++ scenarios built theirs.
+//! real [`RunExecutor`] driven by scripted Run Toolsets over temporary Mod
+//! Roots, so the view is only tested against results a real run can produce
+//! (#554).
 //!
 //! `tests/GuiRunDispatchTests.cpp` is dropped with Qt's dispatch (spec Testing
 //! Decisions); its `closeWaitsForCleanupAndTerminalDelivery` intent is
@@ -16,19 +18,21 @@ use std::sync::Arc;
 
 use cao_core::Error;
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
-use cao_core::routing::{AssetRouter, ExecutionMode, RequestedWork};
+use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
-    ArchiveCollision, ArchiveDiscoveryEvidence, ArchiveExtractionFailure, ArchiveExtractionResult,
-    ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationResult,
-    CancellationToken, ModSelection, OptimizationRunResult, PhaseSkipReason, RoutedAssetAttempt,
-    RunConfiguration, RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode, RunEvent,
-    RunEventPayload, RunExecutor, RunFailure, RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord,
-    RunPreparation, RunProgress, RunRequest, RunServices, RunWorkEvidence, RunWorkMilestones,
-    RunWorkService, SafetyCleanupService, SelectedProfileFacts, TemporaryArtifactRegistry,
+    ArchiveExtractionFailure, ArchiveExtractionResult, ArchiveFinalizationAttempt,
+    ArchiveFinalizationFailure, ArchiveFinalizationResult, ArchivePrecedence, CancellationToken,
+    ModSelection, OptimizationRunResult, PhaseSkipReason, RunDiagnostic, RunDiagnosticCode,
+    RunEvent, RunEventPayload, RunFailure, RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord,
+    RunProgress, RunRequest,
+};
+use cao_core::test_support::{
+    CountingCleanup, Observed, RecordingSink, ScriptedToolset, ToolsetConfiguration, entry,
+    execute_run, record_finalization_result, write_archive,
 };
 use cao_gui::RunView;
 
-// ---- Fakes of the run seams, to build real terminal results
+// ---- Real runs over scripted Run Toolsets, to build real terminal results
 
 /// A fresh, empty directory under the target directory for one scenario.
 fn scratch_dir(name: &str) -> PathBuf {
@@ -42,154 +46,137 @@ fn scratch_dir(name: &str) -> PathBuf {
     dir
 }
 
-/// An SSE-like profile that supports every kind of work.
-struct AllWorkProfile;
-
-impl RunConfigurationProvider for AllWorkProfile {
-    fn load(&self, _profile_identity: &str) -> Result<RunConfiguration, Error> {
-        Ok(RunConfiguration {
-            profile: SelectedProfileFacts {
-                archive_extension: Some(".bsa".to_owned()),
-                supports_native_texture_optimization: true,
-                supports_texture_conversion: true,
-                supports_standard_mesh_optimization: true,
-                supports_terrain_mesh_optimization: true,
-                supports_animation_optimization: true,
-                supports_archive_extraction: true,
-                supports_mesh_reference_maintenance: true,
-                supports_archive_creation: true,
-            },
-            ..RunConfiguration::default()
-        })
-    }
-}
-
-/// A Safety Cleanup service reporting the given failures.
-struct Cleanup(Vec<RunFailure>);
-
-impl SafetyCleanupService for Cleanup {
-    fn perform_safety_cleanup(&mut self) -> Result<Vec<RunFailure>, Error> {
-        Ok(std::mem::take(&mut self.0))
-    }
-}
-
-/// Executes `request` with `work` and `cleanup` through the real Run Executor.
+/// Executes `request` through the real Run Executor under an SSE-like profile
+/// that supports every kind of work, its work done by a fresh Run Toolset
+/// over `toolset`. Live facts reach `sink`, whose hook may cancel through
+/// `stop`, and Safety Cleanup reports `cleanup`.
 fn execute(
     request: &RunRequest,
-    work: &dyn RunWorkService,
+    toolset: &Arc<ScriptedToolset>,
+    sink: &RecordingSink,
     cleanup: Vec<RunFailure>,
     stop: &CancellationToken,
 ) -> Arc<OptimizationRunResult> {
-    Arc::new(RunExecutor.execute(
+    let provider = ToolsetConfiguration::sse(Some(Arc::clone(toolset)));
+    let mut cleanup = CountingCleanup {
+        failures: cleanup,
+        ..CountingCleanup::default()
+    };
+    Arc::new(execute_run(
         request,
-        RunServices {
-            safety_cleanup: &mut Cleanup(cleanup),
-            observations: None,
-            configuration: Some(&AllWorkProfile),
-            work: Some(work),
-        },
+        &mut cleanup,
+        Some(sink),
+        Some(&provider),
         stop,
-        "run".to_owned(),
     ))
 }
 
-/// How the classified run's attempts turn out (C++ `ClassificationScenario`).
+/// Writes `count` loose Textures, `asset-0.dds` onwards, into `root`.
+fn write_textures(root: &Path, count: usize) {
+    for index in 0..count {
+        std::fs::write(root.join(format!("asset-{index}.dds")), b"texture").unwrap();
+    }
+}
+
+/// How the classified run turns out (C++ `ClassificationScenario`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Scenario {
     AllSuccessful,
     ContainedFailure,
     Cancelled,
-    UnsafeFailure,
+    FailingFinalizer,
 }
 
-/// Completes three routed Texture attempts, the third turning out as the
-/// scenario says, and stops in Processing Assets without reaching Archive
-/// Finalization, as the C++ fake did. The cancelled scenario routes eight
-/// Textures and cancels after the third attempt, leaving five unattempted.
-struct ClassifiedWork(Scenario);
-
-impl RunWorkService for ClassifiedWork {
-    fn execute(
-        &self,
-        preparation: &RunPreparation,
-        evidence: &RunWorkEvidence<'_, '_>,
-        _artifacts: &mut TemporaryArtifactRegistry,
-        milestones: &dyn RunWorkMilestones,
-        stop: &CancellationToken,
-    ) -> Result<(), Error> {
-        let scenario = self.0;
-        let root = preparation.mod_roots()[0].clone();
-        milestones.archive_discovery_started()?;
-        evidence.record_archive_discovery(ArchiveDiscoveryEvidence::default())?;
-        milestones.dry_run_archive_extraction()?;
-        milestones.effective_asset_tree_started()?;
-        let total = if scenario == Scenario::Cancelled {
-            8
-        } else {
-            3
-        };
-        let ledger = AssetRouter::new(preparation.policy().clone())
-            .route_all((0..total).map(|index| root.join(format!("asset-{index}.dds"))));
-        let assets = ledger.routed_assets().to_vec();
-        evidence.record_routing_ledger(ledger)?;
-        milestones.asset_processing_planned(total)?;
-        let third = match scenario {
-            Scenario::AllSuccessful | Scenario::Cancelled => {
-                AssetExecutionResult::success(MutationState::None)
-            }
-            Scenario::ContainedFailure => AssetExecutionResult::failed(
-                AssetExecutionFailure::SaveFailed,
-                "third attempt failed",
-            ),
-            Scenario::UnsafeFailure => AssetExecutionResult::failed(
-                AssetExecutionFailure::SaveFailed,
-                "third attempt failed",
-            )
-            .with_mutation(MutationState::PartialOrUnknown),
-        };
-        let results = [
-            AssetExecutionResult::success(MutationState::None),
-            AssetExecutionResult::success(MutationState::None),
-            third,
-        ];
-        for (asset, result) in assets.into_iter().zip(results) {
-            evidence.record_asset_attempt(
-                RoutedAssetAttempt {
-                    mod_root: root.clone(),
-                    asset,
-                    result,
-                },
-                total,
-            )?;
-        }
-        if scenario == Scenario::Cancelled {
-            stop.cancel();
-        }
-        Ok(())
-    }
-}
-
-/// The terminal result of a Dry Run whose Textures turn out as `scenario`
-/// says, with the number of Textures it routed.
-fn classified_run(scenario: Scenario) -> (Arc<OptimizationRunResult>, usize) {
-    let total = if scenario == Scenario::Cancelled {
-        8
-    } else {
-        3
+/// The terminal result of an Apply run over three loose Textures that turns
+/// out as `scenario` says:
+/// - all successful: every Asset attempt succeeds, and Archive Finalization
+///   packs its one planned output Archive;
+/// - contained failure: as all successful, but the `asset-2.dds` attempt
+///   fails safely;
+/// - cancelled: the run covers eight Textures and is cancelled once the
+///   Processing Assets record counts three attempts, leaving five unattempted;
+/// - failing finalizer: Archive Finalization plans three outputs, packs one,
+///   then fails outside any attempt with an Unexpected Exception.
+///
+/// Each is an Apply run because a completed Dry Run ends at a skipped Archive
+/// Finalization, which has no counts for the terminal view to show.
+fn classified_run(scenario: Scenario) -> Arc<OptimizationRunResult> {
+    let root = scratch_dir(&format!("{scenario:?}"));
+    let textures = match scenario {
+        Scenario::Cancelled => 8,
+        _ => 3,
     };
+    write_textures(&root, textures);
+    let toolset = ScriptedToolset::default().with_finalization(move |preparation, recorder, _| {
+        let root = preparation.mod_roots()[0].clone();
+        let packed = ArchiveFinalizationAttempt {
+            mutation: MutationState::Committed,
+            ..ArchiveFinalizationAttempt::new(root.join("output.bsa"), root)
+        };
+        if scenario == Scenario::FailingFinalizer {
+            // As production Archive Finalization records its own work's
+            // failure: an Unexpected Exception keeping the attempt already
+            // made, which forbids continuation and so fails the run.
+            return record_finalization_result(
+                recorder,
+                ArchiveFinalizationResult {
+                    attempts: vec![packed],
+                    failure: Some(ArchiveFinalizationFailure::UnexpectedException),
+                    safe_to_continue: false,
+                    detail: "the packer is gone".to_owned(),
+                    ..ArchiveFinalizationResult::default()
+                },
+                Some(3),
+            );
+        }
+        record_finalization_result(
+            recorder,
+            ArchiveFinalizationResult {
+                attempts: vec![packed],
+                ..ArchiveFinalizationResult::default()
+            },
+            None,
+        )
+    });
+    let toolset = if scenario == Scenario::ContainedFailure {
+        toolset.with_assets(|asset, _, _| {
+            Ok(if asset.execution_path().ends_with("asset-2.dds") {
+                AssetExecutionResult::failed(
+                    AssetExecutionFailure::SaveFailed,
+                    "third attempt failed",
+                )
+            } else {
+                AssetExecutionResult::success(MutationState::None)
+            })
+        })
+    } else {
+        toolset
+    };
+    let stop = CancellationToken::new();
+    let token = stop.clone();
+    // Every attempt re-fires the Processing Assets record with its counts, so
+    // the third attempt's record is where the user cancels.
+    let sink = RecordingSink::with_hook(move |observation| {
+        if scenario == Scenario::Cancelled
+            && let Observed::Phase(record) = observation
+            && record.phase() == RunPhase::ProcessingAssets
+            && record
+                .progress()
+                .is_some_and(|progress| progress.completed() == 3)
+        {
+            token.cancel();
+        }
+    });
     let request = RunRequest::new(
         "SkyrimSE",
-        ExecutionMode::DryRun,
-        ModSelection::SingleModRoot(scratch_dir(&format!("{scenario:?}"))),
-        vec![RequestedWork::NativeTextureOptimization],
+        ExecutionMode::Apply,
+        ModSelection::SingleModRoot(root),
+        vec![
+            RequestedWork::NativeTextureOptimization,
+            RequestedWork::ArchiveCreation,
+        ],
     );
-    let result = execute(
-        &request,
-        &ClassifiedWork(scenario),
-        Vec::new(),
-        &CancellationToken::new(),
-    );
-    (result, total)
+    execute(&request, &Arc::new(toolset), &sink, Vec::new(), &stop)
 }
 
 /// A Run Event of run `run_id` at `sequence`.
@@ -291,7 +278,7 @@ fn detail_rows_keep_unicode_paths() {
             1,
             RunEventPayload::Failure(
                 RunFailure::new(
-                    RunFailureCode::WorkServiceFailed,
+                    RunFailureCode::RunWorkEscaped,
                     RunPhase::ExtractingArchives,
                     "archive failure",
                 )
@@ -307,20 +294,38 @@ fn detail_rows_keep_unicode_paths() {
 
 /// Origin: GuiRunTests::presentsTerminalClassification. Cancellation is only
 /// intent until the terminal result arrives, only success reads as Done, and
-/// cancelling twice, or after the end, changes nothing.
+/// cancelling twice, or after the end, changes nothing. The terminal counts
+/// are the final work phase's: Archive Finalization's outputs, or Processing
+/// Assets' attempts for the run cancelled there.
 #[test]
 fn the_terminal_result_names_the_outcome_and_cancelling_is_only_intent() {
-    for (scenario, outcome, label) in [
-        (Scenario::AllSuccessful, RunOutcome::Succeeded, "Done"),
+    for (scenario, outcome, label, (completed, total)) in [
+        (
+            Scenario::AllSuccessful,
+            RunOutcome::Succeeded,
+            "Done",
+            (1, 1),
+        ),
         (
             Scenario::ContainedFailure,
             RunOutcome::CompletedWithFailures,
             "Completed With Failures",
+            (1, 1),
         ),
-        (Scenario::Cancelled, RunOutcome::Cancelled, "Cancelled"),
-        (Scenario::UnsafeFailure, RunOutcome::Failed, "Failed"),
+        (
+            Scenario::Cancelled,
+            RunOutcome::Cancelled,
+            "Cancelled",
+            (3, 8),
+        ),
+        (
+            Scenario::FailingFinalizer,
+            RunOutcome::Failed,
+            "Failed",
+            (1, 3),
+        ),
     ] {
-        let (result, total) = classified_run(scenario);
+        let result = classified_run(scenario);
         assert_eq!(result.outcome(), outcome, "{scenario:?}");
 
         let mut view = RunView::default();
@@ -346,7 +351,11 @@ fn the_terminal_result_names_the_outcome_and_cancelling_is_only_intent() {
         assert!(!view.state().active);
         // The final work phase's counts, not Safety Cleanup's (it has none).
         let progress = view.state().progress.unwrap();
-        assert_eq!((progress.completed(), progress.total()), (3, total));
+        assert_eq!(
+            (progress.completed(), progress.total()),
+            (completed, total),
+            "{scenario:?}"
+        );
 
         view.request_cancellation();
         assert_eq!(view.state().label, label);
@@ -371,117 +380,93 @@ fn a_close_during_a_run_waits_for_its_terminal_result() {
     assert!(view.consume(&event("run", 1, executed(RunPhase::SafetyCleanup, None))));
     assert!(!view.request_close(), "Safety Cleanup has not finished");
 
-    let (result, _) = classified_run(Scenario::Cancelled);
+    let result = classified_run(Scenario::Cancelled);
     assert!(view.consume(&event("run", 2, RunEventPayload::Terminal(result))));
     assert!(view.request_close());
     assert!(view.state().close_requested);
     assert!(!view.can_start());
 }
 
-/// Records evidence of every kind a failed Apply run can retain: an Archive
-/// Collision, a committed and a partial extraction, a committed failed Asset
-/// save, a finalization whose source cleanup failed, and a primary Run Failure.
-struct EvidenceOnlyWork;
+/// A failed Apply run whose real evidence holds every kind the detail rows
+/// show: an Archive Collision a Loose Asset wins, a committed and a failed
+/// extraction, a committed failed Asset save, a finalization whose source
+/// cleanup failed beside an output left partial, and the primary Run Failure
+/// of a finalizer whose work then escapes (simulated, as no real run reaches
+/// a Run Failure here). Safety Cleanup reports `cleanup`.
+fn evidence_run(cleanup: Vec<RunFailure>) -> Arc<OptimizationRunResult> {
+    let root = scratch_dir("evidence");
+    for name in ["winner", "shadowed"] {
+        write_archive(
+            &root.join(format!("{name}.bsa")),
+            &[entry("textures/a.dds", name.as_bytes())],
+        );
+    }
+    std::fs::create_dir_all(root.join("textures")).unwrap();
+    std::fs::write(root.join("textures/a.dds"), b"loose").unwrap();
 
-impl RunWorkService for EvidenceOnlyWork {
-    fn execute(
-        &self,
-        preparation: &RunPreparation,
-        evidence: &RunWorkEvidence<'_, '_>,
-        _artifacts: &mut TemporaryArtifactRegistry,
-        milestones: &dyn RunWorkMilestones,
-        _stop: &CancellationToken,
-    ) -> Result<(), Error> {
-        let root = preparation.mod_roots()[0].clone();
-        milestones.archive_discovery_started()?;
-        evidence.record_archive_collisions(&[ArchiveCollision {
-            mod_root: root.clone(),
-            game_path: PathBuf::from("textures/a.dds"),
-            winning_archive: root.join("winner.bsa"),
-            shadowed_archives: vec![root.join("shadowed.bsa")],
-            loose_asset_wins: true,
-        }])?;
-        evidence.record_archive_discovery(ArchiveDiscoveryEvidence::default())?;
-        milestones.archive_extraction_planned(2)?;
-        evidence.record_archive_extraction_attempt(
-            ArchiveExtractionResult {
-                archive_path: root.join("committed.bsa"),
-                mod_root: root.clone(),
-                mutation: MutationState::Committed,
-                failure: None,
-                safe_to_continue: true,
-                detail: String::new(),
-            },
-            2,
-        )?;
-        evidence.record_archive_extraction_attempt(
-            ArchiveExtractionResult {
-                archive_path: root.join("input.bsa"),
-                mod_root: root.clone(),
-                mutation: MutationState::PartialOrUnknown,
-                failure: Some(ArchiveExtractionFailure::MergeFailed),
-                safe_to_continue: false,
-                detail: "merge interrupted".to_owned(),
-            },
-            2,
-        )?;
-
-        milestones.effective_asset_tree_started()?;
-        let ledger =
-            AssetRouter::new(preparation.policy().clone()).route_all([root.join("failed.dds")]);
-        let asset = ledger.routed_assets()[0].clone();
-        evidence.record_routing_ledger(ledger)?;
-        milestones.asset_processing_planned(1)?;
-        evidence.record_asset_attempt(
-            RoutedAssetAttempt {
-                mod_root: root.clone(),
-                asset,
-                result: AssetExecutionResult::failed(
+    let toolset =
+        ScriptedToolset::default()
+            .with_extraction(|plan, _| {
+                if plan.archive_path.ends_with("winner.bsa") {
+                    ArchiveExtractionResult {
+                        mutation: MutationState::Committed,
+                        ..ArchiveExtractionResult::new(plan)
+                    }
+                } else {
+                    // A failed merge that rolled back is safe, so the run goes
+                    // on to the Asset and Archive Finalization evidence; a
+                    // partial one would stop it here.
+                    ArchiveExtractionResult {
+                        failure: Some(ArchiveExtractionFailure::MergeFailed),
+                        detail: "merge interrupted".to_owned(),
+                        ..ArchiveExtractionResult::new(plan)
+                    }
+                }
+            })
+            .with_assets(|asset, _, _| {
+                Ok(AssetExecutionResult::failed(
                     AssetExecutionFailure::SaveFailed,
                     "asset save failed",
                 )
                 .with_mutation(MutationState::Committed)
-                .with_path(root.join("failed.dds"))
+                .with_path(asset.execution_path())
                 .with_operation("save_texture")
-                .with_service_detail("backend detail"),
-            },
-            1,
-        )?;
-
-        milestones.archive_finalization_available(ExecutionMode::Apply, true)?;
-        let attempts = vec![
-            ArchiveFinalizationAttempt {
-                mutation: MutationState::Committed,
-                failure: Some(ArchiveFinalizationFailure::SourceCleanupFailed),
-                detail: "source remains usable".to_owned(),
-                ..ArchiveFinalizationAttempt::new(root.join("output.bsa"), root.clone())
-            },
-            ArchiveFinalizationAttempt::new(root.join("output-two.bsa"), root.clone()),
-        ];
-        evidence.record_archive_finalization_plan(5)?;
-        for attempt in &attempts {
-            evidence.record_archive_finalization_attempt(attempt.clone(), 5)?;
-        }
-        evidence.record_archive_finalization(ArchiveFinalizationResult {
-            attempts,
-            ..ArchiveFinalizationResult::default()
-        })?;
-        evidence.record_failure(RunFailure::new(
-            RunFailureCode::WorkServiceFailed,
-            RunPhase::ArchiveFinalization,
-            "primary failure",
-        ));
-        Ok(())
-    }
-}
-
-/// Origin: GuiRunTests::presentsTerminalEvidence. A failed run's detail rows
-/// show its attempts, collision winners, cleanup failures and retained
-/// mutations; a streamed failure is not repeated, and a late diagnostic keeps
-/// the terminal label.
-#[test]
-fn the_terminal_result_lists_its_evidence_once() {
-    let root = scratch_dir("evidence");
+                .with_service_detail("backend detail"))
+            })
+            .with_finalization(|preparation, recorder, _| {
+                let root = preparation.mod_roots()[0].clone();
+                // The partial output stops finalization after two of five planned
+                // outputs; being the last work phase, it still reaches the result.
+                let attempts = vec![
+                    ArchiveFinalizationAttempt {
+                        mutation: MutationState::Committed,
+                        failure: Some(ArchiveFinalizationFailure::SourceCleanupFailed),
+                        detail: "source remains usable".to_owned(),
+                        ..ArchiveFinalizationAttempt::new(root.join("output.bsa"), root.clone())
+                    },
+                    ArchiveFinalizationAttempt {
+                        mutation: MutationState::PartialOrUnknown,
+                        failure: Some(ArchiveFinalizationFailure::CommitFailed),
+                        safe_to_continue: false,
+                        detail: "publication interrupted".to_owned(),
+                        ..ArchiveFinalizationAttempt::new(root.join("output-two.bsa"), root.clone())
+                    },
+                ];
+                record_finalization_result(
+                    recorder,
+                    ArchiveFinalizationResult {
+                        attempts,
+                        ..ArchiveFinalizationResult::default()
+                    },
+                    Some(5),
+                )?;
+                // Simulates the run's work escaping after the phase recorded
+                // its result: no real port returns an error that is not a Run
+                // Evidence invariant violation, but the executor contains one
+                // as Run Work Escaped, which gives the view the primary Run
+                // Failure row this scenario needs.
+                Err(Error::RunWorkEscaped("primary failure".to_owned()))
+            });
     let request = RunRequest::new(
         "SkyrimSE",
         ExecutionMode::Apply,
@@ -491,7 +476,27 @@ fn the_terminal_result_lists_its_evidence_once() {
             RequestedWork::NativeTextureOptimization,
             RequestedWork::ArchiveCreation,
         ],
-    );
+    )
+    // Explicit, so `winner.bsa` outranks `shadowed.bsa` whatever their names.
+    .with_archive_precedence(ArchivePrecedence::ExplicitOrder(vec![
+        "winner.bsa".into(),
+        "shadowed.bsa".into(),
+    ]));
+    execute(
+        &request,
+        &Arc::new(toolset),
+        &RecordingSink::default(),
+        cleanup,
+        &CancellationToken::new(),
+    )
+}
+
+/// Origin: GuiRunTests::presentsTerminalEvidence. A failed run's detail rows
+/// show its attempts, collision winners, cleanup failures and retained
+/// mutations; a streamed failure is not repeated, and a late diagnostic keeps
+/// the terminal label.
+#[test]
+fn the_terminal_result_lists_its_evidence_once() {
     let cleanup = vec![
         RunFailure::new(
             RunFailureCode::TemporaryArtifactCleanupFailed,
@@ -500,13 +505,12 @@ fn the_terminal_result_lists_its_evidence_once() {
         )
         .with_path("staging.tmp"),
     ];
-    let result = execute(
-        &request,
-        &EvidenceOnlyWork,
-        cleanup,
-        &CancellationToken::new(),
-    );
+    let result = evidence_run(cleanup);
     assert_eq!(result.outcome(), RunOutcome::Failed);
+    let [failure] = result.failures() else {
+        panic!("one Run Failure expected: {:?}", result.failures());
+    };
+    assert_eq!(failure.phase, RunPhase::ArchiveFinalization);
 
     let mut view = RunView::default();
     view.begin("run");
