@@ -36,7 +36,6 @@
 
 mod common;
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -49,9 +48,8 @@ use cao_core::run::{
     ArchiveFinalizationResult, ArchivePrecedence, CancellationToken, ModSelection, MutationKind,
     OptimizationRunResult, PhaseSkipReason, RunConfiguration, RunConfigurationProvider,
     RunDiagnosticCode, RunExecutor, RunFailure, RunFailureCode, RunObservationSink, RunOutcome,
-    RunPhase, RunPhaseRecord, RunPhaseStatus, RunPreparation, RunProgress, RunRequest, RunServices,
-    RunWorkEvidence, RunWorkMilestones, RunWorkService, SafetyCleanupService, SelectedProfileFacts,
-    TemporaryArtifactRegistry, create_run_id,
+    RunPhase, RunPhaseRecord, RunPhaseStatus, RunProgress, RunRequest, RunServices,
+    SafetyCleanupService, SelectedProfileFacts, TemporaryArtifactRegistry, create_run_id,
 };
 use cao_core::test_support::{
     CallbackConfiguration, CountingCleanup, FakeCapacity, Observed, RecordingSink, ScriptedCleanup,
@@ -59,42 +57,21 @@ use cao_core::test_support::{
 };
 use common::{canonical, no_work_request, request, scratch_dir, test_configuration};
 
-/// Executes one request with the given services and a fresh run identity.
-fn execute(
-    request: &RunRequest,
-    cleanup: &mut CountingCleanup,
-    configuration: Option<&dyn RunConfigurationProvider>,
-    work: Option<&dyn RunWorkService>,
-    stop: &CancellationToken,
-) -> cao_core::run::OptimizationRunResult {
-    RunExecutor.execute(
-        request,
-        RunServices {
-            safety_cleanup: cleanup,
-            observations: None,
-            configuration,
-            work,
-        },
-        stop,
-        create_run_id(),
-    )
-}
-
 /// Executes one request with no observer and a fresh run identity. Requested
 /// work runs only through the Run Toolset `configuration` returns, if any.
-fn run(
+fn execute(
     request: &RunRequest,
     cleanup: &mut CountingCleanup,
     configuration: Option<&dyn RunConfigurationProvider>,
     stop: &CancellationToken,
 ) -> OptimizationRunResult {
-    run_with(request, cleanup, None, configuration, stop)
+    execute_with(request, cleanup, None, configuration, stop)
 }
 
 /// Executes one request with every service supplied by the scenario.
 /// Requested work runs only through the Run Toolset `configuration`
 /// returns, if any.
-fn run_with(
+fn execute_with(
     request: &RunRequest,
     cleanup: &mut dyn SafetyCleanupService,
     observations: Option<&dyn RunObservationSink>,
@@ -175,7 +152,7 @@ fn a_no_work_run_traverses_every_phase_skipping_work_for_the_one_known_reason() 
             Vec::new(),
         );
         let mut cleanup = CountingCleanup::default();
-        let result = run(
+        let result = execute(
             &request,
             &mut cleanup,
             Some(&*test_configuration()),
@@ -269,7 +246,7 @@ fn safety_cleanup_runs_exactly_once_on_every_terminal_path() {
     ];
     for (name, request, configuration, stop, outcome) in paths {
         let mut cleanup = CountingCleanup::default();
-        let result = run(&request, &mut cleanup, Some(configuration), &stop);
+        let result = execute(&request, &mut cleanup, Some(configuration), &stop);
 
         assert_eq!(result.outcome(), outcome, "{name}");
         assert_eq!(cleanup.passes, 1, "{name}: one cleanup pass");
@@ -292,7 +269,7 @@ fn a_configuration_loading_failure_fails_preparing_with_its_detail() {
         ))
     }));
     let mut cleanup = CountingCleanup::default();
-    let result = run(
+    let result = execute(
         &no_work_request(),
         &mut cleanup,
         Some(&provider),
@@ -318,7 +295,7 @@ fn a_configuration_loading_failure_fails_preparing_with_its_detail() {
 fn a_panicking_configuration_provider_fails_preparing() {
     let provider = CallbackConfiguration(Box::new(|_| panic!("the provider exploded")));
     let mut cleanup = CountingCleanup::default();
-    let result = run(
+    let result = execute(
         &no_work_request(),
         &mut cleanup,
         Some(&provider),
@@ -342,7 +319,7 @@ fn a_panicking_configuration_provider_fails_preparing() {
 #[test]
 fn a_missing_configuration_provider_fails_preparing() {
     let mut cleanup = CountingCleanup::default();
-    let result = run(
+    let result = execute(
         &no_work_request(),
         &mut cleanup,
         None,
@@ -375,7 +352,7 @@ fn a_request_contradicting_the_profile_fails_preparing_with_every_conflict() {
         &[RequestedWork::StandardMeshOptimization],
     );
     let mut cleanup = CountingCleanup::default();
-    let result = run(
+    let result = execute(
         &request,
         &mut cleanup,
         Some(&provider),
@@ -408,7 +385,7 @@ fn a_selection_that_is_not_an_existing_directory_fails_preparing() {
             Vec::new(),
         );
         let mut cleanup = CountingCleanup::default();
-        let result = run(
+        let result = execute(
             &request,
             &mut cleanup,
             Some(&*test_configuration()),
@@ -436,7 +413,7 @@ fn a_filesystem_root_cannot_be_a_mod_root() {
             Vec::new(),
         );
         let mut cleanup = CountingCleanup::default();
-        let result = run(
+        let result = execute(
             &request,
             &mut cleanup,
             Some(&*test_configuration()),
@@ -470,7 +447,7 @@ fn requested_work_without_a_run_toolset_fails_preparing() {
         &[RequestedWork::NativeTextureOptimization],
     );
     let mut cleanup = CountingCleanup::default();
-    let result = run(
+    let result = execute(
         &request,
         &mut cleanup,
         Some(&*test_configuration()),
@@ -502,7 +479,7 @@ fn cancellation_during_preparing_publishes_no_preparation() {
         }))
     };
     let mut cleanup = CountingCleanup::default();
-    let result = run(&no_work_request(), &mut cleanup, Some(&cancelling), &token);
+    let result = execute(&no_work_request(), &mut cleanup, Some(&cancelling), &token);
 
     assert_eq!(result.outcome(), RunOutcome::Cancelled);
     assert!(result.cancellation_observed());
@@ -529,7 +506,7 @@ fn cleanup_failures_complete_with_failures_but_a_failed_cleanup_service_is_fatal
         failures: vec![artifact_failure.clone()],
         ..CountingCleanup::default()
     };
-    let result = run(
+    let result = execute(
         &no_work_request(),
         &mut cleanup,
         Some(&*test_configuration()),
@@ -546,7 +523,7 @@ fn cleanup_failures_complete_with_failures_but_a_failed_cleanup_service_is_fatal
         service_error: Some("the registry is gone".to_owned()),
         ..CountingCleanup::default()
     };
-    let result = run(
+    let result = execute(
         &no_work_request(),
         &mut broken,
         Some(&*test_configuration()),
@@ -572,189 +549,13 @@ fn cancellation_wins_over_cleanup_failures() {
         )],
         ..CountingCleanup::default()
     };
-    let result = run(
+    let result = execute(
         &no_work_request(),
         &mut cleanup,
         Some(&*test_configuration()),
         &token,
     );
     assert_eq!(result.outcome(), RunOutcome::Cancelled);
-}
-
-/// A work service that fails, panics or violates an evidence invariant.
-struct FaultyWork(fn() -> Result<(), Error>);
-
-impl RunWorkService for FaultyWork {
-    fn execute(
-        &self,
-        _preparation: &RunPreparation,
-        _evidence: &RunWorkEvidence<'_, '_>,
-        _artifacts: &mut TemporaryArtifactRegistry,
-        milestones: &dyn RunWorkMilestones,
-        _stop: &CancellationToken,
-    ) -> Result<(), Error> {
-        milestones.archive_discovery_started()?;
-        (self.0)()
-    }
-}
-
-/// Origin: OptimizationRunServiceTests::workExceptionRetainsEarlierEvidence.
-#[test]
-fn a_failing_or_panicking_work_service_fails_at_its_phase_and_still_cleans_up() {
-    let root = scratch_dir("executor-faulty-work");
-    let request = request(
-        ExecutionMode::DryRun,
-        &root,
-        &[RequestedWork::NativeTextureOptimization],
-    );
-    type Fault = fn() -> Result<(), Error>;
-    let faults: [(&str, Fault); 2] = [
-        ("error", || {
-            Err(Error::WorkService("the backend is unavailable".to_owned()))
-        }),
-        ("panic", || panic!("the work service panicked")),
-    ];
-    for (name, fault) in faults {
-        let work = FaultyWork(fault);
-        let mut cleanup = CountingCleanup::default();
-        let result = execute(
-            &request,
-            &mut cleanup,
-            Some(&*test_configuration()),
-            Some(&work),
-            &CancellationToken::new(),
-        );
-
-        assert_eq!(result.outcome(), RunOutcome::Failed, "{name}");
-        assert_eq!(
-            result.final_phase(),
-            RunPhase::DiscoveringArchives,
-            "{name}"
-        );
-        assert_eq!(
-            result.failures()[0].code,
-            RunFailureCode::WorkServiceFailed,
-            "{name}"
-        );
-        assert_eq!(
-            result.failures()[0].phase,
-            RunPhase::DiscoveringArchives,
-            "{name}"
-        );
-        assert!(
-            result.preparation().is_some(),
-            "{name}: earlier evidence survives"
-        );
-        assert_eq!(cleanup.passes, 1, "{name}");
-    }
-}
-
-/// A panic payload whose own drop panics again, which a containment boundary
-/// that merely dropped it would let escape.
-struct PanicsAgainOnDrop;
-
-impl Drop for PanicsAgainOnDrop {
-    fn drop(&mut self) {
-        panic!("the panic payload panicked while it was dropped");
-    }
-}
-
-/// Stages one durable Asset sibling under the run's Temporary Ownership, then
-/// panics with the payload `panic` makes.
-struct PanickingAfterStaging {
-    panic: fn() -> !,
-    staged: Mutex<Option<PathBuf>>,
-}
-
-impl RunWorkService for PanickingAfterStaging {
-    fn execute(
-        &self,
-        preparation: &RunPreparation,
-        _evidence: &RunWorkEvidence<'_, '_>,
-        artifacts: &mut TemporaryArtifactRegistry,
-        milestones: &dyn RunWorkMilestones,
-        _stop: &CancellationToken,
-    ) -> Result<(), Error> {
-        milestones.archive_discovery_started()?;
-        let root = &preparation.mod_roots()[0];
-        let receipt = artifacts
-            .capture_and_stage_file(root, &root.join("textures").join("a.dds"))
-            .expect("the staging sibling is created");
-        let staged = receipt.path().unwrap().to_path_buf();
-        std::fs::write(&staged, "half-written output").unwrap();
-        *self.staged.lock().unwrap() = Some(staged);
-        (self.panic)()
-    }
-}
-
-/// Spec (#476, #468): a panic in the Run Worker becomes a Failed outcome, and
-/// Safety Cleanup still runs, removing what the run staged. The second row's
-/// payload panics again when dropped, which must not escape the boundary.
-#[test]
-fn a_run_worker_panic_fails_the_run_and_safety_cleanup_still_removes_its_staging() {
-    type Panic = fn() -> !;
-    let rows: [(&str, Panic); 2] = [
-        ("contained", || panic!("the work service panicked")),
-        ("payload panics on drop", || {
-            std::panic::panic_any(PanicsAgainOnDrop)
-        }),
-    ];
-    for (name, panic) in rows {
-        let root = scratch_dir(&format!("executor-worker-panic-{name}"));
-        common::write_tree(&root, &["textures/a.dds"]);
-        let work = PanickingAfterStaging {
-            panic,
-            staged: Mutex::default(),
-        };
-        let request = request(
-            ExecutionMode::Apply,
-            &root,
-            &[RequestedWork::NativeTextureOptimization],
-        );
-        let mut cleanup = CountingCleanup::default();
-        let configuration = test_configuration();
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            execute(
-                &request,
-                &mut cleanup,
-                Some(&*configuration),
-                Some(&work),
-                &CancellationToken::new(),
-            )
-        }))
-        .unwrap_or_else(|_| panic!("{name}: the executor contains the panic"));
-
-        assert_eq!(result.outcome(), RunOutcome::Failed, "{name}");
-        assert_eq!(result.failures().len(), 1, "{name}");
-        assert_eq!(
-            result.failures()[0].code,
-            RunFailureCode::WorkServiceFailed,
-            "{name}"
-        );
-        assert_eq!(
-            result.failures()[0].phase,
-            RunPhase::DiscoveringArchives,
-            "{name}"
-        );
-        assert_eq!(cleanup.passes, 1, "{name}");
-        assert_eq!(
-            result.phases().last().unwrap().phase(),
-            RunPhase::SafetyCleanup,
-            "{name}"
-        );
-        let staged = work.staged.lock().unwrap().clone().unwrap();
-        assert!(
-            !staged.exists(),
-            "{name}: Safety Cleanup removed {}",
-            staged.display()
-        );
-        assert_eq!(
-            std::fs::read_to_string(root.join("textures/a.dds")).unwrap(),
-            "textures/a.dds",
-            "{name}: the original is untouched"
-        );
-        assert!(result.cleanup_failures().is_empty(), "{name}");
-    }
 }
 
 /// Origin: RunExecutorTests::cancellationAfterAtomicAssetAttempt (cancellation
@@ -782,7 +583,7 @@ fn cancelling_between_assets_keeps_committed_mutations_and_cleans_up() {
         &[RequestedWork::NativeTextureOptimization],
     );
     let mut cleanup = CountingCleanup::default();
-    let result = run(&request, &mut cleanup, Some(&scripted(&toolset)), &token);
+    let result = execute(&request, &mut cleanup, Some(&scripted(&toolset)), &token);
 
     assert_eq!(result.outcome(), RunOutcome::Cancelled);
     assert!(result.cancellation_observed());
@@ -948,7 +749,7 @@ fn processing_and_evidence_share_the_canonical_mod_root() {
         let toolset = Arc::new(ScriptedToolset::default());
         let mut cleanup = CountingCleanup::default();
 
-        let result = run(
+        let result = execute(
             &request,
             &mut cleanup,
             Some(&scripted(&toolset)),
@@ -1011,7 +812,7 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
         );
         let mut cleanup = CountingCleanup::default();
 
-        let result = run(&request, &mut cleanup, Some(&scripted(&toolset)), &token);
+        let result = execute(&request, &mut cleanup, Some(&scripted(&toolset)), &token);
 
         let row = if cancels {
             "later cancellation"
@@ -1119,7 +920,7 @@ fn an_asset_retargeted_after_discovery_is_attributed_to_the_root_containing_it()
         );
         let mut cleanup = CountingCleanup::default();
 
-        let result = run_with(
+        let result = execute_with(
             &request,
             &mut cleanup,
             Some(&sink),
@@ -1190,7 +991,7 @@ fn applicable_work_reports_its_phases_whether_or_not_there_is_anything_to_do() {
         );
         let mut cleanup = CountingCleanup::default();
 
-        let result = run(
+        let result = execute(
             &request,
             &mut cleanup,
             Some(&scripted(&toolset)),
@@ -1286,7 +1087,7 @@ fn each_work_phase_is_published_before_its_work_starts() {
     );
     let mut cleanup = CountingCleanup::default();
 
-    let result = run_with(
+    let result = execute_with(
         &request(
             ExecutionMode::Apply,
             &root,
@@ -1327,7 +1128,7 @@ fn a_preparing_diagnostic_survives_work_without_an_observer() {
     let toolset = Arc::new(ScriptedToolset::default());
     let mut cleanup = CountingCleanup::default();
 
-    let result = run(
+    let result = execute(
         &request,
         &mut cleanup,
         Some(&ignoring(&["ignored"], &toolset)),
@@ -1412,7 +1213,7 @@ fn a_discovery_diagnostic_follows_the_attempt_and_can_cancel_finalization() {
         );
         let mut cleanup = CountingCleanup::default();
 
-        let result = run_with(
+        let result = execute_with(
             &request,
             &mut cleanup,
             Some(&sink),
@@ -1502,7 +1303,7 @@ fn a_panicking_progress_observer_keeps_the_failed_attempt() {
         }));
         let mut cleanup = CountingCleanup::default();
 
-        let result = run_with(
+        let result = execute_with(
             &request(
                 ExecutionMode::Apply,
                 &root,
@@ -1605,7 +1406,7 @@ fn mixed_asset_evidence_outlives_every_service() {
                 }),
         );
         let mut cleanup = CountingCleanup::default();
-        let result = run(
+        let result = execute(
             &request(
                 ExecutionMode::Apply,
                 &root,
@@ -1731,7 +1532,7 @@ fn a_cancelled_finalization_keeps_its_committed_output() {
         }
     }));
     let mut cleanup = CountingCleanup::default();
-    let result = run(
+    let result = execute(
         &request(
             ExecutionMode::Apply,
             &root,
@@ -1791,7 +1592,7 @@ fn a_committed_archive_without_its_loading_plugin_fails_the_run() {
         }),
     );
     let mut cleanup = CountingCleanup::default();
-    let result = run(
+    let result = execute(
         &request(
             ExecutionMode::Apply,
             &root,
@@ -1844,7 +1645,7 @@ fn an_unsafe_attempt_cancelled_mid_flight_fails_and_leaves_pending_work_untouche
     }));
     let mut cleanup = CountingCleanup::default();
 
-    let result = run(
+    let result = execute(
         &request(
             ExecutionMode::Apply,
             &root,
@@ -1903,7 +1704,7 @@ fn a_discovery_diagnostic_survives_a_failure_later_in_discovery() {
     });
     let mut cleanup = CountingCleanup::default();
 
-    let result = run(
+    let result = execute(
         &request(
             ExecutionMode::Apply,
             &root,
@@ -1957,7 +1758,7 @@ fn a_failing_work_configuration_leaves_stale_staging_untouched() {
     }));
     let mut cleanup = CountingCleanup::default();
 
-    let result = run(
+    let result = execute(
         &request(
             ExecutionMode::Apply,
             &root,
@@ -2014,7 +1815,7 @@ fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
         });
         let mut cleanup = CountingCleanup::default();
 
-        let result = run(
+        let result = execute(
             &request(
                 ExecutionMode::Apply,
                 &root,
@@ -2077,7 +1878,7 @@ fn a_fatal_preparing_failure_stays_failed_when_cleanup_cancels() {
         ..ScriptedCleanup::default()
     };
 
-    let result = run_with(&no_work_request(), &mut cleanup, None, None, &token);
+    let result = execute_with(&no_work_request(), &mut cleanup, None, None, &token);
 
     assert_eq!(result.outcome(), RunOutcome::Failed);
     assert!(result.cancellation_observed());
@@ -2109,7 +1910,7 @@ fn a_panicking_cleanup_service_never_replaces_cancellation() {
             ..ScriptedCleanup::default()
         };
 
-        let result = run_with(
+        let result = execute_with(
             &no_work_request(),
             &mut cleanup,
             None,
@@ -2138,7 +1939,7 @@ fn a_panicking_cleanup_service_fails_the_run() {
         ..ScriptedCleanup::default()
     };
 
-    let result = run_with(
+    let result = execute_with(
         &no_work_request(),
         &mut cleanup,
         None,
@@ -2229,7 +2030,7 @@ fn terminal_precedence_classifies_every_combination_and_keeps_every_fact() {
                 ..ScriptedCleanup::default()
             };
 
-            let result = run_with(
+            let result = execute_with(
                 &request(
                     ExecutionMode::Apply,
                     &root,
@@ -2281,7 +2082,7 @@ fn a_failed_staging_recovery_still_performs_safety_cleanup() {
     std::fs::set_permissions(&leftover, permissions.clone()).unwrap();
     let mut cleanup = CountingCleanup::default();
 
-    let result = run(
+    let result = execute(
         &request(ExecutionMode::Apply, &root, &[]),
         &mut cleanup,
         Some(&*test_configuration()),
@@ -2316,7 +2117,7 @@ fn active_staging_blocks_apply_until_its_owner_exits() {
     let owner = cao_winfs::OwnerLock::open_existing(&root.join(".cao-staging/owner.lock")).unwrap();
     let request = request(ExecutionMode::Apply, &root, &[]);
 
-    let blocked = run(
+    let blocked = execute(
         &request,
         &mut CountingCleanup::default(),
         Some(&*test_configuration()),
@@ -2327,7 +2128,7 @@ fn active_staging_blocks_apply_until_its_owner_exits() {
     drop(owner);
     assert_eq!(common::snapshot_tree(&root), before);
 
-    let recovered = run(
+    let recovered = execute(
         &request,
         &mut CountingCleanup::default(),
         Some(&*test_configuration()),
@@ -2351,7 +2152,7 @@ struct NestedRunCleanup {
 
 impl SafetyCleanupService for NestedRunCleanup {
     fn perform_safety_cleanup(&mut self) -> Result<Vec<RunFailure>, Error> {
-        let nested = run(
+        let nested = execute(
             &self.request,
             &mut CountingCleanup::default(),
             Some(&*test_configuration()),
@@ -2380,7 +2181,7 @@ fn the_recovery_lock_is_held_through_safety_cleanup() {
         blocked: None,
     };
 
-    let result = run_with(
+    let result = execute_with(
         &request,
         &mut cleanup,
         None,
@@ -2395,7 +2196,7 @@ fn the_recovery_lock_is_held_through_safety_cleanup() {
         result.failures()
     );
     assert_eq!(cleanup.blocked, Some(true));
-    let next = run(
+    let next = execute(
         &request,
         &mut CountingCleanup::default(),
         Some(&*test_configuration()),
@@ -2424,7 +2225,7 @@ fn verified_stale_staging_is_recovered_before_the_first_work_phase() {
     });
     let mut cleanup = CountingCleanup::default();
 
-    let result = run_with(
+    let result = execute_with(
         &request(ExecutionMode::Apply, &root, &[]),
         &mut cleanup,
         Some(&sink),
@@ -2450,7 +2251,7 @@ fn an_unowned_staging_directory_blocks_apply_and_is_untouched() {
     std::fs::write(&user, "retain me").unwrap();
     let mut cleanup = CountingCleanup::default();
 
-    let result = run(
+    let result = execute(
         &request(ExecutionMode::Apply, &root, &[]),
         &mut cleanup,
         Some(&*test_configuration()),
@@ -2498,7 +2299,7 @@ fn preparing_retains_the_resolved_root_and_policy() {
     );
     let mut cleanup = CountingCleanup::default();
 
-    let result = run(
+    let result = execute(
         &request,
         &mut cleanup,
         Some(&provider),
@@ -2534,7 +2335,7 @@ fn an_ambiguous_archive_extension_fails_preparing_before_any_work_phase() {
     }));
     let mut cleanup = CountingCleanup::default();
 
-    let result = run(
+    let result = execute(
         &no_work_request(),
         &mut cleanup,
         Some(&provider),
@@ -2567,7 +2368,7 @@ fn explicit_archive_precedence_is_retained_through_preparing() {
     order.clear();
     let mut cleanup = CountingCleanup::default();
 
-    let result = run(
+    let result = execute(
         &request,
         &mut cleanup,
         Some(&*test_configuration()),
@@ -2604,7 +2405,7 @@ fn a_failed_preparing_mutates_no_asset_or_archive() {
         let before = (modified("asset.dds"), modified("source.bsa"));
         let mut cleanup = CountingCleanup::default();
 
-        let result = run(
+        let result = execute(
             &request(
                 mode,
                 &root,
@@ -2640,7 +2441,7 @@ fn a_failed_preparing_mutates_no_asset_or_archive() {
 #[test]
 fn a_run_stopped_in_preparing_records_only_the_phases_it_traversed() {
     let mut cleanup = CountingCleanup::default();
-    let result = run(
+    let result = execute(
         &request(
             ExecutionMode::Apply,
             &common::test_mod_root(),
@@ -2704,7 +2505,7 @@ fn registered_artifacts_are_cleaned_and_committed_output_survives() {
     std::fs::write(root.join("output.bin"), "output").unwrap();
     registry.commit(output).unwrap();
 
-    let result = run_with(
+    let result = execute_with(
         &no_work_request(),
         &mut registry,
         None,
@@ -2738,7 +2539,7 @@ fn cleanup_failures_are_aggregated_without_deleting_retained_material() {
     std::fs::write(root.join("staging/backup.bsa"), "backup").unwrap();
     std::fs::write(root.join("evidence/failed.bin"), "failed output").unwrap();
 
-    let result = run_with(
+    let result = execute_with(
         &no_work_request(),
         &mut registry,
         None,
@@ -2794,7 +2595,7 @@ fn registered_artifacts_are_cleaned_on_every_terminal_path() {
         let provider: Option<&dyn RunConfigurationProvider> =
             (expected != RunOutcome::Failed).then_some(&*configuration);
 
-        let result = run_with(&no_work_request(), &mut registry, None, provider, &token);
+        let result = execute_with(&no_work_request(), &mut registry, None, provider, &token);
 
         assert_eq!(result.outcome(), expected);
         assert!(result.cleanup_failures().is_empty(), "{expected:?}");
@@ -2838,7 +2639,7 @@ fn a_cleanup_failure_never_replaces_the_primary_outcome() {
         let configuration = test_configuration();
         let provider: Option<&dyn RunConfigurationProvider> = (!fatal).then_some(&*configuration);
 
-        let result = run_with(
+        let result = execute_with(
             &no_work_request(),
             &mut registry,
             Some(&sink),
@@ -2899,7 +2700,7 @@ fn artifact_registration_rejects_paths_it_cannot_own() {
         "a committed path"
     );
 
-    let result = run_with(
+    let result = execute_with(
         &no_work_request(),
         &mut registry,
         None,
@@ -2927,7 +2728,7 @@ fn cleanup_does_not_follow_a_replaced_parent() {
         .unwrap();
     common::junction(&staging, &root.join("unrelated"));
 
-    let result = run_with(
+    let result = execute_with(
         &no_work_request(),
         &mut registry,
         None,
@@ -2996,7 +2797,7 @@ fn cancelling_at_each_work_milestone_stops_at_that_phase() {
         }));
         let mut cleanup = CountingCleanup::default();
 
-        let result = run_with(
+        let result = execute_with(
             &request(
                 ExecutionMode::Apply,
                 &root,

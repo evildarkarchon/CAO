@@ -513,6 +513,35 @@ impl RunExecutor {
         stop: &CancellationToken,
         run_id: RunId,
     ) -> OptimizationRunResult {
+        self.execute_with_work(request, services, stop, run_id, execute_toolset)
+    }
+
+    /// [`execute`](Self::execute), with `run_work` running the work phases in
+    /// place of the Run Toolset's ports.
+    ///
+    /// This is the crate-private seam beneath the executor's interface: it
+    /// lets the executor's own unit tests inject work that escapes as an
+    /// error or a panic, which every Toolset port contains before it could.
+    /// `run_work` is called only when Preparing produced a Run Toolset for
+    /// requested work, with that Toolset.
+    ///
+    /// # Panics
+    ///
+    /// As [`execute`](Self::execute).
+    pub(crate) fn execute_with_work(
+        &self,
+        request: &RunRequest,
+        services: RunServices<'_>,
+        stop: &CancellationToken,
+        run_id: RunId,
+        run_work: impl FnOnce(
+            &RunPreparation,
+            RunToolset,
+            &RefCell<MutableRunEvidence<'_>>,
+            &mut TemporaryArtifactRegistry,
+            &CancellationToken,
+        ) -> Result<(), Error>,
+    ) -> OptimizationRunResult {
         let RunServices {
             safety_cleanup,
             observations,
@@ -539,6 +568,7 @@ impl RunExecutor {
                 &mut artifacts,
                 &mut invariant,
                 stop,
+                run_work,
             )
         }));
         if let Err(payload) = traversal {
@@ -595,7 +625,11 @@ impl RunExecutor {
     /// Failures are recorded, never returned; Run Evidence invariant
     /// violations are noted in `invariant` for the caller to raise after
     /// cleanup. `artifacts` is the run's Temporary Ownership scope, which the
-    /// caller cleans up whatever happens here.
+    /// caller cleans up whatever happens here. `run_work` runs the work
+    /// phases when Preparing produced a Run Toolset.
+    // Eight arguments only while the Run Work Service fallback remains
+    // beside `run_work`; removing `work` brings it back within the lint.
+    #[allow(clippy::too_many_arguments)]
     fn traverse(
         request: &RunRequest,
         configuration: Option<&dyn RunConfigurationProvider>,
@@ -604,6 +638,13 @@ impl RunExecutor {
         artifacts: &mut TemporaryArtifactRegistry,
         invariant: &mut DeferredInvariant,
         stop: &CancellationToken,
+        run_work: impl FnOnce(
+            &RunPreparation,
+            RunToolset,
+            &RefCell<MutableRunEvidence<'_>>,
+            &mut TemporaryArtifactRegistry,
+            &CancellationToken,
+        ) -> Result<(), Error>,
     ) {
         let mut failed = false;
 
@@ -715,7 +756,7 @@ impl RunExecutor {
             (&preparation, request.has_requested_work(), toolset)
         {
             let outcome = catch_unwind(AssertUnwindSafe(|| {
-                execute_toolset(prepared, toolset, evidence, artifacts, stop)
+                run_work(prepared, toolset, evidence, artifacts, stop)
             }));
             if let Some(detail) = escaped_work_detail(outcome, "The run's work", invariant) {
                 Self::fail_at_current_phase(evidence, detail);
@@ -836,3 +877,6 @@ impl RunExecutor {
         OptimizationRunResult::terminal(outcome, final_phase, evidence, run_id)
     }
 }
+
+#[cfg(test)]
+mod tests;
