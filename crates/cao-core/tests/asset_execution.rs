@@ -50,8 +50,8 @@ use cao_core::run::{
     OptimizationRunResult, RunExecutor, RunFailure, RunFailureCode, RunOutcome, RunPhase,
     RunServices, TemporaryArtifactRegistry, create_run_id, is_staging_name,
 };
-use cao_core::test_support::CountingCleanup;
-use common::{canonical, converting_configuration, scratch_dir, scripted_toolset};
+use cao_core::test_support::{CountingCleanup, ScriptedToolset};
+use common::{canonical, converting_configuration, scratch_dir};
 
 /// Every capability a routed scenario needs.
 const CAPABILITIES: &[ProfileCapability] = &[
@@ -429,7 +429,7 @@ fn run(
     backend: &SharedBackend,
 ) -> OptimizationRunResult {
     let backend = backend.clone();
-    let toolset = scripted_toolset().with_backend_factory(move || backend.clone());
+    let toolset = ScriptedToolset::default().with_backend_factory(move || backend.clone());
     let mut cleanup = CountingCleanup::default();
     RunExecutor.execute(
         &common::request(mode, root, requested),

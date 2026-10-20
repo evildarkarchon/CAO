@@ -89,23 +89,15 @@ pub fn junction(link: &Path, target: &Path) {
 }
 
 /// The provider most scenarios use: the SSE-like profile, with a fresh
-/// default [`scripted_toolset`] for each run, so requested work runs core's
-/// real Archive work.
+/// default [`ScriptedToolset`] for each run, whose Asset attempts succeed
+/// with no mutation while Archive extraction and Archive Finalization are
+/// core's own over the fake reader, packer and probes.
 pub fn test_configuration() -> Arc<ToolsetConfiguration> {
     toolset_configuration(None)
 }
 
-/// A default scripted Run Toolset opted in to core's real Archive work: its
-/// Asset attempts succeed with no mutation, while Archive extraction and
-/// Archive Finalization are core's own over the fake reader, packer and
-/// probes (#587). Scenarios observe that work through Run Evidence and the
-/// fakes' own records.
-pub fn scripted_toolset() -> ScriptedToolset {
-    ScriptedToolset::default().with_core_archive_work()
-}
-
 /// A provider of the SSE-like profile that returns a fresh Run Toolset over
-/// `toolset` to each run, or over a default [`scripted_toolset`] when it is
+/// `toolset` to each run, or over a default [`ScriptedToolset`] when it is
 /// `None`, shared as the Optimization Run Service takes it.
 pub fn toolset_configuration(toolset: Option<Arc<ScriptedToolset>>) -> Arc<ToolsetConfiguration> {
     Arc::new(ToolsetConfiguration::sse(Some(or_scripted(toolset))))
@@ -123,10 +115,10 @@ pub fn converting_configuration(
     ))
 }
 
-/// `toolset`, or a default [`scripted_toolset`] in its place, so a scenario
-/// that scripts nothing still runs core's real Archive work.
+/// `toolset`, or a default [`ScriptedToolset`] in its place, so a scenario
+/// that scripts nothing still runs requested work.
 pub fn or_scripted(toolset: Option<Arc<ScriptedToolset>>) -> Arc<ScriptedToolset> {
-    toolset.unwrap_or_else(|| Arc::new(scripted_toolset()))
+    toolset.unwrap_or_else(|| Arc::new(ScriptedToolset::default()))
 }
 
 /// Runs `request` to its terminal result on the inline scheduler, loading
@@ -150,10 +142,10 @@ pub fn run_with(
 /// The production shape of a run's Asset attempts: a scripted Toolset whose
 /// attempts drive `factory`'s fake backend behind the production Asset
 /// attempt adapter, one backend per run. Keep clones of the factory's shared
-/// logs to observe it. Like [`scripted_toolset`], it runs core's real Archive
-/// work.
+/// logs to observe it. Like every scripted Toolset, it runs core's real
+/// Archive work.
 pub fn backend_toolset(factory: FakeBackendFactory) -> Arc<ScriptedToolset> {
-    Arc::new(scripted_toolset().with_backend(factory))
+    Arc::new(ScriptedToolset::default().with_backend(factory))
 }
 
 /// The shared Mod Root of scenarios that need one to exist but not to hold Assets.

@@ -12,13 +12,12 @@
 //! finalization recorder over fresh evidence already in the Archive
 //! Finalization phase, so that phase is tested at its own interface (#548).
 //!
-//! [`ScriptedToolset`] scripts a run's Asset attempt, extraction and Archive
-//! Finalization results, and [`ToolsetConfiguration`] returns a fresh Run
-//! Toolset over it to each run, so a scenario drives the real Run Executor
-//! through its Toolset path (#550). Opted in with
-//! [`ScriptedToolset::with_core_archive_work`], the run instead uses core's
-//! real extraction and Archive Finalization over the scripted fake reader,
-//! packer and probes (#584). [`ToolsetConfiguration::sse`] provides
+//! [`ScriptedToolset`] scripts a run's Asset attempt results, and
+//! [`ToolsetConfiguration`] returns a fresh Run Toolset over it to each run,
+//! so a scenario drives the real Run Executor through its Toolset path
+//! (#550). The Toolset is built through the production constructor, so the
+//! run does core's real extraction and Archive Finalization over the
+//! scripted fake reader, packer and probes (#581). [`ToolsetConfiguration::sse`] provides
 //! the all-supported [`sse_profile`] most scenarios configure, and
 //! [`execute_run`] runs a request through the real Run Executor with the
 //! services a scenario supplies.
@@ -47,6 +46,6 @@ pub use scheduling::{
     CountingInlineScheduler, DeferredScheduler, ExhaustedScheduler, GatedScheduler, WorkerHook,
 };
 pub use toolset::{
-    AssetAdapterMaker, AssetAttemptScript, AssetAttempts, ExtractionScript, FinalizationScript,
-    ScriptedToolset, ToolsetConfiguration, execute_run, record_finalization_result,
+    AssetAdapterMaker, AssetAttemptScript, AssetAttempts, ScriptedToolset, ToolsetConfiguration,
+    execute_run,
 };

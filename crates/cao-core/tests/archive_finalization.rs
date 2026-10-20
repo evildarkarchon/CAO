@@ -2293,6 +2293,66 @@ fn an_unexpected_failure_is_recorded_once() {
     }
 }
 
+/// Rust-only, for #588: Archive Finalization is the only layer that contains
+/// a panic inside an output attempt. A packer panicking once it has written
+/// the first Archive to staging becomes that attempt's Unexpected Exception,
+/// which forbids continuation: nothing is published, the later Mod Root's
+/// output is never attempted, and pruning does not run.
+#[test]
+fn a_packer_panicking_after_its_write_is_an_unexpected_exception_that_stops_later_outputs() {
+    let parent = scratch("packer-panics");
+    let root = parent.join("mod-a");
+    let later_root = parent.join("mod-b");
+    let source = root.join("textures/asset.dds");
+    write_file(&source, b"source bytes");
+    let later_source = later_root.join("textures/later.dds");
+    write_file(&later_source, b"later source bytes");
+    let empty_directory = root.join("empty/nested");
+    std::fs::create_dir_all(&empty_directory).unwrap();
+    let mut finalizer = Finalizer {
+        settings: ArchiveFinalizationSettings {
+            create_dummy_plugins: false,
+            compress: false,
+            ..ArchiveFinalizationSettings::default()
+        },
+        ..Finalizer::default()
+    };
+    finalizer.packer.after_write = Some(Box::new(|_| panic!("the archive writer panicked")));
+    let mut evidence = Evidence::new();
+    let mut artifacts = registry();
+    finalizer
+        .run(
+            &[root.clone(), later_root.clone()],
+            &mut evidence,
+            &mut artifacts,
+        )
+        .unwrap();
+
+    let result = evidence.finalization();
+    assert_eq!(evidence.progress().unwrap().total(), 2);
+    assert_eq!(
+        result.attempts.len(),
+        1,
+        "the later output is not attempted"
+    );
+    let attempt = &result.attempts[0];
+    assert_eq!(
+        attempt.failure,
+        Some(ArchiveFinalizationFailure::UnexpectedException)
+    );
+    assert_eq!(attempt.detail, "the archive writer panicked");
+    assert!(!attempt.safe_to_continue);
+    assert_eq!(attempt.mutation, MutationState::None);
+    assert!(!result.safe_to_continue);
+    assert_eq!(finalizer.packer.writes().len(), 1);
+    assert!(source.exists());
+    assert!(later_source.exists());
+    assert!(archives_in(&root).is_empty());
+    assert!(archives_in(&later_root).is_empty());
+    assert!(empty_directory.exists(), "pruning does not run");
+    assert!(artifacts.cleanup().is_empty());
+}
+
 /// Origin: cleanupExceptionKeepsRecordedAttempts. A failure in Loading
 /// Plugin maintenance keeps the committed attempt before it.
 #[test]
