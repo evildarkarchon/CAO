@@ -194,8 +194,6 @@ pub struct ArchiveFinalization<'a> {
     seams: Seams<'a>,
     volume_identity: &'a dyn VolumeIdentityProbe,
     settings: ArchiveFinalizationSettings,
-    /// The Packing Exclusions, lowercase with `/` separators.
-    files_to_not_pack: Vec<String>,
 }
 
 impl<'a> ArchiveFinalization<'a> {
@@ -203,18 +201,15 @@ impl<'a> ArchiveFinalization<'a> {
     /// writes Archives, `reader` verifies a committed Archive is readable, and
     /// the probes are the phase's only other filesystem seams.
     ///
-    /// `files_to_not_pack` holds the profile's Packing Exclusion rules, read
-    /// from `FilesToNotPack.txt` during Preparing. **Deviation 16:** each is
-    /// matched as a case-insensitive substring of the `/`-separated path
-    /// within the Mod Root, never the absolute path, so a rule cannot match
-    /// the folder the mods live in.
+    /// The Packing Exclusions come from the Selected Profile in the
+    /// [`RunPreparation`] handed to [`Self::run`]; see
+    /// [`packing_exclusions`] for how they are matched.
     pub fn new(
         packer: &'a dyn ArchivePacker,
         reader: &'a dyn ArchiveReader,
         capacity: &'a dyn CapacityProbe,
         volume_identity: &'a dyn VolumeIdentityProbe,
         settings: ArchiveFinalizationSettings,
-        files_to_not_pack: &[String],
     ) -> Self {
         Self {
             seams: Seams {
@@ -224,10 +219,6 @@ impl<'a> ArchiveFinalization<'a> {
             },
             volume_identity,
             settings,
-            files_to_not_pack: files_to_not_pack
-                .iter()
-                .map(|rule| rule.replace('\\', "/").to_lowercase())
-                .collect(),
         }
     }
 
@@ -290,9 +281,10 @@ impl<'a> ArchiveFinalization<'a> {
             recorder.record_output_total(0).map_err(Escape::Evidence)?;
             prune_empty_directories(preparation.mod_roots(), cancelled, result);
         } else {
+            let files_to_not_pack = packing_exclusions(preparation);
             // The list only filters packing, so its absence matters only when
             // packing runs.
-            if self.files_to_not_pack.is_empty() {
+            if files_to_not_pack.is_empty() {
                 log::error!(
                     "FilesToNotPack.txt not found. This can cause a number of issues. For \
                      example, for Skyrim, animations will be packed to BSA, preventing them from \
@@ -303,7 +295,7 @@ impl<'a> ArchiveFinalization<'a> {
                 preparation.mod_roots(),
                 &self.settings,
                 self.seams.packer,
-                &self.files_to_not_pack,
+                &files_to_not_pack,
                 cancelled,
             ) {
                 Ok(plan) => plan,
@@ -533,6 +525,21 @@ enum Escape {
     Evidence(Error),
     /// The phase's own work failed outside any attempt.
     Work(String),
+}
+
+/// The Selected Profile's Packing Exclusion rules, read from
+/// `FilesToNotPack.txt` during Preparing, lowercase with `/` separators.
+///
+/// **Deviation 16:** each is matched as a case-insensitive substring of the
+/// `/`-separated path within the Mod Root, never the absolute path, so a rule
+/// cannot match the folder the mods live in.
+fn packing_exclusions(preparation: &RunPreparation) -> Vec<String> {
+    preparation
+        .selected_profile()
+        .packing_exclusions()
+        .iter()
+        .map(|rule| rule.replace('\\', "/").to_lowercase())
+        .collect()
 }
 
 /// Retains the attempt just pushed onto `result` before the next output
