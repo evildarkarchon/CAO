@@ -86,7 +86,8 @@ impl Tab {
     }
 }
 
-/// Which tabs the profile enables, as the tab bar shows them.
+/// Which tabs the profile enables, as the tab bar shows them: the profile's
+/// Profile Capabilities, which also gate the asset options [`read_options`] reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EnabledTabs {
     pub bsa: bool,
@@ -96,15 +97,24 @@ pub(crate) struct EnabledTabs {
 }
 
 impl EnabledTabs {
-    /// Reads the tab bar's per-tab enable.
-    pub(crate) fn of(ui: &MainWindow) -> Self {
-        let tabs = ui.get_tabs();
-        let enabled = |tab: Tab| tabs.iter().any(|row| row.id == tab.id() && row.enabled);
+    /// No asset tab enabled, as for a profile whose `profile.ini` could not be
+    /// read. Only the tab bar uses this; [`read_options`] takes `None` for an
+    /// unreadable profile, so it cannot mistake one for a profile supporting
+    /// nothing.
+    pub(crate) const NONE: Self = Self {
+        bsa: false,
+        meshes: false,
+        textures: false,
+        animations: false,
+    };
+
+    /// The asset tabs the capabilities in `settings` (`profile.ini`) enable.
+    pub(crate) fn of_profile(settings: &ProfileSettings) -> Self {
         Self {
-            bsa: enabled(Tab::Bsa),
-            meshes: enabled(Tab::Meshes),
-            textures: enabled(Tab::Textures),
-            animations: enabled(Tab::Animations),
+            bsa: settings.bsa_enabled,
+            meshes: settings.meshes_enabled,
+            textures: settings.textures_enabled,
+            animations: settings.animations_enabled,
         }
     }
 
@@ -198,9 +208,31 @@ pub(crate) fn show_options(ui: &MainWindow, options: &Options) {
 /// Reads the options model back from the window, over `current`: the options
 /// last loaded, which keep what the window does not show (`bBsaProcessContent`,
 /// and the mesh level when no level radio is checked).
-pub(crate) fn read_options(ui: &MainWindow, current: &Options) -> Options {
-    let tabs = EnabledTabs::of(ui);
+///
+/// `capabilities` are the selected profile's Profile Capabilities, or `None`
+/// when its `profile.ini` could not be read. Known capabilities gate the asset
+/// options: those on a tab the profile does not support read as off. Unknown
+/// capabilities keep every BSA, Texture, Mesh and Animation option of `current`,
+/// and only Dry Run, the mod path, the mode and the debug log are read (#580).
+pub(crate) fn read_options(
+    ui: &MainWindow,
+    current: &Options,
+    capabilities: Option<EnabledTabs>,
+) -> Options {
     let mut options = current.clone();
+
+    options.dry_run = ui.get_dry_run();
+    options.user_path = clean_path(&ui.get_user_path());
+    // No selection reads as Single Mod, as an invalid `QVariant` converts to 0.
+    options.mode = mode_at(ui.get_mode_index()).unwrap_or(OptimizationMode::SingleMod);
+    options.debug_log = ui.get_debug_log();
+
+    // An unreadable profile shows every asset tab disabled, which the gating
+    // below would read as "every option off" and so wipe `settings.ini`. Not
+    // knowing what the profile can do is no reason to forget what it had.
+    let Some(tabs) = capabilities else {
+        return options;
+    };
 
     // The base group is disabled while Dry Run is on (`rules.rs`), and C++
     // reads every BSA option as off while the tab or that group is disabled.
@@ -246,12 +278,6 @@ pub(crate) fn read_options(ui: &MainWindow, current: &Options) -> Options {
 
     options.animations_optimization =
         tabs.animations && ui.global::<AnimationsTab>().get_necessary();
-
-    options.dry_run = ui.get_dry_run();
-    options.user_path = clean_path(&ui.get_user_path());
-    // No selection reads as Single Mod, as an invalid `QVariant` converts to 0.
-    options.mode = mode_at(ui.get_mode_index()).unwrap_or(OptimizationMode::SingleMod);
-    options.debug_log = ui.get_debug_log();
     options
 }
 
