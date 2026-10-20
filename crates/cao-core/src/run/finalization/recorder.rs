@@ -46,11 +46,7 @@ impl<'e, 'a> ArchiveFinalizationRecorder<'e, 'a> {
     /// A Run Evidence invariant violation: no output total is recorded, the
     /// result is already recorded, or the attempts would exceed the total.
     pub fn record_attempt(&mut self, attempt: ArchiveFinalizationAttempt) -> Result<(), Error> {
-        let evidence = &mut *self.evidence;
-        // Evidence rejects an attempt without a total; zero only gives that
-        // rejection something to compare against.
-        let total = evidence.archive_finalization_total().unwrap_or(0);
-        evidence.record_archive_finalization_attempt(attempt, total)
+        self.evidence.record_archive_finalization_attempt(attempt)
     }
 
     /// Retains the phase's one complete result. Its attempts must begin with

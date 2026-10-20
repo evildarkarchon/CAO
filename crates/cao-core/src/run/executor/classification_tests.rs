@@ -140,14 +140,11 @@ fn sealed_evidence(fact: WorkFact, terminal: Terminal) -> Result<RunEvidence, Er
         .and_then(|ledger| ledger.routed_assets().first().cloned())
         .expect("the Texture is routed for Native Texture Optimization");
     evidence.record_asset_processing_plan(1)?;
-    evidence.record_asset_attempt(
-        RoutedAssetAttempt {
-            mod_root,
-            asset,
-            result: asset_result(fact),
-        },
-        1,
-    )?;
+    evidence.record_asset_attempt(RoutedAssetAttempt {
+        mod_root,
+        asset,
+        result: asset_result(fact),
+    })?;
 
     // An unsafe attempt stops every later attempt and Archive Finalization.
     if fact != WorkFact::UnsafeMutation {
