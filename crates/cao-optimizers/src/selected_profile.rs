@@ -100,16 +100,6 @@ impl SelectedProfile {
     }
 }
 
-/// The Profile Capabilities `settings` declare, for the composition root's
-/// pre-start capability check, which reads `profile.ini` leniently rather than
-/// through [`SelectedProfile::read`].
-///
-/// The capabilities are derived exactly as the read derives them. Only that
-/// check uses this; #570 removes the check, and this with it.
-pub(crate) fn capabilities_of(settings: &ProfileSettings) -> ProfileCapabilities {
-    capabilities(settings, &archive_settings(settings))
-}
-
 /// The Archive settings of a profile's game, with its maximum Archive size
 /// raised to the profile's `maxBsaUncompressedSize` when that is larger, as
 /// C++ `archiveSettings` did.
