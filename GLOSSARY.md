@@ -53,7 +53,7 @@ The work ports one Optimization Run uses, built by Preparing from the same profi
 _Avoid_: Run Work Service, adapters
 
 **Optimization Run Service**:
-The public component that validates a Run Request, starts one Optimization Run, and hands it back as an owning Run Handle. It owns scheduling and the run services, so the GUI and the parity driver supply intent rather than orchestrating a run.
+The public component that validates a Run Request, starts one Optimization Run, and hands it back as an owning Run Handle. It owns scheduling and the run services, so the GUI supplies intent rather than orchestrating a run.
 _Avoid_: Manager, runner, job queue
 
 **Run Handle**:

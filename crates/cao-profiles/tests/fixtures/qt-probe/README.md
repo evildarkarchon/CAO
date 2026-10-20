@@ -23,9 +23,8 @@ All fixture bytes are exact (CRLF, Latin-1, trailing spaces); `.gitattributes` m
 ## Regenerating
 
 From a Developer Command Prompt for VS 2026 x64, with `QT` set to a vcpkg
-`vcpkg_installed\x64-windows` tree from a C++ CAO configure (for example
-`build\oracle\vcpkg_installed\x64-windows`; the C++ tree was deleted with #515 and is kept
-at the oracle's commit, see `docs/parity-oracle.md`):
+`vcpkg_installed\x64-windows` tree from a C++ CAO configure (the C++ tree was deleted with
+#515, so configure the commit before it):
 
 ```
 cl /nologo /std:c++17 /EHsc /MD /O2 /Zc:__cplusplus /permissive- ^

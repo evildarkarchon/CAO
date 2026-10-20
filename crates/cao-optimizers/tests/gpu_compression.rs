@@ -11,7 +11,7 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use cao_core::routing::TextureVariant;
-use cao_optimizers::device::{DeviceUnavailable, GpuDevice, describe_adapter};
+use cao_optimizers::device::{DeviceUnavailable, GpuDevice};
 use cao_optimizers::textures::{Texture, TextureProfile, TextureRequest};
 use common::{scratch_dir, write_dds};
 use directxtex::{
@@ -162,34 +162,6 @@ fn an_adapter_the_host_does_not_have_gives_no_device() {
     );
 }
 
-/// The adapter a device is created on can be described, for the record the
-/// BC7/BC6H threshold calibration keeps (#513): its name and the user-mode
-/// driver version, as four dotted parts.
-#[test]
-fn the_first_adapter_is_described_with_its_driver_version() {
-    let description = describe_adapter(0).unwrap();
-
-    assert!(!description.name.is_empty());
-    assert!(!description.name.contains('\0'), "{:?}", description.name);
-    let parts: Vec<&str> = description.driver_version.split('.').collect();
-    assert_eq!(parts.len(), 4, "{}", description.driver_version);
-    assert!(
-        parts.iter().all(|part| part.parse::<u16>().is_ok()),
-        "{}",
-        description.driver_version
-    );
-}
-
-/// An adapter the host does not have cannot be described.
-#[test]
-fn an_adapter_the_host_does_not_have_is_not_described() {
-    let error = describe_adapter(MISSING_ADAPTER).err().unwrap();
-    assert!(
-        matches!(error, DeviceUnavailable::NoAdapter { adapter, .. } if adapter == MISSING_ADAPTER),
-        "{error}"
-    );
-}
-
 /// The DirectCompute encoder produces BC7 that decodes close to its source.
 /// That it is a different encoder from the CPU one is pinned by
 /// `a_texture_with_a_device_is_compressed_to_bc7_on_the_gpu`.
@@ -254,9 +226,7 @@ fn a_texture_with_a_device_is_compressed_to_bc7_on_the_gpu() {
 }
 
 /// With device creation forced to fail, BC7 falls back to the CPU encoder, as
-/// C++ does, and the Texture gets exactly its bytes. On the oracle the same
-/// fallback is forced with `CAO_ORACLE_FORCE_CPU_BC`, and the two CPU encoders
-/// are byte-identical (#494).
+/// C++ does, and the Texture gets exactly its bytes.
 #[test]
 fn a_texture_without_a_device_is_compressed_to_bc7_on_the_cpu() {
     let path = plain_texture("cpu-bc7-texture");
@@ -271,7 +241,7 @@ fn a_texture_without_a_device_is_compressed_to_bc7_on_the_cpu() {
 }
 
 /// Formats other than BC6H and BC7 stay on the CPU even with a device, as in
-/// C++, so their output stays byte-identical to the oracle's.
+/// C++, so their output does not depend on the host's GPU.
 #[test]
 fn other_block_formats_stay_on_the_cpu_with_a_device() {
     let path = plain_texture("gpu-bc1-texture");

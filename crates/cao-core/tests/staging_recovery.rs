@@ -3,7 +3,7 @@
 //!
 //! The manifests under `tests/fixtures/staging/` are reused byte for byte,
 //! except for the Mod Root line, which must name the scratch Mod Root (see the
-//! README there). Two were written by the C++ oracle, so a C++ run's leftover
+//! README there). Two were written by the C++ CLI, so a C++ run's leftover
 //! recovers in the port. The C++ suites had no v1 or v2 fixture.
 //!
 //! `durable_staging.rs` ports the recovery scenarios of C++
@@ -21,8 +21,8 @@ use common::{canonical, scratch_dir, snapshot_tree};
 
 const V1: &[u8] = include_bytes!("fixtures/staging/v1.manifest");
 const V2: &[u8] = include_bytes!("fixtures/staging/v2.manifest");
-const ORACLE_COMPLETED: &[u8] = include_bytes!("fixtures/staging/oracle-v3-completed.manifest");
-const ORACLE_KILLED: &[u8] = include_bytes!("fixtures/staging/oracle-v3-killed.manifest");
+const CPP_COMPLETED: &[u8] = include_bytes!("fixtures/staging/cpp-v3-completed.manifest");
+const CPP_KILLED: &[u8] = include_bytes!("fixtures/staging/cpp-v3-killed.manifest");
 
 /// The run child every v2 fixture record lives under.
 const V2_CHILD: &str = "run-4f1c2a9e-0123456789abcdef0123456789abcdef";
@@ -187,12 +187,12 @@ fn a_literal_v1_manifest_is_recovered_but_cannot_own_scratch() {
 }
 
 /// Spec (#492): the leftover of a C++ Apply run that finished, captured from
-/// the oracle, recovers. Its manifest still records the run child Safety
+/// the C++ CLI, recovers. Its manifest still records the run child Safety
 /// Cleanup removed. The recovered area then serves this run's staging.
 #[test]
-fn a_completed_cpp_leftover_from_the_oracle_is_recovered() {
-    let root = mod_root("oracle-completed");
-    let manifest = rehome(ORACLE_COMPLETED, &root);
+fn a_completed_cpp_leftover_is_recovered() {
+    let root = mod_root("cpp-completed");
+    let manifest = rehome(CPP_COMPLETED, &root);
     write_controls(&root, &manifest);
     std::fs::create_dir(root.join("textures")).unwrap();
     std::fs::write(root.join("textures/a.dds"), "optimized by C++").unwrap();
@@ -223,12 +223,12 @@ fn a_completed_cpp_leftover_from_the_oracle_is_recovered() {
 }
 
 /// Spec (#492): the leftover of a C++ Apply run killed mid-run, captured from
-/// the oracle, recovers. Its unpublished Texture sibling and run child go,
+/// the C++ CLI, recovers. Its unpublished Texture sibling and run child go,
 /// and the Textures beside them stay.
 #[test]
-fn a_killed_cpp_leftover_from_the_oracle_is_recovered() {
-    let root = mod_root("oracle-killed");
-    let manifest = rehome(ORACLE_KILLED, &root);
+fn a_killed_cpp_leftover_is_recovered() {
+    let root = mod_root("cpp-killed");
+    let manifest = rehome(CPP_KILLED, &root);
     write_controls(&root, &manifest);
     let text = String::from_utf8(manifest.clone()).unwrap();
     let child = record(&text, 'D');
@@ -258,7 +258,7 @@ fn a_killed_cpp_leftover_from_the_oracle_is_recovered() {
 #[test]
 fn a_sibling_record_needs_version_3() {
     let root = mod_root("v2-sibling");
-    let text = String::from_utf8(rehome(ORACLE_KILLED, &root)).unwrap();
+    let text = String::from_utf8(rehome(CPP_KILLED, &root)).unwrap();
     let manifest = staging(&root).join("ownership.manifest");
     write_controls(
         &root,

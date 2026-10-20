@@ -52,7 +52,7 @@ fn dry_run(ui: &MainWindow) {
 
 /// Several Mods: "Necessary" is the mesh level, and Medium and Full are
 /// disabled. The "Process meshes" group is left as it is, so level 0 (no mesh
-/// work) stays allowed, as the parity guard expects.
+/// work) stays allowed.
 ///
 /// C++ also called `setChecked(false)` on "Necessary" for One Mod, which Qt
 /// ignores on the checked button of an exclusive group; so One Mod only gives

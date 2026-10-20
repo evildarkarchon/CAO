@@ -1,6 +1,5 @@
 //! What the window shows of an Optimization Run (C++ `cao::gui::RunViewModel`,
-//! `src/GuiRun.cpp`, deleted with the C++ tree (#515) and kept at the oracle's
-//! commit; see `docs/parity-oracle.md`).
+//! `src/GuiRun.cpp`, deleted with the C++ tree in #515).
 //!
 //! [`RunView`] turns the ordered Run Events of one run into presentation facts:
 //! a label naming the phase or the Run Outcome, the phase's attempt counts, and

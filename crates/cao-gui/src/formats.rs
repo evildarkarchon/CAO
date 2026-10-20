@@ -1,6 +1,5 @@
 //! The texture formats a profile can list as unwanted, by the names the window
-//! shows (C++ `src/texturesformats.h`, deleted with the C++ tree (#515) and
-//! kept at the oracle's commit; see `docs/parity-oracle.md`).
+//! shows (C++ `src/texturesformats.h`, deleted with the C++ tree in #515).
 //!
 //! `profile.ini` stores `DXGI_FORMAT` numbers (`ProfileSettings::textures_unwanted_formats`),
 //! and the window shows and edits names. The numbers come from DirectXTex's own

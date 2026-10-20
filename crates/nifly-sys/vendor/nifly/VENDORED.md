@@ -1,11 +1,11 @@
 # Vendored nifly
 
 This directory is [ousnius/nifly](https://github.com/ousnius/nifly) at commit
-`5504832da8009248ff68a9d306973ee1ba61a0a4`, the same `REF` the C++ build's vcpkg overlay port
-pins (`cmake/ports/nifly/portfile.cmake`). nifly is GPL-3.0; its licence is `LICENSE` here.
+`5504832da8009248ff68a9d306973ee1ba61a0a4`, the same `REF` the deleted C++ build's vcpkg overlay
+port pinned. nifly is GPL-3.0; its licence is `LICENSE` here.
 
-**Never bump the pin during the port (#476).** Upstream `main` is far ahead of it, and a bump
-would change Mesh output relative to the C++ parity oracle.
+Upstream `main` is far ahead of the pin. A bump may change Mesh output, so treat it as a
+behaviour change: re-run the byte-identity tests in `../../tests/` and review what moved.
 
 ## What was copied
 
@@ -22,8 +22,7 @@ C++ build's `cmake/ports/nifly/fix-const-matrix-equality.patch`, which backports
 It makes `Matrix3::operator==` and `Matrix4::operator==` `const`.
 
 `build.rs` compiles nifly as C++17, which does not need the patch; C++20 does (C2666 at
-`Object3d.hpp` 506 and 708). It is applied anyway so this tree is identical to what the oracle's
-vcpkg port builds (#460).
+`Object3d.hpp` 506 and 708). It is applied anyway so the tree also builds as C++20 (#460).
 
 ## Reproducing this tree
 

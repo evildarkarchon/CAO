@@ -1,9 +1,9 @@
 //! Apply over loose Textures through the production wiring (#491, #494): the
 //! CPU Texture path with mipmaps, staged publication and Quarantine.
 //!
-//! TES5 targets BC3, which DirectXTex encodes on the CPU in both builds, so
-//! these outputs are what the parity oracle produces too. SSE's BC7 is encoded
-//! on the GPU when there is one (#495), which the last scenario needs.
+//! TES5 targets BC3, which DirectXTex encodes on the CPU on every host. SSE's
+//! BC7 is encoded on the GPU when there is one (#495), which the last scenario
+//! needs.
 
 mod common;
 

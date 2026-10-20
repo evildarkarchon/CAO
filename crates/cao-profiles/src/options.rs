@@ -196,7 +196,7 @@ impl Options {
 
     /// Writes the model into `settings.ini` as C++'s `OptionsCAO::saveToIni` does.
     /// Keys already in `ini` keep their place; the order of the calls below is the
-    /// order Qt appends missing keys in, so it follows C++ exactly. Keys the model
+    /// order Qt appends missing keys in, the order C++ wrote. Keys the model
     /// does not hold are left alone.
     pub fn write(&self, ini: &mut IniFile) {
         ini.set("bDryRun", self.dry_run);

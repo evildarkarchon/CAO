@@ -2108,7 +2108,7 @@ fn deviation_20_pruning_has_no_separator_rule() {
 /// Split points: sources over the size limit split into several Archives of
 /// one kind, in sorted order. The first takes the plugin-derived name, the
 /// rest the next free counter names, and each gets its own Loading Plugin.
-/// The corpus cannot reach a real game's 2 GiB limit, so this pins the
+/// A test cannot cheaply reach a real game's 2 GiB limit, so this pins the
 /// finalization side; `cao-archive` pins the exact split boundaries.
 #[test]
 fn split_outputs_take_counter_names_and_their_own_plugins() {

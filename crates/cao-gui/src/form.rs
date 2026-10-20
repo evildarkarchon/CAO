@@ -1,9 +1,9 @@
 //! Moves a profile's models into the window's controls and back (C++
 //! `OptionsCAO::saveToUi`/`readFromUi` and `Profiles::saveToUi`/`readFromUi`).
 //!
-//! Each direction follows C++ rule for rule, including its quirks, so a profile
-//! the C++ build saved reloads the same, and what the window saves reloads the
-//! same. #509's UI rules (Dry Run, Several Mods, FO4 textures; `rules.rs`) are
+//! Each direction was ported from C++ rule for rule, quirks included, so a
+//! profile the C++ build saved reloads the same, and what the window saves
+//! reloads the same. #509's UI rules (Dry Run, Several Mods, FO4 textures; `rules.rs`) are
 //! not applied here; they run after [`show_options`] and [`show_settings`].
 
 use cao_gui_ui::{AnimationsTab, BsaTab, MainWindow, MeshesTab, TexturesTab};

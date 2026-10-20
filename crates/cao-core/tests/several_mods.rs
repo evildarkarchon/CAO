@@ -3,7 +3,7 @@
 //!
 //! Each scenario names its C++ origin in `tests/OptimizationRunServiceTests.cpp`
 //! or `tests/RunExecutorTests.cpp`. Scenarios that pin a recorded deviation say
-//! so; the parity corpus never reaches them.
+//! so.
 
 mod common;
 

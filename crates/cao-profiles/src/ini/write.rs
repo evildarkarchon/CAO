@@ -1,5 +1,6 @@
 //! The writing half of Qt 5.15's QSettings IniFormat (`qsettings.cpp`), unchanged
-//! from Qt so the C++ build reads every file Rust writes.
+//! from Qt, so CAO keeps writing the format its shipped profiles and users'
+//! existing settings files are in.
 //!
 //! Output is pure ASCII: anything else is `\x`- or `%`-escaped, as Qt writes when no
 //! INI codec is set.
