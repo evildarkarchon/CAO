@@ -308,20 +308,11 @@ impl App {
         // The UI rules also hold for what was loaded (deviations 3 and 21).
         rules::apply(ui);
         // An unreadable profile enables no asset tab.
-        self.enable_tabs(match &settings {
-            Some(settings) => EnabledTabs {
-                bsa: settings.bsa_enabled,
-                meshes: settings.meshes_enabled,
-                textures: settings.textures_enabled,
-                animations: settings.animations_enabled,
-            },
-            None => EnabledTabs {
-                bsa: false,
-                meshes: false,
-                textures: false,
-                animations: false,
-            },
-        });
+        self.enable_tabs(
+            settings
+                .as_ref()
+                .map_or(EnabledTabs::NONE, EnabledTabs::of_profile),
+        );
         ui.set_base_profile(profile.is_base());
 
         loaded.profile = profile;
@@ -366,7 +357,11 @@ impl App {
             return;
         }
 
-        let options = form::read_options(ui, &loaded.options);
+        // The capabilities come from the loaded `profile.ini`, not the tab bar:
+        // an unreadable one disables every tab, yet says nothing of what the
+        // profile supports, so its asset options are kept as loaded (#580).
+        let capabilities = loaded.settings.as_ref().map(EnabledTabs::of_profile);
+        let options = form::read_options(ui, &loaded.options, capabilities);
         if let Err(error) = loaded.profile.save_options(&options) {
             self.error(
                 "Save",
