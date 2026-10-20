@@ -779,14 +779,18 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
             "SkyrimSE",
             ExecutionMode::Apply,
             ModSelection::ChildModRoots(common::relative_to_working_directory(&selected)),
-            vec![RequestedWork::ConvertibleTextureConversion],
+            vec![RequestedWork::NativeTextureOptimization],
         );
         let mut cleanup = CountingCleanup::default();
 
+        // The Conversion Preference adds conversion to the native Texture
+        // work; the Mod Root holds no native Texture.
         let result = execute(
             &request,
             &mut cleanup,
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&*common::converting_toolset_configuration(Some(
+                Arc::clone(&toolset),
+            ))),
             &token,
         );
 

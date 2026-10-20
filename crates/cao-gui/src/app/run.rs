@@ -270,6 +270,12 @@ fn start_error_message(error: StartError) -> String {
     let reason = match error {
         StartError::MissingProfileIdentity => "no profile is selected",
         StartError::MissingModSelectionDirectory => "no mod folder is selected",
+        // The composition root never builds such a request; TGA conversion
+        // comes only from the profile's "Convert TGA" setting.
+        StartError::ConversionRequested => {
+            "TGA conversion was requested directly instead of through the profile's \
+             \"Convert TGA\" setting"
+        }
         StartError::ActiveRun => "another run is still active",
     };
     format!("The run could not start: {reason}.")

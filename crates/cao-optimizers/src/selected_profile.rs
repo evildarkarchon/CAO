@@ -18,6 +18,7 @@ use crate::textures::TextureProfile;
 #[derive(Debug, Clone)]
 pub struct SelectedProfile {
     capabilities: ProfileCapabilities,
+    conversion_preference: bool,
     /// The one Archive settings value the routing extension, the packer's
     /// naming rules and the Headpart scan's plugin extensions all come from.
     archive: Settings,
@@ -45,6 +46,7 @@ impl SelectedProfile {
         let archive = archive_settings(&settings);
         Ok(Self {
             capabilities: capabilities(&settings, &archive),
+            conversion_preference: settings.textures_convert_tga,
             archive,
             texture_profile: texture_profile(&settings),
             mesh_target: mesh_target(&settings),
@@ -61,6 +63,13 @@ impl SelectedProfile {
     /// including the Archive extension.
     pub fn capabilities(&self) -> &ProfileCapabilities {
         &self.capabilities
+    }
+
+    /// The Conversion Preference: the profile's `texturesConvertTga` setting,
+    /// which the Textures tab's "Convert TGA" checkbox writes. Preparing adds
+    /// conversion to requested native Texture work only when it is on.
+    pub fn conversion_preference(&self) -> bool {
+        self.conversion_preference
     }
 
     /// The Archive settings of the profile's game, with the profile's maximum

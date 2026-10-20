@@ -68,11 +68,11 @@ use cao_core::run::{
 };
 use cao_core::test_support::{
     CountingCleanup, EventLog, FakeBackendFactory, GatedScheduler, Observed, RecordingSink,
-    ScriptedToolset, record_finalization_result,
+    ScriptedToolset, ToolsetConfiguration, record_finalization_result,
 };
 use common::{
-    HandleSlot, backend_toolset, canonical, junction, reclaim, request, scratch_dir, serial,
-    snapshot_tree, toolset_configuration, write_tree,
+    HandleSlot, backend_toolset, canonical, converting_toolset_configuration, junction, reclaim,
+    request, scratch_dir, serial, snapshot_tree, toolset_configuration, write_tree,
 };
 
 /// Runs one request to its terminal result on the inline scheduler, its work
@@ -81,10 +81,29 @@ fn run(
     toolset: &Arc<ScriptedToolset>,
     request: cao_core::run::RunRequest,
 ) -> (Arc<OptimizationRunResult>, EventLog) {
-    let service = OptimizationRunService::with_scheduler(
-        Arc::new(InlineRunScheduler),
-        Some(toolset_configuration(Some(Arc::clone(toolset)))),
-    );
+    run_against(toolset_configuration(Some(Arc::clone(toolset))), request)
+}
+
+/// As [`run`], but the profile's Conversion Preference is on, so requested
+/// native Texture work also converts convertible Textures.
+fn run_converting(
+    toolset: &Arc<ScriptedToolset>,
+    request: cao_core::run::RunRequest,
+) -> (Arc<OptimizationRunResult>, EventLog) {
+    run_against(
+        converting_toolset_configuration(Some(Arc::clone(toolset))),
+        request,
+    )
+}
+
+/// Runs one request to its terminal result on the inline scheduler against
+/// `configuration`, recording its events.
+fn run_against(
+    configuration: Arc<ToolsetConfiguration>,
+    request: cao_core::run::RunRequest,
+) -> (Arc<OptimizationRunResult>, EventLog) {
+    let service =
+        OptimizationRunService::with_scheduler(Arc::new(InlineRunScheduler), Some(configuration));
     let events = EventLog::default();
     let handle = service
         .start(request, Some(events.dispatcher()))
@@ -1186,13 +1205,15 @@ fn a_dry_run_leaves_the_complete_mod_tree_unchanged() {
         }),
     );
 
-    let (result, events) = run(
+    // The Conversion Preference adds conversion to the native Texture work;
+    // the tree holds no native Texture.
+    let (result, events) = run_converting(
         &toolset,
         request(
             ExecutionMode::DryRun,
             &root,
             &[
-                RequestedWork::ConvertibleTextureConversion,
+                RequestedWork::NativeTextureOptimization,
                 RequestedWork::StandardMeshOptimization,
                 RequestedWork::ArchiveExtraction,
             ],

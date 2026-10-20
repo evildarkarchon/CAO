@@ -56,7 +56,7 @@ fn invalid_option_values_are_rejected_before_any_run() {
     add("relative folder", &|o| o.user_path = "mods/Mod".into());
 
     for (name, options) in cases {
-        assert!(run_request(&app, "SSE", &options).is_err(), "{name}");
+        assert!(run_request("SSE", &options).is_err(), "{name}");
     }
 }
 
@@ -70,7 +70,7 @@ fn an_odd_target_size_is_accepted_while_resizing_by_size_is_off() {
         textures_target_width: 513,
         ..Options::default()
     };
-    assert!(run_request(&app, "SSE", &options).is_ok());
+    assert!(run_request("SSE", &options).is_ok());
 }
 
 #[test]
@@ -85,13 +85,16 @@ fn the_request_owns_the_caller_intent() {
         ..Options::default()
     };
 
-    let request = run_request(&app, "FO4", &options).unwrap();
+    let request = run_request("FO4", &options).unwrap();
 
     assert_eq!(request.profile_identity(), "FO4");
     assert_eq!(request.execution_mode(), ExecutionMode::DryRun);
     assert_eq!(request.mod_selection(), &ModSelection::ChildModRoots(mods));
-    // The default options select necessary Texture work; FO4 converts TGAs.
-    assert!(request.requests(RequestedWork::ConvertibleTextureConversion));
+    // The default options select necessary Texture work. FO4 converts TGAs,
+    // but that is its Conversion Preference, which Preparing adds; the
+    // request carries only the caller's intent.
+    assert!(request.requests(RequestedWork::NativeTextureOptimization));
+    assert!(!request.requests(RequestedWork::ConvertibleTextureConversion));
     assert!(request.requests(RequestedWork::StandardMeshOptimization));
     assert!(request.requests(RequestedWork::TerrainMeshOptimization));
     assert!(!request.requests(RequestedWork::ArchiveCreation));
@@ -105,7 +108,7 @@ fn disabled_texture_work_does_not_request_profile_conversion() {
         textures_necessary: false,
         ..Options::default()
     };
-    let request = run_request(&app, "SSE", &options).unwrap();
+    let request = run_request("SSE", &options).unwrap();
     assert!(!request.has_requested_work());
 }
 
@@ -215,19 +218,23 @@ fn a_request_contradicting_the_profile_capabilities_fails_preparing() {
 /// Origin: ApplicationRunSetupTests::fo4ConversionCompilesWithoutMeshOptimization.
 /// TGA conversion derives Mesh Reference Maintenance, which FO4 supports
 /// through its Texture capability even though it has no Mesh optimization.
+/// FO4's Conversion Preference is on, so Preparing adds the conversion.
 #[test]
 fn fo4_texture_conversion_needs_no_mesh_optimization_capability() {
+    let _serial = serial();
     let app = app_dir("fo4-conversion");
-    let options = dry_run_textures(&app, &app.join("mods/Mod"));
+    let mod_root = app.join("mods").join("Mod");
+    std::fs::create_dir_all(&mod_root).unwrap();
+    let options = dry_run_textures(&app, &mod_root);
     let run = ApplicationRun::new(&app, "FO4", &options).unwrap();
-    assert!(
-        run.request()
-            .requests(RequestedWork::ConvertibleTextureConversion)
-    );
-    assert!(
-        !run.request()
-            .requests(RequestedWork::StandardMeshOptimization)
-    );
+
+    let result = run.start(None).unwrap().wait();
+
+    assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    let policy = result.preparation().unwrap().policy();
+    assert!(policy.requests(RequestedWork::ConvertibleTextureConversion));
+    assert!(policy.maintains_mesh_references());
+    assert!(!policy.requests(RequestedWork::StandardMeshOptimization));
 }
 
 /// Several Mods through the production wiring: the shipped SSE profile's
@@ -362,6 +369,40 @@ fn a_change_to_profile_ini_between_two_runs_is_picked_up_at_preparing() {
     let failure = &second.failures()[0];
     assert_eq!(failure.code, RunFailureCode::PolicyConflict);
     assert_eq!(failure.phase, RunPhase::Preparing);
+}
+
+/// The Conversion Preference is read with the rest of the Selected Profile
+/// during Preparing, so an edit made after setup but before start is honoured
+/// in either direction rather than frozen at setup.
+#[test]
+fn a_conversion_preference_edit_between_setup_and_start_is_honoured() {
+    let _serial = serial();
+    let app = app_dir("conversion-preference-reload");
+    let mod_root = app.join("mods").join("Mod");
+    write_dds(
+        &mod_root.join("textures/plain.dds"),
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        16,
+    );
+    edit_profile(&app, "SSE", "texturesConvertTga", "false");
+    let run = ApplicationRun::new(&app, "SSE", &dry_run_textures(&app, &mod_root)).unwrap();
+    let converts = |run: &ApplicationRun| {
+        let result = run.start(None).unwrap().wait();
+        assert_eq!(result.outcome(), RunOutcome::Succeeded);
+        let policy = result.preparation().unwrap().policy();
+        assert_eq!(
+            policy.requests(RequestedWork::ConvertibleTextureConversion),
+            policy.maintains_mesh_references(),
+            "Mesh Reference Maintenance follows conversion"
+        );
+        policy.requests(RequestedWork::ConvertibleTextureConversion)
+    };
+
+    edit_profile(&app, "SSE", "texturesConvertTga", "true");
+    assert!(converts(&run), "turned on after setup");
+
+    edit_profile(&app, "SSE", "texturesConvertTga", "false");
+    assert!(!converts(&run), "turned off again before the next start");
 }
 
 #[test]

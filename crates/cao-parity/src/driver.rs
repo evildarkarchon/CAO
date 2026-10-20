@@ -99,7 +99,7 @@ pub fn drive(spec: &CaseSpec, app_dir: &Path) -> Result<RunFacts, HarnessError> 
     let dispatcher = Box::new(move |event: RunEvent| lock(&collected).push(event));
     let handle = match run.start(Some(dispatcher)) {
         Ok(handle) => handle,
-        Err(error) => return Ok(RunFacts::StartError(start_error(error))),
+        Err(error) => return start_error(error).map(RunFacts::StartError),
     };
     let result = handle.wait();
     let events = lock(&events);
@@ -345,10 +345,23 @@ fn mutation_kind(kind: CoreMutationKind) -> MutationKind {
     }
 }
 
-fn start_error(error: CoreStartError) -> StartError {
-    match error {
+/// The C++ oracle's Start Error for a core one.
+///
+/// # Errors
+/// [`HarnessError::Driver`] for `ConversionRequested`, which has no C++ code:
+/// only a request built outside the composition root can list conversion, so
+/// it is a driver fault rather than a run fact the oracle could agree on.
+fn start_error(error: CoreStartError) -> Result<StartError, HarnessError> {
+    Ok(match error {
         CoreStartError::MissingProfileIdentity => StartError::MissingProfileIdentity,
         CoreStartError::MissingModSelectionDirectory => StartError::MissingModSelectionDirectory,
         CoreStartError::ActiveRun => StartError::ActiveRun,
-    }
+        CoreStartError::ConversionRequested => {
+            return Err(HarnessError::Driver(
+                "the Run Request listed TGA conversion, which only the profile's \
+                 Conversion Preference may add"
+                    .to_owned(),
+            ));
+        }
+    })
 }

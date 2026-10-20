@@ -24,14 +24,15 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex, OnceLock, mpsc};
 
 use cao_core::Error;
-use cao_core::routing::{ExecutionMode, RequestedWork};
+use cao_core::routing::{ExecutionMode, RequestedWork, RoutingPolicy};
 use cao_core::run::{
-    ModSelection, OptimizationRunService, PhaseSkipReason, RunDiagnosticCode, RunEventPayload,
-    RunFailureCode, RunHandle, RunOutcome, RunPhase, RunPhaseStatus, RunRequest, StartError,
+    ModSelection, OptimizationRunService, PhaseSkipReason, RunConfiguration, RunDiagnosticCode,
+    RunEventPayload, RunFailureCode, RunHandle, RunOutcome, RunPhase, RunPhaseStatus, RunRequest,
+    StartError,
 };
 use cao_core::test_support::{
     CallbackConfiguration, CountingInlineScheduler, DeferredScheduler, EventLog,
-    ExhaustedScheduler, GatedScheduler, ScriptedToolset, ToolsetConfiguration,
+    ExhaustedScheduler, GatedScheduler, ScriptedToolset, ToolsetConfiguration, sse_configuration,
 };
 use common::{HandleSlot, no_work_request, reclaim, serial, test_mod_root, toolset_configuration};
 
@@ -104,6 +105,105 @@ fn a_mod_selection_without_a_directory_is_rejected_without_creating_a_worker() {
         StartError::MissingModSelectionDirectory
     );
     assert_eq!(scheduler.scheduled.load(Ordering::SeqCst), 0);
+}
+
+/// Conversion is switched on only by the Selected Profile's Conversion
+/// Preference, so a request listing it is refused before any worker exists
+/// and leaves no active run behind.
+#[test]
+fn a_request_listing_texture_conversion_is_refused_without_creating_a_worker() {
+    let _serial = serial();
+    let scheduler = Arc::new(CountingInlineScheduler::default());
+    let service = service_on(scheduler.clone());
+
+    let started = service.start(
+        RunRequest::new(
+            "SkyrimSE",
+            ExecutionMode::DryRun,
+            ModSelection::SingleModRoot(test_mod_root()),
+            vec![
+                RequestedWork::NativeTextureOptimization,
+                RequestedWork::ConvertibleTextureConversion,
+            ],
+        ),
+        None,
+    );
+
+    assert_eq!(started.unwrap_err(), StartError::ConversionRequested);
+    assert_eq!(scheduler.scheduled.load(Ordering::SeqCst), 0);
+    // The refusal claimed no active run, so the next valid request starts.
+    let handle = service
+        .start(no_work_request(), None)
+        .expect("a valid request starts after the refusal");
+    assert_eq!(handle.wait().outcome(), RunOutcome::Succeeded);
+}
+
+/// Native Texture work joined by the Conversion Preference requests
+/// conversion, and Mesh Reference Maintenance follows from it.
+#[test]
+fn texture_work_with_the_conversion_preference_on_requests_conversion() {
+    let _serial = serial();
+    let policy = prepared_policy(true, &[RequestedWork::NativeTextureOptimization]);
+
+    assert!(policy.requests(RequestedWork::ConvertibleTextureConversion));
+    assert!(policy.maintains_mesh_references());
+}
+
+/// With the Conversion Preference off, native Texture work converts nothing.
+#[test]
+fn texture_work_with_the_conversion_preference_off_requests_no_conversion() {
+    let _serial = serial();
+    let policy = prepared_policy(false, &[RequestedWork::NativeTextureOptimization]);
+
+    assert!(policy.requests(RequestedWork::NativeTextureOptimization));
+    assert!(!policy.requests(RequestedWork::ConvertibleTextureConversion));
+    assert!(!policy.maintains_mesh_references());
+}
+
+/// The Conversion Preference alone, with no Texture work, converts nothing.
+#[test]
+fn the_conversion_preference_without_texture_work_requests_no_conversion() {
+    let _serial = serial();
+    let policy = prepared_policy(true, &[RequestedWork::StandardMeshOptimization]);
+
+    assert!(!policy.requests(RequestedWork::ConvertibleTextureConversion));
+    assert!(!policy.maintains_mesh_references());
+}
+
+/// Starts a Dry Run of `work` over the empty test Mod Root against the
+/// SSE-like profile with the given Conversion Preference, and returns the
+/// Routing Policy its Preparing compiled.
+fn prepared_policy(conversion_preference: bool, work: &[RequestedWork]) -> RoutingPolicy {
+    let configuration = RunConfiguration {
+        conversion_preference,
+        ..sse_configuration()
+    };
+    let provider = Arc::new(ToolsetConfiguration::new(
+        configuration,
+        Some(Arc::new(ScriptedToolset::default())),
+    ));
+    let service = OptimizationRunService::with_scheduler(
+        Arc::new(CountingInlineScheduler::default()),
+        Some(provider),
+    );
+    let handle = service
+        .start(
+            RunRequest::new(
+                "SkyrimSE",
+                ExecutionMode::DryRun,
+                ModSelection::SingleModRoot(test_mod_root()),
+                work.to_vec(),
+            ),
+            None,
+        )
+        .expect("the request starts");
+    let terminal = handle.wait();
+    assert_eq!(terminal.outcome(), RunOutcome::Succeeded);
+    terminal
+        .preparation()
+        .expect("Preparing succeeded")
+        .policy()
+        .clone()
 }
 
 /// Origin: OptimizationRunServiceTests::aRejectedStartExposesAStartErrorInsteadOfAHandle and

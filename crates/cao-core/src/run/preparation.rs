@@ -27,6 +27,10 @@ pub struct RunConfiguration {
     /// extension, which Preparing compiles the run's Routing Policy against
     /// (C++ `RunSetup::prepare`).
     pub profile: ProfileCapabilities,
+    /// The Selected Profile's Conversion Preference: whether requested native
+    /// Texture work also converts convertible Textures. It is not a Profile
+    /// Capability, so its absence never contradicts a Run Request.
+    pub conversion_preference: bool,
     /// Child names matched case-insensitively during Several Mods Preparing.
     pub ignored_mods: Vec<String>,
     /// Case-sensitive suffixes marking mod-manager separators among child

@@ -27,7 +27,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::Error;
 use crate::execution::MutationState;
-use crate::routing::{ExecutionMode, RoutingPolicy, RoutingPolicyRequest};
+use crate::routing::{ExecutionMode, RequestedWork, RoutingPolicy, RoutingPolicyRequest};
 use crate::run::mod_selection::resolve_mod_roots;
 use crate::run::{
     CancellationToken, MutableRunEvidence, OptimizationRunResult, PhaseSkipReason,
@@ -139,6 +139,29 @@ fn load_configuration(
     }
 }
 
+/// Builds the Routing Policy Request from the Run Request's work and the
+/// Selected Profile's Conversion Preference.
+///
+/// Convertible Texture conversion joins the work only when native Texture
+/// optimization is requested and the preference is on, in Dry Run and Apply
+/// alike. Conversion the request lists itself is dropped: the service refuses
+/// such a request with `ConversionRequested`, and dropping it here keeps the
+/// synchronous Run Executor, which skips Start Errors, to the same rule.
+fn policy_request(request: &RunRequest, configuration: &RunConfiguration) -> RoutingPolicyRequest {
+    let mut work: Vec<RequestedWork> = request
+        .requested_work()
+        .iter()
+        .copied()
+        .filter(|work| *work != RequestedWork::ConvertibleTextureConversion)
+        .collect();
+    if configuration.conversion_preference
+        && request.requests(RequestedWork::NativeTextureOptimization)
+    {
+        work.push(RequestedWork::ConvertibleTextureConversion);
+    }
+    RoutingPolicyRequest::for_work(request.execution_mode(), &work)
+}
+
 /// Prepares immutable facts without mutation, with the Run Toolset the
 /// provider built from the same profile read; `Ok(None)` means cancellation
 /// was observed.
@@ -158,7 +181,7 @@ fn prepare_run(
         return Ok(None);
     }
     let policy = RoutingPolicy::compile(
-        RoutingPolicyRequest::for_work(request.execution_mode(), request.requested_work()),
+        policy_request(request, &configuration),
         configuration.profile.clone(),
     )
     .map_err(|conflicts| {

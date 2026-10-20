@@ -25,7 +25,7 @@ use cao_core::run::{
     RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode, RunEventDispatcher, RunHandle,
     RunPhase, RunRequest, RunToolset, SourceCleanup, StartError,
 };
-use cao_profiles::{OptimizationMode, Options, ProfileError, Profiles};
+use cao_profiles::{OptimizationMode, Options, Profiles};
 
 use crate::animations::Hkxcmd;
 use crate::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
@@ -55,9 +55,6 @@ pub enum RunSetupError {
     /// A relative folder would resolve against the working directory.
     #[error("The selected folder `{}` is not an absolute path.", .0.display())]
     RelativeSelection(PathBuf),
-    /// The selected profile's `profile.ini` could not be read.
-    #[error(transparent)]
-    Profile(#[from] ProfileError),
 }
 
 /// One run, set up and ready to start: its Run Request and the service that
@@ -73,21 +70,19 @@ pub struct ApplicationRun {
 impl ApplicationRun {
     /// Sets up a run of `options` under `profile`, in the install at `app_dir`.
     ///
-    /// The Run Request takes its intent from `options`, and freezes the
-    /// profile's TGA-conversion choice as C++ does: only that is read from
-    /// `profile.ini` now. Everything else the run needs from the profile is read
-    /// again by its Run Configuration Provider during Preparing, so an edit made
-    /// before the run starts is honoured.
+    /// The Run Request takes its intent from `options` alone. Everything the
+    /// run needs from the profile, including the Conversion Preference that
+    /// decides TGA conversion, is read by its Run Configuration Provider during
+    /// Preparing, so an edit made before the run starts is honoured.
     ///
     /// The request is not checked against the profile's Profile Capabilities
     /// here: a request the profile cannot honour sets up, and its run fails
     /// Preparing with a Policy Conflict carrying every conflict (#570).
     ///
     /// # Errors
-    /// [`RunSetupError`] when the options are invalid or the profile's TGA
-    /// choice cannot be read.
+    /// [`RunSetupError`] when the options are invalid.
     pub fn new(app_dir: &Path, profile: &str, options: &Options) -> Result<Self, RunSetupError> {
-        let request = run_request(app_dir, profile, options)?;
+        let request = run_request(profile, options)?;
         let configuration = Arc::new(ProfileConfigurationProvider::for_runs(
             app_dir,
             RunWorkSettings {
@@ -120,18 +115,15 @@ impl ApplicationRun {
 /// Builds the Run Request for `options` under `profile`, as C++
 /// `makeApplicationRunRequest` does.
 ///
-/// Texture work is requested when any Texture option is on; conversion of TGAs
-/// joins it when the profile converts them. Mesh work is requested when the
-/// level is above 0 or resaving is on; it covers both Standard and Terrain
-/// Meshes.
+/// Texture work is requested when any Texture option is on. TGA conversion is
+/// never requested here: Preparing adds it to that Texture work when the
+/// Selected Profile's Conversion Preference is on. Mesh work is requested when
+/// the level is above 0 or resaving is on; it covers both Standard and Terrain
+/// Meshes. No profile is read.
 ///
 /// # Errors
-/// [`RunSetupError`] when an option is invalid or `profile.ini` cannot be read.
-pub fn run_request(
-    app_dir: &Path,
-    profile: &str,
-    options: &Options,
-) -> Result<RunRequest, RunSetupError> {
+/// [`RunSetupError`] when an option is invalid.
+pub fn run_request(profile: &str, options: &Options) -> Result<RunRequest, RunSetupError> {
     validate(options)?;
     let selected = PathBuf::from(&options.user_path);
     // An empty folder is a structural Start Error the service reports itself.
@@ -149,22 +141,11 @@ pub fn run_request(
         || options.textures_mipmaps
         || options.textures_resize_size
         || options.textures_resize_ratio;
-    // Read only when Texture work is selected; the lenient read matches the C++
-    // GUI's, which ignored lines QSettings rejected. Preparing reads strictly.
-    let convert_textures = optimize_native_textures
-        && Profiles::new(app_dir)
-            .open(profile)
-            .load_settings()?
-            .textures_convert_tga;
     let optimize_meshes = requests_mesh_work(options);
     let choices = [
         (
             optimize_native_textures,
             RequestedWork::NativeTextureOptimization,
-        ),
-        (
-            convert_textures,
-            RequestedWork::ConvertibleTextureConversion,
         ),
         (optimize_meshes, RequestedWork::StandardMeshOptimization),
         (optimize_meshes, RequestedWork::TerrainMeshOptimization),
@@ -320,6 +301,7 @@ impl RunConfigurationProvider for ProfileConfigurationProvider {
             .map_err(|error| Error::ConfigurationLoading(error.to_string()))?;
         let configuration = RunConfiguration {
             profile: profile.capabilities().clone(),
+            conversion_preference: profile.conversion_preference(),
             ignored_mods: profile.ignored_mods().to_vec(),
             // Deviation 20: MO2 names its separators `<name>_separator`. C++
             // passed the marker "separator" and excluded any child containing it.

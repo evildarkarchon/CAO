@@ -15,7 +15,7 @@ use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{ModSelection, RunHandle, RunRequest, TemporaryArtifactRegistry};
 use cao_core::test_support::{
     FakeBackendFactory, FixedConfiguration, ScriptedToolset, ToolsetConfiguration,
-    sse_configuration,
+    converting_sse_configuration, sse_configuration,
 };
 
 /// Serializes scenarios that start runs: one active run is allowed per
@@ -100,6 +100,18 @@ pub fn test_configuration() -> Arc<FixedConfiguration> {
 /// the Optimization Run Service takes it.
 pub fn toolset_configuration(toolset: Option<Arc<ScriptedToolset>>) -> Arc<ToolsetConfiguration> {
     Arc::new(ToolsetConfiguration::sse(toolset))
+}
+
+/// As [`toolset_configuration`], but the SSE-like profile's Conversion
+/// Preference is on, so requested native Texture work also converts
+/// convertible Textures and maintains Mesh references.
+pub fn converting_toolset_configuration(
+    toolset: Option<Arc<ScriptedToolset>>,
+) -> Arc<ToolsetConfiguration> {
+    Arc::new(ToolsetConfiguration::new(
+        converting_sse_configuration(),
+        toolset,
+    ))
 }
 
 /// The production shape of a run's Asset attempts: a scripted Toolset whose
