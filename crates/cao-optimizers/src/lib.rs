@@ -22,6 +22,9 @@
 //!   directory, a profile and the options model, it builds the Run Request, the
 //!   profile-backed Run Configuration Provider and the per-run optimizer settings,
 //!   and wires them into an Optimization Run Service (spec #476).
+//! - [`selected_profile`] is the one read of a run's Selected Profile during
+//!   Preparing: the Profile Capabilities, the game's Archive settings, the
+//!   Texture and Mesh targets and the profile's lists (spec #566).
 //! - [`application_log`] is the `log` facade's sink both binaries install: the
 //!   Application Log's HTML file, and the rows the Log tab shows (#470).
 
@@ -35,4 +38,5 @@ pub mod headparts;
 pub mod mesh_references;
 pub mod meshes;
 pub mod plugins;
+pub mod selected_profile;
 pub mod textures;

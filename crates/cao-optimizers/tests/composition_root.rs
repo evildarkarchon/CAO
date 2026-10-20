@@ -6,12 +6,8 @@ mod common;
 
 use cao_core::execution::AssetExecutionFailure;
 use cao_core::routing::{ExecutionMode, PolicyValidationError, RequestedWork, SkipReason};
-use cao_core::run::{
-    ModSelection, RunConfigurationProvider, RunDiagnosticCode, RunFailureCode, RunOutcome, RunPhase,
-};
-use cao_optimizers::composition::{
-    ApplicationRun, ProfileConfigurationProvider, RunSetupError, run_request,
-};
+use cao_core::run::{ModSelection, RunDiagnosticCode, RunFailureCode, RunOutcome, RunPhase};
+use cao_optimizers::composition::{ApplicationRun, RunSetupError, run_request};
 use cao_profiles::{OptimizationMode, Options};
 use common::{app_dir, dry_run_textures, edit_profile, serial, snapshot_tree, write, write_dds};
 use directxtex::{DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM};
@@ -269,62 +265,6 @@ fn several_mods_excludes_separators_and_ignored_mods_from_the_shipped_profile() 
     );
     assert_eq!(result.asset_attempts().len(), 2);
     assert_eq!(snapshot_tree(&app), before, "Dry Run never mutates");
-}
-
-#[test]
-fn the_provider_loads_owned_configuration() {
-    let app = app_dir("provider-owned");
-    write(
-        &app.join("profiles/SSE"),
-        "ignoredMods.txt",
-        b"# comment\n  Tool   Mod  \n\n",
-    );
-    let provider = ProfileConfigurationProvider::new(&app);
-
-    // FO4 has no ignoredMods.txt of its own, so it falls back to SSE's.
-    // One read yields both the routing facts and what the run's work is
-    // built from.
-    let (configuration, prepared) = provider.read_profile("FO4").unwrap();
-    assert_eq!(configuration.profile.archive_extension(), Some(".ba2"));
-    assert_eq!(configuration.ignored_mods, vec!["Tool Mod".to_owned()]);
-    // Deviation 20: MO2's separator suffix, not C++'s "separator" substring.
-    assert_eq!(
-        configuration.separator_suffixes,
-        vec!["_separator".to_owned()]
-    );
-    assert_eq!(
-        prepared.settings.textures_format, 98,
-        "the backend sees the profile routing used"
-    );
-    assert_eq!(provider.load("FO4").unwrap().0, configuration);
-
-    assert!(provider.load("MissingProfile").is_err());
-}
-
-#[test]
-fn routing_and_the_backend_load_from_the_same_updated_profile() {
-    let app = app_dir("provider-updated");
-    let provider = ProfileConfigurationProvider::new(&app);
-    let (first, _) = provider.load("FO4").unwrap();
-    assert_eq!(first.profile.archive_extension(), Some(".ba2"));
-
-    // Edited between two loads, as between two runs' Preparing.
-    edit_profile(&app, "FO4", "bsaGame", "4");
-    edit_profile(&app, "FO4", "texturesFormat", "87");
-    edit_profile(&app, "FO4", "texturesUnwantedFormats", "85");
-    let (second, prepared) = provider.read_profile("FO4").unwrap();
-
-    assert_eq!(second.profile.archive_extension(), Some(".bsa"));
-    let backend = prepared.settings;
-    assert_eq!(backend.textures_format, 87);
-    assert_eq!(backend.textures_unwanted_formats, vec![85]);
-}
-
-#[test]
-fn the_provider_rejects_an_unreadable_ignored_mod_list() {
-    let app = app_dir("provider-unreadable-ignored");
-    std::fs::create_dir(app.join("profiles/FO4/ignoredMods.txt")).unwrap();
-    assert!(ProfileConfigurationProvider::new(&app).load("FO4").is_err());
 }
 
 #[test]
