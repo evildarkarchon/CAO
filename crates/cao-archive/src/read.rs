@@ -57,8 +57,7 @@ pub enum Fo4Container {
     Gnmf,
 }
 
-/// What an Archive's header says, beyond its entries: the facts the parity
-/// comparator holds equal between two Archives.
+/// What an Archive's header says, beyond its entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArchiveHeader {
     /// The container family, from the magic.

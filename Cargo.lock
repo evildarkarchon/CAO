@@ -732,27 +732,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cao-parity"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ba2",
- "cao-archive",
- "cao-core",
- "cao-optimizers",
- "cao-profiles",
- "cao-winfs",
- "directxtex",
- "embed-resource",
- "log",
- "nifly-sys",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "toml",
-]
-
-[[package]]
 name = "cao-profiles"
 version = "0.1.0"
 dependencies = [

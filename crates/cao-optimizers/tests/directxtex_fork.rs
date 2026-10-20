@@ -1,8 +1,7 @@
 //! Checks that the workspace builds Textures through CAO's `directxtex` fork (#479).
 //!
-//! The fork bumps DirectXTex to `may2026` so the Rust port and the C++ parity
-//! oracle encode with the same library. It also makes `ScratchImage` `Send` so the
-//! Run Worker can own one. `ba2` must link the same copy.
+//! The fork bumps DirectXTex to `may2026`. It also makes `ScratchImage` `Send` so
+//! the Run Worker can own one. `ba2` must link the same copy.
 
 use directxtex::{
     CP_FLAGS_NONE, DDS_FLAGS_NONE, DXGI_FORMAT_BC7_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, ScratchImage,
@@ -110,8 +109,7 @@ fn loads_mipmaps_and_cpu_compresses_a_synthetic_texture() {
     assert_eq!(compressed.images().len(), FULL_MIP_COUNT);
 
     // BC7 is lossy, so decode and compare instead of matching bytes. This is a
-    // sanity floor against the source, not the spec's parity threshold (#467),
-    // which compares two encodes of the same source. The gradients here put
+    // sanity floor against the source. The gradients here put
     // each 4×4 block's colours on a plane, which BC7's per-subset line cannot fit
     // exactly, so a working encoder lands near 39.6 dB. A broken one (garbage
     // blocks, swapped channels, a misread mip) falls far below 30 dB.

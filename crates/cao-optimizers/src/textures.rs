@@ -313,8 +313,7 @@ impl Texture {
     /// (`modifiedCurrentTexture`).
     ///
     /// The metadata saved with the Texture is updated field by field, as C++
-    /// updates `_info`, rather than replaced by each step's result, so the DDS
-    /// header matches the oracle's.
+    /// updates `_info`, rather than replaced by each step's result.
     ///
     /// Mipmap generation may go through WIC, so the calling thread must have
     /// joined COM ([`crate::device::initialize_com`]). BC6H and BC7 are
@@ -551,7 +550,7 @@ mod tests {
     /// This pins the check itself rather than a run, because no DirectXTex
     /// step CAO calls returns metadata that differs from what C++ expects, so
     /// no Texture can reach the mismatch through the backend. The Apply
-    /// scenarios and parity seeds show the check never rejects a real step.
+    /// scenarios show the check never rejects a real step.
     #[test]
     fn a_step_result_differing_in_any_compared_field_is_a_mismatch() {
         /// A compared field's name and a change to just that field.

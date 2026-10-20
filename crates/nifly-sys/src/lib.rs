@@ -18,18 +18,8 @@
 //!
 //! A nifly call cannot be interrupted, and a corrupt file can keep `load`
 //! busy for minutes, so cancellation waits for the call in progress.
-//!
-//! The `corpus` feature adds Mesh creation ([`Nif::create`] and friends) for
-//! the parity corpus's synthetic Meshes. It is off by default, and only
-//! `cao-parity` enables it, so an app build that selects the app's own package
-//! carries none of it; a `--workspace` build unifies it in.
 
-#[cfg(feature = "corpus")]
-mod corpus;
 mod ffi;
-
-#[cfg(feature = "corpus")]
-pub use corpus::Shape;
 
 use std::ffi::c_char;
 use std::os::windows::ffi::OsStrExt;
@@ -158,8 +148,7 @@ pub struct OptimizeReport {
     pub shapes_parallax_removed: Vec<String>,
 }
 
-/// One nifly `NifFile`: a Mesh loaded from disk, one created in memory (the
-/// `corpus` feature), or nothing yet.
+/// One nifly `NifFile`: a Mesh loaded from disk, or nothing yet.
 ///
 /// A `Nif` is `Send` but not `Sync`. Every call, even enumerating texture
 /// paths, mutates shim state, and `NifFile` has no internal locking:
@@ -180,7 +169,7 @@ unsafe impl Send for Nif {}
 
 impl Nif {
     /// An empty handle; [`is_valid`](Self::is_valid) is `false` until a load
-    /// succeeds, or a Mesh is created with the `corpus` feature.
+    /// succeeds.
     ///
     /// # Panics
     ///
@@ -294,8 +283,6 @@ impl Nif {
     ///
     /// On [`ffi::BAD_ARGUMENT`]: this wrapper validates every index and keeps
     /// the texture snapshot fresh, so the shim rejecting one is a bug here.
-    /// The one index it cannot check, a `corpus` shape's, is caught by
-    /// `set_texture_slot` before it gets here.
     fn status(&self, status: i32) -> Result<i32, NifError> {
         match status {
             ffi::EXCEPTION => Err(NifError::Exception(self.last_error())),

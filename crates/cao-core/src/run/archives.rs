@@ -979,8 +979,7 @@ fn contained_relative(path: &Path) -> Option<PathBuf> {
 /// original spelling breaking ties, never filesystem enumeration order.
 ///
 /// C++ folded with utf8proc's full case folding. Lowercasing plus `ß` to `ss`
-/// matches it for every ASCII name and the common Latin cases; the corpus
-/// keeps game paths ASCII.
+/// matches it for every ASCII name and the common Latin cases.
 pub(crate) fn archive_order_key(relative_name: &str) -> (String, String) {
     let folded: String = relative_name
         .chars()

@@ -120,8 +120,9 @@ pub fn delete_by_handle(file: &File) -> io::Result<()> {
 /// `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`.
 ///
 /// Staging replaces `ownership.manifest` this way. `WRITE_THROUGH` mainly
-/// matters for copy-and-delete moves across volumes; it is kept for parity
-/// with C++. Paths go to Win32 as they are, so long ones rely on the
+/// matters for copy-and-delete moves across volumes, where it keeps the
+/// manifest from being reported moved before its bytes are on disk. Paths go
+/// to Win32 as they are, so long ones rely on the
 /// `longPathAware` manifest.
 ///
 /// A move refused with Access denied or a sharing violation is retried with

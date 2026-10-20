@@ -1,4 +1,4 @@
-//! The composition root: production wiring shared by `cao-gui` and `cao-parity`.
+//! The composition root: `cao-gui`'s production wiring.
 //!
 //! Ported from C++ `ApplicationRunSetup` and `ApplicationRunWork`. Given the app
 //! directory, the selected profile and the options model, [`ApplicationRun::new`]
@@ -6,8 +6,8 @@
 //! the profile's Profile Capabilities, and wires a profile-backed Run
 //! Configuration Provider into an Optimization Run Service. During each run's
 //! Preparing, that provider builds the production Run Toolset from the same
-//! profile read as the run's Routing Policy. Both binaries go through it, so
-//! the parity driver exercises the wiring users run.
+//! profile read as the run's Routing Policy. The integration tests go through
+//! it too, so they exercise the wiring users run.
 //!
 //! Everything resolves against the app directory the caller passes: `profiles/`
 //! and `bin/hkxcmd.exe` here, and later `logs/` (deviation 1). Only `cao-gui`'s

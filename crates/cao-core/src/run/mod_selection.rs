@@ -40,8 +40,7 @@ fn resolution_failure(detail: impl Into<String>) -> RunFailure {
 /// C++ used utf8proc's full Unicode case folding. This is Unicode lowercase
 /// plus the full foldings in which lowercase and folding disagree for letters
 /// a mod name plausibly holds: `ß` and `ẞ` fold to `ss`, final sigma to sigma,
-/// long s to `s` and the micro sign to mu. Corpus names are ASCII, where both
-/// agree exactly.
+/// long s to `s` and the micro sign to mu. For ASCII names both agree exactly.
 fn folded_name(name: &str) -> String {
     let mut folded = String::with_capacity(name.len());
     for character in name.chars() {
@@ -114,8 +113,7 @@ fn mod_exclusion(
         .separator_suffixes
         .iter()
         .any(|suffix| !suffix.is_empty() && child.name.ends_with(suffix.as_str()));
-    // The details keep C++'s wording, "marker" included, so they read the same
-    // as the oracle's; message text is never compared, but logs are read.
+    // The details keep C++'s wording, "marker" included.
     let (code, detail) = if separator {
         (
             RunDiagnosticCode::SeparatorModExcluded,

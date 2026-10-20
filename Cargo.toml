@@ -70,7 +70,7 @@ i-slint-backend-testing = "=1.18.1"
 # `common-controls-v6` stays off; the manifest carries no ComCtl32 v6 entry (#471).
 rfd = "0.17"
 raw-window-handle = "0.6"
-# Errors, logging and parallelism (#468, #470). `anyhow` is for the two binaries only.
+# Errors, logging and parallelism (#468, #470). `anyhow` is for the binary only.
 thiserror = "2"
 anyhow = "1"
 log = "0.4"
@@ -79,26 +79,22 @@ log = "0.4"
 # off the default features of a workspace dependency.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 rayon = "1"
-# `case.json` and the Rust driver's `RunFacts` JSON (#472).
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-# `cao-parity`'s pinned local asset list, `local-assets.toml` (#501).
-toml = "1"
 # Build scripts (#460, #471).
 cc = "1"
 embed-resource = "3"
 
 # CAO's fork of directxtex-rs (#479), on its 1.x line so it still satisfies
 # `ba2`'s `directxtex = "1.1.0"`. A patch replaces the crate for the whole
-# graph, so CAO and `ba2` link one copy of DirectXTex, the `may2026` release the
-# C++ parity oracle also builds. The fork's FORK.md records its upstream base and
-# delta. Pinned by `rev`: move it together with `cargo update -p directxtex`.
+# graph, so CAO and `ba2` link one copy of DirectXTex, the `may2026` release.
+# The fork's FORK.md records its upstream base and delta. Pinned by `rev`: move
+# it together with `cargo update -p directxtex`.
 [patch.crates-io]
 directxtex = { git = "https://github.com/evildarkarchon/directxtex-rs", rev = "0862d750e78a0eaf5bb0817570f0eb9ca6900c50" }
 
 # DirectXTex's encoded bytes depend on how its C++ is optimized, not only on
 # `/fp:fast` (which the fork sets): an unoptimized build orients some BC3 blocks
-# differently from the oracle's Release build (#491). Dev builds therefore
-# optimize the crate, which `cc` passes on to the C++ compiler.
+# differently from a Release build (#491). Dev builds therefore optimize the
+# crate, which `cc` passes on to the C++ compiler, so they encode what a
+# release build of CAO does.
 [profile.dev.package.directxtex]
 opt-level = 3

@@ -13,9 +13,6 @@
 //! preflight reads every selected manifest, rejects any Unsafe Game Path,
 //! records the Archive Collisions in Run Evidence and runs the Capacity
 //! Check; any failure stops the run with nothing extracted.
-//!
-//! The run passes through every lifecycle phase the C++ run does, so run facts
-//! compare in order with the parity oracle.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
