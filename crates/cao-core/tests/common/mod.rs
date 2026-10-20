@@ -12,10 +12,13 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use cao_core::routing::{ExecutionMode, RequestedWork};
-use cao_core::run::{ModSelection, RunHandle, RunRequest, TemporaryArtifactRegistry};
+use cao_core::run::{
+    InlineRunScheduler, ModSelection, OptimizationRunResult, OptimizationRunService, RunHandle,
+    RunRequest, TemporaryArtifactRegistry,
+};
 use cao_core::test_support::{
-    FakeBackendFactory, FixedConfiguration, ScriptedToolset, ToolsetConfiguration,
-    sse_configuration,
+    EventLog, FakeBackendFactory, FixedConfiguration, ScriptedToolset, ToolsetConfiguration,
+    sse_profile,
 };
 
 /// Serializes scenarios that start runs: one active run is allowed per
@@ -90,7 +93,7 @@ pub fn junction(link: &Path, target: &Path) {
 /// The provider most scenarios use: the SSE-like profile.
 pub fn test_configuration() -> Arc<FixedConfiguration> {
     Arc::new(FixedConfiguration {
-        configuration: sse_configuration(),
+        profile: sse_profile(),
         loads: AtomicUsize::new(0),
     })
 }
@@ -100,6 +103,36 @@ pub fn test_configuration() -> Arc<FixedConfiguration> {
 /// the Optimization Run Service takes it.
 pub fn toolset_configuration(toolset: Option<Arc<ScriptedToolset>>) -> Arc<ToolsetConfiguration> {
     Arc::new(ToolsetConfiguration::sse(toolset))
+}
+
+/// Like [`toolset_configuration`], but the SSE-like profile prefers
+/// conversion, so a run requesting native Texture work also converts its
+/// convertible Textures and maintains Mesh references.
+pub fn converting_configuration(
+    toolset: Option<Arc<ScriptedToolset>>,
+) -> Arc<ToolsetConfiguration> {
+    Arc::new(ToolsetConfiguration::new(
+        sse_profile().with_conversion_preference(true),
+        toolset,
+    ))
+}
+
+/// Runs `request` to its terminal result on the inline scheduler, loading
+/// the Selected Profile and Run Toolset from `configuration`, and returns the
+/// result with the events the run dispatched.
+///
+/// The caller holds [`serial`]: one active run is allowed per process.
+pub fn run_with(
+    configuration: Arc<ToolsetConfiguration>,
+    request: RunRequest,
+) -> (Arc<OptimizationRunResult>, EventLog) {
+    let service =
+        OptimizationRunService::with_scheduler(Arc::new(InlineRunScheduler), Some(configuration));
+    let events = EventLog::default();
+    let handle = service
+        .start(request, Some(events.dispatcher()))
+        .expect("the run starts");
+    (handle.wait(), events)
 }
 
 /// The production shape of a run's Asset attempts: a scripted Toolset whose

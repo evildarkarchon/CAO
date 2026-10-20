@@ -44,7 +44,7 @@ use cao_core::run::{
 };
 use cao_core::test_support::{
     ArchiveFinalizationEvidence as Evidence, FakeArchivePacker, FakeArchiveReader, FakeCapacity,
-    FakeVolumes, fake_dummy_plugin, sse_configuration,
+    FakeVolumes, fake_dummy_plugin, sse_profile,
 };
 use common::{archives_in, canonical, junction, scratch_dir};
 
@@ -74,15 +74,21 @@ fn registry() -> TemporaryArtifactRegistry {
 
 /// An Apply run over `roots` whose Routing Policy requests Archive creation,
 /// or only Texture work when `create_archives` is false.
-fn preparation_for(roots: &[PathBuf], create_archives: bool) -> RunPreparation {
+///
+/// `files_to_not_pack` becomes the Selected Profile's Packing Exclusions, as
+/// Preparing hands them to the phase in production.
+fn preparation_for(
+    roots: &[PathBuf],
+    create_archives: bool,
+    files_to_not_pack: &[String],
+) -> RunPreparation {
     let work = if create_archives {
         RequestedWork::ArchiveCreation
     } else {
         RequestedWork::NativeTextureOptimization
     };
-    let configuration = sse_configuration();
-    let policy = configuration
-        .profile
+    let profile = sse_profile().with_packing_exclusions(files_to_not_pack.to_vec());
+    let policy = profile
         .compile_policy(RoutingPolicyRequest::for_work(
             ExecutionMode::Apply,
             &[work],
@@ -90,7 +96,7 @@ fn preparation_for(roots: &[PathBuf], create_archives: bool) -> RunPreparation {
         .unwrap();
     RunPreparation::new(
         roots.to_vec(),
-        configuration,
+        profile,
         policy,
         ArchivePrecedence::DeterministicDiscovery,
     )
@@ -162,6 +168,7 @@ struct Finalizer {
     settings: ArchiveFinalizationSettings,
     /// When set, the Routing Policy requests only Texture work.
     no_archive_creation: bool,
+    /// The Selected Profile's Packing Exclusions, as the profile writes them.
     files_to_not_pack: Vec<String>,
     stop: CancellationToken,
 }
@@ -191,10 +198,9 @@ impl Finalizer {
             &self.capacity,
             &self.volumes,
             self.settings,
-            &self.files_to_not_pack,
         )
         .run(
-            &preparation_for(roots, !self.no_archive_creation),
+            &preparation_for(roots, !self.no_archive_creation, &self.files_to_not_pack),
             &mut evidence.recorder(),
             artifacts,
             cancelled,
@@ -213,10 +219,9 @@ impl Finalizer {
             &zero,
             &self.volumes,
             self.settings,
-            &self.files_to_not_pack,
         )
         .run(
-            &preparation_for(&[root.to_path_buf()], true),
+            &preparation_for(&[root.to_path_buf()], true, &self.files_to_not_pack),
             &mut evidence.recorder(),
             &mut artifacts,
             &|| false,

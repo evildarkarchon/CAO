@@ -38,6 +38,7 @@ fn route(mode: ExecutionMode, path: &Path) -> RoutedAsset {
     let policy = RoutingPolicy::compile(
         RoutingPolicyRequest::for_work(mode, &[RequestedWork::NativeTextureOptimization]),
         ProfileCapabilities::define(".bsa", CAPABILITIES),
+        false,
     )
     .expect("the scenario's policy is valid");
     match AssetRouter::new(policy).route(path) {

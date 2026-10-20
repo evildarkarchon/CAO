@@ -5,8 +5,8 @@
 //! schedules nothing and dispatches nothing; the Optimization Run Service and
 //! its Run Worker sit above it.
 //!
-//! The configuration provider returns a Run Toolset with the run's
-//! configuration, and the executor runs every work phase itself through the
+//! The configuration provider returns a Run Toolset with the run's Selected
+//! Profile, and the executor runs every work phase itself through the
 //! Toolset's ports. A request with work but no Toolset fails Preparing.
 //!
 //! The executor owns the run's Run Evidence and lends it mutably to each step
@@ -31,9 +31,9 @@ use crate::routing::{ExecutionMode, RoutingPolicyRequest};
 use crate::run::mod_selection::resolve_mod_roots;
 use crate::run::{
     CancellationToken, MutableRunEvidence, OptimizationRunResult, PhaseSkipReason,
-    RunConfiguration, RunConfigurationProvider, RunEvidence, RunFailure, RunFailureCode, RunId,
-    RunObservationSink, RunOutcome, RunPhase, RunPhaseRecord, RunPreparation, RunRequest,
-    RunToolset, TemporaryArtifactRegistry, run_worker_panic_detail, take_panic_message,
+    RunConfigurationProvider, RunEvidence, RunFailure, RunFailureCode, RunId, RunObservationSink,
+    RunOutcome, RunPhase, RunPhaseRecord, RunPreparation, RunRequest, RunToolset, SelectedProfile,
+    TemporaryArtifactRegistry, run_worker_panic_detail, take_panic_message,
 };
 
 mod work_phases;
@@ -112,12 +112,12 @@ pub struct RunServices<'a> {
     pub configuration: Option<&'a dyn RunConfigurationProvider>,
 }
 
-/// Loads configuration and the Run Toolset built from the same profile read,
+/// Loads the Selected Profile and the Run Toolset built from the same profile read,
 /// converting a missing, failing or panicking provider into a failure.
-fn load_configuration(
+fn load_selected_profile(
     request: &RunRequest,
     provider: Option<&dyn RunConfigurationProvider>,
-) -> Result<(RunConfiguration, Option<RunToolset>), RunFailure> {
+) -> Result<(SelectedProfile, Option<RunToolset>), RunFailure> {
     let failure = |detail: String| {
         RunFailure::new(
             RunFailureCode::ConfigurationLoadingFailed,
@@ -151,14 +151,13 @@ fn prepare_run(
     evidence: &mut MutableRunEvidence<'_>,
     stop: &CancellationToken,
 ) -> Result<Option<(RunPreparation, Option<RunToolset>)>, RunFailure> {
-    let (configuration, toolset) = load_configuration(request, provider)?;
+    let (selected_profile, toolset) = load_selected_profile(request, provider)?;
     // A provider may finish an atomic read after cancellation; stop before
     // compiling or resolving anything more.
     if stop.is_cancelled() {
         return Ok(None);
     }
-    let policy = configuration
-        .profile
+    let policy = selected_profile
         .compile_policy(RoutingPolicyRequest::for_work(
             request.execution_mode(),
             request.requested_work(),
@@ -171,14 +170,14 @@ fn prepare_run(
             )
             .with_policy_conflicts(conflicts)
         })?;
-    let mod_roots = resolve_mod_roots(request.mod_selection(), &configuration, evidence, stop)?;
+    let mod_roots = resolve_mod_roots(request.mod_selection(), &selected_profile, evidence, stop)?;
     if stop.is_cancelled() {
         return Ok(None);
     }
     Ok(Some((
         RunPreparation::new(
             mod_roots,
-            configuration,
+            selected_profile,
             policy,
             request.archive_precedence().clone(),
         ),

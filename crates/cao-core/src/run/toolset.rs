@@ -2,7 +2,7 @@
 //! Preparing from the same profile read as its Routing Policy.
 //!
 //! The configuration provider returns a [`RunToolset`] beside the
-//! [`RunConfiguration`](crate::run::RunConfiguration), and the Run Executor
+//! [`SelectedProfile`](crate::run::SelectedProfile), and the Run Executor
 //! runs every work phase through it: Archive discovery and the Capacity Check
 //! through the Archive reader and the two probes, then one
 //! [`ArchiveExtractionPort`] call per planned Archive, one [`AssetAttemptPort`]
@@ -165,27 +165,26 @@ impl ArchiveExtractionPort for ArchiveExtractionAdapter {
 }
 
 /// The production Archive Finalization port: [`ArchiveFinalization`] over
-/// the run's packer, reader and probes, its finalization settings and the
-/// profile's Packing Exclusions.
+/// the run's packer, reader and probes and its finalization settings. The
+/// phase reads the profile's Packing Exclusions from the Selected Profile in
+/// the [`RunPreparation`] it finalizes.
 pub struct ArchiveFinalizationAdapter {
     packer: Box<dyn ArchivePacker>,
     reader: Arc<dyn ArchiveReader>,
     capacity: Arc<dyn CapacityProbe>,
     volume_identity: Arc<dyn VolumeIdentityProbe>,
     settings: ArchiveFinalizationSettings,
-    files_to_not_pack: Vec<String>,
 }
 
 impl ArchiveFinalizationAdapter {
     /// An adapter over the phase's seams; see [`ArchiveFinalization::new`]
-    /// for what each is used for and how `files_to_not_pack` is matched.
+    /// for what each is used for.
     pub fn new(
         packer: Box<dyn ArchivePacker>,
         reader: Arc<dyn ArchiveReader>,
         capacity: Arc<dyn CapacityProbe>,
         volume_identity: Arc<dyn VolumeIdentityProbe>,
         settings: ArchiveFinalizationSettings,
-        files_to_not_pack: Vec<String>,
     ) -> Self {
         Self {
             packer,
@@ -193,7 +192,6 @@ impl ArchiveFinalizationAdapter {
             capacity,
             volume_identity,
             settings,
-            files_to_not_pack,
         }
     }
 }
@@ -214,7 +212,6 @@ impl ArchiveFinalizationPort for ArchiveFinalizationAdapter {
             &*self.capacity,
             &*self.volume_identity,
             self.settings,
-            &self.files_to_not_pack,
         )
         .run(preparation, recorder, artifacts, &|| stop.is_cancelled())
     }

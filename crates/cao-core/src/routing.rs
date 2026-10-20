@@ -88,10 +88,13 @@ impl SkipReason {
 }
 
 /// Closed work choices that an input adapter can place in a Run Request.
+///
+/// Texture conversion is not caller intent and has no choice here: it follows
+/// from native Texture optimization and the Selected Profile's Conversion
+/// Preference when the Routing Policy is compiled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RequestedWork {
     NativeTextureOptimization,
-    ConvertibleTextureConversion,
     StandardMeshOptimization,
     TerrainMeshOptimization,
     AnimationOptimization,
@@ -116,16 +119,11 @@ pub enum ProfileCapability {
 }
 
 /// Each explicit work choice, the capability it needs, and the Variant it targets.
-const REQUESTED_WORK_DEFINITIONS: [(RequestedWork, ProfileCapability, Option<AssetVariant>); 7] = [
+const REQUESTED_WORK_DEFINITIONS: [(RequestedWork, ProfileCapability, Option<AssetVariant>); 6] = [
     (
         RequestedWork::NativeTextureOptimization,
         ProfileCapability::NativeTextureOptimization,
         Some(AssetVariant::Texture(TextureVariant::Native)),
-    ),
-    (
-        RequestedWork::ConvertibleTextureConversion,
-        ProfileCapability::ConvertibleTextureConversion,
-        Some(AssetVariant::Texture(TextureVariant::Convertible)),
     ),
     (
         RequestedWork::StandardMeshOptimization,
@@ -207,7 +205,7 @@ impl AssetOperations {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoutingPolicyRequest {
     execution_mode: ExecutionMode,
-    work: [bool; 7],
+    work: [bool; 6],
 }
 
 impl RoutingPolicyRequest {
@@ -216,7 +214,7 @@ impl RoutingPolicyRequest {
     pub fn for_work(execution_mode: ExecutionMode, work: &[RequestedWork]) -> Self {
         let mut request = Self {
             execution_mode,
-            work: [false; 7],
+            work: [false; 6],
         };
         for choice in work {
             request.work[*choice as usize] = true;
@@ -347,7 +345,6 @@ fn asset_kind_name(kind: AssetKind) -> &'static str {
 fn requested_work_name(work: RequestedWork) -> &'static str {
     match work {
         RequestedWork::NativeTextureOptimization => "native Texture optimization",
-        RequestedWork::ConvertibleTextureConversion => "convertible Texture conversion",
         RequestedWork::StandardMeshOptimization => "standard Mesh optimization",
         RequestedWork::TerrainMeshOptimization => "terrain Mesh optimization",
         RequestedWork::AnimationOptimization => "Animation optimization",
@@ -441,14 +438,21 @@ fn malformed_reason(extension: &str) -> Option<MalformedArchiveExtensionReason> 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoutingPolicy {
     execution_mode: ExecutionMode,
-    work: [bool; 7],
-    mesh_reference_maintenance: bool,
+    work: [bool; 6],
+    /// Whether convertible Textures are converted. Mesh Reference Maintenance
+    /// is derived from this one fact, so it is not stored separately.
+    converts_textures: bool,
     archive_extension: String,
 }
 
 impl RoutingPolicy {
-    /// Compiles a request against Profile Capabilities into one policy, or
-    /// every validation error at once.
+    /// Compiles a request against Profile Capabilities and the profile's
+    /// Conversion Preference into one policy, or every validation error at once.
+    ///
+    /// The policy converts Textures when native Texture optimization is
+    /// requested, `prefers_conversion` is on and the profile supports
+    /// convertible Texture conversion; a missing piece means no conversion,
+    /// never a conflict. Conversion then derives Mesh Reference Maintenance.
     ///
     /// Errors come in compiler order: the Archive extension first, then each
     /// explicit work choice in enumeration order, then derived work, so an
@@ -456,6 +460,7 @@ impl RoutingPolicy {
     pub fn compile(
         request: RoutingPolicyRequest,
         capabilities: ProfileCapabilities,
+        prefers_conversion: bool,
     ) -> Result<RoutingPolicy, Vec<PolicyValidationError>> {
         let mut errors = Vec::new();
 
@@ -505,13 +510,20 @@ impl RoutingPolicy {
             }
         }
 
-        let mesh_reference_maintenance =
-            request.work[RequestedWork::ConvertibleTextureConversion as usize];
-        if mesh_reference_maintenance
-            && !capabilities.supports(ProfileCapability::MeshReferenceMaintenance)
+        // A preference the profile cannot honour, or one with no Texture work
+        // to attach to, is simply not applied: it is never a Policy Conflict.
+        let converts_textures = prefers_conversion
+            && request.work[RequestedWork::NativeTextureOptimization as usize]
+            && capabilities.supports(ProfileCapability::ConvertibleTextureConversion);
+
+        // Converted Textures change the names Meshes reference, so conversion
+        // derives Mesh Reference Maintenance, which the profile must support.
+        if converts_textures && !capabilities.supports(ProfileCapability::MeshReferenceMaintenance)
         {
+            // Conversion is never requested, so the conflict is attributed to
+            // the requested native Texture work that conversion rides on.
             errors.push(PolicyValidationError::UnsupportedDerivedOperation {
-                cause: RequestedWork::ConvertibleTextureConversion,
+                cause: RequestedWork::NativeTextureOptimization,
                 operation: AssetOperation::MeshReferenceMaintenance,
             });
         }
@@ -522,7 +534,7 @@ impl RoutingPolicy {
         Ok(RoutingPolicy {
             execution_mode: request.execution_mode,
             work: request.work,
-            mesh_reference_maintenance,
+            converts_textures,
             archive_extension,
         })
     }
@@ -537,9 +549,20 @@ impl RoutingPolicy {
         self.work[work as usize]
     }
 
-    /// Reports whether convertible Texture work derived Mesh Reference Maintenance.
+    /// Reports whether this policy converts convertible Textures, a fact
+    /// derived at compilation from requested native Texture work, the
+    /// Conversion Preference and the Profile Capabilities.
+    pub fn converts_textures(&self) -> bool {
+        self.converts_textures
+    }
+
+    /// Reports whether Texture conversion derived Mesh Reference Maintenance.
+    ///
+    /// Derived from [`Self::converts_textures`], not stored: converted
+    /// Textures change the names Meshes reference, so this is true exactly
+    /// when the policy converts.
     pub fn maintains_mesh_references(&self) -> bool {
-        self.mesh_reference_maintenance
+        self.converts_textures
     }
 
     /// The validated, ASCII-lowercase profile Archive extension, including its period.
@@ -551,8 +574,7 @@ impl RoutingPolicy {
     fn kind_has_work(&self, kind: AssetKind) -> bool {
         match kind {
             AssetKind::Texture => {
-                self.requests(RequestedWork::NativeTextureOptimization)
-                    || self.requests(RequestedWork::ConvertibleTextureConversion)
+                self.requests(RequestedWork::NativeTextureOptimization) || self.converts_textures()
             }
             AssetKind::Mesh => {
                 self.requests(RequestedWork::StandardMeshOptimization)
@@ -757,10 +779,7 @@ impl AssetRouter {
                 )
             }
             ".tga" => {
-                if self
-                    .policy
-                    .requests(RequestedWork::ConvertibleTextureConversion)
-                {
+                if self.policy.converts_textures() {
                     operations.include(AssetOperation::Conversion);
                 }
                 (
