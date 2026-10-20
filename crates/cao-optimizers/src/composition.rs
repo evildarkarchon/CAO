@@ -59,9 +59,6 @@ pub enum RunSetupError {
     /// A relative folder would resolve against the working directory.
     #[error("The selected folder `{}` is not an absolute path.", .0.display())]
     RelativeSelection(PathBuf),
-    /// The selected profile's `profile.ini` could not be read.
-    #[error(transparent)]
-    Profile(#[from] ProfileError),
 }
 
 /// One run, set up and ready to start: its Run Request and the service that
@@ -77,21 +74,20 @@ pub struct ApplicationRun {
 impl ApplicationRun {
     /// Sets up a run of `options` under `profile`, in the install at `app_dir`.
     ///
-    /// The Run Request takes its intent from `options`, and freezes the
-    /// profile's TGA-conversion choice as C++ does: only that is read from
-    /// `profile.ini` now. Everything else the run needs from the profile is read
-    /// again by its Run Configuration Provider during Preparing, so an edit made
-    /// before the run starts is honoured.
+    /// The Run Request takes its intent from `options` alone; nothing is read
+    /// from the profile now. Everything the run needs from the profile,
+    /// including its Conversion Preference, is read once by its Run
+    /// Configuration Provider during Preparing, so an edit made before the run
+    /// starts is honoured.
     ///
     /// The request is not checked against the profile's Profile Capabilities
     /// here: a request the profile cannot honour starts, and its Preparing
     /// fails with a Policy Conflict Run Failure.
     ///
     /// # Errors
-    /// [`RunSetupError`] when the options are invalid or the profile's TGA
-    /// choice cannot be read.
+    /// [`RunSetupError`] when the options are invalid.
     pub fn new(app_dir: &Path, profile: &str, options: &Options) -> Result<Self, RunSetupError> {
-        let request = run_request(app_dir, profile, options)?;
+        let request = run_request(profile, options)?;
         let configuration = Arc::new(ProfileConfigurationProvider::new(app_dir, options)?);
         Ok(Self {
             // The provider's Run Toolset does the work.
@@ -114,21 +110,19 @@ impl ApplicationRun {
     }
 }
 
-/// Builds the Run Request for `options` under `profile`, as C++
-/// `makeApplicationRunRequest` does.
+/// Builds the Run Request for `options` under the profile identity `profile`:
+/// a pure function of the caller's intent that reads no profile file.
 ///
-/// Texture work is requested when any Texture option is on; conversion of TGAs
-/// joins it when the profile converts them. Mesh work is requested when the
-/// level is above 0 or resaving is on; it covers both Standard and Terrain
-/// Meshes.
+/// Texture work is requested when any Texture option is on. Conversion of
+/// TGAs is never requested: Routing Policy compilation derives it during
+/// Preparing from the Conversion Preference of the profile read there. Mesh
+/// work is requested when the level is above 0 or resaving is on; it covers
+/// both Standard and Terrain Meshes.
 ///
 /// # Errors
-/// [`RunSetupError`] when an option is invalid or `profile.ini` cannot be read.
-pub fn run_request(
-    app_dir: &Path,
-    profile: &str,
-    options: &Options,
-) -> Result<RunRequest, RunSetupError> {
+/// [`RunSetupError`] when an option is invalid or the selected folder is
+/// relative.
+pub fn run_request(profile: &str, options: &Options) -> Result<RunRequest, RunSetupError> {
     validate(options)?;
     let selected = PathBuf::from(&options.user_path);
     // An empty folder is a structural Start Error the service reports itself.
@@ -146,22 +140,11 @@ pub fn run_request(
         || options.textures_mipmaps
         || options.textures_resize_size
         || options.textures_resize_ratio;
-    // Read only when Texture work is selected; the lenient read matches the C++
-    // GUI's, which ignored lines QSettings rejected. Preparing reads strictly.
-    let convert_textures = optimize_native_textures
-        && Profiles::new(app_dir)
-            .open(profile)
-            .load_settings()?
-            .textures_convert_tga;
     let optimize_meshes = requests_mesh_work(options);
     let choices = [
         (
             optimize_native_textures,
             RequestedWork::NativeTextureOptimization,
-        ),
-        (
-            convert_textures,
-            RequestedWork::ConvertibleTextureConversion,
         ),
         (optimize_meshes, RequestedWork::StandardMeshOptimization),
         (optimize_meshes, RequestedWork::TerrainMeshOptimization),
