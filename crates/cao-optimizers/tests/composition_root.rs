@@ -5,9 +5,12 @@
 mod common;
 
 use cao_core::execution::AssetExecutionFailure;
-use cao_core::routing::{ExecutionMode, PolicyValidationError, RequestedWork, SkipReason};
+use cao_core::routing::{
+    AssetKind, AssetVariant, ExecutionMode, MeshVariant, PolicyValidationError, RequestedWork,
+    SkipReason,
+};
 use cao_core::run::{ModSelection, RunDiagnosticCode, RunFailureCode, RunOutcome, RunPhase};
-use cao_optimizers::composition::{ApplicationRun, RunSetupError, run_request};
+use cao_optimizers::composition::{ApplicationRun, run_request};
 use cao_profiles::{OptimizationMode, Options};
 use common::{app_dir, dry_run_textures, edit_profile, serial, snapshot_tree, write, write_dds};
 use directxtex::{DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM};
@@ -142,51 +145,69 @@ fn every_kind_of_work_is_accepted() {
     assert!(ApplicationRun::new(&app, "SSE", &options).is_ok());
 }
 
+/// Sets up `options` under `profile` and runs it to the end, asserting that
+/// setup succeeds, the run ends Failed, and its first Run Failure is a Policy
+/// Conflict in Preparing; returns that failure's conflicts.
+fn policy_conflicts_at_preparing(
+    app: &std::path::Path,
+    profile: &str,
+    options: &Options,
+) -> Vec<PolicyValidationError> {
+    let run = ApplicationRun::new(app, profile, options)
+        .unwrap_or_else(|error| panic!("setup refused the request: {error:?}"));
+    let result = run.start(None).unwrap().wait();
+    assert_eq!(result.outcome(), RunOutcome::Failed);
+    let failure = &result.failures()[0];
+    assert_eq!(failure.code, RunFailureCode::PolicyConflict);
+    assert_eq!(failure.phase, RunPhase::Preparing);
+    failure.policy_conflicts.clone()
+}
+
 /// Origin: ApplicationRunSetupTests::archiveCreationRequiresProfileArchiveSupport
-/// and the FO4 Profile Capabilities. A request the selected profile cannot
-/// honour is refused before any service exists, so no run starts and nothing
-/// holds the one active-run slot.
+/// and the FO4 Profile Capabilities. Capability conflicts are judged only at
+/// Preparing (#570): a request the selected profile cannot honour sets up,
+/// and its run fails Preparing with a Policy Conflict carrying every conflict.
+/// The failed run releases the one active-run slot.
 #[test]
-fn a_request_contradicting_the_profile_capabilities_never_starts_a_run() {
+fn a_request_contradicting_the_profile_capabilities_fails_preparing() {
     let _serial = serial();
     let app = app_dir("capability-conflict");
     let mod_root = app.join("mods").join("Mod");
     std::fs::create_dir_all(&mod_root).unwrap();
 
-    // FO4 has no Mesh support: any Mesh work contradicts it.
+    // FO4 has no Mesh optimization: any Mesh work contradicts it. Its
+    // Texture capability still covers Mesh Reference Maintenance, so Meshes
+    // are a supported Asset Kind and each conflict names the Mesh Variant.
     let mut options = dry_run_textures(&app, &mod_root);
     options.meshes_resave = true;
-    let Err(RunSetupError::PolicyConflict(conflicts)) = ApplicationRun::new(&app, "FO4", &options)
-    else {
-        panic!("Mesh work under FO4 must be a policy conflict");
-    };
-    assert!(!conflicts.is_empty());
-    assert!(conflicts.iter().all(|conflict| matches!(
-        conflict,
-        PolicyValidationError::UnsupportedRequestedAssetKind {
-            request: RequestedWork::StandardMeshOptimization
-                | RequestedWork::TerrainMeshOptimization,
-            ..
-        } | PolicyValidationError::UnsupportedRequestedAssetVariant {
-            request: RequestedWork::StandardMeshOptimization
-                | RequestedWork::TerrainMeshOptimization,
-            ..
-        }
-    )));
+    assert_eq!(
+        policy_conflicts_at_preparing(&app, "FO4", &options),
+        [
+            PolicyValidationError::UnsupportedRequestedAssetVariant {
+                request: RequestedWork::StandardMeshOptimization,
+                variant: AssetVariant::Mesh(MeshVariant::Standard),
+            },
+            PolicyValidationError::UnsupportedRequestedAssetVariant {
+                request: RequestedWork::TerrainMeshOptimization,
+                variant: AssetVariant::Mesh(MeshVariant::Terrain),
+            },
+        ]
+    );
 
     // A profile with no Archive support cannot create Archives, even in a
     // Dry Run that would never pack them.
     edit_profile(&app, "SSE", "bsaEnabled", "false");
     let mut options = dry_run_textures(&app, &mod_root);
     options.bsa_create = true;
-    let error = ApplicationRun::new(&app, "SSE", &options).err().unwrap();
-    assert!(
-        matches!(error, RunSetupError::PolicyConflict(_)),
-        "{error:?}"
+    assert_eq!(
+        policy_conflicts_at_preparing(&app, "SSE", &options),
+        [PolicyValidationError::UnsupportedRequestedAssetKind {
+            request: RequestedWork::ArchiveCreation,
+            kind: AssetKind::Archive,
+        }]
     );
-    assert!(!error.to_string().is_empty());
 
-    // Neither refusal left a run behind: the next valid request starts.
+    // Neither failed run left a run behind: the next valid request succeeds.
     let run = ApplicationRun::new(&app, "FO4", &dry_run_textures(&app, &mod_root)).unwrap();
     assert_eq!(
         run.start(None).unwrap().wait().outcome(),
@@ -403,7 +424,8 @@ fn an_unreadable_profile_fails_preparing_rather_than_the_start() {
         RunFailureCode::ConfigurationLoadingFailed
     );
 
-    // Unreadable before setup too: the capability check leaves it to Preparing.
+    // Unreadable before setup too: setup judges no capabilities, so Preparing
+    // reports it.
     let mut options = Options {
         user_path: mod_root.to_string_lossy().into_owned(),
         textures_necessary: false,
