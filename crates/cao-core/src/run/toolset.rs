@@ -92,7 +92,7 @@ pub trait ArchiveFinalizationPort {
     fn finalize(
         &mut self,
         preparation: &RunPreparation,
-        recorder: &ArchiveFinalizationRecorder<'_, '_>,
+        recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
         artifacts: &mut TemporaryArtifactRegistry,
         stop: &CancellationToken,
     ) -> Result<(), Error>;
@@ -204,7 +204,7 @@ impl ArchiveFinalizationPort for ArchiveFinalizationAdapter {
     fn finalize(
         &mut self,
         preparation: &RunPreparation,
-        recorder: &ArchiveFinalizationRecorder<'_, '_>,
+        recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
         artifacts: &mut TemporaryArtifactRegistry,
         stop: &CancellationToken,
     ) -> Result<(), Error> {

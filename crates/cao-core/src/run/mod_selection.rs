@@ -14,7 +14,6 @@
 //! - Deviation 20: a separator is a child whose name *ends in* a configured
 //!   suffix (`_separator`, MO2's convention), not one containing a marker.
 
-use std::cell::RefCell;
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -144,7 +143,7 @@ fn mod_exclusion(
 pub(crate) fn resolve_mod_roots(
     selection: &ModSelection,
     configuration: &RunConfiguration,
-    evidence: &RefCell<MutableRunEvidence<'_>>,
+    evidence: &mut MutableRunEvidence<'_>,
     stop: &CancellationToken,
 ) -> Result<Vec<PathBuf>, RunFailure> {
     // MSVC's canonical text, so a Mod Root compares equal to the one a C++
@@ -216,7 +215,7 @@ pub(crate) fn resolve_mod_roots(
             return Ok(Vec::new());
         }
         if let Some(diagnostic) = mod_exclusion(child, configuration, &ignored) {
-            evidence.borrow_mut().record_diagnostic(diagnostic);
+            evidence.record_diagnostic(diagnostic);
             continue;
         }
         let resolved = cao_winfs::msvc_canonical(&child.path).map_err(io_failure)?;

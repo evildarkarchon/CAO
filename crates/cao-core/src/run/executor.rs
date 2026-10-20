@@ -9,6 +9,12 @@
 //! configuration, and the executor runs every work phase itself through the
 //! Toolset's ports. A request with work but no Toolset fails Preparing.
 //!
+//! The executor owns the run's Run Evidence and lends it mutably to each step
+//! in turn. Run Evidence enforces the canonical Run Phase order: the
+//! traversal records Preparing, the skips of a request with no work and
+//! Safety Cleanup, and the work phases enter, skip and plan their own Run
+//! Phases through it.
+//!
 //! C++ caught exceptions at three boundaries here; they are `Result`s and
 //! `catch_unwind` now. A panic in the configuration provider, the run's work
 //! or the cleanup service becomes the same Run Failure an exception did. A
@@ -17,13 +23,11 @@
 //! Evidence invariant violation is a bug: the executor finishes Safety Cleanup
 //! and then panics, and the Run Worker turns that panic into a Failed outcome.
 
-use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::Error;
 use crate::execution::MutationState;
 use crate::routing::{ExecutionMode, RoutingPolicyRequest};
-use crate::run::evidence::RunWorkEvidence;
 use crate::run::mod_selection::resolve_mod_roots;
 use crate::run::{
     CancellationToken, MutableRunEvidence, OptimizationRunResult, PhaseSkipReason,
@@ -35,8 +39,8 @@ use crate::run::{
 mod work_phases;
 
 /// The work phases of one run, as the executor's traversal calls them: with
-/// the run's preparation, its Run Toolset, its evidence, its Temporary
-/// Ownership registry and its token.
+/// the run's preparation, its Run Toolset, its evidence lent mutably for the
+/// call, its Temporary Ownership registry and its token.
 ///
 /// Production work is the Run Toolset's work phases; the executor's own unit
 /// tests inject work that escapes as an error or a panic through
@@ -46,7 +50,7 @@ pub(crate) trait RunWork:
     FnOnce(
     &RunPreparation,
     RunToolset,
-    &RefCell<MutableRunEvidence<'_>>,
+    &mut MutableRunEvidence<'_>,
     &mut TemporaryArtifactRegistry,
     &CancellationToken,
 ) -> Result<(), Error>
@@ -57,7 +61,7 @@ impl<F> RunWork for F where
     F: FnOnce(
         &RunPreparation,
         RunToolset,
-        &RefCell<MutableRunEvidence<'_>>,
+        &mut MutableRunEvidence<'_>,
         &mut TemporaryArtifactRegistry,
         &CancellationToken,
     ) -> Result<(), Error>
@@ -108,67 +112,6 @@ pub struct RunServices<'a> {
     pub configuration: Option<&'a dyn RunConfigurationProvider>,
 }
 
-/// Translates the run's work milestones into the executor's lifecycle account.
-///
-/// These are private steps of the Run Executor: the executor alone selects
-/// Run Phases, and its work phases report where they have got to.
-struct ExecutorMilestones<'e, 'a> {
-    evidence: &'e RefCell<MutableRunEvidence<'a>>,
-    /// The Routing Policy's execution mode, which selects Archive
-    /// Finalization's record.
-    mode: ExecutionMode,
-}
-
-impl ExecutorMilestones<'_, '_> {
-    /// Enters Archive discovery, before any collision or extraction facts.
-    fn archive_discovery_started(&self) -> Result<(), Error> {
-        self.evidence
-            .borrow_mut()
-            .record_archive_discovery_started()
-    }
-
-    /// Starts Archive extraction with its immutable attempt total.
-    fn archive_extraction_planned(&self, total: usize) -> Result<(), Error> {
-        self.evidence
-            .borrow_mut()
-            .record_archive_extraction_plan(total)
-    }
-
-    /// Records that Dry Run excluded Archive extraction.
-    fn dry_run_archive_extraction(&self) -> Result<(), Error> {
-        self.evidence
-            .borrow_mut()
-            .record_dry_run_archive_extraction()
-    }
-
-    /// Enters definitive Effective Asset Tree discovery after Archive work.
-    fn effective_asset_tree_started(&self) -> Result<(), Error> {
-        self.evidence
-            .borrow_mut()
-            .record_effective_asset_tree_started()
-    }
-
-    /// Starts Asset processing with the retained Routing Ledger's routed total.
-    fn asset_processing_planned(&self, total: usize) -> Result<(), Error> {
-        self.evidence
-            .borrow_mut()
-            .record_asset_processing_plan(total)
-    }
-
-    /// Records the final work phase from the execution mode: Apply executes
-    /// Archive Finalization through the Run Toolset's port, and Dry Run
-    /// skips it.
-    fn archive_finalization_available(&self) -> Result<(), Error> {
-        let record = match self.mode {
-            ExecutionMode::DryRun => {
-                RunPhaseRecord::skipped(RunPhase::ArchiveFinalization, PhaseSkipReason::DryRun)
-            }
-            ExecutionMode::Apply => RunPhaseRecord::executed(RunPhase::ArchiveFinalization, None),
-        };
-        self.evidence.borrow_mut().record_phase(record)
-    }
-}
-
 /// Loads configuration and the Run Toolset built from the same profile read,
 /// converting a missing, failing or panicking provider into a failure.
 fn load_configuration(
@@ -205,7 +148,7 @@ fn load_configuration(
 fn prepare_run(
     request: &RunRequest,
     provider: Option<&dyn RunConfigurationProvider>,
-    evidence: &RefCell<MutableRunEvidence<'_>>,
+    evidence: &mut MutableRunEvidence<'_>,
     stop: &CancellationToken,
 ) -> Result<Option<(RunPreparation, Option<RunToolset>)>, RunFailure> {
     let (configuration, toolset) = load_configuration(request, provider)?;
@@ -254,23 +197,11 @@ fn prepare_run(
 fn execute_toolset(
     preparation: &RunPreparation,
     mut toolset: RunToolset,
-    evidence: &RefCell<MutableRunEvidence<'_>>,
+    evidence: &mut MutableRunEvidence<'_>,
     artifacts: &mut TemporaryArtifactRegistry,
     stop: &CancellationToken,
 ) -> Result<(), Error> {
-    let milestones = ExecutorMilestones {
-        evidence,
-        mode: preparation.policy().execution_mode(),
-    };
-    let work_evidence = RunWorkEvidence::new(evidence);
-    work_phases::run_work_phases(
-        preparation,
-        &mut toolset,
-        &work_evidence,
-        artifacts,
-        &milestones,
-        stop,
-    )
+    work_phases::run_work_phases(preparation, &mut toolset, evidence, artifacts, stop)
 }
 
 /// The Run Work Escaped detail of work that escaped with `outcome`, or
@@ -447,7 +378,9 @@ impl RunExecutor {
             observations,
             configuration,
         } = services;
-        let evidence = RefCell::new(MutableRunEvidence::new(observations));
+        // The run's evidence, owned here for the whole run and lent mutably to
+        // each step of the traversal in turn.
+        let mut evidence = MutableRunEvidence::new(observations);
         let mut invariant = DeferredInvariant::default();
         // The run's Temporary Ownership scope. It lives for the whole run so
         // its root pins and staging lock are held through Safety Cleanup.
@@ -462,7 +395,7 @@ impl RunExecutor {
             Self::traverse(
                 request,
                 configuration,
-                &evidence,
+                &mut evidence,
                 &mut artifacts,
                 &mut invariant,
                 stop,
@@ -470,14 +403,15 @@ impl RunExecutor {
             )
         }));
         if let Err(payload) = traversal {
-            // Any evidence borrow the panic interrupted was released by unwinding.
-            Self::fail_at_current_phase(&evidence, run_worker_panic_detail(payload));
+            // The traversal's borrow of the evidence ended with the unwind. The
+            // owned evidence keeps every fact recorded before the panic,
+            // including whatever the interrupted step had partly written.
+            Self::fail_at_current_phase(&mut evidence, run_worker_panic_detail(payload));
         }
 
         // Safety Cleanup runs exactly once on every terminal path, before the
         // terminal result exists, so cancellation and failure cannot leave
         // run-owned artifacts behind. It does not move the final work phase.
-        let mut evidence = evidence.into_inner();
         let final_phase = evidence
             .current_phase()
             .map_or(RunPhase::Preparing, RunPhaseRecord::phase);
@@ -518,7 +452,7 @@ impl RunExecutor {
     fn traverse(
         request: &RunRequest,
         configuration: Option<&dyn RunConfigurationProvider>,
-        evidence: &RefCell<MutableRunEvidence<'_>>,
+        evidence: &mut MutableRunEvidence<'_>,
         artifacts: &mut TemporaryArtifactRegistry,
         invariant: &mut DeferredInvariant,
         stop: &CancellationToken,
@@ -528,11 +462,7 @@ impl RunExecutor {
 
         // Preparing always executes: it is where the request becomes run-scoped
         // state. It is indeterminate work, so it reports no progress.
-        invariant.note(
-            evidence
-                .borrow_mut()
-                .record_phase(RunPhaseRecord::executed(RunPhase::Preparing, None)),
-        );
+        invariant.note(evidence.record_phase(RunPhaseRecord::executed(RunPhase::Preparing, None)));
 
         let mut preparation = None;
         // The work ports the provider built from Preparing's profile read.
@@ -548,7 +478,7 @@ impl RunExecutor {
                 }
                 Err(failure) => {
                     failed = true;
-                    evidence.borrow_mut().record_failure(failure);
+                    evidence.record_failure(failure);
                 }
             }
         }
@@ -572,7 +502,7 @@ impl RunExecutor {
                 });
                 if let Some(failure) = failure {
                     failed = true;
-                    evidence.borrow_mut().record_failure(failure);
+                    evidence.record_failure(failure);
                     break;
                 }
             }
@@ -587,7 +517,7 @@ impl RunExecutor {
             // Keep the candidate private: a run with no means to do its work
             // never exposes partial Preparing facts.
             failed = true;
-            evidence.borrow_mut().record_failure(RunFailure::new(
+            evidence.record_failure(RunFailure::new(
                 RunFailureCode::RequestedWorkUnavailable,
                 RunPhase::Preparing,
                 "Requested work requires run services that are not yet available",
@@ -596,7 +526,7 @@ impl RunExecutor {
 
         let preparation = preparation.filter(|_| !failed && !stop.is_cancelled());
         if let Some(prepared) = &preparation {
-            invariant.note(evidence.borrow_mut().record_preparation(prepared.clone()));
+            invariant.note(evidence.record_preparation(prepared.clone()));
         }
 
         if failed {
@@ -624,7 +554,7 @@ impl RunExecutor {
                 if stop.is_cancelled() {
                     break;
                 }
-                invariant.note(evidence.borrow_mut().record_phase(RunPhaseRecord::skipped(
+                invariant.note(evidence.record_phase(RunPhaseRecord::skipped(
                     *phase,
                     PhaseSkipReason::NoRequestedWork,
                 )));
@@ -634,8 +564,7 @@ impl RunExecutor {
 
     /// Records work that escaped with `detail` as a fatal Run Failure at the
     /// run's current phase, retaining every earlier fact.
-    fn fail_at_current_phase(evidence: &RefCell<MutableRunEvidence<'_>>, detail: String) {
-        let mut evidence = evidence.borrow_mut();
+    fn fail_at_current_phase(evidence: &mut MutableRunEvidence<'_>, detail: String) {
         let phase = evidence
             .current_phase()
             .map_or(RunPhase::Preparing, RunPhaseRecord::phase);
@@ -717,3 +646,8 @@ impl RunExecutor {
 
 #[cfg(test)]
 mod tests;
+
+// Kept apart from the containment tests above: classification needs no run,
+// only evidence built through the evidence store's own recording steps.
+#[cfg(test)]
+mod classification_tests;
