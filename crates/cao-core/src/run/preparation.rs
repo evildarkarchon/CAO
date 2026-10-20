@@ -127,14 +127,13 @@ impl SelectedProfile {
 pub trait RunConfigurationProvider: Send + Sync {
     /// Reads the named profile once, returning its Selected Profile together
     /// with the Run Toolset built from that same read, so the run's work uses
-    /// exactly the profile facts its Routing Policy is compiled from.
-    ///
-    /// A `None` Toolset means the provider supplies no means to do work: a
-    /// request with work then fails Preparing with `RequestedWorkUnavailable`.
+    /// exactly the profile facts its Routing Policy is compiled from. Every
+    /// Optimization Run has a Run Toolset, so a successful load always
+    /// returns one.
     ///
     /// # Errors
     /// Any error becomes a `ConfigurationLoadingFailed` Run Failure.
-    fn load(&self, profile_identity: &str) -> Result<(SelectedProfile, Option<RunToolset>), Error>;
+    fn load(&self, profile_identity: &str) -> Result<(SelectedProfile, RunToolset), Error>;
 }
 
 /// The immutable facts a successful Preparing establishes, retained by the terminal result.

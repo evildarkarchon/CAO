@@ -352,9 +352,9 @@ fn the_provider_loads_the_selected_profile_from_the_profile_files() {
     );
 
     // FO4 has no ignoredMods.txt of its own, so it falls back to SSE's.
-    let (profile, toolset) = provider(&app, "FO4").load("FO4").unwrap();
+    // The contract's return type guarantees the Toolset is built.
+    let (profile, _toolset) = provider(&app, "FO4").load("FO4").unwrap();
 
-    assert!(toolset.is_some(), "the provider always builds the Toolset");
     // FO4 enables Textures and Archives, but neither Meshes nor Animations.
     // Mesh Reference Maintenance belongs to Texture conversion.
     assert_eq!(

@@ -39,8 +39,9 @@ fn several(mode: ExecutionMode, mods: &Path) -> RunRequest {
     )
 }
 
-/// Runs `request` inline with `profile` and, if any, a fresh Run Toolset
-/// over `toolset`, collecting its events.
+/// Runs `request` inline with `profile` and a fresh Run Toolset over
+/// `toolset`, or a default scripted one when it is `None`, collecting its
+/// events.
 fn run(
     profile: SelectedProfile,
     toolset: Option<Arc<ScriptedToolset>>,
