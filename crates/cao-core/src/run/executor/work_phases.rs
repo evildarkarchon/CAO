@@ -364,8 +364,7 @@ pub(super) fn run_work_phases(
         .routing_ledger()
         .cloned()
         .expect("the Routing Ledger was just recorded");
-    let total = ledger.routed_assets().len();
-    evidence.record_asset_processing_plan(total)?;
+    evidence.record_asset_processing_plan(ledger.routed_assets().len())?;
     for target in [
         OptimizerTarget::Texture,
         OptimizerTarget::Mesh,
@@ -415,14 +414,11 @@ pub(super) fn run_work_phases(
             };
             let (mod_root, result) = attempt;
             let safe_to_continue = result.safe_to_continue();
-            evidence.record_asset_attempt(
-                RoutedAssetAttempt {
-                    mod_root,
-                    asset: asset.clone(),
-                    result,
-                },
-                total,
-            )?;
+            evidence.record_asset_attempt(RoutedAssetAttempt {
+                mod_root,
+                asset: asset.clone(),
+                result,
+            })?;
             // A failed attempt still completes progress, but uncertain mutation
             // makes every later attempt and Archive Finalization unsafe.
             if !safe_to_continue {
@@ -549,7 +545,6 @@ fn extract_archives(
         // the caller's own checks around this phase observe it.
         return Ok(None);
     }
-    let total = plans.len();
     for plan in plans {
         if stop.is_cancelled() {
             return Ok(Some(ExtractionStop::Cancelled));
@@ -569,7 +564,7 @@ fn extract_archives(
         // partial mutation stops the run regardless.
         let unsafe_attempt = attempt.is_unsafe();
         attempt.mod_root = plan.mod_root.clone();
-        evidence.record_archive_extraction_attempt(attempt, total)?;
+        evidence.record_archive_extraction_attempt(attempt)?;
         if unsafe_attempt {
             return Ok(Some(ExtractionStop::Unsafe {
                 cancellation: stop.is_cancelled(),
