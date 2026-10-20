@@ -335,18 +335,35 @@ impl ArchiveExtractor<'_> {
     /// still the same readable Archive: then the run may go on, because the
     /// retained source is still recovery material for what was extracted.
     /// Otherwise the mutation becomes unknown.
+    ///
+    /// Every panic is contained here, classified like `extract`'s by how far
+    /// the attempt got. One while pinning comes before any read, so it is an
+    /// [`ArchiveExtractionFailure::ExtractionFailed`] with no mutation, safe
+    /// to continue. One during cleanup or its recovery check is a
+    /// [`ArchiveExtractionFailure::SourceCleanupFailed`] with
+    /// `PartialOrUnknown` mutation, unsafe whatever was committed.
     pub fn extract_with_source_cleanup(
         &self,
         plan: &ArchiveExtractionPlan,
         cleanup: SourceCleanup,
         artifacts: &mut TemporaryArtifactRegistry,
     ) -> ArchiveExtractionResult {
-        let mut pin = match SourceFilePin::new(&plan.archive_path, &plan.mod_root) {
+        // The pin and cleanup act only on the filesystem through `cao_winfs`,
+        // never through the reader or capacity probe, so no seam can make
+        // them panic and no test reaches these arms; they are contained
+        // anyway, because the Run Executor relies on this extractor to own
+        // every panic of an extraction attempt.
+        let pinned = catch_unwind(AssertUnwindSafe(|| {
+            SourceFilePin::new(&plan.archive_path, &plan.mod_root)
+                .map_err(|error| error.to_string())
+        }))
+        .unwrap_or_else(|payload| Err(take_panic_message(payload)));
+        let mut pin = match pinned {
             Ok(pin) => pin,
-            Err(error) => {
+            Err(detail) => {
                 return ArchiveExtractionResult {
                     failure: Some(ArchiveExtractionFailure::ExtractionFailed),
-                    detail: error.to_string(),
+                    detail,
                     ..ArchiveExtractionResult::new(plan)
                 };
             }
@@ -356,23 +373,26 @@ impl ArchiveExtractor<'_> {
         if !result.succeeded() {
             return result;
         }
-        let cleaned = match cleanup {
+        let cleaned = catch_unwind(AssertUnwindSafe(|| match cleanup {
             SourceCleanup::Remove => pin.remove_if_unchanged(),
             SourceCleanup::Backup => pin.backup_if_unchanged().map(|_| ()),
-        };
+        }));
         match cleaned {
-            Ok(()) => result.mutation = MutationState::Committed,
-            Err(error) => {
+            Ok(Ok(())) => result.mutation = MutationState::Committed,
+            Ok(Err(error)) => {
                 result.failure = Some(ArchiveExtractionFailure::SourceCleanupFailed);
                 result.safe_to_continue = false;
                 result.detail = error.to_string();
                 // Existence alone cannot prove the retained source is still
                 // usable: reopen its manifest, through the same pin, before
                 // letting later phases proceed.
-                if result.mutation == MutationState::Committed
-                    && pin.pin_unchanged_for_recovery().is_ok()
-                {
+                if result.mutation == MutationState::Committed {
+                    // A panic while re-pinning or reading leaves the source's
+                    // state unproven, so it counts as unreadable.
                     let readable = catch_unwind(AssertUnwindSafe(|| {
+                        if pin.pin_unchanged_for_recovery().is_err() {
+                            return false;
+                        }
                         let listed = self.reader.list_entries(pin.path()).is_ok();
                         self.reader.release();
                         listed
@@ -385,6 +405,16 @@ impl ArchiveExtractor<'_> {
                 if !result.safe_to_continue {
                     result.mutation = MutationState::PartialOrUnknown;
                 }
+            }
+            Err(payload) => {
+                // A rename or delete that panicked may or may not have
+                // happened, and the pin it ran through is no longer
+                // trustworthy, so the source is not reopened to prove
+                // recovery: the mutation is unknown and the run stops.
+                result.failure = Some(ArchiveExtractionFailure::SourceCleanupFailed);
+                result.safe_to_continue = false;
+                result.detail = take_panic_message(payload);
+                result.mutation = MutationState::PartialOrUnknown;
             }
         }
         result

@@ -39,8 +39,9 @@ fn several(mode: ExecutionMode, mods: &Path) -> RunRequest {
     )
 }
 
-/// Runs `request` inline with `profile` and, if any, a fresh Run Toolset
-/// over `toolset`, collecting its events.
+/// Runs `request` inline with `profile` and a fresh Run Toolset over
+/// `toolset`, or a default [`ScriptedToolset`] when it is `None`, collecting its
+/// events.
 fn run(
     profile: SelectedProfile,
     toolset: Option<Arc<ScriptedToolset>>,
@@ -48,7 +49,10 @@ fn run(
 ) -> (Arc<OptimizationRunResult>, RunHandle, EventLog) {
     let service = OptimizationRunService::with_scheduler(
         Arc::new(InlineRunScheduler),
-        Some(Arc::new(ToolsetConfiguration::new(profile, toolset))),
+        Some(Arc::new(ToolsetConfiguration::new(
+            profile,
+            toolset.unwrap_or_default(),
+        ))),
     );
     let events = EventLog::default();
     let handle = service
@@ -398,7 +402,7 @@ fn cancelling_from_an_exclusion_diagnostic_stops_preparing() {
         scheduler.clone(),
         Some(Arc::new(ToolsetConfiguration::new(
             ignoring(&["a_ignored", "b_ignored"]),
-            None,
+            Arc::new(ScriptedToolset::default()),
         ))),
     );
     let slot: HandleSlot = Arc::new(OnceLock::new());

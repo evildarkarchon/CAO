@@ -419,8 +419,9 @@ impl AssetExecutionBackend for SharedBackend {
 
 /// Runs `backend` over `root` through the Run Executor, Safety Cleanup
 /// included: a scripted Run Toolset drives every Routed Asset through the
-/// production Asset attempt adapter over the shared backend. As in [`route`],
-/// the profile prefers conversion.
+/// production Asset attempt adapter over the shared backend, and an Apply run
+/// ends in core's real Archive Finalization. As in [`route`], the profile
+/// prefers conversion.
 fn run(
     root: &Path,
     mode: ExecutionMode,
@@ -435,7 +436,7 @@ fn run(
         RunServices {
             safety_cleanup: &mut cleanup,
             observations: None,
-            configuration: Some(&*converting_configuration(Some(Arc::new(toolset)))),
+            configuration: Some(&*converting_configuration(Arc::new(toolset))),
         },
         &CancellationToken::new(),
         create_run_id(),

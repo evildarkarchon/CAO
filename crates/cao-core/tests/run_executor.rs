@@ -4,7 +4,9 @@
 //! Each scenario names the C++ test whose intent it ports, mostly from
 //! `tests/RunExecutorTests.cpp`. Work runs through a [`ScriptedToolset`], the
 //! Rust stand-in for C++ `ControlledAssetWork`: the executor runs every work
-//! phase itself, and a scenario scripts only the ports. Phase-timed triggers
+//! phase itself, a scenario scripts only the Asset attempt port, and core's
+//! own Archive extraction and Archive Finalization run over the fake Archive
+//! reader, packer and probes. Phase-timed triggers
 //! observe phase records through a [`RecordingSink`], and cancellation goes
 //! through the run's token. A junction stands in wherever C++ needed a
 //! symlink, which takes a privilege a junction does not.
@@ -36,6 +38,7 @@
 
 mod common;
 
+use std::os::windows::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -46,22 +49,28 @@ use cao_core::routing::{
     AssetOperation, ExecutionMode, PolicyValidationError, ProfileCapabilities, RequestedWork,
 };
 use cao_core::run::{
-    ArchiveExtractionResult, ArchiveFinalizationAttempt, ArchiveFinalizationFailure,
-    ArchiveFinalizationResult, ArchivePrecedence, CancellationToken, ModSelection, MutationKind,
-    OptimizationRunResult, PhaseSkipReason, RunConfigurationProvider, RunDiagnosticCode,
-    RunExecutor, RunFailure, RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord, RunPhaseStatus,
-    RunProgress, RunRequest, SafetyCleanupService, SelectedProfile, TemporaryArtifactRegistry,
-    create_run_id,
+    ArchiveFinalizationFailure, ArchiveFinalizationMutationKind, ArchivePrecedence, ArchiveReader,
+    CancellationToken, ModSelection, MutationKind, OptimizationRunResult, PhaseSkipReason,
+    RunConfigurationProvider, RunDiagnosticCode, RunExecutor, RunFailure, RunFailureCode,
+    RunOutcome, RunPhase, RunPhaseRecord, RunPhaseStatus, RunProgress, RunRequest,
+    SafetyCleanupService, SelectedProfile, TemporaryArtifactRegistry, create_run_id,
 };
 use cao_core::test_support::{
-    CallbackConfiguration, CountingCleanup, FakeCapacity, Observed, RecordingSink, ScriptedCleanup,
-    ScriptedToolset, ToolsetConfiguration, entry, execute_run, record_finalization_result,
-    sse_capabilities, sse_profile, write_archive,
+    CallbackConfiguration, CountingCleanup, FakeArchivePacker, FakeArchiveReader, FakeCapacity,
+    Observed, RecordingSink, ScriptedCleanup, ScriptedToolset, ToolsetConfiguration, entry,
+    execute_run, sse_capabilities, sse_profile, write_archive,
 };
-use common::{canonical, no_work_request, request, scratch_dir, test_configuration};
+use common::{
+    canonical, no_work_request, request, scratch_dir, test_configuration,
+    unsupporting_configuration,
+};
+
+/// `FILE_SHARE_WRITE | FILE_SHARE_DELETE`: a handle opened with only these
+/// denies other readers while still allowing writes and deletion.
+const SHARE_WRITE_DELETE: u32 = 0x2 | 0x4;
 
 /// Executes one request with no observer and a fresh run identity. Requested
-/// work runs only through the Run Toolset `configuration` returns, if any.
+/// work runs only through the Run Toolset `configuration` returns.
 fn execute(
     request: &RunRequest,
     cleanup: &mut CountingCleanup,
@@ -76,8 +85,9 @@ fn execute(
 /// Safety Cleanup removed it.
 ///
 /// It stands in for the temporary C++ `ControlledAssetWork` staged before
-/// any Asset ran; a Toolset lends the registry only to its ports, so a
-/// scenario stages from whichever port its run reaches.
+/// any Asset ran; a Toolset lends the registry only to its work, so a
+/// scenario stages from its scripted Asset attempts. Core's real Archive work
+/// stages its own files instead; see [`StagedArchiveWork`].
 #[derive(Clone, Default)]
 struct StagedTemporary(Arc<Mutex<Option<PathBuf>>>);
 
@@ -105,6 +115,50 @@ impl StagedTemporary {
     fn assert_removed(&self) {
         let staged = self.path().expect("a port staged a temporary");
         assert!(!staged.exists(), "{} survived the run", staged.display());
+    }
+}
+
+/// What core's real Archive work staged beneath a Mod Root's reserved
+/// `.cao-staging` directory, captured from a fake's hook while the work still
+/// held it, so a scenario can prove Safety Cleanup removed it.
+///
+/// Real extraction and Archive Finalization stage their own files under the
+/// run's Temporary Ownership, so a scenario can no longer stage a marker
+/// through them as it can through a scripted Asset attempt.
+#[derive(Clone, Default)]
+struct StagedArchiveWork(Arc<Mutex<Vec<PathBuf>>>);
+
+impl StagedArchiveWork {
+    /// Records every entry of `root`'s `.cao-staging` except its two control
+    /// files, `owner.lock` and `ownership.manifest`, which outlive the run.
+    fn capture(&self, root: &Path) {
+        let Ok(entries) = std::fs::read_dir(root.join(".cao-staging")) else {
+            return;
+        };
+        let mut staged = self.0.lock().unwrap();
+        for entry in entries {
+            let path = entry.unwrap().path();
+            let control = ["owner.lock", "ownership.manifest"]
+                .iter()
+                .any(|name| path.file_name() == Some(std::ffi::OsStr::new(name)));
+            if !control && !staged.contains(&path) {
+                staged.push(path);
+            }
+        }
+    }
+
+    /// Whether any capture found staged work.
+    fn is_empty(&self) -> bool {
+        self.0.lock().unwrap().is_empty()
+    }
+
+    /// Asserts the work staged something and Safety Cleanup removed all of it.
+    fn assert_removed(&self) {
+        let staged = self.0.lock().unwrap();
+        assert!(!staged.is_empty(), "the Archive work staged nothing");
+        for path in staged.iter() {
+            assert!(!path.exists(), "{} survived the run", path.display());
+        }
     }
 }
 
@@ -402,33 +456,6 @@ fn a_filesystem_root_cannot_be_a_mod_root() {
     }
 }
 
-/// Origin: OptimizationRunServiceTests::failureEventsPrecedeCleanupAndTerminal
-/// (the RequestedWorkUnavailable row).
-#[test]
-fn requested_work_without_a_run_toolset_fails_preparing() {
-    let root = scratch_dir("executor-no-run-toolset");
-    let request = request(
-        ExecutionMode::Apply,
-        &root,
-        &[RequestedWork::NativeTextureOptimization],
-    );
-    let mut cleanup = CountingCleanup::default();
-    let result = execute(
-        &request,
-        &mut cleanup,
-        Some(&*test_configuration()),
-        &CancellationToken::new(),
-    );
-
-    assert_eq!(result.outcome(), RunOutcome::Failed);
-    assert_eq!(
-        result.failures()[0].code,
-        RunFailureCode::RequestedWorkUnavailable
-    );
-    assert_eq!(result.failures()[0].phase, RunPhase::Preparing);
-    assert!(result.preparation().is_none());
-}
-
 /// Origin: RunExecutorTests::cancellationDuringPreparingPublishesNoPreparation.
 #[test]
 fn cancellation_during_preparing_publishes_no_preparation() {
@@ -549,7 +576,7 @@ fn cancelling_between_assets_keeps_committed_mutations_and_cleans_up() {
     let result = execute(
         &request,
         &mut cleanup,
-        Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+        Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
         &token,
     );
 
@@ -669,7 +696,7 @@ fn diagnostic_count(result: &OptimizationRunResult, code: RunDiagnosticCode) -> 
 fn ignoring(mods: &[&str], toolset: &Arc<ScriptedToolset>) -> ToolsetConfiguration {
     ToolsetConfiguration::new(
         sse_profile().with_ignored_mods(mods.iter().map(|name| (*name).to_owned()).collect()),
-        Some(Arc::clone(toolset)),
+        Arc::clone(toolset),
     )
 }
 
@@ -716,7 +743,7 @@ fn processing_and_evidence_share_the_canonical_mod_root() {
         let result = execute(
             &request,
             &mut cleanup,
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
             &CancellationToken::new(),
         );
 
@@ -735,11 +762,19 @@ fn processing_and_evidence_share_the_canonical_mod_root() {
     }
 }
 
+/// A fake packer that panics once it has written an Archive to staging, so
+/// core's Archive Finalization fails its first output attempt with an
+/// Unexpected Exception that forbids continuation.
+fn panicking_packer() -> Arc<FakeArchivePacker> {
+    Arc::new(FakeArchivePacker::panicking_after_write())
+}
+
 /// Origin: RunExecutorTests::removedConversionRetainsModRoot (both rows). A
 /// conversion that removed its source keeps its committed attempt and Mod
 /// Root when a later checkpoint fails or cancels. Cancellation stops before
-/// Archive Finalization; the later failure is the Archive Finalization port
-/// failing, the only checkpoint after the last attempt a Toolset can fail.
+/// Archive Finalization; the later failure is Archive Finalization's own,
+/// its packer panicking after the write, which the phase contains as an
+/// Unexpected Exception.
 #[test]
 fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
     for cancels in [false, true] {
@@ -747,10 +782,18 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
             "executor/removed-conversion-{cancels}"
         )));
         let root = selected.join("mod");
-        common::write_tree(&root, &["original.tga"]);
+        common::write_tree(&root, &["textures/original.tga"]);
         let token = CancellationToken::new();
         let staged = StagedTemporary::default();
-        let toolset = ScriptedToolset::default().with_assets({
+        let toolset = ScriptedToolset {
+            packer: if cancels {
+                Arc::default()
+            } else {
+                panicking_packer()
+            },
+            ..ScriptedToolset::default()
+        }
+        .with_assets({
             let (token, staged) = (token.clone(), staged.clone());
             move |asset, mod_root, artifacts| {
                 staged.stage(mod_root, artifacts);
@@ -763,16 +806,16 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
                 Ok(AssetExecutionResult::success(MutationState::Committed))
             }
         });
-        let toolset = Arc::new(if cancels {
-            toolset
-        } else {
-            toolset.with_escaping_finalization_work("later orchestration failure")
-        });
+        let toolset = Arc::new(toolset);
+        // Archive creation gives the failure row an output to pack.
         let request = RunRequest::new(
             "SkyrimSE",
             ExecutionMode::Apply,
             ModSelection::ChildModRoots(common::relative_to_working_directory(&selected)),
-            vec![RequestedWork::NativeTextureOptimization],
+            vec![
+                RequestedWork::NativeTextureOptimization,
+                RequestedWork::ArchiveCreation,
+            ],
         );
         let mut cleanup = CountingCleanup::default();
 
@@ -781,9 +824,7 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
         let result = execute(
             &request,
             &mut cleanup,
-            Some(&*common::converting_configuration(Some(Arc::clone(
-                &toolset,
-            )))),
+            Some(&*common::converting_configuration(Arc::clone(&toolset))),
             &token,
         );
 
@@ -798,16 +839,23 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
             RunOutcome::Failed
         };
         assert_eq!(result.outcome(), expected, "{row}");
-        if !cancels {
-            assert_eq!(result.failures()[0].code, RunFailureCode::RunWorkEscaped);
-            assert_eq!(result.failures()[0].phase, RunPhase::ArchiveFinalization);
-            assert!(
-                result.failures()[0]
-                    .detail
-                    .contains("later orchestration failure")
+        assert!(
+            result.failures().is_empty(),
+            "{row}: contained by the phase"
+        );
+        if cancels {
+            assert!(result.archive_finalization().is_none(), "{row}");
+        } else {
+            let finalization = result.archive_finalization().unwrap();
+            let [attempt] = finalization.attempts.as_slice() else {
+                panic!("{row}: one output attempt: {finalization:?}");
+            };
+            assert_eq!(
+                attempt.failure,
+                Some(ArchiveFinalizationFailure::UnexpectedException)
             );
+            assert!(!finalization.safe_to_continue, "{row}");
         }
-        assert_eq!(toolset.finalizations(), usize::from(!cancels), "{row}");
         assert_eq!(cleanup.passes, 1, "{row}");
         staged.assert_removed();
         let attempts = result.asset_attempts();
@@ -815,7 +863,7 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
         assert_eq!(attempts[0].mod_root, root, "{row}");
         assert_eq!(
             attempts[0].asset.execution_path(),
-            root.join("original.tga")
+            root.join("textures/original.tga")
         );
         assert!(
             attempts[0]
@@ -841,8 +889,8 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
             cancels,
             "{row}"
         );
-        assert!(!root.join("original.tga").exists());
-        assert_eq!(read(&root.join("original.dds")), "converted");
+        assert!(!root.join("textures/original.tga").exists());
+        assert_eq!(read(&root.join("textures/original.dds")), "converted");
     }
 }
 
@@ -897,7 +945,7 @@ fn an_asset_retargeted_after_discovery_is_attributed_to_the_root_containing_it()
             &request,
             &mut cleanup,
             Some(&sink),
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
             &CancellationToken::new(),
         );
         std::fs::remove_dir(&link).unwrap();
@@ -929,10 +977,10 @@ fn an_asset_retargeted_after_discovery_is_attributed_to_the_root_containing_it()
 /// requested work, Dry Run evaluation and empty Dry Run rows). Applicable
 /// work with nothing to do still processes Assets against a 0/0 account; Dry
 /// Run evaluates Assets but skips extraction and finalization; nothing is
-/// extracted, and only Apply stages anything. A Run Toolset always carries
-/// an Archive Finalization port, so Apply always executes that phase: the
-/// C++ row without a finalizer, skipped for no requested work, has no
-/// Toolset equivalent.
+/// extracted or staged. A run always executes Archive Finalization in Apply,
+/// where with nothing to pack it plans no output and prunes nothing: the C++
+/// row without a finalizer, skipped for no requested work, has no Toolset
+/// equivalent.
 #[test]
 fn applicable_work_reports_its_phases_whether_or_not_there_is_anything_to_do() {
     // (row, mode, has an Asset)
@@ -946,14 +994,7 @@ fn applicable_work_reports_its_phases_whether_or_not_there_is_anything_to_do() {
         if has_asset {
             std::fs::write(root.join("asset.dds"), "untouched").unwrap();
         }
-        let staged = StagedTemporary::default();
-        let toolset = Arc::new(ScriptedToolset::default().with_finalization({
-            let staged = staged.clone();
-            move |preparation, recorder, artifacts| {
-                staged.stage(&preparation.mod_roots()[0], artifacts);
-                record_finalization_result(recorder, ArchiveFinalizationResult::default(), None)
-            }
-        }));
+        let toolset = Arc::new(ScriptedToolset::default());
         let request = request(
             mode,
             &root,
@@ -967,20 +1008,23 @@ fn applicable_work_reports_its_phases_whether_or_not_there_is_anything_to_do() {
         let result = execute(
             &request,
             &mut cleanup,
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
             &CancellationToken::new(),
         );
 
         assert_eq!(result.outcome(), RunOutcome::Succeeded, "{row}");
         let total = usize::from(has_asset);
         assert_eq!(toolset.attempted().len(), total, "{row}");
-        assert!(toolset.extracted().is_empty(), "{row}");
+        assert!(result.archive_extraction_attempts().is_empty(), "{row}");
         assert_eq!(
-            toolset.finalizations(),
-            usize::from(mode == ExecutionMode::Apply),
+            result.archive_finalization().is_some(),
+            mode == ExecutionMode::Apply,
             "{row}"
         );
+        assert!(toolset.packer.writes().is_empty(), "{row}");
         assert!(result.mutation_summaries().is_empty(), "{row}");
+        // Nothing to do stages nothing, in either mode.
+        assert!(!root.join(".cao-staging").exists(), "{row}");
         assert_eq!(cleanup.passes, 1, "{row}");
         assert!(result.routing_ledger().is_some(), "{row}");
         assert_eq!(
@@ -1001,17 +1045,22 @@ fn applicable_work_reports_its_phases_whether_or_not_there_is_anything_to_do() {
                 )),
                 "{row}"
             );
-            assert!(staged.path().is_none(), "{row}");
-            assert!(!root.join(".cao-staging").exists(), "{row}");
             assert_eq!(
                 finalization.skip_reason(),
                 Some(PhaseSkipReason::DryRun),
                 "{row}"
             );
         } else {
-            staged.assert_removed();
             assert_eq!(finalization.status(), RunPhaseStatus::Executed, "{row}");
             assert_eq!(finalization.skip_reason(), None, "{row}");
+            assert_eq!(
+                finalization.progress(),
+                Some(RunProgress::determinate(0, 0, 0)),
+                "{row}: no output is planned"
+            );
+            let finalized = result.archive_finalization().unwrap();
+            assert!(finalized.attempts.is_empty(), "{row}");
+            assert!(finalized.mutations.is_empty(), "{row}");
         }
         if has_asset {
             assert_eq!(read(&root.join("asset.dds")), "untouched", "{row}");
@@ -1021,10 +1070,12 @@ fn applicable_work_reports_its_phases_whether_or_not_there_is_anything_to_do() {
 
 /// Origin: RunExecutorTests::assetWorkPhasesPrecedeAttempts. Processing
 /// Assets is published before any attempt and Archive Finalization before
-/// its finalizer, and the whole canonical sequence is published in order.
+/// its packer writes the first Archive, and the whole canonical sequence is
+/// published in order.
 #[test]
 fn each_work_phase_is_published_before_its_work_starts() {
-    let root = mod_root("phases-precede-work", &["texture.dds"]);
+    // In a folder, since Archive Finalization never packs a root-level file.
+    let root = mod_root("phases-precede-work", &["textures/texture.dds"]);
     let published = Arc::new(Mutex::new(Vec::<RunPhase>::new()));
     let sink = RecordingSink::with_hook({
         let published = published.clone();
@@ -1042,21 +1093,28 @@ fn each_work_phase_is_published_before_its_work_starts() {
         let published = published.clone();
         move || published.lock().unwrap().last().copied()
     };
-    // A failed assertion in a port is contained there, so it surfaces as an
-    // unsafe attempt or a failed finalization, and the run is not Succeeded.
+    // What was last published as the packer wrote each Archive, read after
+    // the run rather than asserted inside the packer.
+    let published_at_write = Arc::new(Mutex::new(Vec::<Option<RunPhase>>::new()));
+    let packer = FakeArchivePacker {
+        after_write: Some(Box::new({
+            let (last_published, published_at_write) =
+                (last_published.clone(), published_at_write.clone());
+            move |_| published_at_write.lock().unwrap().push(last_published())
+        })),
+        ..FakeArchivePacker::default()
+    };
+    // A failed assertion in the Asset port is contained there, so it surfaces
+    // as an unsafe attempt, and the run is not Succeeded.
     let toolset = Arc::new(
-        ScriptedToolset::default()
-            .with_assets({
-                let last_published = last_published.clone();
-                move |_, _, _| {
-                    assert_eq!(last_published(), Some(RunPhase::ProcessingAssets));
-                    Ok(AssetExecutionResult::success(MutationState::None))
-                }
-            })
-            .with_finalization(move |_, recorder, _| {
-                assert_eq!(last_published(), Some(RunPhase::ArchiveFinalization));
-                record_finalization_result(recorder, ArchiveFinalizationResult::default(), None)
-            }),
+        ScriptedToolset {
+            packer: Arc::new(packer),
+            ..ScriptedToolset::default()
+        }
+        .with_assets(move |_, _, _| {
+            assert_eq!(last_published(), Some(RunPhase::ProcessingAssets));
+            Ok(AssetExecutionResult::success(MutationState::None))
+        }),
     );
     let mut cleanup = CountingCleanup::default();
 
@@ -1064,11 +1122,14 @@ fn each_work_phase_is_published_before_its_work_starts() {
         &request(
             ExecutionMode::Apply,
             &root,
-            &[RequestedWork::NativeTextureOptimization],
+            &[
+                RequestedWork::NativeTextureOptimization,
+                RequestedWork::ArchiveCreation,
+            ],
         ),
         &mut cleanup,
         Some(&sink),
-        Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+        Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
         &CancellationToken::new(),
     );
 
@@ -1080,7 +1141,14 @@ fn each_work_phase_is_published_before_its_work_starts() {
         result.archive_finalization()
     );
     assert_eq!(result.asset_attempts().len(), 1);
-    assert_eq!(toolset.finalizations(), 1);
+    let [packed] = result.archive_finalization().unwrap().attempts.as_slice() else {
+        panic!("one output: {:?}", result.archive_finalization());
+    };
+    assert!(packed.succeeded(), "{}", packed.detail);
+    assert_eq!(
+        *published_at_write.lock().unwrap(),
+        [Some(RunPhase::ArchiveFinalization)]
+    );
     assert_eq!(*published.lock().unwrap(), RunPhase::SEQUENCE);
 }
 
@@ -1207,7 +1275,7 @@ fn a_discovery_diagnostic_follows_the_attempt_and_can_cancel_finalization() {
             "{row}"
         );
         assert_eq!(result.asset_attempts().len(), 1, "{row}");
-        assert_eq!(toolset.finalizations(), usize::from(!cancels), "{row}");
+        assert_eq!(result.archive_finalization().is_some(), !cancels, "{row}");
         assert_eq!(
             result.phase(RunPhase::ArchiveFinalization).is_none(),
             cancels,
@@ -1284,7 +1352,7 @@ fn a_panicking_progress_observer_keeps_the_failed_attempt() {
             ),
             &mut cleanup,
             Some(&sink),
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
             &token,
         );
 
@@ -1316,7 +1384,7 @@ fn a_panicking_progress_observer_keeps_the_failed_attempt() {
             1,
             "{row}"
         );
-        assert_eq!(toolset.finalizations(), usize::from(!cancels), "{row}");
+        assert_eq!(result.archive_finalization().is_some(), !cancels, "{row}");
         assert_eq!(cleanup.passes, 1, "{row}");
         staged.assert_removed();
         assert_eq!(read(&root.join("asset.dds")), "original", "{row}");
@@ -1326,58 +1394,46 @@ fn a_panicking_progress_observer_keeps_the_failed_attempt() {
 /// Origin: RunExecutorTests::mixedWorkEvidenceOutlivesServices. Mixed Asset
 /// and Archive Finalization successes and failures complete with failures,
 /// and every fact is owned by the result once the services are gone.
+///
+/// The real Archive Finalization packs the unrouted Mesh into a Standard
+/// Archive, which commits, then fails to write the Textures Archive: one of
+/// its sources is held open against reads for the whole run.
 #[test]
 fn mixed_asset_evidence_outlives_every_service() {
-    let root = mod_root("mixed-evidence", &[]);
-    for name in ["a.dds", "b.dds"] {
-        std::fs::write(root.join(name), "original").unwrap();
+    let root = mod_root("mixed-evidence", &["meshes/packed.nif"]);
+    let (a, b) = (root.join("textures/a.dds"), root.join("textures/b.dds"));
+    std::fs::create_dir_all(root.join("textures")).unwrap();
+    for texture in [&a, &b] {
+        std::fs::write(texture, "original").unwrap();
     }
-    let output = root.join("packed.bsa");
-    let result = {
-        let packed = output.clone();
-        let failed_root = root.clone();
+    // Denies reads while allowing writes and deletion, so only the packer's
+    // read of this source fails.
+    let unreadable = std::fs::OpenOptions::new()
+        .write(true)
+        .share_mode(SHARE_WRITE_DELETE)
+        .open(&b)
+        .unwrap();
+    let (result, writes) = {
         let staged = StagedTemporary::default();
-        let toolset = Arc::new(
-            ScriptedToolset::default()
-                .with_assets({
-                    let staged = staged.clone();
-                    move |asset, mod_root, artifacts| {
-                        staged.stage(mod_root, artifacts);
-                        let path = asset.execution_path();
-                        Ok(if path.ends_with("a.dds") {
-                            std::fs::write(path, "committed").unwrap();
-                            AssetExecutionResult::success(MutationState::Committed)
-                        } else {
-                            AssetExecutionResult::failed(
-                                AssetExecutionFailure::LoadFailed,
-                                "controlled load failure",
-                            )
-                            .with_path(path)
-                            .with_operation("load_texture")
-                            .with_service_detail("raw detail")
-                        })
-                    }
+        let toolset = Arc::new(ScriptedToolset::default().with_assets({
+            let staged = staged.clone();
+            move |asset, mod_root, artifacts| {
+                staged.stage(mod_root, artifacts);
+                let path = asset.execution_path();
+                Ok(if path.ends_with("a.dds") {
+                    std::fs::write(path, "committed").unwrap();
+                    AssetExecutionResult::success(MutationState::Committed)
+                } else {
+                    AssetExecutionResult::failed(
+                        AssetExecutionFailure::LoadFailed,
+                        "controlled load failure",
+                    )
+                    .with_path(path)
+                    .with_operation("load_texture")
+                    .with_service_detail("raw detail")
                 })
-                .with_finalization(move |_, recorder, _| {
-                    std::fs::write(&packed, "packed").unwrap();
-                    let result = ArchiveFinalizationResult {
-                        attempts: vec![
-                            finalization_attempt(&packed, &failed_root, MutationState::Committed),
-                            ArchiveFinalizationAttempt {
-                                failure: Some(ArchiveFinalizationFailure::WriteFailed),
-                                detail: "write detail".to_owned(),
-                                ..finalization_attempt(
-                                    &failed_root.join("failed.bsa"),
-                                    &failed_root,
-                                    MutationState::None,
-                                )
-                            },
-                        ],
-                        ..ArchiveFinalizationResult::default()
-                    };
-                    record_finalization_result(recorder, result, None)
-                }),
-        );
+            }
+        }));
         let mut cleanup = CountingCleanup::default();
         let result = execute(
             &request(
@@ -1389,14 +1445,14 @@ fn mixed_asset_evidence_outlives_every_service() {
                 ],
             ),
             &mut cleanup,
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
             &CancellationToken::new(),
         );
-        assert_eq!(toolset.finalizations(), 1);
         assert_eq!(cleanup.passes, 1);
         staged.assert_removed();
-        result
+        (result, toolset.packer.writes())
     };
+    drop(unreadable);
 
     assert_eq!(result.outcome(), RunOutcome::CompletedWithFailures);
     let ledger = result.routing_ledger().unwrap();
@@ -1405,11 +1461,11 @@ fn mixed_asset_evidence_outlives_every_service() {
         .iter()
         .map(|asset| asset.execution_path().to_path_buf())
         .collect();
-    assert_eq!(routed, [root.join("a.dds"), root.join("b.dds")]);
+    assert_eq!(routed, [a.clone(), b.clone()]);
     let attempts = result.asset_attempts();
     assert_eq!(attempts.len(), 2);
     assert_eq!(attempts[0].mod_root, root);
-    assert_eq!(attempts[0].asset.execution_path(), root.join("a.dds"));
+    assert_eq!(attempts[0].asset.execution_path(), a);
     assert_eq!(
         attempts[0].result.mutation_state(),
         MutationState::Committed
@@ -1418,7 +1474,7 @@ fn mixed_asset_evidence_outlives_every_service() {
     assert_eq!(attempts[1].mod_root, root);
     assert_eq!(failed.failure(), Some(AssetExecutionFailure::LoadFailed));
     assert_eq!(failed.mutation_state(), MutationState::None);
-    assert_eq!(failed.affected_path(), root.join("b.dds"));
+    assert_eq!(failed.affected_path(), b);
     assert_eq!(failed.operation(), "load_texture");
     assert_eq!(failed.service_detail(), "raw detail");
     assert!(failed.safe_to_continue());
@@ -1428,15 +1484,44 @@ fn mixed_asset_evidence_outlives_every_service() {
     );
     assert!(result.failures().is_empty());
     let finalization = result.archive_finalization().unwrap();
-    assert_eq!(finalization.attempts.len(), 2);
-    assert_eq!(finalization.attempts[0].archive_path, output);
-    assert_eq!(finalization.attempts[0].mod_root, root);
-    assert_eq!(finalization.attempts[0].mutation, MutationState::Committed);
+    assert_eq!(finalization.attempts.len(), 2, "{finalization:?}");
+    let (packed, unwritten) = (&finalization.attempts[0], &finalization.attempts[1]);
+    assert!(packed.succeeded(), "{}", packed.detail);
+    assert_eq!(packed.mod_root, root);
+    assert_eq!(packed.mutation, MutationState::Committed);
     assert_eq!(
-        finalization.attempts[1].failure,
+        unwritten.failure,
         Some(ArchiveFinalizationFailure::WriteFailed)
     );
-    assert_eq!(finalization.attempts[1].detail, "write detail");
+    assert_eq!(unwritten.mod_root, root);
+    assert_eq!(unwritten.mutation, MutationState::None);
+    assert!(unwritten.safe_to_continue);
+    assert!(
+        unwritten.detail.contains("b.dds"),
+        "the detail names the unreadable source: {}",
+        unwritten.detail
+    );
+    assert!(!unwritten.archive_path.exists());
+    // Pruning still runs after a recoverable failure: the packed Mesh's
+    // folder is empty once its source is deleted.
+    assert_eq!(
+        finalization
+            .mutations
+            .iter()
+            .map(|mutation| (mutation.kind, mutation.count))
+            .collect::<Vec<_>>(),
+        [
+            (ArchiveFinalizationMutationKind::PluginCreation, 1),
+            (ArchiveFinalizationMutationKind::EmptyDirectoryPruning, 1),
+        ]
+    );
+    assert_eq!(
+        writes
+            .iter()
+            .map(|write| write.names.clone())
+            .collect::<Vec<_>>(),
+        [["meshes/packed.nif"]]
+    );
     let summaries: Vec<_> = result
         .mutation_summaries()
         .iter()
@@ -1453,57 +1538,58 @@ fn mixed_asset_evidence_outlives_every_service() {
         summaries,
         [
             (&root, MutationKind::AssetProcessing, 1, 0),
-            (&root, MutationKind::ArchiveFinalization, 1, 0),
+            // The committed Archive, its Loading Plugin and the pruned folder.
+            (&root, MutationKind::ArchiveFinalization, 3, 0),
         ]
     );
     assert!(result.cleanup_failures().is_empty());
-    assert_eq!(read(&root.join("a.dds")), "committed");
-    assert_eq!(read(&root.join("b.dds")), "original");
-    assert_eq!(read(&output), "packed");
+    assert_eq!(read(&a), "committed");
+    assert_eq!(read(&b), "original");
+    assert!(!root.join("meshes").exists());
+    assert_eq!(
+        FakeArchiveReader::default()
+            .list_entries(&packed.archive_path)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>(),
+        ["meshes/packed.nif"]
+    );
     assert_eq!(
         result.phases().last().unwrap().phase(),
         RunPhase::SafetyCleanup
     );
 }
 
-/// An Archive Finalization attempt at `archive` in `root`.
-fn finalization_attempt(
-    archive: &Path,
-    root: &Path,
-    mutation: MutationState,
-) -> ArchiveFinalizationAttempt {
-    ArchiveFinalizationAttempt {
-        mutation,
-        ..ArchiveFinalizationAttempt::new(archive.to_path_buf(), root.to_path_buf())
-    }
-}
-
 /// Origin: RunExecutorTests::archiveFinalizationCancellationRetainsCommittedOutput.
 /// A cancelled finalization keeps its committed output, and the run is
 /// Cancelled after Safety Cleanup.
+///
+/// The Mod Root plans a Standard and a Textures Archive. Cancellation arrives
+/// as the packer writes the first; that atomic attempt still finishes, and
+/// Archive Finalization observes the stop before the second output.
 #[test]
 fn a_cancelled_finalization_keeps_its_committed_output() {
-    let root = mod_root("finalization-cancelled", &[]);
-    let output = root.join("committed.bsa");
-    let (packed, packed_root) = (output.clone(), root.clone());
-    let staged = StagedTemporary::default();
-    let toolset = Arc::new(ScriptedToolset::default().with_finalization({
-        let staged = staged.clone();
-        move |_, recorder, artifacts| {
-            staged.stage(&packed_root, artifacts);
-            std::fs::write(&packed, "committed output").unwrap();
-            let result = ArchiveFinalizationResult {
-                attempts: vec![finalization_attempt(
-                    &packed,
-                    &packed_root,
-                    MutationState::Committed,
-                )],
-                cancelled: true,
-                ..ArchiveFinalizationResult::default()
-            };
-            record_finalization_result(recorder, result, None)
-        }
-    }));
+    let root = mod_root(
+        "finalization-cancelled",
+        &["meshes/packed.nif", "textures/unpacked.dds"],
+    );
+    let token = CancellationToken::new();
+    let staged = StagedArchiveWork::default();
+    let packer = FakeArchivePacker {
+        after_write: Some(Box::new({
+            let (token, staged, root) = (token.clone(), staged.clone(), root.clone());
+            move |_| {
+                staged.capture(&root);
+                token.cancel();
+            }
+        })),
+        ..FakeArchivePacker::default()
+    };
+    let toolset = Arc::new(ScriptedToolset {
+        packer: Arc::new(packer),
+        ..ScriptedToolset::default()
+    });
     let mut cleanup = CountingCleanup::default();
     let result = execute(
         &request(
@@ -1512,11 +1598,15 @@ fn a_cancelled_finalization_keeps_its_committed_output() {
             &[RequestedWork::ArchiveCreation],
         ),
         &mut cleanup,
-        Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
-        &CancellationToken::new(),
+        Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
+        &token,
     );
 
-    assert_eq!(toolset.finalizations(), 1);
+    assert_eq!(
+        toolset.packer.writes().len(),
+        1,
+        "the second is never written"
+    );
     assert_eq!(cleanup.passes, 1);
     assert_eq!(result.outcome(), RunOutcome::Cancelled);
     assert_eq!(result.final_phase(), RunPhase::ArchiveFinalization);
@@ -1525,45 +1615,65 @@ fn a_cancelled_finalization_keeps_its_committed_output() {
     let finalization = result.archive_finalization().unwrap();
     assert!(finalization.cancelled);
     assert_eq!(finalization.attempts.len(), 1);
-    assert_eq!(finalization.attempts[0].mod_root, root);
-    assert_eq!(finalization.attempts[0].mutation, MutationState::Committed);
-    assert!(finalization.attempts[0].safe_to_continue);
+    let committed = &finalization.attempts[0];
+    assert!(committed.succeeded(), "{}", committed.detail);
+    assert_eq!(committed.mod_root, root);
+    assert_eq!(committed.mutation, MutationState::Committed);
+    assert!(committed.safe_to_continue);
     let progress = result
         .phase(RunPhase::ArchiveFinalization)
         .unwrap()
         .progress()
         .unwrap();
-    assert_eq!(progress.completed(), 1);
+    assert_eq!((progress.total(), progress.completed()), (2, 1));
     assert!(result.cleanup_failures().is_empty());
     staged.assert_removed();
-    assert_eq!(read(&output), "committed output");
+    assert_eq!(
+        FakeArchiveReader::default()
+            .list_entries(&committed.archive_path)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>(),
+        ["meshes/packed.nif"]
+    );
+    assert!(
+        !root.join("meshes/packed.nif").exists(),
+        "its source is packed"
+    );
+    assert!(
+        root.join("meshes").exists(),
+        "a cancelled phase prunes nothing"
+    );
+    assert_eq!(
+        read(&root.join("textures/unpacked.dds")),
+        "textures/unpacked.dds"
+    );
 }
 
 /// Origin: RunExecutorTests::missingPlannedLoadingPluginFailsRunWithArchiveCommit.
 /// An output whose Loading Plugin failed after its Archive committed fails
 /// the run, and the committed Archive still counts as a mutation.
+///
+/// A competing creator takes the planned Dummy Plugin name after planning,
+/// as Archive Finalization's first capacity sample runs, so the Archive
+/// commits and its Loading Plugin cannot be created.
 #[test]
 fn a_committed_archive_without_its_loading_plugin_fails_the_run() {
     let root = mod_root("missing-loading-plugin", &["textures/asset.dds"]);
     let source = root.join("textures/asset.dds");
-    let output = root.join("packed.bsa");
-    let (packed, packed_root) = (output.clone(), root.clone());
-    let toolset = Arc::new(
-        ScriptedToolset::default().with_finalization(move |_, recorder, _| {
-            std::fs::write(&packed, "committed Archive").unwrap();
-            let result = ArchiveFinalizationResult {
-                attempts: vec![ArchiveFinalizationAttempt {
-                    failure: Some(ArchiveFinalizationFailure::PluginCreationFailed),
-                    safe_to_continue: false,
-                    detail: "planned Loading Plugin occupied".to_owned(),
-                    ..finalization_attempt(&packed, &packed_root, MutationState::Committed)
-                }],
-                safe_to_continue: false,
-                ..ArchiveFinalizationResult::default()
-            };
-            record_finalization_result(recorder, result, None)
-        }),
-    );
+    let planned_plugin = root.join("missing-loading-plugin.esp");
+    let competitor = planned_plugin.clone();
+    let occupied = AtomicBool::new(false);
+    let toolset = Arc::new(ScriptedToolset {
+        capacity: Arc::new(FakeCapacity(Some(Box::new(move |_| {
+            if !occupied.swap(true, Ordering::SeqCst) {
+                std::fs::write(&competitor, "competing plugin").unwrap();
+            }
+            None
+        })))),
+        ..ScriptedToolset::default()
+    });
     let mut cleanup = CountingCleanup::default();
     let result = execute(
         &request(
@@ -1572,23 +1682,30 @@ fn a_committed_archive_without_its_loading_plugin_fails_the_run() {
             &[RequestedWork::ArchiveCreation],
         ),
         &mut cleanup,
-        Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+        Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
         &CancellationToken::new(),
     );
 
     assert_eq!(result.outcome(), RunOutcome::Failed);
     assert_eq!(result.final_phase(), RunPhase::ArchiveFinalization);
+    assert!(result.failures().is_empty(), "{:?}", result.failures());
     let finalization = result.archive_finalization().unwrap();
     assert_eq!(finalization.attempts.len(), 1);
+    let attempt = &finalization.attempts[0];
     assert_eq!(
-        finalization.attempts[0].failure,
-        Some(ArchiveFinalizationFailure::PluginCreationFailed)
+        attempt.failure,
+        Some(ArchiveFinalizationFailure::PluginCreationFailed),
+        "{}",
+        attempt.detail
     );
-    assert_eq!(finalization.attempts[0].mutation, MutationState::Committed);
+    assert_eq!(attempt.mutation, MutationState::Committed);
+    assert!(!attempt.safe_to_continue);
+    assert!(!finalization.safe_to_continue);
     assert_eq!(result.mutation_summaries().len(), 1);
     assert_eq!(result.mutation_summaries()[0].committed, 1);
-    assert!(output.exists());
+    assert!(attempt.archive_path.exists());
     assert!(source.exists());
+    assert_eq!(read(&planned_plugin), "competing plugin");
 }
 
 /// Origin: RunExecutorTests::cancellationAfterAtomicAssetAttempt (the unsafe
@@ -1625,14 +1742,14 @@ fn an_unsafe_attempt_cancelled_mid_flight_fails_and_leaves_pending_work_untouche
             &[RequestedWork::NativeTextureOptimization],
         ),
         &mut cleanup,
-        Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+        Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
         &token,
     );
 
     assert_eq!(result.outcome(), RunOutcome::Failed);
     assert!(result.cancellation_observed());
     assert_eq!(result.asset_attempts().len(), 1);
-    assert_eq!(toolset.finalizations(), 0);
+    assert!(result.archive_finalization().is_none());
     assert_eq!(result.routing_ledger().unwrap().routed_assets().len(), 2);
     let attempt = &result.asset_attempts()[0];
     assert_eq!(attempt.mod_root, root);
@@ -1687,7 +1804,7 @@ fn a_discovery_diagnostic_survives_a_failure_later_in_discovery() {
             ],
         ),
         &mut cleanup,
-        Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+        Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
         &CancellationToken::new(),
     );
     std::fs::remove_dir(&link).unwrap();
@@ -1709,7 +1826,8 @@ fn a_discovery_diagnostic_survives_a_failure_later_in_discovery() {
     );
     assert_eq!(result.diagnostics()[0].path, link);
     assert!(result.routing_ledger().is_none());
-    assert!(toolset.extracted().is_empty());
+    assert!(result.archive_extraction_attempts().is_empty());
+    assert!(root.join("content.bsa").exists(), "nothing is extracted");
     assert!(result.phase(RunPhase::ArchiveFinalization).is_none());
     assert_eq!(cleanup.passes, 1);
 }
@@ -1761,7 +1879,8 @@ fn a_failing_work_configuration_leaves_stale_staging_untouched() {
 /// (both rows). Stale staging is recovered before work, the run's own staging
 /// shares the same area, the committed Asset survives, and the run's
 /// temporaries are cleaned once whether or not the work later fails. The
-/// later failure is the Archive Finalization port failing after the commit.
+/// later failure is Archive Finalization's own, after the commit: its packer
+/// panics once it has staged the Archive.
 #[test]
 fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
     for fails in [false, true] {
@@ -1770,10 +1889,21 @@ fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
         } else {
             "completed"
         };
-        let root = mod_root(&format!("shared-recovery-{fails}"), &["texture.dds"]);
-        let leftover = common::crashed_run_leftover(&root, "texture.dds");
+        let root = mod_root(
+            &format!("shared-recovery-{fails}"),
+            &["textures/texture.dds"],
+        );
+        let leftover = common::crashed_run_leftover(&root, "textures/texture.dds");
         let staged = StagedTemporary::default();
-        let toolset = ScriptedToolset::default().with_assets({
+        let toolset = ScriptedToolset {
+            packer: if fails {
+                panicking_packer()
+            } else {
+                Arc::default()
+            },
+            ..ScriptedToolset::default()
+        }
+        .with_assets({
             let staged = staged.clone();
             move |asset, mod_root, artifacts| {
                 staged.stage(mod_root, artifacts);
@@ -1781,32 +1911,41 @@ fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
                 Ok(AssetExecutionResult::success(MutationState::Committed))
             }
         });
-        let toolset = Arc::new(if fails {
-            toolset.with_escaping_finalization_work("orchestration failed after the commit")
-        } else {
-            toolset
-        });
+        let toolset = Arc::new(toolset);
         let mut cleanup = CountingCleanup::default();
+        // Archive creation gives the failure row an output to pack.
+        let work: &[RequestedWork] = if fails {
+            &[
+                RequestedWork::NativeTextureOptimization,
+                RequestedWork::ArchiveCreation,
+            ]
+        } else {
+            &[RequestedWork::NativeTextureOptimization]
+        };
 
         let result = execute(
-            &request(
-                ExecutionMode::Apply,
-                &root,
-                &[RequestedWork::NativeTextureOptimization],
-            ),
+            &request(ExecutionMode::Apply, &root, work),
             &mut cleanup,
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
             &CancellationToken::new(),
         );
 
+        assert!(
+            result.failures().is_empty(),
+            "{row}: {:?}",
+            result.failures()
+        );
         if fails {
             assert_eq!(result.outcome(), RunOutcome::Failed, "{row}");
-            assert_eq!(result.failures().len(), 1, "{row}");
-            assert_eq!(result.failures()[0].code, RunFailureCode::RunWorkEscaped);
+            let finalization = result.archive_finalization().unwrap();
+            assert_eq!(
+                finalization.attempts[0].failure,
+                Some(ArchiveFinalizationFailure::UnexpectedException)
+            );
+            assert!(!finalization.safe_to_continue, "{row}");
             assert!(
-                result.failures()[0]
-                    .detail
-                    .contains("orchestration failed after the commit")
+                common::archives_in(&root).is_empty(),
+                "{row}: nothing is packed"
             );
         } else {
             assert_eq!(result.outcome(), RunOutcome::Succeeded, "{row}");
@@ -1818,16 +1957,22 @@ fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
             Some(RunProgress::determinate(1, 1, 0)),
             "{row}"
         );
-        assert_eq!(toolset.finalizations(), 1, "{row}");
         assert!(
             result.phase(RunPhase::ArchiveFinalization).is_some(),
             "{row}"
         );
+        if !fails {
+            assert!(result.archive_finalization().is_some(), "{row}");
+        }
         assert_eq!(result.mutation_summaries().len(), 1, "{row}");
         assert_eq!(result.mutation_summaries()[0].committed, 1, "{row}");
         staged.assert_removed();
         assert!(!leftover.exists(), "{row}: the stale sibling was recovered");
-        assert_eq!(read(&root.join("texture.dds")), "committed asset", "{row}");
+        assert_eq!(
+            read(&root.join("textures/texture.dds")),
+            "committed asset",
+            "{row}"
+        );
         assert_eq!(cleanup.passes, 1, "{row}");
         assert!(result.cleanup_failures().is_empty(), "{row}");
         assert_eq!(
@@ -1997,7 +2142,7 @@ fn terminal_precedence_classifies_each_outcome_and_keeps_every_fact() {
             ),
             &mut cleanup,
             None,
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
             &token,
         );
 
@@ -2336,8 +2481,9 @@ fn explicit_archive_precedence_is_retained_through_preparing() {
 }
 
 /// Origin: RunExecutorTests::preparingDoesNotMutateAssetsOrArchives (both
-/// modes). Requested work without a Run Toolset fails Preparing, and the
-/// Assets, Archives and directory listing are untouched, mtimes included.
+/// modes). Requested work the profile supports none of fails Preparing
+/// with a Policy Conflict, and the Assets, Archives and directory listing
+/// are untouched, mtimes included.
 #[test]
 fn a_failed_preparing_mutates_no_asset_or_archive() {
     for mode in [ExecutionMode::Apply, ExecutionMode::DryRun] {
@@ -2352,6 +2498,7 @@ fn a_failed_preparing_mutates_no_asset_or_archive() {
                 .unwrap()
         };
         let before = (modified("asset.dds"), modified("source.bsa"));
+        let unsupporting = unsupporting_configuration();
         let mut cleanup = CountingCleanup::default();
 
         let result = execute(
@@ -2364,15 +2511,12 @@ fn a_failed_preparing_mutates_no_asset_or_archive() {
                 ],
             ),
             &mut cleanup,
-            Some(&*test_configuration()),
+            Some(&*unsupporting),
             &CancellationToken::new(),
         );
 
         assert!(result.preparation().is_none(), "{mode:?}");
-        assert_eq!(
-            result.failures()[0].code,
-            RunFailureCode::RequestedWorkUnavailable
-        );
+        assert_eq!(result.failures()[0].code, RunFailureCode::PolicyConflict);
         assert_eq!((modified("asset.dds"), modified("source.bsa")), before);
         let mut names: Vec<_> = std::fs::read_dir(&root)
             .unwrap()
@@ -2387,6 +2531,7 @@ fn a_failed_preparing_mutates_no_asset_or_archive() {
 }
 
 /// Origin: RunExecutorTests::aRunThatStopsEarlyRecordsOnlyThePhasesItTraversed.
+/// The run stops in Preparing on a Policy Conflict.
 #[test]
 fn a_run_stopped_in_preparing_records_only_the_phases_it_traversed() {
     let mut cleanup = CountingCleanup::default();
@@ -2397,10 +2542,11 @@ fn a_run_stopped_in_preparing_records_only_the_phases_it_traversed() {
             &[RequestedWork::ArchiveExtraction],
         ),
         &mut cleanup,
-        Some(&*test_configuration()),
+        Some(&*unsupporting_configuration()),
         &CancellationToken::new(),
     );
 
+    assert_eq!(result.failures()[0].code, RunFailureCode::PolicyConflict);
     assert_eq!(result.final_phase(), RunPhase::Preparing);
     let phases: Vec<_> = result.phases().iter().map(RunPhaseRecord::phase).collect();
     assert_eq!(phases, [RunPhase::Preparing, RunPhase::SafetyCleanup]);
@@ -2705,9 +2851,9 @@ fn cleanup_does_not_follow_a_replaced_parent() {
 /// Safety Cleanup still removes what the run staged.
 ///
 /// Each milestone is observed as its phase record reaches the run's sink.
-/// The run's one Archive is extracted by a scripted port that stages a
-/// temporary, so every row from the definitive pass on proves its removal;
-/// the earlier rows stop before any port has held the run's registry.
+/// The run's one Archive is really extracted, staging its entry under the
+/// run's Temporary Ownership, so every row from the definitive pass on proves
+/// that staging's removal; the earlier rows stop before anything is staged.
 #[test]
 fn cancelling_at_each_work_milestone_stops_at_that_phase() {
     let milestones = [
@@ -2734,16 +2880,20 @@ fn cancelling_at_each_work_milestone_stops_at_that_phase() {
                 }
             }
         });
-        let staged = StagedTemporary::default();
-        // Extraction stages and succeeds without publishing, so the tree
-        // the definitive pass routes is the loose one.
-        let toolset = Arc::new(ScriptedToolset::default().with_extraction({
-            let staged = staged.clone();
-            move |plan, artifacts| {
-                staged.stage(&plan.mod_root, artifacts);
-                ArchiveExtractionResult::new(plan)
-            }
-        }));
+        let staged = StagedArchiveWork::default();
+        // The extracted Mesh is published but never routed for Texture work,
+        // so the definitive pass routes only the loose Texture.
+        let reader = FakeArchiveReader {
+            on_extract: Some(Box::new({
+                let (staged, root) = (staged.clone(), root.clone());
+                move |_, _| staged.capture(&root)
+            })),
+            ..FakeArchiveReader::default()
+        };
+        let toolset = Arc::new(ScriptedToolset {
+            reader: Arc::new(reader),
+            ..ScriptedToolset::default()
+        });
         let mut cleanup = CountingCleanup::default();
 
         let result = execute_run(
@@ -2757,7 +2907,7 @@ fn cancelling_at_each_work_milestone_stops_at_that_phase() {
             ),
             &mut cleanup,
             Some(&sink),
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
             &token,
         );
 
@@ -2779,18 +2929,31 @@ fn cancelling_at_each_work_milestone_stops_at_that_phase() {
         );
         // Only the definitive pass and later follow extraction.
         let extracted = milestone >= RunPhase::BuildingEffectiveAssetTree;
+        let attempts = result.archive_extraction_attempts();
+        assert_eq!(attempts.len(), usize::from(extracted), "{milestone:?}");
+        assert!(
+            attempts
+                .iter()
+                .all(|attempt| attempt.mutation == MutationState::Committed),
+            "{milestone:?}: {attempts:?}"
+        );
         assert_eq!(
-            toolset.extracted().len(),
-            usize::from(extracted),
+            root.join("meshes/archived.nif").exists(),
+            extracted,
             "{milestone:?}"
         );
-        assert_eq!(toolset.finalizations(), 0, "{milestone:?}");
+        assert_eq!(
+            root.join("content.bsa.bak").exists(),
+            extracted,
+            "{milestone:?}: an extracted source is backed up"
+        );
+        assert!(result.archive_finalization().is_none(), "{milestone:?}");
         assert!(result.failures().is_empty(), "{milestone:?}");
         assert_eq!(cleanup.passes, 1, "{milestone:?}");
         if extracted {
             staged.assert_removed();
         } else {
-            assert!(staged.path().is_none(), "{milestone:?}");
+            assert!(staged.is_empty(), "{milestone:?}");
         }
         assert_eq!(read(&root.join("textures/a.dds")), "textures/a.dds");
     }

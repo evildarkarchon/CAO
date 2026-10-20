@@ -15,6 +15,13 @@
 //! that phase's record through a recording Run Observation Sink, and cancels
 //! through the run's cancellation token.
 //!
+//! Every run does core's real Archive extraction and Archive Finalization
+//! over those fakes, so it does what a production run does: an extracted
+//! source Archive is backed up to `<name>.bak`, and Archive Finalization
+//! prunes empty directories and maintains Loading Plugins. A scenario
+//! observes that work through the run's Run Evidence, and through the fakes'
+//! own records only for what Run Evidence does not hold.
+//!
 //! Ported elsewhere: the scenarios that drove `ArchiveExtractor` with a
 //! hand-built plan are in `archive_extraction.rs`.
 //!
@@ -40,13 +47,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use cao_core::execution::MutationState;
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
-    ArchiveExtractionFailure, ArchiveExtractionResult, ArchivePrecedence, CancellationToken,
-    ModSelection, MutationKind, OptimizationRunResult, RunDiagnosticCode, RunFailureCode,
-    RunObservationSink, RunOutcome, RunPhase, RunRequest,
+    ArchiveExtractionFailure, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
+    ArchivePrecedence, CancellationToken, ModSelection, MutationKind, MutationSummary,
+    OptimizationRunResult, RunDiagnosticCode, RunFailureCode, RunObservationSink, RunOutcome,
+    RunPhase, RunRequest,
 };
 use cao_core::test_support::{
-    CountingCleanup, FakeArchiveReader, FakeCapacity, FakeEntry, FakeVolumes, Observed,
-    RecordingSink, ScriptedToolset, ToolsetConfiguration, entry, execute_run, write_archive,
+    CountingCleanup, FakeArchivePacker, FakeArchiveReader, FakeCapacity, FakeEntry, FakeVolumes,
+    Observed, RecordingSink, ScriptedToolset, ToolsetConfiguration, entry, execute_run,
+    write_archive,
 };
 use common::{canonical, junction, request, scratch_dir, snapshot_tree, write_tree};
 
@@ -79,14 +88,15 @@ fn execute_with(
     observations: Option<&dyn RunObservationSink>,
     stop: &CancellationToken,
 ) -> OptimizationRunResult {
-    let provider = ToolsetConfiguration::sse(Some(Arc::clone(toolset)));
+    let provider = ToolsetConfiguration::sse(Arc::clone(toolset));
     let mut cleanup = CountingCleanup::default();
     let result = execute_run(request, &mut cleanup, observations, Some(&provider), stop);
     assert_eq!(cleanup.passes, 1, "Safety Cleanup always runs once");
     result
 }
 
-/// A Toolset whose capacity probe answers `capacity` for every Mod Root.
+/// A Toolset doing real Archive work whose capacity probe answers `capacity`
+/// for every Mod Root.
 fn with_capacity(
     capacity: impl Fn(&Path) -> Option<u64> + Send + Sync + 'static,
 ) -> ScriptedToolset {
@@ -96,8 +106,8 @@ fn with_capacity(
     }
 }
 
-/// A Toolset whose fake reader runs `on_extract` as it extracts each entry,
-/// before writing the payload.
+/// A Toolset doing real Archive work whose fake reader runs `on_extract` as
+/// it extracts each entry, before writing the payload.
 fn on_extract(hook: impl Fn(&Path, &str) + Send + Sync + 'static) -> Arc<ScriptedToolset> {
     Arc::new(ScriptedToolset {
         reader: Arc::new(FakeArchiveReader {
@@ -113,14 +123,22 @@ fn no_manifest_listed(toolset: &ScriptedToolset) -> bool {
     toolset.reader.listed.lock().unwrap().is_empty()
 }
 
-/// The Archive path of every extraction plan the run handed to its
-/// extraction port, in order.
-fn extracted_archives(toolset: &ScriptedToolset) -> Vec<PathBuf> {
-    toolset
-        .extracted()
-        .into_iter()
-        .map(|plan| plan.archive_path)
+/// The Archive path of every extraction attempt in the run's Run Evidence,
+/// in the order the run made them.
+fn extracted_archives(result: &OptimizationRunResult) -> Vec<PathBuf> {
+    result
+        .archive_extraction_attempts()
+        .iter()
+        .map(|attempt| attempt.archive_path.clone())
         .collect()
+}
+
+/// The `<name>.bak` backup Backup source cleanup renames an extracted
+/// source Archive at `archive` to.
+fn backup_of(archive: &Path) -> PathBuf {
+    let mut name = archive.file_name().unwrap().to_os_string();
+    name.push(".bak");
+    archive.with_file_name(name)
 }
 
 /// The progress of every phase record `sink` saw for `phase` after at least
@@ -156,9 +174,7 @@ fn an_enabled_archive_is_extracted_before_the_definitive_tree_is_built() {
         "{:?}",
         result.failures()
     );
-    let plans = toolset.extracted();
-    assert_eq!(plans.len(), 1);
-    assert_eq!(plans[0].archive_path, root.join("content.bsa"));
+    assert_eq!(extracted_archives(&result), [root.join("content.bsa")]);
     assert_eq!(
         std::fs::read(root.join("textures/extracted.dds")).unwrap(),
         b"extracted"
@@ -172,10 +188,17 @@ fn an_enabled_archive_is_extracted_before_the_definitive_tree_is_built() {
             root.join("textures").join("loose.dds"),
         ]
     );
+    // Backup source cleanup keeps the extracted source under a new name.
+    assert!(!root.join("content.bsa").exists());
     assert!(
-        root.join("content.bsa").exists(),
-        "the source Archive is kept"
+        backup_of(&root.join("content.bsa")).exists(),
+        "the source Archive is backed up"
     );
+    // Archive Finalization ran, with no Archive creation requested and no
+    // empty directory left to prune.
+    let finalization = result.archive_finalization().unwrap();
+    assert!(finalization.attempts.is_empty());
+    assert!(finalization.mutations.is_empty());
 }
 
 /// The Apply request over native Textures and Archive extraction for every
@@ -226,8 +249,14 @@ fn assert_blocked_before_extraction(
     assert_eq!(failure.phase, RunPhase::DiscoveringArchives);
     assert_eq!(failure.path, path);
     assert!(!failure.detail.is_empty());
-    assert!(toolset.extracted().is_empty(), "no extraction starts");
-    assert!(result.archive_extraction_attempts().is_empty());
+    assert!(
+        result.archive_extraction_attempts().is_empty(),
+        "no extraction starts"
+    );
+    assert!(
+        result.archive_finalization().is_none(),
+        "nor does Archive Finalization"
+    );
     assert!(result.archive_collisions().is_empty());
     assert!(result.routing_ledger().is_none());
     assert!(toolset.attempted().is_empty());
@@ -282,7 +311,7 @@ fn independent_volumes_each_need_only_their_own_estimate() {
     let result = execute(&several_archives_and_textures(&base), &toolset);
 
     assert!(result.failures().is_empty(), "{:?}", result.failures());
-    assert_eq!(toolset.extracted().len(), 2);
+    assert_eq!(result.archive_extraction_attempts().len(), 2);
 }
 
 /// Origin: ArchiveFirstAssetDiscoveryTests::unknownVolumeWithWorkRetainsBatchCapacity.
@@ -307,7 +336,7 @@ fn an_unidentified_volume_with_work_keeps_the_whole_batch_estimate() {
         result.failures()[0].code,
         RunFailureCode::ArchiveInsufficientCapacity
     );
-    assert!(toolset.extracted().is_empty());
+    assert!(result.archive_extraction_attempts().is_empty());
 }
 
 /// Origin: ArchiveFirstAssetDiscoveryTests::compressedShadowedEntryRequiresCapacity.
@@ -538,7 +567,7 @@ fn an_unreadable_archive_fails_the_run_before_any_mutation() {
         RunFailureCode::ArchiveUnreadable,
         &root.join("broken.bsa"),
     );
-    assert_eq!(toolset.finalizations(), 0);
+    assert!(result.archive_finalization().is_none());
     assert!(result.phase(RunPhase::ProcessingAssets).is_none());
     assert!(result.phase(RunPhase::ArchiveFinalization).is_none());
     assert!(!result.cancellation_observed());
@@ -609,7 +638,7 @@ fn invalid_explicit_archive_precedence_fails_before_extraction() {
         assert_eq!(result.outcome(), RunOutcome::Failed);
         assert_eq!(result.failures().len(), 1);
         assert_eq!(result.failures()[0].code, code, "{order:?}");
-        assert!(toolset.extracted().is_empty());
+        assert!(result.archive_extraction_attempts().is_empty());
         assert!(result.routing_ledger().is_none());
         assert!(
             no_manifest_listed(&toolset),
@@ -634,7 +663,7 @@ fn collisions_never_cross_mod_roots() {
 
     assert!(result.failures().is_empty(), "{:?}", result.failures());
     assert!(result.archive_collisions().is_empty());
-    assert_eq!(toolset.extracted().len(), 2);
+    assert_eq!(result.archive_extraction_attempts().len(), 2);
     assert_eq!(
         std::fs::read(base.join("second/textures/shared.dds")).unwrap(),
         b"second"
@@ -719,7 +748,7 @@ fn collisions_are_recorded_and_reported_before_the_first_extraction() {
             shadowed.map(|name| root.join(name))
         );
         assert_eq!(collision.loose_asset_wins, loose);
-        let extracted: Vec<_> = extracted_archives(&toolset);
+        let extracted: Vec<_> = extracted_archives(&result);
         assert_eq!(extracted[0], root.join(winner), "the winner extracts first");
         // A Loose Asset's precedence is planned, not left to a failed publish.
         assert!(
@@ -754,7 +783,7 @@ fn a_collision_keeps_the_winning_archives_spelling() {
     let result = execute(&archives_and_textures(&root), &toolset);
 
     assert!(result.failures().is_empty(), "{:?}", result.failures());
-    assert_eq!(toolset.extracted().len(), 2);
+    assert_eq!(result.archive_extraction_attempts().len(), 2);
     let [collision] = result.archive_collisions() else {
         panic!("one collision expected");
     };
@@ -790,7 +819,7 @@ fn archives_are_ordered_by_folded_name_within_each_mod_root() {
 
     let result = execute(&several_archives_and_textures(&base), &toolset);
 
-    let observed: Vec<_> = extracted_archives(&toolset);
+    let observed: Vec<_> = extracted_archives(&result);
     let expected: Vec<_> = ["a-mod", "z-mod"]
         .into_iter()
         .flat_map(|root| names.map(|name| base.join(root).join(name)))
@@ -829,7 +858,7 @@ fn a_dry_run_ignores_precedence_and_never_reads_a_manifest() {
         result.archive_collisions().is_empty(),
         "Dry Run retains no collisions"
     );
-    assert!(toolset.extracted().is_empty());
+    assert!(result.archive_extraction_attempts().is_empty());
     assert!(
         no_manifest_listed(&toolset),
         "Dry Run never reads a manifest"
@@ -870,7 +899,7 @@ fn a_collision_observer_can_cancel_before_any_extraction() {
         1,
         "the plan is still retained"
     );
-    assert!(toolset.extracted().is_empty());
+    assert!(result.archive_extraction_attempts().is_empty());
     assert!(result.routing_ledger().is_none());
     assert!(!root.join("textures").exists());
 }
@@ -896,7 +925,7 @@ fn explicit_precedence_resolves_against_the_mod_roots_resolved_target() {
     std::fs::remove_dir(&alias).unwrap();
 
     assert!(result.failures().is_empty(), "{:?}", result.failures());
-    let extracted: Vec<_> = extracted_archives(&toolset);
+    let extracted: Vec<_> = extracted_archives(&result);
     assert_eq!(extracted, [root.join("a.bsa")]);
 }
 
@@ -941,7 +970,11 @@ fn windows_distinct_sharp_s_and_ss_entries_both_publish() {
 
     assert!(result.failures().is_empty(), "{:?}", result.failures());
     assert!(result.archive_collisions().is_empty());
-    assert_eq!(toolset.extracted()[0].merge_entries.len(), 2);
+    assert_eq!(
+        std::fs::read_dir(root.join("textures")).unwrap().count(),
+        2,
+        "both entries were merged"
+    );
     assert_eq!(
         std::fs::read(root.join("textures/strasse.dds")).unwrap(),
         b"A"
@@ -985,10 +1018,11 @@ fn extraction_adds_archived_assets_without_replacing_a_loose_asset() {
         std::fs::read(root.join("textures/archived-only.dds")).unwrap(),
         b"archived only"
     );
-    assert_eq!(
-        toolset.extracted()[0].merge_entries,
-        ["textures/archived-only.dds"]
-    );
+    // Only the unshadowed entry is merged: publishing the shadowed one over
+    // the Loose Asset would have failed the attempt.
+    let attempt = attempt_for(&result, "content.bsa");
+    assert!(attempt.succeeded(), "{}", attempt.detail);
+    assert_eq!(std::fs::read_dir(root.join("textures")).unwrap().count(), 2);
     assert_eq!(toolset.attempted().len(), 2);
     let summary = &result.mutation_summaries()[0];
     assert_eq!(summary.kind, cao_core::run::MutationKind::ArchiveExtraction);
@@ -1018,7 +1052,8 @@ fn a_loose_asset_created_after_preflight_blocks_the_merge() {
     );
 
     assert_eq!(result.outcome(), RunOutcome::CompletedWithFailures);
-    assert_eq!(toolset.extracted()[0].merge_entries, ["textures/a.dds"]);
+    // The entry was planned for merging at preflight, so its no-replace
+    // publication is what fails.
     let attempt = attempt_for(&result, "source.bsa");
     assert_eq!(
         attempt.failure,
@@ -1067,12 +1102,45 @@ fn frozen_precedence_survives_a_failed_winner_or_a_vanished_loose_asset() {
         assert_eq!(attempts[0].succeeded(), loose, "{}", attempts[0].detail);
         assert!(attempts[0].safe_to_continue);
         assert!(attempts[1].succeeded(), "{}", attempts[1].detail);
+        // The shadowed Archive merges nothing, but its successful extraction
+        // still backs up its source, which is its Committed Mutation.
         assert_eq!(
             attempts[1].mutation,
-            cao_core::execution::MutationState::None
+            cao_core::execution::MutationState::Committed
         );
         assert!(!root.join("textures/a.dds").exists());
-        assert!(root.join("a.bsa").exists());
+        // Removing the Loose Asset left `textures` empty, so Archive
+        // Finalization prunes it; without one, `textures` never existed.
+        assert!(!root.join("textures").exists());
+        let pruned: Vec<_> = result
+            .archive_finalization()
+            .unwrap()
+            .mutations
+            .iter()
+            .map(|mutation| (mutation.kind, mutation.mod_root.clone(), mutation.count))
+            .collect();
+        let expected_pruning = if loose {
+            vec![(
+                ArchiveFinalizationMutationKind::EmptyDirectoryPruning,
+                root.clone(),
+                1,
+            )]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(pruned, expected_pruning);
+        assert_eq!(
+            result
+                .mutation_summaries()
+                .iter()
+                .any(|summary| summary.kind == MutationKind::ArchiveFinalization),
+            loose
+        );
+        assert!(backup_of(&root.join("b.bsa")).exists());
+        // A failed winner keeps its source; a winner shadowed by the vanished
+        // Loose Asset merged nothing and is backed up.
+        assert_eq!(root.join("a.bsa").exists(), !loose);
+        assert_eq!(backup_of(&root.join("a.bsa")).exists(), loose);
     }
 }
 
@@ -1133,9 +1201,11 @@ fn every_attempt_repeats_containment_after_a_safe_rejection() {
     );
     assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
     assert_eq!(std::fs::read(root.join("meshes/c.dds")).unwrap(), b"C");
-    for name in ["a.bsa", "b.bsa", "c.bsa"] {
+    // The rejected Archives keep their sources; the merged one is backed up.
+    for name in ["a.bsa", "b.bsa"] {
         assert!(root.join(name).exists());
     }
+    assert!(backup_of(&root.join("c.bsa")).exists());
     assert_eq!(result.outcome(), RunOutcome::CompletedWithFailures);
 }
 
@@ -1162,7 +1232,7 @@ fn an_archive_excluded_by_policy_is_never_read_or_extracted() {
         "{:?}",
         result.failures()
     );
-    assert!(toolset.extracted().is_empty());
+    assert!(result.archive_extraction_attempts().is_empty());
     assert!(no_manifest_listed(&toolset));
     assert_eq!(
         toolset.attempted(),
@@ -1195,7 +1265,11 @@ fn an_archive_produced_by_extraction_is_counted_but_never_worked() {
         "{:?}",
         result.failures()
     );
-    assert_eq!(toolset.extracted().len(), 1, "nesting is never extracted");
+    assert_eq!(
+        result.archive_extraction_attempts().len(),
+        1,
+        "nesting is never extracted"
+    );
     assert!(root.join("textures/nested.bsa").exists());
     assert_eq!(
         toolset.attempted(),
@@ -1318,15 +1392,15 @@ fn cancellation_between_archives_stops_before_the_next_attempt() {
     write_archive(&root.join("b.bsa"), &[entry("meshes/b.dds", b"B")]);
     let token = CancellationToken::new();
     let raise = token.clone();
-    let toolset = Arc::new(ScriptedToolset::default().with_extraction(move |plan, _| {
-        raise.cancel();
-        cao_core::run::ArchiveExtractionResult::new(plan)
-    }));
+    let toolset = on_extract(move |_, _| raise.cancel());
 
     let result = execute_with(&archives_and_textures(&root), &toolset, None, &token);
 
     assert_eq!(result.outcome(), RunOutcome::Cancelled);
-    assert_eq!(result.archive_extraction_attempts().len(), 1);
+    assert_eq!(extracted_archives(&result), [root.join("a.bsa")]);
+    assert!(attempt_for(&result, "a.bsa").succeeded());
+    assert!(root.join("b.bsa").exists(), "the next Archive is untouched");
+    assert!(!root.join("meshes").exists());
     let progress = result
         .phase(RunPhase::ExtractingArchives)
         .unwrap()
@@ -1363,16 +1437,22 @@ fn a_contained_linked_loose_asset_still_shadows_its_archive_entry() {
     let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(&archives_and_textures(&root), &toolset);
+    let still_linked = std::fs::symlink_metadata(&loose)
+        .unwrap()
+        .file_type()
+        .is_symlink();
     std::fs::remove_file(&loose).unwrap();
 
     assert!(result.failures().is_empty(), "{:?}", result.failures());
-    let plans = toolset.extracted();
-    assert_eq!(plans.len(), 1);
-    assert!(
-        plans[0].merge_entries.is_empty(),
-        "the linked Loose Asset wins"
-    );
+    // The linked Loose Asset wins, so the entry is never merged: publishing
+    // it at the link's name would have failed the attempt.
+    let [attempt] = result.archive_extraction_attempts() else {
+        panic!("one attempt expected");
+    };
+    assert!(attempt.succeeded(), "{}", attempt.detail);
+    assert!(still_linked, "the linked Loose Asset wins");
     assert_eq!(std::fs::read(&target).unwrap(), b"loose asset");
+    assert!(backup_of(&root.join("source.bsa")).exists());
 }
 
 /// Origin: ArchiveFirstAssetDiscoveryTests::escapingFileLinksAreExcluded.
@@ -1400,7 +1480,7 @@ fn escaping_file_links_are_neither_extracted_nor_worked() {
     std::fs::remove_file(root.join("linked.bsa")).unwrap();
 
     assert!(result.failures().is_empty(), "{:?}", result.failures());
-    assert!(toolset.extracted().is_empty());
+    assert!(result.archive_extraction_attempts().is_empty());
     assert!(no_manifest_listed(&toolset));
     assert_eq!(toolset.attempted(), [root.join("inside.dds")]);
     let mut diagnosed: Vec<_> = result
@@ -1550,15 +1630,64 @@ fn a_contained_file_link_is_work_and_a_dangling_one_is_diagnosed() {
     assert_eq!(diagnostic.path, dangling);
 }
 
+/// A Toolset doing real Archive work whose fake packer panics once it has
+/// written an Archive to staging: Archive Finalization's first output
+/// attempt then fails with an Unexpected Exception that forbids
+/// continuation, the later failure a real run can meet after extraction.
+fn with_panicking_packer() -> Arc<ScriptedToolset> {
+    Arc::new(ScriptedToolset {
+        packer: Arc::new(FakeArchivePacker::panicking_after_write()),
+        ..ScriptedToolset::default()
+    })
+}
+
+/// The Apply request that extracts Archives and then packs Loose Assets into
+/// new Archives.
+fn extraction_then_packing(root: &Path) -> RunRequest {
+    request(
+        ExecutionMode::Apply,
+        root,
+        &[
+            RequestedWork::ArchiveExtraction,
+            RequestedWork::ArchiveCreation,
+        ],
+    )
+}
+
+/// Asserts that Archive Finalization failed its first output attempt with an
+/// Unexpected Exception that forbids continuation, contained by the phase
+/// rather than failing the run's work.
+fn assert_packing_failed_unexpectedly(result: &OptimizationRunResult) {
+    assert_eq!(result.outcome(), RunOutcome::Failed);
+    assert!(result.failures().is_empty(), "{:?}", result.failures());
+    let finalization = result.archive_finalization().unwrap();
+    let [attempt] = finalization.attempts.as_slice() else {
+        panic!("one output attempt: {finalization:?}");
+    };
+    assert_eq!(
+        attempt.failure,
+        Some(ArchiveFinalizationFailure::UnexpectedException)
+    );
+    assert!(!finalization.safe_to_continue);
+}
+
+/// The run's Archive extraction mutation summary.
+fn extraction_summary(result: &OptimizationRunResult) -> &MutationSummary {
+    result
+        .mutation_summaries()
+        .iter()
+        .find(|summary| summary.kind == MutationKind::ArchiveExtraction)
+        .expect("an Archive extraction summary")
+}
+
 /// Origin: RunExecutorTests::discoveryDiagnosticsSurviveInterruption (the
 /// Archive half). A link exclusion retained before extraction survives a
-/// later orchestration failure, alongside the committed extraction.
+/// later failure, alongside the committed extraction.
 ///
-/// Every port called between extraction and routing contains its own
-/// panics, so the later failure is the one that can still escape the run's
-/// work from outside it: an Archive Finalization port failing with an error
-/// that is no Run Evidence invariant violation. A panic escaping the
-/// executor's own work code is covered by its in-crate containment tests.
+/// The later failure is Archive Finalization's own: its packer panics after
+/// the write, which the phase contains as an Unexpected Exception. Work
+/// escaping the executor's traversal is covered by its in-crate containment
+/// tests, since no seam a scenario fakes can make it escape.
 #[test]
 fn discovery_diagnostics_survive_an_interruption_after_extraction() {
     let base = canonical(&scratch_dir("archive-diagnostics-interrupted"));
@@ -1569,44 +1698,24 @@ fn discovery_diagnostics_survive_an_interruption_after_extraction() {
     if !file_symlink(&base.join("source").join("asset.dds"), &link) {
         return;
     }
-    let output = root.join("asset.dds");
-    let toolset = Arc::new(
-        ScriptedToolset::default()
-            .with_extraction(move |plan, _| {
-                std::fs::write(&output, "committed").unwrap();
-                ArchiveExtractionResult {
-                    mutation: MutationState::Committed,
-                    ..ArchiveExtractionResult::new(plan)
-                }
-            })
-            .with_escaping_finalization_work("interrupted after exclusion"),
-    );
+    let toolset = with_panicking_packer();
 
-    let result = execute(
-        &request(
-            ExecutionMode::Apply,
-            &root,
-            &[RequestedWork::ArchiveExtraction],
-        ),
-        &toolset,
-    );
+    let result = execute(&extraction_then_packing(&root), &toolset);
     std::fs::remove_file(&link).unwrap();
 
-    assert_eq!(result.outcome(), RunOutcome::Failed);
+    assert_packing_failed_unexpectedly(&result);
     assert_eq!(result.archive_extraction_attempts().len(), 1);
-    assert_eq!(result.failures().len(), 1);
-    assert_eq!(result.failures()[0].code, RunFailureCode::RunWorkEscaped);
-    assert_eq!(result.failures()[0].phase, RunPhase::ArchiveFinalization);
     let [diagnostic] = result.diagnostics() else {
         panic!("one diagnostic expected: {:?}", result.diagnostics());
     };
     assert_eq!(diagnostic.code, RunDiagnosticCode::LinkedEntryExcluded);
     assert_eq!(diagnostic.phase, RunPhase::DiscoveringArchives);
     assert_eq!(diagnostic.path, link);
-    let summary = &result.mutation_summaries()[0];
-    assert_eq!(summary.kind, MutationKind::ArchiveExtraction);
-    assert_eq!(summary.committed, 1);
-    assert_eq!(std::fs::read(root.join("asset.dds")).unwrap(), b"committed");
+    assert_eq!(extraction_summary(&result).committed, 1);
+    assert_eq!(
+        std::fs::read(root.join("textures/fixture.dds")).unwrap(),
+        b"fixture"
+    );
 }
 
 /// Origin: AssetRunTests::filesystemTraversalPollsCancellation (the
@@ -1639,51 +1748,57 @@ fn cancellation_once_the_definitive_pass_begins_leaves_no_tree() {
     assert!(result.phase(RunPhase::BuildingEffectiveAssetTree).is_some());
     assert!(result.routing_ledger().is_none());
     assert!(toolset.attempted().is_empty());
-    assert_eq!(toolset.finalizations(), 0);
+    assert!(result.archive_finalization().is_none());
 }
 
 /// Origin: AssetRunTests::archiveFailuresControlContinuation (safe failure,
-/// unsafe first, unsafe last, and partial mutation overriding a safe flag).
-/// A safe failure lets the run go on; an unsafe one, or any partial
-/// mutation, stops all later Archives, Assets and finalization.
+/// unsafe first and unsafe last). A safe failure lets the run go on; an
+/// unsafe one, with partial mutation, stops all later Archives, Assets and
+/// finalization.
+///
+/// The safe failure is an Archive corrupted after preflight, which fails
+/// before anything is published. The unsafe one is an obstruction placed
+/// after preflight where the Archive's second entry needs a directory, so
+/// its first entry is already published when the merge fails.
+///
+/// Not covered: C++'s row of partial mutation overriding a safe flag, and an
+/// attempt naming a Mod Root other than its plan's. The real extractor
+/// reports partial mutation as unsafe and keeps its plan's Mod Root, so
+/// no run can produce either.
 #[test]
 fn archive_failures_control_continuation() {
-    use std::sync::atomic::AtomicUsize;
-
-    for (safe, failed_attempt, partial) in [
-        (true, 1, false),
-        (false, 1, true),
-        (false, 2, true),
-        (true, 1, true),
-    ] {
-        let can_continue = safe && !partial;
+    for (failed_attempt, partial) in [(1, false), (1, true), (2, true)] {
+        let can_continue = !partial;
         let root = canonical(&scratch_dir(&format!(
-            "archive-continuation-{safe}-{failed_attempt}-{partial}"
+            "archive-continuation-{failed_attempt}-{partial}"
         )));
+        let name = if failed_attempt == 1 {
+            "a.bsa"
+        } else {
+            "b.bsa"
+        };
         fixture_archive(&root.join("a.bsa"));
         write_archive(&root.join("b.bsa"), &[entry("meshes/b.dds", b"B")]);
+        let failing = root.join(name);
+        if partial {
+            write_archive(
+                &failing,
+                &[
+                    entry("a-committed.dds", b"committed"),
+                    entry("z/blocked.dds", b"blocked"),
+                ],
+            );
+        }
         write_tree(&root, &["loose.dds"]);
-        let attempts = AtomicUsize::new(0);
-        let toolset = Arc::new(ScriptedToolset::default().with_extraction(move |plan, _| {
-            assert_eq!(plan.entries.len(), 1, "the completed manifest plan");
-            if attempts.fetch_add(1, Ordering::SeqCst) + 1 != failed_attempt {
-                return ArchiveExtractionResult::new(plan);
+        let toolset = Arc::new(ScriptedToolset::default());
+        let (directory, corrupted) = (root.clone(), failing.clone());
+        let sink = RecordingSink::on_first_record_of(RunPhase::ExtractingArchives, move || {
+            if partial {
+                std::fs::write(directory.join("z"), "obstruction").unwrap();
+            } else {
+                std::fs::write(&corrupted, "corrupted after preflight").unwrap();
             }
-            ArchiveExtractionResult {
-                failure: Some(ArchiveExtractionFailure::MergeFailed),
-                mutation: if partial {
-                    MutationState::PartialOrUnknown
-                } else {
-                    MutationState::None
-                },
-                safe_to_continue: safe,
-                detail: "Injected merge failure".to_owned(),
-                // The adapter cannot choose the frozen Mod Root.
-                mod_root: PathBuf::from("elsewhere"),
-                ..ArchiveExtractionResult::new(plan)
-            }
-        }));
-        let sink = RecordingSink::default();
+        });
 
         let result = execute_with(
             &archives_and_textures(&root),
@@ -1694,24 +1809,35 @@ fn archive_failures_control_continuation() {
 
         let attempted = if can_continue { 2 } else { failed_attempt };
         assert_eq!(result.archive_extraction_attempts().len(), attempted);
-        assert_eq!(toolset.attempted().len(), usize::from(can_continue));
-        assert_eq!(toolset.finalizations(), usize::from(can_continue));
+        // After a safe failure the later Archive's entry is worked too.
+        let mut worked = toolset.attempted();
+        worked.sort();
+        let expected_work = if can_continue {
+            vec![root.join("loose.dds"), root.join("meshes").join("b.dds")]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(worked, expected_work);
+        assert_eq!(result.archive_finalization().is_some(), can_continue);
         assert_eq!(result.routing_ledger().is_some(), can_continue);
         assert!(!result.cancellation_observed());
         let failure = &result.archive_extraction_attempts()[failed_attempt - 1];
         assert_eq!(failure.mod_root, root);
         assert!(!failure.succeeded());
-        assert_eq!(
-            failure.safe_to_continue, safe,
-            "the adapter's claim is retained"
-        );
-        assert_eq!(failure.detail, "Injected merge failure");
-        let name = if failed_attempt == 1 {
-            "a.bsa"
+        assert_eq!(failure.safe_to_continue, !partial);
+        if partial {
+            assert_eq!(failure.failure, Some(ArchiveExtractionFailure::MergeFailed));
+            assert_eq!(failure.mutation, MutationState::PartialOrUnknown);
+            assert_eq!(
+                std::fs::read(root.join("a-committed.dds")).unwrap(),
+                b"committed"
+            );
         } else {
-            "b.bsa"
-        };
-        assert_eq!(failure.archive_path, root.join(name));
+            assert_eq!(failure.mutation, MutationState::None);
+        }
+        assert!(!failure.detail.is_empty());
+        assert!(failing.exists(), "a failed attempt keeps its source");
+        assert_eq!(failure.archive_path, failing);
         let last = attempt_progress(&sink, RunPhase::ExtractingArchives)
             .pop()
             .unwrap();
@@ -1734,26 +1860,31 @@ fn archive_failures_control_continuation() {
 #[test]
 fn a_failing_collision_observer_cannot_lose_the_retained_plan() {
     let root = canonical(&scratch_dir("archive-collision-observer-fails"));
-    for name in ["a.bsa", "z.bsa"] {
+    // Each Archive also holds an entry of its own, so each extraction reads
+    // an entry whatever the shadowed one does.
+    for (name, own) in [("a.bsa", "meshes/a.nif"), ("z.bsa", "meshes/z.nif")] {
         write_archive(
             &root.join(name),
-            &[entry("textures/shared.dds", b"archived")],
+            &[
+                entry("textures/shared.dds", b"archived"),
+                entry(own, b"own"),
+            ],
         );
     }
     write_tree(&root, &["textures/shared.dds"]);
     let reported = Arc::new(AtomicBool::new(false));
     let (flag, seen) = (Arc::clone(&reported), Arc::clone(&reported));
-    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let extractions = Arc::clone(&order);
+    let extracted_before_report = Arc::new(AtomicBool::new(false));
+    let violated = Arc::clone(&extracted_before_report);
     let sink = RecordingSink::on_first_record_of(RunPhase::ExtractingArchives, move || {
         flag.store(true, Ordering::SeqCst);
         panic!("collision observer");
     });
-    let toolset = Arc::new(ScriptedToolset::default().with_extraction(move |plan, _| {
-        assert!(seen.load(Ordering::SeqCst), "reported before extraction");
-        extractions.lock().unwrap().push(plan.archive_path.clone());
-        ArchiveExtractionResult::new(plan)
-    }));
+    let toolset = on_extract(move |_, _| {
+        if !seen.load(Ordering::SeqCst) {
+            violated.store(true, Ordering::SeqCst);
+        }
+    });
     let precedence = ArchivePrecedence::ExplicitOrder(vec!["z.bsa".into(), "a.bsa".into()]);
 
     let result = execute_with(
@@ -1775,10 +1906,16 @@ fn a_failing_collision_observer_cannot_lose_the_retained_plan() {
         result.failures()
     );
     assert!(reported.load(Ordering::SeqCst));
+    assert!(
+        !extracted_before_report.load(Ordering::SeqCst),
+        "reported before extraction"
+    );
     assert_eq!(
-        *order.lock().unwrap(),
+        extracted_archives(&result),
         [root.join("z.bsa"), root.join("a.bsa")]
     );
+    assert_eq!(std::fs::read(root.join("meshes/a.nif")).unwrap(), b"own");
+    assert_eq!(std::fs::read(root.join("meshes/z.nif")).unwrap(), b"own");
     let [collision] = result.archive_collisions() else {
         panic!("one collision expected");
     };
@@ -1798,13 +1935,12 @@ fn a_failing_collision_observer_cannot_lose_the_retained_plan() {
 #[test]
 fn extraction_progress_precedes_routed_asset_progress() {
     let root = canonical(&scratch_dir("archive-progress-order"));
-    fixture_archive(&root.join("content.bsa"));
+    write_archive(
+        &root.join("content.bsa"),
+        &[entry("textures/extracted.dds", b"extracted")],
+    );
     write_tree(&root, &["textures/loose.dds"]);
-    let extracted = root.join("textures/extracted.dds");
-    let toolset = Arc::new(ScriptedToolset::default().with_extraction(move |plan, _| {
-        std::fs::write(&extracted, "extracted").unwrap();
-        ArchiveExtractionResult::new(plan)
-    }));
+    let toolset = Arc::new(ScriptedToolset::default());
     let sink = RecordingSink::default();
 
     let result = execute_with(
@@ -1846,29 +1982,32 @@ fn extraction_progress_precedes_routed_asset_progress() {
 
 /// Origin: RunExecutorTests::mixedExtractionAttemptsAdvanceProgress. Mixed
 /// attempts advance one determinate account; a failing progress observer is
-/// contained; and an Archive the failed attempt left behind is counted as
-/// nesting rather than worked.
+/// contained; and an Archive left behind by extraction is counted as nesting
+/// rather than worked.
+///
+/// The failed attempt is a safe one, which publishes nothing, so the nested
+/// Archive comes from the committed attempt instead. C++'s failed attempt
+/// leaving an Archive behind is not covered: the real extractor publishes
+/// nothing on a safe failure, so no run can.
 #[test]
 fn mixed_extraction_attempts_advance_one_determinate_account() {
     let root = canonical(&scratch_dir("archive-mixed-attempts"));
-    fixture_archive(&root.join("a.bsa"));
+    write_archive(
+        &root.join("a.bsa"),
+        &[
+            entry("a.dds", b"extracted"),
+            entry("nested.bsa", b"nested archive"),
+        ],
+    );
     write_archive(&root.join("b.bsa"), &[entry("meshes/b.dds", b"B")]);
-    let directory = root.clone();
-    let toolset = Arc::new(ScriptedToolset::default().with_extraction(move |plan, _| {
-        if plan.archive_path.ends_with("b.bsa") {
-            std::fs::write(directory.join("nested.bsa"), "nested archive").unwrap();
-            return ArchiveExtractionResult {
-                failure: Some(ArchiveExtractionFailure::ExtractionFailed),
-                detail: "controlled extraction failure".to_owned(),
-                ..ArchiveExtractionResult::new(plan)
-            };
+    let later = root.join("b.bsa");
+    // b.bsa is corrupted after preflight, while a.bsa is extracting, so its
+    // own attempt fails safely before publishing anything.
+    let toolset = on_extract(move |archive, _| {
+        if archive.ends_with("a.bsa") {
+            std::fs::write(&later, "corrupted after preflight").unwrap();
         }
-        std::fs::write(directory.join("a.dds"), "extracted").unwrap();
-        ArchiveExtractionResult {
-            mutation: MutationState::Committed,
-            ..ArchiveExtractionResult::new(plan)
-        }
-    }));
+    });
     let threw = std::cell::Cell::new(false);
     let sink = RecordingSink::with_hook(move |observed| {
         if let Observed::Phase(record) = observed
@@ -1899,9 +2038,12 @@ fn mixed_extraction_attempts_advance_one_determinate_account() {
         (progress.total(), progress.succeeded(), progress.failed()),
         (2, 1, 1)
     );
+    assert!(attempt_for(&result, "a.bsa").succeeded());
+    assert!(!attempt_for(&result, "b.bsa").succeeded());
     assert_eq!(toolset.attempted(), [root.join("a.dds")]);
     let discovery = result.evidence().archive_discovery().unwrap();
     assert_eq!(discovery.nested_archive_count, 1);
+    assert!(root.join("nested.bsa").exists());
     let summary = &result.mutation_summaries()[0];
     assert_eq!(summary.kind, MutationKind::ArchiveExtraction);
     assert_eq!(summary.committed, 1);
@@ -1956,9 +2098,9 @@ fn a_failing_preflight_observer_cannot_lose_the_failure() {
         .filter(|diagnostic| diagnostic.code == RunDiagnosticCode::ObserverFailed)
         .count();
     assert_eq!(observer_failures, 1);
-    assert!(toolset.extracted().is_empty());
     assert!(result.archive_extraction_attempts().is_empty());
-    assert_eq!(toolset.finalizations(), 0);
+    assert!(result.archive_extraction_attempts().is_empty());
+    assert!(result.archive_finalization().is_none());
     assert!(result.phase(RunPhase::ArchiveFinalization).is_none());
     assert_eq!(
         std::fs::read(root.join("broken.bsa")).unwrap(),
@@ -1966,101 +2108,73 @@ fn a_failing_preflight_observer_cannot_lose_the_failure() {
     );
 }
 
-/// Rust-only, from the spec's panic rule (#476): a panic in the extraction
-/// adapter is contained as unknown mutation, unsafe to continue, as C++
-/// contained an adapter exception.
+/// Origin: RunExecutorTests::committedExtractionSurvivesDiscoveryInterruption
+/// (cancel row). An extraction committed before discovery is interrupted by
+/// cancellation stays a Committed Mutation in the evidence, with its source
+/// backed up.
 #[test]
-fn a_panicking_extraction_adapter_stops_the_run_with_unknown_mutation() {
-    let root = canonical(&scratch_dir("archive-adapter-panics"));
-    fixture_archive(&root.join("a.bsa"));
-    write_archive(&root.join("b.bsa"), &[entry("meshes/b.dds", b"B")]);
-    write_tree(&root, &["loose.dds"]);
-    let toolset = Arc::new(
-        ScriptedToolset::default()
-            .with_extraction(|_, _| panic!("the extraction backend panicked")),
+fn a_committed_extraction_survives_a_later_cancellation() {
+    let root = canonical(&scratch_dir("archive-interrupted-cancelled"));
+    fixture_archive(&root.join("source.bsa"));
+    let stop = CancellationToken::new();
+    let raise = stop.clone();
+    // Raised while the attempt is in flight, so the run samples it only once
+    // the contained extraction has returned.
+    let toolset = on_extract(move |_, _| raise.cancel());
+
+    let result = execute_with(
+        &request(
+            ExecutionMode::Apply,
+            &root,
+            &[RequestedWork::ArchiveExtraction],
+        ),
+        &toolset,
+        None,
+        &stop,
     );
 
-    let result = execute(&archives_and_textures(&root), &toolset);
-
-    assert_eq!(result.outcome(), RunOutcome::Failed);
-    let [attempt] = result.archive_extraction_attempts() else {
-        panic!("one attempt expected");
-    };
-    assert_eq!(attempt.mutation, MutationState::PartialOrUnknown);
-    assert!(!attempt.safe_to_continue);
-    assert_eq!(
-        attempt.failure,
-        Some(ArchiveExtractionFailure::ExtractionFailed)
-    );
-    assert!(attempt.detail.contains("the extraction backend panicked"));
-    assert!(result.routing_ledger().is_none());
-    assert!(toolset.attempted().is_empty());
+    assert_eq!(result.outcome(), RunOutcome::Cancelled);
+    assert!(result.failures().is_empty());
+    assert_eq!(result.archive_extraction_attempts().len(), 1);
+    assert!(result.archive_finalization().is_none());
     let summary = &result.mutation_summaries()[0];
     assert_eq!(summary.kind, MutationKind::ArchiveExtraction);
-    assert_eq!((summary.committed, summary.partial_or_unknown), (0, 1));
+    assert_eq!((summary.committed, summary.partial_or_unknown), (1, 0));
+    assert_eq!(
+        std::fs::read(root.join("textures/fixture.dds")).unwrap(),
+        b"fixture"
+    );
+    assert!(!root.join("source.bsa").exists());
+    assert!(backup_of(&root.join("source.bsa")).exists());
 }
 
 /// Origin: RunExecutorTests::committedExtractionSurvivesDiscoveryInterruption
-/// (cancel and throw rows). An extraction committed before discovery is
-/// interrupted, by cancellation or by a later orchestration failure, stays a
-/// Committed Mutation in the evidence.
+/// (throw row). An extraction committed before a later failure stays a
+/// Committed Mutation in the evidence, with its source backed up.
 ///
-/// The later failure is an Archive Finalization port failing with an error
-/// that is no Run Evidence invariant violation, the one failure after
-/// extraction that still escapes the run's work from outside it; see
-/// `discovery_diagnostics_survive_an_interruption_after_extraction`.
+/// The later failure is Archive Finalization's own, as in
+/// `discovery_diagnostics_survive_an_interruption_after_extraction`. The
+/// cancel row is `a_committed_extraction_survives_a_later_cancellation`.
 #[test]
 fn a_committed_extraction_survives_a_later_interruption() {
-    for escapes in [false, true] {
-        let root = canonical(&scratch_dir(&format!("archive-interrupted-{escapes}")));
-        fixture_archive(&root.join("source.bsa"));
-        let output = root.join("asset.dds");
-        let stop = CancellationToken::new();
-        let raise = stop.clone();
-        let toolset = ScriptedToolset::default().with_extraction(move |plan, _| {
-            std::fs::write(&output, "committed extraction").unwrap();
-            // Raised while the attempt is in flight, so the run samples it
-            // only once the contained extraction has returned.
-            if !escapes {
-                raise.cancel();
-            }
-            ArchiveExtractionResult {
-                mutation: MutationState::Committed,
-                ..ArchiveExtractionResult::new(plan)
-            }
-        });
-        let toolset = Arc::new(if escapes {
-            toolset.with_escaping_finalization_work("interrupted after extraction")
-        } else {
-            toolset
-        });
+    let root = canonical(&scratch_dir("archive-interrupted-true"));
+    fixture_archive(&root.join("source.bsa"));
+    let toolset = with_panicking_packer();
 
-        let result = execute_with(
-            &request(
-                ExecutionMode::Apply,
-                &root,
-                &[RequestedWork::ArchiveExtraction],
-            ),
-            &toolset,
-            None,
-            &stop,
-        );
+    let result = execute(&extraction_then_packing(&root), &toolset);
 
-        if escapes {
-            assert_eq!(result.outcome(), RunOutcome::Failed);
-            assert_eq!(result.failures()[0].code, RunFailureCode::RunWorkEscaped);
-        } else {
-            assert_eq!(result.outcome(), RunOutcome::Cancelled);
-            assert!(result.failures().is_empty());
-        }
-        assert_eq!(result.archive_extraction_attempts().len(), 1);
-        let summary = &result.mutation_summaries()[0];
-        assert_eq!(summary.kind, MutationKind::ArchiveExtraction);
-        assert_eq!((summary.committed, summary.partial_or_unknown), (1, 0));
-        assert_eq!(
-            std::fs::read(root.join("asset.dds")).unwrap(),
-            b"committed extraction"
-        );
-        assert!(root.join("source.bsa").exists());
-    }
+    assert_packing_failed_unexpectedly(&result);
+    let [extraction] = result.archive_extraction_attempts() else {
+        panic!("one extraction attempt");
+    };
+    assert_eq!(extraction.mutation, MutationState::Committed);
+    let summary = extraction_summary(&result);
+    assert_eq!((summary.committed, summary.partial_or_unknown), (1, 0));
+    assert_eq!(
+        std::fs::read(root.join("textures/fixture.dds")).unwrap(),
+        b"fixture",
+        "the extracted entry is kept"
+    );
+    assert!(!root.join("source.bsa").exists());
+    assert!(backup_of(&root.join("source.bsa")).exists());
 }

@@ -24,6 +24,7 @@ pub use archives::{
     ArchiveCollision, ArchiveExtractionFailure, ArchiveExtractionPlan, ArchiveExtractionResult,
     ArchiveExtractor, SourceCleanup,
 };
+pub(crate) use artifacts::fingerprint;
 pub use artifacts::{
     PublicationPolicy, PublicationReceipt, PublicationResult, PublicationState, PublicationTarget,
     Registration, StagedFile, TemporaryArtifactRegistry,
@@ -62,11 +63,8 @@ pub use service::{OptimizationRunService, RunEventDispatcher, RunHandle, StartEr
 pub use source_pin::{LoadingPluginPin, SourceDirectoryPins, SourceFilePin, SourcePinError};
 pub use staging::{StagingError, is_staging_name};
 pub use toolset::{
-    ArchiveExtractionAdapter, ArchiveExtractionPort, ArchiveFinalizationAdapter,
-    ArchiveFinalizationPort, AssetAttemptPort, AssetInitializationCancelled, RunToolset,
+    ArchiveSeams, ArchiveWorkSettings, AssetAttemptPort, AssetInitializationCancelled, RunToolset,
 };
-
-pub(crate) use artifacts::fingerprint;
 // Only an Optimization Run may write Run Evidence, so the store's writing
 // side stays inside the crate; the sealed `RunEvidence` is the public view.
 pub(crate) use evidence::MutableRunEvidence;

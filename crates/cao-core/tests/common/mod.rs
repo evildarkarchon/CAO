@@ -8,17 +8,15 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use cao_core::routing::{ExecutionMode, RequestedWork};
+use cao_core::routing::{ExecutionMode, ProfileCapabilities, RequestedWork};
 use cao_core::run::{
     InlineRunScheduler, ModSelection, OptimizationRunResult, OptimizationRunService, RunHandle,
-    RunRequest, TemporaryArtifactRegistry,
+    RunRequest, SelectedProfile, TemporaryArtifactRegistry,
 };
 use cao_core::test_support::{
-    EventLog, FakeBackendFactory, FixedConfiguration, ScriptedToolset, ToolsetConfiguration,
-    sse_profile,
+    EventLog, FakeBackendFactory, ScriptedToolset, ToolsetConfiguration, sse_profile,
 };
 
 /// Serializes scenarios that start runs: one active run is allowed per
@@ -90,30 +88,38 @@ pub fn junction(link: &Path, target: &Path) {
     );
 }
 
-/// The provider most scenarios use: the SSE-like profile.
-pub fn test_configuration() -> Arc<FixedConfiguration> {
-    Arc::new(FixedConfiguration {
-        profile: sse_profile(),
-        loads: AtomicUsize::new(0),
-    })
+/// The provider most scenarios use: the SSE-like profile, with a fresh
+/// default [`ScriptedToolset`] for each run, whose Asset attempts succeed
+/// with no mutation while Archive extraction and Archive Finalization are
+/// core's own over the fake reader, packer and probes.
+pub fn test_configuration() -> Arc<ToolsetConfiguration> {
+    toolset_configuration(Arc::new(ScriptedToolset::default()))
 }
 
 /// A provider of the SSE-like profile that returns a fresh Run Toolset over
-/// `toolset` to each run, or no Toolset at all when it is `None`, shared as
-/// the Optimization Run Service takes it.
-pub fn toolset_configuration(toolset: Option<Arc<ScriptedToolset>>) -> Arc<ToolsetConfiguration> {
+/// `toolset` to each run, shared as the Optimization Run Service takes it.
+pub fn toolset_configuration(toolset: Arc<ScriptedToolset>) -> Arc<ToolsetConfiguration> {
     Arc::new(ToolsetConfiguration::sse(toolset))
 }
 
 /// Like [`toolset_configuration`], but the SSE-like profile prefers
 /// conversion, so a run requesting native Texture work also converts its
 /// convertible Textures and maintains Mesh references.
-pub fn converting_configuration(
-    toolset: Option<Arc<ScriptedToolset>>,
-) -> Arc<ToolsetConfiguration> {
+pub fn converting_configuration(toolset: Arc<ScriptedToolset>) -> Arc<ToolsetConfiguration> {
     Arc::new(ToolsetConfiguration::new(
         sse_profile().with_conversion_preference(true),
         toolset,
+    ))
+}
+
+/// A provider whose `.bsa` profile supports no Profile Capability, with a
+/// default [`ScriptedToolset`], so any requested work fails Preparing with a
+/// Policy Conflict: the way a real run with work stops in Preparing before
+/// staging recovery.
+pub fn unsupporting_configuration() -> Arc<ToolsetConfiguration> {
+    Arc::new(ToolsetConfiguration::new(
+        SelectedProfile::new(ProfileCapabilities::define(".bsa", &[])),
+        Arc::new(ScriptedToolset::default()),
     ))
 }
 
@@ -138,7 +144,8 @@ pub fn run_with(
 /// The production shape of a run's Asset attempts: a scripted Toolset whose
 /// attempts drive `factory`'s fake backend behind the production Asset
 /// attempt adapter, one backend per run. Keep clones of the factory's shared
-/// logs to observe it.
+/// logs to observe it. Like every scripted Toolset, it runs core's real
+/// Archive work.
 pub fn backend_toolset(factory: FakeBackendFactory) -> Arc<ScriptedToolset> {
     Arc::new(ScriptedToolset::default().with_backend(factory))
 }

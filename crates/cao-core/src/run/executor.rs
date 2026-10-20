@@ -6,8 +6,10 @@
 //! its Run Worker sit above it.
 //!
 //! The configuration provider returns a Run Toolset with the run's Selected
-//! Profile, and the executor runs every work phase itself through the
-//! Toolset's ports. A request with work but no Toolset fails Preparing.
+//! Profile, and the executor runs every work phase itself: Asset attempts
+//! through the Toolset's Asset attempt port, and Archive discovery,
+//! extraction and Archive Finalization as core's own modules over the
+//! Toolset's Archive seams. Every Optimization Run has a Run Toolset.
 //!
 //! The executor owns the run's Run Evidence and lends it mutably to each step
 //! in turn. Run Evidence enforces the canonical Run Phase order: the
@@ -107,8 +109,7 @@ pub struct RunServices<'a> {
     pub safety_cleanup: &'a mut dyn SafetyCleanupService,
     pub observations: Option<&'a dyn RunObservationSink>,
     /// A missing provider fails Preparing, including for requests with no work.
-    /// Requested work fails Preparing with `RequestedWorkUnavailable` unless
-    /// the provider returns a Run Toolset.
+    /// A provider always returns a Run Toolset with the Selected Profile.
     pub configuration: Option<&'a dyn RunConfigurationProvider>,
 }
 
@@ -117,7 +118,7 @@ pub struct RunServices<'a> {
 fn load_selected_profile(
     request: &RunRequest,
     provider: Option<&dyn RunConfigurationProvider>,
-) -> Result<(SelectedProfile, Option<RunToolset>), RunFailure> {
+) -> Result<(SelectedProfile, RunToolset), RunFailure> {
     let failure = |detail: String| {
         RunFailure::new(
             RunFailureCode::ConfigurationLoadingFailed,
@@ -150,7 +151,7 @@ fn prepare_run(
     provider: Option<&dyn RunConfigurationProvider>,
     evidence: &mut MutableRunEvidence<'_>,
     stop: &CancellationToken,
-) -> Result<Option<(RunPreparation, Option<RunToolset>)>, RunFailure> {
+) -> Result<Option<(RunPreparation, RunToolset)>, RunFailure> {
     let (selected_profile, toolset) = load_selected_profile(request, provider)?;
     // A provider may finish an atomic read after cancellation; stop before
     // compiling or resolving anything more.
@@ -186,13 +187,13 @@ fn prepare_run(
 }
 
 /// Runs every work phase, from Archive discovery through Archive
-/// Finalization, through the Run Toolset's ports.
+/// Finalization, over the Run Toolset.
 ///
 /// Phases are observed only through the run's Run Observation Sink and
-/// cancellation only through `stop`. Each port's panics are contained at
-/// that port. Errors are Run Evidence invariant violations, or any other
-/// error an Archive Finalization port returned against its contract, which
-/// escapes the run's work.
+/// cancellation only through `stop`. Each panic is contained once, by the
+/// module that owns its rule: the work phases contain an Asset attempt's,
+/// and the Archive extractor and Archive Finalization their own. Errors are
+/// Run Evidence invariant violations.
 fn execute_toolset(
     preparation: &RunPreparation,
     mut toolset: RunToolset,
@@ -352,14 +353,14 @@ impl RunExecutor {
         self.execute_with_work(request, services, stop, run_id, execute_toolset)
     }
 
-    /// [`execute`](Self::execute), with `run_work` running the work phases in
-    /// place of the Run Toolset's ports.
+    /// [`execute`](Self::execute), with `run_work` running in place of the
+    /// Run Toolset's work phases.
     ///
     /// This is the crate-private seam beneath the executor's interface: it
     /// lets the executor's own unit tests inject work that escapes as an
-    /// error or a panic, which every Toolset port contains before it could.
-    /// `run_work` is called only when Preparing produced a Run Toolset for
-    /// requested work, with that Toolset.
+    /// error or a panic, which the work phases' own containment stops before
+    /// it could. `run_work` is called only when Preparing succeeded for a
+    /// request with work, with the Run Toolset Preparing produced.
     ///
     /// # Panics
     ///
@@ -447,7 +448,7 @@ impl RunExecutor {
     /// violations are noted in `invariant` for the caller to raise after
     /// cleanup. `artifacts` is the run's Temporary Ownership scope, which the
     /// caller cleans up whatever happens here. `run_work` runs the work
-    /// phases when Preparing produced a Run Toolset.
+    /// phases when Preparing succeeded for a request with work.
     fn traverse(
         request: &RunRequest,
         configuration: Option<&dyn RunConfigurationProvider>,
@@ -464,16 +465,14 @@ impl RunExecutor {
         invariant.note(evidence.record_phase(RunPhaseRecord::executed(RunPhase::Preparing, None)));
 
         let mut preparation = None;
-        // The work ports the provider built from Preparing's profile read.
-        // With one, the executor runs the work phases itself.
+        // The Run Toolset the provider built from Preparing's profile read,
+        // present whenever Preparing produced a preparation. The executor
+        // runs the work phases itself over it.
         let mut toolset = None;
         if !stop.is_cancelled() {
             match prepare_run(request, configuration, evidence, stop) {
                 Ok(prepared) => {
-                    (preparation, toolset) = prepared
-                        .map_or((None, None), |(prepared, toolset)| {
-                            (Some(prepared), toolset)
-                        });
+                    (preparation, toolset) = prepared.unzip();
                 }
                 Err(failure) => {
                     failed = true;
@@ -505,22 +504,6 @@ impl RunExecutor {
                     break;
                 }
             }
-        }
-
-        if preparation.is_some()
-            && !failed
-            && request.has_requested_work()
-            && toolset.is_none()
-            && !stop.is_cancelled()
-        {
-            // Keep the candidate private: a run with no means to do its work
-            // never exposes partial Preparing facts.
-            failed = true;
-            evidence.record_failure(RunFailure::new(
-                RunFailureCode::RequestedWorkUnavailable,
-                RunPhase::Preparing,
-                "Requested work requires run services that are not yet available",
-            ));
         }
 
         let preparation = preparation.filter(|_| !failed && !stop.is_cancelled());

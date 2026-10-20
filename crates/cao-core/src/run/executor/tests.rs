@@ -1,9 +1,11 @@
-//! The Run Executor's own containment, which no Run Toolset port can reach.
+//! The Run Executor's own containment, which no Run Toolset seam can reach.
 //!
-//! Each port contains its own panics, so work that escapes the executor's
-//! traversal can only be injected below its interface. These scenarios pass
-//! the traversal a scripted work closure through the crate-private
-//! [`RunExecutor::execute_with_work`] instead of the Toolset's work phases.
+//! The work phases contain an Asset attempt's panics, and the Archive
+//! extractor and Archive Finalization their own, so work that escapes the
+//! executor's traversal can only be injected below its interface. These
+//! scenarios pass the traversal a scripted work closure through the
+//! crate-private [`RunExecutor::execute_with_work`] instead of the Toolset's
+//! work phases.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -49,7 +51,7 @@ fn texture_request(name: &str) -> (RunRequest, PathBuf) {
 /// A provider of an SSE-like profile with a default scripted Run Toolset, so
 /// the traversal reaches its work phases.
 fn provider() -> ToolsetConfiguration {
-    ToolsetConfiguration::sse(Some(Arc::new(ScriptedToolset::default())))
+    ToolsetConfiguration::sse(Arc::new(ScriptedToolset::default()))
 }
 
 /// Runs `request` with `work` in place of the Toolset's work phases.
