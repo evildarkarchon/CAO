@@ -1,8 +1,6 @@
 //! The finalization recorder: the only way Archive Finalization writes Run
 //! Evidence.
 
-use std::cell::RefCell;
-
 use crate::Error;
 use crate::run::{
     ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationResult,
@@ -17,14 +15,17 @@ use crate::run::{
 /// the phase's determinate progress through the run's observation sink. The
 /// run's evidence must already be in the executed Archive Finalization phase;
 /// anything else is a Run Evidence invariant violation.
+///
+/// It borrows the run's evidence exclusively for as long as it lives, so
+/// nothing else writes Run Evidence while Archive Finalization holds it.
 pub struct ArchiveFinalizationRecorder<'e, 'a> {
-    evidence: &'e RefCell<MutableRunEvidence<'a>>,
+    evidence: &'e mut MutableRunEvidence<'a>,
 }
 
 impl<'e, 'a> ArchiveFinalizationRecorder<'e, 'a> {
-    /// A recorder over the run's evidence owner. Crate-private, so only the
+    /// A recorder lent the run's evidence owner. Crate-private, so only the
     /// run and `test_support` can open one.
-    pub(crate) fn new(evidence: &'e RefCell<MutableRunEvidence<'a>>) -> Self {
+    pub(crate) fn new(evidence: &'e mut MutableRunEvidence<'a>) -> Self {
         Self { evidence }
     }
 
@@ -34,10 +35,8 @@ impl<'e, 'a> ArchiveFinalizationRecorder<'e, 'a> {
     /// # Errors
     /// A Run Evidence invariant violation: the phase is not the current,
     /// executed one, or its total is already recorded.
-    pub fn record_output_total(&self, total: usize) -> Result<(), Error> {
-        self.evidence
-            .borrow_mut()
-            .record_archive_finalization_plan(total)
+    pub fn record_output_total(&mut self, total: usize) -> Result<(), Error> {
+        self.evidence.record_archive_finalization_plan(total)
     }
 
     /// Retains one completed output attempt before the next output starts,
@@ -46,8 +45,8 @@ impl<'e, 'a> ArchiveFinalizationRecorder<'e, 'a> {
     /// # Errors
     /// A Run Evidence invariant violation: no output total is recorded, the
     /// result is already recorded, or the attempts would exceed the total.
-    pub fn record_attempt(&self, attempt: ArchiveFinalizationAttempt) -> Result<(), Error> {
-        let mut evidence = self.evidence.borrow_mut();
+    pub fn record_attempt(&mut self, attempt: ArchiveFinalizationAttempt) -> Result<(), Error> {
+        let evidence = &mut *self.evidence;
         // Evidence rejects an attempt without a total; zero only gives that
         // rejection something to compare against.
         let total = evidence.archive_finalization_total().unwrap_or(0);
@@ -63,10 +62,8 @@ impl<'e, 'a> ArchiveFinalizationRecorder<'e, 'a> {
     /// A Run Evidence invariant violation: the phase is not the current,
     /// executed one, a result is already recorded, or the attempts disagree
     /// with those recorded.
-    pub fn record_result(&self, result: ArchiveFinalizationResult) -> Result<(), Error> {
-        self.evidence
-            .borrow_mut()
-            .record_archive_finalization(result)
+    pub fn record_result(&mut self, result: ArchiveFinalizationResult) -> Result<(), Error> {
+        self.evidence.record_archive_finalization(result)
     }
 
     /// Records the phase's Unexpected Exception after its port panicked with
@@ -77,8 +74,8 @@ impl<'e, 'a> ArchiveFinalizationRecorder<'e, 'a> {
     /// [`Error::RunWorkEscaped`] when the phase had already recorded its result,
     /// so the panic has no result left to fail and escapes the run's work
     /// instead; or a Run Evidence invariant violation.
-    pub(crate) fn record_unexpected_exception(&self, detail: String) -> Result<(), Error> {
-        let mut evidence = self.evidence.borrow_mut();
+    pub(crate) fn record_unexpected_exception(&mut self, detail: String) -> Result<(), Error> {
+        let evidence = &mut *self.evidence;
         if evidence.archive_finalization_completed() {
             return Err(Error::RunWorkEscaped(format!(
                 "Archive Finalization panicked after recording its result: {detail}"

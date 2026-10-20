@@ -25,7 +25,6 @@
 
 mod common;
 
-use std::cell::Cell;
 use std::fs::{File, OpenOptions};
 use std::os::windows::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
@@ -38,9 +37,10 @@ use cao_core::execution::MutationState;
 use cao_core::routing::{ExecutionMode, RequestedWork, RoutingPolicyRequest};
 use cao_core::run::{
     ArchiveFinalization, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
-    ArchiveFinalizationSettings, ArchivePrecedence, ArchiveReader, CancellationToken, MutationKind,
-    PackedArchiveKind, RunDiagnostic, RunFailure, RunObservationSink, RunPhase, RunPhaseRecord,
-    RunPreparation, TemporaryArtifactRegistry, create_run_id,
+    ArchiveFinalizationResult, ArchiveFinalizationSettings, ArchivePrecedence, ArchiveReader,
+    CancellationToken, MutationKind, PackedArchiveKind, RunDiagnostic, RunFailure,
+    RunObservationSink, RunPhase, RunPhaseRecord, RunPreparation, TemporaryArtifactRegistry,
+    create_run_id,
 };
 use cao_core::test_support::{
     ArchiveFinalizationEvidence as Evidence, FakeArchivePacker, FakeArchiveReader, FakeCapacity,
@@ -171,7 +171,7 @@ impl Finalizer {
     fn run(
         &self,
         roots: &[PathBuf],
-        evidence: &Evidence<'_>,
+        evidence: &mut Evidence<'_>,
         artifacts: &mut TemporaryArtifactRegistry,
     ) -> Result<(), Error> {
         self.run_polling(roots, evidence, artifacts, &|| self.stop.is_cancelled())
@@ -181,7 +181,7 @@ impl Finalizer {
     fn run_polling(
         &self,
         roots: &[PathBuf],
-        evidence: &Evidence<'_>,
+        evidence: &mut Evidence<'_>,
         artifacts: &mut TemporaryArtifactRegistry,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(), Error> {
@@ -195,7 +195,7 @@ impl Finalizer {
         )
         .run(
             &preparation_for(roots, !self.no_archive_creation),
-            &evidence.recorder(),
+            &mut evidence.recorder(),
             artifacts,
             cancelled,
         )
@@ -205,7 +205,7 @@ impl Finalizer {
     /// all: one planned output's estimate plus its plugin reserve.
     fn reported_estimate(&self, root: &Path) -> u64 {
         let zero = capacity(|_| Some(0));
-        let evidence = Evidence::new();
+        let mut evidence = Evidence::new();
         let mut artifacts = registry();
         ArchiveFinalization::new(
             &self.packer,
@@ -217,7 +217,7 @@ impl Finalizer {
         )
         .run(
             &preparation_for(&[root.to_path_buf()], true),
-            &evidence.recorder(),
+            &mut evidence.recorder(),
             &mut artifacts,
             &|| false,
         )
@@ -309,9 +309,11 @@ fn capacity_shortages_stop_before_mutation() {
             }
             Some(UNLIMITED)
         });
-        let evidence = Evidence::new();
+        let mut evidence = Evidence::new();
         let mut artifacts = registry();
-        finalizer.run(&roots, &evidence, &mut artifacts).unwrap();
+        finalizer
+            .run(&roots, &mut evidence, &mut artifacts)
+            .unwrap();
 
         let result = evidence.finalization();
         assert!(result.safe_to_continue, "{name}");
@@ -383,9 +385,11 @@ fn capacity_is_grouped_by_volume() {
             .to_owned(),
         )
     });
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
-    finalizer.run(&roots, &evidence, &mut artifacts).unwrap();
+    finalizer
+        .run(&roots, &mut evidence, &mut artifacts)
+        .unwrap();
 
     let result = evidence.finalization();
     assert_eq!(result.attempts.len(), 2);
@@ -434,9 +438,11 @@ fn an_idle_root_of_unknown_volume_does_not_inflate_capacity() {
             .to_owned()
         })
     });
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
-    finalizer.run(&roots, &evidence, &mut artifacts).unwrap();
+    finalizer
+        .run(&roots, &mut evidence, &mut artifacts)
+        .unwrap();
 
     let result = evidence.finalization();
     assert_eq!(result.attempts.len(), 2);
@@ -469,9 +475,11 @@ fn the_plugin_allowance_shrinks_after_each_root() {
         }),
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
-    finalizer.run(&roots, &evidence, &mut artifacts).unwrap();
+    finalizer
+        .run(&roots, &mut evidence, &mut artifacts)
+        .unwrap();
 
     let result = evidence.finalization();
     assert_eq!(result.failure, None, "{}", result.detail);
@@ -495,10 +503,10 @@ fn a_plugin_only_shortage_fails_the_phase_without_progress() {
         capacity: capacity(|_| Some(0)),
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     let result = evidence.finalization();
@@ -551,10 +559,10 @@ fn a_disappearing_loading_plugin_keeps_its_fallback_reserved() {
             }
             Some(archive_only)
         });
-        let evidence = Evidence::new();
+        let mut evidence = Evidence::new();
         let mut artifacts = registry();
         finalizer
-            .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+            .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
             .unwrap();
 
         let result = evidence.finalization();
@@ -582,10 +590,10 @@ fn cancelled_planning_records_no_output_total() {
     write_file(&source, b"source bytes");
     let finalizer = Finalizer::default();
     finalizer.stop.cancel();
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     let result = evidence.finalization();
@@ -613,7 +621,7 @@ fn the_total_is_frozen_and_cancellation_falls_between_outputs() {
         }
         let log = Log::default();
         let sink = ProgressLog(log.clone());
-        let evidence = Evidence::observed(&sink);
+        let mut evidence = Evidence::observed(&sink);
         let frozen_before_mutation = Arc::new(AtomicBool::new(false));
         let first_recorded_before_second = Arc::new(AtomicBool::new(false));
         let mut finalizer = Finalizer {
@@ -657,7 +665,9 @@ fn the_total_is_frozen_and_cancellation_falls_between_outputs() {
             Some(UNLIMITED)
         });
         let mut artifacts = registry();
-        finalizer.run(&roots, &evidence, &mut artifacts).unwrap();
+        finalizer
+            .run(&roots, &mut evidence, &mut artifacts)
+            .unwrap();
 
         let label = format!("{cancel_after:?}");
         assert!(frozen_before_mutation.load(Ordering::SeqCst), "{label}");
@@ -738,9 +748,11 @@ fn cancellation_keeps_the_committed_archive_loadable() {
         }
         Some(UNLIMITED)
     });
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
-    finalizer.run(&roots, &evidence, &mut artifacts).unwrap();
+    finalizer
+        .run(&roots, &mut evidence, &mut artifacts)
+        .unwrap();
 
     assert!(no_plugin_before_attempts.load(Ordering::SeqCst));
     let result = evidence.finalization();
@@ -779,9 +791,11 @@ fn cancellation_stops_plugin_maintenance_between_roots() {
         }
         Some(UNLIMITED)
     });
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
-    finalizer.run(&roots, &evidence, &mut artifacts).unwrap();
+    finalizer
+        .run(&roots, &mut evidence, &mut artifacts)
+        .unwrap();
 
     let result = evidence.finalization();
     assert!(result.attempts.is_empty());
@@ -824,10 +838,10 @@ fn a_blocked_dummy_plugin_removal_is_a_contained_failure() {
         }),
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
     assert!(held.lock().unwrap().take().is_some());
 
@@ -868,10 +882,10 @@ fn plugin_actions_for_existing_archives_are_mutation_facts() {
             },
             ..Finalizer::default()
         };
-        let evidence = Evidence::new();
+        let mut evidence = Evidence::new();
         let mut artifacts = registry();
         finalizer
-            .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+            .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
             .unwrap();
 
         let result = evidence.finalization();
@@ -934,10 +948,10 @@ fn only_exact_dummy_plugins_are_removed() {
         },
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     let result = evidence.finalization();
@@ -988,10 +1002,10 @@ fn linked_dummy_plugins_are_never_removed() {
             },
             ..Finalizer::default()
         };
-        let evidence = Evidence::new();
+        let mut evidence = Evidence::new();
         let mut artifacts = registry();
         finalizer
-            .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+            .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
             .unwrap();
 
         let result = evidence.finalization();
@@ -1046,10 +1060,10 @@ fn a_mod_root_swapped_for_a_junction_stops_removal() {
         }),
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
     std::fs::remove_dir(&root).unwrap();
 
@@ -1104,10 +1118,10 @@ fn a_dummy_plugin_replaced_after_planning_is_kept() {
         }),
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     assert!(replaced.load(Ordering::SeqCst));
@@ -1146,9 +1160,11 @@ fn earlier_removals_survive_a_later_guard_failure() {
         },
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
-    finalizer.run(&roots, &evidence, &mut artifacts).unwrap();
+    finalizer
+        .run(&roots, &mut evidence, &mut artifacts)
+        .unwrap();
     drop(held);
 
     let result = evidence.finalization();
@@ -1189,10 +1205,10 @@ fn an_occupied_plugin_name_for_an_existing_archive_fails_safely() {
         }),
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     let result = evidence.finalization();
@@ -1229,9 +1245,9 @@ fn staging_files_are_never_packed() {
         },
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     let result = evidence.finalization();
@@ -1270,10 +1286,10 @@ fn packing_exclusions_are_neither_packed_nor_deleted() {
         files_to_not_pack: vec!["TEXTURES/KEEP/".to_owned()],
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     let result = evidence.finalization();
@@ -1315,10 +1331,10 @@ fn deviation_16_packing_exclusions_match_within_the_mod_root() {
         files_to_not_pack: vec!["CalienteTools/".to_owned(), "textures\\keep\\".to_owned()],
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     let result = evidence.finalization();
@@ -1366,10 +1382,10 @@ fn a_failed_write_keeps_sources_and_existing_archives() {
         },
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
     drop(locked);
 
@@ -1422,10 +1438,10 @@ fn a_source_parent_swapped_for_a_junction_fails_the_write() {
         }),
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
     std::fs::remove_dir(&source_parent).unwrap();
 
@@ -1457,7 +1473,7 @@ fn planned_names_are_distinct_and_a_late_destination_wins() {
     write_file(&sound, b"sound bytes");
     let log = Log::default();
     let sink = ProgressLog(log.clone());
-    let evidence = Evidence::observed(&sink);
+    let mut evidence = Evidence::observed(&sink);
     // The Standard Archive takes the Mod Root's name; the Incompressible one
     // needs another.
     let first_destination = root.join("mod.bsa");
@@ -1482,7 +1498,7 @@ fn planned_names_are_distinct_and_a_late_destination_wins() {
     };
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     let result = evidence.finalization();
@@ -1541,10 +1557,10 @@ fn a_competing_plugin_at_the_planned_name_keeps_archive_and_sources() {
         }),
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     let result = evidence.finalization();
@@ -1605,10 +1621,10 @@ fn an_exact_dummy_at_the_planned_name_is_reused() {
         }),
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     let original = written.lock().unwrap().expect("the dummy appeared");
@@ -1655,10 +1671,10 @@ fn outputs_sharing_a_dummy_plugin_publish_it_once() {
         },
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     let result = evidence.finalization();
@@ -1712,10 +1728,10 @@ fn a_vanished_loading_plugin_gets_its_fallback() {
         }),
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     assert!(removed.load(Ordering::SeqCst));
@@ -1778,10 +1794,10 @@ fn a_linked_loading_plugin_gets_an_ordinary_fallback() {
             },
             ..Finalizer::default()
         };
-        let evidence = Evidence::new();
+        let mut evidence = Evidence::new();
         let mut artifacts = registry();
         finalizer
-            .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+            .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
             .unwrap();
 
         let result = evidence.finalization();
@@ -1848,10 +1864,10 @@ fn links_at_every_plugin_name_keep_the_sources() {
         }),
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     assert!(linked.load(Ordering::SeqCst));
@@ -1895,7 +1911,7 @@ fn the_loading_plugin_stays_pinned_through_source_cleanup() {
             },
             ..Finalizer::default()
         };
-        let evidence = Evidence::new();
+        let mut evidence = Evidence::new();
         let mut artifacts = registry();
         let stop = AtomicBool::new(false);
         let (saw_cleanup_gap, removed_plugin) = std::thread::scope(|scope| {
@@ -1917,7 +1933,7 @@ fn the_loading_plugin_stays_pinned_through_source_cleanup() {
                 (false, false)
             });
             finalizer
-                .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+                .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
                 .unwrap();
             stop.store(true, Ordering::SeqCst);
             remover.join().unwrap()
@@ -1980,12 +1996,12 @@ fn a_locked_source_after_commit_continues_only_while_readable() {
                 }
             }));
         }
-        let evidence = Evidence::new();
+        let mut evidence = Evidence::new();
         let mut artifacts = registry();
         finalizer
             .run(
                 &[root.clone(), later_root.clone()],
-                &evidence,
+                &mut evidence,
                 &mut artifacts,
             )
             .unwrap();
@@ -2036,10 +2052,10 @@ fn without_archive_creation_only_pruning_runs() {
         }),
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     let result = evidence.finalization();
@@ -2076,10 +2092,10 @@ fn deviation_20_pruning_has_no_separator_rule() {
         no_archive_creation: true,
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     let result = evidence.finalization();
@@ -2109,10 +2125,10 @@ fn split_outputs_take_counter_names_and_their_own_plugins() {
     };
     // Room for one source per Archive.
     finalizer.packer.max_size = 20;
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
         .unwrap();
 
     let result = evidence.finalization();
@@ -2177,10 +2193,10 @@ fn deviation_21_separate_texture_games_never_merge_textures() {
             },
             ..Finalizer::default()
         };
-        let evidence = Evidence::new();
+        let mut evidence = Evidence::new();
         let mut artifacts = registry();
         finalizer
-            .run(std::slice::from_ref(&root), &evidence, &mut artifacts)
+            .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
             .unwrap();
 
         let result = evidence.finalization();
@@ -2246,10 +2262,10 @@ fn an_unexpected_failure_is_recorded_once() {
         } else {
             parent.join("missing")
         };
-        let evidence = Evidence::new();
+        let mut evidence = Evidence::new();
         let mut artifacts = registry();
         finalizer
-            .run(&[selected], &evidence, &mut artifacts)
+            .run(&[selected], &mut evidence, &mut artifacts)
             .unwrap();
 
         let result = evidence.finalization();
@@ -2309,10 +2325,10 @@ fn a_plugin_maintenance_failure_keeps_recorded_attempts() {
         }),
         ..Finalizer::default()
     };
-    let evidence = Evidence::new();
+    let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
-        .run(&[packed, existing], &evidence, &mut artifacts)
+        .run(&[packed, existing], &mut evidence, &mut artifacts)
         .unwrap();
 
     assert!(moved.load(Ordering::SeqCst));
@@ -2344,9 +2360,20 @@ fn evidence_failures_reach_the_caller_unchanged() {
         let root = scratch(&format!("evidence-failure-{stage}")).join("mod");
         let source = root.join("textures/asset.dds");
         write_file(&source, b"source bytes");
-        let evidence = Evidence::new();
+        let mut evidence = Evidence::new();
         if stage == 0 {
             evidence.leave_phase();
+        } else {
+            // The recorder holds the evidence exclusively for the whole run,
+            // so nothing can leave the phase between the preflight and the
+            // attempt any more. A result already recorded, as cancelled
+            // planning records one, still accepts the output total but
+            // rejects every attempt, so the attempt's record is again the
+            // first evidence call to fail.
+            evidence
+                .recorder()
+                .record_result(ArchiveFinalizationResult::default())
+                .unwrap();
         }
         let probes = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&probes);
@@ -2367,22 +2394,12 @@ fn evidence_failures_reach_the_caller_unchanged() {
             }),
             ..Finalizer::default()
         };
-        // Leave the phase between the preflight and the attempt, so the
-        // attempt's record is the next evidence call. Cancellation is polled
-        // exactly there and never requested.
-        let left = Cell::new(false);
-        let cancelled = || {
-            if stage != 0 && probes.load(Ordering::SeqCst) == 1 && !left.replace(true) {
-                evidence.leave_phase();
-            }
-            false
-        };
         let mut artifacts = registry();
         let outcome = finalizer.run_polling(
             std::slice::from_ref(&root),
-            &evidence,
+            &mut evidence,
             &mut artifacts,
-            &cancelled,
+            &|| false,
         );
 
         assert!(

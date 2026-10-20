@@ -1,7 +1,5 @@
 //! Fresh Run Evidence for driving Archive Finalization at its own interface.
 
-use std::cell::RefCell;
-
 use crate::run::{
     ArchiveFinalizationRecorder, ArchiveFinalizationResult, MutableRunEvidence, RunEvidence,
     RunObservationSink, RunPhase, RunPhaseRecord, RunProgress,
@@ -14,7 +12,7 @@ use crate::run::{
 /// It records Preparing and Archive Finalization itself, so a scenario never
 /// restates the Run Phase order to reach the phase.
 pub struct ArchiveFinalizationEvidence<'s> {
-    owner: RefCell<MutableRunEvidence<'s>>,
+    owner: MutableRunEvidence<'s>,
 }
 
 impl Default for ArchiveFinalizationEvidence<'_> {
@@ -43,21 +41,20 @@ impl<'s> ArchiveFinalizationEvidence<'s> {
                 .record_phase(RunPhaseRecord::executed(phase, None))
                 .expect("Preparing then Archive Finalization is a canonical traversal");
         }
-        Self {
-            owner: RefCell::new(evidence),
-        }
+        Self { owner: evidence }
     }
 
-    /// The finalization recorder over this evidence. Recorders opened more
-    /// than once share the same facts.
-    pub fn recorder(&self) -> ArchiveFinalizationRecorder<'_, 's> {
-        ArchiveFinalizationRecorder::new(&self.owner)
+    /// The finalization recorder lent this evidence for as long as it lives,
+    /// as a run lends its own. Recorders opened one after another share the
+    /// same facts.
+    pub fn recorder(&mut self) -> ArchiveFinalizationRecorder<'_, 's> {
+        self.owner.finalization_recorder()
     }
 
     /// The retained attempts and result, or `None` before the phase recorded
     /// an output total or a result.
     pub fn recorded(&self) -> Option<ArchiveFinalizationResult> {
-        self.owner.borrow().archive_finalization().cloned()
+        self.owner.archive_finalization().cloned()
     }
 
     /// The retained result.
@@ -71,25 +68,22 @@ impl<'s> ArchiveFinalizationEvidence<'s> {
     /// The phase's latest progress, or `None` before an output total exists.
     pub fn progress(&self) -> Option<RunProgress> {
         self.owner
-            .borrow()
             .phase(RunPhase::ArchiveFinalization)
             .and_then(RunPhaseRecord::progress)
     }
 
     /// Moves the evidence on to Safety Cleanup, out of the phase, so any
     /// later recorder operation is a Run Evidence invariant violation.
-    pub fn leave_phase(&self) {
+    pub fn leave_phase(&mut self) {
         self.owner
-            .borrow_mut()
             .record_phase(RunPhaseRecord::executed(RunPhase::SafetyCleanup, None))
             .expect("Safety Cleanup follows Archive Finalization");
     }
 
     /// Performs the executor's mandatory Safety Cleanup and seals the facts.
-    pub fn seal(self) -> RunEvidence {
+    pub fn seal(mut self) -> RunEvidence {
         self.leave_phase();
         self.owner
-            .into_inner()
             .consume()
             .expect("the evidence seals after Safety Cleanup")
     }
