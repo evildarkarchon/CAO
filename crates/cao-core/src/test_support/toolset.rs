@@ -12,12 +12,12 @@ use crate::run::{
     ArchiveExtractionPlan, ArchiveExtractionPort, ArchiveExtractionResult, ArchiveExtractor,
     ArchiveFinalizationPort, ArchiveFinalizationRecorder, ArchiveFinalizationResult,
     AssetAttemptAdapter, AssetAttemptPort, AssetBackendFactory, AssetInitializationCancelled,
-    CancellationToken, OptimizationRunResult, RunConfiguration, RunConfigurationProvider,
-    RunDiagnostic, RunExecutor, RunObservationSink, RunPreparation, RunRequest, RunServices,
-    RunToolset, SafetyCleanupService, TemporaryArtifactRegistry, create_run_id,
+    CancellationToken, OptimizationRunResult, RunConfigurationProvider, RunDiagnostic, RunExecutor,
+    RunObservationSink, RunPreparation, RunRequest, RunServices, RunToolset, SafetyCleanupService,
+    SelectedProfile, TemporaryArtifactRegistry, create_run_id,
 };
 use crate::test_support::{
-    FakeArchiveReader, FakeBackendFactory, FakeCapacity, FakeVolumes, sse_configuration,
+    FakeArchiveReader, FakeBackendFactory, FakeCapacity, FakeVolumes, sse_profile,
 };
 
 /// What a scripted Asset attempt returns for one Routed Asset and its frozen
@@ -363,31 +363,31 @@ pub fn record_finalization_result(
     recorder.record_result(result)
 }
 
-/// A provider returning one fixed configuration and, if scripted, a fresh
+/// A provider returning one fixed Selected Profile and, if scripted, a fresh
 /// Run Toolset over `toolset` for each run. It counts its loads.
 ///
 /// Without a Toolset, requested work has no means to run, so Preparing fails
 /// with `RequestedWorkUnavailable`.
 pub struct ToolsetConfiguration {
-    pub configuration: RunConfiguration,
+    pub profile: SelectedProfile,
     pub toolset: Option<Arc<ScriptedToolset>>,
     pub loads: AtomicUsize,
 }
 
 impl ToolsetConfiguration {
-    /// A provider of `configuration` and of `toolset`'s Toolsets, if any.
-    pub fn new(configuration: RunConfiguration, toolset: Option<Arc<ScriptedToolset>>) -> Self {
+    /// A provider of `profile` and of `toolset`'s Toolsets, if any.
+    pub fn new(profile: SelectedProfile, toolset: Option<Arc<ScriptedToolset>>) -> Self {
         Self {
-            configuration,
+            profile,
             toolset,
             loads: AtomicUsize::new(0),
         }
     }
 
-    /// A provider of the SSE-like [`sse_configuration`] and of `toolset`'s
+    /// A provider of the SSE-like [`sse_profile`] and of `toolset`'s
     /// Toolsets, if any.
     pub fn sse(toolset: Option<Arc<ScriptedToolset>>) -> Self {
-        Self::new(sse_configuration(), toolset)
+        Self::new(sse_profile(), toolset)
     }
 }
 
@@ -417,10 +417,10 @@ impl RunConfigurationProvider for ToolsetConfiguration {
     fn load(
         &self,
         _profile_identity: &str,
-    ) -> Result<(RunConfiguration, Option<RunToolset>), Error> {
+    ) -> Result<(SelectedProfile, Option<RunToolset>), Error> {
         self.loads.fetch_add(1, Ordering::SeqCst);
         Ok((
-            self.configuration.clone(),
+            self.profile.clone(),
             self.toolset.as_ref().map(ScriptedToolset::toolset),
         ))
     }

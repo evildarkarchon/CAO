@@ -11,8 +11,8 @@
 //!
 //! - Deviation 19: a child in CAO's reserved `.cao-staging` namespace is never
 //!   a Mod Root, and is skipped silently rather than diagnosed.
-//! - Deviation 20: a separator is a child whose name *ends in* a configured
-//!   suffix (`_separator`, MO2's convention), not one containing a marker.
+//! - Deviation 20: a separator is a child whose name *ends in*
+//!   [`SEPARATOR_SUFFIX`] (MO2's convention), not one containing a marker.
 
 use std::collections::HashSet;
 use std::io;
@@ -21,9 +21,19 @@ use std::path::{Path, PathBuf};
 use cao_winfs::{Access, FileIdentity, Open, Share};
 
 use crate::run::{
-    CancellationToken, ModSelection, MutableRunEvidence, RunConfiguration, RunDiagnostic,
-    RunDiagnosticCode, RunFailure, RunFailureCode, RunPhase, is_staging_name,
+    CancellationToken, ModSelection, MutableRunEvidence, RunDiagnostic, RunDiagnosticCode,
+    RunFailure, RunFailureCode, RunPhase, SelectedProfile, is_staging_name,
 };
+
+/// The suffix Mod Organizer 2 gives its separator folders. A Several Mods
+/// child whose name ends in it, matched case-sensitively, is a separator.
+///
+/// Deviation 20: MO2 names its separators `<name>_separator`. C++ passed the
+/// marker "separator" and excluded any child containing it.
+///
+/// It is a fixed convention of the mod manager, not a profile fact, so it is
+/// not part of the Selected Profile.
+pub(crate) const SEPARATOR_SUFFIX: &str = "_separator";
 
 /// A ModSelectionResolutionFailed Run Failure in Preparing.
 fn resolution_failure(detail: impl Into<String>) -> RunFailure {
@@ -102,17 +112,9 @@ struct Child {
 ///
 /// A child matching both policies owes one exclusion, and the separator rule
 /// takes precedence, as in C++.
-fn mod_exclusion(
-    child: &Child,
-    configuration: &RunConfiguration,
-    ignored: &HashSet<String>,
-) -> Option<RunDiagnostic> {
-    // Deviation 20: a suffix, matched case-sensitively. An empty suffix would
-    // match every child, so it never excludes anything.
-    let separator = configuration
-        .separator_suffixes
-        .iter()
-        .any(|suffix| !suffix.is_empty() && child.name.ends_with(suffix.as_str()));
+fn mod_exclusion(child: &Child, ignored: &HashSet<String>) -> Option<RunDiagnostic> {
+    // Deviation 20: a suffix, matched case-sensitively.
+    let separator = child.name.ends_with(SEPARATOR_SUFFIX);
     // The details keep C++'s wording, "marker" included.
     let (code, detail) = if separator {
         (
@@ -140,7 +142,7 @@ fn mod_exclusion(
 /// twice, so both fail Preparing.
 pub(crate) fn resolve_mod_roots(
     selection: &ModSelection,
-    configuration: &RunConfiguration,
+    profile: &SelectedProfile,
     evidence: &mut MutableRunEvidence<'_>,
     stop: &CancellationToken,
 ) -> Result<Vec<PathBuf>, RunFailure> {
@@ -163,8 +165,8 @@ pub(crate) fn resolve_mod_roots(
         return Ok(vec![root]);
     };
 
-    let ignored: HashSet<String> = configuration
-        .ignored_mods
+    let ignored: HashSet<String> = profile
+        .ignored_mods()
         .iter()
         .map(|name| folded_name(name))
         .collect();
@@ -212,7 +214,7 @@ pub(crate) fn resolve_mod_roots(
         if stop.is_cancelled() {
             return Ok(Vec::new());
         }
-        if let Some(diagnostic) = mod_exclusion(child, configuration, &ignored) {
+        if let Some(diagnostic) = mod_exclusion(child, &ignored) {
             evidence.record_diagnostic(diagnostic);
             continue;
         }

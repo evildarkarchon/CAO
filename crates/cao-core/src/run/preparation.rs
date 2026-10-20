@@ -6,8 +6,7 @@ use std::path::PathBuf;
 
 use crate::Error;
 use crate::routing::{
-    PolicyValidationError, ProfileCapabilities, ProfileCapability, RoutingPolicy,
-    RoutingPolicyRequest,
+    PolicyValidationError, ProfileCapabilities, RoutingPolicy, RoutingPolicyRequest,
 };
 use crate::run::RunToolset;
 
@@ -23,128 +22,141 @@ pub enum ArchivePrecedence {
     ExplicitOrder(Vec<PathBuf>),
 }
 
-/// The selected profile's facts, adapted without exposing any profile object.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SelectedProfileFacts {
-    /// The profile's Archive extension with its period, such as `.bsa`.
-    pub archive_extension: Option<String>,
-    pub supports_native_texture_optimization: bool,
-    pub supports_texture_conversion: bool,
-    pub supports_standard_mesh_optimization: bool,
-    pub supports_terrain_mesh_optimization: bool,
-    pub supports_animation_optimization: bool,
-    pub supports_archive_extraction: bool,
-    pub supports_mesh_reference_maintenance: bool,
-    pub supports_archive_creation: bool,
+/// The Selected Profile: the profile facts one Optimization Run reads once,
+/// during Preparing, owning no profile object or application state.
+///
+/// It holds the facts core uses: the typed Profile Capabilities, which carry
+/// the profile's Archive extension; the Conversion Preference; the
+/// ignored-mods list; and the Packing Exclusions. The backend's own profile
+/// facts, such as the Texture and Mesh targets and the custom Headpart Meshes,
+/// come from the same read but stay private to the provider that built it.
+///
+/// The default profile declares no Archive extension, no Profile Capability
+/// and no Conversion Preference, and excludes nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedProfile {
+    capabilities: ProfileCapabilities,
+    prefers_conversion: bool,
+    ignored_mods: Vec<String>,
+    packing_exclusions: Vec<String>,
 }
 
-impl SelectedProfileFacts {
-    /// Maps the facts onto the closed Profile Capabilities routing understands.
-    pub fn capabilities(&self) -> ProfileCapabilities {
-        let supported = [
-            (
-                self.supports_native_texture_optimization,
-                ProfileCapability::NativeTextureOptimization,
-            ),
-            (
-                self.supports_texture_conversion,
-                ProfileCapability::ConvertibleTextureConversion,
-            ),
-            (
-                self.supports_standard_mesh_optimization,
-                ProfileCapability::StandardMeshOptimization,
-            ),
-            (
-                self.supports_terrain_mesh_optimization,
-                ProfileCapability::TerrainMeshOptimization,
-            ),
-            (
-                self.supports_animation_optimization,
-                ProfileCapability::AnimationOptimization,
-            ),
-            (
-                self.supports_archive_extraction,
-                ProfileCapability::ArchiveExtraction,
-            ),
-            (
-                self.supports_mesh_reference_maintenance,
-                ProfileCapability::MeshReferenceMaintenance,
-            ),
-            (
-                self.supports_archive_creation,
-                ProfileCapability::ArchiveCreation,
-            ),
-        ];
-        let capabilities: Vec<_> = supported
-            .into_iter()
-            .filter(|(supported, _)| *supported)
-            .map(|(_, capability)| capability)
-            .collect();
-        match &self.archive_extension {
-            Some(extension) => ProfileCapabilities::define(extension.clone(), &capabilities),
-            None => ProfileCapabilities::without_archive_extension(&capabilities),
+impl Default for SelectedProfile {
+    fn default() -> Self {
+        Self::new(ProfileCapabilities::without_archive_extension(&[]))
+    }
+}
+
+impl SelectedProfile {
+    /// A Selected Profile with `capabilities`, no Conversion Preference, no
+    /// ignored mods and no Packing Exclusions.
+    pub fn new(capabilities: ProfileCapabilities) -> Self {
+        Self {
+            capabilities,
+            prefers_conversion: false,
+            ignored_mods: Vec::new(),
+            packing_exclusions: Vec::new(),
         }
     }
 
-    /// Compiles a Routing Policy Request against these facts (C++ `RunSetup::prepare`).
+    /// Sets the Conversion Preference: whether requested Texture work also
+    /// converts convertible Textures. It is not a Profile Capability, so it
+    /// never contradicts a Run Request.
+    #[must_use]
+    pub fn with_conversion_preference(mut self, prefers_conversion: bool) -> Self {
+        self.prefers_conversion = prefers_conversion;
+        self
+    }
+
+    /// Sets the ignored-mods list: child names that Several Mods Preparing
+    /// excludes as Mod Exclusions, matched case-insensitively.
+    #[must_use]
+    pub fn with_ignored_mods(mut self, ignored_mods: Vec<String>) -> Self {
+        self.ignored_mods = ignored_mods;
+        self
+    }
+
+    /// Sets the Packing Exclusions: the rules naming Loose Assets that Archive
+    /// Finalization keeps loose. They are kept as the profile declares them.
+    #[must_use]
+    pub fn with_packing_exclusions(mut self, packing_exclusions: Vec<String>) -> Self {
+        self.packing_exclusions = packing_exclusions;
+        self
+    }
+
+    /// The Profile Capabilities, including the profile's Archive extension.
+    pub fn capabilities(&self) -> &ProfileCapabilities {
+        &self.capabilities
+    }
+
+    /// The Conversion Preference. Routing does not consult it yet: the Run
+    /// Request still carries convertible Texture conversion.
+    pub fn prefers_conversion(&self) -> bool {
+        self.prefers_conversion
+    }
+
+    /// The ignored-mods list, as the profile declares it.
+    pub fn ignored_mods(&self) -> &[String] {
+        &self.ignored_mods
+    }
+
+    /// The Packing Exclusions, as the profile declares them.
+    pub fn packing_exclusions(&self) -> &[String] {
+        &self.packing_exclusions
+    }
+
+    /// Compiles a Routing Policy Request against this profile's Profile
+    /// Capabilities.
+    ///
+    /// # Errors
+    /// Every Policy Conflict between the request and the capabilities, in
+    /// compiler order.
     pub fn compile_policy(
         &self,
         request: RoutingPolicyRequest,
     ) -> Result<RoutingPolicy, Vec<PolicyValidationError>> {
-        RoutingPolicy::compile(request, self.capabilities())
+        RoutingPolicy::compile(request, self.capabilities.clone())
     }
 }
 
-/// The configuration and profile facts loaded for one run, owning no application state.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct RunConfiguration {
-    pub profile: SelectedProfileFacts,
-    /// Child names matched case-insensitively during Several Mods Preparing.
-    pub ignored_mods: Vec<String>,
-    /// Case-sensitive suffixes marking mod-manager separators among child
-    /// names. C++ matched them anywhere in the name; deviation 20 matches only
-    /// the end. An empty suffix never matches.
-    pub separator_suffixes: Vec<String>,
-}
-
-/// Loads a run's configuration during Preparing, on the Run Worker.
+/// Loads a run's Selected Profile during Preparing, on the Run Worker.
 ///
 /// Implementations return owned facts and never borrow application state. An
 /// error becomes a `ConfigurationLoadingFailed` Run Failure, never a Start Error.
 pub trait RunConfigurationProvider: Send + Sync {
-    /// Loads the named profile's facts together with the Run Toolset built
-    /// from that same read, so the run's work uses exactly the profile facts
-    /// its Routing Policy is compiled from.
+    /// Reads the named profile once, returning its Selected Profile together
+    /// with the Run Toolset built from that same read, so the run's work uses
+    /// exactly the profile facts its Routing Policy is compiled from.
     ///
-    /// `None` means the provider supplies no means to do work: a request with
-    /// work then fails Preparing with `RequestedWorkUnavailable`.
+    /// A `None` Toolset means the provider supplies no means to do work: a
+    /// request with work then fails Preparing with `RequestedWorkUnavailable`.
     ///
     /// # Errors
     /// Any error becomes a `ConfigurationLoadingFailed` Run Failure.
-    fn load(&self, profile_identity: &str)
-    -> Result<(RunConfiguration, Option<RunToolset>), Error>;
+    fn load(&self, profile_identity: &str) -> Result<(SelectedProfile, Option<RunToolset>), Error>;
 }
 
 /// The immutable facts a successful Preparing establishes, retained by the terminal result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunPreparation {
     mod_roots: Vec<PathBuf>,
-    configuration: RunConfiguration,
+    selected_profile: SelectedProfile,
     policy: RoutingPolicy,
     archive_precedence: ArchivePrecedence,
 }
 
 impl RunPreparation {
-    /// Owns the canonical Mod Roots, the loaded configuration and the compiled policy.
+    /// Owns the canonical Mod Roots, the Selected Profile and the policy
+    /// compiled from it.
     pub fn new(
         mod_roots: Vec<PathBuf>,
-        configuration: RunConfiguration,
+        selected_profile: SelectedProfile,
         policy: RoutingPolicy,
         archive_precedence: ArchivePrecedence,
     ) -> Self {
         Self {
             mod_roots,
-            configuration,
+            selected_profile,
             policy,
             archive_precedence,
         }
@@ -155,8 +167,9 @@ impl RunPreparation {
         &self.mod_roots
     }
 
-    pub fn configuration(&self) -> &RunConfiguration {
-        &self.configuration
+    /// The Selected Profile Preparing read, which every part of the run uses.
+    pub fn selected_profile(&self) -> &SelectedProfile {
+        &self.selected_profile
     }
 
     pub fn policy(&self) -> &RoutingPolicy {

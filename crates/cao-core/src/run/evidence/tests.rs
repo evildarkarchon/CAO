@@ -34,29 +34,23 @@ use crate::run::{
     ArchiveDiscoveryEvidence, ArchiveExtractionFailure, ArchiveExtractionResult,
     ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationMutation,
     ArchiveFinalizationMutationKind, ArchiveFinalizationResult, ArchivePrecedence, MutationKind,
-    PhaseSkipReason, RoutedAssetAttempt, RunConfiguration, RunDiagnostic, RunDiagnosticCode,
-    RunEvidence, RunFailure, RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunProgress,
-    SelectedProfileFacts,
+    PhaseSkipReason, RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode, RunEvidence, RunFailure,
+    RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunProgress, SelectedProfile,
 };
-use crate::test_support::{Observed, RecordingSink, sse_configuration, sse_profile};
+use crate::test_support::{Observed, RecordingSink, sse_capabilities, sse_profile};
 
 /// The preparation of a Dry Run with no work, as Preparing would retain it.
 fn successful_preparation() -> RunPreparation {
-    let configuration = RunConfiguration {
-        profile: SelectedProfileFacts {
-            archive_extension: Some(".BSA".to_owned()),
-            ..sse_profile()
-        },
-        ignored_mods: vec!["ignored-mod".to_owned()],
-        separator_suffixes: vec!["separator".to_owned()],
-    };
-    let policy = configuration
-        .profile
+    let profile = SelectedProfile::new(sse_capabilities(".BSA"))
+        .with_conversion_preference(true)
+        .with_ignored_mods(vec!["ignored-mod".to_owned()])
+        .with_packing_exclusions(vec!["readme.txt".to_owned()]);
+    let policy = profile
         .compile_policy(RoutingPolicyRequest::for_work(ExecutionMode::DryRun, &[]))
         .expect("the profile is valid");
     RunPreparation::new(
         vec![PathBuf::from("prepared-root")],
-        configuration,
+        profile,
         policy,
         ArchivePrecedence::ExplicitOrder(vec!["winner.bsa".into(), "shadowed.bsa".into()]),
     )
@@ -140,11 +134,10 @@ fn a_recorded_preparation_is_owned_by_the_sealed_evidence() {
     assert_eq!(preparation.mod_roots(), [PathBuf::from("prepared-root")]);
     assert_eq!(preparation.policy().archive_extension(), ".bsa");
     assert_eq!(preparation.policy().execution_mode(), ExecutionMode::DryRun);
-    assert_eq!(preparation.configuration().ignored_mods, ["ignored-mod"]);
-    assert_eq!(
-        preparation.configuration().separator_suffixes,
-        ["separator"]
-    );
+    let profile = preparation.selected_profile();
+    assert!(profile.prefers_conversion());
+    assert_eq!(profile.ignored_mods(), ["ignored-mod"]);
+    assert_eq!(profile.packing_exclusions(), ["readme.txt"]);
     let ArchivePrecedence::ExplicitOrder(order) = preparation.archive_precedence() else {
         panic!("the explicit order was retained");
     };
@@ -805,8 +798,7 @@ fn extracting(
 /// The definitive routing of `count` Textures in one Mod Root, each routed
 /// for Native Texture Optimization in an Apply run.
 fn texture_ledger(count: usize) -> RoutingLedger {
-    let policy = sse_configuration()
-        .profile
+    let policy = sse_profile()
         .compile_policy(RoutingPolicyRequest::for_work(
             ExecutionMode::Apply,
             &[RequestedWork::NativeTextureOptimization],
