@@ -439,8 +439,9 @@ fn malformed_reason(extension: &str) -> Option<MalformedArchiveExtensionReason> 
 pub struct RoutingPolicy {
     execution_mode: ExecutionMode,
     work: [bool; 6],
+    /// Whether convertible Textures are converted. Mesh Reference Maintenance
+    /// is derived from this one fact, so it is not stored separately.
     converts_textures: bool,
-    mesh_reference_maintenance: bool,
     archive_extension: String,
 }
 
@@ -517,9 +518,7 @@ impl RoutingPolicy {
 
         // Converted Textures change the names Meshes reference, so conversion
         // derives Mesh Reference Maintenance, which the profile must support.
-        let mesh_reference_maintenance = converts_textures;
-        if mesh_reference_maintenance
-            && !capabilities.supports(ProfileCapability::MeshReferenceMaintenance)
+        if converts_textures && !capabilities.supports(ProfileCapability::MeshReferenceMaintenance)
         {
             // Conversion is never requested, so the conflict is attributed to
             // the requested native Texture work that conversion rides on.
@@ -536,7 +535,6 @@ impl RoutingPolicy {
             execution_mode: request.execution_mode,
             work: request.work,
             converts_textures,
-            mesh_reference_maintenance,
             archive_extension,
         })
     }
@@ -559,8 +557,12 @@ impl RoutingPolicy {
     }
 
     /// Reports whether Texture conversion derived Mesh Reference Maintenance.
+    ///
+    /// Derived from [`Self::converts_textures`], not stored: converted
+    /// Textures change the names Meshes reference, so this is true exactly
+    /// when the policy converts.
     pub fn maintains_mesh_references(&self) -> bool {
-        self.mesh_reference_maintenance
+        self.converts_textures
     }
 
     /// The validated, ASCII-lowercase profile Archive extension, including its period.

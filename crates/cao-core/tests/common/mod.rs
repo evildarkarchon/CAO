@@ -12,9 +12,13 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use cao_core::routing::{ExecutionMode, RequestedWork};
-use cao_core::run::{ModSelection, RunHandle, RunRequest, TemporaryArtifactRegistry};
+use cao_core::run::{
+    InlineRunScheduler, ModSelection, OptimizationRunResult, OptimizationRunService, RunHandle,
+    RunRequest, TemporaryArtifactRegistry,
+};
 use cao_core::test_support::{
-    FakeBackendFactory, FixedConfiguration, ScriptedToolset, ToolsetConfiguration, sse_profile,
+    EventLog, FakeBackendFactory, FixedConfiguration, ScriptedToolset, ToolsetConfiguration,
+    sse_profile,
 };
 
 /// Serializes scenarios that start runs: one active run is allowed per
@@ -111,6 +115,24 @@ pub fn converting_configuration(
         sse_profile().with_conversion_preference(true),
         toolset,
     ))
+}
+
+/// Runs `request` to its terminal result on the inline scheduler, loading
+/// the Selected Profile and Run Toolset from `configuration`, and returns the
+/// result with the events the run dispatched.
+///
+/// The caller holds [`serial`]: one active run is allowed per process.
+pub fn run_with(
+    configuration: Arc<ToolsetConfiguration>,
+    request: RunRequest,
+) -> (Arc<OptimizationRunResult>, EventLog) {
+    let service =
+        OptimizationRunService::with_scheduler(Arc::new(InlineRunScheduler), Some(configuration));
+    let events = EventLog::default();
+    let handle = service
+        .start(request, Some(events.dispatcher()))
+        .expect("the run starts");
+    (handle.wait(), events)
 }
 
 /// The production shape of a run's Asset attempts: a scripted Toolset whose
