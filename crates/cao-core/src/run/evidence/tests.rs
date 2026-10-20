@@ -28,7 +28,8 @@ use super::MutableRunEvidence;
 use crate::Error;
 use crate::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use crate::routing::{
-    AssetRouter, ExecutionMode, RequestedWork, RoutedAsset, RoutingLedger, RoutingPolicyRequest,
+    AssetRouter, ExecutionMode, ProfileCapabilities, RequestedWork, RoutedAsset, RoutingLedger,
+    RoutingPolicy, RoutingPolicyRequest,
 };
 use crate::run::{
     ArchiveDiscoveryEvidence, ArchiveExtractionFailure, ArchiveExtractionResult,
@@ -36,24 +37,21 @@ use crate::run::{
     ArchiveFinalizationMutationKind, ArchiveFinalizationResult, ArchivePrecedence, MutationKind,
     PhaseSkipReason, RoutedAssetAttempt, RunConfiguration, RunDiagnostic, RunDiagnosticCode,
     RunEvidence, RunFailure, RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunProgress,
-    SelectedProfileFacts,
 };
-use crate::test_support::{Observed, RecordingSink, sse_configuration, sse_profile};
+use crate::test_support::{EVERY_CAPABILITY, Observed, RecordingSink, sse_profile};
 
 /// The preparation of a Dry Run with no work, as Preparing would retain it.
 fn successful_preparation() -> RunPreparation {
     let configuration = RunConfiguration {
-        profile: SelectedProfileFacts {
-            archive_extension: Some(".BSA".to_owned()),
-            ..sse_profile()
-        },
+        profile: ProfileCapabilities::define(".BSA", &EVERY_CAPABILITY),
         ignored_mods: vec!["ignored-mod".to_owned()],
         separator_suffixes: vec!["separator".to_owned()],
     };
-    let policy = configuration
-        .profile
-        .compile_policy(RoutingPolicyRequest::for_work(ExecutionMode::DryRun, &[]))
-        .expect("the profile is valid");
+    let policy = RoutingPolicy::compile(
+        RoutingPolicyRequest::for_work(ExecutionMode::DryRun, &[]),
+        configuration.profile.clone(),
+    )
+    .expect("the profile is valid");
     RunPreparation::new(
         vec![PathBuf::from("prepared-root")],
         configuration,
@@ -805,13 +803,14 @@ fn extracting(
 /// The definitive routing of `count` Textures in one Mod Root, each routed
 /// for Native Texture Optimization in an Apply run.
 fn texture_ledger(count: usize) -> RoutingLedger {
-    let policy = sse_configuration()
-        .profile
-        .compile_policy(RoutingPolicyRequest::for_work(
+    let policy = RoutingPolicy::compile(
+        RoutingPolicyRequest::for_work(
             ExecutionMode::Apply,
             &[RequestedWork::NativeTextureOptimization],
-        ))
-        .expect("the SSE profile supports Native Texture Optimization");
+        ),
+        sse_profile(),
+    )
+    .expect("the SSE profile supports Native Texture Optimization");
     AssetRouter::new(policy)
         .route_all((0..count).map(|index| PathBuf::from(format!("mod-root/textures/{index}.dds"))))
 }

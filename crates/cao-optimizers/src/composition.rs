@@ -19,14 +19,15 @@ use std::sync::Arc;
 use cao_archive::{Game, Settings};
 use cao_core::Error;
 use cao_core::routing::{
-    ExecutionMode, PolicyValidationError, RequestedWork, RoutingPolicyRequest,
+    ExecutionMode, PolicyValidationError, ProfileCapabilities, ProfileCapability, RequestedWork,
+    RoutingPolicy, RoutingPolicyRequest,
 };
 use cao_core::run::{
     ArchiveExtractionAdapter, ArchiveFinalizationAdapter, ArchiveFinalizationSettings,
     AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
     CancellationToken, ModSelection, OptimizationRunService, RunConfiguration,
     RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode, RunEventDispatcher, RunHandle,
-    RunPhase, RunRequest, RunToolset, SelectedProfileFacts, SourceCleanup, StartError,
+    RunPhase, RunRequest, RunToolset, SourceCleanup, StartError,
 };
 use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
 use directxtex::DXGI_FORMAT;
@@ -228,13 +229,12 @@ fn check_profile_capabilities(
     let Ok(settings) = Profiles::new(app_dir).open(profile).load_settings() else {
         return Ok(());
     };
-    profile_facts(&settings)
-        .compile_policy(RoutingPolicyRequest::for_work(
-            request.execution_mode(),
-            request.requested_work(),
-        ))
-        .map(|_| ())
-        .map_err(RunSetupError::PolicyConflict)
+    RoutingPolicy::compile(
+        RoutingPolicyRequest::for_work(request.execution_mode(), request.requested_work()),
+        profile_capabilities(&settings),
+    )
+    .map(|_| ())
+    .map_err(RunSetupError::PolicyConflict)
 }
 
 /// Whether the options ask for Mesh work: a level above 0, or resaving, which
@@ -401,9 +401,8 @@ impl ProfileConfigurationProvider {
         let files_to_not_pack = profile.files_to_not_pack();
         // The same holds here; the headpart scan logs it.
         let custom_headparts = profile.custom_headparts();
-        let facts = profile_facts(&settings);
         let configuration = RunConfiguration {
-            profile: facts,
+            profile: profile_capabilities(&settings),
             ignored_mods,
             // Deviation 20: MO2 names its separators `<name>_separator`. C++
             // passed the marker "separator" and excluded any child containing it.
@@ -442,22 +441,33 @@ const SEPARATOR_SUFFIX: &str = "_separator";
 
 /// The Profile Capabilities a profile's settings declare, as C++
 /// `ApplicationRunConfigurationProvider` and `factsFromSelectedProfile` map them.
-fn profile_facts(settings: &ProfileSettings) -> SelectedProfileFacts {
+///
+/// Each enabled Asset Kind supports all of its work, and the Archive extension
+/// is the profile's game's.
+fn profile_capabilities(settings: &ProfileSettings) -> ProfileCapabilities {
     let textures = settings.textures_enabled;
     let meshes = settings.meshes_enabled;
     let archives = settings.bsa_enabled;
-    SelectedProfileFacts {
-        archive_extension: Some(archive_extension(settings.bsa_game).to_owned()),
-        supports_native_texture_optimization: textures,
-        supports_texture_conversion: textures,
-        supports_standard_mesh_optimization: meshes,
-        supports_terrain_mesh_optimization: meshes,
-        supports_animation_optimization: settings.animations_enabled,
-        supports_archive_extraction: archives,
+    let supported = [
+        (textures, ProfileCapability::NativeTextureOptimization),
+        (textures, ProfileCapability::ConvertibleTextureConversion),
+        (meshes, ProfileCapability::StandardMeshOptimization),
+        (meshes, ProfileCapability::TerrainMeshOptimization),
+        (
+            settings.animations_enabled,
+            ProfileCapability::AnimationOptimization,
+        ),
+        (archives, ProfileCapability::ArchiveExtraction),
         // Reference maintenance belongs to Texture conversion.
-        supports_mesh_reference_maintenance: textures,
-        supports_archive_creation: archives,
-    }
+        (textures, ProfileCapability::MeshReferenceMaintenance),
+        (archives, ProfileCapability::ArchiveCreation),
+    ];
+    let capabilities: Vec<_> = supported
+        .into_iter()
+        .filter(|(supported, _)| *supported)
+        .map(|(_, capability)| capability)
+        .collect();
+    ProfileCapabilities::define(archive_extension(settings.bsa_game), &capabilities)
 }
 
 /// The Archive extension of a game, from `cao-archive`'s per-game tables.

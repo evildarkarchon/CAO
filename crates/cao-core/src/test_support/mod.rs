@@ -36,7 +36,8 @@ pub use archives::{
 pub use backend::{FakeBackend, FakeBackendFactory, FinishedAttempt};
 pub use cleanup::{CountingCleanup, ScriptedCleanup};
 pub use configuration::{
-    CallbackConfiguration, FixedConfiguration, Loader, sse_configuration, sse_profile,
+    CallbackConfiguration, EVERY_CAPABILITY, FixedConfiguration, Loader, sse_configuration,
+    sse_profile,
 };
 pub use finalization::ArchiveFinalizationEvidence;
 pub use observation::{EventLog, ObservationHook, Observed, RecordingSink};

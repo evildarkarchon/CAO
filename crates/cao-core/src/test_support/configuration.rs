@@ -3,21 +3,25 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::Error;
-use crate::run::{RunConfiguration, RunConfigurationProvider, RunToolset, SelectedProfileFacts};
+use crate::routing::{ProfileCapabilities, ProfileCapability};
+use crate::run::{RunConfiguration, RunConfigurationProvider, RunToolset};
+
+/// Every Profile Capability, for a profile that supports every kind of work
+/// under an Archive extension of the test's choosing.
+pub const EVERY_CAPABILITY: [ProfileCapability; 8] = [
+    ProfileCapability::NativeTextureOptimization,
+    ProfileCapability::ConvertibleTextureConversion,
+    ProfileCapability::StandardMeshOptimization,
+    ProfileCapability::TerrainMeshOptimization,
+    ProfileCapability::AnimationOptimization,
+    ProfileCapability::ArchiveExtraction,
+    ProfileCapability::MeshReferenceMaintenance,
+    ProfileCapability::ArchiveCreation,
+];
 
 /// An SSE-like profile that supports every kind of work, with `.bsa` Archives.
-pub fn sse_profile() -> SelectedProfileFacts {
-    SelectedProfileFacts {
-        archive_extension: Some(".bsa".to_owned()),
-        supports_native_texture_optimization: true,
-        supports_texture_conversion: true,
-        supports_standard_mesh_optimization: true,
-        supports_terrain_mesh_optimization: true,
-        supports_animation_optimization: true,
-        supports_archive_extraction: true,
-        supports_mesh_reference_maintenance: true,
-        supports_archive_creation: true,
-    }
+pub fn sse_profile() -> ProfileCapabilities {
+    ProfileCapabilities::define(".bsa", &EVERY_CAPABILITY)
 }
 
 /// The Run Configuration of [`sse_profile`], with no ignored mods and no

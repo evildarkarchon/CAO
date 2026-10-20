@@ -234,7 +234,10 @@ impl RoutingPolicyRequest {
 }
 
 /// The Profile Capability facts a Routing Policy Request is validated against.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The default supports nothing and omits the Archive extension, the same as
+/// [`ProfileCapabilities::without_archive_extension`] with no capabilities.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ProfileCapabilities {
     archive_extension: Option<String>,
     capabilities: [bool; 8],
@@ -266,6 +269,12 @@ impl ProfileCapabilities {
             definition.capabilities[*capability as usize] = true;
         }
         definition
+    }
+
+    /// The raw Archive extension as defined, unvalidated and with its original
+    /// case, or `None` when the definition omits it.
+    pub fn archive_extension(&self) -> Option<&str> {
+        self.archive_extension.as_deref()
     }
 
     fn supports(&self, capability: ProfileCapability) -> bool {

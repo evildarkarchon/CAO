@@ -34,7 +34,7 @@ use std::time::{Duration, SystemTime};
 
 use cao_core::Error;
 use cao_core::execution::MutationState;
-use cao_core::routing::{ExecutionMode, RequestedWork, RoutingPolicyRequest};
+use cao_core::routing::{ExecutionMode, RequestedWork, RoutingPolicy, RoutingPolicyRequest};
 use cao_core::run::{
     ArchiveFinalization, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
     ArchiveFinalizationResult, ArchiveFinalizationSettings, ArchivePrecedence, ArchiveReader,
@@ -81,13 +81,11 @@ fn preparation_for(roots: &[PathBuf], create_archives: bool) -> RunPreparation {
         RequestedWork::NativeTextureOptimization
     };
     let configuration = sse_configuration();
-    let policy = configuration
-        .profile
-        .compile_policy(RoutingPolicyRequest::for_work(
-            ExecutionMode::Apply,
-            &[work],
-        ))
-        .unwrap();
+    let policy = RoutingPolicy::compile(
+        RoutingPolicyRequest::for_work(ExecutionMode::Apply, &[work]),
+        configuration.profile.clone(),
+    )
+    .unwrap();
     RunPreparation::new(
         roots.to_vec(),
         configuration,
