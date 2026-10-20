@@ -8,18 +8,19 @@ mod common;
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ArchiveFinalizationAttempt, ArchiveFinalizationFailure, CancellationToken,
-    OptimizationRunResult, PhaseSkipReason, RunDiagnostic, RunDiagnosticCode, RunFailureCode,
-    RunOutcome, RunPhase, RunPhaseStatus, RunRequest,
+    OptimizationRunResult, PhaseSkipReason, RunConfigurationProvider, RunDiagnostic,
+    RunDiagnosticCode, RunFailureCode, RunOutcome, RunPhase, RunPhaseStatus, RunRequest,
 };
 use cao_core::test_support::{
-    CountingCleanup, FakeBackendFactory, Observed, RecordingSink, ScriptedToolset,
-    ToolsetConfiguration, entry, execute_run, write_archive,
+    CallbackConfiguration, CountingCleanup, FakeBackendFactory, FixedConfiguration, Observed,
+    RecordingSink, ScriptedToolset, ToolsetConfiguration, entry, execute_run, sse_profile,
+    write_archive,
 };
 use common::{canonical, request, scratch_dir, write_tree};
 
@@ -74,34 +75,52 @@ fn an_apply_run_through_a_toolset_traverses_every_phase_and_succeeds() {
     assert_eq!(cleanup.passes, 1);
 }
 
+/// Every Optimization Run has a Run Toolset: a test provider given no script
+/// returns a default scripted one, as production always returns its own, so
+/// requested work runs and every Asset attempt succeeds.
 #[test]
-fn requested_work_without_a_toolset_fails_preparing() {
-    let root = scratch_dir("toolset-unavailable");
-    write_tree(&root, &["textures/a.dds"]);
-    let configuration = ToolsetConfiguration::sse(None);
-    let sink = RecordingSink::default();
-    let mut cleanup = CountingCleanup::default();
-
-    let result = execute(
-        &request(
-            ExecutionMode::Apply,
-            &root,
-            &[RequestedWork::NativeTextureOptimization],
+fn an_unscripted_provider_runs_requested_work_through_a_default_toolset() {
+    let providers: [(&str, Box<dyn RunConfigurationProvider>); 3] = [
+        ("toolset", Box::new(ToolsetConfiguration::sse(None))),
+        (
+            "fixed",
+            Box::new(FixedConfiguration {
+                profile: sse_profile(),
+                loads: AtomicUsize::new(0),
+            }),
         ),
-        &configuration,
-        &sink,
-        &mut cleanup,
-        &CancellationToken::new(),
-    );
+        (
+            "callback",
+            Box::new(CallbackConfiguration(Box::new(|_| Ok(sse_profile())))),
+        ),
+    ];
+    for (name, provider) in providers {
+        let root = scratch_dir(&format!("toolset-default-{name}"));
+        write_tree(&root, &["textures/a.dds"]);
+        let mut cleanup = CountingCleanup::default();
 
-    assert_eq!(result.outcome(), RunOutcome::Failed);
-    assert_eq!(
-        result.failures()[0].code,
-        RunFailureCode::RequestedWorkUnavailable
-    );
-    assert_eq!(result.failures()[0].phase, RunPhase::Preparing);
-    assert!(result.preparation().is_none());
-    assert_eq!(cleanup.passes, 1);
+        let result = execute_run(
+            &request(
+                ExecutionMode::Apply,
+                &root,
+                &[RequestedWork::NativeTextureOptimization],
+            ),
+            &mut cleanup,
+            None,
+            Some(&*provider),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(
+            result.outcome(),
+            RunOutcome::Succeeded,
+            "{name}: {:?}",
+            result.failures()
+        );
+        assert!(result.preparation().is_some(), "{name}");
+        assert_eq!(result.asset_attempts().len(), 1, "{name}");
+        assert_eq!(cleanup.passes, 1, "{name}");
+    }
 }
 
 #[test]

@@ -355,10 +355,10 @@ impl RunConfigurationProvider for ProfileConfigurationProvider {
     /// Reads the profile once and builds the run's Selected Profile and
     /// production Run Toolset from that read. Built only after every read
     /// succeeded, so work never sees a partial profile.
-    fn load(&self, profile_identity: &str) -> Result<(SelectedProfile, Option<RunToolset>), Error> {
+    fn load(&self, profile_identity: &str) -> Result<(SelectedProfile, RunToolset), Error> {
         let (selected, profile) = self.read_profile(profile_identity)?;
         let toolset = self.work.toolset(Arc::new(profile));
-        Ok((selected, Some(toolset)))
+        Ok((selected, toolset))
     }
 }
 

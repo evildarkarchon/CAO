@@ -99,8 +99,8 @@ pub fn test_configuration() -> Arc<FixedConfiguration> {
 }
 
 /// A provider of the SSE-like profile that returns a fresh Run Toolset over
-/// `toolset` to each run, or no Toolset at all when it is `None`, shared as
-/// the Optimization Run Service takes it.
+/// `toolset` to each run, or a default scripted one when it is `None`, shared
+/// as the Optimization Run Service takes it.
 pub fn toolset_configuration(toolset: Option<Arc<ScriptedToolset>>) -> Arc<ToolsetConfiguration> {
     Arc::new(ToolsetConfiguration::sse(toolset))
 }
