@@ -101,6 +101,18 @@ pub fn toolset_configuration(toolset: Option<Arc<ScriptedToolset>>) -> Arc<Tools
     Arc::new(ToolsetConfiguration::sse(toolset))
 }
 
+/// Like [`toolset_configuration`], but the SSE-like profile prefers
+/// conversion, so a run requesting native Texture work also converts its
+/// convertible Textures and maintains Mesh references.
+pub fn converting_configuration(
+    toolset: Option<Arc<ScriptedToolset>>,
+) -> Arc<ToolsetConfiguration> {
+    Arc::new(ToolsetConfiguration::new(
+        sse_profile().with_conversion_preference(true),
+        toolset,
+    ))
+}
+
 /// The production shape of a run's Asset attempts: a scripted Toolset whose
 /// attempts drive `factory`'s fake backend behind the production Asset
 /// attempt adapter, one backend per run. Keep clones of the factory's shared

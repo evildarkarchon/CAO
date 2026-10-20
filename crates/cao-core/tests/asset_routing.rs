@@ -23,27 +23,49 @@ const ALL_ROUTING_CAPABILITIES: &[ProfileCapability] = &[
     ProfileCapability::MeshReferenceMaintenance,
 ];
 
-/// Compiles a policy the test knows is valid.
+/// Compiles a policy the test knows is valid, for a profile without the
+/// Conversion Preference.
 fn policy(
     mode: ExecutionMode,
     work: &[RequestedWork],
     capabilities: &[ProfileCapability],
 ) -> RoutingPolicy {
+    policy_with_preference(mode, work, capabilities, false)
+}
+
+/// Compiles a policy the test knows is valid, for a profile that prefers
+/// conversion, so requested native Texture work also converts.
+fn converting_policy(
+    mode: ExecutionMode,
+    work: &[RequestedWork],
+    capabilities: &[ProfileCapability],
+) -> RoutingPolicy {
+    policy_with_preference(mode, work, capabilities, true)
+}
+
+/// Compiles a policy the test knows is valid under `.ba2`, with the given
+/// Conversion Preference.
+fn policy_with_preference(
+    mode: ExecutionMode,
+    work: &[RequestedWork],
+    capabilities: &[ProfileCapability],
+    prefers_conversion: bool,
+) -> RoutingPolicy {
     RoutingPolicy::compile(
         RoutingPolicyRequest::for_work(mode, work),
         ProfileCapabilities::define(".ba2", capabilities),
-        false,
+        prefers_conversion,
     )
     .expect("the scenario's policy is valid")
 }
 
-/// The shared all-work Apply router used by the recognition and carried-fact matrices.
+/// The shared all-work Apply router used by the recognition and carried-fact
+/// matrices. Its profile prefers conversion, so it also converts.
 fn fully_enabled_router() -> AssetRouter {
-    AssetRouter::new(policy(
+    AssetRouter::new(converting_policy(
         ExecutionMode::Apply,
         &[
             RequestedWork::NativeTextureOptimization,
-            RequestedWork::ConvertibleTextureConversion,
             RequestedWork::StandardMeshOptimization,
             RequestedWork::TerrainMeshOptimization,
             RequestedWork::AnimationOptimization,
@@ -73,7 +95,6 @@ fn skip_reason(decision: RoutingDecision) -> SkipReason {
 fn valid_request_and_capabilities_compile_one_immutable_policy() {
     let work = [
         RequestedWork::NativeTextureOptimization,
-        RequestedWork::ConvertibleTextureConversion,
         RequestedWork::StandardMeshOptimization,
         RequestedWork::TerrainMeshOptimization,
         RequestedWork::AnimationOptimization,
@@ -82,7 +103,7 @@ fn valid_request_and_capabilities_compile_one_immutable_policy() {
     let compiled = RoutingPolicy::compile(
         RoutingPolicyRequest::for_work(ExecutionMode::DryRun, &work),
         ProfileCapabilities::define(".Ba2", ALL_ROUTING_CAPABILITIES),
-        false,
+        true,
     )
     .expect("complete request compiles");
 
@@ -91,6 +112,7 @@ fn valid_request_and_capabilities_compile_one_immutable_policy() {
         assert!(compiled.requests(choice), "{choice:?} is requested");
     }
     assert!(!compiled.requests(RequestedWork::ArchiveCreation));
+    assert!(compiled.converts_textures());
     assert!(compiled.maintains_mesh_references());
     assert_eq!(compiled.archive_extension(), ".ba2");
 }
@@ -102,16 +124,19 @@ fn compilation_reports_every_request_capability_and_derived_conflict_together() 
         RoutingPolicyRequest::for_work(
             ExecutionMode::Apply,
             &[
-                RequestedWork::ConvertibleTextureConversion,
+                RequestedWork::NativeTextureOptimization,
                 RequestedWork::TerrainMeshOptimization,
                 RequestedWork::AnimationOptimization,
             ],
         ),
+        // The profile converts but cannot maintain Mesh references, so the
+        // preferred conversion derives an unsupported operation.
         ProfileCapabilities::without_archive_extension(&[
             ProfileCapability::NativeTextureOptimization,
+            ProfileCapability::ConvertibleTextureConversion,
             ProfileCapability::StandardMeshOptimization,
         ]),
-        false,
+        true,
     )
     .expect_err("the request conflicts with the profile");
 
@@ -119,10 +144,6 @@ fn compilation_reports_every_request_capability_and_derived_conflict_together() 
         errors,
         vec![
             PolicyValidationError::MissingArchiveExtension,
-            PolicyValidationError::UnsupportedRequestedAssetVariant {
-                request: RequestedWork::ConvertibleTextureConversion,
-                variant: AssetVariant::Texture(TextureVariant::Convertible),
-            },
             PolicyValidationError::UnsupportedRequestedAssetVariant {
                 request: RequestedWork::TerrainMeshOptimization,
                 variant: AssetVariant::Mesh(MeshVariant::Terrain),
@@ -132,7 +153,7 @@ fn compilation_reports_every_request_capability_and_derived_conflict_together() 
                 kind: AssetKind::Animation,
             },
             PolicyValidationError::UnsupportedDerivedOperation {
-                cause: RequestedWork::ConvertibleTextureConversion,
+                cause: RequestedWork::NativeTextureOptimization,
                 operation: AssetOperation::MeshReferenceMaintenance,
             },
         ]
@@ -422,10 +443,12 @@ fn routed_assets_carry_phase_target_mode_and_closed_operations() {
     }
 }
 
-/// Origin: AssetRoutingTests::skipReasonPrecedence (all seven rows).
+/// Origin: AssetRoutingTests::skipReasonPrecedence (six of its seven rows:
+/// conversion-only work, which excluded native Textures, can no longer be
+/// requested).
 #[test]
 fn recognized_assets_are_skipped_with_the_highest_precedence_reason() {
-    let cases: [(ExecutionMode, &[RequestedWork], &str, SkipReason); 7] = [
+    let cases: [(ExecutionMode, &[RequestedWork], &str, SkipReason); 6] = [
         (
             ExecutionMode::DryRun,
             &[],
@@ -437,12 +460,6 @@ fn recognized_assets_are_skipped_with_the_highest_precedence_reason() {
             &[],
             "Textures/Native.dds",
             SkipReason::DisabledAssetKind,
-        ),
-        (
-            ExecutionMode::Apply,
-            &[RequestedWork::ConvertibleTextureConversion],
-            "Textures/Native.dds",
-            SkipReason::ExcludedAssetVariant,
         ),
         (
             ExecutionMode::Apply,
@@ -481,49 +498,18 @@ fn recognized_assets_are_skipped_with_the_highest_precedence_reason() {
     }
 }
 
-/// Origin: AssetRoutingTests::conversionOnlyRoutesTextureAndMaintainsMeshes.
-#[test]
-fn conversion_only_work_routes_tga_and_maintains_both_mesh_variants() {
-    let router = AssetRouter::new(policy(
-        ExecutionMode::Apply,
-        &[RequestedWork::ConvertibleTextureConversion],
-        &[
-            ProfileCapability::ConvertibleTextureConversion,
-            ProfileCapability::MeshReferenceMaintenance,
-        ],
-    ));
-    for path in [
-        "Textures/Convertible.tga",
-        "Meshes/Standard.nif",
-        "Meshes/Terrain.btr",
-        "Meshes/Terrain.bto",
-    ] {
-        let asset = routed(router.route(Path::new(path)));
-        assert_eq!(asset.execution_path(), Path::new(path));
-        let operations = asset.operations();
-        if asset.kind() == AssetKind::Texture {
-            assert!(operations.contains(AssetOperation::Conversion));
-            assert!(!operations.contains(AssetOperation::Optimization));
-            assert!(!operations.contains(AssetOperation::MeshReferenceMaintenance));
-        } else {
-            assert_eq!(asset.kind(), AssetKind::Mesh);
-            assert!(operations.contains(AssetOperation::MeshReferenceMaintenance));
-            assert!(!operations.contains(AssetOperation::Optimization));
-        }
-    }
-}
-
 /// Origin: AssetRoutingTests::dryRunPreservesLooseAssetOperations.
 #[test]
 fn dry_run_keeps_loose_asset_operations_but_disables_archive_extraction() {
-    let router = AssetRouter::new(policy(
+    let router = AssetRouter::new(converting_policy(
         ExecutionMode::DryRun,
         &[
-            RequestedWork::ConvertibleTextureConversion,
+            RequestedWork::NativeTextureOptimization,
             RequestedWork::StandardMeshOptimization,
             RequestedWork::ArchiveExtraction,
         ],
         &[
+            ProfileCapability::NativeTextureOptimization,
             ProfileCapability::ConvertibleTextureConversion,
             ProfileCapability::StandardMeshOptimization,
             ProfileCapability::ArchiveExtraction,
@@ -612,25 +598,25 @@ fn batch_routing_owns_routed_assets_in_input_order_with_duplicates() {
 /// Origin: AssetRoutingTests::batchRoutingOmitsUnsupportedPathsAndCountsSkips.
 #[test]
 fn batch_routing_omits_unsupported_paths_and_counts_each_skip_reason() {
+    // Without the Conversion Preference, native Texture work excludes TGAs.
     let router = AssetRouter::new(policy(
         ExecutionMode::DryRun,
         &[
-            RequestedWork::ConvertibleTextureConversion,
+            RequestedWork::NativeTextureOptimization,
             RequestedWork::ArchiveExtraction,
         ],
         &[
-            ProfileCapability::ConvertibleTextureConversion,
+            ProfileCapability::NativeTextureOptimization,
             ProfileCapability::ArchiveExtraction,
-            ProfileCapability::MeshReferenceMaintenance,
         ],
     ));
     let paths = [
-        "Textures/Routed.tga",
+        "Textures/Routed.dds",
         "Docs/Unsupported.txt",
-        "Textures/Excluded.dds",
+        "Textures/Excluded.tga",
         "Animations/Disabled.hkx",
         "Archives/Disabled.ba2",
-        "Textures/Routed.tga",
+        "Textures/Routed.dds",
     ];
 
     let ledger = router.route_all(paths);
@@ -697,13 +683,14 @@ fn ledger_queries_by_phase_and_target_keep_relative_order() {
 /// Origin: AssetRoutingTests::ledgerWorkTotalCountsRoutedAssetsNotOperations.
 #[test]
 fn one_routed_asset_is_one_work_entry_whatever_its_operations() {
-    let router = AssetRouter::new(policy(
+    let router = AssetRouter::new(converting_policy(
         ExecutionMode::Apply,
         &[
-            RequestedWork::ConvertibleTextureConversion,
+            RequestedWork::NativeTextureOptimization,
             RequestedWork::StandardMeshOptimization,
         ],
         &[
+            ProfileCapability::NativeTextureOptimization,
             ProfileCapability::ConvertibleTextureConversion,
             ProfileCapability::StandardMeshOptimization,
             ProfileCapability::MeshReferenceMaintenance,
@@ -721,23 +708,21 @@ fn one_routed_asset_is_one_work_entry_whatever_its_operations() {
 /// Origin: AssetRoutingTests::batchRoutingMatchesSingleAssetDecisions.
 #[test]
 fn batch_routing_matches_single_path_decisions_for_every_disposition() {
+    // Without the Conversion Preference, native Texture work excludes TGAs.
     let router = AssetRouter::new(policy(
         ExecutionMode::Apply,
-        &[RequestedWork::ConvertibleTextureConversion],
-        &[
-            ProfileCapability::ConvertibleTextureConversion,
-            ProfileCapability::MeshReferenceMaintenance,
-        ],
+        &[RequestedWork::NativeTextureOptimization],
+        &[ProfileCapability::NativeTextureOptimization],
     ));
     let paths = [
-        "Textures/Routed.tga",
-        "Textures/Skipped.dds",
+        "Textures/Routed.dds",
+        "Textures/Skipped.tga",
         "Docs/Unsupported.txt",
     ];
 
     let single_routed = routed(router.route(Path::new(paths[0])));
     let RoutingDecision::Skipped(single_skipped) = router.route(Path::new(paths[1])) else {
-        panic!("the native Texture is excluded");
+        panic!("the convertible Texture is excluded");
     };
     assert_eq!(
         router.route(Path::new(paths[2])),

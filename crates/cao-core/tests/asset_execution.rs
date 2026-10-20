@@ -51,7 +51,7 @@ use cao_core::run::{
     RunServices, TemporaryArtifactRegistry, create_run_id, is_staging_name,
 };
 use cao_core::test_support::{CountingCleanup, ScriptedToolset};
-use common::{canonical, scratch_dir, toolset_configuration};
+use common::{canonical, converting_configuration, scratch_dir};
 
 /// Every capability a routed scenario needs.
 const CAPABILITIES: &[ProfileCapability] = &[
@@ -65,11 +65,14 @@ const CAPABILITIES: &[ProfileCapability] = &[
 ];
 
 /// Routes `path` under a policy compiled for `work`, as Asset Routing would.
+///
+/// The profile prefers conversion, so requested native Texture work also
+/// converts TGAs and maintains the references of every Mesh.
 fn route(mode: ExecutionMode, work: &[RequestedWork], path: &Path) -> RoutedAsset {
     let policy = RoutingPolicy::compile(
         RoutingPolicyRequest::for_work(mode, work),
         ProfileCapabilities::define(".bsa", CAPABILITIES),
-        false,
+        true,
     )
     .expect("the scenario's policy is valid");
     match AssetRouter::new(policy).route(path) {
@@ -416,7 +419,8 @@ impl AssetExecutionBackend for SharedBackend {
 
 /// Runs `backend` over `root` through the Run Executor, Safety Cleanup
 /// included: a scripted Run Toolset drives every Routed Asset through the
-/// production Asset attempt adapter over the shared backend.
+/// production Asset attempt adapter over the shared backend. As in [`route`],
+/// the profile prefers conversion.
 fn run(
     root: &Path,
     mode: ExecutionMode,
@@ -431,7 +435,7 @@ fn run(
         RunServices {
             safety_cleanup: &mut cleanup,
             observations: None,
-            configuration: Some(&*toolset_configuration(Some(Arc::new(toolset)))),
+            configuration: Some(&*converting_configuration(Some(Arc::new(toolset)))),
         },
         &CancellationToken::new(),
         create_run_id(),
@@ -557,7 +561,7 @@ fn a_failed_source_removal_after_commit_reports_what_survived() {
         };
         let asset = route(
             ExecutionMode::Apply,
-            &[RequestedWork::ConvertibleTextureConversion],
+            &[RequestedWork::NativeTextureOptimization],
             &source,
         );
 
@@ -617,7 +621,7 @@ fn a_panicking_source_removal_is_unsafe_and_keeps_the_committed_output() {
         let result = run(
             &root,
             ExecutionMode::Apply,
-            &[RequestedWork::ConvertibleTextureConversion],
+            &[RequestedWork::NativeTextureOptimization],
             &shared,
         );
 
@@ -664,7 +668,7 @@ fn a_source_replaced_during_load_is_never_removed() {
     };
     let asset = route(
         ExecutionMode::Apply,
-        &[RequestedWork::ConvertibleTextureConversion],
+        &[RequestedWork::NativeTextureOptimization],
         &source,
     );
 
@@ -828,7 +832,7 @@ fn a_destination_obstructed_by_a_directory_is_refused_without_mutation() {
     let rows = [
         (
             "texture conversion",
-            RequestedWork::ConvertibleTextureConversion,
+            RequestedWork::NativeTextureOptimization,
             "source.tga",
             "source.dds",
             "commit_texture",
@@ -904,7 +908,7 @@ fn a_failed_release_after_publication_keeps_the_committed_output() {
         ),
         (
             "convertible Texture",
-            vec![RequestedWork::ConvertibleTextureConversion],
+            vec![RequestedWork::NativeTextureOptimization],
             "source.tga",
             "source.dds",
             "saved source.tga",
@@ -920,7 +924,7 @@ fn a_failed_release_after_publication_keeps_the_committed_output() {
         ),
         (
             "Mesh Reference Maintenance",
-            vec![RequestedWork::ConvertibleTextureConversion],
+            vec![RequestedWork::NativeTextureOptimization],
             "actor.nif",
             "actor.nif",
             "saved actor.nif",
@@ -1118,11 +1122,7 @@ fn conversion_only_work_converts_in_apply_and_only_evaluates_in_dry_run() {
             })),
             ..HookBackend::default()
         };
-        let asset = route(
-            mode,
-            &[RequestedWork::ConvertibleTextureConversion],
-            &source,
-        );
+        let asset = route(mode, &[RequestedWork::NativeTextureOptimization], &source);
 
         let result = execute_and_clean(&asset, &mut backend, &root);
 
@@ -1212,7 +1212,7 @@ fn a_panicking_mesh_call_is_unsafe_and_preserves_the_original() {
             ExecutionMode::Apply,
             &[
                 RequestedWork::StandardMeshOptimization,
-                RequestedWork::ConvertibleTextureConversion,
+                RequestedWork::NativeTextureOptimization,
             ],
             &shared,
         );
@@ -1241,7 +1241,7 @@ fn an_ordinary_mesh_failure_names_its_operation_and_is_safe_to_continue() {
             ..HookBackend::default()
         };
         let requested = if boundary == "maintain_mesh_references" {
-            RequestedWork::ConvertibleTextureConversion
+            RequestedWork::NativeTextureOptimization
         } else {
             RequestedWork::StandardMeshOptimization
         };
@@ -1286,7 +1286,7 @@ fn an_unchanged_apply_mesh_or_a_dry_run_mesh_is_never_staged() {
             mode,
             &[
                 RequestedWork::StandardMeshOptimization,
-                RequestedWork::ConvertibleTextureConversion,
+                RequestedWork::NativeTextureOptimization,
             ],
             &source,
         );
@@ -1382,7 +1382,7 @@ fn mesh_operations_share_one_load_and_one_staged_save() {
             "maintenance only",
             0,
             1,
-            vec![RequestedWork::ConvertibleTextureConversion],
+            vec![RequestedWork::NativeTextureOptimization],
         ),
         (
             "optimization and maintenance",
@@ -1390,7 +1390,7 @@ fn mesh_operations_share_one_load_and_one_staged_save() {
             1,
             vec![
                 RequestedWork::StandardMeshOptimization,
-                RequestedWork::ConvertibleTextureConversion,
+                RequestedWork::NativeTextureOptimization,
             ],
         ),
     ];
@@ -1438,7 +1438,7 @@ fn dry_run_mesh_reference_maintenance_is_evaluated_without_saving() {
     let mut backend = HookBackend::default();
     let asset = route(
         ExecutionMode::DryRun,
-        &[RequestedWork::ConvertibleTextureConversion],
+        &[RequestedWork::NativeTextureOptimization],
         Path::new("Meshes/Actor.nif"),
     );
 
@@ -1703,7 +1703,7 @@ fn conversion_crash_child() {
     let source = root.join("textures/source.tga");
     let asset = route(
         ExecutionMode::Apply,
-        &[RequestedWork::ConvertibleTextureConversion],
+        &[RequestedWork::NativeTextureOptimization],
         &source,
     );
     // The registry, and with it the ownership lock, lives until the kill.
