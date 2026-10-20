@@ -2350,48 +2350,56 @@ fn a_plugin_maintenance_failure_keeps_recorded_attempts() {
     assert!(artifacts.cleanup().is_empty());
 }
 
-/// Origin: evidenceFailuresPropagateUnchanged (all three rows). A Run
-/// Evidence invariant violation, before the total, at a capacity rejection
-/// or after a commit, reaches the caller unchanged and is never converted
+/// Origin: evidenceFailuresPropagateUnchanged, reworked. A Run Evidence
+/// invariant violation reaches the caller unchanged and is never converted
 /// into a finalization result.
+///
+/// Each row leaves the evidence in a state a run can reach, which the
+/// phase's output total must violate: the phase already left, a result
+/// already recorded (as cancelled planning records one), or an output total
+/// already recorded. The C++ rows at a capacity rejection and after a commit
+/// left the phase mid-run from the cancellation poll; the recorder now holds
+/// the evidence exclusively for the whole run, and every later evidence call
+/// is preceded by the output total that establishes its preconditions, so
+/// only the first call can meet a violated state.
+///
+/// Each row pins the output total's own invariant. Had the phase converted
+/// it into an Unexpected Exception result, its result's record would either
+/// fail with a different invariant or, after a recorded total, succeed, so
+/// every row would notice.
 #[test]
 fn evidence_failures_reach_the_caller_unchanged() {
-    for stage in 0..3 {
-        let root = scratch(&format!("evidence-failure-{stage}")).join("mod");
+    /// What one row calls itself, and how it brings the evidence to the
+    /// state the output total must violate.
+    type Row = (&'static str, fn(&mut Evidence<'_>));
+    let rows: [Row; 3] = [
+        ("phase-left", |evidence| evidence.leave_phase()),
+        ("result-recorded", |evidence| {
+            evidence
+                .recorder()
+                .record_result(ArchiveFinalizationResult {
+                    cancelled: true,
+                    ..ArchiveFinalizationResult::default()
+                })
+                .unwrap();
+        }),
+        ("total-recorded", |evidence| {
+            evidence.recorder().record_output_total(0).unwrap();
+        }),
+    ];
+    for (row, reach) in rows {
+        let root = scratch(&format!("evidence-failure-{row}")).join("mod");
         let source = root.join("textures/asset.dds");
         write_file(&source, b"source bytes");
         let mut evidence = Evidence::new();
-        if stage == 0 {
-            evidence.leave_phase();
-        } else {
-            // The recorder holds the evidence exclusively for the whole run,
-            // so nothing can leave the phase between the preflight and the
-            // attempt any more. A result already recorded, as cancelled
-            // planning records one, still accepts the output total but
-            // rejects every attempt, so the attempt's record is again the
-            // first evidence call to fail.
-            evidence
-                .recorder()
-                .record_result(ArchiveFinalizationResult::default())
-                .unwrap();
-        }
-        let probes = Arc::new(AtomicUsize::new(0));
-        let counted = Arc::clone(&probes);
+        reach(&mut evidence);
+        let before = evidence.recorded();
         let finalizer = Finalizer {
             settings: ArchiveFinalizationSettings {
                 create_dummy_plugins: false,
                 compress: false,
                 ..ArchiveFinalizationSettings::default()
             },
-            // The second probe opens the output attempt, after the preflight.
-            capacity: capacity(move |_| {
-                let probe = counted.fetch_add(1, Ordering::SeqCst) + 1;
-                Some(if probe == 2 && stage == 1 {
-                    0
-                } else {
-                    UNLIMITED
-                })
-            }),
             ..Finalizer::default()
         };
         let mut artifacts = registry();
@@ -2402,17 +2410,16 @@ fn evidence_failures_reach_the_caller_unchanged() {
             &|| false,
         );
 
-        assert!(
-            matches!(outcome, Err(Error::EvidenceInvariant(_))),
-            "{stage}: {outcome:?}"
+        let Err(Error::EvidenceInvariant(violated)) = outcome else {
+            panic!("{row}: {outcome:?}");
+        };
+        assert_eq!(
+            violated, "Archive Finalization needs an executed phase and one immutable plan",
+            "{row}"
         );
-        assert!(
-            evidence
-                .recorded()
-                .is_none_or(|result| result.failure.is_none())
-        );
-        assert_eq!(source.exists(), stage != 2, "{stage}");
-        assert_eq!(archives_in(&root).len(), usize::from(stage == 2), "{stage}");
-        assert!(artifacts.cleanup().is_empty());
+        assert_eq!(evidence.recorded(), before, "{row}");
+        assert!(source.exists(), "{row}");
+        assert!(archives_in(&root).is_empty(), "{row}");
+        assert!(artifacts.cleanup().is_empty(), "{row}");
     }
 }
