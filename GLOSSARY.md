@@ -28,6 +28,14 @@ _Avoid_: Packed file, archive entry
 An Asset Kind or optimization behavior supported by the selected game profile. A run request that contradicts a Profile Capability is invalid.
 _Avoid_: Feature flag, UI availability
 
+**Selected Profile**:
+The profile facts one Optimization Run reads once, during Preparing: its Profile Capabilities, Conversion Preference, Archive naming rules, Texture and Mesh targets, Packing Exclusions, and custom Headpart Meshes. Every part of the run uses this one read.
+_Avoid_: Profile snapshot, profile settings
+
+**Conversion Preference**:
+The Selected Profile's choice of whether requested Texture work also converts convertible Textures. It is not a Profile Capability: its absence never contradicts a Run Request.
+_Avoid_: TGA option, convert flag
+
 **Dry Run**:
 A non-mutating optimization run that evaluates eligible Loose Assets without extracting or creating Archives.
 _Avoid_: Preview mode, simulation
