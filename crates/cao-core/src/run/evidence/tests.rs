@@ -85,6 +85,15 @@ fn is_invariant(result: Result<(), Error>) -> bool {
     matches!(result, Err(Error::EvidenceInvariant(_)))
 }
 
+/// The Run Evidence invariant `result` violated, or `None` when it was
+/// accepted or failed some other way, so a test can pin which rule refused it.
+fn invariant(result: Result<(), Error>) -> Option<&'static str> {
+    match result {
+        Err(Error::EvidenceInvariant(message)) => Some(message),
+        _ => None,
+    }
+}
+
 /// A finalization attempt at `archive` in `mod_root`.
 fn finalization_attempt(
     archive: &str,
@@ -1083,6 +1092,121 @@ fn a_finalization_attempt_after_its_result_is_rejected() {
     assert!(is_invariant(evidence.record_archive_finalization_attempt(
         finalization_attempt("late.bsa", "mod-root", MutationState::Committed, None)
     )));
+}
+
+/// Archive Finalization's attempt rejections keep their own messages: every
+/// attempt outside the executed, planned and still open phase breaks its
+/// immutable executed plan, and one past the planned total exceeds it.
+#[test]
+fn finalization_attempt_rejections_keep_their_messages() {
+    const PLAN: &str = "Archive Finalization attempts require the immutable executed plan";
+    const EXCEEDED: &str = "Archive Finalization attempts cannot exceed the planned total";
+    fn attempt() -> ArchiveFinalizationAttempt {
+        finalization_attempt("a.bsa", "mod-root", MutationState::Committed, None)
+    }
+    let cases: [(RejectionCase, &str); 5] = [
+        (
+            ("an attempt before the phase", || {
+                let mut evidence = routed(None, texture_ledger(1));
+                evidence.record_asset_processing_plan(1)?;
+                evidence.record_archive_finalization_attempt(attempt())
+            }),
+            PLAN,
+        ),
+        (
+            ("an attempt after the phase ended", || {
+                let mut evidence = finalizing(None);
+                evidence.record_archive_finalization_plan(1)?;
+                evidence.record_phase(executed(RunPhase::SafetyCleanup))?;
+                evidence.record_archive_finalization_attempt(attempt())
+            }),
+            PLAN,
+        ),
+        (
+            ("an attempt before the plan", || {
+                finalizing(None).record_archive_finalization_attempt(attempt())
+            }),
+            PLAN,
+        ),
+        (
+            ("an attempt after the result", || {
+                let mut evidence = finalizing(None);
+                evidence.record_archive_finalization_plan(1)?;
+                evidence.record_archive_finalization(ArchiveFinalizationResult::default())?;
+                evidence.record_archive_finalization_attempt(attempt())
+            }),
+            PLAN,
+        ),
+        (
+            ("an attempt past the planned total", || {
+                let mut evidence = finalizing(None);
+                evidence.record_archive_finalization_plan(1)?;
+                evidence.record_archive_finalization_attempt(attempt())?;
+                evidence.record_archive_finalization_attempt(attempt())
+            }),
+            EXCEEDED,
+        ),
+    ];
+    for ((case, record), expected) in cases {
+        assert_eq!(invariant(record()), Some(expected), "{case}");
+    }
+}
+
+/// An Archive Finalization attempt needs the phase's own plan: determinate
+/// progress recorded around the plan opens no result to retain it in, so
+/// the attempt is refused rather than retained in a result made up for it.
+#[test]
+fn a_finalization_attempt_without_its_plan_is_rejected() {
+    let mut evidence = finalizing(None);
+    evidence
+        .record_phase(progress(RunPhase::ArchiveFinalization, 1, 0, 0))
+        .unwrap();
+
+    assert_eq!(
+        invariant(
+            evidence.record_archive_finalization_attempt(finalization_attempt(
+                "unplanned.bsa",
+                "mod-root",
+                MutationState::Committed,
+                None
+            ))
+        ),
+        Some("Archive Finalization attempts require the immutable executed plan")
+    );
+    assert!(evidence.archive_finalization().is_none());
+    let unchanged = evidence
+        .phase(RunPhase::ArchiveFinalization)
+        .and_then(RunPhaseRecord::progress)
+        .unwrap();
+    assert_eq!((unchanged.total(), unchanged.completed()), (1, 0));
+}
+
+/// No output total may follow Archive Finalization's recorded result, as
+/// when cancelled planning recorded a result without one; the plan would
+/// otherwise reopen the closed phase and replace its result.
+#[test]
+fn a_finalization_plan_after_its_result_is_rejected() {
+    let mut evidence = finalizing(None);
+    evidence
+        .record_archive_finalization(ArchiveFinalizationResult {
+            cancelled: true,
+            ..ArchiveFinalizationResult::default()
+        })
+        .unwrap();
+
+    assert_eq!(
+        invariant(evidence.record_archive_finalization_plan(1)),
+        Some("Archive Finalization needs an executed phase and one immutable plan")
+    );
+    let terminal = consume_after_cleanup(evidence);
+    assert!(terminal.archive_finalization().unwrap().cancelled);
+    assert!(
+        terminal
+            .phase(RunPhase::ArchiveFinalization)
+            .unwrap()
+            .progress()
+            .is_none()
+    );
 }
 
 /// Processing Assets is planned only with the definitive Routing Ledger's

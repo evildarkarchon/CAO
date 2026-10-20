@@ -82,7 +82,6 @@ struct Storage {
     /// The phase's streamed attempts once its total is recorded, then its
     /// returned result.
     archive_finalization: Option<ArchiveFinalizationResult>,
-    archive_finalization_total: Option<usize>,
     archive_finalization_completed: bool,
     safety_cleanup_failures: Vec<RunFailure>,
     cancellation_observed: bool,
@@ -297,8 +296,10 @@ impl AttemptKind {
                 "Archive extraction attempts must be recorded during Extracting Archives"
             }
             Self::Asset => "Asset attempts must be recorded during Processing Assets",
+            // Archive Finalization has always reported every attempt outside
+            // its executed, planned and open phase as one broken plan.
             Self::ArchiveFinalization => {
-                "Archive Finalization attempts must be recorded during Archive Finalization"
+                "Archive Finalization attempts require the immutable executed plan"
             }
         }
     }
@@ -309,9 +310,7 @@ impl AttemptKind {
         match self {
             Self::ArchiveExtraction => "Archive extraction attempts require a planned total",
             Self::Asset => "Asset attempts require a planned routed-work total",
-            Self::ArchiveFinalization => {
-                "Archive Finalization attempts require a recorded output total"
-            }
+            Self::ArchiveFinalization => self.outside_phase(),
         }
     }
 
@@ -470,9 +469,14 @@ impl<'a> MutableRunEvidence<'a> {
     ///
     /// The phase must be the current, executed phase with no progress yet, so
     /// the plan is recorded once and never changed (C++
-    /// `recordArchiveFinalizationPlan`).
+    /// `recordArchiveFinalizationPlan`). Nor may it follow the phase's result,
+    /// as cancelled planning records one without a total: the plan would
+    /// reopen the closed phase and replace that result.
+    ///
+    /// The total lives only in that progress, which the attempts and the
+    /// result read back.
     pub fn record_archive_finalization_plan(&mut self, total: usize) -> Result<(), Error> {
-        let planned = self.storage.archive_finalization_total.is_none()
+        let planned = !self.storage.archive_finalization_completed
             && self.storage.phases.last().is_some_and(|record| {
                 record.phase() == RunPhase::ArchiveFinalization
                     && record.status() == RunPhaseStatus::Executed
@@ -483,7 +487,6 @@ impl<'a> MutableRunEvidence<'a> {
                 "Archive Finalization needs an executed phase and one immutable plan",
             ));
         }
-        self.storage.archive_finalization_total = Some(total);
         self.storage.archive_finalization = Some(ArchiveFinalizationResult::default());
         self.record_phase(RunPhaseRecord::executed(
             RunPhase::ArchiveFinalization,
@@ -505,20 +508,22 @@ impl<'a> MutableRunEvidence<'a> {
     ) -> Result<(), Error> {
         // A recorded result closes the phase to attempts but leaves it the
         // current, executed phase, so the shared step alone would accept one.
-        if self.storage.archive_finalization_completed {
+        // Progress recorded around the plan opens no result to retain the
+        // attempt in, and the shared step would accept that too.
+        if self.storage.archive_finalization_completed
+            || self.storage.archive_finalization.is_none()
+        {
             return Err(Error::EvidenceInvariant(
-                "Archive Finalization attempts cannot follow its recorded result",
+                AttemptKind::ArchiveFinalization.outside_phase(),
             ));
         }
         let succeeded = attempt.succeeded();
         self.record_attempt_progress(AttemptKind::ArchiveFinalization, succeeded, |storage| {
-            // The plan opened this result; the default only covers a
-            // progress record that bypassed the plan.
-            storage
-                .archive_finalization
-                .get_or_insert_with(ArchiveFinalizationResult::default)
-                .attempts
-                .push(attempt);
+            // The check above guarantees the plan's open result, so the
+            // attempt always lands in it.
+            if let Some(finalization) = storage.archive_finalization.as_mut() {
+                finalization.attempts.push(attempt);
+            }
         })
     }
 
@@ -585,7 +590,7 @@ impl<'a> MutableRunEvidence<'a> {
                 "Archive Finalization results require the executed work phase exactly once",
             ));
         }
-        let Some(total) = self.storage.archive_finalization_total else {
+        let Some(total) = self.archive_finalization_total() else {
             // A finalizer may fail or cancel before planning establishes a
             // trustworthy total; keep its phase-level status without
             // inventing zero planned outputs.
@@ -625,6 +630,19 @@ impl<'a> MutableRunEvidence<'a> {
         }
         self.complete_archive_finalization(result);
         Ok(())
+    }
+
+    /// Archive Finalization's planned output total, read from the determinate
+    /// Run Progress its plan recorded, or `None` before the plan.
+    ///
+    /// Only the plan opens the phase's result, so progress recorded around
+    /// the plan, which opened none, plans nothing.
+    fn archive_finalization_total(&self) -> Option<usize> {
+        self.storage.archive_finalization.as_ref()?;
+        self.storage
+            .phase(RunPhase::ArchiveFinalization)
+            .and_then(RunPhaseRecord::progress)
+            .map(|progress| progress.total())
     }
 
     /// Whether Archive Finalization's one result is already recorded, so a
