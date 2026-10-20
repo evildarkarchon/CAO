@@ -29,7 +29,7 @@ An Asset Kind or optimization behavior supported by the selected game profile. A
 _Avoid_: Feature flag, UI availability
 
 **Selected Profile**:
-The profile facts one Optimization Run reads once, during Preparing: its Profile Capabilities, Conversion Preference, Archive naming rules, Texture and Mesh targets, Packing Exclusions, and custom Headpart Meshes. Every part of the run uses this one read.
+The profile facts one Optimization Run reads once, during Preparing: its Profile Capabilities, Conversion Preference, one Archive settings value from which the Archive extension, the Archive naming rules and the plugin extensions all derive, Texture and Mesh targets, ignored mods (its Mod Exclusions by name), Packing Exclusions, and custom Headpart Meshes. Every part of the run uses this one read.
 _Avoid_: Profile snapshot, profile settings
 
 **Conversion Preference**:

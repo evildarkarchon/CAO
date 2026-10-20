@@ -23,7 +23,7 @@ pub enum ArchivePrecedence {
 /// The configuration and profile facts loaded for one run, owning no application state.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RunConfiguration {
-    /// The selected profile's Profile Capabilities, including its Archive
+    /// The Selected Profile's Profile Capabilities, including its Archive
     /// extension, which Preparing compiles the run's Routing Policy against
     /// (C++ `RunSetup::prepare`).
     pub profile: ProfileCapabilities,
