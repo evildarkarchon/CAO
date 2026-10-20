@@ -61,7 +61,7 @@ use cao_core::test_support::{
 use common::{canonical, no_work_request, request, scratch_dir, test_configuration};
 
 /// Executes one request with no observer and a fresh run identity. Requested
-/// work runs only through the Run Toolset `configuration` returns, if any.
+/// work runs only through the Run Toolset `configuration` returns.
 fn execute(
     request: &RunRequest,
     cleanup: &mut CountingCleanup,
@@ -69,6 +69,18 @@ fn execute(
     stop: &CancellationToken,
 ) -> OptimizationRunResult {
     execute_run(request, cleanup, None, configuration, stop)
+}
+
+/// A provider whose `.bsa` profile supports no Profile Capability, so any
+/// requested work fails Preparing with a Policy Conflict: the way a real run
+/// with work stops in Preparing before staging recovery.
+fn unsupporting_configuration() -> CallbackConfiguration {
+    CallbackConfiguration(Box::new(|_| {
+        Ok(SelectedProfile::new(ProfileCapabilities::define(
+            ".bsa",
+            &[],
+        )))
+    }))
 }
 
 /// The temporary a scripted port staged under the run's Temporary Ownership,
@@ -400,33 +412,6 @@ fn a_filesystem_root_cannot_be_a_mod_root() {
         assert!(result.preparation().is_none());
         assert_eq!(cleanup.passes, 1);
     }
-}
-
-/// Origin: OptimizationRunServiceTests::failureEventsPrecedeCleanupAndTerminal
-/// (the RequestedWorkUnavailable row).
-#[test]
-fn requested_work_without_a_run_toolset_fails_preparing() {
-    let root = scratch_dir("executor-no-run-toolset");
-    let request = request(
-        ExecutionMode::Apply,
-        &root,
-        &[RequestedWork::NativeTextureOptimization],
-    );
-    let mut cleanup = CountingCleanup::default();
-    let result = execute(
-        &request,
-        &mut cleanup,
-        Some(&*test_configuration()),
-        &CancellationToken::new(),
-    );
-
-    assert_eq!(result.outcome(), RunOutcome::Failed);
-    assert_eq!(
-        result.failures()[0].code,
-        RunFailureCode::RequestedWorkUnavailable
-    );
-    assert_eq!(result.failures()[0].phase, RunPhase::Preparing);
-    assert!(result.preparation().is_none());
 }
 
 /// Origin: RunExecutorTests::cancellationDuringPreparingPublishesNoPreparation.
@@ -2336,8 +2321,9 @@ fn explicit_archive_precedence_is_retained_through_preparing() {
 }
 
 /// Origin: RunExecutorTests::preparingDoesNotMutateAssetsOrArchives (both
-/// modes). Requested work without a Run Toolset fails Preparing, and the
-/// Assets, Archives and directory listing are untouched, mtimes included.
+/// modes). Requested work the profile supports none of fails Preparing
+/// with a Policy Conflict, and the Assets, Archives and directory listing
+/// are untouched, mtimes included.
 #[test]
 fn a_failed_preparing_mutates_no_asset_or_archive() {
     for mode in [ExecutionMode::Apply, ExecutionMode::DryRun] {
@@ -2352,6 +2338,7 @@ fn a_failed_preparing_mutates_no_asset_or_archive() {
                 .unwrap()
         };
         let before = (modified("asset.dds"), modified("source.bsa"));
+        let unsupporting = unsupporting_configuration();
         let mut cleanup = CountingCleanup::default();
 
         let result = execute(
@@ -2364,15 +2351,12 @@ fn a_failed_preparing_mutates_no_asset_or_archive() {
                 ],
             ),
             &mut cleanup,
-            Some(&*test_configuration()),
+            Some(&unsupporting),
             &CancellationToken::new(),
         );
 
         assert!(result.preparation().is_none(), "{mode:?}");
-        assert_eq!(
-            result.failures()[0].code,
-            RunFailureCode::RequestedWorkUnavailable
-        );
+        assert_eq!(result.failures()[0].code, RunFailureCode::PolicyConflict);
         assert_eq!((modified("asset.dds"), modified("source.bsa")), before);
         let mut names: Vec<_> = std::fs::read_dir(&root)
             .unwrap()
@@ -2387,6 +2371,7 @@ fn a_failed_preparing_mutates_no_asset_or_archive() {
 }
 
 /// Origin: RunExecutorTests::aRunThatStopsEarlyRecordsOnlyThePhasesItTraversed.
+/// The run stops in Preparing on a Policy Conflict.
 #[test]
 fn a_run_stopped_in_preparing_records_only_the_phases_it_traversed() {
     let mut cleanup = CountingCleanup::default();
@@ -2397,10 +2382,11 @@ fn a_run_stopped_in_preparing_records_only_the_phases_it_traversed() {
             &[RequestedWork::ArchiveExtraction],
         ),
         &mut cleanup,
-        Some(&*test_configuration()),
+        Some(&unsupporting_configuration()),
         &CancellationToken::new(),
     );
 
+    assert_eq!(result.failures()[0].code, RunFailureCode::PolicyConflict);
     assert_eq!(result.final_phase(), RunPhase::Preparing);
     let phases: Vec<_> = result.phases().iter().map(RunPhaseRecord::phase).collect();
     assert_eq!(phases, [RunPhase::Preparing, RunPhase::SafetyCleanup]);

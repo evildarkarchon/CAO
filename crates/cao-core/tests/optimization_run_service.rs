@@ -24,10 +24,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex, OnceLock, mpsc};
 
 use cao_core::Error;
-use cao_core::routing::{ExecutionMode, RequestedWork};
+use cao_core::routing::{ExecutionMode, ProfileCapabilities, RequestedWork};
 use cao_core::run::{
     ModSelection, OptimizationRunService, PhaseSkipReason, RunDiagnosticCode, RunEventPayload,
-    RunFailureCode, RunHandle, RunOutcome, RunPhase, RunPhaseStatus, RunRequest, StartError,
+    RunFailureCode, RunHandle, RunOutcome, RunPhase, RunPhaseStatus, RunRequest, SelectedProfile,
+    StartError,
 };
 use cao_core::test_support::{
     CallbackConfiguration, CountingInlineScheduler, DeferredScheduler, EventLog,
@@ -607,8 +608,8 @@ fn events_form_one_ordered_history_ending_in_one_terminal_event() {
 }
 
 /// Origin: OptimizationRunServiceTests::failureEventsPrecedeCleanupAndTerminal.
-/// The provider returns no Run Toolset, so the requested work has no means
-/// to run and Preparing fails with Requested Work Unavailable.
+/// The provider's profile supports none of the requested work, so
+/// Preparing fails with a Policy Conflict.
 #[test]
 fn failure_events_precede_safety_cleanup_and_the_terminal_event() {
     let _serial = serial();
@@ -618,8 +619,11 @@ fn failure_events_precede_safety_cleanup_and_the_terminal_event() {
         } else {
             Arc::new(CountingInlineScheduler::default())
         };
-        let service =
-            OptimizationRunService::with_scheduler(scheduler, Some(toolset_configuration(None)));
+        let unsupporting = Arc::new(ToolsetConfiguration::new(
+            SelectedProfile::new(ProfileCapabilities::define(".bsa", &[])),
+            None,
+        ));
+        let service = OptimizationRunService::with_scheduler(scheduler, Some(unsupporting));
         let events = EventLog::default();
         let request = RunRequest::new(
             "SkyrimSE",
@@ -639,7 +643,7 @@ fn failure_events_precede_safety_cleanup_and_the_terminal_event() {
         let expected = if scheduling_fails {
             RunFailureCode::SchedulingFailed
         } else {
-            RunFailureCode::RequestedWorkUnavailable
+            RunFailureCode::PolicyConflict
         };
         assert_eq!(failure.code, expected);
         assert_eq!(failure.phase, RunPhase::Preparing);

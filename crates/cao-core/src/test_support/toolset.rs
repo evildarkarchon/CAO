@@ -16,6 +16,7 @@ use crate::run::{
     RunObservationSink, RunPreparation, RunRequest, RunServices, RunToolset, SafetyCleanupService,
     SelectedProfile, TemporaryArtifactRegistry, create_run_id,
 };
+use crate::test_support::configuration::default_toolset;
 use crate::test_support::{
     FakeArchiveReader, FakeBackendFactory, FakeCapacity, FakeVolumes, sse_profile,
 };
@@ -363,11 +364,9 @@ pub fn record_finalization_result(
     recorder.record_result(result)
 }
 
-/// A provider returning one fixed Selected Profile and, if scripted, a fresh
-/// Run Toolset over `toolset` for each run. It counts its loads.
-///
-/// Without a Toolset, requested work has no means to run, so Preparing fails
-/// with `RequestedWorkUnavailable`.
+/// A provider returning one fixed Selected Profile and a fresh Run Toolset
+/// for each run: over `toolset` if scripted, or over a default
+/// [`ScriptedToolset`] otherwise. It counts its loads.
 pub struct ToolsetConfiguration {
     pub profile: SelectedProfile,
     pub toolset: Option<Arc<ScriptedToolset>>,
@@ -375,7 +374,8 @@ pub struct ToolsetConfiguration {
 }
 
 impl ToolsetConfiguration {
-    /// A provider of `profile` and of `toolset`'s Toolsets, if any.
+    /// A provider of `profile` and of `toolset`'s Toolsets, or default
+    /// scripted ones when `toolset` is `None`.
     pub fn new(profile: SelectedProfile, toolset: Option<Arc<ScriptedToolset>>) -> Self {
         Self {
             profile,
@@ -385,7 +385,7 @@ impl ToolsetConfiguration {
     }
 
     /// A provider of the SSE-like [`sse_profile`] and of `toolset`'s
-    /// Toolsets, if any.
+    /// Toolsets, or default scripted ones when `toolset` is `None`.
     pub fn sse(toolset: Option<Arc<ScriptedToolset>>) -> Self {
         Self::new(sse_profile(), toolset)
     }
@@ -393,7 +393,7 @@ impl ToolsetConfiguration {
 
 /// Executes `request` through the real Run Executor with the services the
 /// scenario supplies and a fresh Run ID. Requested work runs only through the
-/// Run Toolset `configuration` returns, if any.
+/// Run Toolset `configuration` returns; without a provider, Preparing fails.
 pub fn execute_run(
     request: &RunRequest,
     cleanup: &mut dyn SafetyCleanupService,
@@ -414,14 +414,12 @@ pub fn execute_run(
 }
 
 impl RunConfigurationProvider for ToolsetConfiguration {
-    fn load(
-        &self,
-        _profile_identity: &str,
-    ) -> Result<(SelectedProfile, Option<RunToolset>), Error> {
+    fn load(&self, _profile_identity: &str) -> Result<(SelectedProfile, RunToolset), Error> {
         self.loads.fetch_add(1, Ordering::SeqCst);
-        Ok((
-            self.profile.clone(),
-            self.toolset.as_ref().map(ScriptedToolset::toolset),
-        ))
+        let toolset = self
+            .toolset
+            .as_ref()
+            .map_or_else(default_toolset, ScriptedToolset::toolset);
+        Ok((self.profile.clone(), toolset))
     }
 }

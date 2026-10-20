@@ -7,7 +7,7 @@
 //!
 //! The configuration provider returns a Run Toolset with the run's Selected
 //! Profile, and the executor runs every work phase itself through the
-//! Toolset's ports. A request with work but no Toolset fails Preparing.
+//! Toolset's ports. Every Optimization Run has a Run Toolset.
 //!
 //! The executor owns the run's Run Evidence and lends it mutably to each step
 //! in turn. Run Evidence enforces the canonical Run Phase order: the
@@ -107,8 +107,7 @@ pub struct RunServices<'a> {
     pub safety_cleanup: &'a mut dyn SafetyCleanupService,
     pub observations: Option<&'a dyn RunObservationSink>,
     /// A missing provider fails Preparing, including for requests with no work.
-    /// Requested work fails Preparing with `RequestedWorkUnavailable` unless
-    /// the provider returns a Run Toolset.
+    /// A provider always returns a Run Toolset with the Selected Profile.
     pub configuration: Option<&'a dyn RunConfigurationProvider>,
 }
 
@@ -117,7 +116,7 @@ pub struct RunServices<'a> {
 fn load_selected_profile(
     request: &RunRequest,
     provider: Option<&dyn RunConfigurationProvider>,
-) -> Result<(SelectedProfile, Option<RunToolset>), RunFailure> {
+) -> Result<(SelectedProfile, RunToolset), RunFailure> {
     let failure = |detail: String| {
         RunFailure::new(
             RunFailureCode::ConfigurationLoadingFailed,
@@ -150,7 +149,7 @@ fn prepare_run(
     provider: Option<&dyn RunConfigurationProvider>,
     evidence: &mut MutableRunEvidence<'_>,
     stop: &CancellationToken,
-) -> Result<Option<(RunPreparation, Option<RunToolset>)>, RunFailure> {
+) -> Result<Option<(RunPreparation, RunToolset)>, RunFailure> {
     let (selected_profile, toolset) = load_selected_profile(request, provider)?;
     // A provider may finish an atomic read after cancellation; stop before
     // compiling or resolving anything more.
@@ -447,7 +446,7 @@ impl RunExecutor {
     /// violations are noted in `invariant` for the caller to raise after
     /// cleanup. `artifacts` is the run's Temporary Ownership scope, which the
     /// caller cleans up whatever happens here. `run_work` runs the work
-    /// phases when Preparing produced a Run Toolset.
+    /// phases when Preparing succeeded for a request with work.
     fn traverse(
         request: &RunRequest,
         configuration: Option<&dyn RunConfigurationProvider>,
@@ -464,16 +463,14 @@ impl RunExecutor {
         invariant.note(evidence.record_phase(RunPhaseRecord::executed(RunPhase::Preparing, None)));
 
         let mut preparation = None;
-        // The work ports the provider built from Preparing's profile read.
-        // With one, the executor runs the work phases itself.
+        // The work ports the provider built from Preparing's profile read,
+        // present whenever Preparing produced a preparation. The executor
+        // runs the work phases itself through them.
         let mut toolset = None;
         if !stop.is_cancelled() {
             match prepare_run(request, configuration, evidence, stop) {
                 Ok(prepared) => {
-                    (preparation, toolset) = prepared
-                        .map_or((None, None), |(prepared, toolset)| {
-                            (Some(prepared), toolset)
-                        });
+                    (preparation, toolset) = prepared.unzip();
                 }
                 Err(failure) => {
                     failed = true;
@@ -505,22 +502,6 @@ impl RunExecutor {
                     break;
                 }
             }
-        }
-
-        if preparation.is_some()
-            && !failed
-            && request.has_requested_work()
-            && toolset.is_none()
-            && !stop.is_cancelled()
-        {
-            // Keep the candidate private: a run with no means to do its work
-            // never exposes partial Preparing facts.
-            failed = true;
-            evidence.record_failure(RunFailure::new(
-                RunFailureCode::RequestedWorkUnavailable,
-                RunPhase::Preparing,
-                "Requested work requires run services that are not yet available",
-            ));
         }
 
         let preparation = preparation.filter(|_| !failed && !stop.is_cancelled());

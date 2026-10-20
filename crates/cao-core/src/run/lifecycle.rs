@@ -148,7 +148,6 @@ impl RunDiagnostic {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RunFailureCode {
     SchedulingFailed,
-    RequestedWorkUnavailable,
     PolicyConflict,
     ConfigurationLoadingFailed,
     ModSelectionResolutionFailed,

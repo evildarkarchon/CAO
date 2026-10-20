@@ -446,8 +446,7 @@ pub struct OptimizationRunService {
 impl OptimizationRunService {
     /// A service running each run on its own production thread.
     ///
-    /// A missing provider fails each run's Preparing rather than its start; a
-    /// provider that supplies no Run Toolset fails runs that request work.
+    /// A missing provider fails each run's Preparing rather than its start.
     pub fn new(configuration: Option<Arc<dyn RunConfigurationProvider>>) -> Self {
         Self::with_scheduler(Arc::new(StandardRunScheduler), configuration)
     }
