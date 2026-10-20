@@ -44,6 +44,7 @@ use cao_core::Error;
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use cao_core::routing::{
     AssetOperation, ExecutionMode, PolicyValidationError, ProfileCapabilities, RequestedWork,
+    RoutingPolicy,
 };
 use cao_core::run::{
     ArchiveExtractionResult, ArchiveFinalizationAttempt, ArchiveFinalizationFailure,
@@ -56,7 +57,7 @@ use cao_core::run::{
 use cao_core::test_support::{
     CallbackConfiguration, CountingCleanup, EVERY_CAPABILITY, FakeCapacity, Observed,
     RecordingSink, ScriptedCleanup, ScriptedToolset, ToolsetConfiguration, entry, execute_run,
-    record_finalization_result, sse_profile, write_archive,
+    record_finalization_result, sse_configuration, sse_policy, sse_profile, write_archive,
 };
 use common::{canonical, no_work_request, request, scratch_dir, test_configuration};
 
@@ -335,6 +336,83 @@ fn a_request_contradicting_the_profile_fails_preparing_with_every_conflict() {
             kind: cao_core::routing::AssetKind::Mesh,
         }]
     );
+}
+
+/// The synchronous Run Executor skips Start Errors, so it never sees
+/// `ConversionRequested`; Preparing still takes conversion only from the
+/// Conversion Preference. With the preference off, conversion a request lists
+/// itself is dropped from the Routing Policy.
+#[test]
+fn the_executor_drops_listed_conversion_when_the_conversion_preference_is_off() {
+    let policy = executor_policy("executor-listed-conversion-off", false);
+
+    assert_eq!(
+        policy,
+        compiled_policy(&[RequestedWork::NativeTextureOptimization])
+    );
+    assert!(!policy.requests(RequestedWork::ConvertibleTextureConversion));
+    assert!(!policy.maintains_mesh_references());
+}
+
+/// With the Conversion Preference on, a request that both lists conversion
+/// and asks for native Texture work yields the same Routing Policy as native
+/// Texture work alone would: conversion appears once, from the preference.
+#[test]
+fn the_executor_takes_conversion_once_from_the_conversion_preference() {
+    let policy = executor_policy("executor-listed-conversion-on", true);
+
+    assert_eq!(
+        policy,
+        compiled_policy(&[
+            RequestedWork::NativeTextureOptimization,
+            RequestedWork::ConvertibleTextureConversion,
+        ])
+    );
+    assert!(policy.requests(RequestedWork::ConvertibleTextureConversion));
+    assert!(policy.maintains_mesh_references());
+}
+
+/// Executes a Dry Run of native Texture work plus listed conversion over an
+/// empty Mod Root directly through the Run Executor, against the SSE-like
+/// profile with the given Conversion Preference, and returns the Routing
+/// Policy its Preparing compiled.
+fn executor_policy(name: &str, conversion_preference: bool) -> RoutingPolicy {
+    let provider = ToolsetConfiguration::new(
+        RunConfiguration {
+            conversion_preference,
+            ..sse_configuration()
+        },
+        Some(Arc::new(ScriptedToolset::default())),
+    );
+    let root = scratch_dir(name);
+    let request = request(
+        ExecutionMode::DryRun,
+        &root,
+        &[
+            RequestedWork::NativeTextureOptimization,
+            RequestedWork::ConvertibleTextureConversion,
+        ],
+    );
+    let mut cleanup = CountingCleanup::default();
+    let result = execute(
+        &request,
+        &mut cleanup,
+        Some(&provider),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    result
+        .preparation()
+        .expect("Preparing succeeded")
+        .policy()
+        .clone()
+}
+
+/// The Dry Run Routing Policy `work` compiles to against the SSE-like profile,
+/// the independent expectation the executor's policy is compared with.
+fn compiled_policy(work: &[RequestedWork]) -> RoutingPolicy {
+    sse_policy(ExecutionMode::DryRun, work)
 }
 
 /// Origin: RunExecutorTests::aNonDirectorySelectionFailsPreparing and

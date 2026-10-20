@@ -38,7 +38,7 @@ use crate::run::{
     PhaseSkipReason, RoutedAssetAttempt, RunConfiguration, RunDiagnostic, RunDiagnosticCode,
     RunEvidence, RunFailure, RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunProgress,
 };
-use crate::test_support::{EVERY_CAPABILITY, Observed, RecordingSink, sse_profile};
+use crate::test_support::{EVERY_CAPABILITY, Observed, RecordingSink, sse_policy};
 
 /// The preparation of a Dry Run with no work, as Preparing would retain it.
 fn successful_preparation() -> RunPreparation {
@@ -804,14 +804,10 @@ fn extracting(
 /// The definitive routing of `count` Textures in one Mod Root, each routed
 /// for Native Texture Optimization in an Apply run.
 fn texture_ledger(count: usize) -> RoutingLedger {
-    let policy = RoutingPolicy::compile(
-        RoutingPolicyRequest::for_work(
-            ExecutionMode::Apply,
-            &[RequestedWork::NativeTextureOptimization],
-        ),
-        sse_profile(),
-    )
-    .expect("the SSE profile supports Native Texture Optimization");
+    let policy = sse_policy(
+        ExecutionMode::Apply,
+        &[RequestedWork::NativeTextureOptimization],
+    );
     AssetRouter::new(policy)
         .route_all((0..count).map(|index| PathBuf::from(format!("mod-root/textures/{index}.dds"))))
 }

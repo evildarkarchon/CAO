@@ -1,10 +1,16 @@
 //! The Selected Profile: every profile fact one Optimization Run uses, read
 //! once, strictly, during Preparing (spec #566).
 //!
-//! [`SelectedProfile::read`] is the module's one read. Routing, Archive
-//! extraction and finalization, Texture and Mesh optimization and the Headpart
-//! Mesh scan all take their profile facts from the value it returns, so no
-//! part of a run can see a different version of the profile than another.
+//! [`SelectedProfile::read`] is the module's one read. Routing, Mod Selection,
+//! Archive extraction and finalization, Texture and Mesh optimization and the
+//! Headpart Mesh scan all take their profile facts from the value it returns,
+//! so no part of a run can see a different version of the profile than
+//! another.
+//!
+//! It provides the Profile Capabilities, the Conversion Preference, one
+//! Archive settings value from which the Archive extension, the Archive naming
+//! rules and the plugin extensions all derive, the Texture and Mesh targets,
+//! the ignored mods, the Packing Exclusions and the custom Headpart Meshes.
 
 use cao_archive::{Game, Settings};
 use cao_core::routing::{ProfileCapabilities, ProfileCapability};
@@ -180,3 +186,6 @@ fn mesh_target(settings: &ProfileSettings) -> NifVersion {
         stream: settings.meshes_stream,
     }
 }
+
+#[cfg(test)]
+mod tests;

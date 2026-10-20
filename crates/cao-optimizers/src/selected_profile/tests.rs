@@ -1,22 +1,103 @@
 //! The Selected Profile read: every profile fact one Optimization Run uses,
 //! read once from copies of the shipped profiles and from edited copies.
+//!
+//! These are unit tests so the module can stay crate-private (spec #566,
+//! story 24): the read is reached in production only through the composition
+//! root's Run Configuration Provider.
 
-mod common;
+use std::ops::Deref;
+use std::path::{Path, PathBuf};
 
 use cao_core::routing::{ProfileCapabilities, ProfileCapability};
-use cao_optimizers::selected_profile::SelectedProfile;
-use cao_optimizers::textures::TextureProfile;
 use cao_profiles::{ProfileError, Profiles};
-use common::{app_dir, edit_profile, write};
 use directxtex::{
     DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_BC3_UNORM,
     DXGI_FORMAT_BC7_UNORM, DXGI_FORMAT_BC7_UNORM_SRGB,
 };
 use nifly_sys::NifVersion;
 
+use super::SelectedProfile;
+use crate::textures::TextureProfile;
+
 /// Reads `identity` from the profiles of the install in `app`.
-fn read(app: &std::path::Path, identity: &str) -> SelectedProfile {
+fn read(app: &Path, identity: &str) -> SelectedProfile {
     SelectedProfile::read(&Profiles::new(app), identity).unwrap()
+}
+
+/// An app directory holding a copy of the repository's shipped `profiles/`,
+/// removed again when the scenario ends.
+///
+/// Unit tests get no `CARGO_TARGET_TMPDIR`, so it lives under the system
+/// temporary directory, named for the process as well as the scenario so
+/// that test runs from several worktrees at once never share one.
+struct AppDir(PathBuf);
+
+impl Deref for AppDir {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for AppDir {
+    fn drop(&mut self) {
+        // Best effort: a leftover copy is harmless, and a failing scenario's
+        // panic must not be masked by a cleanup error.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A fresh [`AppDir`] for the scenario `name`.
+fn app_dir(name: &str) -> AppDir {
+    let app = std::env::temp_dir()
+        .join("cao-optimizers-unit")
+        .join(format!("{name}-{}", std::process::id()));
+    // A missing directory is the expected case; anything else surfaces below.
+    let _ = std::fs::remove_dir_all(&app);
+    let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles");
+    copy_tree(&shipped, &app.join("profiles"));
+    AppDir(app)
+}
+
+/// Copies the directory tree `from` to `to`, creating `to`.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+/// Replaces one `key=value` line of a profile's `profile.ini`.
+fn edit_profile(app: &Path, profile: &str, key: &str, value: &str) {
+    let path = app.join("profiles").join(profile).join("profile.ini");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let prefix = format!("{key}=");
+    assert!(text.lines().any(|line| line.starts_with(&prefix)), "{key}");
+    let edited: Vec<String> = text
+        .lines()
+        .map(|line| {
+            if line.starts_with(&prefix) {
+                format!("{prefix}{value}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect();
+    std::fs::write(&path, edited.join("\r\n")).unwrap();
+}
+
+/// Writes `bytes` at `root/relative`, creating parent directories.
+fn write(root: &Path, relative: &str, bytes: &[u8]) {
+    let path = root.join(relative);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, bytes).unwrap();
 }
 
 #[test]
@@ -67,6 +148,56 @@ fn each_enabled_asset_kind_supports_all_of_its_work() {
                 StandardMeshOptimization,
                 TerrainMeshOptimization,
                 AnimationOptimization,
+            ]
+        )
+    );
+}
+
+/// Turning off Meshes alone, on a profile that otherwise supports every Asset
+/// Kind, removes only Mesh optimization: Mesh Reference Maintenance belongs to
+/// Texture conversion, so it stays.
+#[test]
+fn turning_off_meshes_removes_only_mesh_optimization() {
+    use ProfileCapability::*;
+    let app = app_dir("selected-meshes-off");
+
+    edit_profile(&app, "SSE", "meshesEnabled", "false");
+    assert_eq!(
+        read(&app, "SSE").capabilities(),
+        &ProfileCapabilities::define(
+            ".bsa",
+            &[
+                NativeTextureOptimization,
+                ConvertibleTextureConversion,
+                AnimationOptimization,
+                ArchiveExtraction,
+                MeshReferenceMaintenance,
+                ArchiveCreation,
+            ]
+        )
+    );
+}
+
+/// Turning off Animations alone, on a profile that otherwise supports every
+/// Asset Kind, removes only Animation optimization.
+#[test]
+fn turning_off_animations_removes_only_animation_optimization() {
+    use ProfileCapability::*;
+    let app = app_dir("selected-animations-off");
+
+    edit_profile(&app, "SSE", "animationsEnabled", "false");
+    assert_eq!(
+        read(&app, "SSE").capabilities(),
+        &ProfileCapabilities::define(
+            ".bsa",
+            &[
+                NativeTextureOptimization,
+                ConvertibleTextureConversion,
+                StandardMeshOptimization,
+                TerrainMeshOptimization,
+                ArchiveExtraction,
+                MeshReferenceMaintenance,
+                ArchiveCreation,
             ]
         )
     );

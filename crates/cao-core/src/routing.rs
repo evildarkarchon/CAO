@@ -98,7 +98,7 @@ pub enum RequestedWork {
     ArchiveExtraction,
     /// Archive creation is a run finalization choice, not a per-Asset Routing
     /// Decision, but it is carried here so one compiled policy validates it
-    /// against the selected profile.
+    /// against the Selected Profile.
     ArchiveCreation,
 }
 
@@ -289,7 +289,9 @@ impl ProfileCapabilities {
     }
 }
 
-const CAPABILITIES: [ProfileCapability; 8] = [
+/// Every Profile Capability in declaration order, shared with the test
+/// support's `EVERY_CAPABILITY` so the variant list is stated once.
+pub(crate) const CAPABILITIES: [ProfileCapability; 8] = [
     ProfileCapability::NativeTextureOptimization,
     ProfileCapability::ConvertibleTextureConversion,
     ProfileCapability::StandardMeshOptimization,
