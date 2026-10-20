@@ -1,7 +1,8 @@
-//! The Run Executor's own containment, which no Run Toolset port can reach.
+//! The Run Executor's own containment, which no Run Toolset seam can reach.
 //!
-//! Each port contains its own panics, so work that escapes the executor's
-//! traversal can only be injected below its interface. These scenarios pass
+//! The work phases contain an Asset attempt's panics, and the Archive
+//! extractor and Archive Finalization their own, so work that escapes the
+//! executor's traversal can only be injected below its interface. These scenarios pass
 //! the traversal a scripted work closure through the crate-private
 //! [`RunExecutor::execute_with_work`] instead of the Toolset's work phases.
 

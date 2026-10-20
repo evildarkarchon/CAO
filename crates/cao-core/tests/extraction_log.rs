@@ -40,13 +40,13 @@ impl Log for Capture {
 static CAPTURE: Capture = Capture(Mutex::new(Vec::new()));
 
 #[test]
-fn a_run_using_core_archive_work_logs_each_successful_extraction() {
+fn a_run_logs_each_successful_extraction() {
     log::set_logger(&CAPTURE).unwrap();
     log::set_max_level(LevelFilter::Info);
     let root = canonical(&scratch_dir("extraction-log"));
     let archive = root.join("content.bsa");
     write_archive(&archive, &[entry("meshes/extracted.nif", b"extracted")]);
-    let toolset = Arc::new(ScriptedToolset::default().with_core_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute_run(
         &request(

@@ -645,12 +645,6 @@ impl<'a> MutableRunEvidence<'a> {
             .map(|progress| progress.total())
     }
 
-    /// Whether Archive Finalization's one result is already recorded, so a
-    /// contained port panic knows no further result may be recorded.
-    pub(crate) fn archive_finalization_completed(&self) -> bool {
-        self.storage.archive_finalization_completed
-    }
-
     /// The finalization recorder lent this evidence for as long as it lives,
     /// which the run hands to Archive Finalization in place of the whole
     /// store, so the phase reaches only its own facts.
@@ -669,6 +663,10 @@ impl<'a> MutableRunEvidence<'a> {
 
     /// Archive Finalization's attempts and result so far, once its output
     /// total or result is recorded.
+    // Only the evidence suite and the `test_support` finalization harness
+    // read the result back from the crate-private store: Archive
+    // Finalization keeps its own attempts when it contains a panic (#588).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn archive_finalization(&self) -> Option<&ArchiveFinalizationResult> {
         self.storage.archive_finalization.as_ref()
     }

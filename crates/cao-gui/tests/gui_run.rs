@@ -91,7 +91,6 @@ fn real_archive_work(reader: FakeArchiveReader, packer: FakeArchivePacker) -> Sc
         packer: Arc::new(packer),
         ..ScriptedToolset::default()
     }
-    .with_core_archive_work()
 }
 
 /// How the classified run turns out (C++ `ClassificationScenario`).

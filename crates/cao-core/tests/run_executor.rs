@@ -569,17 +569,13 @@ fn cancelling_between_assets_keeps_committed_mutations_and_cleans_up() {
     let token = CancellationToken::new();
     // Every attempt commits; the first cancels the run before it returns,
     // as a user clicking Cancel mid-attempt would.
-    let toolset = Arc::new(
-        ScriptedToolset::default()
-            .with_assets({
-                let token = token.clone();
-                move |_, _, _| {
-                    token.cancel();
-                    Ok(AssetExecutionResult::success(MutationState::Committed))
-                }
-            })
-            .with_core_archive_work(),
-    );
+    let toolset = Arc::new(ScriptedToolset::default().with_assets({
+        let token = token.clone();
+        move |_, _, _| {
+            token.cancel();
+            Ok(AssetExecutionResult::success(MutationState::Committed))
+        }
+    }));
     let request = request(
         ExecutionMode::Apply,
         &root,
@@ -750,7 +746,7 @@ fn processing_and_evidence_share_the_canonical_mod_root() {
             selection,
             vec![RequestedWork::NativeTextureOptimization],
         );
-        let toolset = Arc::new(ScriptedToolset::default().with_core_archive_work());
+        let toolset = Arc::new(ScriptedToolset::default());
         let mut cleanup = CountingCleanup::default();
 
         let result = execute(
@@ -775,11 +771,22 @@ fn processing_and_evidence_share_the_canonical_mod_root() {
     }
 }
 
+/// A fake packer that panics once it has written an Archive to staging, so
+/// core's Archive Finalization fails its first output attempt with an
+/// Unexpected Exception that forbids continuation.
+fn panicking_packer() -> Arc<FakeArchivePacker> {
+    Arc::new(FakeArchivePacker {
+        after_write: Some(Box::new(|_| panic!("the archive writer panicked"))),
+        ..FakeArchivePacker::default()
+    })
+}
+
 /// Origin: RunExecutorTests::removedConversionRetainsModRoot (both rows). A
 /// conversion that removed its source keeps its committed attempt and Mod
 /// Root when a later checkpoint fails or cancels. Cancellation stops before
-/// Archive Finalization; the later failure is the Archive Finalization port
-/// failing, the only checkpoint after the last attempt a Toolset can fail.
+/// Archive Finalization; the later failure is Archive Finalization's own,
+/// its packer panicking after the write, which the phase contains as an
+/// Unexpected Exception.
 #[test]
 fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
     for cancels in [false, true] {
@@ -787,10 +794,18 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
             "executor/removed-conversion-{cancels}"
         )));
         let root = selected.join("mod");
-        common::write_tree(&root, &["original.tga"]);
+        common::write_tree(&root, &["textures/original.tga"]);
         let token = CancellationToken::new();
         let staged = StagedTemporary::default();
-        let toolset = ScriptedToolset::default().with_assets({
+        let toolset = ScriptedToolset {
+            packer: if cancels {
+                Arc::default()
+            } else {
+                panicking_packer()
+            },
+            ..ScriptedToolset::default()
+        }
+        .with_assets({
             let (token, staged) = (token.clone(), staged.clone());
             move |asset, mod_root, artifacts| {
                 staged.stage(mod_root, artifacts);
@@ -803,19 +818,16 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
                 Ok(AssetExecutionResult::success(MutationState::Committed))
             }
         });
-        // The cancellation row runs core's real Archive work; the failure row
-        // still scripts an escaping finalization, which no real run produces
-        // and which the port contract ticket (#588) deletes.
-        let toolset = Arc::new(if cancels {
-            toolset.with_core_archive_work()
-        } else {
-            toolset.with_escaping_finalization_work("later orchestration failure")
-        });
+        let toolset = Arc::new(toolset);
+        // Archive creation gives the failure row an output to pack.
         let request = RunRequest::new(
             "SkyrimSE",
             ExecutionMode::Apply,
             ModSelection::ChildModRoots(common::relative_to_working_directory(&selected)),
-            vec![RequestedWork::NativeTextureOptimization],
+            vec![
+                RequestedWork::NativeTextureOptimization,
+                RequestedWork::ArchiveCreation,
+            ],
         );
         let mut cleanup = CountingCleanup::default();
 
@@ -841,16 +853,23 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
             RunOutcome::Failed
         };
         assert_eq!(result.outcome(), expected, "{row}");
-        if !cancels {
-            assert_eq!(result.failures()[0].code, RunFailureCode::RunWorkEscaped);
-            assert_eq!(result.failures()[0].phase, RunPhase::ArchiveFinalization);
-            assert!(
-                result.failures()[0]
-                    .detail
-                    .contains("later orchestration failure")
+        assert!(
+            result.failures().is_empty(),
+            "{row}: contained by the phase"
+        );
+        if cancels {
+            assert!(result.archive_finalization().is_none(), "{row}");
+        } else {
+            let finalization = result.archive_finalization().unwrap();
+            let [attempt] = finalization.attempts.as_slice() else {
+                panic!("{row}: one output attempt: {finalization:?}");
+            };
+            assert_eq!(
+                attempt.failure,
+                Some(ArchiveFinalizationFailure::UnexpectedException)
             );
+            assert!(!finalization.safe_to_continue, "{row}");
         }
-        assert!(result.archive_finalization().is_none(), "{row}");
         assert_eq!(cleanup.passes, 1, "{row}");
         staged.assert_removed();
         let attempts = result.asset_attempts();
@@ -858,7 +877,7 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
         assert_eq!(attempts[0].mod_root, root, "{row}");
         assert_eq!(
             attempts[0].asset.execution_path(),
-            root.join("original.tga")
+            root.join("textures/original.tga")
         );
         assert!(
             attempts[0]
@@ -884,8 +903,8 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
             cancels,
             "{row}"
         );
-        assert!(!root.join("original.tga").exists());
-        assert_eq!(read(&root.join("original.dds")), "converted");
+        assert!(!root.join("textures/original.tga").exists());
+        assert_eq!(read(&root.join("textures/original.dds")), "converted");
     }
 }
 
@@ -927,7 +946,7 @@ fn an_asset_retargeted_after_discovery_is_attributed_to_the_root_containing_it()
                 }
             }
         });
-        let toolset = Arc::new(ScriptedToolset::default().with_core_archive_work());
+        let toolset = Arc::new(ScriptedToolset::default());
         let request = RunRequest::new(
             "SkyrimSE",
             ExecutionMode::Apply,
@@ -989,7 +1008,7 @@ fn applicable_work_reports_its_phases_whether_or_not_there_is_anything_to_do() {
         if has_asset {
             std::fs::write(root.join("asset.dds"), "untouched").unwrap();
         }
-        let toolset = Arc::new(ScriptedToolset::default().with_core_archive_work());
+        let toolset = Arc::new(ScriptedToolset::default());
         let request = request(
             mode,
             &root,
@@ -1109,8 +1128,7 @@ fn each_work_phase_is_published_before_its_work_starts() {
         .with_assets(move |_, _, _| {
             assert_eq!(last_published(), Some(RunPhase::ProcessingAssets));
             Ok(AssetExecutionResult::success(MutationState::None))
-        })
-        .with_core_archive_work(),
+        }),
     );
     let mut cleanup = CountingCleanup::default();
 
@@ -1162,7 +1180,7 @@ fn a_preparing_diagnostic_survives_work_without_an_observer() {
         ModSelection::ChildModRoots(mods.clone()),
         vec![RequestedWork::NativeTextureOptimization],
     );
-    let toolset = Arc::new(ScriptedToolset::default().with_core_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
     let mut cleanup = CountingCleanup::default();
 
     let result = execute(
@@ -1234,18 +1252,14 @@ fn a_discovery_diagnostic_follows_the_attempt_and_can_cancel_finalization() {
             }
         });
         let staged = StagedTemporary::default();
-        let toolset = Arc::new(
-            ScriptedToolset::default()
-                .with_assets({
-                    let (order, staged) = (order.clone(), staged.clone());
-                    move |_, mod_root, artifacts| {
-                        staged.stage(mod_root, artifacts);
-                        order.lock().unwrap().push("asset");
-                        Ok(AssetExecutionResult::success(MutationState::None))
-                    }
-                })
-                .with_core_archive_work(),
-        );
+        let toolset = Arc::new(ScriptedToolset::default().with_assets({
+            let (order, staged) = (order.clone(), staged.clone());
+            move |_, mod_root, artifacts| {
+                staged.stage(mod_root, artifacts);
+                order.lock().unwrap().push("asset");
+                Ok(AssetExecutionResult::success(MutationState::None))
+            }
+        }));
         let request = RunRequest::new(
             "SkyrimSE",
             ExecutionMode::Apply,
@@ -1332,20 +1346,16 @@ fn a_panicking_progress_observer_keeps_the_failed_attempt() {
             }
         });
         let staged = StagedTemporary::default();
-        let toolset = Arc::new(
-            ScriptedToolset::default()
-                .with_assets({
-                    let staged = staged.clone();
-                    move |_, mod_root, artifacts| {
-                        staged.stage(mod_root, artifacts);
-                        Ok(AssetExecutionResult::failed(
-                            AssetExecutionFailure::CommitFailed,
-                            "controlled recoverable failure",
-                        ))
-                    }
-                })
-                .with_core_archive_work(),
-        );
+        let toolset = Arc::new(ScriptedToolset::default().with_assets({
+            let staged = staged.clone();
+            move |_, mod_root, artifacts| {
+                staged.stage(mod_root, artifacts);
+                Ok(AssetExecutionResult::failed(
+                    AssetExecutionFailure::CommitFailed,
+                    "controlled recoverable failure",
+                ))
+            }
+        }));
         let mut cleanup = CountingCleanup::default();
 
         let result = execute_run(
@@ -1419,29 +1429,25 @@ fn mixed_asset_evidence_outlives_every_service() {
         .unwrap();
     let (result, writes) = {
         let staged = StagedTemporary::default();
-        let toolset = Arc::new(
-            ScriptedToolset::default()
-                .with_assets({
-                    let staged = staged.clone();
-                    move |asset, mod_root, artifacts| {
-                        staged.stage(mod_root, artifacts);
-                        let path = asset.execution_path();
-                        Ok(if path.ends_with("a.dds") {
-                            std::fs::write(path, "committed").unwrap();
-                            AssetExecutionResult::success(MutationState::Committed)
-                        } else {
-                            AssetExecutionResult::failed(
-                                AssetExecutionFailure::LoadFailed,
-                                "controlled load failure",
-                            )
-                            .with_path(path)
-                            .with_operation("load_texture")
-                            .with_service_detail("raw detail")
-                        })
-                    }
+        let toolset = Arc::new(ScriptedToolset::default().with_assets({
+            let staged = staged.clone();
+            move |asset, mod_root, artifacts| {
+                staged.stage(mod_root, artifacts);
+                let path = asset.execution_path();
+                Ok(if path.ends_with("a.dds") {
+                    std::fs::write(path, "committed").unwrap();
+                    AssetExecutionResult::success(MutationState::Committed)
+                } else {
+                    AssetExecutionResult::failed(
+                        AssetExecutionFailure::LoadFailed,
+                        "controlled load failure",
+                    )
+                    .with_path(path)
+                    .with_operation("load_texture")
+                    .with_service_detail("raw detail")
                 })
-                .with_core_archive_work(),
-        );
+            }
+        }));
         let mut cleanup = CountingCleanup::default();
         let result = execute(
             &request(
@@ -1594,13 +1600,10 @@ fn a_cancelled_finalization_keeps_its_committed_output() {
         })),
         ..FakeArchivePacker::default()
     };
-    let toolset = Arc::new(
-        ScriptedToolset {
-            packer: Arc::new(packer),
-            ..ScriptedToolset::default()
-        }
-        .with_core_archive_work(),
-    );
+    let toolset = Arc::new(ScriptedToolset {
+        packer: Arc::new(packer),
+        ..ScriptedToolset::default()
+    });
     let mut cleanup = CountingCleanup::default();
     let result = execute(
         &request(
@@ -1676,18 +1679,15 @@ fn a_committed_archive_without_its_loading_plugin_fails_the_run() {
     let planned_plugin = root.join("missing-loading-plugin.esp");
     let competitor = planned_plugin.clone();
     let occupied = AtomicBool::new(false);
-    let toolset = Arc::new(
-        ScriptedToolset {
-            capacity: Arc::new(FakeCapacity(Some(Box::new(move |_| {
-                if !occupied.swap(true, Ordering::SeqCst) {
-                    std::fs::write(&competitor, "competing plugin").unwrap();
-                }
-                None
-            })))),
-            ..ScriptedToolset::default()
-        }
-        .with_core_archive_work(),
-    );
+    let toolset = Arc::new(ScriptedToolset {
+        capacity: Arc::new(FakeCapacity(Some(Box::new(move |_| {
+            if !occupied.swap(true, Ordering::SeqCst) {
+                std::fs::write(&competitor, "competing plugin").unwrap();
+            }
+            None
+        })))),
+        ..ScriptedToolset::default()
+    });
     let mut cleanup = CountingCleanup::default();
     let result = execute(
         &request(
@@ -1733,24 +1733,20 @@ fn an_unsafe_attempt_cancelled_mid_flight_fails_and_leaves_pending_work_untouche
     std::fs::write(root.join("b.dds"), "unattempted").unwrap();
     let token = CancellationToken::new();
     let staged = StagedTemporary::default();
-    let toolset = Arc::new(
-        ScriptedToolset::default()
-            .with_assets({
-                let (token, staged) = (token.clone(), staged.clone());
-                move |asset, mod_root, artifacts| {
-                    staged.stage(mod_root, artifacts);
-                    token.cancel();
-                    std::fs::write(asset.execution_path(), "finished atomic attempt").unwrap();
-                    Ok(AssetExecutionResult::failed(
-                        AssetExecutionFailure::CommitFailed,
-                        "publication left the output unknown",
-                    )
-                    .with_mutation(MutationState::PartialOrUnknown)
-                    .with_safe_to_continue(false))
-                }
-            })
-            .with_core_archive_work(),
-    );
+    let toolset = Arc::new(ScriptedToolset::default().with_assets({
+        let (token, staged) = (token.clone(), staged.clone());
+        move |asset, mod_root, artifacts| {
+            staged.stage(mod_root, artifacts);
+            token.cancel();
+            std::fs::write(asset.execution_path(), "finished atomic attempt").unwrap();
+            Ok(AssetExecutionResult::failed(
+                AssetExecutionFailure::CommitFailed,
+                "publication left the output unknown",
+            )
+            .with_mutation(MutationState::PartialOrUnknown)
+            .with_safe_to_continue(false))
+        }
+    }));
     let mut cleanup = CountingCleanup::default();
 
     let result = execute(
@@ -1804,15 +1800,12 @@ fn a_discovery_diagnostic_survives_a_failure_later_in_discovery() {
     let outside = canonical(&scratch_dir("executor/diagnostic-survives-failure-outside"));
     let link = root.join("linked");
     common::junction(&link, &outside);
-    let toolset = Arc::new(
-        ScriptedToolset {
-            capacity: Arc::new(FakeCapacity(Some(Box::new(|_| {
-                panic!("the Capacity Check failed")
-            })))),
-            ..ScriptedToolset::default()
-        }
-        .with_core_archive_work(),
-    );
+    let toolset = Arc::new(ScriptedToolset {
+        capacity: Arc::new(FakeCapacity(Some(Box::new(|_| {
+            panic!("the Capacity Check failed")
+        })))),
+        ..ScriptedToolset::default()
+    });
     let mut cleanup = CountingCleanup::default();
 
     let result = execute(
@@ -1900,7 +1893,8 @@ fn a_failing_work_configuration_leaves_stale_staging_untouched() {
 /// (both rows). Stale staging is recovered before work, the run's own staging
 /// shares the same area, the committed Asset survives, and the run's
 /// temporaries are cleaned once whether or not the work later fails. The
-/// later failure is the Archive Finalization port failing after the commit.
+/// later failure is Archive Finalization's own, after the commit: its packer
+/// panics once it has staged the Archive.
 #[test]
 fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
     for fails in [false, true] {
@@ -1909,10 +1903,21 @@ fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
         } else {
             "completed"
         };
-        let root = mod_root(&format!("shared-recovery-{fails}"), &["texture.dds"]);
-        let leftover = common::crashed_run_leftover(&root, "texture.dds");
+        let root = mod_root(
+            &format!("shared-recovery-{fails}"),
+            &["textures/texture.dds"],
+        );
+        let leftover = common::crashed_run_leftover(&root, "textures/texture.dds");
         let staged = StagedTemporary::default();
-        let toolset = ScriptedToolset::default().with_assets({
+        let toolset = ScriptedToolset {
+            packer: if fails {
+                panicking_packer()
+            } else {
+                Arc::default()
+            },
+            ..ScriptedToolset::default()
+        }
+        .with_assets({
             let staged = staged.clone();
             move |asset, mod_root, artifacts| {
                 staged.stage(mod_root, artifacts);
@@ -1920,35 +1925,41 @@ fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
                 Ok(AssetExecutionResult::success(MutationState::Committed))
             }
         });
-        // The completed row runs core's real Archive work; the failure row
-        // still scripts an escaping finalization, which no real run produces
-        // and which the port contract ticket (#588) deletes.
-        let toolset = Arc::new(if fails {
-            toolset.with_escaping_finalization_work("orchestration failed after the commit")
-        } else {
-            toolset.with_core_archive_work()
-        });
+        let toolset = Arc::new(toolset);
         let mut cleanup = CountingCleanup::default();
+        // Archive creation gives the failure row an output to pack.
+        let work: &[RequestedWork] = if fails {
+            &[
+                RequestedWork::NativeTextureOptimization,
+                RequestedWork::ArchiveCreation,
+            ]
+        } else {
+            &[RequestedWork::NativeTextureOptimization]
+        };
 
         let result = execute(
-            &request(
-                ExecutionMode::Apply,
-                &root,
-                &[RequestedWork::NativeTextureOptimization],
-            ),
+            &request(ExecutionMode::Apply, &root, work),
             &mut cleanup,
             Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
             &CancellationToken::new(),
         );
 
+        assert!(
+            result.failures().is_empty(),
+            "{row}: {:?}",
+            result.failures()
+        );
         if fails {
             assert_eq!(result.outcome(), RunOutcome::Failed, "{row}");
-            assert_eq!(result.failures().len(), 1, "{row}");
-            assert_eq!(result.failures()[0].code, RunFailureCode::RunWorkEscaped);
+            let finalization = result.archive_finalization().unwrap();
+            assert_eq!(
+                finalization.attempts[0].failure,
+                Some(ArchiveFinalizationFailure::UnexpectedException)
+            );
+            assert!(!finalization.safe_to_continue, "{row}");
             assert!(
-                result.failures()[0]
-                    .detail
-                    .contains("orchestration failed after the commit")
+                common::archives_in(&root).is_empty(),
+                "{row}: nothing is packed"
             );
         } else {
             assert_eq!(result.outcome(), RunOutcome::Succeeded, "{row}");
@@ -1971,7 +1982,11 @@ fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
         assert_eq!(result.mutation_summaries()[0].committed, 1, "{row}");
         staged.assert_removed();
         assert!(!leftover.exists(), "{row}: the stale sibling was recovered");
-        assert_eq!(read(&root.join("texture.dds")), "committed asset", "{row}");
+        assert_eq!(
+            read(&root.join("textures/texture.dds")),
+            "committed asset",
+            "{row}"
+        );
         assert_eq!(cleanup.passes, 1, "{row}");
         assert!(result.cleanup_failures().is_empty(), "{row}");
         assert_eq!(
@@ -2107,24 +2122,18 @@ fn terminal_precedence_classifies_each_outcome_and_keeps_every_fact() {
     for (fact, cleanup_fails, cancelled, expected) in table {
         let case = format!("{fact:?}, cleanup failure {cleanup_fails}, cancelled {cancelled}");
         let token = CancellationToken::new();
-        let toolset = Arc::new(
-            ScriptedToolset::default()
-                .with_assets(move |_, _, _| {
-                    Ok(match fact {
-                        WorkFact::ContainedFailure => AssetExecutionResult::failed(
-                            AssetExecutionFailure::LoadFailed,
-                            "contained",
-                        ),
-                        WorkFact::UnsafeMutation => AssetExecutionResult::failed(
-                            AssetExecutionFailure::CommitFailed,
-                            "unknown",
-                        )
-                        .with_mutation(MutationState::PartialOrUnknown),
-                        WorkFact::Succeeded => AssetExecutionResult::success(MutationState::None),
-                    })
-                })
-                .with_core_archive_work(),
-        );
+        let toolset = Arc::new(ScriptedToolset::default().with_assets(move |_, _, _| {
+            Ok(match fact {
+                WorkFact::ContainedFailure => {
+                    AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed, "contained")
+                }
+                WorkFact::UnsafeMutation => {
+                    AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed, "unknown")
+                        .with_mutation(MutationState::PartialOrUnknown)
+                }
+                WorkFact::Succeeded => AssetExecutionResult::success(MutationState::None),
+            })
+        }));
         let mut cleanup = ScriptedCleanup {
             cancels: cancelled.then(|| token.clone()),
             failures: if cleanup_fails {
@@ -2895,13 +2904,10 @@ fn cancelling_at_each_work_milestone_stops_at_that_phase() {
             })),
             ..FakeArchiveReader::default()
         };
-        let toolset = Arc::new(
-            ScriptedToolset {
-                reader: Arc::new(reader),
-                ..ScriptedToolset::default()
-            }
-            .with_core_archive_work(),
-        );
+        let toolset = Arc::new(ScriptedToolset {
+            reader: Arc::new(reader),
+            ..ScriptedToolset::default()
+        });
         let mut cleanup = CountingCleanup::default();
 
         let result = execute_run(

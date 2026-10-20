@@ -37,9 +37,9 @@ pub fn sse_profile() -> SelectedProfile {
 /// scenario gives no script: every Asset attempt succeeds with no mutation.
 /// Every Optimization Run has a Run Toolset, as in production, and its
 /// Archive extraction and Archive Finalization are core's own over the
-/// default fakes (see [`ScriptedToolset::with_core_archive_work`]).
+/// default fakes.
 pub(crate) fn default_toolset() -> RunToolset {
-    Arc::new(ScriptedToolset::default().with_core_archive_work()).toolset()
+    Arc::new(ScriptedToolset::default()).toolset()
 }
 
 /// A provider returning one fixed Selected Profile and counting its loads.

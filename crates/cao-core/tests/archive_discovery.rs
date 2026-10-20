@@ -15,15 +15,12 @@
 //! that phase's record through a recording Run Observation Sink, and cancels
 //! through the run's cancellation token.
 //!
-//! Every run opts in to core's real Archive extraction and Archive
-//! Finalization over those fakes, so it does what a production run does: an
-//! extracted source Archive is backed up to `<name>.bak`, and Archive
-//! Finalization prunes empty directories and maintains Loading Plugins. A
-//! scenario observes that work through the run's Run Evidence, and through
-//! the fakes' own records only for what Run Evidence does not hold. The only
-//! runs that still script an Archive port are the panic and escaping-work
-//! scenarios no real port can produce; they are deleted with the ports
-//! (#588).
+//! Every run does core's real Archive extraction and Archive Finalization
+//! over those fakes, so it does what a production run does: an extracted
+//! source Archive is backed up to `<name>.bak`, and Archive Finalization
+//! prunes empty directories and maintains Loading Plugins. A scenario
+//! observes that work through the run's Run Evidence, and through the fakes'
+//! own records only for what Run Evidence does not hold.
 //!
 //! Ported elsewhere: the scenarios that drove `ArchiveExtractor` with a
 //! hand-built plan are in `archive_extraction.rs`.
@@ -50,13 +47,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use cao_core::execution::MutationState;
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
-    ArchiveExtractionFailure, ArchiveExtractionResult, ArchiveFinalizationMutationKind,
-    ArchivePrecedence, CancellationToken, ModSelection, MutationKind, OptimizationRunResult,
-    RunDiagnosticCode, RunFailureCode, RunObservationSink, RunOutcome, RunPhase, RunRequest,
+    ArchiveExtractionFailure, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
+    ArchivePrecedence, CancellationToken, ModSelection, MutationKind, MutationSummary,
+    OptimizationRunResult, RunDiagnosticCode, RunFailureCode, RunObservationSink, RunOutcome,
+    RunPhase, RunRequest,
 };
 use cao_core::test_support::{
-    CountingCleanup, FakeArchiveReader, FakeCapacity, FakeEntry, FakeVolumes, Observed,
-    RecordingSink, ScriptedToolset, ToolsetConfiguration, entry, execute_run, write_archive,
+    CountingCleanup, FakeArchivePacker, FakeArchiveReader, FakeCapacity, FakeEntry, FakeVolumes,
+    Observed, RecordingSink, ScriptedToolset, ToolsetConfiguration, entry, execute_run,
+    write_archive,
 };
 use common::{canonical, junction, request, scratch_dir, snapshot_tree, write_tree};
 
@@ -82,31 +81,18 @@ fn execute(request: &RunRequest, toolset: &Arc<ScriptedToolset>) -> Optimization
 /// live facts to `observations` and observing cancellation through `stop`.
 ///
 /// The SSE-like profile is the run's configuration. Every run makes exactly
-/// one Safety Cleanup pass, which this asserts. It also asserts `toolset`
-/// opted in to core's real Archive work, unless it scripts an Archive port
-/// for a panic or escaping-work scenario.
+/// one Safety Cleanup pass, which this asserts.
 fn execute_with(
     request: &RunRequest,
     toolset: &Arc<ScriptedToolset>,
     observations: Option<&dyn RunObservationSink>,
     stop: &CancellationToken,
 ) -> OptimizationRunResult {
-    assert!(
-        toolset.core_archive_work || toolset.extraction.is_some() || toolset.finalization.is_some(),
-        "a run opts in to core's real Archive work unless it scripts a port's panic or escape"
-    );
     let provider = ToolsetConfiguration::sse(Some(Arc::clone(toolset)));
     let mut cleanup = CountingCleanup::default();
     let result = execute_run(request, &mut cleanup, observations, Some(&provider), stop);
     assert_eq!(cleanup.passes, 1, "Safety Cleanup always runs once");
     result
-}
-
-/// A default Toolset over the fakes, opted in to core's real Archive
-/// extraction and Archive Finalization with the default Archive work
-/// settings: extracted sources are backed up.
-fn real_archive_work() -> ScriptedToolset {
-    ScriptedToolset::default().with_core_archive_work()
 }
 
 /// A Toolset doing real Archive work whose capacity probe answers `capacity`
@@ -116,7 +102,7 @@ fn with_capacity(
 ) -> ScriptedToolset {
     ScriptedToolset {
         capacity: Arc::new(FakeCapacity(Some(Box::new(capacity)))),
-        ..real_archive_work()
+        ..ScriptedToolset::default()
     }
 }
 
@@ -128,7 +114,7 @@ fn on_extract(hook: impl Fn(&Path, &str) + Send + Sync + 'static) -> Arc<Scripte
             on_extract: Some(Box::new(hook)),
             ..FakeArchiveReader::default()
         }),
-        ..real_archive_work()
+        ..ScriptedToolset::default()
     })
 }
 
@@ -178,7 +164,7 @@ fn an_enabled_archive_is_extracted_before_the_definitive_tree_is_built() {
         &[entry("textures/extracted.dds", b"extracted")],
     );
     write_tree(&root, &["textures/loose.dds"]);
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(&archives_and_textures(&root), &toolset);
 
@@ -411,7 +397,7 @@ fn an_unsafe_game_path_in_a_later_archive_blocks_the_whole_batch() {
         fixture_archive(&base.join("first/source.bsa"));
         write_archive(&base.join("last/source.bsa"), &[entry(name, b"B")]);
         let before = snapshot_tree(&base);
-        let toolset = Arc::new(real_archive_work());
+        let toolset = Arc::new(ScriptedToolset::default());
 
         let result = execute(&several_archives_and_textures(&base), &toolset);
 
@@ -438,7 +424,7 @@ fn deviation_15_a_device_stem_with_trailing_spaces_is_an_unsafe_game_path() {
     {
         let root = canonical(&scratch_dir(&format!("archive-deviation-15-{index}")));
         write_archive(&root.join("source.bsa"), &[entry(name, b"B")]);
-        let toolset = Arc::new(real_archive_work());
+        let toolset = Arc::new(ScriptedToolset::default());
 
         let result = execute(&archives_and_textures(&root), &toolset);
 
@@ -462,7 +448,7 @@ fn aliased_entries_within_one_archive_block_the_batch() {
             &base.join("last/source.bsa"),
             &[entry("textures/a.dds", b"A"), entry(alias, b"B")],
         );
-        let toolset = Arc::new(real_archive_work());
+        let toolset = Arc::new(ScriptedToolset::default());
 
         let result = execute(&several_archives_and_textures(&base), &toolset);
 
@@ -492,7 +478,7 @@ fn a_destination_occupied_by_a_non_file_blocks_the_batch() {
         } else {
             std::fs::create_dir_all(base.join("last/textures/a.dds")).unwrap();
         }
-        let toolset = Arc::new(real_archive_work());
+        let toolset = Arc::new(ScriptedToolset::default());
 
         let result = execute(&several_archives_and_textures(&base), &toolset);
 
@@ -520,7 +506,7 @@ fn two_winners_cannot_plan_a_file_and_its_child() {
         };
         write_archive(&root.join("a.bsa"), &[entry(first, b"A")]);
         write_archive(&root.join("b.bsa"), &[entry(second, b"B")]);
-        let toolset = Arc::new(real_archive_work());
+        let toolset = Arc::new(ScriptedToolset::default());
 
         let result = execute(&archives_and_textures(&root), &toolset);
 
@@ -548,7 +534,7 @@ fn a_junction_destination_parent_blocks_the_batch() {
     // `mklink` rejects `/`, so the paths are joined one component at a time.
     let link = base.join("last").join("textures");
     junction(&link, &target);
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(&several_archives_and_textures(&base), &toolset);
     std::fs::remove_dir(&link).unwrap();
@@ -571,7 +557,7 @@ fn an_unreadable_archive_fails_the_run_before_any_mutation() {
     write_tree(&root, &["textures/loose.dds"]);
     std::fs::write(root.join("broken.bsa"), "not an archive").unwrap();
     let before = snapshot_tree(&root);
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(&archives_and_textures(&root), &toolset);
 
@@ -598,7 +584,7 @@ fn an_unreadable_archive_in_a_later_root_blocks_every_extraction() {
     );
     std::fs::create_dir_all(base.join("second")).unwrap();
     std::fs::write(base.join("second/broken.bsa"), "unreadable").unwrap();
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(&several_archives_and_textures(&base), &toolset);
 
@@ -640,7 +626,7 @@ fn invalid_explicit_archive_precedence_fails_before_extraction() {
             &root.join("content.bsa"),
             &[entry("textures/shared.dds", b"archived")],
         );
-        let toolset = Arc::new(real_archive_work());
+        let toolset = Arc::new(ScriptedToolset::default());
         let precedence =
             ArchivePrecedence::ExplicitOrder(order.iter().map(PathBuf::from).collect());
 
@@ -671,7 +657,7 @@ fn collisions_never_cross_mod_roots() {
             &[entry("textures/shared.dds", root.as_bytes())],
         );
     }
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(&several_archives_and_textures(&base), &toolset);
 
@@ -792,7 +778,7 @@ fn a_collision_keeps_the_winning_archives_spelling() {
         &root.join("b.bsa"),
         &[entry("TEXTURES\\folder\\..\\.\\SHARED.DDS", b"B")],
     );
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(&archives_and_textures(&root), &toolset);
 
@@ -829,7 +815,7 @@ fn archives_are_ordered_by_folded_name_within_each_mod_root() {
             fixture_archive(&base.join(root).join(name));
         }
     }
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(&several_archives_and_textures(&base), &toolset);
 
@@ -848,7 +834,7 @@ fn archives_are_ordered_by_folded_name_within_each_mod_root() {
 fn a_dry_run_ignores_precedence_and_never_reads_a_manifest() {
     let root = canonical(&scratch_dir("archive-dry-run"));
     std::fs::write(root.join("broken.bsa"), "invalid manifest").unwrap();
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
     let precedence =
         ArchivePrecedence::ExplicitOrder(vec!["../missing.bsa".into(), "../missing.bsa".into()]);
 
@@ -898,7 +884,7 @@ fn a_collision_observer_can_cancel_before_any_extraction() {
     for name in ["a.bsa", "b.bsa"] {
         write_archive(&root.join(name), &[entry("textures/shared.dds", b"B")]);
     }
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
     let stop = CancellationToken::new();
     let raise = stop.clone();
     let sink =
@@ -929,7 +915,7 @@ fn explicit_precedence_resolves_against_the_mod_roots_resolved_target() {
     write_archive(&root.join("a.bsa"), &[entry("textures/shared.dds", b"B")]);
     let alias = base.join("alias");
     junction(&alias, &root);
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(
         &archives_and_textures(&alias)
@@ -951,7 +937,7 @@ fn extraction_keeps_an_entrys_unicode_spelling() {
         &root.join("source.bsa"),
         &[entry("Textures/Stra\u{DF}e.DDS", b"B")],
     );
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(&archives_and_textures(&root), &toolset);
 
@@ -978,7 +964,7 @@ fn windows_distinct_sharp_s_and_ss_entries_both_publish() {
             entry("textures/stra\u{DF}e.dds", b"B"),
         ],
     );
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(&archives_and_textures(&root), &toolset);
 
@@ -1014,7 +1000,7 @@ fn extraction_adds_archived_assets_without_replacing_a_loose_asset() {
     );
     std::fs::create_dir_all(root.join("textures")).unwrap();
     std::fs::write(root.join("textures/collision.dds"), "loose collision").unwrap();
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(&archives_and_textures(&root), &toolset);
 
@@ -1052,7 +1038,7 @@ fn a_loose_asset_created_after_preflight_blocks_the_merge() {
     write_archive(&root.join("source.bsa"), &[entry("textures/a.dds", b"B")]);
     let loose = root.join("Textures").join("A.DDS");
     let late = loose.clone();
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
     let sink = RecordingSink::on_first_record_of(RunPhase::ExtractingArchives, move || {
         std::fs::create_dir_all(late.parent().unwrap()).unwrap();
         std::fs::write(&late, "late loose").unwrap();
@@ -1094,7 +1080,7 @@ fn frozen_precedence_survives_a_failed_winner_or_a_vanished_loose_asset() {
             write_tree(&root, &["textures/a.dds"]);
         }
         let (archive, asset) = (root.join("a.bsa"), root.join("textures/a.dds"));
-        let toolset = Arc::new(real_archive_work());
+        let toolset = Arc::new(ScriptedToolset::default());
         let sink = RecordingSink::on_first_record_of(RunPhase::ExtractingArchives, move || {
             if loose {
                 std::fs::remove_file(&asset).unwrap();
@@ -1172,7 +1158,7 @@ fn every_attempt_repeats_containment_after_a_safe_rejection() {
     write_archive(&root.join("c.bsa"), &[entry("meshes/c.dds", b"C")]);
     let link = root.join("textures");
     let (linked, target) = (link.clone(), outside.clone());
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
     let sink = RecordingSink::with_hook(move |observed| {
         let Observed::Phase(record) = observed else {
             return;
@@ -1229,7 +1215,7 @@ fn an_archive_excluded_by_policy_is_never_read_or_extracted() {
     let root = canonical(&scratch_dir("archive-excluded"));
     std::fs::write(root.join("disabled.bsa"), "archive placeholder").unwrap();
     write_tree(&root, &["textures/loose.dds"]);
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(
         &request(
@@ -1269,7 +1255,7 @@ fn an_archive_produced_by_extraction_is_counted_but_never_worked() {
             entry("textures/extracted.dds", b"extracted"),
         ],
     );
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(&archives_and_textures(&root), &toolset);
 
@@ -1448,7 +1434,7 @@ fn a_contained_linked_loose_asset_still_shadows_its_archive_entry() {
     if !file_symlink(&target, &loose) {
         return;
     }
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(&archives_and_textures(&root), &toolset);
     let still_linked = std::fs::symlink_metadata(&loose)
@@ -1487,7 +1473,7 @@ fn escaping_file_links_are_neither_extracted_nor_worked() {
         &outside.join("outside.bsa"),
         &root.join("linked.bsa")
     ));
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(&archives_and_textures(&root), &toolset);
     std::fs::remove_file(root.join("linked.dds")).unwrap();
@@ -1529,7 +1515,7 @@ fn staging_and_links_into_it_never_enter_discovery() {
     let staged = root.join(".cao-staging");
     let linked = file_symlink(&staged.join("archive.bsa"), &root.join("linked.bsa"))
         && file_symlink(&staged.join("temporary.dds"), &root.join("linked.dds"));
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(
         &request(
@@ -1596,7 +1582,7 @@ fn directory_junctions_are_never_traversed() {
         write_tree(&target, &["target.dds"]);
         let link = root.join("linked");
         junction(&link, &target);
-        let toolset = Arc::new(real_archive_work());
+        let toolset = Arc::new(ScriptedToolset::default());
 
         let result = execute(&textures_only(&root), &toolset);
         std::fs::remove_dir(&link).unwrap();
@@ -1628,7 +1614,7 @@ fn a_contained_file_link_is_work_and_a_dangling_one_is_diagnosed() {
         return;
     }
     assert!(file_symlink(&root.join("missing.dds"), &dangling));
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(&textures_only(&root), &toolset);
     std::fs::remove_file(&contained).unwrap();
@@ -1644,15 +1630,67 @@ fn a_contained_file_link_is_work_and_a_dangling_one_is_diagnosed() {
     assert_eq!(diagnostic.path, dangling);
 }
 
+/// A Toolset doing real Archive work whose fake packer panics once it has
+/// written an Archive to staging: Archive Finalization's first output
+/// attempt then fails with an Unexpected Exception that forbids
+/// continuation, the later failure a real run can meet after extraction.
+fn with_panicking_packer() -> Arc<ScriptedToolset> {
+    Arc::new(ScriptedToolset {
+        packer: Arc::new(FakeArchivePacker {
+            after_write: Some(Box::new(|_| panic!("the archive writer panicked"))),
+            ..FakeArchivePacker::default()
+        }),
+        ..ScriptedToolset::default()
+    })
+}
+
+/// The Apply request that extracts Archives and then packs Loose Assets into
+/// new Archives.
+fn extraction_then_packing(root: &Path) -> RunRequest {
+    request(
+        ExecutionMode::Apply,
+        root,
+        &[
+            RequestedWork::ArchiveExtraction,
+            RequestedWork::ArchiveCreation,
+        ],
+    )
+}
+
+/// Asserts that Archive Finalization failed its first output attempt with an
+/// Unexpected Exception that forbids continuation, contained by the phase
+/// rather than failing the run's work.
+fn assert_packing_failed_unexpectedly(result: &OptimizationRunResult) {
+    assert_eq!(result.outcome(), RunOutcome::Failed);
+    assert!(result.failures().is_empty(), "{:?}", result.failures());
+    let finalization = result.archive_finalization().unwrap();
+    let [attempt] = finalization.attempts.as_slice() else {
+        panic!("one output attempt: {finalization:?}");
+    };
+    assert_eq!(
+        attempt.failure,
+        Some(ArchiveFinalizationFailure::UnexpectedException)
+    );
+    assert!(!finalization.safe_to_continue);
+}
+
+/// The run's Archive extraction mutation summary.
+fn extraction_summary(result: &OptimizationRunResult) -> &MutationSummary {
+    result
+        .mutation_summaries()
+        .iter()
+        .find(|summary| summary.kind == MutationKind::ArchiveExtraction)
+        .expect("an Archive extraction summary")
+}
+
 /// Origin: RunExecutorTests::discoveryDiagnosticsSurviveInterruption (the
 /// Archive half). A link exclusion retained before extraction survives a
-/// later orchestration failure, alongside the committed extraction.
+/// later failure, alongside the committed extraction.
 ///
-/// Every port called between extraction and routing contains its own
-/// panics, so the later failure is the one that can still escape the run's
-/// work from outside it: an Archive Finalization port failing with an error
-/// that is no Run Evidence invariant violation. A panic escaping the
-/// executor's own work code is covered by its in-crate containment tests.
+/// The later failure is Archive Finalization's own: its packer panics after
+/// the write, which the phase contains as an Unexpected Exception. Work
+/// escaping the executor's traversal is covered by its in-crate containment
+/// tests, since no seam a scenario fakes can make it escape.
 #[test]
 fn discovery_diagnostics_survive_an_interruption_after_extraction() {
     let base = canonical(&scratch_dir("archive-diagnostics-interrupted"));
@@ -1663,44 +1701,24 @@ fn discovery_diagnostics_survive_an_interruption_after_extraction() {
     if !file_symlink(&base.join("source").join("asset.dds"), &link) {
         return;
     }
-    let output = root.join("asset.dds");
-    let toolset = Arc::new(
-        ScriptedToolset::default()
-            .with_extraction(move |plan, _| {
-                std::fs::write(&output, "committed").unwrap();
-                ArchiveExtractionResult {
-                    mutation: MutationState::Committed,
-                    ..ArchiveExtractionResult::new(plan)
-                }
-            })
-            .with_escaping_finalization_work("interrupted after exclusion"),
-    );
+    let toolset = with_panicking_packer();
 
-    let result = execute(
-        &request(
-            ExecutionMode::Apply,
-            &root,
-            &[RequestedWork::ArchiveExtraction],
-        ),
-        &toolset,
-    );
+    let result = execute(&extraction_then_packing(&root), &toolset);
     std::fs::remove_file(&link).unwrap();
 
-    assert_eq!(result.outcome(), RunOutcome::Failed);
+    assert_packing_failed_unexpectedly(&result);
     assert_eq!(result.archive_extraction_attempts().len(), 1);
-    assert_eq!(result.failures().len(), 1);
-    assert_eq!(result.failures()[0].code, RunFailureCode::RunWorkEscaped);
-    assert_eq!(result.failures()[0].phase, RunPhase::ArchiveFinalization);
     let [diagnostic] = result.diagnostics() else {
         panic!("one diagnostic expected: {:?}", result.diagnostics());
     };
     assert_eq!(diagnostic.code, RunDiagnosticCode::LinkedEntryExcluded);
     assert_eq!(diagnostic.phase, RunPhase::DiscoveringArchives);
     assert_eq!(diagnostic.path, link);
-    let summary = &result.mutation_summaries()[0];
-    assert_eq!(summary.kind, MutationKind::ArchiveExtraction);
-    assert_eq!(summary.committed, 1);
-    assert_eq!(std::fs::read(root.join("asset.dds")).unwrap(), b"committed");
+    assert_eq!(extraction_summary(&result).committed, 1);
+    assert_eq!(
+        std::fs::read(root.join("textures/fixture.dds")).unwrap(),
+        b"fixture"
+    );
 }
 
 /// Origin: AssetRunTests::filesystemTraversalPollsCancellation (the
@@ -1718,7 +1736,7 @@ fn cancellation_once_the_definitive_pass_begins_leaves_no_tree() {
     for index in 0..100 {
         std::fs::write(root.join(format!("{index}.txt")), "unsupported").unwrap();
     }
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
     let stop = CancellationToken::new();
     let raise = stop.clone();
     let sink = RecordingSink::on_first_record_of(RunPhase::BuildingEffectiveAssetTree, move || {
@@ -1748,8 +1766,8 @@ fn cancellation_once_the_definitive_pass_begins_leaves_no_tree() {
 ///
 /// Not covered: C++'s row of partial mutation overriding a safe flag, and an
 /// attempt naming a Mod Root other than its plan's. The real extractor
-/// reports partial mutation as unsafe and keeps its plan's Mod Root, so only
-/// a scripted extraction port could produce either.
+/// reports partial mutation as unsafe and keeps its plan's Mod Root, so
+/// no run can produce either.
 #[test]
 fn archive_failures_control_continuation() {
     for (failed_attempt, partial) in [(1, false), (1, true), (2, true)] {
@@ -1775,7 +1793,7 @@ fn archive_failures_control_continuation() {
             );
         }
         write_tree(&root, &["loose.dds"]);
-        let toolset = Arc::new(real_archive_work());
+        let toolset = Arc::new(ScriptedToolset::default());
         let (directory, corrupted) = (root.clone(), failing.clone());
         let sink = RecordingSink::on_first_record_of(RunPhase::ExtractingArchives, move || {
             if partial {
@@ -1925,7 +1943,7 @@ fn extraction_progress_precedes_routed_asset_progress() {
         &[entry("textures/extracted.dds", b"extracted")],
     );
     write_tree(&root, &["textures/loose.dds"]);
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
     let sink = RecordingSink::default();
 
     let result = execute_with(
@@ -1973,7 +1991,7 @@ fn extraction_progress_precedes_routed_asset_progress() {
 /// The failed attempt is a safe one, which publishes nothing, so the nested
 /// Archive comes from the committed attempt instead. C++'s failed attempt
 /// leaving an Archive behind is not covered: the real extractor publishes
-/// nothing on a safe failure, so only a scripted extraction port could.
+/// nothing on a safe failure, so no run can.
 #[test]
 fn mixed_extraction_attempts_advance_one_determinate_account() {
     let root = canonical(&scratch_dir("archive-mixed-attempts"));
@@ -2047,7 +2065,7 @@ fn mixed_extraction_attempts_advance_one_determinate_account() {
 fn a_failing_preflight_observer_cannot_lose_the_failure() {
     let root = canonical(&scratch_dir("archive-preflight-observer"));
     std::fs::write(root.join("broken.bsa"), "invalid archive").unwrap();
-    let toolset = Arc::new(real_archive_work());
+    let toolset = Arc::new(ScriptedToolset::default());
     let sink = RecordingSink::with_hook(|observed| {
         if let Observed::Failure(_) = observed {
             panic!("preflight failure observer failed");
@@ -2093,40 +2111,6 @@ fn a_failing_preflight_observer_cannot_lose_the_failure() {
     );
 }
 
-/// Rust-only, from the spec's panic rule (#476): a panic in the extraction
-/// adapter is contained as unknown mutation, unsafe to continue, as C++
-/// contained an adapter exception.
-#[test]
-fn a_panicking_extraction_adapter_stops_the_run_with_unknown_mutation() {
-    let root = canonical(&scratch_dir("archive-adapter-panics"));
-    fixture_archive(&root.join("a.bsa"));
-    write_archive(&root.join("b.bsa"), &[entry("meshes/b.dds", b"B")]);
-    write_tree(&root, &["loose.dds"]);
-    let toolset = Arc::new(
-        ScriptedToolset::default()
-            .with_extraction(|_, _| panic!("the extraction backend panicked")),
-    );
-
-    let result = execute(&archives_and_textures(&root), &toolset);
-
-    assert_eq!(result.outcome(), RunOutcome::Failed);
-    let [attempt] = result.archive_extraction_attempts() else {
-        panic!("one attempt expected");
-    };
-    assert_eq!(attempt.mutation, MutationState::PartialOrUnknown);
-    assert!(!attempt.safe_to_continue);
-    assert_eq!(
-        attempt.failure,
-        Some(ArchiveExtractionFailure::ExtractionFailed)
-    );
-    assert!(attempt.detail.contains("the extraction backend panicked"));
-    assert!(result.routing_ledger().is_none());
-    assert!(toolset.attempted().is_empty());
-    let summary = &result.mutation_summaries()[0];
-    assert_eq!(summary.kind, MutationKind::ArchiveExtraction);
-    assert_eq!((summary.committed, summary.partial_or_unknown), (0, 1));
-}
-
 /// Origin: RunExecutorTests::committedExtractionSurvivesDiscoveryInterruption
 /// (cancel row). An extraction committed before discovery is interrupted by
 /// cancellation stays a Committed Mutation in the evidence, with its source
@@ -2168,49 +2152,32 @@ fn a_committed_extraction_survives_a_later_cancellation() {
 }
 
 /// Origin: RunExecutorTests::committedExtractionSurvivesDiscoveryInterruption
-/// (throw row). An extraction committed before discovery is interrupted by a
-/// later orchestration failure stays a Committed Mutation in the evidence.
+/// (throw row). An extraction committed before a later failure stays a
+/// Committed Mutation in the evidence, with its source backed up.
 ///
-/// The later failure is an Archive Finalization port failing with an error
-/// that is no Run Evidence invariant violation, the one failure after
-/// extraction that still escapes the run's work from outside it; see
+/// The later failure is Archive Finalization's own, as in
 /// `discovery_diagnostics_survive_an_interruption_after_extraction`. The
 /// cancel row is `a_committed_extraction_survives_a_later_cancellation`.
 #[test]
 fn a_committed_extraction_survives_a_later_interruption() {
     let root = canonical(&scratch_dir("archive-interrupted-true"));
     fixture_archive(&root.join("source.bsa"));
-    let output = root.join("asset.dds");
-    let toolset = Arc::new(
-        ScriptedToolset::default()
-            .with_extraction(move |plan, _| {
-                std::fs::write(&output, "committed extraction").unwrap();
-                ArchiveExtractionResult {
-                    mutation: MutationState::Committed,
-                    ..ArchiveExtractionResult::new(plan)
-                }
-            })
-            .with_escaping_finalization_work("interrupted after extraction"),
-    );
+    let toolset = with_panicking_packer();
 
-    let result = execute(
-        &request(
-            ExecutionMode::Apply,
-            &root,
-            &[RequestedWork::ArchiveExtraction],
-        ),
-        &toolset,
-    );
+    let result = execute(&extraction_then_packing(&root), &toolset);
 
-    assert_eq!(result.outcome(), RunOutcome::Failed);
-    assert_eq!(result.failures()[0].code, RunFailureCode::RunWorkEscaped);
-    assert_eq!(result.archive_extraction_attempts().len(), 1);
-    let summary = &result.mutation_summaries()[0];
-    assert_eq!(summary.kind, MutationKind::ArchiveExtraction);
+    assert_packing_failed_unexpectedly(&result);
+    let [extraction] = result.archive_extraction_attempts() else {
+        panic!("one extraction attempt");
+    };
+    assert_eq!(extraction.mutation, MutationState::Committed);
+    let summary = extraction_summary(&result);
     assert_eq!((summary.committed, summary.partial_or_unknown), (1, 0));
     assert_eq!(
-        std::fs::read(root.join("asset.dds")).unwrap(),
-        b"committed extraction"
+        std::fs::read(root.join("textures/fixture.dds")).unwrap(),
+        b"fixture",
+        "the extracted entry is kept"
     );
-    assert!(root.join("source.bsa").exists());
+    assert!(!root.join("source.bsa").exists());
+    assert!(backup_of(&root.join("source.bsa")).exists());
 }

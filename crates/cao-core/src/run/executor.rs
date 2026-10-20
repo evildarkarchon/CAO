@@ -6,8 +6,10 @@
 //! its Run Worker sit above it.
 //!
 //! The configuration provider returns a Run Toolset with the run's Selected
-//! Profile, and the executor runs every work phase itself through the
-//! Toolset's ports. Every Optimization Run has a Run Toolset.
+//! Profile, and the executor runs every work phase itself: Asset attempts
+//! through the Toolset's Asset attempt port, and Archive discovery,
+//! extraction and Archive Finalization as core's own modules over the
+//! Toolset's Archive seams. Every Optimization Run has a Run Toolset.
 //!
 //! The executor owns the run's Run Evidence and lends it mutably to each step
 //! in turn. Run Evidence enforces the canonical Run Phase order: the
@@ -185,13 +187,13 @@ fn prepare_run(
 }
 
 /// Runs every work phase, from Archive discovery through Archive
-/// Finalization, through the Run Toolset's ports.
+/// Finalization, over the Run Toolset.
 ///
 /// Phases are observed only through the run's Run Observation Sink and
-/// cancellation only through `stop`. Each port's panics are contained at
-/// that port. Errors are Run Evidence invariant violations, or any other
-/// error an Archive Finalization port returned against its contract, which
-/// escapes the run's work.
+/// cancellation only through `stop`. Each panic is contained once, by the
+/// module that owns its rule: the work phases contain an Asset attempt's,
+/// and the Archive extractor and Archive Finalization their own. Errors are
+/// Run Evidence invariant violations.
 fn execute_toolset(
     preparation: &RunPreparation,
     mut toolset: RunToolset,
@@ -351,12 +353,13 @@ impl RunExecutor {
         self.execute_with_work(request, services, stop, run_id, execute_toolset)
     }
 
-    /// [`execute`](Self::execute), with `run_work` running the work phases in
-    /// place of the Run Toolset's ports.
+    /// [`execute`](Self::execute), with `run_work` running in place of the
+    /// Run Toolset's work phases.
     ///
     /// This is the crate-private seam beneath the executor's interface: it
     /// lets the executor's own unit tests inject work that escapes as an
-    /// error or a panic, which every Toolset port contains before it could.
+    /// error or a panic, which the work phases' own containment stops before
+    /// it could.
     /// `run_work` is called only when Preparing produced a Run Toolset for
     /// requested work, with that Toolset.
     ///
@@ -463,9 +466,9 @@ impl RunExecutor {
         invariant.note(evidence.record_phase(RunPhaseRecord::executed(RunPhase::Preparing, None)));
 
         let mut preparation = None;
-        // The work ports the provider built from Preparing's profile read,
+        // The Run Toolset the provider built from Preparing's profile read,
         // present whenever Preparing produced a preparation. The executor
-        // runs the work phases itself through them.
+        // runs the work phases itself over it.
         let mut toolset = None;
         if !stop.is_cancelled() {
             match prepare_run(request, configuration, evidence, stop) {
