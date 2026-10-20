@@ -34,7 +34,7 @@ use std::time::{Duration, SystemTime};
 
 use cao_core::Error;
 use cao_core::execution::MutationState;
-use cao_core::routing::{ExecutionMode, RequestedWork, RoutingPolicy, RoutingPolicyRequest};
+use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ArchiveFinalization, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
     ArchiveFinalizationResult, ArchiveFinalizationSettings, ArchivePrecedence, ArchiveReader,
@@ -44,7 +44,7 @@ use cao_core::run::{
 };
 use cao_core::test_support::{
     ArchiveFinalizationEvidence as Evidence, FakeArchivePacker, FakeArchiveReader, FakeCapacity,
-    FakeVolumes, fake_dummy_plugin, sse_configuration,
+    FakeVolumes, fake_dummy_plugin, sse_configuration, sse_policy,
 };
 use common::{archives_in, canonical, junction, scratch_dir};
 
@@ -81,11 +81,7 @@ fn preparation_for(roots: &[PathBuf], create_archives: bool) -> RunPreparation {
         RequestedWork::NativeTextureOptimization
     };
     let configuration = sse_configuration();
-    let policy = RoutingPolicy::compile(
-        RoutingPolicyRequest::for_work(ExecutionMode::Apply, &[work]),
-        configuration.profile.clone(),
-    )
-    .unwrap();
+    let policy = sse_policy(ExecutionMode::Apply, &[work]);
     RunPreparation::new(
         roots.to_vec(),
         configuration,

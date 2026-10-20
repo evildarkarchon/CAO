@@ -3,25 +3,29 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::Error;
-use crate::routing::{ProfileCapabilities, ProfileCapability};
+use crate::routing::{
+    ExecutionMode, ProfileCapabilities, ProfileCapability, RequestedWork, RoutingPolicy,
+    RoutingPolicyRequest,
+};
 use crate::run::{RunConfiguration, RunConfigurationProvider, RunToolset};
 
 /// Every Profile Capability, for a profile that supports every kind of work
 /// under an Archive extension of the test's choosing.
-pub const EVERY_CAPABILITY: [ProfileCapability; 8] = [
-    ProfileCapability::NativeTextureOptimization,
-    ProfileCapability::ConvertibleTextureConversion,
-    ProfileCapability::StandardMeshOptimization,
-    ProfileCapability::TerrainMeshOptimization,
-    ProfileCapability::AnimationOptimization,
-    ProfileCapability::ArchiveExtraction,
-    ProfileCapability::MeshReferenceMaintenance,
-    ProfileCapability::ArchiveCreation,
-];
+pub const EVERY_CAPABILITY: [ProfileCapability; 8] = crate::routing::CAPABILITIES;
 
 /// An SSE-like profile that supports every kind of work, with `.bsa` Archives.
 pub fn sse_profile() -> ProfileCapabilities {
     ProfileCapabilities::define(".bsa", &EVERY_CAPABILITY)
+}
+
+/// The Routing Policy `work` compiles to in `mode` against [`sse_profile`].
+///
+/// # Panics
+/// Never for valid work: the SSE-like profile supports every kind of work and
+/// its `.bsa` extension is valid, so compilation cannot conflict.
+pub fn sse_policy(mode: ExecutionMode, work: &[RequestedWork]) -> RoutingPolicy {
+    RoutingPolicy::compile(RoutingPolicyRequest::for_work(mode, work), sse_profile())
+        .expect("the SSE-like profile supports every kind of work")
 }
 
 /// The Run Configuration of [`sse_profile`], with no ignored mods and no

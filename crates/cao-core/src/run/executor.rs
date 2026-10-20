@@ -144,9 +144,15 @@ fn load_configuration(
 ///
 /// Convertible Texture conversion joins the work only when native Texture
 /// optimization is requested and the preference is on, in Dry Run and Apply
-/// alike. Conversion the request lists itself is dropped: the service refuses
-/// such a request with `ConversionRequested`, and dropping it here keeps the
-/// synchronous Run Executor, which skips Start Errors, to the same rule.
+/// alike.
+///
+/// The user-facing rule is [`StartError::ConversionRequested`]: the
+/// Optimization Run Service refuses a Run Request that lists conversion itself
+/// before any run exists. Dropping such conversion here is only the backstop
+/// for callers that skip Start Errors, such as the synchronous Run Executor
+/// seam, so they too get conversion solely from the Conversion Preference.
+///
+/// [`StartError::ConversionRequested`]: crate::run::StartError::ConversionRequested
 fn policy_request(request: &RunRequest, configuration: &RunConfiguration) -> RoutingPolicyRequest {
     let mut work: Vec<RequestedWork> = request
         .requested_work()
