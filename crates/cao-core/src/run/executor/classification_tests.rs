@@ -16,7 +16,9 @@ use std::path::PathBuf;
 use super::classify_terminal_outcome;
 use crate::Error;
 use crate::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
-use crate::routing::{AssetRouter, ExecutionMode, RequestedWork, RoutingPolicyRequest};
+use crate::routing::{
+    AssetRouter, ExecutionMode, RequestedWork, RoutingPolicy, RoutingPolicyRequest,
+};
 use crate::run::evidence::{
     ArchiveDiscoveryEvidence, MutableRunEvidence, RoutedAssetAttempt, RunEvidence,
 };
@@ -110,13 +112,14 @@ fn asset_result(fact: WorkFact) -> AssetExecutionResult {
 fn sealed_evidence(fact: WorkFact, terminal: Terminal) -> Result<RunEvidence, Error> {
     let mod_root = PathBuf::from("mod-root");
     let configuration = sse_configuration();
-    let policy = configuration
-        .profile
-        .compile_policy(RoutingPolicyRequest::for_work(
+    let policy = RoutingPolicy::compile(
+        RoutingPolicyRequest::for_work(
             ExecutionMode::Apply,
             &[RequestedWork::NativeTextureOptimization],
-        ))
-        .expect("the SSE profile supports Native Texture Optimization");
+        ),
+        configuration.profile.clone(),
+    )
+    .expect("the SSE profile supports Native Texture Optimization");
     let router = AssetRouter::new(policy.clone());
     let mut evidence = MutableRunEvidence::new(None);
 

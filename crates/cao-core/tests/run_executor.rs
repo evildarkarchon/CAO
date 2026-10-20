@@ -42,19 +42,21 @@ use std::sync::{Arc, Mutex};
 
 use cao_core::Error;
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
-use cao_core::routing::{AssetOperation, ExecutionMode, PolicyValidationError, RequestedWork};
+use cao_core::routing::{
+    AssetOperation, ExecutionMode, PolicyValidationError, ProfileCapabilities, RequestedWork,
+};
 use cao_core::run::{
     ArchiveExtractionResult, ArchiveFinalizationAttempt, ArchiveFinalizationFailure,
     ArchiveFinalizationResult, ArchivePrecedence, CancellationToken, ModSelection, MutationKind,
     OptimizationRunResult, PhaseSkipReason, RunConfiguration, RunConfigurationProvider,
     RunDiagnosticCode, RunExecutor, RunFailure, RunFailureCode, RunOutcome, RunPhase,
     RunPhaseRecord, RunPhaseStatus, RunProgress, RunRequest, SafetyCleanupService,
-    SelectedProfileFacts, TemporaryArtifactRegistry, create_run_id,
+    TemporaryArtifactRegistry, create_run_id,
 };
 use cao_core::test_support::{
-    CallbackConfiguration, CountingCleanup, FakeCapacity, Observed, RecordingSink, ScriptedCleanup,
-    ScriptedToolset, ToolsetConfiguration, entry, execute_run, record_finalization_result,
-    sse_profile, write_archive,
+    CallbackConfiguration, CountingCleanup, EVERY_CAPABILITY, FakeCapacity, Observed,
+    RecordingSink, ScriptedCleanup, ScriptedToolset, ToolsetConfiguration, entry, execute_run,
+    record_finalization_result, sse_profile, write_archive,
 };
 use common::{canonical, no_work_request, request, scratch_dir, test_configuration};
 
@@ -305,10 +307,7 @@ fn a_missing_configuration_provider_fails_preparing() {
 fn a_request_contradicting_the_profile_fails_preparing_with_every_conflict() {
     let provider = CallbackConfiguration(Box::new(|_| {
         Ok(RunConfiguration {
-            profile: SelectedProfileFacts {
-                archive_extension: Some(".ba2".to_owned()),
-                ..SelectedProfileFacts::default()
-            },
+            profile: ProfileCapabilities::define(".ba2", &[]),
             ..RunConfiguration::default()
         })
     }));
@@ -2243,10 +2242,7 @@ fn preparing_retains_the_resolved_root_and_policy() {
             )));
         }
         Ok(RunConfiguration {
-            profile: SelectedProfileFacts {
-                archive_extension: Some(".BSA".to_owned()),
-                ..sse_profile()
-            },
+            profile: ProfileCapabilities::define(".BSA", &EVERY_CAPABILITY),
             ignored_mods: vec!["ignored-mod".to_owned()],
             ..RunConfiguration::default()
         })
@@ -2286,10 +2282,7 @@ fn preparing_retains_the_resolved_root_and_policy() {
 fn an_ambiguous_archive_extension_fails_preparing_before_any_work_phase() {
     let provider = CallbackConfiguration(Box::new(|_| {
         Ok(RunConfiguration {
-            profile: SelectedProfileFacts {
-                archive_extension: Some(".dds".to_owned()),
-                ..sse_profile()
-            },
+            profile: ProfileCapabilities::define(".dds", &EVERY_CAPABILITY),
             ..RunConfiguration::default()
         })
     }));

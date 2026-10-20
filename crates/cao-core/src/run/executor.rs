@@ -27,7 +27,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::Error;
 use crate::execution::MutationState;
-use crate::routing::{ExecutionMode, RoutingPolicyRequest};
+use crate::routing::{ExecutionMode, RoutingPolicy, RoutingPolicyRequest};
 use crate::run::mod_selection::resolve_mod_roots;
 use crate::run::{
     CancellationToken, MutableRunEvidence, OptimizationRunResult, PhaseSkipReason,
@@ -157,20 +157,18 @@ fn prepare_run(
     if stop.is_cancelled() {
         return Ok(None);
     }
-    let policy = configuration
-        .profile
-        .compile_policy(RoutingPolicyRequest::for_work(
-            request.execution_mode(),
-            request.requested_work(),
-        ))
-        .map_err(|conflicts| {
-            RunFailure::new(
-                RunFailureCode::PolicyConflict,
-                RunPhase::Preparing,
-                "The loaded profile conflicts with the requested Routing Policy",
-            )
-            .with_policy_conflicts(conflicts)
-        })?;
+    let policy = RoutingPolicy::compile(
+        RoutingPolicyRequest::for_work(request.execution_mode(), request.requested_work()),
+        configuration.profile.clone(),
+    )
+    .map_err(|conflicts| {
+        RunFailure::new(
+            RunFailureCode::PolicyConflict,
+            RunPhase::Preparing,
+            "The loaded profile conflicts with the requested Routing Policy",
+        )
+        .with_policy_conflicts(conflicts)
+    })?;
     let mod_roots = resolve_mod_roots(request.mod_selection(), &configuration, evidence, stop)?;
     if stop.is_cancelled() {
         return Ok(None);
