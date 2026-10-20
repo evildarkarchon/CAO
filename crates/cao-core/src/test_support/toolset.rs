@@ -10,15 +10,17 @@ use crate::execution::{AssetExecutionResult, MutationState};
 use crate::routing::RoutedAsset;
 use crate::run::{
     ArchiveExtractionPlan, ArchiveExtractionPort, ArchiveExtractionResult, ArchiveExtractor,
-    ArchiveFinalizationPort, ArchiveFinalizationRecorder, ArchiveFinalizationResult,
-    AssetAttemptAdapter, AssetAttemptPort, AssetBackendFactory, AssetInitializationCancelled,
-    CancellationToken, OptimizationRunResult, RunConfigurationProvider, RunDiagnostic, RunExecutor,
-    RunObservationSink, RunPreparation, RunRequest, RunServices, RunToolset, SafetyCleanupService,
-    SelectedProfile, TemporaryArtifactRegistry, create_run_id,
+    ArchiveFinalizationPort, ArchiveFinalizationRecorder, ArchiveFinalizationResult, ArchiveSeams,
+    ArchiveWorkSettings, AssetAttemptAdapter, AssetAttemptPort, AssetBackendFactory,
+    AssetInitializationCancelled, CancellationToken, OptimizationRunResult,
+    RunConfigurationProvider, RunDiagnostic, RunExecutor, RunObservationSink, RunPreparation,
+    RunRequest, RunServices, RunToolset, SafetyCleanupService, SelectedProfile,
+    TemporaryArtifactRegistry, create_run_id,
 };
 use crate::test_support::configuration::default_toolset;
 use crate::test_support::{
-    FakeArchiveReader, FakeBackendFactory, FakeCapacity, FakeVolumes, sse_profile,
+    FakeArchivePacker, FakeArchiveReader, FakeBackendFactory, FakeCapacity, FakeVolumes,
+    sse_profile,
 };
 
 /// What a scripted Asset attempt returns for one Routed Asset and its frozen
@@ -84,8 +86,12 @@ pub enum AssetAttempts {
 /// - Archive Finalization records an output total of zero and an empty
 ///   result, as the production phase does with nothing to pack.
 ///
-/// `reader`, `capacity` and `volumes` are the Toolset's Archive reader and
-/// probes. Every port call is logged, whatever its script.
+/// `reader`, `capacity`, `volumes` and `packer` are the Toolset's Archive
+/// seams, and `archive_work` its Archive work settings. Every Toolset is
+/// built through the production [`RunToolset::new`] over them. Unless
+/// [`Self::core_archive_work`] opts in, the scripted extraction and Archive
+/// Finalization then replace core's own, and every port call is logged,
+/// whatever its script.
 #[derive(Default)]
 pub struct ScriptedToolset {
     /// How each Asset attempt is produced; by default it succeeds with no
@@ -100,6 +106,21 @@ pub struct ScriptedToolset {
     pub reader: Arc<FakeArchiveReader>,
     pub capacity: Arc<FakeCapacity>,
     pub volumes: Arc<FakeVolumes>,
+    /// The Archive packer core's Archive Finalization packs through, under
+    /// [`Self::core_archive_work`]; keep a clone to read its writes.
+    pub packer: Arc<FakeArchivePacker>,
+    /// The source cleanup and Archive Finalization settings core's Archive
+    /// work runs with, under [`Self::core_archive_work`]. By default,
+    /// extracted sources are backed up, as in production, and finalization
+    /// uses its default settings.
+    pub archive_work: ArchiveWorkSettings,
+    /// Runs the production Run Toolset's own Archive extraction and Archive
+    /// Finalization over the seams above, instead of the scripted ones. The
+    /// `extraction` and `finalization` scripts are then unused, and neither
+    /// [`Self::extracted`] nor [`Self::finalizations`] records anything: the
+    /// run's Run Evidence and the fakes' own records are what a scenario
+    /// observes.
+    pub core_archive_work: bool,
     /// Each Asset attempt's execution path and the Mod Root it was handed.
     pub attempts: Mutex<Vec<(PathBuf, PathBuf)>>,
     /// Each extraction plan, in order.
@@ -157,6 +178,15 @@ impl ScriptedToolset {
     pub fn cancelling_at_attempt(self, attempt: usize) -> Self {
         Self {
             cancel_at_attempt: Some(attempt),
+            ..self
+        }
+    }
+
+    /// Opts in to core's real Archive work; see
+    /// [`ScriptedToolset::core_archive_work`].
+    pub fn with_core_archive_work(self) -> Self {
+        Self {
+            core_archive_work: true,
             ..self
         }
     }
@@ -221,8 +251,10 @@ impl ScriptedToolset {
     }
 
     /// A fresh Run Toolset over this script, as a provider returns for one
-    /// run. A scripted fake backend, or a scripted adapter, is created afresh
-    /// for each Toolset.
+    /// run, built through the production [`RunToolset::new`]. A scripted
+    /// fake backend, or a scripted adapter, is created afresh for each
+    /// Toolset. Unless [`Self::core_archive_work`] opts in, the scripted
+    /// extraction and Archive Finalization ports replace core's own.
     pub fn toolset(self: &Arc<Self>) -> RunToolset {
         let backend: Option<Box<dyn AssetAttemptPort>> = match &self.assets {
             AssetAttempts::FakeBackend(factory) => {
@@ -231,16 +263,28 @@ impl ScriptedToolset {
             AssetAttempts::Adapter(make) => Some(make()),
             AssetAttempts::Succeeding | AssetAttempts::Scripted(_) => None,
         };
-        RunToolset {
-            asset_attempt: Box::new(ScriptedAssetAttempt {
+        let toolset = RunToolset::new(
+            Box::new(ScriptedAssetAttempt {
                 script: Arc::clone(self),
                 backend,
             }),
+            ArchiveSeams {
+                reader: self.reader.clone(),
+                capacity: self.capacity.clone(),
+                volume_identity: self.volumes.clone(),
+                packer: self.packer.clone(),
+            },
+            self.archive_work,
+        );
+        if self.core_archive_work {
+            return toolset;
+        }
+        // The crate-visible fields let the scripted ports stand in for core's
+        // until the scripted runs migrate onto the seams (#581).
+        RunToolset {
             archive_extraction: Box::new(ScriptedExtraction(Arc::clone(self))),
             archive_finalization: Box::new(ScriptedFinalization(Arc::clone(self))),
-            archive_reader: self.reader.clone(),
-            capacity: self.capacity.clone(),
-            volume_identity: self.volumes.clone(),
+            ..toolset
         }
     }
 
