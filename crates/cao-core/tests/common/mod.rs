@@ -14,8 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{ModSelection, RunHandle, RunRequest, TemporaryArtifactRegistry};
 use cao_core::test_support::{
-    FakeBackendFactory, FixedConfiguration, ScriptedToolset, ToolsetConfiguration,
-    sse_configuration,
+    FakeBackendFactory, FixedConfiguration, ScriptedToolset, ToolsetConfiguration, sse_profile,
 };
 
 /// Serializes scenarios that start runs: one active run is allowed per
@@ -90,7 +89,7 @@ pub fn junction(link: &Path, target: &Path) {
 /// The provider most scenarios use: the SSE-like profile.
 pub fn test_configuration() -> Arc<FixedConfiguration> {
     Arc::new(FixedConfiguration {
-        configuration: sse_configuration(),
+        profile: sse_profile(),
         loads: AtomicUsize::new(0),
     })
 }

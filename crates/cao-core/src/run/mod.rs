@@ -48,8 +48,7 @@ pub use lifecycle::{
     RunRequest, RunSnapshot, create_run_id,
 };
 pub use preparation::{
-    ArchivePrecedence, RunConfiguration, RunConfigurationProvider, RunPreparation,
-    SelectedProfileFacts,
+    ArchivePrecedence, RunConfigurationProvider, RunPreparation, SelectedProfile,
 };
 pub use probes::{
     ArchiveEntry, ArchiveMerge, ArchiveName, ArchiveNameKind, ArchiveNamingRules, ArchivePacker,

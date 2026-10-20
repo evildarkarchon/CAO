@@ -44,7 +44,7 @@ use cao_core::run::{
 };
 use cao_core::test_support::{
     ArchiveFinalizationEvidence as Evidence, FakeArchivePacker, FakeArchiveReader, FakeCapacity,
-    FakeVolumes, fake_dummy_plugin, sse_configuration,
+    FakeVolumes, fake_dummy_plugin, sse_profile,
 };
 use common::{archives_in, canonical, junction, scratch_dir};
 
@@ -80,9 +80,8 @@ fn preparation_for(roots: &[PathBuf], create_archives: bool) -> RunPreparation {
     } else {
         RequestedWork::NativeTextureOptimization
     };
-    let configuration = sse_configuration();
-    let policy = configuration
-        .profile
+    let profile = sse_profile();
+    let policy = profile
         .compile_policy(RoutingPolicyRequest::for_work(
             ExecutionMode::Apply,
             &[work],
@@ -90,7 +89,7 @@ fn preparation_for(roots: &[PathBuf], create_archives: bool) -> RunPreparation {
         .unwrap();
     RunPreparation::new(
         roots.to_vec(),
-        configuration,
+        profile,
         policy,
         ArchivePrecedence::DeterministicDiscovery,
     )

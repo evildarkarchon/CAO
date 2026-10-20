@@ -4,8 +4,13 @@
 
 mod common;
 
+use std::path::Path;
+
 use cao_core::execution::AssetExecutionFailure;
-use cao_core::routing::{ExecutionMode, PolicyValidationError, RequestedWork, SkipReason};
+use cao_core::routing::{
+    ExecutionMode, PolicyValidationError, ProfileCapabilities, ProfileCapability, RequestedWork,
+    SkipReason,
+};
 use cao_core::run::{
     ModSelection, RunConfigurationProvider, RunDiagnosticCode, RunFailureCode, RunOutcome, RunPhase,
 };
@@ -13,7 +18,10 @@ use cao_optimizers::composition::{
     ApplicationRun, ProfileConfigurationProvider, RunSetupError, run_request,
 };
 use cao_profiles::{OptimizationMode, Options};
-use common::{app_dir, dry_run_textures, edit_profile, serial, snapshot_tree, write, write_dds};
+use common::{
+    app_dir, dry_run_textures, edit_profile, profile_options, serial, snapshot_tree, write,
+    write_dds,
+};
 use directxtex::{DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM};
 
 #[test]
@@ -271,63 +279,93 @@ fn several_mods_excludes_separators_and_ignored_mods_from_the_shipped_profile() 
     assert_eq!(snapshot_tree(&app), before, "Dry Run never mutates");
 }
 
+/// The production provider over `app`'s profiles, set up for runs of the
+/// options `profile` saves.
+fn provider(app: &Path, profile: &str) -> ProfileConfigurationProvider {
+    ProfileConfigurationProvider::new(app, &profile_options(app, profile)).unwrap()
+}
+
+/// The Selected Profile the production provider loads from the shipped FO4
+/// profile: its Profile Capabilities and Archive extension, its Conversion
+/// Preference, and the ignored-mods list and Packing Exclusions read with
+/// it, together with the Run Toolset built from the same read.
 #[test]
-fn the_provider_loads_owned_configuration() {
-    let app = app_dir("provider-owned");
+fn the_provider_loads_the_selected_profile_from_the_profile_files() {
+    let app = app_dir("provider-selected-profile");
     write(
         &app.join("profiles/SSE"),
         "ignoredMods.txt",
         b"# comment\n  Tool   Mod  \n\n",
     );
-    let provider = ProfileConfigurationProvider::new(&app);
+    write(
+        &app.join("profiles/FO4"),
+        "FilesToNotPack.txt",
+        b"# comment\nreadme.txt\n  meshes/kept  \n",
+    );
 
     // FO4 has no ignoredMods.txt of its own, so it falls back to SSE's.
-    // One read yields both the routing facts and what the run's work is
-    // built from.
-    let (configuration, prepared) = provider.read_profile("FO4").unwrap();
-    assert_eq!(
-        configuration.profile.archive_extension.as_deref(),
-        Some(".ba2")
-    );
-    assert_eq!(configuration.ignored_mods, vec!["Tool Mod".to_owned()]);
-    // Deviation 20: MO2's separator suffix, not C++'s "separator" substring.
-    assert_eq!(
-        configuration.separator_suffixes,
-        vec!["_separator".to_owned()]
-    );
-    assert_eq!(
-        prepared.settings.textures_format, 98,
-        "the backend sees the profile routing used"
-    );
-    assert_eq!(provider.load("FO4").unwrap().0, configuration);
+    let (profile, toolset) = provider(&app, "FO4").load("FO4").unwrap();
 
-    assert!(provider.load("MissingProfile").is_err());
+    assert!(toolset.is_some(), "the provider always builds the Toolset");
+    // FO4 enables Textures and Archives, but neither Meshes nor Animations.
+    // Mesh Reference Maintenance belongs to Texture conversion.
+    assert_eq!(
+        profile.capabilities(),
+        &ProfileCapabilities::define(
+            ".ba2",
+            &[
+                ProfileCapability::NativeTextureOptimization,
+                ProfileCapability::ConvertibleTextureConversion,
+                ProfileCapability::MeshReferenceMaintenance,
+                ProfileCapability::ArchiveExtraction,
+                ProfileCapability::ArchiveCreation,
+            ]
+        )
+    );
+    assert!(profile.prefers_conversion());
+    assert_eq!(profile.ignored_mods(), ["Tool Mod"]);
+    assert_eq!(profile.packing_exclusions(), ["readme.txt", "meshes/kept"]);
+
+    assert!(provider(&app, "FO4").load("MissingProfile").is_err());
 }
 
+/// Each load reads the profile afresh, as each run's Preparing does, so an
+/// edit between two loads is in the second Selected Profile.
 #[test]
-fn routing_and_the_backend_load_from_the_same_updated_profile() {
+fn the_provider_loads_an_updated_selected_profile() {
     let app = app_dir("provider-updated");
-    let provider = ProfileConfigurationProvider::new(&app);
+    let provider = provider(&app, "FO4");
     let (first, _) = provider.load("FO4").unwrap();
-    assert_eq!(first.profile.archive_extension.as_deref(), Some(".ba2"));
+    assert!(first.prefers_conversion());
 
     // Edited between two loads, as between two runs' Preparing.
     edit_profile(&app, "FO4", "bsaGame", "4");
-    edit_profile(&app, "FO4", "texturesFormat", "87");
-    edit_profile(&app, "FO4", "texturesUnwantedFormats", "85");
-    let (second, prepared) = provider.read_profile("FO4").unwrap();
+    edit_profile(&app, "FO4", "bsaEnabled", "false");
+    edit_profile(&app, "FO4", "texturesConvertTga", "false");
+    edit_profile(&app, "FO4", "meshesEnabled", "true");
+    let (second, _) = provider.load("FO4").unwrap();
 
-    assert_eq!(second.profile.archive_extension.as_deref(), Some(".bsa"));
-    let backend = prepared.settings;
-    assert_eq!(backend.textures_format, 87);
-    assert_eq!(backend.textures_unwanted_formats, vec![85]);
+    assert_eq!(
+        second.capabilities(),
+        &ProfileCapabilities::define(
+            ".bsa",
+            &[
+                ProfileCapability::NativeTextureOptimization,
+                ProfileCapability::ConvertibleTextureConversion,
+                ProfileCapability::StandardMeshOptimization,
+                ProfileCapability::TerrainMeshOptimization,
+                ProfileCapability::MeshReferenceMaintenance,
+            ]
+        )
+    );
+    assert!(!second.prefers_conversion());
 }
 
 #[test]
 fn the_provider_rejects_an_unreadable_ignored_mod_list() {
     let app = app_dir("provider-unreadable-ignored");
     std::fs::create_dir(app.join("profiles/FO4/ignoredMods.txt")).unwrap();
-    assert!(ProfileConfigurationProvider::new(&app).load("FO4").is_err());
+    assert!(provider(&app, "FO4").load("FO4").is_err());
 }
 
 #[test]

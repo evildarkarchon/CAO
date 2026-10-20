@@ -2,7 +2,7 @@
 //! Preparing from the same profile read as its Routing Policy.
 //!
 //! The configuration provider returns a [`RunToolset`] beside the
-//! [`RunConfiguration`](crate::run::RunConfiguration), and the Run Executor
+//! [`SelectedProfile`](crate::run::SelectedProfile), and the Run Executor
 //! runs every work phase through it: Archive discovery and the Capacity Check
 //! through the Archive reader and the two probes, then one
 //! [`ArchiveExtractionPort`] call per planned Archive, one [`AssetAttemptPort`]

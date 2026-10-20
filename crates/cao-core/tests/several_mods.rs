@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     InlineRunScheduler, ModSelection, OptimizationRunResult, OptimizationRunService,
-    RunConfiguration, RunDiagnosticCode, RunEventPayload, RunFailureCode, RunHandle, RunOutcome,
-    RunPhase, RunRequest, RunSnapshot,
+    RunDiagnosticCode, RunEventPayload, RunFailureCode, RunHandle, RunOutcome, RunPhase,
+    RunRequest, RunSnapshot, SelectedProfile,
 };
 use cao_core::test_support::{
     EventLog, FakeBackendFactory, GatedScheduler, ScriptedToolset, ToolsetConfiguration,
@@ -24,16 +24,9 @@ use common::{
     HandleSlot, backend_toolset, canonical, junction, reclaim, scratch_dir, serial, write_tree,
 };
 
-/// The SSE-like profile's configuration with the given Mod Exclusion lists.
-fn exclusions(ignored_mods: &[&str], separator_suffixes: &[&str]) -> RunConfiguration {
-    RunConfiguration {
-        profile: sse_profile(),
-        ignored_mods: ignored_mods.iter().map(|name| (*name).to_owned()).collect(),
-        separator_suffixes: separator_suffixes
-            .iter()
-            .map(|suffix| (*suffix).to_owned())
-            .collect(),
-    }
+/// The SSE-like Selected Profile with the given ignored-mods list.
+fn ignoring(ignored_mods: &[&str]) -> SelectedProfile {
+    sse_profile().with_ignored_mods(ignored_mods.iter().map(|name| (*name).to_owned()).collect())
 }
 
 /// A Several Mods request over `mods` asking for no work.
@@ -46,16 +39,16 @@ fn several(mode: ExecutionMode, mods: &Path) -> RunRequest {
     )
 }
 
-/// Runs `request` inline with `configuration` and, if any, a fresh Run
-/// Toolset over `toolset`, collecting its events.
+/// Runs `request` inline with `profile` and, if any, a fresh Run Toolset
+/// over `toolset`, collecting its events.
 fn run(
-    configuration: RunConfiguration,
+    profile: SelectedProfile,
     toolset: Option<Arc<ScriptedToolset>>,
     request: RunRequest,
 ) -> (Arc<OptimizationRunResult>, RunHandle, EventLog) {
     let service = OptimizationRunService::with_scheduler(
         Arc::new(InlineRunScheduler),
-        Some(Arc::new(ToolsetConfiguration::new(configuration, toolset))),
+        Some(Arc::new(ToolsetConfiguration::new(profile, toolset))),
     );
     let events = EventLog::default();
     let handle = service
@@ -94,7 +87,7 @@ fn several_mods_resolves_each_immediate_child_directory_in_folded_name_order() {
     write_tree(&mods, &["not-a-mod.txt"]);
 
     let (result, _handle, _events) = run(
-        exclusions(&[], &[]),
+        ignoring(&[]),
         None,
         several(ExecutionMode::DryRun, &mods.join(".")),
     );
@@ -123,7 +116,7 @@ fn an_ignored_mod_is_excluded_by_its_whole_folded_name_and_diagnosed_once() {
     children(&mods, &["Nemesis", "\u{100}ssets", "Nemesis Extended"]);
 
     let (result, handle, events) = run(
-        exclusions(&["nEmEsIs", "NEMESIS", "\u{101}ssets"], &[]),
+        ignoring(&["nEmEsIs", "NEMESIS", "\u{101}ssets"]),
         None,
         several(ExecutionMode::Apply, &mods),
     );
@@ -162,8 +155,8 @@ fn an_ignored_mod_is_excluded_by_its_whole_folded_name_and_diagnosed_once() {
 }
 
 /// Deviation 20 (origin: OptimizationRunServiceTests::severalModsUsesConfiguredSeparatorExclusions).
-/// A separator is a child whose name ends in a configured suffix, matched
-/// case-sensitively. "separator" elsewhere in a name, or in the mods
+/// A separator is a child whose name ends in MO2's `_separator` suffix,
+/// matched case-sensitively. "separator" elsewhere in a name, or in the mods
 /// directory's own name, excludes nothing.
 #[test]
 fn a_separator_is_a_child_name_ending_in_the_separator_suffix() {
@@ -181,10 +174,9 @@ fn a_separator_is_a_child_name_ending_in_the_separator_suffix() {
         ],
     );
 
-    // An empty suffix would match every name, so it never excludes anything.
     // `z_separator` is also ignored, and owes only its separator exclusion.
     let (result, handle, _events) = run(
-        exclusions(&["z_separator"], &["", "_separator"]),
+        ignoring(&["z_separator"]),
         None,
         several(ExecutionMode::DryRun, &mods),
     );
@@ -219,7 +211,7 @@ fn a_separator_is_a_child_name_ending_in_the_separator_suffix() {
 
     // A Mod Exclusion applies only to the children of a mods directory.
     let (single, _handle, _events) = run(
-        exclusions(&["z_separator"], &["_separator"]),
+        ignoring(&["z_separator"]),
         None,
         RunRequest::new(
             "SkyrimSE",
@@ -230,14 +222,6 @@ fn a_separator_is_a_child_name_ending_in_the_separator_suffix() {
     );
     assert_eq!(single.mod_roots(), [root.join("a_separator")]);
     assert!(single.diagnostics().is_empty());
-
-    // With no suffix configured, every child is a Mod Root.
-    let (unfiltered, _handle, _events) = run(
-        exclusions(&[], &[]),
-        None,
-        several(ExecutionMode::Apply, &mods),
-    );
-    assert_eq!(unfiltered.mod_roots().len(), 6);
 }
 
 /// Deviation 19: CAO's reserved `.cao-staging` namespace is never a Mod Root.
@@ -247,14 +231,19 @@ fn a_separator_is_a_child_name_ending_in_the_separator_suffix() {
 fn a_staging_named_child_is_never_a_mod_root_and_is_skipped_silently() {
     let _serial = serial();
     let mods = scratch_dir("several-staging");
-    children(&mods, &[".cao-staging", ".CAO-STAGING-1234", "Mod"]);
+    // `.CAO-STAGING-1234_separator` would also be a separator, but the
+    // reserved namespace wins and owes no diagnostic.
+    children(
+        &mods,
+        &[".cao-staging", ".CAO-STAGING-1234_separator", "Mod"],
+    );
     write_tree(
         &mods,
         &[".cao-staging-1/textures/leftover.dds", "Mod/textures/a.dds"],
     );
 
     let (result, _handle, events) = run(
-        exclusions(&[".cao-staging"], &["staging"]),
+        ignoring(&[".cao-staging"]),
         Some(backend_toolset(FakeBackendFactory::default())),
         RunRequest::new(
             "SkyrimSE",
@@ -299,7 +288,7 @@ fn mod_exclusions_never_change_the_outcome_and_each_child_keeps_its_own_assets()
     );
 
     let (result, _handle, events) = run(
-        exclusions(&["ignored"], &["_separator"]),
+        ignoring(&["ignored"]),
         Some(backend_toolset(FakeBackendFactory::default())),
         RunRequest::new(
             "SkyrimSE",
@@ -372,7 +361,7 @@ fn several_mods_can_prepare_no_mod_roots_but_a_missing_directory_fails() {
             children(&mods, &["Ignored"]);
         }
         let (result, handle, _events) = run(
-            exclusions(&["ignored"], &[]),
+            ignoring(&["ignored"]),
             None,
             several(ExecutionMode::DryRun, &mods),
         );
@@ -383,7 +372,7 @@ fn several_mods_can_prepare_no_mod_roots_but_a_missing_directory_fails() {
     }
 
     let (missing, _handle, _events) = run(
-        exclusions(&[], &[]),
+        ignoring(&[]),
         None,
         several(ExecutionMode::Apply, &mods.join("missing")),
     );
@@ -408,7 +397,7 @@ fn cancelling_from_an_exclusion_diagnostic_stops_preparing() {
     let service = OptimizationRunService::with_scheduler(
         scheduler.clone(),
         Some(Arc::new(ToolsetConfiguration::new(
-            exclusions(&["a_ignored", "b_ignored"], &[]),
+            ignoring(&["a_ignored", "b_ignored"]),
             None,
         ))),
     );
@@ -459,11 +448,8 @@ fn two_children_linking_to_one_directory_are_conflicting_mod_roots() {
     children(&mods, &["original"]);
     junction(&mods.join("alias"), &mods.join("original"));
 
-    let (result, _handle, _events) = run(
-        exclusions(&[], &[]),
-        None,
-        several(ExecutionMode::DryRun, &mods),
-    );
+    let (result, _handle, _events) =
+        run(ignoring(&[]), None, several(ExecutionMode::DryRun, &mods));
 
     assert_eq!(result.outcome(), RunOutcome::Failed);
     assert_eq!(result.final_phase(), RunPhase::Preparing);
@@ -496,11 +482,8 @@ fn a_child_linking_inside_another_child_is_a_conflicting_mod_root() {
         junction(&mods.join(ancestor), &target);
         junction(&mods.join(descendant), &target.join("nested"));
 
-        let (result, _handle, _events) = run(
-            exclusions(&[], &[]),
-            None,
-            several(ExecutionMode::Apply, &mods),
-        );
+        let (result, _handle, _events) =
+            run(ignoring(&[]), None, several(ExecutionMode::Apply, &mods));
 
         assert_eq!(result.outcome(), RunOutcome::Failed, "{descendant_first}");
         assert_eq!(result.final_phase(), RunPhase::Preparing);
@@ -529,11 +512,8 @@ fn a_child_linking_to_the_mods_directory_or_above_it_fails_preparing() {
         let link = mods.join("loop");
         junction(&link, &target);
 
-        let (result, _handle, _events) = run(
-            exclusions(&[], &[]),
-            None,
-            several(ExecutionMode::DryRun, &mods),
-        );
+        let (result, _handle, _events) =
+            run(ignoring(&[]), None, several(ExecutionMode::DryRun, &mods));
         // Remove the link itself; its target must survive.
         std::fs::remove_dir(&link).unwrap();
 
@@ -564,7 +544,7 @@ fn linked_mod_roots_retain_their_canonical_identities() {
     junction(&mods.join("a-second-target"), &sibling);
 
     let (single, _handle, _events) = run(
-        exclusions(&[], &[]),
+        ignoring(&[]),
         None,
         RunRequest::new(
             "SkyrimSE",
@@ -573,11 +553,8 @@ fn linked_mod_roots_retain_their_canonical_identities() {
             Vec::new(),
         ),
     );
-    let (several_result, _handle, _events) = run(
-        exclusions(&[], &[]),
-        None,
-        several(ExecutionMode::Apply, &mods),
-    );
+    let (several_result, _handle, _events) =
+        run(ignoring(&[]), None, several(ExecutionMode::Apply, &mods));
     // Removing the aliases cannot change identities the results already own.
     std::fs::remove_dir(mods.join("z-first-target")).unwrap();
     std::fs::remove_dir(mods.join("a-second-target")).unwrap();

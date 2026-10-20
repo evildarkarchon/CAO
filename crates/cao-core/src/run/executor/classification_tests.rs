@@ -24,7 +24,7 @@ use crate::run::{
     ArchiveFinalizationFailure, ArchiveFinalizationResult, ArchivePrecedence, RunFailure,
     RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord, RunPreparation,
 };
-use crate::test_support::sse_configuration;
+use crate::test_support::sse_profile;
 
 /// The work fact one row of the classification table establishes.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -109,9 +109,8 @@ fn asset_result(fact: WorkFact) -> AssetExecutionResult {
 /// evidence store accepts.
 fn sealed_evidence(fact: WorkFact, terminal: Terminal) -> Result<RunEvidence, Error> {
     let mod_root = PathBuf::from("mod-root");
-    let configuration = sse_configuration();
-    let policy = configuration
-        .profile
+    let profile = sse_profile();
+    let policy = profile
         .compile_policy(RoutingPolicyRequest::for_work(
             ExecutionMode::Apply,
             &[RequestedWork::NativeTextureOptimization],
@@ -123,7 +122,7 @@ fn sealed_evidence(fact: WorkFact, terminal: Terminal) -> Result<RunEvidence, Er
     evidence.record_phase(RunPhaseRecord::executed(RunPhase::Preparing, None))?;
     evidence.record_preparation(RunPreparation::new(
         vec![mod_root.clone()],
-        configuration,
+        profile,
         policy,
         ArchivePrecedence::DeterministicDiscovery,
     ))?;
