@@ -9,9 +9,7 @@ use cao_core::routing::{ExecutionMode, PolicyValidationError, RequestedWork, Ski
 use cao_core::run::{
     ModSelection, RunConfigurationProvider, RunDiagnosticCode, RunFailureCode, RunOutcome, RunPhase,
 };
-use cao_optimizers::composition::{
-    ApplicationRun, ProfileConfigurationProvider, RunSetupError, run_request,
-};
+use cao_optimizers::composition::{ApplicationRun, ProfileConfigurationProvider, run_request};
 use cao_profiles::{OptimizationMode, Options};
 use common::{app_dir, dry_run_textures, edit_profile, serial, snapshot_tree, write, write_dds};
 use directxtex::{DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM};
@@ -145,10 +143,10 @@ fn every_kind_of_work_is_accepted() {
 
 /// Origin: ApplicationRunSetupTests::archiveCreationRequiresProfileArchiveSupport
 /// and the FO4 Profile Capabilities. A request the selected profile cannot
-/// honour is refused before any service exists, so no run starts and nothing
-/// holds the one active-run slot.
+/// honour is not a Start Error: setup accepts it, and the run fails Preparing
+/// with a Policy Conflict Run Failure.
 #[test]
-fn a_request_contradicting_the_profile_capabilities_never_starts_a_run() {
+fn a_request_contradicting_the_profile_capabilities_fails_preparing() {
     let _serial = serial();
     let app = app_dir("capability-conflict");
     let mod_root = app.join("mods").join("Mod");
@@ -157,10 +155,16 @@ fn a_request_contradicting_the_profile_capabilities_never_starts_a_run() {
     // FO4 has no Mesh support: any Mesh work contradicts it.
     let mut options = dry_run_textures(&app, &mod_root);
     options.meshes_resave = true;
-    let Err(RunSetupError::PolicyConflict(conflicts)) = ApplicationRun::new(&app, "FO4", &options)
-    else {
-        panic!("Mesh work under FO4 must be a policy conflict");
-    };
+    let result = ApplicationRun::new(&app, "FO4", &options)
+        .unwrap()
+        .start(None)
+        .unwrap()
+        .wait();
+    assert_eq!(result.outcome(), RunOutcome::Failed);
+    let failure = &result.failures()[0];
+    assert_eq!(failure.code, RunFailureCode::PolicyConflict);
+    assert_eq!(failure.phase, RunPhase::Preparing);
+    let conflicts = &failure.policy_conflicts;
     assert!(!conflicts.is_empty());
     assert!(conflicts.iter().all(|conflict| matches!(
         conflict,
@@ -180,19 +184,25 @@ fn a_request_contradicting_the_profile_capabilities_never_starts_a_run() {
     edit_profile(&app, "SSE", "bsaEnabled", "false");
     let mut options = dry_run_textures(&app, &mod_root);
     options.bsa_create = true;
-    let error = ApplicationRun::new(&app, "SSE", &options).err().unwrap();
-    assert!(
-        matches!(error, RunSetupError::PolicyConflict(_)),
-        "{error:?}"
-    );
-    assert!(!error.to_string().is_empty());
-
-    // Neither refusal left a run behind: the next valid request starts.
-    let run = ApplicationRun::new(&app, "FO4", &dry_run_textures(&app, &mod_root)).unwrap();
-    assert_eq!(
-        run.start(None).unwrap().wait().outcome(),
-        RunOutcome::Succeeded
-    );
+    let result = ApplicationRun::new(&app, "SSE", &options)
+        .unwrap()
+        .start(None)
+        .unwrap()
+        .wait();
+    assert_eq!(result.outcome(), RunOutcome::Failed);
+    let failure = &result.failures()[0];
+    assert_eq!(failure.code, RunFailureCode::PolicyConflict);
+    assert_eq!(failure.phase, RunPhase::Preparing);
+    assert!(failure.policy_conflicts.iter().any(|conflict| matches!(
+        conflict,
+        PolicyValidationError::UnsupportedRequestedAssetKind {
+            request: RequestedWork::ArchiveCreation,
+            ..
+        } | PolicyValidationError::UnsupportedRequestedAssetVariant {
+            request: RequestedWork::ArchiveCreation,
+            ..
+        }
+    )));
 }
 
 /// Origin: ApplicationRunSetupTests::fo4ConversionCompilesWithoutMeshOptimization.
@@ -425,7 +435,8 @@ fn an_unreadable_profile_fails_preparing_rather_than_the_start() {
         RunFailureCode::ConfigurationLoadingFailed
     );
 
-    // Unreadable before setup too: the capability check leaves it to Preparing.
+    // Unreadable before setup too: with no Texture work, setup does not read
+    // the profile, so Preparing reports it.
     let mut options = Options {
         user_path: mod_root.to_string_lossy().into_owned(),
         textures_necessary: false,
