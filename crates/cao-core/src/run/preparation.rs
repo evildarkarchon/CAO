@@ -89,8 +89,8 @@ impl SelectedProfile {
         &self.capabilities
     }
 
-    /// The Conversion Preference. Routing does not consult it yet: the Run
-    /// Request still carries convertible Texture conversion.
+    /// The Conversion Preference, which [`Self::compile_policy`] passes to
+    /// Routing Policy compilation.
     pub fn prefers_conversion(&self) -> bool {
         self.prefers_conversion
     }
@@ -106,16 +106,17 @@ impl SelectedProfile {
     }
 
     /// Compiles a Routing Policy Request against this profile's Profile
-    /// Capabilities.
+    /// Capabilities and Conversion Preference, so requested native Texture
+    /// work also converts when the profile prefers and supports it.
     ///
     /// # Errors
     /// Every Policy Conflict between the request and the capabilities, in
-    /// compiler order.
+    /// compiler order. The Conversion Preference never causes one by itself.
     pub fn compile_policy(
         &self,
         request: RoutingPolicyRequest,
     ) -> Result<RoutingPolicy, Vec<PolicyValidationError>> {
-        RoutingPolicy::compile(request, self.capabilities.clone())
+        RoutingPolicy::compile(request, self.capabilities.clone(), self.prefers_conversion)
     }
 }
 

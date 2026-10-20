@@ -32,6 +32,7 @@ fn policy(
     RoutingPolicy::compile(
         RoutingPolicyRequest::for_work(mode, work),
         ProfileCapabilities::define(".ba2", capabilities),
+        false,
     )
     .expect("the scenario's policy is valid")
 }
@@ -59,6 +60,14 @@ fn routed(decision: RoutingDecision) -> RoutedAsset {
     }
 }
 
+/// The Skip Reason of a decision the scenario expects to be skipped.
+fn skip_reason(decision: RoutingDecision) -> SkipReason {
+    match decision {
+        RoutingDecision::Skipped(asset) => asset.reason(),
+        other => panic!("expected a Skipped Asset, got {other:?}"),
+    }
+}
+
 /// Origin: AssetRoutingTests::compilesCompleteRoutingPolicy.
 #[test]
 fn valid_request_and_capabilities_compile_one_immutable_policy() {
@@ -73,6 +82,7 @@ fn valid_request_and_capabilities_compile_one_immutable_policy() {
     let compiled = RoutingPolicy::compile(
         RoutingPolicyRequest::for_work(ExecutionMode::DryRun, &work),
         ProfileCapabilities::define(".Ba2", ALL_ROUTING_CAPABILITIES),
+        false,
     )
     .expect("complete request compiles");
 
@@ -101,6 +111,7 @@ fn compilation_reports_every_request_capability_and_derived_conflict_together() 
             ProfileCapability::NativeTextureOptimization,
             ProfileCapability::StandardMeshOptimization,
         ]),
+        false,
     )
     .expect_err("the request conflicts with the profile");
 
@@ -125,6 +136,118 @@ fn compilation_reports_every_request_capability_and_derived_conflict_together() 
                 operation: AssetOperation::MeshReferenceMaintenance,
             },
         ]
+    );
+}
+
+/// Compiles `work` in Apply mode under `.ba2` and `capabilities`, with the
+/// given Conversion Preference.
+fn compile_with_preference(
+    work: &[RequestedWork],
+    capabilities: &[ProfileCapability],
+    prefers_conversion: bool,
+) -> Result<RoutingPolicy, Vec<PolicyValidationError>> {
+    RoutingPolicy::compile(
+        RoutingPolicyRequest::for_work(ExecutionMode::Apply, work),
+        ProfileCapabilities::define(".ba2", capabilities),
+        prefers_conversion,
+    )
+}
+
+#[test]
+fn native_texture_work_with_the_conversion_preference_converts_and_maintains_mesh_references() {
+    let compiled = compile_with_preference(
+        &[RequestedWork::NativeTextureOptimization],
+        ALL_ROUTING_CAPABILITIES,
+        true,
+    )
+    .expect("native Texture work with the preference compiles");
+
+    assert!(compiled.converts_textures());
+    assert!(compiled.maintains_mesh_references());
+    let router = AssetRouter::new(compiled);
+    let tga = routed(router.route(Path::new("Textures/Convertible.tga")));
+    assert!(tga.operations().contains(AssetOperation::Conversion));
+    assert!(!tga.operations().contains(AssetOperation::Optimization));
+    for mesh in ["Meshes/Standard.nif", "Meshes/Terrain.btr"] {
+        let mesh = routed(router.route(Path::new(mesh)));
+        assert!(
+            mesh.operations()
+                .contains(AssetOperation::MeshReferenceMaintenance)
+        );
+        assert!(!mesh.operations().contains(AssetOperation::Optimization));
+    }
+}
+
+#[test]
+fn the_conversion_preference_without_texture_work_converts_nothing() {
+    let compiled = compile_with_preference(
+        &[RequestedWork::StandardMeshOptimization],
+        ALL_ROUTING_CAPABILITIES,
+        true,
+    )
+    .expect("Mesh work with the preference compiles");
+
+    assert!(!compiled.converts_textures());
+    assert!(!compiled.maintains_mesh_references());
+    let router = AssetRouter::new(compiled);
+    assert_eq!(
+        skip_reason(router.route(Path::new("Textures/Convertible.tga"))),
+        SkipReason::DisabledAssetKind
+    );
+}
+
+#[test]
+fn native_texture_work_without_the_conversion_preference_converts_nothing() {
+    let compiled = compile_with_preference(
+        &[RequestedWork::NativeTextureOptimization],
+        ALL_ROUTING_CAPABILITIES,
+        false,
+    )
+    .expect("native Texture work compiles");
+
+    assert!(!compiled.converts_textures());
+    assert!(!compiled.maintains_mesh_references());
+    let router = AssetRouter::new(compiled);
+    assert_eq!(
+        skip_reason(router.route(Path::new("Textures/Convertible.tga"))),
+        SkipReason::ExcludedAssetVariant
+    );
+}
+
+#[test]
+fn the_conversion_preference_without_the_conversion_capability_converts_nothing_and_never_conflicts()
+ {
+    // Neither conversion nor Mesh Reference Maintenance is supported, so any
+    // derived work would surface as a Policy Conflict.
+    let compiled = compile_with_preference(
+        &[RequestedWork::NativeTextureOptimization],
+        &[ProfileCapability::NativeTextureOptimization],
+        true,
+    )
+    .expect("a preference the profile cannot honour is not a conflict");
+
+    assert!(!compiled.converts_textures());
+    assert!(!compiled.maintains_mesh_references());
+}
+
+#[test]
+fn conversion_derived_from_the_preference_still_needs_mesh_reference_maintenance() {
+    let errors = compile_with_preference(
+        &[RequestedWork::NativeTextureOptimization],
+        &[
+            ProfileCapability::NativeTextureOptimization,
+            ProfileCapability::ConvertibleTextureConversion,
+        ],
+        true,
+    )
+    .expect_err("conversion derives unsupported Mesh Reference Maintenance");
+
+    assert_eq!(
+        errors,
+        vec![PolicyValidationError::UnsupportedDerivedOperation {
+            cause: RequestedWork::NativeTextureOptimization,
+            operation: AssetOperation::MeshReferenceMaintenance,
+        }]
     );
 }
 
@@ -155,6 +278,7 @@ fn invalid_profile_archive_extensions_are_structured_errors() {
         let errors = RoutingPolicy::compile(
             RoutingPolicyRequest::optimize_native_textures(),
             ProfileCapabilities::define(extension, &[ProfileCapability::NativeTextureOptimization]),
+            false,
         )
         .expect_err("the extension is invalid");
         assert_eq!(errors, vec![expected], "extension {extension:?}");
@@ -168,6 +292,7 @@ fn only_a_terminal_dds_extension_routes_a_native_texture_with_the_callers_path()
         RoutingPolicy::compile(
             RoutingPolicyRequest::optimize_native_textures(),
             ProfileCapabilities::define(".bsa", &[ProfileCapability::NativeTextureOptimization]),
+            false,
         )
         .unwrap(),
     );
@@ -433,6 +558,7 @@ fn routing_neither_depends_on_nor_mutates_the_filesystem() {
         RoutingPolicy::compile(
             RoutingPolicyRequest::optimize_native_textures(),
             ProfileCapabilities::define(".ba2", &[ProfileCapability::NativeTextureOptimization]),
+            false,
         )
         .unwrap(),
     );
