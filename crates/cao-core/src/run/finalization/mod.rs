@@ -249,7 +249,7 @@ impl<'a> ArchiveFinalization<'a> {
     pub fn run(
         &self,
         preparation: &RunPreparation,
-        recorder: &ArchiveFinalizationRecorder<'_, '_>,
+        recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
         artifacts: &mut TemporaryArtifactRegistry,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(), Error> {
@@ -276,7 +276,7 @@ impl<'a> ArchiveFinalization<'a> {
     fn run_phase(
         &self,
         preparation: &RunPreparation,
-        recorder: &ArchiveFinalizationRecorder<'_, '_>,
+        recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
         artifacts: &mut TemporaryArtifactRegistry,
         cancelled: &dyn Fn() -> bool,
         result: &mut ArchiveFinalizationResult,
@@ -343,7 +343,7 @@ impl<'a> ArchiveFinalization<'a> {
         plan: &FinalizationPlan,
         artifacts: &mut TemporaryArtifactRegistry,
         cancelled: &dyn Fn() -> bool,
-        recorder: &ArchiveFinalizationRecorder<'_, '_>,
+        recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
         result: &mut ArchiveFinalizationResult,
     ) -> Result<(), Escape> {
         if cancelled() {
@@ -447,7 +447,7 @@ impl<'a> ArchiveFinalization<'a> {
         volumes: &CachedVolumes,
         artifacts: &mut TemporaryArtifactRegistry,
         cancelled: &dyn Fn() -> bool,
-        recorder: &ArchiveFinalizationRecorder<'_, '_>,
+        recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
         result: &mut ArchiveFinalizationResult,
     ) -> Result<(), Escape> {
         for (index, root) in plan.roots.iter().enumerate() {
@@ -502,7 +502,7 @@ impl<'a> ArchiveFinalization<'a> {
         root: &Path,
         archive: Option<&Path>,
         required: u64,
-        recorder: &ArchiveFinalizationRecorder<'_, '_>,
+        recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
         result: &mut ArchiveFinalizationResult,
     ) -> Result<bool, Escape> {
         let Some(shortfall) = capacity_shortfall(self.seams.capacity, root, required) else {
@@ -540,7 +540,7 @@ enum Escape {
 /// `Escape::Evidence`, keeping each Run Evidence failure distinct from work
 /// failures.
 fn record_last_attempt(
-    recorder: &ArchiveFinalizationRecorder<'_, '_>,
+    recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
     result: &ArchiveFinalizationResult,
 ) -> Result<(), Escape> {
     let attempt = result.attempts.last().expect("just pushed").clone();

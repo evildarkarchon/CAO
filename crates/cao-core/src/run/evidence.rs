@@ -10,7 +10,6 @@
 //! [`Error::EvidenceInvariant`], which the Run Executor turns into a panic only
 //! after Safety Cleanup.
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
@@ -554,6 +553,13 @@ impl<'a> MutableRunEvidence<'a> {
         self.storage.archive_finalization_completed
     }
 
+    /// The finalization recorder lent this evidence for as long as it lives,
+    /// which the run hands to Archive Finalization in place of the whole
+    /// store, so the phase reaches only its own facts.
+    pub(crate) fn finalization_recorder(&mut self) -> ArchiveFinalizationRecorder<'_, 'a> {
+        ArchiveFinalizationRecorder::new(self)
+    }
+
     /// Retains the phase's final result, once.
     fn complete_archive_finalization(&mut self, result: ArchiveFinalizationResult) {
         if result.cancelled {
@@ -924,97 +930,4 @@ fn derive_mutation_summaries(
         }
     }
     grouped.into_values().collect()
-}
-
-/// The phase-restricted view of Run Evidence that the run's work writes through.
-///
-/// Work submits complete facts here but cannot choose Run Phases; the executor
-/// advances the lifecycle through its own milestones. Both share one evidence
-/// owner for the duration of the synchronous work call. Crate-private: the
-/// view grants nothing its owner could not already do.
-pub(crate) struct RunWorkEvidence<'e, 'a> {
-    evidence: &'e RefCell<MutableRunEvidence<'a>>,
-}
-
-impl<'e, 'a> RunWorkEvidence<'e, 'a> {
-    /// Borrows the executor's evidence owner for one work call.
-    pub(crate) fn new(evidence: &'e RefCell<MutableRunEvidence<'a>>) -> Self {
-        Self { evidence }
-    }
-
-    /// Retains the Archive discovery facts once discovery returns.
-    pub fn record_archive_discovery(
-        &self,
-        discovery: ArchiveDiscoveryEvidence,
-    ) -> Result<(), Error> {
-        self.evidence
-            .borrow_mut()
-            .record_archive_discovery(discovery)
-    }
-
-    /// Retains the preflight collision plan before any extraction.
-    pub fn record_archive_collisions(&self, collisions: &[ArchiveCollision]) -> Result<(), Error> {
-        self.evidence
-            .borrow_mut()
-            .record_archive_collisions(collisions)
-    }
-
-    /// Retains one completed extraction attempt and advances its planned progress.
-    pub fn record_archive_extraction_attempt(
-        &self,
-        attempt: ArchiveExtractionResult,
-        total: usize,
-    ) -> Result<(), Error> {
-        self.evidence
-            .borrow_mut()
-            .record_archive_extraction_attempt(attempt, total)
-    }
-
-    /// Retains definitive routing before Asset processing starts.
-    pub fn record_routing_ledger(&self, ledger: RoutingLedger) -> Result<(), Error> {
-        self.evidence.borrow_mut().record_routing_ledger(ledger)
-    }
-
-    /// Retains a completed Asset attempt and advances its planned progress.
-    pub fn record_asset_attempt(
-        &self,
-        attempt: RoutedAssetAttempt,
-        total: usize,
-    ) -> Result<(), Error> {
-        self.evidence
-            .borrow_mut()
-            .record_asset_attempt(attempt, total)
-    }
-
-    /// The finalization recorder over the same evidence owner, which the run
-    /// hands to Archive Finalization in place of this whole view.
-    pub(crate) fn finalization_recorder(&self) -> ArchiveFinalizationRecorder<'e, 'a> {
-        ArchiveFinalizationRecorder::new(self.evidence)
-    }
-
-    /// Retains and publishes a Run Failure.
-    pub fn record_failure(&self, failure: RunFailure) {
-        self.evidence.borrow_mut().record_failure(failure);
-    }
-
-    /// Retains a diagnostic whose publication boundary comes later in the work.
-    pub fn retain_diagnostic(&self, diagnostic: RunDiagnostic) {
-        self.evidence.borrow_mut().retain_diagnostic(diagnostic);
-    }
-
-    /// Publishes deferred diagnostics, once each.
-    pub fn publish_diagnostics(&self) {
-        self.evidence.borrow_mut().publish_diagnostics();
-    }
-
-    /// Retains cancellation independently of the eventual Run Outcome.
-    pub fn record_cancellation_observation(&self) {
-        self.evidence.borrow_mut().record_cancellation_observation();
-    }
-
-    /// A copy of the definitive Routing Ledger, once routing has completed. A
-    /// copy, so the work can iterate it while recording attempts.
-    pub fn routing_ledger(&self) -> Option<RoutingLedger> {
-        self.evidence.borrow().routing_ledger().cloned()
-    }
 }

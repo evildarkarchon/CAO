@@ -45,7 +45,7 @@ pub type ExtractionScript = Box<
 pub type FinalizationScript = Box<
     dyn Fn(
             &RunPreparation,
-            &ArchiveFinalizationRecorder<'_, '_>,
+            &mut ArchiveFinalizationRecorder<'_, '_>,
             &mut TemporaryArtifactRegistry,
         ) -> Result<(), Error>
         + Send
@@ -182,7 +182,7 @@ impl ScriptedToolset {
         self,
         script: impl Fn(
             &RunPreparation,
-            &ArchiveFinalizationRecorder<'_, '_>,
+            &mut ArchiveFinalizationRecorder<'_, '_>,
             &mut TemporaryArtifactRegistry,
         ) -> Result<(), Error>
         + Send
@@ -328,7 +328,7 @@ impl ArchiveFinalizationPort for ScriptedFinalization {
     fn finalize(
         &mut self,
         preparation: &RunPreparation,
-        recorder: &ArchiveFinalizationRecorder<'_, '_>,
+        recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
         artifacts: &mut TemporaryArtifactRegistry,
         _stop: &CancellationToken,
     ) -> Result<(), Error> {
@@ -352,7 +352,7 @@ impl ArchiveFinalizationPort for ScriptedFinalization {
 /// # Errors
 /// A Run Evidence invariant violation the recorder reports.
 pub fn record_finalization_result(
-    recorder: &ArchiveFinalizationRecorder<'_, '_>,
+    recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
     result: ArchiveFinalizationResult,
     total: Option<usize>,
 ) -> Result<(), Error> {

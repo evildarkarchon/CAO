@@ -5,7 +5,6 @@
 //! the traversal a scripted work closure through the crate-private
 //! [`RunExecutor::execute_with_work`] instead of the Toolset's work phases.
 
-use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -78,10 +77,10 @@ fn execute(
 /// the staged path.
 fn discover_and_stage(
     preparation: &RunPreparation,
-    evidence: &RefCell<MutableRunEvidence<'_>>,
+    evidence: &mut MutableRunEvidence<'_>,
     artifacts: &mut TemporaryArtifactRegistry,
 ) -> Result<PathBuf, Error> {
-    evidence.borrow_mut().record_archive_discovery_started()?;
+    evidence.record_archive_discovery_started()?;
     let root = &preparation.mod_roots()[0];
     let receipt = artifacts
         .capture_and_stage_file(root, &root.join("textures").join("a.dds"))
@@ -212,7 +211,7 @@ fn an_evidence_invariant_violation_panics_only_after_safety_cleanup() {
             |preparation, _toolset, evidence, artifacts, _stop| {
                 staged = Some(discover_and_stage(preparation, evidence, artifacts)?);
                 // Planning Processing Assets before any routing is a producer bug.
-                evidence.borrow_mut().record_asset_processing_plan(3)
+                evidence.record_asset_processing_plan(3)
             },
         )
     }));

@@ -29,19 +29,21 @@ use crate::routing::{
 use crate::run::archives::{
     Preflight, RootArchives, archive_order_key, preflight, relative_game_path,
 };
-use crate::run::evidence::RunWorkEvidence;
-use crate::run::executor::ExecutorMilestones;
 use crate::run::{
     ArchiveDiscoveryEvidence, ArchiveExtractionFailure, ArchiveExtractionPlan,
     ArchiveExtractionPort, ArchiveExtractionResult, ArchiveFinalizationPort,
     ArchiveFinalizationRecorder, AssetInitializationCancelled, CancellationToken,
-    RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode, RunPhase, RunPreparation, RunToolset,
-    TemporaryArtifactRegistry, is_staging_name, take_panic_message,
+    MutableRunEvidence, PhaseSkipReason, RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode,
+    RunPhase, RunPhaseRecord, RunPreparation, RunToolset, TemporaryArtifactRegistry,
+    is_staging_name, take_panic_message,
 };
 
 /// Walks Mod Roots for regular files under the scope rules both discovery passes share.
-struct Discovery<'r, 'e, 'x, 'y> {
-    evidence: &'e RunWorkEvidence<'x, 'y>,
+///
+/// It holds no evidence of its own: each walk is lent the run's evidence for
+/// its linked-entry exclusion diagnostics, since other work phases record
+/// between the two passes.
+struct Discovery<'r> {
     stop: &'r CancellationToken,
     /// The phase linked-entry diagnostics are attributed to.
     phase: RunPhase,
@@ -49,11 +51,11 @@ struct Discovery<'r, 'e, 'x, 'y> {
     diagnosed: HashSet<PathBuf>,
 }
 
-impl Discovery<'_, '_, '_, '_> {
-    /// Retains one linked-entry exclusion the first time it is observed.
-    fn exclude(&mut self, path: &Path, detail: &str) {
+impl Discovery<'_> {
+    /// Retains one linked-entry exclusion in `evidence` the first time it is observed.
+    fn exclude(&mut self, evidence: &mut MutableRunEvidence<'_>, path: &Path, detail: &str) {
         if self.diagnosed.insert(path.to_path_buf()) {
-            self.evidence.retain_diagnostic(
+            evidence.retain_diagnostic(
                 RunDiagnostic::new(RunDiagnosticCode::LinkedEntryExcluded, self.phase, detail)
                     .with_path(path),
             );
@@ -62,7 +64,12 @@ impl Discovery<'_, '_, '_, '_> {
 
     /// Rejects directory links, and file links not provably inside the Mod Root.
     /// Entries that vanish or cannot be read are silently absent.
-    fn within_scope(&mut self, path: &Path, canonical_root: &Path) -> bool {
+    fn within_scope(
+        &mut self,
+        evidence: &mut MutableRunEvidence<'_>,
+        path: &Path,
+        canonical_root: &Path,
+    ) -> bool {
         let Ok(metadata) = std::fs::symlink_metadata(path) else {
             return false;
         };
@@ -72,6 +79,7 @@ impl Discovery<'_, '_, '_, '_> {
         }
         if path.is_dir() {
             self.exclude(
+                evidence,
                 path,
                 "Directory links and reparse points are not followed during discovery.",
             );
@@ -79,13 +87,18 @@ impl Discovery<'_, '_, '_, '_> {
         }
         let Ok(resolved) = cao_winfs::msvc_canonical(path) else {
             self.exclude(
+                evidence,
                 path,
                 "Linked entry could not be resolved within the Mod Root.",
             );
             return false;
         };
         let Ok(relative) = resolved.strip_prefix(canonical_root) else {
-            self.exclude(path, "Linked entry resolves outside the Mod Root.");
+            self.exclude(
+                evidence,
+                path,
+                "Linked entry resolves outside the Mod Root.",
+            );
             return false;
         };
         // A contained alias can still point into staging; its own name would hide that.
@@ -93,23 +106,34 @@ impl Discovery<'_, '_, '_, '_> {
             .components()
             .any(|component| is_staging_name(component.as_os_str()))
         {
-            self.exclude(path, "Linked entry resolves into excluded CAO staging.");
+            self.exclude(
+                evidence,
+                path,
+                "Linked entry resolves into excluded CAO staging.",
+            );
             return false;
         }
         true
     }
 
     /// Visits each regular file beneath `root` depth-first, in enumeration
-    /// order. Returns `false` as soon as cancellation is observed.
-    fn visit(&mut self, root: &Path, visitor: &mut dyn FnMut(&Path)) -> bool {
+    /// order, retaining linked-entry exclusions in `evidence`. Returns
+    /// `false` as soon as cancellation is observed.
+    fn visit(
+        &mut self,
+        evidence: &mut MutableRunEvidence<'_>,
+        root: &Path,
+        visitor: &mut dyn FnMut(&Path),
+    ) -> bool {
         if root.file_name().is_some_and(is_staging_name) {
             return true;
         }
-        self.visit_directory(root, root, visitor)
+        self.visit_directory(evidence, root, root, visitor)
     }
 
     fn visit_directory(
         &mut self,
+        evidence: &mut MutableRunEvidence<'_>,
         directory: &Path,
         root: &Path,
         visitor: &mut dyn FnMut(&Path),
@@ -127,12 +151,12 @@ impl Discovery<'_, '_, '_, '_> {
             }
             let Ok(entry) = entry else { continue };
             let path = entry.path();
-            if is_staging_name(&entry.file_name()) || !self.within_scope(&path, root) {
+            if is_staging_name(&entry.file_name()) || !self.within_scope(evidence, &path, root) {
                 continue;
             }
             if path.is_file() {
                 visitor(&path);
-            } else if path.is_dir() && !self.visit_directory(&path, root, visitor) {
+            } else if path.is_dir() && !self.visit_directory(evidence, &path, root, visitor) {
                 return false;
             }
         }
@@ -158,11 +182,13 @@ fn attributed_mod_root<'p>(path: &Path, mod_roots: &'p [PathBuf]) -> Option<&'p 
 /// Runs Archive-first discovery, definitive routing, Asset attempts and
 /// Archive Finalization through the ports of `toolset`.
 ///
-/// Completed facts enter the evidence before the run's Run Observation Sink
-/// sees them, and the milestones let the executor own phase position and
-/// progress. Cancellation, from `stop`, is observed between entries and
-/// attempts and once more after the last attempt; an attempt in flight always
-/// finishes. An unsafe attempt stops all further work.
+/// Completed facts enter `evidence`, which the executor lends for the whole
+/// call, before the run's Run Observation Sink sees them. The work phases
+/// enter, skip and plan their own Run Phases by recording them in
+/// `evidence`, which enforces the canonical Run Phase order. Cancellation,
+/// from `stop`, is observed between entries and attempts and once more after
+/// the last attempt; an attempt in flight always finishes. An unsafe attempt
+/// stops all further work.
 ///
 /// Each port's panic is contained at that port: an Asset attempt's becomes an
 /// unsafe Operation Failure with unknown mutation, an extraction's unknown
@@ -175,36 +201,17 @@ fn attributed_mod_root<'p>(path: &Path, mod_roots: &'p [PathBuf]) -> Option<&'p 
 pub(super) fn run_work_phases(
     preparation: &RunPreparation,
     toolset: &mut RunToolset,
-    evidence: &RunWorkEvidence<'_, '_>,
+    evidence: &mut MutableRunEvidence<'_>,
     artifacts: &mut TemporaryArtifactRegistry,
-    milestones: &ExecutorMilestones<'_, '_>,
     stop: &CancellationToken,
 ) -> Result<(), Error> {
     let policy = preparation.policy();
     let mode = policy.execution_mode();
     let router = AssetRouter::new(policy.clone());
-    // Every return publishes the diagnostics discovery retained, exactly once.
-    let finish = |cancellation_observed: bool| -> Result<(), Error> {
-        if cancellation_observed {
-            evidence.record_cancellation_observation();
-        }
-        evidence.publish_diagnostics();
-        Ok(())
-    };
-    // Cancellation before the definitive pass: keep the Archive exclusions the
-    // pass already counted, but never a partial tree.
-    let interrupted = |skipped_archive_counts: BTreeMap<SkipReason, usize>| -> Result<(), Error> {
-        evidence.record_archive_discovery(ArchiveDiscoveryEvidence {
-            skipped_archive_counts,
-            ..ArchiveDiscoveryEvidence::default()
-        })?;
-        finish(true)
-    };
 
-    milestones.archive_discovery_started()?;
+    evidence.record_archive_discovery_started()?;
 
     let mut discovery = Discovery {
-        evidence,
         stop,
         phase: RunPhase::DiscoveringArchives,
         diagnosed: HashSet::new(),
@@ -218,7 +225,7 @@ pub(super) fn run_work_phases(
     for root in preparation.mod_roots() {
         let mut selected: Vec<PathBuf> = Vec::new();
         let mut loose = BTreeSet::new();
-        let complete = discovery.visit(root, &mut |path| {
+        let complete = discovery.visit(evidence, root, &mut |path| {
             if !names_an_archive(&router, path) {
                 loose.insert(cao_winfs::OrdinalIgnoreCase(relative_game_path(root, path)));
                 return;
@@ -236,7 +243,7 @@ pub(super) fn run_work_phases(
             }
         });
         if !complete {
-            return interrupted(skipped_archive_counts);
+            return interrupted(evidence, skipped_archive_counts);
         }
         // Root order belongs to the caller; only this root's batch is sorted,
         // by its relative names rather than filesystem enumeration order.
@@ -268,9 +275,9 @@ pub(super) fn run_work_phases(
                     ..ArchiveDiscoveryEvidence::default()
                 })?;
                 evidence.record_failure(failure);
-                return finish(false);
+                return finish(evidence, false);
             }
-            Preflight::Cancelled => return interrupted(skipped_archive_counts),
+            Preflight::Cancelled => return interrupted(evidence, skipped_archive_counts),
             Preflight::Planned {
                 plans: planned,
                 collisions,
@@ -284,14 +291,14 @@ pub(super) fn run_work_phases(
     }
 
     if stop.is_cancelled() {
-        return interrupted(skipped_archive_counts);
+        return interrupted(evidence, skipped_archive_counts);
     }
     match mode {
-        ExecutionMode::DryRun => milestones.dry_run_archive_extraction()?,
-        ExecutionMode::Apply => milestones.archive_extraction_planned(plans.len())?,
+        ExecutionMode::DryRun => evidence.record_dry_run_archive_extraction()?,
+        ExecutionMode::Apply => evidence.record_archive_extraction_plan(plans.len())?,
     };
     if stop.is_cancelled() {
-        return interrupted(skipped_archive_counts);
+        return interrupted(evidence, skipped_archive_counts);
     }
 
     if let Some(halt) = extract_archives(
@@ -302,7 +309,7 @@ pub(super) fn run_work_phases(
         stop,
     )? {
         return match halt {
-            ExtractionStop::Cancelled => interrupted(skipped_archive_counts),
+            ExtractionStop::Cancelled => interrupted(evidence, skipped_archive_counts),
             // An unsafe attempt never reaches routing or finalization; only
             // separately observed cancellation is retained alongside it.
             ExtractionStop::Unsafe { cancellation } => {
@@ -310,14 +317,14 @@ pub(super) fn run_work_phases(
                     skipped_archive_counts,
                     ..ArchiveDiscoveryEvidence::default()
                 })?;
-                finish(cancellation)
+                finish(evidence, cancellation)
             }
         };
     }
 
-    milestones.effective_asset_tree_started()?;
+    evidence.record_effective_asset_tree_started()?;
     if stop.is_cancelled() {
-        return interrupted(skipped_archive_counts);
+        return interrupted(evidence, skipped_archive_counts);
     }
 
     // The definitive pass. No Archive enters the tree: one the Archive pass did
@@ -328,7 +335,7 @@ pub(super) fn run_work_phases(
     let mut nested_archives: HashSet<PathBuf> = HashSet::new();
     let mut complete = true;
     for root in preparation.mod_roots() {
-        complete = discovery.visit(root, &mut |path| {
+        complete = discovery.visit(evidence, root, &mut |path| {
             if names_an_archive(&router, path) {
                 if !recognized_archives.contains(path) {
                     nested_archives.insert(path.to_path_buf());
@@ -348,15 +355,17 @@ pub(super) fn run_work_phases(
     })?;
     if !complete {
         // A partial scan is not a definitive tree and never becomes work.
-        return finish(true);
+        return finish(evidence, true);
     }
     evidence.record_routing_ledger(router.route_all(&effective_paths))?;
 
+    // A copy, so the loop can iterate it while recording attempts.
     let ledger = evidence
         .routing_ledger()
+        .cloned()
         .expect("the Routing Ledger was just recorded");
     let total = ledger.routed_assets().len();
-    milestones.asset_processing_planned(total)?;
+    evidence.record_asset_processing_plan(total)?;
     for target in [
         OptimizerTarget::Texture,
         OptimizerTarget::Mesh,
@@ -364,7 +373,7 @@ pub(super) fn run_work_phases(
     ] {
         for asset in ledger.routed_assets_for(target) {
             if stop.is_cancelled() {
-                return finish(true);
+                return finish(evidence, true);
             }
             let path = asset.execution_path();
             let attempt = match attributed_mod_root(path, preparation.mod_roots()) {
@@ -389,7 +398,7 @@ pub(super) fn run_work_phases(
                             .attempt(asset, mod_root, artifacts, stop, &mut retain)
                     })) {
                         Ok(Ok(result)) => (mod_root.clone(), result),
-                        Ok(Err(AssetInitializationCancelled)) => return finish(true),
+                        Ok(Err(AssetInitializationCancelled)) => return finish(evidence, true),
                         // A panic cannot establish whether durable bytes were committed.
                         Err(payload) => (
                             mod_root.clone(),
@@ -417,39 +426,75 @@ pub(super) fn run_work_phases(
             // A failed attempt still completes progress, but uncertain mutation
             // makes every later attempt and Archive Finalization unsafe.
             if !safe_to_continue {
-                return finish(stop.is_cancelled());
+                return finish(evidence, stop.is_cancelled());
             }
         }
     }
     // Cancellation raised during the last attempt has no later loop head to
     // observe it, and a finalizer need not check it either.
     if stop.is_cancelled() {
-        return finish(true);
+        return finish(evidence, true);
     }
     evidence.publish_diagnostics();
     // An observer of those diagnostics may cancel; the run then stops before
     // entering Archive Finalization rather than recording a phase it skips.
     if stop.is_cancelled() {
-        return finish(true);
+        return finish(evidence, true);
     }
 
-    milestones.archive_finalization_available()?;
+    // The execution mode selects the final work phase's record: Apply
+    // executes Archive Finalization through the Run Toolset's port, and Dry
+    // Run skips it.
+    evidence.record_phase(match mode {
+        ExecutionMode::DryRun => {
+            RunPhaseRecord::skipped(RunPhase::ArchiveFinalization, PhaseSkipReason::DryRun)
+        }
+        ExecutionMode::Apply => RunPhaseRecord::executed(RunPhase::ArchiveFinalization, None),
+    })?;
     // Archive Finalization is a separate mutation boundary: observe cancellation before it.
     if stop.is_cancelled() {
-        return finish(true);
+        return finish(evidence, true);
     }
     // The immutable policy decides: Dry Run never finalizes, whatever the Toolset holds.
     if mode == ExecutionMode::Apply {
-        // Finalization reaches only its own facts, never the whole view.
+        // Finalization reaches only its own facts, never the whole evidence.
         finalize_contained(
             &mut *toolset.archive_finalization,
             preparation,
-            &evidence.finalization_recorder(),
+            &mut evidence.finalization_recorder(),
             artifacts,
             stop,
         )?;
     }
-    finish(stop.is_cancelled())
+    finish(evidence, stop.is_cancelled())
+}
+
+/// Ends the work on any return: records cancellation in `evidence` when it
+/// was observed, then publishes every diagnostic the work retained, exactly
+/// once. Always `Ok`, so a return site can hand back its result directly.
+fn finish(evidence: &mut MutableRunEvidence<'_>, cancellation_observed: bool) -> Result<(), Error> {
+    if cancellation_observed {
+        evidence.record_cancellation_observation();
+    }
+    evidence.publish_diagnostics();
+    Ok(())
+}
+
+/// Ends the work after cancellation before the definitive pass: keeps the
+/// Archive exclusions the Archive pass already counted, but never a partial
+/// tree, then [`finish`]es with cancellation observed.
+///
+/// # Errors
+/// A Run Evidence invariant violation recording the discovery facts.
+fn interrupted(
+    evidence: &mut MutableRunEvidence<'_>,
+    skipped_archive_counts: BTreeMap<SkipReason, usize>,
+) -> Result<(), Error> {
+    evidence.record_archive_discovery(ArchiveDiscoveryEvidence {
+        skipped_archive_counts,
+        ..ArchiveDiscoveryEvidence::default()
+    })?;
+    finish(evidence, true)
 }
 
 /// Runs the Archive Finalization port, containing its panic as the phase's
@@ -463,7 +508,7 @@ pub(super) fn run_work_phases(
 fn finalize_contained(
     port: &mut dyn ArchiveFinalizationPort,
     preparation: &RunPreparation,
-    recorder: &ArchiveFinalizationRecorder<'_, '_>,
+    recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
     artifacts: &mut TemporaryArtifactRegistry,
     stop: &CancellationToken,
 ) -> Result<(), Error> {
@@ -495,7 +540,7 @@ enum ExtractionStop {
 fn extract_archives(
     plans: &[ArchiveExtractionPlan],
     port: &mut dyn ArchiveExtractionPort,
-    evidence: &RunWorkEvidence<'_, '_>,
+    evidence: &mut MutableRunEvidence<'_>,
     artifacts: &mut TemporaryArtifactRegistry,
     stop: &CancellationToken,
 ) -> Result<Option<ExtractionStop>, Error> {
