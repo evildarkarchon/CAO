@@ -15,12 +15,15 @@ use std::time::{Duration, SystemTime};
 
 use cao_archive::{ArchiveFormat, Fo4Container, Game, ReadArchive, Settings};
 use cao_core::execution::MutationState;
-use cao_core::routing::{ExecutionMode, RequestedWork, RoutingPolicyRequest};
+use cao_core::routing::{
+    ExecutionMode, ProfileCapabilities, ProfileCapability, RequestedWork, RoutingPolicy,
+    RoutingPolicyRequest,
+};
 use cao_core::run::{
     ArchiveFinalization, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
     ArchiveFinalizationSettings, ArchiveNameKind, ArchivePacker, ArchivePrecedence, CapacityProbe,
-    MutationKind, RunConfiguration, RunOutcome, RunPreparation, SelectedProfileFacts,
-    TemporaryArtifactRegistry, create_run_id,
+    MutationKind, RunConfiguration, RunOutcome, RunPreparation, TemporaryArtifactRegistry,
+    create_run_id,
 };
 use cao_core::test_support::ArchiveFinalizationEvidence;
 use cao_optimizers::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
@@ -52,21 +55,16 @@ fn mod_root(scenario: &str, name: &str) -> PathBuf {
 /// An Apply preparation over `roots` that requests only Archive creation.
 fn preparation(roots: &[PathBuf], extension: &str) -> RunPreparation {
     let configuration = RunConfiguration {
-        profile: SelectedProfileFacts {
-            archive_extension: Some(extension.to_owned()),
-            supports_archive_creation: true,
-            ..SelectedProfileFacts::default()
-        },
+        profile: ProfileCapabilities::define(extension, &[ProfileCapability::ArchiveCreation]),
+        conversion_preference: false,
         ignored_mods: Vec::new(),
         separator_suffixes: Vec::new(),
     };
-    let policy = configuration
-        .profile
-        .compile_policy(RoutingPolicyRequest::for_work(
-            ExecutionMode::Apply,
-            &[RequestedWork::ArchiveCreation],
-        ))
-        .unwrap();
+    let policy = RoutingPolicy::compile(
+        RoutingPolicyRequest::for_work(ExecutionMode::Apply, &[RequestedWork::ArchiveCreation]),
+        configuration.profile.clone(),
+    )
+    .unwrap();
     RunPreparation::new(
         roots.to_vec(),
         configuration,

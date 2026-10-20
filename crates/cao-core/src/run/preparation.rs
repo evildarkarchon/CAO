@@ -5,10 +5,7 @@
 use std::path::PathBuf;
 
 use crate::Error;
-use crate::routing::{
-    PolicyValidationError, ProfileCapabilities, ProfileCapability, RoutingPolicy,
-    RoutingPolicyRequest,
-};
+use crate::routing::{ProfileCapabilities, RoutingPolicy};
 use crate::run::RunToolset;
 
 /// How Archives within one Mod Root are ordered.
@@ -23,82 +20,17 @@ pub enum ArchivePrecedence {
     ExplicitOrder(Vec<PathBuf>),
 }
 
-/// The selected profile's facts, adapted without exposing any profile object.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SelectedProfileFacts {
-    /// The profile's Archive extension with its period, such as `.bsa`.
-    pub archive_extension: Option<String>,
-    pub supports_native_texture_optimization: bool,
-    pub supports_texture_conversion: bool,
-    pub supports_standard_mesh_optimization: bool,
-    pub supports_terrain_mesh_optimization: bool,
-    pub supports_animation_optimization: bool,
-    pub supports_archive_extraction: bool,
-    pub supports_mesh_reference_maintenance: bool,
-    pub supports_archive_creation: bool,
-}
-
-impl SelectedProfileFacts {
-    /// Maps the facts onto the closed Profile Capabilities routing understands.
-    pub fn capabilities(&self) -> ProfileCapabilities {
-        let supported = [
-            (
-                self.supports_native_texture_optimization,
-                ProfileCapability::NativeTextureOptimization,
-            ),
-            (
-                self.supports_texture_conversion,
-                ProfileCapability::ConvertibleTextureConversion,
-            ),
-            (
-                self.supports_standard_mesh_optimization,
-                ProfileCapability::StandardMeshOptimization,
-            ),
-            (
-                self.supports_terrain_mesh_optimization,
-                ProfileCapability::TerrainMeshOptimization,
-            ),
-            (
-                self.supports_animation_optimization,
-                ProfileCapability::AnimationOptimization,
-            ),
-            (
-                self.supports_archive_extraction,
-                ProfileCapability::ArchiveExtraction,
-            ),
-            (
-                self.supports_mesh_reference_maintenance,
-                ProfileCapability::MeshReferenceMaintenance,
-            ),
-            (
-                self.supports_archive_creation,
-                ProfileCapability::ArchiveCreation,
-            ),
-        ];
-        let capabilities: Vec<_> = supported
-            .into_iter()
-            .filter(|(supported, _)| *supported)
-            .map(|(_, capability)| capability)
-            .collect();
-        match &self.archive_extension {
-            Some(extension) => ProfileCapabilities::define(extension.clone(), &capabilities),
-            None => ProfileCapabilities::without_archive_extension(&capabilities),
-        }
-    }
-
-    /// Compiles a Routing Policy Request against these facts (C++ `RunSetup::prepare`).
-    pub fn compile_policy(
-        &self,
-        request: RoutingPolicyRequest,
-    ) -> Result<RoutingPolicy, Vec<PolicyValidationError>> {
-        RoutingPolicy::compile(request, self.capabilities())
-    }
-}
-
 /// The configuration and profile facts loaded for one run, owning no application state.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RunConfiguration {
-    pub profile: SelectedProfileFacts,
+    /// The Selected Profile's Profile Capabilities, including its Archive
+    /// extension, which Preparing compiles the run's Routing Policy against
+    /// (C++ `RunSetup::prepare`).
+    pub profile: ProfileCapabilities,
+    /// The Selected Profile's Conversion Preference: whether requested native
+    /// Texture work also converts convertible Textures. It is not a Profile
+    /// Capability, so its absence never contradicts a Run Request.
+    pub conversion_preference: bool,
     /// Child names matched case-insensitively during Several Mods Preparing.
     pub ignored_mods: Vec<String>,
     /// Case-sensitive suffixes marking mod-manager separators among child

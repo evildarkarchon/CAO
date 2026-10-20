@@ -98,7 +98,7 @@ pub enum RequestedWork {
     ArchiveExtraction,
     /// Archive creation is a run finalization choice, not a per-Asset Routing
     /// Decision, but it is carried here so one compiled policy validates it
-    /// against the selected profile.
+    /// against the Selected Profile.
     ArchiveCreation,
 }
 
@@ -234,7 +234,10 @@ impl RoutingPolicyRequest {
 }
 
 /// The Profile Capability facts a Routing Policy Request is validated against.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The default supports nothing and omits the Archive extension, the same as
+/// [`ProfileCapabilities::without_archive_extension`] with no capabilities.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ProfileCapabilities {
     archive_extension: Option<String>,
     capabilities: [bool; 8],
@@ -268,6 +271,12 @@ impl ProfileCapabilities {
         definition
     }
 
+    /// The raw Archive extension as defined, unvalidated and with its original
+    /// case, or `None` when the definition omits it.
+    pub fn archive_extension(&self) -> Option<&str> {
+        self.archive_extension.as_deref()
+    }
+
     fn supports(&self, capability: ProfileCapability) -> bool {
         self.capabilities[capability as usize]
     }
@@ -280,7 +289,9 @@ impl ProfileCapabilities {
     }
 }
 
-const CAPABILITIES: [ProfileCapability; 8] = [
+/// Every Profile Capability in declaration order, shared with the test
+/// support's `EVERY_CAPABILITY` so the variant list is stated once.
+pub(crate) const CAPABILITIES: [ProfileCapability; 8] = [
     ProfileCapability::NativeTextureOptimization,
     ProfileCapability::ConvertibleTextureConversion,
     ProfileCapability::StandardMeshOptimization,

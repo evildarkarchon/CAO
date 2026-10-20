@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use super::classify_terminal_outcome;
 use crate::Error;
 use crate::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
-use crate::routing::{AssetRouter, ExecutionMode, RequestedWork, RoutingPolicyRequest};
+use crate::routing::{AssetRouter, ExecutionMode, RequestedWork};
 use crate::run::evidence::{
     ArchiveDiscoveryEvidence, MutableRunEvidence, RoutedAssetAttempt, RunEvidence,
 };
@@ -24,7 +24,7 @@ use crate::run::{
     ArchiveFinalizationFailure, ArchiveFinalizationResult, ArchivePrecedence, RunFailure,
     RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord, RunPreparation,
 };
-use crate::test_support::sse_configuration;
+use crate::test_support::{sse_configuration, sse_policy};
 
 /// The work fact one row of the classification table establishes.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -110,13 +110,10 @@ fn asset_result(fact: WorkFact) -> AssetExecutionResult {
 fn sealed_evidence(fact: WorkFact, terminal: Terminal) -> Result<RunEvidence, Error> {
     let mod_root = PathBuf::from("mod-root");
     let configuration = sse_configuration();
-    let policy = configuration
-        .profile
-        .compile_policy(RoutingPolicyRequest::for_work(
-            ExecutionMode::Apply,
-            &[RequestedWork::NativeTextureOptimization],
-        ))
-        .expect("the SSE profile supports Native Texture Optimization");
+    let policy = sse_policy(
+        ExecutionMode::Apply,
+        &[RequestedWork::NativeTextureOptimization],
+    );
     let router = AssetRouter::new(policy.clone());
     let mut evidence = MutableRunEvidence::new(None);
 

@@ -50,8 +50,8 @@ use cao_core::run::{
     OptimizationRunResult, RunExecutor, RunFailure, RunFailureCode, RunOutcome, RunPhase,
     RunServices, TemporaryArtifactRegistry, create_run_id, is_staging_name,
 };
-use cao_core::test_support::{CountingCleanup, ScriptedToolset};
-use common::{canonical, scratch_dir, toolset_configuration};
+use cao_core::test_support::{CountingCleanup, ScriptedToolset, ToolsetConfiguration};
+use common::{canonical, converting_toolset_configuration, scratch_dir, toolset_configuration};
 
 /// Every capability a routed scenario needs.
 const CAPABILITIES: &[ProfileCapability] = &[
@@ -422,6 +422,35 @@ fn run(
     requested: &[RequestedWork],
     backend: &SharedBackend,
 ) -> OptimizationRunResult {
+    run_against(toolset_configuration, root, mode, requested, backend)
+}
+
+/// As [`run`], but the profile's Conversion Preference is on, so the
+/// requested native Texture work also converts convertible Textures.
+fn run_converting(
+    root: &Path,
+    mode: ExecutionMode,
+    requested: &[RequestedWork],
+    backend: &SharedBackend,
+) -> OptimizationRunResult {
+    run_against(
+        converting_toolset_configuration,
+        root,
+        mode,
+        requested,
+        backend,
+    )
+}
+
+/// Runs `backend` over `root` through the Run Executor against the provider
+/// `configuration` builds around the scripted Run Toolset.
+fn run_against(
+    configuration: fn(Option<Arc<ScriptedToolset>>) -> Arc<ToolsetConfiguration>,
+    root: &Path,
+    mode: ExecutionMode,
+    requested: &[RequestedWork],
+    backend: &SharedBackend,
+) -> OptimizationRunResult {
     let backend = backend.clone();
     let toolset = ScriptedToolset::default().with_backend_factory(move || backend.clone());
     let mut cleanup = CountingCleanup::default();
@@ -430,7 +459,7 @@ fn run(
         RunServices {
             safety_cleanup: &mut cleanup,
             observations: None,
-            configuration: Some(&*toolset_configuration(Some(Arc::new(toolset)))),
+            configuration: Some(&*configuration(Some(Arc::new(toolset)))),
         },
         &CancellationToken::new(),
         create_run_id(),
@@ -613,10 +642,12 @@ fn a_panicking_source_removal_is_unsafe_and_keeps_the_committed_output() {
             ..HookBackend::default()
         });
 
-        let result = run(
+        // Conversion joins native Texture work through the Conversion
+        // Preference; the Mod Root holds no native Texture.
+        let result = run_converting(
             &root,
             ExecutionMode::Apply,
-            &[RequestedWork::ConvertibleTextureConversion],
+            &[RequestedWork::NativeTextureOptimization],
             &shared,
         );
 
@@ -1206,12 +1237,15 @@ fn a_panicking_mesh_call_is_unsafe_and_preserves_the_original() {
         }
         let shared = SharedBackend::new(backend);
 
-        let result = run(
+        // Conversion, which the Conversion Preference adds to the native
+        // Texture work, routes the Mesh for Mesh Reference Maintenance; the
+        // Mod Root holds no Texture.
+        let result = run_converting(
             &root,
             ExecutionMode::Apply,
             &[
+                RequestedWork::NativeTextureOptimization,
                 RequestedWork::StandardMeshOptimization,
-                RequestedWork::ConvertibleTextureConversion,
             ],
             &shared,
         );

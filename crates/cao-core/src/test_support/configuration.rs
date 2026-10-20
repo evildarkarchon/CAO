@@ -3,21 +3,29 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::Error;
-use crate::run::{RunConfiguration, RunConfigurationProvider, RunToolset, SelectedProfileFacts};
+use crate::routing::{
+    ExecutionMode, ProfileCapabilities, ProfileCapability, RequestedWork, RoutingPolicy,
+    RoutingPolicyRequest,
+};
+use crate::run::{RunConfiguration, RunConfigurationProvider, RunToolset};
+
+/// Every Profile Capability, for a profile that supports every kind of work
+/// under an Archive extension of the test's choosing.
+pub const EVERY_CAPABILITY: [ProfileCapability; 8] = crate::routing::CAPABILITIES;
 
 /// An SSE-like profile that supports every kind of work, with `.bsa` Archives.
-pub fn sse_profile() -> SelectedProfileFacts {
-    SelectedProfileFacts {
-        archive_extension: Some(".bsa".to_owned()),
-        supports_native_texture_optimization: true,
-        supports_texture_conversion: true,
-        supports_standard_mesh_optimization: true,
-        supports_terrain_mesh_optimization: true,
-        supports_animation_optimization: true,
-        supports_archive_extraction: true,
-        supports_mesh_reference_maintenance: true,
-        supports_archive_creation: true,
-    }
+pub fn sse_profile() -> ProfileCapabilities {
+    ProfileCapabilities::define(".bsa", &EVERY_CAPABILITY)
+}
+
+/// The Routing Policy `work` compiles to in `mode` against [`sse_profile`].
+///
+/// # Panics
+/// Never for valid work: the SSE-like profile supports every kind of work and
+/// its `.bsa` extension is valid, so compilation cannot conflict.
+pub fn sse_policy(mode: ExecutionMode, work: &[RequestedWork]) -> RoutingPolicy {
+    RoutingPolicy::compile(RoutingPolicyRequest::for_work(mode, work), sse_profile())
+        .expect("the SSE-like profile supports every kind of work")
 }
 
 /// The Run Configuration of [`sse_profile`], with no ignored mods and no
@@ -26,6 +34,16 @@ pub fn sse_configuration() -> RunConfiguration {
     RunConfiguration {
         profile: sse_profile(),
         ..RunConfiguration::default()
+    }
+}
+
+/// The Run Configuration of [`sse_configuration`] with the Conversion
+/// Preference on, so requested native Texture work also converts convertible
+/// Textures, as the shipped SSE profile does.
+pub fn converting_sse_configuration() -> RunConfiguration {
+    RunConfiguration {
+        conversion_preference: true,
+        ..sse_configuration()
     }
 }
 

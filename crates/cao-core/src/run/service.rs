@@ -18,6 +18,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 
 use crate::Error;
+use crate::routing::RequestedWork;
 use crate::run::{
     CancellationToken, OptimizationRunResult, RunConfigurationProvider, RunDiagnostic,
     RunDiagnosticCode, RunEvent, RunEventPayload, RunEvidenceInvariantPanic, RunExecutor,
@@ -41,6 +42,10 @@ pub type RunEventDispatcher = Box<dyn Fn(RunEvent) + Send>;
 pub enum StartError {
     MissingProfileIdentity,
     MissingModSelectionDirectory,
+    /// The requested work lists convertible Texture conversion. Only the
+    /// Selected Profile's Conversion Preference switches conversion on, so
+    /// Preparing adds it to requested Texture work instead.
+    ConversionRequested,
     ActiveRun,
 }
 
@@ -482,6 +487,9 @@ impl OptimizationRunService {
         }
         if request.mod_selection().directory().as_os_str().is_empty() {
             return Err(StartError::MissingModSelectionDirectory);
+        }
+        if request.requests(RequestedWork::ConvertibleTextureConversion) {
+            return Err(StartError::ConversionRequested);
         }
 
         let shared = {

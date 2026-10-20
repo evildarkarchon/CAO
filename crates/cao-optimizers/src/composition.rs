@@ -2,11 +2,11 @@
 //!
 //! Ported from C++ `ApplicationRunSetup` and `ApplicationRunWork`. Given the app
 //! directory, the selected profile and the options model, [`ApplicationRun::new`]
-//! validates the options, builds the Run Request, refuses one that contradicts
-//! the profile's Profile Capabilities, and wires a profile-backed Run
+//! validates the options, builds the Run Request, and wires a profile-backed Run
 //! Configuration Provider into an Optimization Run Service. During each run's
-//! Preparing, that provider builds the production Run Toolset from the same
-//! profile read as the run's Routing Policy. Both binaries go through it, so
+//! Preparing, that provider reads the run's `SelectedProfile` once and builds
+//! both the Run Configuration the run's Routing Policy compiles from and the
+//! production Run Toolset from it. Both binaries go through it, so
 //! the parity driver exercises the wiring users run.
 //!
 //! Everything resolves against the app directory the caller passes: `profiles/`
@@ -16,28 +16,23 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cao_archive::{Game, Settings};
 use cao_core::Error;
-use cao_core::routing::{
-    ExecutionMode, PolicyValidationError, RequestedWork, RoutingPolicyRequest,
-};
+use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ArchiveExtractionAdapter, ArchiveFinalizationAdapter, ArchiveFinalizationSettings,
     AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
     CancellationToken, ModSelection, OptimizationRunService, RunConfiguration,
     RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode, RunEventDispatcher, RunHandle,
-    RunPhase, RunRequest, RunToolset, SelectedProfileFacts, SourceCleanup, StartError,
+    RunPhase, RunRequest, RunToolset, SourceCleanup, StartError,
 };
-use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
-use directxtex::DXGI_FORMAT;
-use nifly_sys::NifVersion;
+use cao_profiles::{OptimizationMode, Options, Profiles};
 
 use crate::animations::Hkxcmd;
 use crate::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
 use crate::backend::{OptimizerBackend, TextureResize, TextureSettings};
 use crate::headparts::{HeadpartList, ScanCancelled, scan_headparts};
 use crate::meshes::{MeshOptimizer, MeshSettings};
-use crate::textures::TextureProfile;
+use crate::selected_profile::SelectedProfile;
 
 /// Why the options cannot start a run. Nothing has run and nothing has changed.
 ///
@@ -60,22 +55,6 @@ pub enum RunSetupError {
     /// A relative folder would resolve against the working directory.
     #[error("The selected folder `{}` is not an absolute path.", .0.display())]
     RelativeSelection(PathBuf),
-    /// The request contradicts the selected profile's Profile Capabilities,
-    /// such as Mesh work under FO4. Every conflict is kept, in compiler order.
-    #[error("{}", conflict_messages(.0))]
-    PolicyConflict(Vec<PolicyValidationError>),
-    /// The selected profile's `profile.ini` could not be read.
-    #[error(transparent)]
-    Profile(#[from] ProfileError),
-}
-
-/// One line per conflict, worded as C++ `policyValidationErrorMessages` did.
-fn conflict_messages(conflicts: &[PolicyValidationError]) -> String {
-    conflicts
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// One run, set up and ready to start: its Run Request and the service that
@@ -91,22 +70,19 @@ pub struct ApplicationRun {
 impl ApplicationRun {
     /// Sets up a run of `options` under `profile`, in the install at `app_dir`.
     ///
-    /// The Run Request takes its intent from `options`, and freezes the
-    /// profile's TGA-conversion choice as C++ does: only that is read from
-    /// `profile.ini` now. Everything else the run needs from the profile is read
-    /// again by its Run Configuration Provider during Preparing, so an edit made
-    /// before the run starts is honoured.
+    /// The Run Request takes its intent from `options` alone. Everything the
+    /// run needs from the profile, including the Conversion Preference that
+    /// decides TGA conversion, is read by its Run Configuration Provider during
+    /// Preparing, so an edit made before the run starts is honoured.
     ///
-    /// The request is also checked against the profile's Profile Capabilities
-    /// now, so a request the profile cannot honour never starts a run. That
-    /// check is repeated against the profile Preparing reads.
+    /// The request is not checked against the profile's Profile Capabilities
+    /// here: a request the profile cannot honour sets up, and its run fails
+    /// Preparing with a Policy Conflict carrying every conflict (#570).
     ///
     /// # Errors
-    /// [`RunSetupError`] when the options are invalid, contradict the
-    /// profile's capabilities, or the profile's TGA choice cannot be read.
+    /// [`RunSetupError`] when the options are invalid.
     pub fn new(app_dir: &Path, profile: &str, options: &Options) -> Result<Self, RunSetupError> {
-        let request = run_request(app_dir, profile, options)?;
-        check_profile_capabilities(app_dir, profile, &request)?;
+        let request = run_request(profile, options)?;
         let configuration = Arc::new(ProfileConfigurationProvider::for_runs(
             app_dir,
             RunWorkSettings {
@@ -139,18 +115,15 @@ impl ApplicationRun {
 /// Builds the Run Request for `options` under `profile`, as C++
 /// `makeApplicationRunRequest` does.
 ///
-/// Texture work is requested when any Texture option is on; conversion of TGAs
-/// joins it when the profile converts them. Mesh work is requested when the
-/// level is above 0 or resaving is on; it covers both Standard and Terrain
-/// Meshes.
+/// Texture work is requested when any Texture option is on. TGA conversion is
+/// never requested here: Preparing adds it to that Texture work when the
+/// Selected Profile's Conversion Preference is on. Mesh work is requested when
+/// the level is above 0 or resaving is on; it covers both Standard and Terrain
+/// Meshes. No profile is read.
 ///
 /// # Errors
-/// [`RunSetupError`] when an option is invalid or `profile.ini` cannot be read.
-pub fn run_request(
-    app_dir: &Path,
-    profile: &str,
-    options: &Options,
-) -> Result<RunRequest, RunSetupError> {
+/// [`RunSetupError`] when an option is invalid.
+fn run_request(profile: &str, options: &Options) -> Result<RunRequest, RunSetupError> {
     validate(options)?;
     let selected = PathBuf::from(&options.user_path);
     // An empty folder is a structural Start Error the service reports itself.
@@ -168,22 +141,11 @@ pub fn run_request(
         || options.textures_mipmaps
         || options.textures_resize_size
         || options.textures_resize_ratio;
-    // Read only when Texture work is selected; the lenient read matches the C++
-    // GUI's, which ignored lines QSettings rejected. Preparing reads strictly.
-    let convert_textures = optimize_native_textures
-        && Profiles::new(app_dir)
-            .open(profile)
-            .load_settings()?
-            .textures_convert_tga;
     let optimize_meshes = requests_mesh_work(options);
     let choices = [
         (
             optimize_native_textures,
             RequestedWork::NativeTextureOptimization,
-        ),
-        (
-            convert_textures,
-            RequestedWork::ConvertibleTextureConversion,
         ),
         (optimize_meshes, RequestedWork::StandardMeshOptimization),
         (optimize_meshes, RequestedWork::TerrainMeshOptimization),
@@ -205,36 +167,6 @@ pub fn run_request(
         ExecutionMode::Apply
     };
     Ok(RunRequest::new(profile, mode, mod_selection, work))
-}
-
-/// Compiles `request`'s Routing Policy against the profile's current Profile
-/// Capabilities, as C++ `prepareApplicationRun` does.
-///
-/// The C++ adapters never called that check before starting, so a
-/// contradicting request started and then failed Preparing with a Policy
-/// Conflict. Here it is refused before any run exists.
-///
-/// A profile that cannot be read is not judged here: the run starts and its
-/// Preparing reports the failure, as it did before this check existed.
-///
-/// # Errors
-/// [`RunSetupError::PolicyConflict`] with every conflict.
-fn check_profile_capabilities(
-    app_dir: &Path,
-    profile: &str,
-    request: &RunRequest,
-) -> Result<(), RunSetupError> {
-    // Lenient, as the C++ GUI's profile reads were; Preparing reads strictly.
-    let Ok(settings) = Profiles::new(app_dir).open(profile).load_settings() else {
-        return Ok(());
-    };
-    profile_facts(&settings)
-        .compile_policy(RoutingPolicyRequest::for_work(
-            request.execution_mode(),
-            request.requested_work(),
-        ))
-        .map(|_| ())
-        .map_err(RunSetupError::PolicyConflict)
 }
 
 /// Whether the options ask for Mesh work: a level above 0, or resaving, which
@@ -333,180 +265,55 @@ impl OptimizerSettings {
     }
 }
 
-/// What Preparing read from the selected profile, pinned for the whole run.
-#[derive(Debug)]
-pub struct PreparedProfile {
-    /// `profile.ini`.
-    pub settings: Arc<ProfileSettings>,
-    /// The Packing Exclusion rules of `FilesToNotPack.txt`, as C++'s profile
-    /// snapshot loaded them during Preparing.
-    pub files_to_not_pack: Vec<String>,
-    /// The Headpart Meshes `customHeadparts.txt` lists, loaded with
-    /// `FilesToNotPack.txt`, as C++'s profile snapshot loaded them.
-    pub custom_headparts: Vec<String>,
-}
-
 /// The Run Configuration Provider over a `profiles/` directory, ported from C++
 /// `ApplicationRunConfigurationProvider`.
 ///
-/// Each load re-reads the named profile's `profile.ini`, `ignoredMods.txt`,
-/// `FilesToNotPack.txt` and `customHeadparts.txt` during Preparing, on the
-/// Run Worker. A provider set up for runs builds the run's production Run
-/// Toolset from that same read, so the run's work uses the very same profile
-/// facts its routing did.
-pub struct ProfileConfigurationProvider {
+/// Each load reads the run's [`SelectedProfile`] once during Preparing, on
+/// the Run Worker, and builds both the Run Configuration and the run's
+/// production Run Toolset from that one read, so the run's work uses the very
+/// same profile facts its routing did.
+struct ProfileConfigurationProvider {
     profiles: Profiles,
-    /// The per-run choices the Run Toolset is built with; `None` when the
-    /// provider loads configuration only.
-    work: Option<RunWorkSettings>,
+    /// The per-run choices the Run Toolset is built with.
+    work: RunWorkSettings,
 }
 
 impl ProfileConfigurationProvider {
-    /// A provider for the profiles of the install in `app_dir` that loads
-    /// configuration only: it builds no Run Toolset, so a request with work
-    /// fails Preparing as unavailable.
-    pub fn new(app_dir: &Path) -> Self {
-        Self {
-            profiles: Profiles::new(app_dir),
-            work: None,
-        }
-    }
-
     /// A provider for the profiles of the install in `app_dir` that builds
     /// each run's production Run Toolset with `work`.
     fn for_runs(app_dir: &Path, work: RunWorkSettings) -> Self {
         Self {
             profiles: Profiles::new(app_dir),
-            work: Some(work),
+            work,
         }
-    }
-
-    /// Reads the named profile once, returning the Run Configuration its
-    /// routing compiles from and everything else the run's work is built
-    /// from.
-    ///
-    /// # Errors
-    /// [`Error::ConfigurationLoading`] when `profile.ini` or
-    /// `ignoredMods.txt` cannot be read.
-    pub fn read_profile(
-        &self,
-        profile_identity: &str,
-    ) -> Result<(RunConfiguration, PreparedProfile), Error> {
-        let failed = |error: ProfileError| Error::ConfigurationLoading(error.to_string());
-        let profile = self.profiles.open(profile_identity);
-        // Strict, as C++ run setup rejected any QSettings status but NoError.
-        let settings = profile.load_settings_checked().map_err(failed)?;
-        let ignored_mods = profile.ignored_mods().map_err(failed)?;
-        // A missing or unreadable list is empty, as in C++; finalization logs it.
-        let files_to_not_pack = profile.files_to_not_pack();
-        // The same holds here; the headpart scan logs it.
-        let custom_headparts = profile.custom_headparts();
-        let facts = profile_facts(&settings);
-        let configuration = RunConfiguration {
-            profile: facts,
-            ignored_mods,
-            // Deviation 20: MO2 names its separators `<name>_separator`. C++
-            // passed the marker "separator" and excluded any child containing it.
-            separator_suffixes: vec![SEPARATOR_SUFFIX.to_owned()],
-        };
-        Ok((
-            configuration,
-            PreparedProfile {
-                settings: Arc::new(settings),
-                files_to_not_pack,
-                custom_headparts,
-            },
-        ))
     }
 }
 
 impl RunConfigurationProvider for ProfileConfigurationProvider {
-    /// Reads the profile once and, when set up for runs, builds the run's
-    /// production Run Toolset from that read. Built only after every read
-    /// succeeded, so work never sees a partial profile.
+    /// Reads the Selected Profile once and builds the Run Configuration and
+    /// the run's production Run Toolset from that read. Built only after every
+    /// read succeeded, so work never sees a partial profile.
     fn load(
         &self,
         profile_identity: &str,
     ) -> Result<(RunConfiguration, Option<RunToolset>), Error> {
-        let (configuration, profile) = self.read_profile(profile_identity)?;
-        let toolset = self
-            .work
-            .as_ref()
-            .map(|work| work.toolset(Arc::new(profile)));
-        Ok((configuration, toolset))
+        let profile = SelectedProfile::read(&self.profiles, profile_identity)
+            .map_err(|error| Error::ConfigurationLoading(error.to_string()))?;
+        let configuration = RunConfiguration {
+            profile: profile.capabilities().clone(),
+            conversion_preference: profile.conversion_preference(),
+            ignored_mods: profile.ignored_mods().to_vec(),
+            // Deviation 20: MO2 names its separators `<name>_separator`. C++
+            // passed the marker "separator" and excluded any child containing it.
+            separator_suffixes: vec![SEPARATOR_SUFFIX.to_owned()],
+        };
+        let toolset = self.work.toolset(Arc::new(profile));
+        Ok((configuration, Some(toolset)))
     }
 }
 
 /// The suffix Mod Organizer 2 gives its separator folders.
 const SEPARATOR_SUFFIX: &str = "_separator";
-
-/// The Profile Capabilities a profile's settings declare, as C++
-/// `ApplicationRunConfigurationProvider` and `factsFromSelectedProfile` map them.
-fn profile_facts(settings: &ProfileSettings) -> SelectedProfileFacts {
-    let textures = settings.textures_enabled;
-    let meshes = settings.meshes_enabled;
-    let archives = settings.bsa_enabled;
-    SelectedProfileFacts {
-        archive_extension: Some(archive_extension(settings.bsa_game).to_owned()),
-        supports_native_texture_optimization: textures,
-        supports_texture_conversion: textures,
-        supports_standard_mesh_optimization: meshes,
-        supports_terrain_mesh_optimization: meshes,
-        supports_animation_optimization: settings.animations_enabled,
-        supports_archive_extraction: archives,
-        // Reference maintenance belongs to Texture conversion.
-        supports_mesh_reference_maintenance: textures,
-        supports_archive_creation: archives,
-    }
-}
-
-/// The Archive extension of a game, from `cao-archive`'s per-game tables.
-fn archive_extension(game: BsaGame) -> &'static str {
-    Settings::get(archive_game(game)).extension
-}
-
-/// The `cao-archive` game whose tables a profile's `bsaGame` names.
-fn archive_game(game: BsaGame) -> Game {
-    match game {
-        BsaGame::Tes5 => Game::Tes5,
-        BsaGame::Sse => Game::Sse,
-        BsaGame::Fo4 => Game::Fo4,
-    }
-}
-
-/// The packer for a profile's game, with its maximum Archive size raised to
-/// the profile's `maxBsaUncompressedSize` when that is larger, as C++
-/// `archiveSettings` did.
-fn archive_packer(settings: &ProfileSettings) -> GameArchivePacker {
-    GameArchivePacker::new(
-        Settings::get(archive_game(settings.bsa_game))
-            .with_profile_max_size(settings.max_bsa_uncompressed_size),
-    )
-}
-
-/// The profile's Texture settings, as the texture optimizer takes them.
-fn texture_profile(settings: &ProfileSettings) -> TextureProfile {
-    TextureProfile {
-        format: DXGI_FORMAT::from(settings.textures_format),
-        unwanted_formats: settings
-            .textures_unwanted_formats
-            .iter()
-            .map(|&format| DXGI_FORMAT::from(format))
-            .collect(),
-        compress_interface: settings.textures_compress_interface,
-    }
-}
-
-/// The version a profile writes Meshes as (`meshesFileVersion`, `meshesUser`,
-/// `meshesStream`), which C++ handed nifly through `SetFile`, `SetUser` and
-/// `SetStream`.
-fn mesh_target(settings: &ProfileSettings) -> NifVersion {
-    NifVersion {
-        file: settings.meshes_file_version,
-        user: settings.meshes_user,
-        stream: settings.meshes_stream,
-    }
-}
 
 /// The per-run choices the production Run Toolset is built with, ported from
 /// what C++ `ApplicationRunWork` held.
@@ -524,7 +331,7 @@ struct RunWorkSettings {
 impl RunWorkSettings {
     /// The production Run Toolset of one run, over the profile its Preparing
     /// read.
-    fn toolset(&self, profile: Arc<PreparedProfile>) -> RunToolset {
+    fn toolset(&self, profile: Arc<SelectedProfile>) -> RunToolset {
         // One reader serves discovery, extraction and finalization for the
         // whole run.
         let reader = Arc::new(ArchiveFileReader::default());
@@ -533,12 +340,14 @@ impl RunWorkSettings {
         // it packs only when the Routing Policy requests Archive creation, and
         // prunes empty directories either way.
         let finalization = ArchiveFinalizationAdapter::new(
-            Box::new(archive_packer(&profile.settings)),
+            // The packer names Archives by the same Archive settings value the
+            // run's routing took its extension from.
+            Box::new(GameArchivePacker::new(*profile.archive_settings())),
             reader.clone(),
             probes.clone(),
             probes.clone(),
             self.settings.finalization,
-            profile.files_to_not_pack.clone(),
+            profile.packing_exclusions().to_vec(),
         );
         RunToolset {
             // The adapter creates the backend on the first Asset, as C++
@@ -573,7 +382,7 @@ struct OptimizerBackendFactory {
     work: RunWorkSettings,
     /// The profile Preparing read, which the backend's Texture profile, Mesh
     /// target and custom Headpart Meshes come from.
-    profile: Arc<PreparedProfile>,
+    profile: Arc<SelectedProfile>,
 }
 
 impl OptimizerBackendFactory {
@@ -598,9 +407,11 @@ impl OptimizerBackendFactory {
             return Ok((HeadpartList::default(), Vec::new()));
         }
         let profile = &self.profile;
-        let extensions = Settings::get(archive_game(profile.settings.bsa_game)).plugin_extensions;
+        // The Archive rules' plugin extensions, so Loading Plugins and
+        // Headpart plugins are judged by one game table.
+        let extensions = profile.archive_settings().plugin_extensions;
         let scan = scan_headparts(
-            &profile.custom_headparts,
+            profile.custom_headparts(),
             &self.work.selected_folder,
             extensions,
             &|| stop.is_cancelled(),
@@ -637,8 +448,8 @@ impl AssetBackendFactory for OptimizerBackendFactory {
         let Ok((headparts, diagnostics)) = self.list_headparts(stop) else {
             return Ok(BackendCreation::Cancelled);
         };
-        let settings = &self.profile.settings;
-        let meshes = MeshOptimizer::new(self.work.settings.meshes, mesh_target(settings))
+        let profile = &self.profile;
+        let meshes = MeshOptimizer::new(self.work.settings.meshes, profile.mesh_target())
             .with_headparts(headparts);
         // The adapter calls this on the Run Worker, the thread that must join
         // COM. C++'s texture optimizer threw when it could not, and its run
@@ -647,7 +458,7 @@ impl AssetBackendFactory for OptimizerBackendFactory {
         // the error, so the run still retains the plugins it could not read.
         let backend = match OptimizerBackend::new(
             self.work.settings.textures,
-            texture_profile(settings),
+            profile.texture_profile().clone(),
             meshes,
             self.work.hkxcmd.clone(),
         ) {
@@ -690,8 +501,11 @@ mod tests {
     #[test]
     fn a_backend_failure_still_hands_back_the_unreadable_plugins() {
         let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let profile = Profiles::new(&app_dir).open("SSE");
-        let mut options = profile.load_options(&Options::default()).unwrap();
+        let profiles = Profiles::new(&app_dir);
+        let mut options = profiles
+            .open("SSE")
+            .load_options(&Options::default())
+            .unwrap();
         options.meshes_optimization_level = 1;
         let selection = std::env::temp_dir().join("cao-optimizers-unit/backend-failure");
         // A missing directory is the expected case; anything else surfaces below.
@@ -704,11 +518,7 @@ mod tests {
                 selected_folder: selection.clone(),
                 hkxcmd: Hkxcmd::in_app_dir(&app_dir),
             },
-            profile: Arc::new(PreparedProfile {
-                settings: Arc::new(profile.load_settings_checked().unwrap()),
-                files_to_not_pack: Vec::new(),
-                custom_headparts: Vec::new(),
-            }),
+            profile: Arc::new(SelectedProfile::read(&profiles, "SSE").unwrap()),
         };
 
         // The thread exits after the attempt, leaving its apartment; neither

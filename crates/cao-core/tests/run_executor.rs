@@ -42,19 +42,22 @@ use std::sync::{Arc, Mutex};
 
 use cao_core::Error;
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
-use cao_core::routing::{AssetOperation, ExecutionMode, PolicyValidationError, RequestedWork};
+use cao_core::routing::{
+    AssetOperation, ExecutionMode, PolicyValidationError, ProfileCapabilities, RequestedWork,
+    RoutingPolicy,
+};
 use cao_core::run::{
     ArchiveExtractionResult, ArchiveFinalizationAttempt, ArchiveFinalizationFailure,
     ArchiveFinalizationResult, ArchivePrecedence, CancellationToken, ModSelection, MutationKind,
     OptimizationRunResult, PhaseSkipReason, RunConfiguration, RunConfigurationProvider,
     RunDiagnosticCode, RunExecutor, RunFailure, RunFailureCode, RunOutcome, RunPhase,
     RunPhaseRecord, RunPhaseStatus, RunProgress, RunRequest, SafetyCleanupService,
-    SelectedProfileFacts, TemporaryArtifactRegistry, create_run_id,
+    TemporaryArtifactRegistry, create_run_id,
 };
 use cao_core::test_support::{
-    CallbackConfiguration, CountingCleanup, FakeCapacity, Observed, RecordingSink, ScriptedCleanup,
-    ScriptedToolset, ToolsetConfiguration, entry, execute_run, record_finalization_result,
-    sse_profile, write_archive,
+    CallbackConfiguration, CountingCleanup, EVERY_CAPABILITY, FakeCapacity, Observed,
+    RecordingSink, ScriptedCleanup, ScriptedToolset, ToolsetConfiguration, entry, execute_run,
+    record_finalization_result, sse_configuration, sse_policy, sse_profile, write_archive,
 };
 use common::{canonical, no_work_request, request, scratch_dir, test_configuration};
 
@@ -305,10 +308,7 @@ fn a_missing_configuration_provider_fails_preparing() {
 fn a_request_contradicting_the_profile_fails_preparing_with_every_conflict() {
     let provider = CallbackConfiguration(Box::new(|_| {
         Ok(RunConfiguration {
-            profile: SelectedProfileFacts {
-                archive_extension: Some(".ba2".to_owned()),
-                ..SelectedProfileFacts::default()
-            },
+            profile: ProfileCapabilities::define(".ba2", &[]),
             ..RunConfiguration::default()
         })
     }));
@@ -336,6 +336,83 @@ fn a_request_contradicting_the_profile_fails_preparing_with_every_conflict() {
             kind: cao_core::routing::AssetKind::Mesh,
         }]
     );
+}
+
+/// The synchronous Run Executor skips Start Errors, so it never sees
+/// `ConversionRequested`; Preparing still takes conversion only from the
+/// Conversion Preference. With the preference off, conversion a request lists
+/// itself is dropped from the Routing Policy.
+#[test]
+fn the_executor_drops_listed_conversion_when_the_conversion_preference_is_off() {
+    let policy = executor_policy("executor-listed-conversion-off", false);
+
+    assert_eq!(
+        policy,
+        compiled_policy(&[RequestedWork::NativeTextureOptimization])
+    );
+    assert!(!policy.requests(RequestedWork::ConvertibleTextureConversion));
+    assert!(!policy.maintains_mesh_references());
+}
+
+/// With the Conversion Preference on, a request that both lists conversion
+/// and asks for native Texture work yields the same Routing Policy as native
+/// Texture work alone would: conversion appears once, from the preference.
+#[test]
+fn the_executor_takes_conversion_once_from_the_conversion_preference() {
+    let policy = executor_policy("executor-listed-conversion-on", true);
+
+    assert_eq!(
+        policy,
+        compiled_policy(&[
+            RequestedWork::NativeTextureOptimization,
+            RequestedWork::ConvertibleTextureConversion,
+        ])
+    );
+    assert!(policy.requests(RequestedWork::ConvertibleTextureConversion));
+    assert!(policy.maintains_mesh_references());
+}
+
+/// Executes a Dry Run of native Texture work plus listed conversion over an
+/// empty Mod Root directly through the Run Executor, against the SSE-like
+/// profile with the given Conversion Preference, and returns the Routing
+/// Policy its Preparing compiled.
+fn executor_policy(name: &str, conversion_preference: bool) -> RoutingPolicy {
+    let provider = ToolsetConfiguration::new(
+        RunConfiguration {
+            conversion_preference,
+            ..sse_configuration()
+        },
+        Some(Arc::new(ScriptedToolset::default())),
+    );
+    let root = scratch_dir(name);
+    let request = request(
+        ExecutionMode::DryRun,
+        &root,
+        &[
+            RequestedWork::NativeTextureOptimization,
+            RequestedWork::ConvertibleTextureConversion,
+        ],
+    );
+    let mut cleanup = CountingCleanup::default();
+    let result = execute(
+        &request,
+        &mut cleanup,
+        Some(&provider),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    result
+        .preparation()
+        .expect("Preparing succeeded")
+        .policy()
+        .clone()
+}
+
+/// The Dry Run Routing Policy `work` compiles to against the SSE-like profile,
+/// the independent expectation the executor's policy is compared with.
+fn compiled_policy(work: &[RequestedWork]) -> RoutingPolicy {
+    sse_policy(ExecutionMode::DryRun, work)
 }
 
 /// Origin: RunExecutorTests::aNonDirectorySelectionFailsPreparing and
@@ -780,14 +857,18 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
             "SkyrimSE",
             ExecutionMode::Apply,
             ModSelection::ChildModRoots(common::relative_to_working_directory(&selected)),
-            vec![RequestedWork::ConvertibleTextureConversion],
+            vec![RequestedWork::NativeTextureOptimization],
         );
         let mut cleanup = CountingCleanup::default();
 
+        // The Conversion Preference adds conversion to the native Texture
+        // work; the Mod Root holds no native Texture.
         let result = execute(
             &request,
             &mut cleanup,
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&*common::converting_toolset_configuration(Some(
+                Arc::clone(&toolset),
+            ))),
             &token,
         );
 
@@ -2243,10 +2324,7 @@ fn preparing_retains_the_resolved_root_and_policy() {
             )));
         }
         Ok(RunConfiguration {
-            profile: SelectedProfileFacts {
-                archive_extension: Some(".BSA".to_owned()),
-                ..sse_profile()
-            },
+            profile: ProfileCapabilities::define(".BSA", &EVERY_CAPABILITY),
             ignored_mods: vec!["ignored-mod".to_owned()],
             ..RunConfiguration::default()
         })
@@ -2286,10 +2364,7 @@ fn preparing_retains_the_resolved_root_and_policy() {
 fn an_ambiguous_archive_extension_fails_preparing_before_any_work_phase() {
     let provider = CallbackConfiguration(Box::new(|_| {
         Ok(RunConfiguration {
-            profile: SelectedProfileFacts {
-                archive_extension: Some(".dds".to_owned()),
-                ..sse_profile()
-            },
+            profile: ProfileCapabilities::define(".dds", &EVERY_CAPABILITY),
             ..RunConfiguration::default()
         })
     }));

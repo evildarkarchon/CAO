@@ -49,7 +49,6 @@ pub use lifecycle::{
 };
 pub use preparation::{
     ArchivePrecedence, RunConfiguration, RunConfigurationProvider, RunPreparation,
-    SelectedProfileFacts,
 };
 pub use probes::{
     ArchiveEntry, ArchiveMerge, ArchiveName, ArchiveNameKind, ArchiveNamingRules, ArchivePacker,

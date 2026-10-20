@@ -28,6 +28,7 @@ use common::{
 fn exclusions(ignored_mods: &[&str], separator_suffixes: &[&str]) -> RunConfiguration {
     RunConfiguration {
         profile: sse_profile(),
+        conversion_preference: false,
         ignored_mods: ignored_mods.iter().map(|name| (*name).to_owned()).collect(),
         separator_suffixes: separator_suffixes
             .iter()

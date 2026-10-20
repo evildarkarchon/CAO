@@ -27,7 +27,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::Error;
 use crate::execution::MutationState;
-use crate::routing::{ExecutionMode, RoutingPolicyRequest};
+use crate::routing::{ExecutionMode, RequestedWork, RoutingPolicy, RoutingPolicyRequest};
 use crate::run::mod_selection::resolve_mod_roots;
 use crate::run::{
     CancellationToken, MutableRunEvidence, OptimizationRunResult, PhaseSkipReason,
@@ -139,6 +139,35 @@ fn load_configuration(
     }
 }
 
+/// Builds the Routing Policy Request from the Run Request's work and the
+/// Selected Profile's Conversion Preference.
+///
+/// Convertible Texture conversion joins the work only when native Texture
+/// optimization is requested and the preference is on, in Dry Run and Apply
+/// alike.
+///
+/// The user-facing rule is [`StartError::ConversionRequested`]: the
+/// Optimization Run Service refuses a Run Request that lists conversion itself
+/// before any run exists. Dropping such conversion here is only the backstop
+/// for callers that skip Start Errors, such as the synchronous Run Executor
+/// seam, so they too get conversion solely from the Conversion Preference.
+///
+/// [`StartError::ConversionRequested`]: crate::run::StartError::ConversionRequested
+fn policy_request(request: &RunRequest, configuration: &RunConfiguration) -> RoutingPolicyRequest {
+    let mut work: Vec<RequestedWork> = request
+        .requested_work()
+        .iter()
+        .copied()
+        .filter(|work| *work != RequestedWork::ConvertibleTextureConversion)
+        .collect();
+    if configuration.conversion_preference
+        && request.requests(RequestedWork::NativeTextureOptimization)
+    {
+        work.push(RequestedWork::ConvertibleTextureConversion);
+    }
+    RoutingPolicyRequest::for_work(request.execution_mode(), &work)
+}
+
 /// Prepares immutable facts without mutation, with the Run Toolset the
 /// provider built from the same profile read; `Ok(None)` means cancellation
 /// was observed.
@@ -157,20 +186,18 @@ fn prepare_run(
     if stop.is_cancelled() {
         return Ok(None);
     }
-    let policy = configuration
-        .profile
-        .compile_policy(RoutingPolicyRequest::for_work(
-            request.execution_mode(),
-            request.requested_work(),
-        ))
-        .map_err(|conflicts| {
-            RunFailure::new(
-                RunFailureCode::PolicyConflict,
-                RunPhase::Preparing,
-                "The loaded profile conflicts with the requested Routing Policy",
-            )
-            .with_policy_conflicts(conflicts)
-        })?;
+    let policy = RoutingPolicy::compile(
+        policy_request(request, &configuration),
+        configuration.profile.clone(),
+    )
+    .map_err(|conflicts| {
+        RunFailure::new(
+            RunFailureCode::PolicyConflict,
+            RunPhase::Preparing,
+            "The loaded profile conflicts with the requested Routing Policy",
+        )
+        .with_policy_conflicts(conflicts)
+    })?;
     let mod_roots = resolve_mod_roots(request.mod_selection(), &configuration, evidence, stop)?;
     if stop.is_cancelled() {
         return Ok(None);
