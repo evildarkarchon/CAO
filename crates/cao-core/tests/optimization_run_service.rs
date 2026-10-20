@@ -24,22 +24,24 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex, OnceLock, mpsc};
 
 use cao_core::Error;
-use cao_core::routing::{ExecutionMode, ProfileCapabilities, RequestedWork};
+use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ModSelection, OptimizationRunService, PhaseSkipReason, RunDiagnosticCode, RunEventPayload,
-    RunFailureCode, RunHandle, RunOutcome, RunPhase, RunPhaseStatus, RunRequest, SelectedProfile,
-    StartError,
+    RunFailureCode, RunHandle, RunOutcome, RunPhase, RunPhaseStatus, RunRequest, StartError,
 };
 use cao_core::test_support::{
     CallbackConfiguration, CountingInlineScheduler, DeferredScheduler, EventLog,
     ExhaustedScheduler, GatedScheduler, ScriptedToolset, ToolsetConfiguration,
 };
-use common::{HandleSlot, no_work_request, reclaim, serial, test_mod_root, toolset_configuration};
+use common::{
+    HandleSlot, no_work_request, reclaim, serial, test_mod_root, toolset_configuration,
+    unsupporting_configuration,
+};
 
 /// A provider of the SSE-like configuration and an unscripted Run Toolset,
 /// the means to do any requested work.
 fn equipped() -> Arc<ToolsetConfiguration> {
-    toolset_configuration(Some(Arc::new(ScriptedToolset::default())))
+    toolset_configuration(Arc::new(ScriptedToolset::default()))
 }
 
 /// A service on an injected scheduler with the SSE-like configuration and an
@@ -619,11 +621,8 @@ fn failure_events_precede_safety_cleanup_and_the_terminal_event() {
         } else {
             Arc::new(CountingInlineScheduler::default())
         };
-        let unsupporting = Arc::new(ToolsetConfiguration::new(
-            SelectedProfile::new(ProfileCapabilities::define(".bsa", &[])),
-            Some(Arc::new(ScriptedToolset::default())),
-        ));
-        let service = OptimizationRunService::with_scheduler(scheduler, Some(unsupporting));
+        let service =
+            OptimizationRunService::with_scheduler(scheduler, Some(unsupporting_configuration()));
         let events = EventLog::default();
         let request = RunRequest::new(
             "SkyrimSE",

@@ -15,7 +15,6 @@ use crate::run::{
     RunServices, RunToolset, SafetyCleanupService, SelectedProfile, TemporaryArtifactRegistry,
     create_run_id,
 };
-use crate::test_support::configuration::default_toolset;
 use crate::test_support::{
     FakeArchivePacker, FakeArchiveReader, FakeBackendFactory, FakeCapacity, FakeVolumes,
     sse_profile,
@@ -217,18 +216,18 @@ impl AssetAttemptPort for ScriptedAssetAttempt {
 }
 
 /// A provider returning one fixed Selected Profile and a fresh Run Toolset
-/// for each run: over `toolset` if scripted, or over a default
-/// [`ScriptedToolset`] otherwise. It counts its loads.
+/// over `toolset` for each run. It counts its loads.
+///
+/// A scenario that scripts nothing passes a default [`ScriptedToolset`].
 pub struct ToolsetConfiguration {
     pub profile: SelectedProfile,
-    pub toolset: Option<Arc<ScriptedToolset>>,
+    pub toolset: Arc<ScriptedToolset>,
     pub loads: AtomicUsize,
 }
 
 impl ToolsetConfiguration {
-    /// A provider of `profile` and of `toolset`'s Toolsets, or default
-    /// scripted ones when `toolset` is `None`.
-    pub fn new(profile: SelectedProfile, toolset: Option<Arc<ScriptedToolset>>) -> Self {
+    /// A provider of `profile` and of `toolset`'s Toolsets.
+    pub fn new(profile: SelectedProfile, toolset: Arc<ScriptedToolset>) -> Self {
         Self {
             profile,
             toolset,
@@ -236,9 +235,8 @@ impl ToolsetConfiguration {
         }
     }
 
-    /// A provider of the SSE-like [`sse_profile`] and of `toolset`'s
-    /// Toolsets, or default scripted ones when `toolset` is `None`.
-    pub fn sse(toolset: Option<Arc<ScriptedToolset>>) -> Self {
+    /// A provider of the SSE-like [`sse_profile`] and of `toolset`'s Toolsets.
+    pub fn sse(toolset: Arc<ScriptedToolset>) -> Self {
         Self::new(sse_profile(), toolset)
     }
 }
@@ -268,10 +266,6 @@ pub fn execute_run(
 impl RunConfigurationProvider for ToolsetConfiguration {
     fn load(&self, _profile_identity: &str) -> Result<(SelectedProfile, RunToolset), Error> {
         self.loads.fetch_add(1, Ordering::SeqCst);
-        let toolset = self
-            .toolset
-            .as_ref()
-            .map_or_else(default_toolset, ScriptedToolset::toolset);
-        Ok((self.profile.clone(), toolset))
+        Ok((self.profile.clone(), self.toolset.toolset()))
     }
 }

@@ -60,7 +60,10 @@ use cao_core::test_support::{
     Observed, RecordingSink, ScriptedCleanup, ScriptedToolset, ToolsetConfiguration, entry,
     execute_run, sse_capabilities, sse_profile, write_archive,
 };
-use common::{canonical, no_work_request, request, scratch_dir, test_configuration};
+use common::{
+    canonical, no_work_request, request, scratch_dir, test_configuration,
+    unsupporting_configuration,
+};
 
 /// `FILE_SHARE_WRITE | FILE_SHARE_DELETE`: a handle opened with only these
 /// denies other readers while still allowing writes and deletion.
@@ -75,18 +78,6 @@ fn execute(
     stop: &CancellationToken,
 ) -> OptimizationRunResult {
     execute_run(request, cleanup, None, configuration, stop)
-}
-
-/// A provider whose `.bsa` profile supports no Profile Capability, so any
-/// requested work fails Preparing with a Policy Conflict: the way a real run
-/// with work stops in Preparing before staging recovery.
-fn unsupporting_configuration() -> CallbackConfiguration {
-    CallbackConfiguration(Box::new(|_| {
-        Ok(SelectedProfile::new(ProfileCapabilities::define(
-            ".bsa",
-            &[],
-        )))
-    }))
 }
 
 /// The temporary a scripted port staged under the run's Temporary Ownership,
@@ -585,7 +576,7 @@ fn cancelling_between_assets_keeps_committed_mutations_and_cleans_up() {
     let result = execute(
         &request,
         &mut cleanup,
-        Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+        Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
         &token,
     );
 
@@ -705,7 +696,7 @@ fn diagnostic_count(result: &OptimizationRunResult, code: RunDiagnosticCode) -> 
 fn ignoring(mods: &[&str], toolset: &Arc<ScriptedToolset>) -> ToolsetConfiguration {
     ToolsetConfiguration::new(
         sse_profile().with_ignored_mods(mods.iter().map(|name| (*name).to_owned()).collect()),
-        Some(Arc::clone(toolset)),
+        Arc::clone(toolset),
     )
 }
 
@@ -752,7 +743,7 @@ fn processing_and_evidence_share_the_canonical_mod_root() {
         let result = execute(
             &request,
             &mut cleanup,
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
             &CancellationToken::new(),
         );
 
@@ -775,10 +766,7 @@ fn processing_and_evidence_share_the_canonical_mod_root() {
 /// core's Archive Finalization fails its first output attempt with an
 /// Unexpected Exception that forbids continuation.
 fn panicking_packer() -> Arc<FakeArchivePacker> {
-    Arc::new(FakeArchivePacker {
-        after_write: Some(Box::new(|_| panic!("the archive writer panicked"))),
-        ..FakeArchivePacker::default()
-    })
+    Arc::new(FakeArchivePacker::panicking_after_write())
 }
 
 /// Origin: RunExecutorTests::removedConversionRetainsModRoot (both rows). A
@@ -836,9 +824,7 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
         let result = execute(
             &request,
             &mut cleanup,
-            Some(&*common::converting_configuration(Some(Arc::clone(
-                &toolset,
-            )))),
+            Some(&*common::converting_configuration(Arc::clone(&toolset))),
             &token,
         );
 
@@ -959,7 +945,7 @@ fn an_asset_retargeted_after_discovery_is_attributed_to_the_root_containing_it()
             &request,
             &mut cleanup,
             Some(&sink),
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
             &CancellationToken::new(),
         );
         std::fs::remove_dir(&link).unwrap();
@@ -1022,7 +1008,7 @@ fn applicable_work_reports_its_phases_whether_or_not_there_is_anything_to_do() {
         let result = execute(
             &request,
             &mut cleanup,
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
             &CancellationToken::new(),
         );
 
@@ -1143,7 +1129,7 @@ fn each_work_phase_is_published_before_its_work_starts() {
         ),
         &mut cleanup,
         Some(&sink),
-        Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+        Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
         &CancellationToken::new(),
     );
 
@@ -1366,7 +1352,7 @@ fn a_panicking_progress_observer_keeps_the_failed_attempt() {
             ),
             &mut cleanup,
             Some(&sink),
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
             &token,
         );
 
@@ -1459,7 +1445,7 @@ fn mixed_asset_evidence_outlives_every_service() {
                 ],
             ),
             &mut cleanup,
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
             &CancellationToken::new(),
         );
         assert_eq!(cleanup.passes, 1);
@@ -1612,7 +1598,7 @@ fn a_cancelled_finalization_keeps_its_committed_output() {
             &[RequestedWork::ArchiveCreation],
         ),
         &mut cleanup,
-        Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+        Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
         &token,
     );
 
@@ -1696,7 +1682,7 @@ fn a_committed_archive_without_its_loading_plugin_fails_the_run() {
             &[RequestedWork::ArchiveCreation],
         ),
         &mut cleanup,
-        Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+        Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
         &CancellationToken::new(),
     );
 
@@ -1756,7 +1742,7 @@ fn an_unsafe_attempt_cancelled_mid_flight_fails_and_leaves_pending_work_untouche
             &[RequestedWork::NativeTextureOptimization],
         ),
         &mut cleanup,
-        Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+        Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
         &token,
     );
 
@@ -1818,7 +1804,7 @@ fn a_discovery_diagnostic_survives_a_failure_later_in_discovery() {
             ],
         ),
         &mut cleanup,
-        Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+        Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
         &CancellationToken::new(),
     );
     std::fs::remove_dir(&link).unwrap();
@@ -1940,7 +1926,7 @@ fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
         let result = execute(
             &request(ExecutionMode::Apply, &root, work),
             &mut cleanup,
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
             &CancellationToken::new(),
         );
 
@@ -2156,7 +2142,7 @@ fn terminal_precedence_classifies_each_outcome_and_keeps_every_fact() {
             ),
             &mut cleanup,
             None,
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
             &token,
         );
 
@@ -2525,7 +2511,7 @@ fn a_failed_preparing_mutates_no_asset_or_archive() {
                 ],
             ),
             &mut cleanup,
-            Some(&unsupporting),
+            Some(&*unsupporting),
             &CancellationToken::new(),
         );
 
@@ -2556,7 +2542,7 @@ fn a_run_stopped_in_preparing_records_only_the_phases_it_traversed() {
             &[RequestedWork::ArchiveExtraction],
         ),
         &mut cleanup,
-        Some(&unsupporting_configuration()),
+        Some(&*unsupporting_configuration()),
         &CancellationToken::new(),
     );
 
@@ -2921,7 +2907,7 @@ fn cancelling_at_each_work_milestone_stops_at_that_phase() {
             ),
             &mut cleanup,
             Some(&sink),
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
             &token,
         );
 

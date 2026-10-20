@@ -89,7 +89,7 @@ fn run(
     toolset: &Arc<ScriptedToolset>,
     request: cao_core::run::RunRequest,
 ) -> (Arc<OptimizationRunResult>, EventLog) {
-    run_with(toolset_configuration(Some(Arc::clone(toolset))), request)
+    run_with(toolset_configuration(Arc::clone(toolset)), request)
 }
 
 /// Like [`run`], but the SSE-like profile prefers conversion, so requested
@@ -98,7 +98,7 @@ fn run_converting(
     toolset: &Arc<ScriptedToolset>,
     request: cao_core::run::RunRequest,
 ) -> (Arc<OptimizationRunResult>, EventLog) {
-    run_with(converting_configuration(Some(Arc::clone(toolset))), request)
+    run_with(converting_configuration(Arc::clone(toolset)), request)
 }
 
 /// Runs one request through the Run Executor, with `sink` observing every
@@ -115,7 +115,7 @@ fn execute_observed(
         RunServices {
             safety_cleanup: &mut cleanup,
             observations: Some(sink),
-            configuration: Some(&*toolset_configuration(Some(Arc::clone(toolset)))),
+            configuration: Some(&*toolset_configuration(Arc::clone(toolset))),
         },
         stop,
         create_run_id(),
@@ -407,7 +407,7 @@ fn cancelling_between_assets_is_cancelled_keeps_committed_mutations_and_still_cl
     let toolset = Arc::new(committing());
     let service = OptimizationRunService::with_scheduler(
         scheduler.clone(),
-        Some(toolset_configuration(Some(toolset.clone()))),
+        Some(toolset_configuration(toolset.clone())),
     );
     let slot: HandleSlot = Arc::new(OnceLock::new());
     let events = EventLog::default();
@@ -1131,7 +1131,7 @@ fn apply_publishes_diagnostics_between_execution_and_finalization() {
     });
     let service = OptimizationRunService::with_scheduler(
         Arc::new(InlineRunScheduler),
-        Some(toolset_configuration(Some(Arc::new(toolset)))),
+        Some(toolset_configuration(Arc::new(toolset))),
     );
     let dispatcher = {
         let order = order.clone();

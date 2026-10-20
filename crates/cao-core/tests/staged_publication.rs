@@ -32,7 +32,7 @@ use common::{
 /// driving a fresh fake backend.
 fn run(request: RunRequest) -> Arc<OptimizationRunResult> {
     let _serial = common::serial();
-    let configuration = toolset_configuration(Some(backend_toolset(FakeBackendFactory::default())));
+    let configuration = toolset_configuration(backend_toolset(FakeBackendFactory::default()));
     run_with(configuration, request).0
 }
 
@@ -40,8 +40,7 @@ fn run(request: RunRequest) -> Arc<OptimizationRunResult> {
 /// native Texture work also converts convertible Textures.
 fn run_converting(request: RunRequest) -> Arc<OptimizationRunResult> {
     let _serial = common::serial();
-    let configuration =
-        converting_configuration(Some(backend_toolset(FakeBackendFactory::default())));
+    let configuration = converting_configuration(backend_toolset(FakeBackendFactory::default()));
     run_with(configuration, request).0
 }
 
