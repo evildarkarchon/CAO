@@ -21,8 +21,7 @@ use cao_core::test_support::{
     sse_profile,
 };
 use common::{
-    HandleSlot, backend_toolset, canonical, junction, or_scripted, reclaim, scratch_dir, serial,
-    write_tree,
+    HandleSlot, backend_toolset, canonical, junction, reclaim, scratch_dir, serial, write_tree,
 };
 
 /// The SSE-like Selected Profile with the given ignored-mods list.
@@ -52,7 +51,7 @@ fn run(
         Arc::new(InlineRunScheduler),
         Some(Arc::new(ToolsetConfiguration::new(
             profile,
-            Some(or_scripted(toolset)),
+            toolset.unwrap_or_default(),
         ))),
     );
     let events = EventLog::default();
@@ -403,7 +402,7 @@ fn cancelling_from_an_exclusion_diagnostic_stops_preparing() {
         scheduler.clone(),
         Some(Arc::new(ToolsetConfiguration::new(
             ignoring(&["a_ignored", "b_ignored"]),
-            Some(Arc::new(ScriptedToolset::default())),
+            Arc::new(ScriptedToolset::default()),
         ))),
     );
     let slot: HandleSlot = Arc::new(OnceLock::new());

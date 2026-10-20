@@ -359,9 +359,8 @@ impl RunExecutor {
     /// This is the crate-private seam beneath the executor's interface: it
     /// lets the executor's own unit tests inject work that escapes as an
     /// error or a panic, which the work phases' own containment stops before
-    /// it could.
-    /// `run_work` is called only when Preparing produced a Run Toolset for
-    /// requested work, with that Toolset.
+    /// it could. `run_work` is called only when Preparing succeeded for a
+    /// request with work, with the Run Toolset Preparing produced.
     ///
     /// # Panics
     ///

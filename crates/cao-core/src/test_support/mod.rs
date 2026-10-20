@@ -17,10 +17,10 @@
 //! so a scenario drives the real Run Executor through its Toolset path
 //! (#550). The Toolset is built through the production constructor, so the
 //! run does core's real extraction and Archive Finalization over the
-//! scripted fake reader, packer and probes (#581). [`ToolsetConfiguration::sse`] provides
-//! the all-supported [`sse_profile`] most scenarios configure, and
-//! [`execute_run`] runs a request through the real Run Executor with the
-//! services a scenario supplies.
+//! scripted fake reader, packer and probes (#581).
+//! [`ToolsetConfiguration::sse`] provides the all-supported [`sse_profile`]
+//! most scenarios configure, and [`execute_run`] runs a request through the
+//! real Run Executor with the services a scenario supplies.
 
 mod archives;
 mod backend;

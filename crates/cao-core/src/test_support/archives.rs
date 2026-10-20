@@ -212,6 +212,31 @@ impl FakeArchivePacker {
         packer
     }
 
+    /// SSE-like rules, but the packer panics with "the archive writer
+    /// panicked" once it has written each Archive to staging, so Archive
+    /// Finalization's first output attempt is an Unexpected Exception that
+    /// forbids continuation.
+    pub fn panicking_after_write() -> Self {
+        Self::panicking_after_write_beyond(0)
+    }
+
+    /// Like [`Self::panicking_after_write`], but the first `kept` writes
+    /// complete normally, so their output attempts commit before a later one
+    /// panics.
+    pub fn panicking_after_write_beyond(kept: usize) -> Self {
+        // The hook is `Fn` and shared across threads, so it counts writes
+        // through an atomic rather than captured mutable state.
+        let written = AtomicUsize::new(0);
+        Self {
+            after_write: Some(Box::new(move |_| {
+                if written.fetch_add(1, Ordering::SeqCst) >= kept {
+                    panic!("the archive writer panicked");
+                }
+            })),
+            ..Self::default()
+        }
+    }
+
     /// Every Archive written so far, in order.
     pub fn writes(&self) -> Vec<FakeWrite> {
         self.writes.lock().unwrap().clone()

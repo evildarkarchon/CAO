@@ -10,10 +10,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use cao_core::routing::{ExecutionMode, RequestedWork};
+use cao_core::routing::{ExecutionMode, ProfileCapabilities, RequestedWork};
 use cao_core::run::{
     InlineRunScheduler, ModSelection, OptimizationRunResult, OptimizationRunService, RunHandle,
-    RunRequest, TemporaryArtifactRegistry,
+    RunRequest, SelectedProfile, TemporaryArtifactRegistry,
 };
 use cao_core::test_support::{
     EventLog, FakeBackendFactory, ScriptedToolset, ToolsetConfiguration, sse_profile,
@@ -93,32 +93,34 @@ pub fn junction(link: &Path, target: &Path) {
 /// with no mutation while Archive extraction and Archive Finalization are
 /// core's own over the fake reader, packer and probes.
 pub fn test_configuration() -> Arc<ToolsetConfiguration> {
-    toolset_configuration(None)
+    toolset_configuration(Arc::new(ScriptedToolset::default()))
 }
 
 /// A provider of the SSE-like profile that returns a fresh Run Toolset over
-/// `toolset` to each run, or over a default [`ScriptedToolset`] when it is
-/// `None`, shared as the Optimization Run Service takes it.
-pub fn toolset_configuration(toolset: Option<Arc<ScriptedToolset>>) -> Arc<ToolsetConfiguration> {
-    Arc::new(ToolsetConfiguration::sse(Some(or_scripted(toolset))))
+/// `toolset` to each run, shared as the Optimization Run Service takes it.
+pub fn toolset_configuration(toolset: Arc<ScriptedToolset>) -> Arc<ToolsetConfiguration> {
+    Arc::new(ToolsetConfiguration::sse(toolset))
 }
 
 /// Like [`toolset_configuration`], but the SSE-like profile prefers
 /// conversion, so a run requesting native Texture work also converts its
 /// convertible Textures and maintains Mesh references.
-pub fn converting_configuration(
-    toolset: Option<Arc<ScriptedToolset>>,
-) -> Arc<ToolsetConfiguration> {
+pub fn converting_configuration(toolset: Arc<ScriptedToolset>) -> Arc<ToolsetConfiguration> {
     Arc::new(ToolsetConfiguration::new(
         sse_profile().with_conversion_preference(true),
-        Some(or_scripted(toolset)),
+        toolset,
     ))
 }
 
-/// `toolset`, or a default [`ScriptedToolset`] in its place, so a scenario
-/// that scripts nothing still runs requested work.
-pub fn or_scripted(toolset: Option<Arc<ScriptedToolset>>) -> Arc<ScriptedToolset> {
-    toolset.unwrap_or_else(|| Arc::new(ScriptedToolset::default()))
+/// A provider whose `.bsa` profile supports no Profile Capability, with a
+/// default [`ScriptedToolset`], so any requested work fails Preparing with a
+/// Policy Conflict: the way a real run with work stops in Preparing before
+/// staging recovery.
+pub fn unsupporting_configuration() -> Arc<ToolsetConfiguration> {
+    Arc::new(ToolsetConfiguration::new(
+        SelectedProfile::new(ProfileCapabilities::define(".bsa", &[])),
+        Arc::new(ScriptedToolset::default()),
+    ))
 }
 
 /// Runs `request` to its terminal result on the inline scheduler, loading

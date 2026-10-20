@@ -88,7 +88,7 @@ fn execute_with(
     observations: Option<&dyn RunObservationSink>,
     stop: &CancellationToken,
 ) -> OptimizationRunResult {
-    let provider = ToolsetConfiguration::sse(Some(Arc::clone(toolset)));
+    let provider = ToolsetConfiguration::sse(Arc::clone(toolset));
     let mut cleanup = CountingCleanup::default();
     let result = execute_run(request, &mut cleanup, observations, Some(&provider), stop);
     assert_eq!(cleanup.passes, 1, "Safety Cleanup always runs once");
@@ -1636,10 +1636,7 @@ fn a_contained_file_link_is_work_and_a_dangling_one_is_diagnosed() {
 /// continuation, the later failure a real run can meet after extraction.
 fn with_panicking_packer() -> Arc<ScriptedToolset> {
     Arc::new(ScriptedToolset {
-        packer: Arc::new(FakeArchivePacker {
-            after_write: Some(Box::new(|_| panic!("the archive writer panicked"))),
-            ..FakeArchivePacker::default()
-        }),
+        packer: Arc::new(FakeArchivePacker::panicking_after_write()),
         ..ScriptedToolset::default()
     })
 }

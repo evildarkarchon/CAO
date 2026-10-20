@@ -27,11 +27,15 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::Error;
 use crate::execution::AssetExecutionResult;
 use crate::routing::RoutedAsset;
+use crate::run::archives::{Preflight, RootArchives, preflight};
 use crate::run::{
-    ArchiveFinalizationSettings, ArchivePacker, ArchiveReader, CancellationToken, CapacityProbe,
-    RunDiagnostic, SourceCleanup, TemporaryArtifactRegistry, VolumeIdentityProbe,
+    ArchiveExtractionPlan, ArchiveExtractionResult, ArchiveExtractor, ArchiveFinalization,
+    ArchiveFinalizationRecorder, ArchiveFinalizationSettings, ArchivePacker, ArchivePrecedence,
+    ArchiveReader, CancellationToken, CapacityProbe, RunDiagnostic, RunPreparation, SourceCleanup,
+    TemporaryArtifactRegistry, VolumeIdentityProbe,
 };
 
 /// Cancellation observed while an Asset backend initialized, before any attempt existed.
@@ -66,7 +70,7 @@ pub trait AssetAttemptPort {
 }
 
 /// The Archive seams one Optimization Run's Archive work goes through: the
-/// lower adapters core assembles extraction and Archive Finalization over.
+/// lower seams core assembles extraction and Archive Finalization over.
 ///
 /// The one `reader` serves Archive discovery, extraction and Archive
 /// Finalization for the whole run.
@@ -153,13 +157,73 @@ impl RunToolset {
         &mut *self.asset_attempt
     }
 
-    /// The Archive seams the run's Archive work goes through.
-    pub(crate) fn seams(&self) -> &ArchiveSeams {
-        &self.seams
+    /// Runs Archive discovery's all-or-nothing preflight over `roots` through
+    /// the seams' reader, capacity probe and volume identity probe.
+    ///
+    /// Nothing on disk changes; see [`preflight`] for what is checked.
+    pub(crate) fn preflight_archives(
+        &self,
+        roots: Vec<RootArchives>,
+        precedence: &ArchivePrecedence,
+        stop: &CancellationToken,
+    ) -> Preflight {
+        preflight(
+            roots,
+            precedence,
+            &*self.seams.reader,
+            &*self.seams.capacity,
+            &*self.seams.volume_identity,
+            stop,
+        )
     }
 
-    /// The run's Archive work settings.
-    pub(crate) fn settings(&self) -> ArchiveWorkSettings {
-        self.settings
+    /// Extracts one planned Archive with the core [`ArchiveExtractor`] over
+    /// the seams' reader and capacity probe, then cleans up its source with
+    /// the run's [`SourceCleanup`], logging a success to the Application Log.
+    ///
+    /// Never fails outright and never panics: the extractor contains its own
+    /// panics and classifies every failure by how far the attempt got.
+    pub(crate) fn extract_archive(
+        &self,
+        plan: &ArchiveExtractionPlan,
+        artifacts: &mut TemporaryArtifactRegistry,
+    ) -> ArchiveExtractionResult {
+        let attempt = ArchiveExtractor::new(&*self.seams.reader, &*self.seams.capacity)
+            .extract_with_source_cleanup(plan, self.settings.source_cleanup, artifacts);
+        if attempt.succeeded() {
+            // The Application Log line C++ `BSAOptimizer::extract` wrote. It
+            // is logged from this module so its module path, which the debug
+            // Application Log layout prints, stays `cao_core::run::toolset`.
+            log::info!(
+                "BSA successfully extracted: {}",
+                plan.archive_path.display()
+            );
+        }
+        attempt
+    }
+
+    /// Runs [`ArchiveFinalization`] over the seams' packer, reader and probes
+    /// with the run's finalization settings, recording through `recorder`.
+    ///
+    /// Archive Finalization contains its own panics as an Unexpected
+    /// Exception, so callers need no second layer.
+    ///
+    /// # Errors
+    /// As [`ArchiveFinalization::run`]: a Run Evidence invariant violation.
+    pub(crate) fn finalize_archives(
+        &self,
+        preparation: &RunPreparation,
+        recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
+        artifacts: &mut TemporaryArtifactRegistry,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), Error> {
+        ArchiveFinalization::new(
+            &*self.seams.packer,
+            &*self.seams.reader,
+            &*self.seams.capacity,
+            &*self.seams.volume_identity,
+            self.settings.finalization,
+        )
+        .run(preparation, recorder, artifacts, cancelled)
     }
 }

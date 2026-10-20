@@ -2309,15 +2309,15 @@ fn a_packer_panicking_after_its_write_is_an_unexpected_exception_that_stops_late
     write_file(&later_source, b"later source bytes");
     let empty_directory = root.join("empty/nested");
     std::fs::create_dir_all(&empty_directory).unwrap();
-    let mut finalizer = Finalizer {
+    let finalizer = Finalizer {
         settings: ArchiveFinalizationSettings {
             create_dummy_plugins: false,
             compress: false,
             ..ArchiveFinalizationSettings::default()
         },
+        packer: FakeArchivePacker::panicking_after_write(),
         ..Finalizer::default()
     };
-    finalizer.packer.after_write = Some(Box::new(|_| panic!("the archive writer panicked")));
     let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer

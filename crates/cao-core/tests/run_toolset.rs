@@ -49,7 +49,7 @@ fn an_apply_run_through_a_toolset_traverses_every_phase_and_succeeds() {
         ScriptedToolset::default()
             .with_assets(|_, _, _| Ok(AssetExecutionResult::success(MutationState::Committed))),
     );
-    let configuration = ToolsetConfiguration::sse(Some(Arc::clone(&toolset)));
+    let configuration = ToolsetConfiguration::sse(Arc::clone(&toolset));
     let sink = RecordingSink::default();
     let mut cleanup = CountingCleanup::default();
 
@@ -91,7 +91,12 @@ fn an_apply_run_through_a_toolset_traverses_every_phase_and_succeeds() {
 #[test]
 fn an_unscripted_provider_runs_requested_work_through_a_default_toolset() {
     let providers: [(&str, Box<dyn RunConfigurationProvider>); 3] = [
-        ("toolset", Box::new(ToolsetConfiguration::sse(None))),
+        (
+            "toolset",
+            Box::new(ToolsetConfiguration::sse(Arc::new(
+                ScriptedToolset::default(),
+            ))),
+        ),
         (
             "fixed",
             Box::new(FixedConfiguration {
@@ -159,7 +164,7 @@ fn a_dry_run_through_a_toolset_never_extracts_or_finalizes() {
 
     let result = execute(
         &archives_and_textures(ExecutionMode::DryRun, &root),
-        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
+        &ToolsetConfiguration::sse(Arc::clone(&toolset)),
         &sink,
         &mut CountingCleanup::default(),
         &CancellationToken::new(),
@@ -200,7 +205,7 @@ fn an_apply_run_extracts_archives_through_the_toolset_before_routing() {
 
     let result = execute(
         &archives_and_textures(ExecutionMode::Apply, &root),
-        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
+        &ToolsetConfiguration::sse(Arc::clone(&toolset)),
         &RecordingSink::default(),
         &mut CountingCleanup::default(),
         &CancellationToken::new(),
@@ -254,7 +259,7 @@ fn a_reader_panicking_while_staging_is_a_safe_failed_extraction() {
 
     let result = execute(
         &archives_and_textures(ExecutionMode::Apply, &root),
-        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
+        &ToolsetConfiguration::sse(Arc::clone(&toolset)),
         &RecordingSink::default(),
         &mut CountingCleanup::default(),
         &CancellationToken::new(),
@@ -313,7 +318,7 @@ fn an_extraction_left_partial_is_unknown_mutation_that_stops_the_run() {
 
     let result = execute(
         &archives_and_textures(ExecutionMode::Apply, &root),
-        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
+        &ToolsetConfiguration::sse(Arc::clone(&toolset)),
         &RecordingSink::default(),
         &mut CountingCleanup::default(),
         &CancellationToken::new(),
@@ -347,7 +352,7 @@ fn an_asset_attempt_port_panic_is_an_unsafe_operation_failure() {
             &root,
             &[RequestedWork::NativeTextureOptimization],
         ),
-        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
+        &ToolsetConfiguration::sse(Arc::clone(&toolset)),
         &RecordingSink::default(),
         &mut CountingCleanup::default(),
         &CancellationToken::new(),
@@ -396,7 +401,7 @@ fn a_fake_backend_runs_behind_the_production_asset_attempt_adapter() {
             &root,
             &[RequestedWork::NativeTextureOptimization],
         ),
-        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
+        &ToolsetConfiguration::sse(Arc::clone(&toolset)),
         &sink,
         &mut CountingCleanup::default(),
         &CancellationToken::new(),
@@ -423,19 +428,8 @@ fn a_packer_panic_is_an_unexpected_exception_keeping_earlier_attempts() {
     let (first, second) = (parent.join("mod-a"), parent.join("mod-b"));
     write_tree(&first, &["textures/a.dds"]);
     write_tree(&second, &["textures/b.dds"]);
-    let writes = Arc::new(AtomicUsize::new(0));
     let toolset = Arc::new(ScriptedToolset {
-        packer: Arc::new(FakeArchivePacker {
-            after_write: Some(Box::new({
-                let writes = Arc::clone(&writes);
-                move |_| {
-                    if writes.fetch_add(1, Ordering::SeqCst) == 1 {
-                        panic!("the archive writer panicked");
-                    }
-                }
-            })),
-            ..FakeArchivePacker::default()
-        }),
+        packer: Arc::new(FakeArchivePacker::panicking_after_write_beyond(1)),
         ..ScriptedToolset::default()
     });
 
@@ -451,7 +445,7 @@ fn a_packer_panic_is_an_unexpected_exception_keeping_earlier_attempts() {
         ),
         &mut CountingCleanup::default(),
         None,
-        Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+        Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
         &CancellationToken::new(),
     );
 
@@ -500,7 +494,7 @@ fn an_archive_finalization_failure_outside_any_attempt_is_an_unexpected_exceptio
                 RequestedWork::ArchiveCreation,
             ],
         ),
-        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
+        &ToolsetConfiguration::sse(Arc::clone(&toolset)),
         &RecordingSink::default(),
         &mut CountingCleanup::default(),
         &CancellationToken::new(),
@@ -549,7 +543,7 @@ fn a_sink_observer_can_cancel_once_the_extraction_phase_is_recorded() {
 
     let result = execute(
         &archives_and_textures(ExecutionMode::Apply, &root),
-        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
+        &ToolsetConfiguration::sse(Arc::clone(&toolset)),
         &sink,
         &mut CountingCleanup::default(),
         &stop,
@@ -587,7 +581,7 @@ fn an_apply_run_extracts_and_finalizes_for_real() {
                 RequestedWork::ArchiveCreation,
             ],
         ),
-        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
+        &ToolsetConfiguration::sse(Arc::clone(&toolset)),
         &RecordingSink::default(),
         &mut CountingCleanup::default(),
         &CancellationToken::new(),

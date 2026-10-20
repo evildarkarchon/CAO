@@ -4,11 +4,13 @@
 //! Ported from `src/Run/AssetRun.h` and `src/Run/ArchiveFirstAssetDiscovery.h`.
 //! The executor calls [`run_work_phases`] with its Run Toolset; the
 //! function walks each Mod Root for Archives, extracts the enabled ones in
-//! Apply with the core [`ArchiveExtractor`] over the Toolset's seams, routes
-//! the Effective Asset Tree once, offers every Routed Asset to the Asset
-//! attempt port in Texture, Mesh, Animation order, recording each completed
-//! attempt before reporting it, and in Apply runs [`ArchiveFinalization`]
-//! over the same seams.
+//! Apply with the core [`ArchiveExtractor`](crate::run::ArchiveExtractor)
+//! over the Toolset's seams, routes the Effective Asset Tree once, offers
+//! every Routed Asset to the Asset attempt port in Texture, Mesh, Animation
+//! order, recording each completed attempt before reporting it, and in Apply
+//! runs [`ArchiveFinalization`](crate::run::ArchiveFinalization) over the
+//! same seams. The Toolset assembles both over its seams, so this module
+//! never reaches into them.
 //!
 //! Loose Assets take precedence over Archived Assets, and Archive Precedence
 //! decides between Archives in one Mod Root. Before the first extraction, a
@@ -25,14 +27,12 @@ use crate::execution::{AssetExecutionFailure, AssetExecutionResult, MutationStat
 use crate::routing::{
     AssetKind, AssetRouter, ExecutionMode, OptimizerTarget, RoutingDecision, SkipReason,
 };
-use crate::run::archives::{
-    Preflight, RootArchives, archive_order_key, preflight, relative_game_path,
-};
+use crate::run::archives::{Preflight, RootArchives, archive_order_key, relative_game_path};
 use crate::run::{
-    ArchiveDiscoveryEvidence, ArchiveExtractionPlan, ArchiveExtractor, ArchiveFinalization,
-    AssetInitializationCancelled, CancellationToken, MutableRunEvidence, PhaseSkipReason,
-    RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode, RunPhase, RunPhaseRecord, RunPreparation,
-    RunToolset, TemporaryArtifactRegistry, is_staging_name, take_panic_message,
+    ArchiveDiscoveryEvidence, ArchiveExtractionPlan, AssetInitializationCancelled,
+    CancellationToken, MutableRunEvidence, PhaseSkipReason, RoutedAssetAttempt, RunDiagnostic,
+    RunDiagnosticCode, RunPhase, RunPhaseRecord, RunPreparation, RunToolset,
+    TemporaryArtifactRegistry, is_staging_name, take_panic_message,
 };
 
 /// Walks Mod Roots for regular files under the scope rules both discovery passes share.
@@ -255,15 +255,7 @@ pub(super) fn run_work_phases(
     // calculates a collision or extracts.
     let mut plans: Vec<ArchiveExtractionPlan> = Vec::new();
     if mode == ExecutionMode::Apply {
-        let seams = toolset.seams();
-        match preflight(
-            root_archives,
-            preparation.archive_precedence(),
-            &*seams.reader,
-            &*seams.capacity,
-            &*seams.volume_identity,
-            stop,
-        ) {
+        match toolset.preflight_archives(root_archives, preparation.archive_precedence(), stop) {
             Preflight::Failed(failure) => {
                 // A failed preflight has no trustworthy tree, so the run stops
                 // before any extraction, routing or finalization.
@@ -448,18 +440,10 @@ pub(super) fn run_work_phases(
     }
     // The immutable policy decides: Dry Run never finalizes, whatever the Toolset holds.
     if mode == ExecutionMode::Apply {
-        let seams = toolset.seams();
         // Finalization reaches only its own facts, never the whole evidence.
         // It contains its own panics as an Unexpected Exception, so it is
         // called without a second layer.
-        ArchiveFinalization::new(
-            &*seams.packer,
-            &*seams.reader,
-            &*seams.capacity,
-            &*seams.volume_identity,
-            toolset.settings().finalization,
-        )
-        .run(
+        toolset.finalize_archives(
             preparation,
             &mut evidence.finalization_recorder(),
             artifacts,
@@ -506,9 +490,11 @@ enum ExtractionStop {
     Unsafe { cancellation: bool },
 }
 
-/// Extracts each planned Archive in order with the core [`ArchiveExtractor`]
-/// over `toolset`'s reader and capacity probe, with its source cleanup,
-/// retaining every completed attempt before it is reported.
+/// Extracts each planned Archive in order through
+/// [`RunToolset::extract_archive`], the core
+/// [`ArchiveExtractor`](crate::run::ArchiveExtractor) over `toolset`'s reader
+/// and capacity probe with its source cleanup, retaining every completed
+/// attempt before it is reported.
 ///
 /// An attempt in flight always finishes, so cancellation never leaves a
 /// partial Archive. The extractor contains its own panics, classified by how
@@ -528,21 +514,11 @@ fn extract_archives(
         // the caller's own checks around this phase observe it.
         return Ok(None);
     }
-    let seams = toolset.seams();
-    let extractor = ArchiveExtractor::new(&*seams.reader, &*seams.capacity);
-    let cleanup = toolset.settings().source_cleanup;
     for plan in plans {
         if stop.is_cancelled() {
             return Ok(Some(ExtractionStop::Cancelled));
         }
-        let mut attempt = extractor.extract_with_source_cleanup(plan, cleanup, artifacts);
-        if attempt.succeeded() {
-            // The Application Log line C++ `BSAOptimizer::extract` wrote.
-            log::info!(
-                "BSA successfully extracted: {}",
-                plan.archive_path.display()
-            );
-        }
+        let mut attempt = toolset.extract_archive(plan, artifacts);
         // The attempt's own continuation claim is retained for diagnosis, but
         // partial mutation stops the run regardless.
         let unsafe_attempt = attempt.is_unsafe();

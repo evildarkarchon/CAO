@@ -59,7 +59,7 @@ fn execute(
     cleanup: Vec<RunFailure>,
     stop: &CancellationToken,
 ) -> Arc<OptimizationRunResult> {
-    let provider = ToolsetConfiguration::sse(Some(Arc::clone(toolset)));
+    let provider = ToolsetConfiguration::sse(Arc::clone(toolset));
     let mut cleanup = CountingCleanup {
         failures: cleanup,
         ..CountingCleanup::default()

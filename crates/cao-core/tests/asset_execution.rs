@@ -436,7 +436,7 @@ fn run(
         RunServices {
             safety_cleanup: &mut cleanup,
             observations: None,
-            configuration: Some(&*converting_configuration(Some(Arc::new(toolset)))),
+            configuration: Some(&*converting_configuration(Arc::new(toolset))),
         },
         &CancellationToken::new(),
         create_run_id(),

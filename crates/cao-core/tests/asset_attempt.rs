@@ -145,7 +145,7 @@ fn a_run_with_nothing_to_process_creates_no_backend() {
         RunServices {
             safety_cleanup: &mut cleanup,
             observations: None,
-            configuration: Some(&*toolset_configuration(Some(backend_toolset(factory)))),
+            configuration: Some(&*toolset_configuration(backend_toolset(factory))),
         },
         &CancellationToken::new(),
         create_run_id(),
