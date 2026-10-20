@@ -3,7 +3,10 @@
 //!
 //! Each run's work goes through a scripted Run Toolset (#553): its Asset
 //! attempts either drive the fake backend behind the production Asset attempt
-//! adapter or return scripted results. Scenarios whose observer must panic,
+//! adapter or return scripted results. Its Archive extraction and Archive
+//! Finalization are core's real work over the fake reader and packer (#587),
+//! observed through Run Evidence, except in the finalizer-failure scenario
+//! the contract ticket deletes (#588). Scenarios whose observer must panic,
 //! or cancel at a phase, run through the Run Executor with a recording Run
 //! Observation Sink instead, because the Optimization Run Service is its own
 //! sink and disables a dispatcher after its first panic.
@@ -60,19 +63,19 @@ use cao_core::execution::{
 };
 use cao_core::routing::{AssetOperation, ExecutionMode, RequestedWork, SkipReason};
 use cao_core::run::{
-    ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationResult,
-    AssetInitializationCancelled, CancellationToken, InlineRunScheduler, OptimizationRunResult,
-    OptimizationRunService, PhaseSkipReason, RunDiagnosticCode, RunEvent, RunEventPayload,
-    RunExecutor, RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord, RunPhaseStatus, RunProgress,
-    RunRequest, RunServices, create_run_id,
+    ArchiveFinalizationFailure, AssetInitializationCancelled, CancellationToken,
+    InlineRunScheduler, OptimizationRunResult, OptimizationRunService, PhaseSkipReason,
+    RunDiagnosticCode, RunEvent, RunEventPayload, RunExecutor, RunFailureCode, RunOutcome,
+    RunPhase, RunPhaseRecord, RunPhaseStatus, RunProgress, RunRequest, RunServices, create_run_id,
 };
 use cao_core::test_support::{
-    CountingCleanup, EventLog, FakeBackendFactory, GatedScheduler, Observed, RecordingSink,
-    ScriptedToolset, record_finalization_result,
+    CountingCleanup, EventLog, FakeArchivePacker, FakeBackendFactory, GatedScheduler, Observed,
+    RecordingSink, ScriptedToolset,
 };
 use common::{
     HandleSlot, backend_toolset, canonical, converting_configuration, junction, reclaim, request,
-    run_with, scratch_dir, serial, snapshot_tree, toolset_configuration, write_tree,
+    run_with, scratch_dir, scripted_toolset, serial, snapshot_tree, toolset_configuration,
+    write_tree,
 };
 
 /// Runs one request to its terminal result on the inline scheduler, its work
@@ -132,7 +135,7 @@ fn processing_progress(events: &EventLog) -> Vec<(usize, usize)> {
 
 /// A scripted Toolset whose every Asset attempt commits.
 fn committing() -> ScriptedToolset {
-    ScriptedToolset::default()
+    scripted_toolset()
         .with_assets(|_, _, _| Ok(AssetExecutionResult::success(MutationState::Committed)))
 }
 
@@ -489,9 +492,8 @@ fn cancellation_during_backend_initialization_invents_no_attempt() {
     let _serial = serial();
     let root = scratch_dir("loose-initialization-cancelled");
     write_tree(&root, &["textures/a.dds", "textures/b.dds"]);
-    let toolset = Arc::new(
-        ScriptedToolset::default().with_assets(|_, _, _| Err(AssetInitializationCancelled)),
-    );
+    let toolset =
+        Arc::new(scripted_toolset().with_assets(|_, _, _| Err(AssetInitializationCancelled)));
 
     let (result, _) = run(
         &toolset,
@@ -547,7 +549,7 @@ fn an_unsafe_operation_failure_stops_every_later_attempt_and_fails_the_run() {
         &root,
         &["textures/a.dds", "textures/b.dds", "textures/c.dds"],
     );
-    let toolset = Arc::new(ScriptedToolset::default().with_assets(|asset, _, _| {
+    let toolset = Arc::new(scripted_toolset().with_assets(|asset, _, _| {
         Ok(if asset.execution_path().ends_with("a.dds") {
             AssetExecutionResult::success(MutationState::Committed)
         } else {
@@ -593,7 +595,7 @@ fn a_backend_panic_whose_payload_panics_again_is_still_an_operation_failure() {
     let root = scratch_dir("loose-backend-panic-payload");
     write_tree(&root, &["textures/a.dds"]);
     let toolset = Arc::new(
-        ScriptedToolset::default().with_assets(|_, _, _| std::panic::panic_any(PanicsAgainOnDrop)),
+        scripted_toolset().with_assets(|_, _, _| std::panic::panic_any(PanicsAgainOnDrop)),
     );
 
     let (result, _) = run(
@@ -669,6 +671,20 @@ fn archive_and_textures(root: &Path) -> RunRequest {
     )
 }
 
+/// Like [`archive_and_textures`], but Archive Finalization also packs the
+/// Mod Root's loose files through the fake packer.
+fn archive_textures_and_creation(root: &Path) -> RunRequest {
+    request(
+        ExecutionMode::Apply,
+        root,
+        &[
+            RequestedWork::NativeTextureOptimization,
+            RequestedWork::ArchiveExtraction,
+            RequestedWork::ArchiveCreation,
+        ],
+    )
+}
+
 /// The Apply request over every loose Asset target and no Archive work.
 fn all_loose_targets(root: &Path) -> RunRequest {
     request(
@@ -694,38 +710,24 @@ fn observer_failures(result: &OptimizationRunResult) -> usize {
 /// Origin: AssetRunTests::completeAttemptEvidenceSurvivesAdapters.
 /// Successful and failed attempt evidence, and the Archive Finalization
 /// attempt after them, outlive the adapters that produced them, and a safe
-/// failure does not stop the run reaching finalization.
+/// failure does not stop the run reaching finalization. The finalization
+/// attempt is the fake packer's real output packing both Textures.
 #[test]
 fn attempt_evidence_outlives_its_adapters() {
     let _serial = serial();
     let root = canonical(&scratch_dir("loose-evidence-outlives-adapters"));
-    write_tree(&root, &["a.dds", "b.dds"]);
-    let toolset = Arc::new(
-        ScriptedToolset::default()
-            .with_assets(|asset, _, _| {
-                Ok(if asset.execution_path().ends_with("a.dds") {
-                    AssetExecutionResult::success(MutationState::Committed)
-                } else {
-                    AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed, "retained")
-                })
-            })
-            .with_finalization_result(
-                ArchiveFinalizationResult {
-                    attempts: vec![ArchiveFinalizationAttempt {
-                        mutation: MutationState::Committed,
-                        ..ArchiveFinalizationAttempt::new(root.join("output.bsa"), root.clone())
-                    }],
-                    ..ArchiveFinalizationResult::default()
-                },
-                None,
-            ),
-    );
+    write_tree(&root, &["textures/a.dds", "textures/b.dds"]);
+    let toolset = Arc::new(scripted_toolset().with_assets(|asset, _, _| {
+        Ok(if asset.execution_path().ends_with("a.dds") {
+            AssetExecutionResult::success(MutationState::Committed)
+        } else {
+            AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed, "retained")
+        })
+    }));
 
-    let (result, _) = run(&toolset, archive_and_textures(&root));
-    let finalized = toolset.finalizations();
+    let (result, _) = run(&toolset, archive_textures_and_creation(&root));
     drop(toolset);
 
-    assert_eq!(finalized, 1);
     let attempts = result.asset_attempts();
     assert_eq!(attempts.len(), 2);
     assert_eq!(attempts[0].mod_root, root);
@@ -734,41 +736,73 @@ fn attempt_evidence_outlives_its_adapters() {
         attempts[0].result.mutation_state(),
         MutationState::Committed
     );
-    assert_eq!(attempts[0].asset.execution_path(), root.join("a.dds"));
+    assert_eq!(
+        attempts[0].asset.execution_path(),
+        root.join("textures/a.dds")
+    );
     assert!(!attempts[1].result.succeeded());
     assert_eq!(attempts[1].result.message(), "retained");
-    assert_eq!(
-        result.archive_finalization().unwrap().attempts[0].mod_root,
-        root
-    );
+    let [packed] = result.archive_finalization().unwrap().attempts.as_slice() else {
+        panic!("one output: {:?}", result.archive_finalization());
+    };
+    assert!(packed.succeeded(), "{}", packed.detail);
+    assert_eq!(packed.mod_root, root);
+    assert_eq!(packed.mutation, MutationState::Committed);
+    assert!(packed.archive_path.exists());
     assert!(result.routing_ledger().is_some());
 }
 
 /// Origin: AssetRunTests::cancelledArchiveFinalizationIsReported. A
 /// finalization that observed cancellation makes the run Cancelled, with no
-/// finalization failure.
+/// finalization failure. The user cancels as the first of two planned
+/// outputs is written; Archive Finalization observes it before the second.
 #[test]
 fn a_cancelled_finalization_is_reported() {
     let _serial = serial();
     let root = canonical(&scratch_dir("loose-finalization-cancelled"));
-    write_tree(&root, &["textures/native.dds"]);
-    let toolset = Arc::new(ScriptedToolset::default().with_finalization_result(
-        ArchiveFinalizationResult {
-            cancelled: true,
-            ..ArchiveFinalizationResult::default()
-        },
-        None,
-    ));
+    // The Mesh is not requested work, but it is still packed: room for one
+    // source per Archive makes two outputs.
+    write_tree(&root, &["textures/native.dds", "meshes/packed.nif"]);
+    let stop = CancellationToken::new();
+    let packer = FakeArchivePacker {
+        max_size: 20,
+        after_write: Some(Box::new({
+            let stop = stop.clone();
+            move |_| stop.cancel()
+        })),
+        ..FakeArchivePacker::default()
+    };
+    let toolset = Arc::new(ScriptedToolset {
+        packer: Arc::new(packer),
+        ..scripted_toolset()
+    });
 
-    let (result, _) = run(&toolset, archive_and_textures(&root));
+    let result = execute_observed(
+        &toolset,
+        &archive_textures_and_creation(&root),
+        &RecordingSink::default(),
+        &stop,
+    );
 
-    assert_eq!(toolset.finalizations(), 1);
     assert_eq!(toolset.attempted().len(), 1);
     assert!(result.cancellation_observed());
     assert_eq!(result.outcome(), RunOutcome::Cancelled);
     let finalization = result.archive_finalization().unwrap();
     assert!(finalization.cancelled);
     assert_eq!(finalization.failure, None);
+    let [packed] = finalization.attempts.as_slice() else {
+        panic!("only the first output is attempted: {finalization:?}");
+    };
+    assert_eq!(packed.mutation, MutationState::Committed);
+    assert_eq!(toolset.packer.writes().len(), 1);
+    assert_eq!(
+        result
+            .phase(RunPhase::ArchiveFinalization)
+            .unwrap()
+            .progress()
+            .map(|progress| (progress.completed(), progress.total())),
+        Some((1, 2))
+    );
 }
 
 /// Origin: AssetRunTests::throwingAttemptRetainsCancellation, under the
@@ -781,7 +815,7 @@ fn a_panicking_attempt_keeps_the_cancellation_it_requested() {
     let root = scratch_dir("loose-panicking-attempt-cancels");
     write_tree(&root, &["a.dds", "b.dds"]);
     let toolset = Arc::new(
-        ScriptedToolset::default()
+        scripted_toolset()
             .cancelling_at_attempt(1)
             .with_assets(|_, _, _| panic!("adapter failed")),
     );
@@ -881,7 +915,7 @@ fn panicking_presentation_adapters_preserve_committed_work() {
     assert_eq!(result.diagnostics().len(), 2);
     assert_eq!(observer_failures(&result), 2);
     assert!(result.failures().is_empty());
-    assert_eq!(toolset.finalizations(), 1);
+    assert!(result.archive_finalization().is_some());
 }
 
 /// Origin: AssetRunTests::relativeSelectionRetainsMutationScope. A Mod Root
@@ -892,7 +926,7 @@ fn a_relative_selection_records_the_canonical_mod_root() {
     let _serial = serial();
     let root = canonical(&scratch_dir("loose-relative-selection"));
     write_tree(&root, &["a.dds"]);
-    let toolset = Arc::new(ScriptedToolset::default().with_assets(|asset, _, _| {
+    let toolset = Arc::new(scripted_toolset().with_assets(|asset, _, _| {
         std::fs::remove_file(asset.execution_path()).unwrap();
         Ok(AssetExecutionResult::success(MutationState::Committed))
     }));
@@ -922,7 +956,7 @@ fn mutation_aware_failures_control_continuation_and_finalization() {
         let root = canonical(&scratch_dir(&format!("loose-continuation-{index}")));
         write_tree(&root, &["first.dds", "second.dds"]);
         let attempts = Arc::new(Mutex::new(0));
-        let toolset = Arc::new(ScriptedToolset::default().with_assets({
+        let toolset = Arc::new(scripted_toolset().with_assets({
             let attempts = attempts.clone();
             move |asset, _, _| {
                 let mut attempts = attempts.lock().unwrap();
@@ -950,7 +984,7 @@ fn mutation_aware_failures_control_continuation_and_finalization() {
 
         let attempted = if safe { 2 } else { failed_attempt };
         assert_eq!(result.asset_attempts().len(), attempted, "{row}");
-        assert_eq!(toolset.finalizations(), usize::from(safe), "{row}");
+        assert_eq!(result.archive_finalization().is_some(), safe, "{row}");
         assert!(!result.cancellation_observed(), "{row}");
         let failures: Vec<_> = result
             .asset_attempts()
@@ -1006,7 +1040,7 @@ fn animation_failures_preserve_progress_and_evidence() {
                 MutationState::PartialOrUnknown,
             )
         };
-        let toolset = Arc::new(ScriptedToolset::default().with_assets({
+        let toolset = Arc::new(scripted_toolset().with_assets({
             let attempts = attempts.clone();
             move |asset, _, _| {
                 let mut attempts = attempts.lock().unwrap();
@@ -1027,7 +1061,7 @@ fn animation_failures_preserve_progress_and_evidence() {
 
         let attempted = if safe { 2 } else { failed_attempt };
         assert_eq!(result.asset_attempts().len(), attempted, "{row}");
-        assert_eq!(toolset.finalizations(), usize::from(safe), "{row}");
+        assert_eq!(result.archive_finalization().is_some(), safe, "{row}");
         assert!(!result.cancellation_observed(), "{row}");
         let failed = &result.asset_attempts()[failed_attempt - 1].result;
         let category = if safe {
@@ -1078,7 +1112,7 @@ fn discovery_polls_cancellation_while_it_walks_the_tree() {
         let files: Vec<String> = (0..100).map(|index| format!("docs/{index}.txt")).collect();
         let files: Vec<&str> = files.iter().map(String::as_str).collect();
         write_tree(&root, &files);
-        let toolset = Arc::new(ScriptedToolset::default());
+        let toolset = Arc::new(scripted_toolset());
         let stop = CancellationToken::new();
         let sink = RecordingSink::with_hook({
             let stop = stop.clone();
@@ -1098,14 +1132,14 @@ fn discovery_polls_cancellation_while_it_walks_the_tree() {
         assert!(result.routing_ledger().is_none(), "{row}");
         assert_eq!(result.final_phase(), RunPhase::DiscoveringArchives, "{row}");
         assert!(toolset.attempted().is_empty(), "{row}");
-        assert_eq!(toolset.finalizations(), 0, "{row}");
+        assert!(result.archive_finalization().is_none(), "{row}");
     }
 }
 
 /// Origin: AssetRunTests::applyFinalizesArchivesAfterRoutedExecution and
 /// linkedAssetsAreReportedBeforeFinalizationWithoutExecution (the ordering
 /// half). Apply executes Assets, then publishes discovery's diagnostics, then
-/// finalizes Archives.
+/// finalizes Archives: the fake packer writes the Texture's output Archive.
 #[test]
 fn apply_publishes_diagnostics_between_execution_and_finalization() {
     let _serial = serial();
@@ -1115,21 +1149,24 @@ fn apply_publishes_diagnostics_between_execution_and_finalization() {
     let link = root.join("linked");
     junction(&link, &outside);
     let order = Arc::new(Mutex::new(Vec::<&'static str>::new()));
-    let toolset = ScriptedToolset::default()
-        .with_assets({
+    let packer = FakeArchivePacker {
+        after_write: Some(Box::new({
             let order = order.clone();
-            move |_, _, _| {
-                order.lock().unwrap().push("execute");
-                Ok(AssetExecutionResult::success(MutationState::None))
-            }
-        })
-        .with_finalization({
-            let order = order.clone();
-            move |_, recorder, _| {
-                order.lock().unwrap().push("finalize");
-                record_finalization_result(recorder, ArchiveFinalizationResult::default(), None)
-            }
-        });
+            move |_| order.lock().unwrap().push("finalize")
+        })),
+        ..FakeArchivePacker::default()
+    };
+    let toolset = ScriptedToolset {
+        packer: Arc::new(packer),
+        ..scripted_toolset()
+    }
+    .with_assets({
+        let order = order.clone();
+        move |_, _, _| {
+            order.lock().unwrap().push("execute");
+            Ok(AssetExecutionResult::success(MutationState::None))
+        }
+    });
     let service = OptimizationRunService::with_scheduler(
         Arc::new(InlineRunScheduler),
         Some(toolset_configuration(Some(Arc::new(toolset)))),
@@ -1144,7 +1181,7 @@ fn apply_publishes_diagnostics_between_execution_and_finalization() {
     };
 
     let result = service
-        .start(archive_and_textures(&root), Some(dispatcher))
+        .start(archive_textures_and_creation(&root), Some(dispatcher))
         .unwrap()
         .wait();
     std::fs::remove_dir(&link).unwrap();
@@ -1176,16 +1213,11 @@ fn a_dry_run_leaves_the_complete_mod_tree_unchanged() {
             "docs/readme.txt",
         ],
     );
+    // Archive Finalization, had it run, would visibly change the tree: it
+    // prunes empty directories even when nothing is packed.
     std::fs::create_dir_all(root.join("empty/nested")).unwrap();
     let before = snapshot_tree(&root);
-    let finalize_target = root.join("content.bsa");
-    // A finalizer that ran would visibly change the tree.
-    let toolset = Arc::new(
-        ScriptedToolset::default().with_finalization(move |_, _, _| {
-            std::fs::remove_file(&finalize_target).unwrap();
-            Ok(())
-        }),
-    );
+    let toolset = Arc::new(scripted_toolset());
 
     let (result, events) = run_converting(
         &toolset,
@@ -1206,7 +1238,15 @@ fn a_dry_run_leaves_the_complete_mod_tree_unchanged() {
         "{:?}",
         result.failures()
     );
-    assert_eq!(toolset.finalizations(), 0);
+    assert!(result.archive_finalization().is_none());
+    assert_eq!(
+        result
+            .phase(RunPhase::ArchiveFinalization)
+            .unwrap()
+            .skip_reason(),
+        Some(PhaseSkipReason::DryRun)
+    );
+    assert!(toolset.packer.writes().is_empty());
     assert_eq!(snapshot_tree(&root), before);
     assert!(root.join("empty/nested").is_dir());
     let attempts = result.asset_attempts();

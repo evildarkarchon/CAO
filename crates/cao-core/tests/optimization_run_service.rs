@@ -32,14 +32,17 @@ use cao_core::run::{
 };
 use cao_core::test_support::{
     CallbackConfiguration, CountingInlineScheduler, DeferredScheduler, EventLog,
-    ExhaustedScheduler, GatedScheduler, ScriptedToolset, ToolsetConfiguration,
+    ExhaustedScheduler, GatedScheduler, ToolsetConfiguration,
 };
-use common::{HandleSlot, no_work_request, reclaim, serial, test_mod_root, toolset_configuration};
+use common::{
+    HandleSlot, no_work_request, reclaim, scripted_toolset, serial, test_mod_root,
+    toolset_configuration,
+};
 
 /// A provider of the SSE-like configuration and an unscripted Run Toolset,
 /// the means to do any requested work.
 fn equipped() -> Arc<ToolsetConfiguration> {
-    toolset_configuration(Some(Arc::new(ScriptedToolset::default())))
+    toolset_configuration(Some(Arc::new(scripted_toolset())))
 }
 
 /// A service on an injected scheduler with the SSE-like configuration and an
@@ -621,7 +624,7 @@ fn failure_events_precede_safety_cleanup_and_the_terminal_event() {
         };
         let unsupporting = Arc::new(ToolsetConfiguration::new(
             SelectedProfile::new(ProfileCapabilities::define(".bsa", &[])),
-            None,
+            Some(Arc::new(scripted_toolset())),
         ));
         let service = OptimizationRunService::with_scheduler(scheduler, Some(unsupporting));
         let events = EventLog::default();

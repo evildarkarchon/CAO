@@ -8,7 +8,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use cao_core::routing::{ExecutionMode, RequestedWork};
@@ -17,8 +16,7 @@ use cao_core::run::{
     RunRequest, TemporaryArtifactRegistry,
 };
 use cao_core::test_support::{
-    EventLog, FakeBackendFactory, FixedConfiguration, ScriptedToolset, ToolsetConfiguration,
-    sse_profile,
+    EventLog, FakeBackendFactory, ScriptedToolset, ToolsetConfiguration, sse_profile,
 };
 
 /// Serializes scenarios that start runs: one active run is allowed per
@@ -90,19 +88,27 @@ pub fn junction(link: &Path, target: &Path) {
     );
 }
 
-/// The provider most scenarios use: the SSE-like profile.
-pub fn test_configuration() -> Arc<FixedConfiguration> {
-    Arc::new(FixedConfiguration {
-        profile: sse_profile(),
-        loads: AtomicUsize::new(0),
-    })
+/// The provider most scenarios use: the SSE-like profile, with a fresh
+/// default [`scripted_toolset`] for each run, so requested work runs core's
+/// real Archive work.
+pub fn test_configuration() -> Arc<ToolsetConfiguration> {
+    toolset_configuration(None)
+}
+
+/// A default scripted Run Toolset opted in to core's real Archive work: its
+/// Asset attempts succeed with no mutation, while Archive extraction and
+/// Archive Finalization are core's own over the fake reader, packer and
+/// probes (#587). Scenarios observe that work through Run Evidence and the
+/// fakes' own records.
+pub fn scripted_toolset() -> ScriptedToolset {
+    ScriptedToolset::default().with_core_archive_work()
 }
 
 /// A provider of the SSE-like profile that returns a fresh Run Toolset over
-/// `toolset` to each run, or a default scripted one when it is `None`, shared
-/// as the Optimization Run Service takes it.
+/// `toolset` to each run, or over a default [`scripted_toolset`] when it is
+/// `None`, shared as the Optimization Run Service takes it.
 pub fn toolset_configuration(toolset: Option<Arc<ScriptedToolset>>) -> Arc<ToolsetConfiguration> {
-    Arc::new(ToolsetConfiguration::sse(toolset))
+    Arc::new(ToolsetConfiguration::sse(Some(or_scripted(toolset))))
 }
 
 /// Like [`toolset_configuration`], but the SSE-like profile prefers
@@ -113,8 +119,14 @@ pub fn converting_configuration(
 ) -> Arc<ToolsetConfiguration> {
     Arc::new(ToolsetConfiguration::new(
         sse_profile().with_conversion_preference(true),
-        toolset,
+        Some(or_scripted(toolset)),
     ))
+}
+
+/// `toolset`, or a default [`scripted_toolset`] in its place, so a scenario
+/// that scripts nothing still runs core's real Archive work.
+pub fn or_scripted(toolset: Option<Arc<ScriptedToolset>>) -> Arc<ScriptedToolset> {
+    toolset.unwrap_or_else(|| Arc::new(scripted_toolset()))
 }
 
 /// Runs `request` to its terminal result on the inline scheduler, loading
@@ -138,9 +150,10 @@ pub fn run_with(
 /// The production shape of a run's Asset attempts: a scripted Toolset whose
 /// attempts drive `factory`'s fake backend behind the production Asset
 /// attempt adapter, one backend per run. Keep clones of the factory's shared
-/// logs to observe it.
+/// logs to observe it. Like [`scripted_toolset`], it runs core's real Archive
+/// work.
 pub fn backend_toolset(factory: FakeBackendFactory) -> Arc<ScriptedToolset> {
-    Arc::new(ScriptedToolset::default().with_backend(factory))
+    Arc::new(scripted_toolset().with_backend(factory))
 }
 
 /// The shared Mod Root of scenarios that need one to exist but not to hold Assets.
