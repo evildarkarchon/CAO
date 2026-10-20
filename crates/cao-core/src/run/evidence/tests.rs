@@ -16,23 +16,26 @@
 //! - The sink re-entering the evidence in `liveFactsAreRetainedBeforePublication`:
 //!   a sink cannot borrow the owner it is called from, so it cannot observe
 //!   a fact before its retention. Only the publication order is ported.
-
-mod common;
+//!
+//! These were an integration suite under `tests/` until [`MutableRunEvidence`]
+//! became crate-private (#561); they now run as the evidence module's unit
+//! tests, so they keep driving the store directly.
 
 use std::cell::Cell;
 use std::path::PathBuf;
 
-use cao_core::Error;
-use cao_core::execution::MutationState;
-use cao_core::routing::{ExecutionMode, RoutingPolicyRequest};
-use cao_core::run::{
+use super::MutableRunEvidence;
+use crate::Error;
+use crate::execution::MutationState;
+use crate::routing::{ExecutionMode, RoutingPolicyRequest};
+use crate::run::{
     ArchiveExtractionFailure, ArchiveExtractionResult, ArchiveFinalizationAttempt,
     ArchiveFinalizationFailure, ArchiveFinalizationMutation, ArchiveFinalizationMutationKind,
-    ArchiveFinalizationResult, ArchivePrecedence, MutableRunEvidence, MutationKind,
-    PhaseSkipReason, RunConfiguration, RunDiagnostic, RunDiagnosticCode, RunEvidence, RunFailure,
-    RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunProgress, SelectedProfileFacts,
+    ArchiveFinalizationResult, ArchivePrecedence, MutationKind, PhaseSkipReason,
+    RunConfiguration, RunDiagnostic, RunDiagnosticCode, RunEvidence, RunFailure, RunFailureCode,
+    RunPhase, RunPhaseRecord, RunPreparation, RunProgress, SelectedProfileFacts,
 };
-use cao_core::test_support::{Observed, RecordingSink, sse_profile};
+use crate::test_support::{Observed, RecordingSink, sse_profile};
 
 /// The preparation of a Dry Run with no work, as Preparing would retain it.
 fn successful_preparation() -> RunPreparation {
@@ -96,7 +99,7 @@ fn finalization_attempt(
 
 /// Evidence in the executed Archive Finalization phase, optionally reporting
 /// to `sink`.
-fn finalizing(sink: Option<&dyn cao_core::run::RunObservationSink>) -> MutableRunEvidence<'_> {
+fn finalizing(sink: Option<&dyn crate::run::RunObservationSink>) -> MutableRunEvidence<'_> {
     let mut evidence = MutableRunEvidence::new(sink);
     evidence
         .record_phase(executed(RunPhase::Preparing))
