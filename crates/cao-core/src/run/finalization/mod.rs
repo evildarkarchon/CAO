@@ -201,9 +201,12 @@ impl<'a> ArchiveFinalization<'a> {
     /// writes Archives, `reader` verifies a committed Archive is readable, and
     /// the probes are the phase's only other filesystem seams.
     ///
-    /// The Packing Exclusions come from the Selected Profile in the
-    /// [`RunPreparation`] handed to [`Self::run`]; see
-    /// [`packing_exclusions`] for how they are matched.
+    /// The Packing Exclusions come from the Selected Profile
+    /// ([`SelectedProfile::packing_exclusions`]) in the [`RunPreparation`]
+    /// handed to [`Self::run`]. Each rule is matched as a case-insensitive
+    /// substring of the `/`-separated path within the Mod Root.
+    ///
+    /// [`SelectedProfile::packing_exclusions`]: crate::run::SelectedProfile::packing_exclusions
     pub fn new(
         packer: &'a dyn ArchivePacker,
         reader: &'a dyn ArchiveReader,
@@ -281,10 +284,10 @@ impl<'a> ArchiveFinalization<'a> {
             recorder.record_output_total(0).map_err(Escape::Evidence)?;
             prune_empty_directories(preparation.mod_roots(), cancelled, result);
         } else {
-            let files_to_not_pack = packing_exclusions(preparation);
+            let exclusions = packing_exclusions(preparation);
             // The list only filters packing, so its absence matters only when
             // packing runs.
-            if files_to_not_pack.is_empty() {
+            if exclusions.is_empty() {
                 log::error!(
                     "FilesToNotPack.txt not found. This can cause a number of issues. For \
                      example, for Skyrim, animations will be packed to BSA, preventing them from \
@@ -295,7 +298,7 @@ impl<'a> ArchiveFinalization<'a> {
                 preparation.mod_roots(),
                 &self.settings,
                 self.seams.packer,
-                &files_to_not_pack,
+                &exclusions,
                 cancelled,
             ) {
                 Ok(plan) => plan,

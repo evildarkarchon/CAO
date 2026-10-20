@@ -114,7 +114,7 @@ pub struct RunServices<'a> {
 
 /// Loads the Selected Profile and the Run Toolset built from the same profile read,
 /// converting a missing, failing or panicking provider into a failure.
-fn load_configuration(
+fn load_selected_profile(
     request: &RunRequest,
     provider: Option<&dyn RunConfigurationProvider>,
 ) -> Result<(SelectedProfile, Option<RunToolset>), RunFailure> {
@@ -151,7 +151,7 @@ fn prepare_run(
     evidence: &mut MutableRunEvidence<'_>,
     stop: &CancellationToken,
 ) -> Result<Option<(RunPreparation, Option<RunToolset>)>, RunFailure> {
-    let (selected_profile, toolset) = load_configuration(request, provider)?;
+    let (selected_profile, toolset) = load_selected_profile(request, provider)?;
     // A provider may finish an atomic read after cancellation; stop before
     // compiling or resolving anything more.
     if stop.is_cancelled() {

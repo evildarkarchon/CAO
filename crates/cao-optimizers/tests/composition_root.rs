@@ -325,9 +325,12 @@ fn several_mods_excludes_separators_and_ignored_mods_from_the_shipped_profile() 
 }
 
 /// The production provider over `app`'s profiles, set up for runs of the
-/// options `profile` saves.
+/// options `profile` saves, wired from the Run Request those options build as
+/// `ApplicationRun::new` wires it.
 fn provider(app: &Path, profile: &str) -> ProfileConfigurationProvider {
-    ProfileConfigurationProvider::new(app, &profile_options(app, profile)).unwrap()
+    let options = profile_options(app, profile);
+    let request = run_request(profile, &options).unwrap();
+    ProfileConfigurationProvider::new(app, &request, &options)
 }
 
 /// The Selected Profile the production provider loads from the shipped FO4

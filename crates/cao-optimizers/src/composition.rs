@@ -87,8 +87,12 @@ impl ApplicationRun {
     /// # Errors
     /// [`RunSetupError`] when the options are invalid.
     pub fn new(app_dir: &Path, profile: &str, options: &Options) -> Result<Self, RunSetupError> {
+        // `run_request` is the one validation of `options`; the provider is
+        // wired from the request it built.
         let request = run_request(profile, options)?;
-        let configuration = Arc::new(ProfileConfigurationProvider::new(app_dir, options)?);
+        let configuration = Arc::new(ProfileConfigurationProvider::new(
+            app_dir, &request, options,
+        ));
         Ok(Self {
             // The provider's Run Toolset does the work.
             service: OptimizationRunService::new(Some(configuration)),
@@ -294,22 +298,23 @@ pub struct ProfileConfigurationProvider {
 impl ProfileConfigurationProvider {
     /// A provider for the profiles of the install in `app_dir` that builds
     /// each run's production Run Toolset with `options`. The headpart scan
-    /// walks the options' selected folder, the directory of the run's Mod
-    /// Selection.
+    /// walks the directory of `request`'s Mod Selection.
     ///
-    /// # Errors
-    /// [`RunSetupError`] when an option value is invalid, as
-    /// [`run_request`] would report it.
-    pub fn new(app_dir: &Path, options: &Options) -> Result<Self, RunSetupError> {
-        validate(options)?;
-        Ok(Self {
+    /// This only wires; it does not validate. `request` must be the one
+    /// [`run_request`] built from `options`, which is where the options were
+    /// checked.
+    ///
+    /// # Panics
+    /// If `options` carries a mesh level [`run_request`] would have rejected.
+    pub fn new(app_dir: &Path, request: &RunRequest, options: &Options) -> Self {
+        Self {
             profiles: Profiles::new(app_dir),
             work: RunWorkSettings {
                 settings: OptimizerSettings::from_options(options),
-                selected_folder: PathBuf::from(&options.user_path),
+                selected_folder: request.mod_selection().directory().to_path_buf(),
                 hkxcmd: Hkxcmd::in_app_dir(app_dir),
             },
-        })
+        }
     }
 
     /// Reads the named profile once, returning the Selected Profile its
