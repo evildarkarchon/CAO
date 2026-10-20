@@ -62,9 +62,11 @@ pub use service::{OptimizationRunService, RunEventDispatcher, RunHandle, StartEr
 pub use source_pin::{LoadingPluginPin, SourceDirectoryPins, SourceFilePin, SourcePinError};
 pub use staging::{StagingError, is_staging_name};
 pub use toolset::{
-    ArchiveExtractionAdapter, ArchiveExtractionPort, ArchiveFinalizationAdapter,
-    ArchiveFinalizationPort, AssetAttemptPort, AssetInitializationCancelled, RunToolset,
+    ArchiveSeams, ArchiveWorkSettings, AssetAttemptPort, AssetInitializationCancelled, RunToolset,
 };
+// The Archive ports stay inside the crate: core assembles them in
+// `RunToolset::new`, and only `test_support` still scripts them (#581).
+pub(crate) use toolset::{ArchiveExtractionPort, ArchiveFinalizationPort};
 
 pub(crate) use artifacts::fingerprint;
 // Only an Optimization Run may write Run Evidence, so the store's writing

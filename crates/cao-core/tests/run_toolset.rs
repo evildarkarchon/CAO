@@ -390,6 +390,76 @@ fn a_sink_observer_can_cancel_once_the_extraction_phase_is_recorded() {
     assert_eq!(toolset.finalizations(), 0);
 }
 
+/// Opted in to core's Archive work, a scripted run's Toolset is built through
+/// the production constructor: extraction backs its source up, as the
+/// production default cleanup does, and the real Archive Finalization packs
+/// the extracted and Loose Assets through the scripted fake packer.
+#[test]
+fn an_apply_run_opted_in_to_core_archive_work_extracts_and_finalizes_for_real() {
+    let root = canonical(&scratch_dir("toolset-core-archive-work"));
+    write_archive(
+        &root.join("content.bsa"),
+        &[entry("meshes/extracted.nif", b"extracted")],
+    );
+    write_tree(&root, &["textures/loose.dds"]);
+    let toolset = Arc::new(ScriptedToolset::default().with_core_archive_work());
+
+    let result = execute(
+        &request(
+            ExecutionMode::Apply,
+            &root,
+            &[
+                RequestedWork::NativeTextureOptimization,
+                RequestedWork::ArchiveExtraction,
+                RequestedWork::ArchiveCreation,
+            ],
+        ),
+        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
+        &RecordingSink::default(),
+        &mut CountingCleanup::default(),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.failures()
+    );
+    let [extraction] = result.archive_extraction_attempts() else {
+        panic!("one extraction attempt");
+    };
+    assert_eq!(extraction.mutation, MutationState::Committed);
+    assert!(
+        root.join("content.bsa.bak").exists(),
+        "the source is backed up, as the production default cleanup does"
+    );
+    let finalization = result.archive_finalization().unwrap();
+    assert_eq!(finalization.failure, None, "{}", finalization.detail);
+    assert!(!finalization.attempts.is_empty(), "{finalization:?}");
+    assert!(
+        finalization
+            .attempts
+            .iter()
+            .all(|attempt| attempt.succeeded())
+    );
+    let mut packed: Vec<_> = toolset
+        .packer
+        .writes()
+        .into_iter()
+        .flat_map(|write| write.names)
+        .collect();
+    packed.sort();
+    assert!(
+        packed.contains(&"meshes/extracted.nif".to_owned()),
+        "{packed:?}"
+    );
+    assert!(
+        packed.contains(&"textures/loose.dds".to_owned()),
+        "{packed:?}"
+    );
+}
+
 /// The Apply or Dry Run request over native Textures and Archive extraction
 /// for `root`.
 fn archives_and_textures(mode: ExecutionMode, root: &Path) -> RunRequest {

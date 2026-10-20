@@ -402,6 +402,78 @@ fn an_sse_apply_extracts_a_bsa_then_backs_up_or_deletes_its_source() {
     }
 }
 
+/// Rust-only, through the production wiring: an SSE Apply run extracts a BSA,
+/// deletes its source, then packs what extraction published, with the Loose
+/// Assets, into a new Archive at the source's own name.
+///
+/// Extraction and packing see the same Archive state: the reader that held
+/// the source mapped while extracting had released it, so the source could be
+/// deleted and its name reused, and Archive Finalization's check that the new
+/// Archive is listable read the new Archive rather than the old one. One
+/// reader served the whole run.
+#[test]
+fn an_sse_apply_packs_what_it_extracted_into_an_archive_at_the_sources_name() {
+    let _serial = serial();
+    let app = app_dir("extract-then-pack-sse");
+    let mod_root = app.join("mods").join("Mod");
+    write(&mod_root, "meshes/loose.nif", &b"loose mesh".repeat(30));
+    let mod_root = msvc_canonical(&mod_root).unwrap();
+    let archive = mod_root.join("Mod.bsa");
+    let archived_mesh = b"archived mesh".repeat(40);
+    write_test_archive(
+        &archive,
+        Game::Sse,
+        ArchiveType::Standard,
+        true,
+        &[("meshes/armor/cuirass.nif", archived_mesh.clone())],
+    );
+
+    let mut options = apply_extraction(&app, "SSE", &mod_root, true);
+    options.bsa_create = true;
+    let run = ApplicationRun::new(&app, "SSE", &options).unwrap();
+    let result = run.start(None).unwrap().wait();
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.failures()
+    );
+    let [extraction] = result.archive_extraction_attempts() else {
+        panic!("one extraction attempt");
+    };
+    assert_eq!(extraction.mutation, MutationState::Committed);
+    let finalization = result.archive_finalization().unwrap();
+    assert_eq!(finalization.failure, None, "{}", finalization.detail);
+    let [packing] = finalization.attempts.as_slice() else {
+        panic!("one packed Archive: {finalization:?}");
+    };
+    assert!(packing.succeeded(), "{}", packing.detail);
+    assert_eq!(packing.archive_path, archive, "the source's name is reused");
+    let read = cao_archive::ReadArchive::open(&archive).unwrap().unwrap();
+    let mut packed: Vec<_> = read
+        .archived_assets()
+        .unwrap()
+        .into_iter()
+        .map(|asset| (asset.name.to_lowercase(), asset.size))
+        .collect();
+    packed.sort();
+    assert_eq!(
+        packed,
+        [
+            (
+                r"meshes\armor\cuirass.nif".to_owned(),
+                archived_mesh.len() as u64
+            ),
+            (r"meshes\loose.nif".to_owned(), 300),
+        ]
+    );
+    assert!(
+        !mod_root.join("meshes").exists(),
+        "packed sources are pruned"
+    );
+}
+
 /// A cubemap of 16×16 faces with one mip, in `format`, filled with seeded
 /// bytes: extraction copies blocks and never decodes them.
 fn cubemap_dds(format: DXGI_FORMAT) -> Vec<u8> {

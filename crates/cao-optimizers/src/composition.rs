@@ -21,11 +21,11 @@ use cao_archive::{Game, Settings};
 use cao_core::Error;
 use cao_core::routing::{ExecutionMode, ProfileCapabilities, ProfileCapability, RequestedWork};
 use cao_core::run::{
-    ArchiveExtractionAdapter, ArchiveFinalizationAdapter, ArchiveFinalizationSettings,
-    AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
-    CancellationToken, ModSelection, OptimizationRunService, RunConfigurationProvider,
-    RunDiagnostic, RunDiagnosticCode, RunEventDispatcher, RunHandle, RunPhase, RunRequest,
-    RunToolset, SelectedProfile, SourceCleanup, StartError,
+    ArchiveFinalizationSettings, ArchiveSeams, ArchiveWorkSettings, AssetAttemptAdapter,
+    AssetBackendFactory, BackendCreation, BackendCreationError, CancellationToken, ModSelection,
+    OptimizationRunService, RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode,
+    RunEventDispatcher, RunHandle, RunPhase, RunRequest, RunToolset, SelectedProfile,
+    SourceCleanup, StartError,
 };
 use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
 use directxtex::DXGI_FORMAT;
@@ -457,37 +457,32 @@ impl RunWorkSettings {
     /// read.
     fn toolset(&self, profile: Arc<PreparedProfile>) -> RunToolset {
         // One reader serves discovery, extraction and finalization for the
-        // whole run.
-        let reader = Arc::new(ArchiveFileReader::default());
+        // whole run: the Toolset holds only this one.
         let probes = Arc::new(VolumeProbes);
         // C++ always wires Archive Finalization, so Apply executes the phase:
         // it packs only when the Routing Policy requests Archive creation, and
         // prunes empty directories either way.
-        let finalization = ArchiveFinalizationAdapter::new(
-            Box::new(archive_packer(&profile.settings)),
-            reader.clone(),
-            probes.clone(),
-            probes.clone(),
-            self.settings.finalization,
-        );
-        RunToolset {
+        let seams = ArchiveSeams {
+            reader: Arc::new(ArchiveFileReader::default()),
+            capacity: probes.clone(),
+            volume_identity: probes,
+            packer: Arc::new(archive_packer(&profile.settings)),
+        };
+        let archive_work = ArchiveWorkSettings {
+            source_cleanup: self.settings.extracted_archive_cleanup,
+            finalization: self.settings.finalization,
+        };
+        RunToolset::new(
             // The adapter creates the backend on the first Asset, as C++
             // creates its MainOptimizer, so a run with nothing to process
             // never sets up an optimizer.
-            asset_attempt: Box::new(AssetAttemptAdapter::new(OptimizerBackendFactory {
+            Box::new(AssetAttemptAdapter::new(OptimizerBackendFactory {
                 work: self.clone(),
                 profile,
             })),
-            archive_extraction: Box::new(ArchiveExtractionAdapter::new(
-                reader.clone(),
-                probes.clone(),
-                self.settings.extracted_archive_cleanup,
-            )),
-            archive_finalization: Box::new(finalization),
-            archive_reader: reader,
-            capacity: probes.clone(),
-            volume_identity: probes,
-        }
+            seams,
+            archive_work,
+        )
     }
 }
 
