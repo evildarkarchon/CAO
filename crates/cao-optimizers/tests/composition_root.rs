@@ -10,7 +10,7 @@ use cao_core::routing::{
     SkipReason,
 };
 use cao_core::run::{ModSelection, RunDiagnosticCode, RunFailureCode, RunOutcome, RunPhase};
-use cao_optimizers::composition::{ApplicationRun, run_request};
+use cao_optimizers::composition::ApplicationRun;
 use cao_profiles::{OptimizationMode, Options};
 use common::{app_dir, dry_run_textures, edit_profile, serial, snapshot_tree, write, write_dds};
 use directxtex::{DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM};
@@ -56,7 +56,10 @@ fn invalid_option_values_are_rejected_before_any_run() {
     add("relative folder", &|o| o.user_path = "mods/Mod".into());
 
     for (name, options) in cases {
-        assert!(run_request("SSE", &options).is_err(), "{name}");
+        assert!(
+            ApplicationRun::new(&app, "SSE", &options).is_err(),
+            "{name}"
+        );
     }
 }
 
@@ -70,7 +73,7 @@ fn an_odd_target_size_is_accepted_while_resizing_by_size_is_off() {
         textures_target_width: 513,
         ..Options::default()
     };
-    assert!(run_request("SSE", &options).is_ok());
+    assert!(ApplicationRun::new(&app, "SSE", &options).is_ok());
 }
 
 #[test]
@@ -85,7 +88,8 @@ fn the_request_owns_the_caller_intent() {
         ..Options::default()
     };
 
-    let request = run_request("FO4", &options).unwrap();
+    let run = ApplicationRun::new(&app, "FO4", &options).unwrap();
+    let request = run.request();
 
     assert_eq!(request.profile_identity(), "FO4");
     assert_eq!(request.execution_mode(), ExecutionMode::DryRun);
@@ -108,8 +112,8 @@ fn disabled_texture_work_does_not_request_profile_conversion() {
         textures_necessary: false,
         ..Options::default()
     };
-    let request = run_request("SSE", &options).unwrap();
-    assert!(!request.has_requested_work());
+    let run = ApplicationRun::new(&app, "SSE", &options).unwrap();
+    assert!(!run.request().has_requested_work());
 }
 
 #[test]
@@ -165,7 +169,7 @@ fn policy_conflicts_at_preparing(
 
 /// Origin: ApplicationRunSetupTests::archiveCreationRequiresProfileArchiveSupport
 /// and the FO4 Profile Capabilities. Capability conflicts are judged only at
-/// Preparing (#570): a request the selected profile cannot honour sets up,
+/// Preparing (#570): a request the Selected Profile cannot honour sets up,
 /// and its run fails Preparing with a Policy Conflict carrying every conflict.
 /// The failed run releases the one active-run slot.
 #[test]

@@ -4,7 +4,7 @@
 //! directory, the selected profile and the options model, [`ApplicationRun::new`]
 //! validates the options, builds the Run Request, and wires a profile-backed Run
 //! Configuration Provider into an Optimization Run Service. During each run's
-//! Preparing, that provider reads the run's [`SelectedProfile`] once and builds
+//! Preparing, that provider reads the run's `SelectedProfile` once and builds
 //! both the Run Configuration the run's Routing Policy compiles from and the
 //! production Run Toolset from it. Both binaries go through it, so
 //! the parity driver exercises the wiring users run.
@@ -123,7 +123,7 @@ impl ApplicationRun {
 ///
 /// # Errors
 /// [`RunSetupError`] when an option is invalid.
-pub fn run_request(profile: &str, options: &Options) -> Result<RunRequest, RunSetupError> {
+fn run_request(profile: &str, options: &Options) -> Result<RunRequest, RunSetupError> {
     validate(options)?;
     let selected = PathBuf::from(&options.user_path);
     // An empty folder is a structural Start Error the service reports itself.
