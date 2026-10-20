@@ -13,14 +13,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
-    ArchiveFinalizationAttempt, ArchiveFinalizationFailure, CancellationToken,
-    OptimizationRunResult, PhaseSkipReason, RunConfigurationProvider, RunDiagnostic,
-    RunDiagnosticCode, RunFailureCode, RunOutcome, RunPhase, RunPhaseStatus, RunRequest,
+    ArchiveExtractionFailure, ArchiveFinalizationAttempt, ArchiveFinalizationFailure,
+    ArchiveFinalizationMutationKind, CancellationToken, OptimizationRunResult, PhaseSkipReason,
+    RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode, RunFailureCode, RunOutcome,
+    RunPhase, RunPhaseStatus, RunRequest,
 };
 use cao_core::test_support::{
-    CallbackConfiguration, CountingCleanup, FakeBackendFactory, FixedConfiguration, Observed,
-    RecordingSink, ScriptedToolset, ToolsetConfiguration, entry, execute_run, sse_profile,
-    write_archive,
+    CallbackConfiguration, CountingCleanup, FakeArchiveReader, FakeBackendFactory, FakeVolumes,
+    FixedConfiguration, Observed, RecordingSink, ScriptedToolset, ToolsetConfiguration, entry,
+    execute_run, sse_profile, write_archive,
 };
 use common::{canonical, request, scratch_dir, write_tree};
 
@@ -42,7 +43,8 @@ fn an_apply_run_through_a_toolset_traverses_every_phase_and_succeeds() {
     write_tree(&root, &["textures/a.dds", "textures/b.dds"]);
     let toolset = Arc::new(
         ScriptedToolset::default()
-            .with_assets(|_, _, _| Ok(AssetExecutionResult::success(MutationState::Committed))),
+            .with_assets(|_, _, _| Ok(AssetExecutionResult::success(MutationState::Committed)))
+            .with_core_archive_work(),
     );
     let configuration = ToolsetConfiguration::sse(Some(Arc::clone(&toolset)));
     let sink = RecordingSink::default();
@@ -70,14 +72,19 @@ fn an_apply_run_through_a_toolset_traverses_every_phase_and_succeeds() {
             .map(|record| record.status()),
         Some(RunPhaseStatus::Executed)
     );
-    assert_eq!(toolset.finalizations(), 1);
-    assert!(result.archive_finalization().is_some());
+    // Without Archive creation, the real phase only prunes, and this tree
+    // has no empty directory to prune.
+    let finalization = result.archive_finalization().unwrap();
+    assert!(finalization.attempts.is_empty(), "{finalization:?}");
+    assert!(finalization.mutations.is_empty(), "{finalization:?}");
+    assert!(toolset.packer.writes().is_empty());
     assert_eq!(cleanup.passes, 1);
 }
 
 /// Every Optimization Run has a Run Toolset: a test provider given no script
 /// returns a default scripted one, as production always returns its own, so
-/// requested work runs and every Asset attempt succeeds.
+/// requested work runs and every Asset attempt succeeds. Its Archive work is
+/// core's own, so Apply runs the real Archive Finalization.
 #[test]
 fn an_unscripted_provider_runs_requested_work_through_a_default_toolset() {
     let providers: [(&str, Box<dyn RunConfigurationProvider>); 3] = [
@@ -97,6 +104,7 @@ fn an_unscripted_provider_runs_requested_work_through_a_default_toolset() {
     for (name, provider) in providers {
         let root = scratch_dir(&format!("toolset-default-{name}"));
         write_tree(&root, &["textures/a.dds"]);
+        std::fs::create_dir(root.join("empty")).unwrap();
         let mut cleanup = CountingCleanup::default();
 
         let result = execute_run(
@@ -119,6 +127,17 @@ fn an_unscripted_provider_runs_requested_work_through_a_default_toolset() {
         );
         assert!(result.preparation().is_some(), "{name}");
         assert_eq!(result.asset_attempts().len(), 1, "{name}");
+        let finalization = result.archive_finalization().unwrap();
+        assert_eq!(
+            finalization
+                .mutations
+                .iter()
+                .map(|mutation| (mutation.kind, mutation.count))
+                .collect::<Vec<_>>(),
+            [(ArchiveFinalizationMutationKind::EmptyDirectoryPruning, 1)],
+            "{name}"
+        );
+        assert!(!root.join("empty").exists(), "{name}: pruned");
         assert_eq!(cleanup.passes, 1, "{name}");
     }
 }
@@ -131,7 +150,8 @@ fn a_dry_run_through_a_toolset_never_extracts_or_finalizes() {
         &[entry("textures/archived.dds", b"archived")],
     );
     write_tree(&root, &["textures/loose.dds"]);
-    let toolset = Arc::new(ScriptedToolset::default());
+    std::fs::create_dir(root.join("empty")).unwrap();
+    let toolset = Arc::new(ScriptedToolset::default().with_core_archive_work());
     let sink = RecordingSink::default();
 
     let result = execute(
@@ -143,9 +163,15 @@ fn a_dry_run_through_a_toolset_never_extracts_or_finalizes() {
     );
 
     assert_eq!(result.outcome(), RunOutcome::Succeeded);
-    assert!(toolset.extracted().is_empty());
+    assert!(result.archive_extraction_attempts().is_empty());
     assert!(toolset.reader.listed.lock().unwrap().is_empty());
-    assert_eq!(toolset.finalizations(), 0);
+    assert!(result.archive_finalization().is_none());
+    assert!(
+        toolset.packer.writes().is_empty(),
+        "the packer is untouched"
+    );
+    assert!(root.join("content.bsa").exists(), "nothing is extracted");
+    assert!(root.join("empty").exists(), "nothing is pruned");
     assert_eq!(
         toolset.attempted(),
         [root.join("textures").join("loose.dds")]
@@ -167,7 +193,7 @@ fn an_apply_run_extracts_archives_through_the_toolset_before_routing() {
         &[entry("textures/extracted.dds", b"extracted")],
     );
     write_tree(&root, &["textures/loose.dds"]);
-    let toolset = Arc::new(ScriptedToolset::default());
+    let toolset = Arc::new(ScriptedToolset::default().with_core_archive_work());
 
     let result = execute(
         &archives_and_textures(ExecutionMode::Apply, &root),
@@ -183,10 +209,16 @@ fn an_apply_run_extracts_archives_through_the_toolset_before_routing() {
         "{:?}",
         result.failures()
     );
-    let plans = toolset.extracted();
-    assert_eq!(plans.len(), 1);
-    assert_eq!(plans[0].archive_path, root.join("content.bsa"));
-    assert_eq!(result.archive_extraction_attempts().len(), 1);
+    let [extraction] = result.archive_extraction_attempts() else {
+        panic!("one extraction attempt");
+    };
+    assert_eq!(extraction.archive_path, root.join("content.bsa"));
+    assert_eq!(extraction.mod_root, root);
+    assert_eq!(extraction.mutation, MutationState::Committed);
+    assert!(
+        root.join("content.bsa.bak").exists(),
+        "the source is backed up"
+    );
     let mut attempted = toolset.attempted();
     attempted.sort();
     assert_eq!(
@@ -225,15 +257,74 @@ fn an_extraction_port_panic_is_unknown_mutation_that_stops_the_run() {
     assert_eq!(attempt.detail, "the extractor panicked");
     assert!(result.failures().is_empty(), "contained at the port");
     assert!(toolset.attempted().is_empty(), "no Asset is attempted");
-    assert_eq!(toolset.finalizations(), 0);
+    assert!(result.archive_finalization().is_none());
+}
+
+/// Core's real extraction leaves unknown mutation when its merge fails after
+/// the first entry was published: a file takes the place of a folder an
+/// entry needs once preflight has passed. The run is Failed before any Asset
+/// is attempted or Archive Finalization runs, and the source is kept.
+#[test]
+fn an_extraction_left_partial_is_unknown_mutation_that_stops_the_run() {
+    let root = canonical(&scratch_dir("toolset-extraction-partial"));
+    let source = root.join("content.bsa");
+    write_archive(
+        &source,
+        &[entry("a.dds", b"published"), entry("z/b.dds", b"blocked")],
+    );
+    write_tree(&root, &["textures/loose.dds"]);
+    let obstruction = root.join("z");
+    let reader = FakeArchiveReader {
+        on_extract: Some(Box::new({
+            let obstruction = obstruction.clone();
+            move |_, _| {
+                if !obstruction.exists() {
+                    std::fs::write(&obstruction, "obstruction").unwrap();
+                }
+            }
+        })),
+        ..FakeArchiveReader::default()
+    };
+    let toolset = Arc::new(
+        ScriptedToolset {
+            reader: Arc::new(reader),
+            ..ScriptedToolset::default()
+        }
+        .with_core_archive_work(),
+    );
+
+    let result = execute(
+        &archives_and_textures(ExecutionMode::Apply, &root),
+        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
+        &RecordingSink::default(),
+        &mut CountingCleanup::default(),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(result.outcome(), RunOutcome::Failed);
+    let [attempt] = result.archive_extraction_attempts() else {
+        panic!("one extraction attempt");
+    };
+    assert_eq!(attempt.failure, Some(ArchiveExtractionFailure::MergeFailed));
+    assert_eq!(attempt.mutation, MutationState::PartialOrUnknown);
+    assert!(!attempt.safe_to_continue);
+    assert!(result.failures().is_empty(), "contained by the extractor");
+    assert!(toolset.attempted().is_empty(), "no Asset is attempted");
+    assert!(result.archive_finalization().is_none());
+    assert_eq!(std::fs::read(root.join("a.dds")).unwrap(), b"published");
+    assert!(source.exists(), "a failed merge keeps its source");
+    assert!(!root.join("content.bsa.bak").exists());
 }
 
 #[test]
 fn an_asset_attempt_port_panic_is_an_unsafe_operation_failure() {
     let root = scratch_dir("toolset-asset-panic");
     write_tree(&root, &["textures/a.dds", "textures/b.dds"]);
-    let toolset =
-        Arc::new(ScriptedToolset::default().with_assets(|_, _, _| panic!("the backend panicked")));
+    let toolset = Arc::new(
+        ScriptedToolset::default()
+            .with_assets(|_, _, _| panic!("the backend panicked"))
+            .with_core_archive_work(),
+    );
 
     let result = execute(
         &request(
@@ -261,7 +352,10 @@ fn an_asset_attempt_port_panic_is_an_unsafe_operation_failure() {
     );
     assert!(!attempt.result.safe_to_continue());
     assert!(result.failures().is_empty(), "contained at the port");
-    assert_eq!(toolset.finalizations(), 0);
+    assert!(
+        result.archive_finalization().is_none(),
+        "unsafe work never reaches Archive Finalization"
+    );
 }
 
 #[test]
@@ -278,7 +372,11 @@ fn a_fake_backend_runs_behind_the_production_asset_attempt_adapter() {
         ..FakeBackendFactory::default()
     };
     let creations = Arc::clone(&factory.creations);
-    let toolset = Arc::new(ScriptedToolset::default().with_backend(factory));
+    let toolset = Arc::new(
+        ScriptedToolset::default()
+            .with_backend(factory)
+            .with_core_archive_work(),
+    );
     let sink = RecordingSink::default();
 
     let result = execute(
@@ -377,6 +475,63 @@ fn a_finalization_port_panic_is_an_unexpected_exception_keeping_its_attempts() {
     assert_eq!(finalization.attempts, [output]);
 }
 
+/// Core's real Archive Finalization contains a failure of its own work
+/// outside any output attempt: here the volume probe panics once the output
+/// total is planned. It is one phase-level Unexpected Exception that forbids
+/// continuation, so the run is Failed with no Run Failure, and nothing is
+/// packed.
+#[test]
+fn an_archive_finalization_failure_outside_any_attempt_is_an_unexpected_exception() {
+    let root = canonical(&scratch_dir("toolset-finalization-unexpected"));
+    write_tree(&root, &["textures/asset.dds"]);
+    let toolset = Arc::new(
+        ScriptedToolset {
+            volumes: Arc::new(FakeVolumes(Some(Box::new(|_| {
+                panic!("the volume query failed")
+            })))),
+            ..ScriptedToolset::default()
+        }
+        .with_core_archive_work(),
+    );
+
+    let result = execute(
+        &request(
+            ExecutionMode::Apply,
+            &root,
+            &[
+                RequestedWork::NativeTextureOptimization,
+                RequestedWork::ArchiveCreation,
+            ],
+        ),
+        &ToolsetConfiguration::sse(Some(Arc::clone(&toolset))),
+        &RecordingSink::default(),
+        &mut CountingCleanup::default(),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(result.outcome(), RunOutcome::Failed);
+    assert!(result.failures().is_empty(), "contained by the phase");
+    assert_eq!(result.asset_attempts().len(), 1, "earlier facts are kept");
+    let finalization = result.archive_finalization().unwrap();
+    assert_eq!(
+        finalization.failure,
+        Some(ArchiveFinalizationFailure::UnexpectedException)
+    );
+    assert!(!finalization.safe_to_continue);
+    assert_eq!(finalization.detail, "the volume query failed");
+    assert!(finalization.attempts.is_empty());
+    assert_eq!(
+        result
+            .phase(RunPhase::ArchiveFinalization)
+            .and_then(|record| record.progress())
+            .map(|progress| progress.total()),
+        Some(1),
+        "the output was planned"
+    );
+    assert!(toolset.packer.writes().is_empty());
+    assert!(root.join("textures/asset.dds").exists());
+}
+
 #[test]
 fn a_sink_observer_can_cancel_once_the_extraction_phase_is_recorded() {
     let root = canonical(&scratch_dir("toolset-cancel-at-extraction"));
@@ -384,7 +539,7 @@ fn a_sink_observer_can_cancel_once_the_extraction_phase_is_recorded() {
         &root.join("content.bsa"),
         &[entry("textures/extracted.dds", b"extracted")],
     );
-    let toolset = Arc::new(ScriptedToolset::default());
+    let toolset = Arc::new(ScriptedToolset::default().with_core_archive_work());
     let stop = CancellationToken::new();
     let token = stop.clone();
     let sink = RecordingSink::with_hook(move |observation| {
@@ -405,8 +560,10 @@ fn a_sink_observer_can_cancel_once_the_extraction_phase_is_recorded() {
 
     assert_eq!(result.outcome(), RunOutcome::Cancelled);
     assert!(result.archive_extraction_attempts().is_empty());
-    assert!(toolset.extracted().is_empty(), "nothing is extracted");
-    assert_eq!(toolset.finalizations(), 0);
+    assert!(root.join("content.bsa").exists(), "nothing is extracted");
+    assert!(!root.join("textures").exists(), "no entry is published");
+    assert!(result.archive_finalization().is_none());
+    assert!(toolset.packer.writes().is_empty());
 }
 
 /// Opted in to core's Archive work, a scripted run's Toolset is built through
