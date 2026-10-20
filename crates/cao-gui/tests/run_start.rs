@@ -100,6 +100,55 @@ fn choose_profile(ui: &cao_gui::ui::MainWindow, name: &str) {
 }
 
 #[test]
+fn settings_that_cannot_be_saved_show_the_save_error_and_start_no_run() {
+    use slint::ComponentHandle;
+
+    let _serial = serial();
+    headless();
+    let (app_dir, mods) = sse_app("run_settings_unsaved");
+    let (app, desktop) = open(&app_dir);
+    let ui = app.window();
+    ui.set_user_path(mods.display().to_string().into());
+    ui.set_dry_run(true);
+    // The window now differs from `profile.ini`, which holds `true`.
+    ui.global::<cao_gui::ui::TexturesTab>()
+        .set_tga_conversion(false);
+    let profile_ini = app_dir.join("profiles/SSE/profile.ini");
+    let on_disk = std::fs::read(&profile_ini).unwrap();
+    set_readonly(&profile_ini, true);
+
+    click(ui, "Run");
+
+    let shown = messages(&desktop);
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    let (level, title, text) = &shown[0];
+    assert_eq!((*level, title.as_str()), (MessageLevel::Error, "Save"));
+    assert!(
+        text.starts_with("The profile's settings could not be saved: "),
+        "{text}"
+    );
+    assert_unlocked(ui);
+    assert_eq!(ui.get_status_text(), "", "no run was presented");
+    assert_eq!(std::fs::read(&profile_ini).unwrap(), on_disk);
+
+    // Once the settings can be saved, the same run starts on them.
+    set_readonly(&profile_ini, false);
+    click(ui, "Run");
+    assert!(ui.get_running());
+    assert_eq!(messages(&desktop).len(), 1);
+    let saved = std::fs::read_to_string(&profile_ini).unwrap();
+    assert!(saved.contains("texturesConvertTga=false"), "{saved}");
+}
+
+/// Sets or clears the read-only attribute of `path`. A read-only file cannot
+/// be replaced, so saving into it fails.
+fn set_readonly(path: &std::path::Path, readonly: bool) {
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+    permissions.set_readonly(readonly);
+    std::fs::set_permissions(path, permissions).unwrap();
+}
+
+#[test]
 fn invalid_options_show_the_setup_error_and_start_no_run() {
     let _serial = serial();
     headless();

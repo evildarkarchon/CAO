@@ -75,8 +75,12 @@ impl App {
     /// was.
     fn start_run(&self) {
         // Settles the options, the profile and the debug-log choice the run
-        // and its log use.
-        self.save();
+        // and its log use. The run reads its settings from `profile.ini`, so
+        // when they could not be saved it would run on stale ones; the save
+        // has already shown why (#545).
+        if !self.save() {
+            return;
+        }
         let (profile, options) = {
             let loaded = self.loaded.borrow();
             (loaded.profile.name().to_owned(), loaded.options.clone())

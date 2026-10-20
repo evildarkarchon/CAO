@@ -341,7 +341,12 @@ impl App {
     /// C++ `saveUi`: saves the common settings, then, unless a run holds the
     /// controls, the options into `settings.ini` and the settings into
     /// `profile.ini` of the current profile. A failure is shown, not raised.
-    pub fn save(&self) {
+    ///
+    /// Returns `false` when the window's settings could not be written to
+    /// `profile.ini`, which then differs from what the window shows. The other
+    /// failures are only shown: a run reads its settings from `profile.ini` but
+    /// takes its options from memory (#545).
+    pub fn save(&self) -> bool {
         let ui = &self.window;
         let mut loaded = self.loaded.borrow_mut();
         loaded.common.show_advanced_settings = ui.get_show_advanced();
@@ -353,8 +358,10 @@ impl App {
                 &format!("The common settings could not be saved: {error}"),
             );
         }
+        // A run holds the controls, so the window still shows the settings
+        // saved when it started.
         if self.locked.get() {
-            return;
+            return true;
         }
 
         // The capabilities come from the loaded `profile.ini`, not the tab bar:
@@ -369,6 +376,7 @@ impl App {
             );
         }
         loaded.options = options;
+        let mut settings_saved = true;
         if let Some(current) = &loaded.settings {
             let settings = form::read_settings(ui, current);
             if let Err(error) = loaded.profile.save_settings(&settings) {
@@ -376,9 +384,11 @@ impl App {
                     "Save",
                     &format!("The profile's settings could not be saved: {error}"),
                 );
+                settings_saved = false;
             }
             loaded.settings = Some(settings);
         }
+        settings_saved
     }
 
     /// C++ `createProfile`: a tutorial box, then the name, then the base profile;
