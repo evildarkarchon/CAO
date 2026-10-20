@@ -13,7 +13,7 @@ use common::*;
 /// An app directory starting on the readable TES5 profile, without tutorial
 /// boxes, whose SSE profile has every asset tab's options turned on, so that a
 /// save clearing them shows on disk.
-fn app_with_busy_sse(name: &str) -> PathBuf {
+fn app_with_sse_asset_options_on(name: &str) -> PathBuf {
     let app_dir = app_dir(name);
     edit_ini(&app_dir, "common.ini", "profile", "TES5");
     edit_ini(&app_dir, "common.ini", "showTutorial", "false");
@@ -47,7 +47,7 @@ fn sse_options(app_dir: &Path) -> Options {
 #[test]
 fn switching_away_from_an_unreadable_profile_keeps_its_asset_options() {
     headless();
-    let app_dir = app_with_busy_sse("unreadable_profile_switch");
+    let app_dir = app_with_sse_asset_options_on("unreadable_profile_switch");
     // An unsupported game makes `profile.ini` unreadable (deviation 11).
     edit_ini(&app_dir, "SSE/profile.ini", "bsaGame", "99");
     let profile_ini = app_dir.join("profiles").join("SSE").join("profile.ini");
@@ -89,10 +89,12 @@ fn switching_away_from_an_unreadable_profile_keeps_its_asset_options() {
 #[test]
 fn a_readable_profile_lacking_a_capability_saves_that_tabs_options_as_off() {
     headless();
-    let app_dir = app_with_busy_sse("profile_lacking_capability");
+    let app_dir = app_with_sse_asset_options_on("profile_lacking_capability");
     edit_ini(&app_dir, "SSE/profile.ini", "texturesEnabled", "false");
     edit_ini(&app_dir, "SSE/profile.ini", "animationsEnabled", "false");
     let loaded = sse_options(&app_dir);
+    assert!(loaded.bsa_extract && loaded.bsa_create && loaded.meshes_resave);
+    assert_eq!(loaded.meshes_optimization_level, 3);
 
     let (app, desktop) = open(&app_dir);
     let ui = app.window();
@@ -102,17 +104,16 @@ fn a_readable_profile_lacking_a_capability_saves_that_tabs_options_as_off() {
     assert!(!enabled(ui, "Textures") && !enabled(ui, "Animations"));
     choose(ui, "Profile", "TES5");
 
-    let saved = sse_options(&app_dir);
     // The unsupported tabs' options are off...
-    assert!(!saved.textures_necessary && !saved.textures_compress && !saved.textures_mipmaps);
-    assert!(!saved.textures_resize_ratio && !saved.textures_resize_size);
-    assert!(!saved.animations_optimization);
-    // ...and the supported tabs' options are as they were loaded.
-    assert!(saved.bsa_extract && saved.bsa_create);
-    assert_eq!(saved.meshes_optimization_level, 3);
-    assert!(saved.meshes_resave && saved.meshes_headparts);
-    assert_eq!(
-        (saved.user_path, saved.mode, saved.dry_run),
-        (loaded.user_path, loaded.mode, loaded.dry_run)
-    );
+    let expected = Options {
+        textures_necessary: false,
+        textures_compress: false,
+        textures_mipmaps: false,
+        textures_resize_size: false,
+        textures_resize_ratio: false,
+        animations_optimization: false,
+        // ...and the supported tabs' options are as they were loaded.
+        ..loaded
+    };
+    assert_eq!(sse_options(&app_dir), expected);
 }

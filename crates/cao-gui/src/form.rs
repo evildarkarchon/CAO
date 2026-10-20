@@ -209,7 +209,7 @@ pub(crate) fn show_options(ui: &MainWindow, options: &Options) {
 /// last loaded, which keep what the window does not show (`bBsaProcessContent`,
 /// and the mesh level when no level radio is checked).
 ///
-/// `capabilities` are the selected profile's Profile Capabilities, or `None`
+/// `capabilities` are the Selected Profile's Profile Capabilities, or `None`
 /// when its `profile.ini` could not be read. Known capabilities gate the asset
 /// options: those on a tab the profile does not support read as off. Unknown
 /// capabilities keep every BSA, Texture, Mesh and Animation option of `current`,
