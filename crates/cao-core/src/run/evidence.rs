@@ -210,7 +210,7 @@ impl RunEvidence {
 }
 
 /// The sole mutable owner of one run's facts while it executes.
-pub struct MutableRunEvidence<'a> {
+pub(crate) struct MutableRunEvidence<'a> {
     storage: Storage,
     observations: Option<&'a dyn RunObservationSink>,
     published_diagnostics: usize,
@@ -784,6 +784,9 @@ impl<'a> MutableRunEvidence<'a> {
     }
 
     /// The latest record of one phase, or `None` when it was never reached.
+    // Only the evidence suite and the `test_support` finalization harness
+    // read a phase back from the crate-private store (#561).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn phase(&self, phase: RunPhase) -> Option<&RunPhaseRecord> {
         self.storage.phase(phase)
     }
@@ -793,29 +796,9 @@ impl<'a> MutableRunEvidence<'a> {
         self.storage.phases.last()
     }
 
-    /// Diagnostics accepted so far.
-    pub fn diagnostics(&self) -> &[RunDiagnostic] {
-        &self.storage.diagnostics
-    }
-
-    /// Run Failures accepted so far.
-    pub fn failures(&self) -> &[RunFailure] {
-        &self.storage.failures
-    }
-
-    /// Archive discovery facts, once discovery has returned.
-    pub fn archive_discovery(&self) -> Option<&ArchiveDiscoveryEvidence> {
-        self.storage.archive_discovery.as_ref()
-    }
-
     /// Definitive routing, once it has completed.
     pub fn routing_ledger(&self) -> Option<&RoutingLedger> {
         self.storage.routing_ledger.as_ref()
-    }
-
-    /// Recognized exclusions from the discovery and routing facts accepted so far.
-    pub fn skipped_asset_count(&self, reason: SkipReason) -> usize {
-        self.storage.skipped_asset_count(reason)
     }
 
     /// Runs one presentation callback, retaining a panic as an unpublished
@@ -931,3 +914,6 @@ fn derive_mutation_summaries(
     }
     grouped.into_values().collect()
 }
+
+#[cfg(test)]
+mod tests;
