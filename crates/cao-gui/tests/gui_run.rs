@@ -7,28 +7,30 @@
 //! whether a close or a new run may proceed. Terminal results come from the
 //! real [`RunExecutor`] driven by scripted Run Toolsets over temporary Mod
 //! Roots, so the view is only tested against results a real run can produce
-//! (#554).
+//! (#554). Their Archive extraction and Archive Finalization are core's real
+//! work over the fake Archive reader and packer (#587).
 //!
 //! `tests/GuiRunDispatchTests.cpp` is dropped with Qt's dispatch (spec Testing
 //! Decisions); its `closeWaitsForCleanupAndTerminalDelivery` intent is
 //! `run_close.rs`.
 
+use std::fs::{File, OpenOptions};
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use cao_core::Error;
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
-    ArchiveExtractionFailure, ArchiveExtractionResult, ArchiveFinalizationAttempt,
-    ArchiveFinalizationFailure, ArchiveFinalizationResult, ArchivePrecedence, CancellationToken,
-    ModSelection, OptimizationRunResult, PhaseSkipReason, RunDiagnostic, RunDiagnosticCode,
-    RunEvent, RunEventPayload, RunFailure, RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord,
-    RunProgress, RunRequest,
+    ArchiveFinalizationFailure, ArchivePrecedence, CancellationToken, ModSelection,
+    OptimizationRunResult, PhaseSkipReason, RunDiagnostic, RunDiagnosticCode, RunEvent,
+    RunEventPayload, RunFailure, RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord, RunProgress,
+    RunRequest,
 };
 use cao_core::test_support::{
-    CountingCleanup, Observed, RecordingSink, ScriptedToolset, ToolsetConfiguration, entry,
-    execute_run, record_finalization_result, write_archive,
+    CountingCleanup, FakeArchivePacker, FakeArchiveReader, Observed, RecordingSink,
+    ScriptedToolset, ToolsetConfiguration, entry, execute_run, write_archive,
 };
 use cao_gui::RunView;
 
@@ -71,11 +73,25 @@ fn execute(
     ))
 }
 
-/// Writes `count` loose Textures, `asset-0.dds` onwards, into `root`.
+/// Writes `count` loose Textures, `textures/asset-0.dds` onwards, into
+/// `root`: beneath a directory, since files directly in a Mod Root are never
+/// packed.
 fn write_textures(root: &Path, count: usize) {
+    std::fs::create_dir_all(root.join("textures")).unwrap();
     for index in 0..count {
-        std::fs::write(root.join(format!("asset-{index}.dds")), b"texture").unwrap();
+        std::fs::write(root.join(format!("textures/asset-{index}.dds")), b"texture").unwrap();
     }
+}
+
+/// A scripted Run Toolset running core's real Archive extraction and Archive
+/// Finalization over `reader` and `packer` (#587).
+fn real_archive_work(reader: FakeArchiveReader, packer: FakeArchivePacker) -> ScriptedToolset {
+    ScriptedToolset {
+        reader: Arc::new(reader),
+        packer: Arc::new(packer),
+        ..ScriptedToolset::default()
+    }
+    .with_core_archive_work()
 }
 
 /// How the classified run turns out (C++ `ClassificationScenario`).
@@ -90,13 +106,14 @@ enum Scenario {
 /// The terminal result of an Apply run over three loose Textures that turns
 /// out as `scenario` says:
 /// - all successful: every Asset attempt succeeds, and Archive Finalization
-///   packs its one planned output Archive;
+///   packs the three Textures into its one planned output Archive;
 /// - contained failure: as all successful, but the `asset-2.dds` attempt
 ///   fails safely;
 /// - cancelled: the run covers eight Textures and is cancelled once the
 ///   Processing Assets record counts three attempts, leaving five unattempted;
-/// - failing finalizer: Archive Finalization plans three outputs, packs one,
-///   then fails outside any attempt with an Unexpected Exception.
+/// - failing finalizer: Archive Finalization plans three outputs, one
+///   Texture each, packs the first, then the packer panics writing the
+///   second: an unsafe Unexpected Exception that stops the third.
 ///
 /// Each is an Apply run because a completed Dry Run ends at a skipped Archive
 /// Finalization, which has no counts for the terminal view to show.
@@ -107,37 +124,18 @@ fn classified_run(scenario: Scenario) -> Arc<OptimizationRunResult> {
         _ => 3,
     };
     write_textures(&root, textures);
-    let toolset = ScriptedToolset::default().with_finalization(move |preparation, recorder, _| {
-        let root = preparation.mod_roots()[0].clone();
-        let packed = ArchiveFinalizationAttempt {
-            mutation: MutationState::Committed,
-            ..ArchiveFinalizationAttempt::new(root.join("output.bsa"), root)
-        };
-        if scenario == Scenario::FailingFinalizer {
-            // As production Archive Finalization records its own work's
-            // failure: an Unexpected Exception keeping the attempt already
-            // made, which forbids continuation and so fails the run.
-            return record_finalization_result(
-                recorder,
-                ArchiveFinalizationResult {
-                    attempts: vec![packed],
-                    failure: Some(ArchiveFinalizationFailure::UnexpectedException),
-                    safe_to_continue: false,
-                    detail: "the packer is gone".to_owned(),
-                    ..ArchiveFinalizationResult::default()
-                },
-                Some(3),
-            );
-        }
-        record_finalization_result(
-            recorder,
-            ArchiveFinalizationResult {
-                attempts: vec![packed],
-                ..ArchiveFinalizationResult::default()
-            },
-            None,
-        )
-    });
+    let mut packer = FakeArchivePacker::default();
+    if scenario == Scenario::FailingFinalizer {
+        // Room for one seven-byte Texture per Archive.
+        packer.max_size = 10;
+        let writes = AtomicUsize::new(0);
+        packer.after_write = Some(Box::new(move |_| {
+            if writes.fetch_add(1, Ordering::SeqCst) == 1 {
+                panic!("the packer is gone");
+            }
+        }));
+    }
+    let toolset = real_archive_work(FakeArchiveReader::default(), packer);
     let toolset = if scenario == Scenario::ContainedFailure {
         toolset.with_assets(|asset, _, _| {
             Ok(if asset.execution_path().ends_with("asset-2.dds") {
@@ -322,7 +320,7 @@ fn the_terminal_result_names_the_outcome_and_cancelling_is_only_intent() {
             Scenario::FailingFinalizer,
             RunOutcome::Failed,
             "Failed",
-            (1, 3),
+            (2, 3),
         ),
     ] {
         let result = classified_run(scenario);
@@ -387,86 +385,71 @@ fn a_close_during_a_run_waits_for_its_terminal_result() {
     assert!(!view.can_start());
 }
 
+/// Opens `path` for reading, sharing only reads: while the handle lives, the
+/// file cannot be deleted, though other handles may still read it.
+fn hold_against_deletion(path: &Path) -> File {
+    // `FILE_SHARE_READ`.
+    const SHARE_READ: u32 = 0x1;
+    OpenOptions::new()
+        .read(true)
+        .share_mode(SHARE_READ)
+        .open(path)
+        .unwrap()
+}
+
 /// A failed Apply run whose real evidence holds every kind the detail rows
-/// show: an Archive Collision a Loose Asset wins, a committed and a failed
-/// extraction, a committed failed Asset save, a finalization whose source
-/// cleanup failed beside an output left partial, and the primary Run Failure
-/// of a finalizer whose work then escapes (simulated, as no real run reaches
-/// a Run Failure here). Safety Cleanup reports `cleanup`.
+/// show but a Run Failure: an Archive Collision a Loose Asset wins, a
+/// committed and a failed extraction, a committed failed Asset save, and an
+/// Archive Finalization output whose source cleanup failed. Safety Cleanup
+/// reports `cleanup`.
+///
+/// `winner.bsa` commits its root-level entry, which is never packed;
+/// `shadowed.bsa`'s reader panics while staging, a safe failure, so the run
+/// goes on to the Asset and Archive Finalization evidence. The Loose Texture
+/// is the one packed source. Its handle denies deletion, so its source
+/// cleanup fails after the commit, and once its Archive is written a
+/// whole-file lock makes it unreadable as recovery material, which forbids
+/// continuation and so fails the run.
 fn evidence_run(cleanup: Vec<RunFailure>) -> Arc<OptimizationRunResult> {
     let root = scratch_dir("evidence");
     for name in ["winner", "shadowed"] {
         write_archive(
             &root.join(format!("{name}.bsa")),
-            &[entry("textures/a.dds", name.as_bytes())],
+            &[
+                entry("textures/a.dds", name.as_bytes()),
+                entry(&format!("{name}.txt"), name.as_bytes()),
+            ],
         );
     }
     std::fs::create_dir_all(root.join("textures")).unwrap();
-    std::fs::write(root.join("textures/a.dds"), b"loose").unwrap();
+    let loose = root.join("textures/a.dds");
+    std::fs::write(&loose, b"loose").unwrap();
+    let held = Arc::new(hold_against_deletion(&loose));
 
-    let toolset =
-        ScriptedToolset::default()
-            .with_extraction(|plan, _| {
-                if plan.archive_path.ends_with("winner.bsa") {
-                    ArchiveExtractionResult {
-                        mutation: MutationState::Committed,
-                        ..ArchiveExtractionResult::new(plan)
-                    }
-                } else {
-                    // A failed merge that rolled back is safe, so the run goes
-                    // on to the Asset and Archive Finalization evidence; a
-                    // partial one would stop it here.
-                    ArchiveExtractionResult {
-                        failure: Some(ArchiveExtractionFailure::MergeFailed),
-                        detail: "merge interrupted".to_owned(),
-                        ..ArchiveExtractionResult::new(plan)
-                    }
-                }
-            })
-            .with_assets(|asset, _, _| {
-                Ok(AssetExecutionResult::failed(
-                    AssetExecutionFailure::SaveFailed,
-                    "asset save failed",
-                )
+    let reader = FakeArchiveReader {
+        on_extract: Some(Box::new(|archive, _| {
+            if archive.ends_with("shadowed.bsa") {
+                panic!("merge interrupted");
+            }
+        })),
+        ..FakeArchiveReader::default()
+    };
+    let packer = FakeArchivePacker {
+        after_write: Some(Box::new({
+            let held = Arc::clone(&held);
+            move |_| held.try_lock().unwrap()
+        })),
+        ..FakeArchivePacker::default()
+    };
+    let toolset = real_archive_work(reader, packer).with_assets(|asset, _, _| {
+        Ok(
+            AssetExecutionResult::failed(AssetExecutionFailure::SaveFailed, "asset save failed")
                 .with_mutation(MutationState::Committed)
                 .with_path(asset.execution_path())
                 .with_operation("save_texture")
-                .with_service_detail("backend detail"))
-            })
-            .with_finalization(|preparation, recorder, _| {
-                let root = preparation.mod_roots()[0].clone();
-                // The partial output stops finalization after two of five planned
-                // outputs; being the last work phase, it still reaches the result.
-                let attempts = vec![
-                    ArchiveFinalizationAttempt {
-                        mutation: MutationState::Committed,
-                        failure: Some(ArchiveFinalizationFailure::SourceCleanupFailed),
-                        detail: "source remains usable".to_owned(),
-                        ..ArchiveFinalizationAttempt::new(root.join("output.bsa"), root.clone())
-                    },
-                    ArchiveFinalizationAttempt {
-                        mutation: MutationState::PartialOrUnknown,
-                        failure: Some(ArchiveFinalizationFailure::CommitFailed),
-                        safe_to_continue: false,
-                        detail: "publication interrupted".to_owned(),
-                        ..ArchiveFinalizationAttempt::new(root.join("output-two.bsa"), root.clone())
-                    },
-                ];
-                record_finalization_result(
-                    recorder,
-                    ArchiveFinalizationResult {
-                        attempts,
-                        ..ArchiveFinalizationResult::default()
-                    },
-                    Some(5),
-                )?;
-                // Simulates the run's work escaping after the phase recorded
-                // its result: no real port returns an error that is not a Run
-                // Evidence invariant violation, but the executor contains one
-                // as Run Work Escaped, which gives the view the primary Run
-                // Failure row this scenario needs.
-                Err(Error::RunWorkEscaped("primary failure".to_owned()))
-            });
+                .with_service_detail("backend detail"),
+        )
+    });
     let request = RunRequest::new(
         "SkyrimSE",
         ExecutionMode::Apply,
@@ -482,21 +465,27 @@ fn evidence_run(cleanup: Vec<RunFailure>) -> Arc<OptimizationRunResult> {
         "winner.bsa".into(),
         "shadowed.bsa".into(),
     ]));
-    execute(
+    let result = execute(
         &request,
         &Arc::new(toolset),
         &RecordingSink::default(),
         cleanup,
         &CancellationToken::new(),
-    )
+    );
+    // The packer's clone of the held handle went with the run's Toolset;
+    // closing this last one releases the lock and the deletion denial, so the
+    // next run can clear the scratch tree.
+    drop(held);
+    result
 }
 
 /// Origin: GuiRunTests::presentsTerminalEvidence. A failed run's detail rows
 /// show its attempts, collision winners, cleanup failures and retained
-/// mutations; a streamed failure is not repeated, and a late diagnostic keeps
-/// the terminal label.
+/// mutations, and a late diagnostic keeps the terminal label. The streamed
+/// failure half is [`a_streamed_run_failure_is_listed_once`]: no real run
+/// reaches a Run Failure after its Archive work.
 #[test]
-fn the_terminal_result_lists_its_evidence_once() {
+fn the_terminal_result_lists_its_evidence() {
     let cleanup = vec![
         RunFailure::new(
             RunFailureCode::TemporaryArtifactCleanupFailed,
@@ -507,53 +496,73 @@ fn the_terminal_result_lists_its_evidence_once() {
     ];
     let result = evidence_run(cleanup);
     assert_eq!(result.outcome(), RunOutcome::Failed);
-    let [failure] = result.failures() else {
-        panic!("one Run Failure expected: {:?}", result.failures());
+    assert!(result.failures().is_empty(), "{:?}", result.failures());
+    let root = result.mod_roots()[0].clone();
+    let [winner, shadowed] = result.archive_extraction_attempts() else {
+        panic!(
+            "two extractions: {:?}",
+            result.archive_extraction_attempts()
+        );
     };
-    assert_eq!(failure.phase, RunPhase::ArchiveFinalization);
+    assert_eq!(winner.mutation, MutationState::Committed);
+    assert!(!shadowed.succeeded() && shadowed.safe_to_continue);
+    let finalization = result.archive_finalization().unwrap();
+    let [packed] = finalization.attempts.as_slice() else {
+        panic!("one output: {finalization:?}");
+    };
+    assert_eq!(
+        packed.failure,
+        Some(ArchiveFinalizationFailure::SourceCleanupFailed)
+    );
+    assert_eq!(packed.mutation, MutationState::Committed);
+    assert!(!finalization.safe_to_continue);
+    let source_cleanup_row = format!(
+        "Archive Failure: {} | {}",
+        packed.archive_path.display(),
+        packed.detail
+    );
 
     let mut view = RunView::default();
     view.begin("run");
     assert!(view.consume(&event("run", 1, executed(RunPhase::SafetyCleanup, None))));
-    assert!(view.consume(&event(
-        "run",
-        2,
-        RunEventPayload::Failure(result.failures()[0].clone())
-    )));
-    assert!(view.consume(&event("run", 3, RunEventPayload::Terminal(result))));
+    assert!(view.consume(&event("run", 2, RunEventPayload::Terminal(result))));
 
     let details = view.state().details.join("\n");
-    let primary = view
-        .state()
-        .details
-        .iter()
-        .filter(|row| row.contains("Failure: primary failure"))
-        .count();
-    assert_eq!(primary, 1, "{details}");
+    let shown = |path: &str| root.join(path).display().to_string();
     for expected in [
-        "primary failure",
-        "cleanup failure",
-        "staging.tmp",
-        "source remains usable",
-        "merge interrupted",
-        "asset save failed",
-        "save_texture",
-        "backend detail",
-        "winner.bsa",
-        "shadowed.bsa",
-        "loose-asset-wins=yes",
-        "Committed Mutations Retained",
-        "committed=1",
-        "partial-or-unknown=1",
-        "Cancellation Observed: no",
+        "Cleanup Failure: cleanup failure | staging.tmp".to_owned(),
+        source_cleanup_row,
+        format!(
+            "Archive Failure: {} | merge interrupted",
+            shown("shadowed.bsa")
+        ),
+        format!(
+            "Asset Failure: {0} | save_texture | asset save failed | {0} | backend detail",
+            root.join("textures").join("a.dds").display()
+        ),
+        format!(
+            "Archive Collision: {} | textures/a.dds | winner={} | loose-asset-wins=yes | shadowed={}",
+            root.display(),
+            shown("winner.bsa"),
+            shown("shadowed.bsa")
+        ),
+        format!(
+            "Committed Mutations Retained: {} | Archive Extraction | committed=1 | partial-or-unknown=0",
+            root.display()
+        ),
+        format!(
+            "Committed Mutations Retained: {} | Asset Processing | committed=1 | partial-or-unknown=0",
+            root.display()
+        ),
+        "Cancellation Observed: no".to_owned(),
     ] {
         assert!(
-            details.contains(expected),
+            view.state().details.contains(&expected),
             "{expected} missing from\n{details}"
         );
     }
     let progress = view.state().progress.unwrap();
-    assert_eq!((progress.completed(), progress.total()), (2, 5));
+    assert_eq!((progress.completed(), progress.total()), (1, 1));
 
     let label = view.state().label.clone();
     assert!(view.consume(&event(
@@ -573,4 +582,53 @@ fn the_terminal_result_lists_its_evidence_once() {
             .unwrap()
             .contains("late diagnostic")
     );
+}
+
+/// Origin: GuiRunTests::presentsTerminalEvidence (the streamed failure). A
+/// Run Failure the view already showed as it streamed is not repeated when
+/// the terminal result arrives. The failure is real: an unreadable Archive
+/// stops the run in Discovering Archives, before any extraction.
+#[test]
+fn a_streamed_run_failure_is_listed_once() {
+    let root = scratch_dir("streamed-failure");
+    let broken = root.join("broken.bsa");
+    std::fs::write(&broken, "not an archive").unwrap();
+    let request = RunRequest::new(
+        "SkyrimSE",
+        ExecutionMode::Apply,
+        ModSelection::SingleModRoot(root),
+        vec![RequestedWork::ArchiveExtraction],
+    );
+    let result = execute(
+        &request,
+        &Arc::new(real_archive_work(
+            FakeArchiveReader::default(),
+            FakeArchivePacker::default(),
+        )),
+        &RecordingSink::default(),
+        Vec::new(),
+        &CancellationToken::new(),
+    );
+    assert_eq!(result.outcome(), RunOutcome::Failed);
+    let [failure] = result.failures() else {
+        panic!("one Run Failure expected: {:?}", result.failures());
+    };
+    assert_eq!(failure.code, RunFailureCode::ArchiveUnreadable);
+    assert_eq!(failure.path, broken);
+    let row = format!("Failure: {} | {}", failure.detail, broken.display());
+
+    let mut view = RunView::default();
+    view.begin("run");
+    assert!(view.consume(&event("run", 1, RunEventPayload::Failure(failure.clone()))));
+    assert!(view.consume(&event("run", 2, RunEventPayload::Terminal(result))));
+
+    let details = view.state().details.join("\n");
+    let shown = view
+        .state()
+        .details
+        .iter()
+        .filter(|detail| **detail == row)
+        .count();
+    assert_eq!(shown, 1, "{details}");
+    assert_eq!(view.state().label, "Failed");
 }
