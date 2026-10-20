@@ -29,11 +29,11 @@ An Asset Kind or optimization behavior supported by the selected game profile. A
 _Avoid_: Feature flag, UI availability
 
 **Selected Profile**:
-The profile facts one Optimization Run reads once, during Preparing: its Profile Capabilities, Conversion Preference, Archive naming rules, Texture and Mesh targets, Packing Exclusions, and custom Headpart Meshes. Every part of the run uses this one read.
+The profile facts one Optimization Run reads once, during Preparing: its Profile Capabilities, Conversion Preference, Archive naming rules, Texture and Mesh targets, Packing Exclusions, ignored-mods list, and custom Headpart Meshes. Every part of the run uses this one read.
 _Avoid_: Profile snapshot, profile settings
 
 **Conversion Preference**:
-The Selected Profile's choice of whether requested Texture work also converts convertible Textures. It is not a Profile Capability: its absence never contradicts a Run Request.
+The Selected Profile's choice of whether requested Texture work also converts convertible Textures. It is not a Profile Capability: its absence never contradicts a Run Request. A Run Request never carries it; requested Texture work picks it up during Preparing.
 _Avoid_: TGA option, convert flag
 
 **Dry Run**:
