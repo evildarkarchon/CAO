@@ -772,14 +772,18 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
             "SkyrimSE",
             ExecutionMode::Apply,
             ModSelection::ChildModRoots(common::relative_to_working_directory(&selected)),
-            vec![RequestedWork::ConvertibleTextureConversion],
+            vec![RequestedWork::NativeTextureOptimization],
         );
         let mut cleanup = CountingCleanup::default();
 
+        // The profile's Conversion Preference turns the requested native
+        // Texture work into conversion of the TGA.
         let result = execute(
             &request,
             &mut cleanup,
-            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            Some(&*common::converting_configuration(Some(Arc::clone(
+                &toolset,
+            )))),
             &token,
         );
 

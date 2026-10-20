@@ -21,22 +21,40 @@ use cao_core::run::{
     InlineRunScheduler, MutationKind, OptimizationRunResult, OptimizationRunService,
     RunFailureCode, RunOutcome, RunPhase, RunRequest, TemporaryArtifactRegistry, create_run_id,
 };
-use cao_core::test_support::FakeBackendFactory;
+use cao_core::test_support::{FakeBackendFactory, ToolsetConfiguration};
 use cao_winfs::OwnerLock;
 use common::{
-    backend_toolset, canonical, scratch_dir, snapshot_tree, toolset_configuration, write_tree,
+    backend_toolset, canonical, converting_configuration, scratch_dir, snapshot_tree,
+    toolset_configuration, write_tree,
 };
 
 /// Runs `request` to completion on the calling thread, its Asset attempts
 /// driving a fresh fake backend.
 fn run(request: RunRequest) -> Arc<OptimizationRunResult> {
+    run_with(
+        toolset_configuration(Some(backend_toolset(FakeBackendFactory::default()))),
+        request,
+    )
+}
+
+/// Like [`run`], but the SSE-like profile prefers conversion, so requested
+/// native Texture work also converts convertible Textures.
+fn run_converting(request: RunRequest) -> Arc<OptimizationRunResult> {
+    run_with(
+        converting_configuration(Some(backend_toolset(FakeBackendFactory::default()))),
+        request,
+    )
+}
+
+/// Runs `request` to completion on the calling thread, loading the Selected
+/// Profile and Run Toolset from `configuration`.
+fn run_with(
+    configuration: Arc<ToolsetConfiguration>,
+    request: RunRequest,
+) -> Arc<OptimizationRunResult> {
     let _serial = common::serial();
-    let service = OptimizationRunService::with_scheduler(
-        Arc::new(InlineRunScheduler),
-        Some(toolset_configuration(Some(backend_toolset(
-            FakeBackendFactory::default(),
-        )))),
-    );
+    let service =
+        OptimizationRunService::with_scheduler(Arc::new(InlineRunScheduler), Some(configuration));
     service.start(request, None).expect("the run starts").wait()
 }
 
@@ -151,13 +169,7 @@ fn a_failed_save_publishes_nothing() {
 fn a_texture_conversion_publishes_the_dds_and_removes_its_source() {
     let root = mod_root("texture-conversion", &["textures/c_changes.tga"]);
 
-    let result = run(apply(
-        &root,
-        &[
-            RequestedWork::NativeTextureOptimization,
-            RequestedWork::ConvertibleTextureConversion,
-        ],
-    ));
+    let result = run_converting(apply(&root, &[RequestedWork::NativeTextureOptimization]));
 
     assert_eq!(
         result.outcome(),

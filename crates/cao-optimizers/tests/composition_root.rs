@@ -105,10 +105,21 @@ fn the_request_owns_the_caller_intent() {
     // conversion, the request never carries it: Preparing derives it from the
     // profile it reads.
     assert!(request.requests(RequestedWork::NativeTextureOptimization));
-    assert!(!request.requests(RequestedWork::ConvertibleTextureConversion));
     assert!(request.requests(RequestedWork::StandardMeshOptimization));
     assert!(request.requests(RequestedWork::TerrainMeshOptimization));
     assert!(!request.requests(RequestedWork::ArchiveCreation));
+    // The intent is exactly the work the options chose, so the request carries
+    // no conversion of any kind.
+    let mut work = request.requested_work().to_vec();
+    work.sort();
+    assert_eq!(
+        work,
+        [
+            RequestedWork::NativeTextureOptimization,
+            RequestedWork::StandardMeshOptimization,
+            RequestedWork::TerrainMeshOptimization,
+        ]
+    );
 }
 
 #[test]
