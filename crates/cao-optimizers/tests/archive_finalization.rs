@@ -93,7 +93,7 @@ fn finalize_probing(
     let reader = ArchiveFileReader::default();
     let mut evidence = ArchiveFinalizationEvidence::new();
     let mut artifacts = TemporaryArtifactRegistry::new(create_run_id());
-    ArchiveFinalization::new(&packer, &reader, capacity, &VolumeProbes, settings, &[])
+    ArchiveFinalization::new(&packer, &reader, capacity, &VolumeProbes, settings)
         .run(
             &preparation(&[root.to_path_buf()], packer.rules().extension.as_str()),
             &mut evidence.recorder(),

@@ -272,10 +272,6 @@ impl OptimizerSettings {
 struct PreparedProfile {
     /// `profile.ini`.
     settings: Arc<ProfileSettings>,
-    /// The Packing Exclusion rules of `FilesToNotPack.txt`, as C++'s profile
-    /// snapshot loaded them during Preparing. The Selected Profile holds the
-    /// same list.
-    files_to_not_pack: Vec<String>,
     /// The Headpart Meshes `customHeadparts.txt` lists, loaded with
     /// `FilesToNotPack.txt`, as C++'s profile snapshot loaded them.
     custom_headparts: Vec<String>,
@@ -339,12 +335,11 @@ impl ProfileConfigurationProvider {
         let selected = SelectedProfile::new(profile_capabilities(&settings))
             .with_conversion_preference(settings.textures_convert_tga)
             .with_ignored_mods(ignored_mods)
-            .with_packing_exclusions(files_to_not_pack.clone());
+            .with_packing_exclusions(files_to_not_pack);
         Ok((
             selected,
             PreparedProfile {
                 settings: Arc::new(settings),
-                files_to_not_pack,
                 custom_headparts,
             },
         ))
@@ -469,7 +464,6 @@ impl RunWorkSettings {
             probes.clone(),
             probes.clone(),
             self.settings.finalization,
-            profile.files_to_not_pack.clone(),
         );
         RunToolset {
             // The adapter creates the backend on the first Asset, as C++
@@ -637,7 +631,6 @@ mod tests {
             },
             profile: Arc::new(PreparedProfile {
                 settings: Arc::new(profile.load_settings_checked().unwrap()),
-                files_to_not_pack: Vec::new(),
                 custom_headparts: Vec::new(),
             }),
         };
