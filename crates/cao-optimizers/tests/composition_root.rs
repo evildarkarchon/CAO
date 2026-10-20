@@ -8,11 +8,12 @@ use std::path::Path;
 
 use cao_core::execution::AssetExecutionFailure;
 use cao_core::routing::{
-    ExecutionMode, PolicyValidationError, ProfileCapabilities, ProfileCapability, RequestedWork,
-    SkipReason,
+    AssetOperation, ExecutionMode, PolicyValidationError, ProfileCapabilities, ProfileCapability,
+    RequestedWork, SkipReason,
 };
 use cao_core::run::{
-    ModSelection, RunConfigurationProvider, RunDiagnosticCode, RunFailureCode, RunOutcome, RunPhase,
+    ModSelection, OptimizationRunResult, RunConfigurationProvider, RunDiagnosticCode,
+    RunFailureCode, RunOutcome, RunPhase,
 };
 use cao_optimizers::composition::{ApplicationRun, ProfileConfigurationProvider, run_request};
 use cao_profiles::{OptimizationMode, Options};
@@ -20,7 +21,10 @@ use common::{
     app_dir, dry_run_textures, edit_profile, profile_options, serial, snapshot_tree, write,
     write_dds,
 };
-use directxtex::{DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM};
+use directxtex::{
+    CP_FLAGS_NONE, DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, ScratchImage,
+    TGA_FLAGS_NONE,
+};
 
 #[test]
 fn invalid_option_values_are_rejected_before_any_run() {
@@ -63,7 +67,7 @@ fn invalid_option_values_are_rejected_before_any_run() {
     add("relative folder", &|o| o.user_path = "mods/Mod".into());
 
     for (name, options) in cases {
-        assert!(run_request(&app, "SSE", &options).is_err(), "{name}");
+        assert!(run_request("SSE", &options).is_err(), "{name}");
     }
 }
 
@@ -77,7 +81,7 @@ fn an_odd_target_size_is_accepted_while_resizing_by_size_is_off() {
         textures_target_width: 513,
         ..Options::default()
     };
-    assert!(run_request(&app, "SSE", &options).is_ok());
+    assert!(run_request("SSE", &options).is_ok());
 }
 
 #[test]
@@ -92,13 +96,16 @@ fn the_request_owns_the_caller_intent() {
         ..Options::default()
     };
 
-    let request = run_request(&app, "FO4", &options).unwrap();
+    let request = run_request("FO4", &options).unwrap();
 
     assert_eq!(request.profile_identity(), "FO4");
     assert_eq!(request.execution_mode(), ExecutionMode::DryRun);
     assert_eq!(request.mod_selection(), &ModSelection::ChildModRoots(mods));
-    // The default options select necessary Texture work; FO4 converts TGAs.
-    assert!(request.requests(RequestedWork::ConvertibleTextureConversion));
+    // The default options select necessary Texture work. Although FO4 prefers
+    // conversion, the request never carries it: Preparing derives it from the
+    // profile it reads.
+    assert!(request.requests(RequestedWork::NativeTextureOptimization));
+    assert!(!request.requests(RequestedWork::ConvertibleTextureConversion));
     assert!(request.requests(RequestedWork::StandardMeshOptimization));
     assert!(request.requests(RequestedWork::TerrainMeshOptimization));
     assert!(!request.requests(RequestedWork::ArchiveCreation));
@@ -112,7 +119,7 @@ fn disabled_texture_work_does_not_request_profile_conversion() {
         textures_necessary: false,
         ..Options::default()
     };
-    let request = run_request(&app, "SSE", &options).unwrap();
+    let request = run_request("SSE", &options).unwrap();
     assert!(!request.has_requested_work());
 }
 
@@ -215,20 +222,37 @@ fn a_request_contradicting_the_profile_capabilities_fails_preparing() {
 
 /// Origin: ApplicationRunSetupTests::fo4ConversionCompilesWithoutMeshOptimization.
 /// TGA conversion derives Mesh Reference Maintenance, which FO4 supports
-/// through its Texture capability even though it has no Mesh optimization.
+/// through its Texture capability even though it has no Mesh optimization, so
+/// a run under FO4's Conversion Preference prepares and converts.
 #[test]
 fn fo4_texture_conversion_needs_no_mesh_optimization_capability() {
+    let _serial = serial();
     let app = app_dir("fo4-conversion");
-    let options = dry_run_textures(&app, &app.join("mods/Mod"));
+    let mod_root = app.join("mods").join("Mod");
+    write(&mod_root, "textures/armor.tga", &tga_bytes());
+    let options = dry_run_textures(&app, &mod_root);
     let run = ApplicationRun::new(&app, "FO4", &options).unwrap();
-    assert!(
-        run.request()
-            .requests(RequestedWork::ConvertibleTextureConversion)
-    );
     assert!(
         !run.request()
             .requests(RequestedWork::StandardMeshOptimization)
     );
+
+    let result = run.start(None).unwrap().wait();
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.failures()
+    );
+    let policy = result.preparation().unwrap().policy();
+    assert!(policy.converts_textures());
+    assert!(policy.maintains_mesh_references());
+    assert!(attempt_carries(
+        &result,
+        "armor.tga",
+        AssetOperation::Conversion
+    ));
 }
 
 /// Several Mods through the production wiring: the shipped SSE profile's
@@ -454,6 +478,111 @@ fn a_change_to_profile_ini_between_two_runs_is_picked_up_at_preparing() {
     assert_eq!(failure.phase, RunPhase::Preparing);
 }
 
+/// An 8×8 TGA, small enough to convert quickly.
+fn tga_bytes() -> Vec<u8> {
+    let mut scratch = ScratchImage::default();
+    scratch
+        .initialize_2d(DXGI_FORMAT_R8G8B8A8_UNORM, 8, 8, 1, 1, CP_FLAGS_NONE)
+        .unwrap();
+    for (index, byte) in scratch.pixels_mut().iter_mut().enumerate() {
+        *byte = (index * 13) as u8;
+    }
+    scratch.images()[0]
+        .save_tga(TGA_FLAGS_NONE, Some(scratch.metadata()))
+        .unwrap()
+        .buffer()
+        .to_vec()
+}
+
+/// Apply options over `mod_root` under SSE with only necessary Texture work,
+/// so a TGA is converted exactly when the Conversion Preference says so.
+fn apply_necessary_textures(app: &Path, mod_root: &Path) -> Options {
+    let mut options = dry_run_textures(app, mod_root);
+    options.dry_run = false;
+    options.textures_compress = false;
+    options.textures_mipmaps = false;
+    options
+}
+
+/// Whether any attempt of `result` on a file named `name` carries `operation`.
+fn attempt_carries(result: &OptimizationRunResult, name: &str, operation: AssetOperation) -> bool {
+    result.asset_attempts().iter().any(|attempt| {
+        attempt.asset.execution_path().file_name() == Some(name.as_ref())
+            && attempt.asset.operations().contains(operation)
+    })
+}
+
+/// A Conversion Preference turned off after setup but before the run starts
+/// is honoured: Preparing's read decides, so no TGA is converted.
+#[test]
+fn a_conversion_preference_turned_off_before_the_start_converts_nothing() {
+    let _serial = serial();
+    let app = app_dir("conversion-preference-off");
+    let mod_root = app.join("mods").join("Mod");
+    write(&mod_root, "textures/armor.tga", &tga_bytes());
+    write(&mod_root, "meshes/armor.nif", b"not a mesh");
+    // The shipped SSE profile prefers conversion when the run is set up.
+    let run = ApplicationRun::new(&app, "SSE", &apply_necessary_textures(&app, &mod_root)).unwrap();
+
+    edit_profile(&app, "SSE", "texturesConvertTga", "false");
+    let result = run.start(None).unwrap().wait();
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.failures()
+    );
+    assert_eq!(
+        std::fs::read(mod_root.join("textures/armor.tga")).unwrap(),
+        tga_bytes()
+    );
+    assert!(!mod_root.join("textures/armor.dds").exists());
+    assert!(result.asset_attempts().is_empty());
+    assert_eq!(
+        result.skipped_asset_count(SkipReason::ExcludedAssetVariant),
+        1,
+        "the TGA is a Texture Variant this run excludes"
+    );
+    assert_eq!(
+        result.skipped_asset_count(SkipReason::DisabledAssetKind),
+        1,
+        "without conversion no Mesh needs its references maintained"
+    );
+}
+
+/// A Conversion Preference turned on after setup but before the run starts
+/// is honoured: the TGA is converted, and Meshes are routed for Mesh
+/// Reference Maintenance.
+#[test]
+fn a_conversion_preference_turned_on_before_the_start_converts_and_maintains_mesh_references() {
+    let _serial = serial();
+    let app = app_dir("conversion-preference-on");
+    let mod_root = app.join("mods").join("Mod");
+    write(&mod_root, "textures/armor.tga", &tga_bytes());
+    // Fails to load, but its routed operations are still visible.
+    write(&mod_root, "meshes/armor.nif", b"not a mesh");
+    edit_profile(&app, "SSE", "texturesConvertTga", "false");
+    let run = ApplicationRun::new(&app, "SSE", &apply_necessary_textures(&app, &mod_root)).unwrap();
+
+    edit_profile(&app, "SSE", "texturesConvertTga", "true");
+    let result = run.start(None).unwrap().wait();
+
+    assert!(result.preparation().unwrap().policy().converts_textures());
+    assert!(attempt_carries(
+        &result,
+        "armor.tga",
+        AssetOperation::Conversion
+    ));
+    assert!(mod_root.join("textures/armor.dds").is_file());
+    assert!(!mod_root.join("textures/armor.tga").exists());
+    assert!(attempt_carries(
+        &result,
+        "armor.nif",
+        AssetOperation::MeshReferenceMaintenance
+    ));
+}
+
 #[test]
 fn an_unreadable_profile_fails_preparing_rather_than_the_start() {
     let _serial = serial();
@@ -473,14 +602,8 @@ fn an_unreadable_profile_fails_preparing_rather_than_the_start() {
         RunFailureCode::ConfigurationLoadingFailed
     );
 
-    // Unreadable before setup too: with no Texture work, setup does not read
-    // the profile, so Preparing reports it.
-    let mut options = Options {
-        user_path: mod_root.to_string_lossy().into_owned(),
-        textures_necessary: false,
-        ..Options::default()
-    };
-    options.dry_run = true;
+    // Unreadable before setup too: setup never reads the profile, even for
+    // Texture work, so Preparing reports it.
     let run = ApplicationRun::new(&app, "MissingProfile", &options).unwrap();
     let result = run.start(None).unwrap().wait();
     assert_eq!(

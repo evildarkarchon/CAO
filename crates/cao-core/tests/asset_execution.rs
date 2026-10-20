@@ -69,6 +69,7 @@ fn route(mode: ExecutionMode, work: &[RequestedWork], path: &Path) -> RoutedAsse
     let policy = RoutingPolicy::compile(
         RoutingPolicyRequest::for_work(mode, work),
         ProfileCapabilities::define(".bsa", CAPABILITIES),
+        false,
     )
     .expect("the scenario's policy is valid");
     match AssetRouter::new(policy).route(path) {
