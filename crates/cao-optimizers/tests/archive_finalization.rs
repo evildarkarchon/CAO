@@ -56,6 +56,7 @@ fn mod_root(scenario: &str, name: &str) -> PathBuf {
 fn preparation(roots: &[PathBuf], extension: &str) -> RunPreparation {
     let configuration = RunConfiguration {
         profile: ProfileCapabilities::define(extension, &[ProfileCapability::ArchiveCreation]),
+        conversion_preference: false,
         ignored_mods: Vec::new(),
         separator_suffixes: Vec::new(),
     };

@@ -44,6 +44,7 @@ use crate::test_support::{EVERY_CAPABILITY, Observed, RecordingSink, sse_profile
 fn successful_preparation() -> RunPreparation {
     let configuration = RunConfiguration {
         profile: ProfileCapabilities::define(".BSA", &EVERY_CAPABILITY),
+        conversion_preference: false,
         ignored_mods: vec!["ignored-mod".to_owned()],
         separator_suffixes: vec!["separator".to_owned()],
     };

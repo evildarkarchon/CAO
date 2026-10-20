@@ -33,6 +33,16 @@ pub fn sse_configuration() -> RunConfiguration {
     }
 }
 
+/// The Run Configuration of [`sse_configuration`] with the Conversion
+/// Preference on, so requested native Texture work also converts convertible
+/// Textures, as the shipped SSE profile does.
+pub fn converting_sse_configuration() -> RunConfiguration {
+    RunConfiguration {
+        conversion_preference: true,
+        ..sse_configuration()
+    }
+}
+
 /// A provider returning one fixed configuration and counting its loads.
 ///
 /// It supplies no Run Toolset, so requested work fails Preparing with

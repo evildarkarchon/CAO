@@ -100,6 +100,20 @@ fn routing_and_the_archive_rules_name_one_game() {
 }
 
 #[test]
+fn the_conversion_preference_is_the_profile_tga_conversion_setting() {
+    let app = app_dir("selected-conversion-preference");
+
+    // The shipped SSE profile converts TGAs; TES5's does not.
+    assert!(read(&app, "SSE").conversion_preference());
+    assert!(!read(&app, "TES5").conversion_preference());
+
+    edit_profile(&app, "SSE", "texturesConvertTga", "false");
+    edit_profile(&app, "TES5", "texturesConvertTga", "true");
+    assert!(!read(&app, "SSE").conversion_preference());
+    assert!(read(&app, "TES5").conversion_preference());
+}
+
+#[test]
 fn the_profile_can_only_raise_the_maximum_archive_size() {
     const MIB: u64 = 1024 * 1024;
     let app = app_dir("selected-archive-size");
