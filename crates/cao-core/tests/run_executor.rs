@@ -1940,110 +1940,93 @@ enum WorkFact {
     Succeeded,
     ContainedFailure,
     UnsafeMutation,
-    FatalFailure,
 }
 
-/// Origin: RunExecutorTests::terminalPrecedenceRetainsAllEvidence (all
-/// sixteen cases). Unsafe work and fatal failures are Failed whatever else
-/// happened; otherwise cancellation is Cancelled; otherwise a contained or
-/// cleanup failure completes with failures. Every fact is retained. The runs
-/// are Apply: the fatal failure is the Archive Finalization port failing,
-/// and Dry Run never calls it.
+/// Origin: RunExecutorTests::terminalPrecedenceRetainsAllEvidence, cut to
+/// one case per Run Outcome. Every combination is classified directly by the
+/// executor's own classification table; these full runs show the executor
+/// feeds its evidence into classification and retains every fact. Unsafe
+/// work is Failed even when cancelled; otherwise cancellation is Cancelled;
+/// otherwise a contained or cleanup failure completes with failures.
 #[test]
-fn terminal_precedence_classifies_every_combination_and_keeps_every_fact() {
+fn terminal_precedence_classifies_each_outcome_and_keeps_every_fact() {
     use RunOutcome::{Cancelled, CompletedWithFailures, Failed, Succeeded};
-    // (fact, [plain, cleanup failure, cancelled, cancelled with cleanup failure])
+    // (fact, cleanup failure, cancelled, outcome)
     let table = [
-        (
-            WorkFact::Succeeded,
-            [Succeeded, CompletedWithFailures, Cancelled, Cancelled],
-        ),
+        (WorkFact::Succeeded, false, false, Succeeded),
         (
             WorkFact::ContainedFailure,
-            [
-                CompletedWithFailures,
-                CompletedWithFailures,
-                Cancelled,
-                Cancelled,
-            ],
+            true,
+            false,
+            CompletedWithFailures,
         ),
-        (WorkFact::UnsafeMutation, [Failed; 4]),
-        (WorkFact::FatalFailure, [Failed; 4]),
+        (WorkFact::ContainedFailure, true, true, Cancelled),
+        (WorkFact::UnsafeMutation, true, true, Failed),
     ];
     let root = mod_root("terminal-precedence", &["textures/a.dds"]);
-    for (fact, outcomes) in table {
-        for (index, expected) in outcomes.into_iter().enumerate() {
-            let (cleanup_fails, cancelled) = (index % 2 == 1, index >= 2);
-            let case = format!("{fact:?}, cleanup failure {cleanup_fails}, cancelled {cancelled}");
-            let token = CancellationToken::new();
-            let toolset = ScriptedToolset::default().with_assets(move |_, _, _| {
-                Ok(match fact {
-                    WorkFact::ContainedFailure => {
-                        AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed, "contained")
-                    }
-                    WorkFact::UnsafeMutation => {
-                        AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed, "unknown")
-                            .with_mutation(MutationState::PartialOrUnknown)
-                    }
-                    _ => AssetExecutionResult::success(MutationState::None),
-                })
-            });
-            let toolset = Arc::new(if fact == WorkFact::FatalFailure {
-                toolset.with_escaping_finalization_work("fatal work failure")
+    for (fact, cleanup_fails, cancelled, expected) in table {
+        let case = format!("{fact:?}, cleanup failure {cleanup_fails}, cancelled {cancelled}");
+        let token = CancellationToken::new();
+        let toolset = Arc::new(ScriptedToolset::default().with_assets(move |_, _, _| {
+            Ok(match fact {
+                WorkFact::ContainedFailure => {
+                    AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed, "contained")
+                }
+                WorkFact::UnsafeMutation => {
+                    AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed, "unknown")
+                        .with_mutation(MutationState::PartialOrUnknown)
+                }
+                WorkFact::Succeeded => AssetExecutionResult::success(MutationState::None),
+            })
+        }));
+        let mut cleanup = ScriptedCleanup {
+            cancels: cancelled.then(|| token.clone()),
+            failures: if cleanup_fails {
+                vec![RunFailure::new(
+                    RunFailureCode::TemporaryArtifactCleanupFailed,
+                    RunPhase::SafetyCleanup,
+                    "retained artifact",
+                )]
             } else {
-                toolset
-            });
-            let mut cleanup = ScriptedCleanup {
-                cancels: cancelled.then(|| token.clone()),
-                failures: if cleanup_fails {
-                    vec![RunFailure::new(
-                        RunFailureCode::TemporaryArtifactCleanupFailed,
-                        RunPhase::SafetyCleanup,
-                        "retained artifact",
-                    )]
-                } else {
-                    Vec::new()
-                },
-                ..ScriptedCleanup::default()
-            };
+                Vec::new()
+            },
+            ..ScriptedCleanup::default()
+        };
 
-            let result = execute_run(
-                &request(
-                    ExecutionMode::Apply,
-                    &root,
-                    &[RequestedWork::NativeTextureOptimization],
-                ),
-                &mut cleanup,
-                None,
-                Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
-                &token,
-            );
+        let result = execute_run(
+            &request(
+                ExecutionMode::Apply,
+                &root,
+                &[RequestedWork::NativeTextureOptimization],
+            ),
+            &mut cleanup,
+            None,
+            Some(&ToolsetConfiguration::sse(Some(Arc::clone(&toolset)))),
+            &token,
+        );
 
-            assert_eq!(result.outcome(), expected, "{case}");
-            assert_eq!(result.cancellation_observed(), cancelled, "{case}");
-            assert_eq!(
-                result.cleanup_failures().len(),
-                usize::from(cleanup_fails),
-                "{case}"
-            );
-            if cleanup_fails {
-                assert_eq!(result.cleanup_failures()[0].detail, "retained artifact");
-            }
-            let attempted = matches!(fact, WorkFact::ContainedFailure | WorkFact::UnsafeMutation);
-            if attempted {
-                assert_eq!(result.asset_attempts().len(), 1, "{case}");
-            }
-            assert_eq!(
-                result.failures().len(),
-                usize::from(fact == WorkFact::FatalFailure),
-                "{case}"
-            );
-            assert_eq!(
-                result.mutation_summaries().len(),
-                usize::from(fact == WorkFact::UnsafeMutation),
-                "{case}"
-            );
+        assert_eq!(result.outcome(), expected, "{case}");
+        assert_eq!(result.cancellation_observed(), cancelled, "{case}");
+        assert_eq!(
+            result.cleanup_failures().len(),
+            usize::from(cleanup_fails),
+            "{case}"
+        );
+        if cleanup_fails {
+            assert_eq!(result.cleanup_failures()[0].detail, "retained artifact");
         }
+        assert_eq!(result.asset_attempts().len(), 1, "{case}");
+        assert_eq!(
+            result.asset_attempts()[0].result.succeeded(),
+            fact == WorkFact::Succeeded,
+            "{case}"
+        );
+        assert!(result.failures().is_empty(), "{case}");
+        assert_eq!(
+            result.mutation_summaries().len(),
+            usize::from(fact == WorkFact::UnsafeMutation),
+            "{case}"
+        );
     }
 }
 

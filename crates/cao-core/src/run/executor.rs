@@ -717,3 +717,8 @@ impl RunExecutor {
 
 #[cfg(test)]
 mod tests;
+
+// Kept apart from the containment tests above: classification needs no run,
+// only evidence built through the evidence store's own recording steps.
+#[cfg(test)]
+mod classification_tests;
