@@ -143,6 +143,25 @@ impl ScriptedToolset {
     /// Archive seams. A scripted fake backend, or a scripted adapter, is
     /// created afresh for each Toolset.
     pub fn toolset(self: &Arc<Self>) -> RunToolset {
+        self.toolset_over(
+            ArchiveSeams {
+                reader: self.reader.clone(),
+                volume_probe: self.volume_probe.clone(),
+                packer: self.packer.clone(),
+            },
+            self.archive_work,
+        )
+    }
+
+    /// A fresh Run Toolset whose Asset attempts follow this script, but whose
+    /// Archive work goes over `seams` with `settings` instead of this
+    /// script's fakes and [`ScriptedToolset::archive_work`]. It is built
+    /// through the production [`RunToolset::new`], as [`Self::toolset`] is.
+    pub fn toolset_over(
+        self: &Arc<Self>,
+        seams: ArchiveSeams,
+        settings: ArchiveWorkSettings,
+    ) -> RunToolset {
         let backend: Option<Box<dyn AssetAttemptPort>> = match &self.assets {
             AssetAttempts::FakeBackend(factory) => {
                 Some(Box::new(AssetAttemptAdapter::new(factory.clone())))
@@ -155,12 +174,8 @@ impl ScriptedToolset {
                 script: Arc::clone(self),
                 backend,
             }),
-            ArchiveSeams {
-                reader: self.reader.clone(),
-                volume_probe: self.volume_probe.clone(),
-                packer: self.packer.clone(),
-            },
-            self.archive_work,
+            seams,
+            settings,
         )
     }
 
@@ -264,5 +279,63 @@ impl RunConfigurationProvider for ToolsetConfiguration {
     fn load(&self, _profile_identity: &str) -> Result<(SelectedProfile, RunToolset), Error> {
         self.loads.fetch_add(1, Ordering::SeqCst);
         Ok((self.profile.clone(), self.toolset.toolset()))
+    }
+}
+
+/// Builds the Archive seams of one run's Toolset.
+pub type SeamsBuilder = Box<dyn Fn() -> ArchiveSeams + Send + Sync>;
+
+/// A provider returning one fixed Selected Profile and, for each run, a
+/// fresh Run Toolset over the Archive seams its builder makes. It counts its
+/// loads.
+///
+/// Unlike [`ToolsetConfiguration`], its Archive seams are not the typed
+/// fakes, so a scenario can drive a run over any reader, packer and volume
+/// probe, such as `cao-optimizers`' production adapters with its own probes.
+/// The Toolset is built through the production [`RunToolset::new`] with
+/// `archive_work`, so the run does core's real Archive work over the seams.
+/// Asset attempts follow `assets` as [`ScriptedToolset`] scripts them; only
+/// its Asset attempt script is used, never its fake Archive seams or
+/// settings.
+pub struct SeamsConfiguration {
+    pub profile: SelectedProfile,
+    /// Called once per run, as Preparing loads the configuration, so each
+    /// run's Toolset has seams of its own.
+    pub seams: SeamsBuilder,
+    pub archive_work: ArchiveWorkSettings,
+    /// The Asset attempt script; keep a clone to read its attempts.
+    pub assets: Arc<ScriptedToolset>,
+    pub loads: AtomicUsize,
+}
+
+impl SeamsConfiguration {
+    /// A provider of `profile` and of Toolsets over the seams `seams` builds,
+    /// with `archive_work`. Every Asset attempt succeeds with no mutation.
+    pub fn new(
+        profile: SelectedProfile,
+        seams: impl Fn() -> ArchiveSeams + Send + Sync + 'static,
+        archive_work: ArchiveWorkSettings,
+    ) -> Self {
+        Self {
+            profile,
+            seams: Box::new(seams),
+            archive_work,
+            assets: Arc::new(ScriptedToolset::default()),
+            loads: AtomicUsize::new(0),
+        }
+    }
+
+    /// Scripts each run's Asset attempts with `assets`; see
+    /// [`SeamsConfiguration::assets`].
+    pub fn with_assets(self, assets: Arc<ScriptedToolset>) -> Self {
+        Self { assets, ..self }
+    }
+}
+
+impl RunConfigurationProvider for SeamsConfiguration {
+    fn load(&self, _profile_identity: &str) -> Result<(SelectedProfile, RunToolset), Error> {
+        self.loads.fetch_add(1, Ordering::SeqCst);
+        let toolset = self.assets.toolset_over((self.seams)(), self.archive_work);
+        Ok((self.profile.clone(), toolset))
     }
 }
