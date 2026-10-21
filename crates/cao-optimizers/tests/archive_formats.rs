@@ -13,13 +13,12 @@ use std::path::Path;
 use ba2::prelude::*;
 use ba2::{fo4, tes3, tes4};
 use cao_core::execution::MutationState;
-use cao_core::run::{
-    ArchiveExtractionPlan, ArchiveExtractor, RunFailureCode, RunOutcome, RunPhase,
-    TemporaryArtifactRegistry, create_run_id,
-};
-use cao_optimizers::archives::{ArchiveFileReader, VolumeProbes};
+use cao_core::routing::RequestedWork;
+use cao_core::run::{CancellationToken, RunFailureCode, RunOutcome, RunPhase};
+use cao_core::test_support::ArchiveRunRequest;
 use cao_optimizers::composition::ApplicationRun;
 use cao_winfs::msvc_canonical;
+use common::archive_run::{only_attempt, production_seams};
 use common::{app_dir, profile_options, scratch_dir, serial};
 
 /// A raw Archive container, as C++ `createRawArchive` numbered them.
@@ -105,7 +104,11 @@ fn raw_archive(path: &Path, format: Format, name: &str) {
 
 /// Origin: stagedExtractionCommitsPayload. Every supported container's
 /// payload commits from registered staging, and the source Archive is kept
-/// byte for byte.
+/// byte for byte, as its backup.
+///
+/// Each container is extracted by a whole Apply run that requests only
+/// Archive extraction, over the production reader, the SSE packer and the
+/// real volume probes, so its plan comes from the run's preflight (#597).
 #[test]
 fn every_container_commits_its_staged_payload() {
     for format in [
@@ -119,24 +122,24 @@ fn every_container_commits_its_staged_payload() {
         let archive = root.join("source.bsa");
         raw_archive(&archive, format, "textures/a.dds");
         let original = std::fs::read(&archive).unwrap();
-        let reader = ArchiveFileReader::default();
-        let mut artifacts = TemporaryArtifactRegistry::new(create_run_id());
-        let entries = vec!["textures/a.dds".to_owned()];
-        let plan = ArchiveExtractionPlan {
-            archive_path: archive.clone(),
-            mod_root: root.clone(),
-            merge_entries: entries.clone(),
-            entries,
-            estimated_capacity_bytes: 0,
-        };
+        let archive_run =
+            ArchiveRunRequest::new(&root).with_work([RequestedWork::ArchiveExtraction]);
+        let configuration = archive_run.seams_configuration(production_seams());
 
-        let result = ArchiveExtractor::new(&reader, &VolumeProbes).extract(&plan, &mut artifacts);
+        let run = archive_run.execute(&configuration, None, &CancellationToken::new());
 
+        let result = only_attempt(&run);
         assert!(result.succeeded(), "{format:?}: {}", result.detail);
         assert_eq!(result.mutation, MutationState::Committed, "{format:?}");
         assert_eq!(std::fs::read(root.join("textures/a.dds")).unwrap(), b"B");
-        assert_eq!(std::fs::read(&archive).unwrap(), original, "{format:?}");
-        assert!(artifacts.cleanup().is_empty(), "{format:?}");
+        // The default source cleanup backs the source up under a new name.
+        assert!(!archive.exists(), "{format:?}");
+        assert_eq!(
+            std::fs::read(root.join("source.bsa.bak")).unwrap(),
+            original,
+            "{format:?}"
+        );
+        assert!(run.cleanup_failures().is_empty(), "{format:?}");
     }
 }
 

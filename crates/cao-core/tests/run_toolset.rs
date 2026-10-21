@@ -238,7 +238,7 @@ fn an_apply_run_extracts_archives_through_the_toolset_before_routing() {
     );
 }
 
-/// The Archive extractor is the only layer that contains a panic of the
+/// Archive extraction is the only layer that contains a panic of the
 /// Archive reader: one while staging, before anything is published, is a
 /// failed extraction attempt with no mutation that is safe to continue. The
 /// source is kept, the run goes on to the Loose Assets and Archive
@@ -266,7 +266,10 @@ fn a_reader_panicking_while_staging_is_a_safe_failed_extraction() {
     );
 
     assert_eq!(result.outcome(), RunOutcome::CompletedWithFailures);
-    assert!(result.failures().is_empty(), "contained by the extractor");
+    assert!(
+        result.failures().is_empty(),
+        "contained by Archive extraction"
+    );
     let [attempt] = result.archive_extraction_attempts() else {
         panic!("one extraction attempt");
     };
@@ -331,7 +334,10 @@ fn an_extraction_left_partial_is_unknown_mutation_that_stops_the_run() {
     assert_eq!(attempt.failure, Some(ArchiveExtractionFailure::MergeFailed));
     assert_eq!(attempt.mutation, MutationState::PartialOrUnknown);
     assert!(!attempt.safe_to_continue);
-    assert!(result.failures().is_empty(), "contained by the extractor");
+    assert!(
+        result.failures().is_empty(),
+        "contained by Archive extraction"
+    );
     assert!(toolset.attempted().is_empty(), "no Asset is attempted");
     assert!(result.archive_finalization().is_none());
     assert_eq!(std::fs::read(root.join("a.dds")).unwrap(), b"published");

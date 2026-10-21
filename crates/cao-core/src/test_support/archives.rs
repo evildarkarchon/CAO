@@ -148,6 +148,24 @@ impl FakeVolumeProbe {
         }
     }
 
+    /// This probe with free space answered by `capacity`, which is also
+    /// handed the call's ordinal, counting from 1 across every Mod Root.
+    ///
+    /// A run samples free space at its Capacity Checks in a fixed order, so
+    /// the ordinal tells them apart: for one Archive extraction, call 1 is
+    /// the preflight and call 2 the extraction's recheck. A scenario can so
+    /// answer a shortage only at a later check, as a volume filling up mid-run
+    /// would (#597).
+    pub fn with_counted_capacity(
+        self,
+        capacity: impl Fn(usize, &Path) -> Option<u64> + Send + Sync + 'static,
+    ) -> Self {
+        // The probe is `Fn` and shared across threads, so it counts calls
+        // through an atomic rather than captured mutable state.
+        let calls = AtomicUsize::new(0);
+        self.with_capacity(move |root| capacity(calls.fetch_add(1, Ordering::SeqCst) + 1, root))
+    }
+
     /// This probe with volume identities answered by `volumes`.
     pub fn with_volumes(
         self,

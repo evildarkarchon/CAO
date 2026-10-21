@@ -148,7 +148,10 @@ pub struct RunPreparation {
 impl RunPreparation {
     /// Owns the canonical Mod Roots, the Selected Profile and the policy
     /// compiled from it.
-    pub fn new(
+    ///
+    /// Crate-private: only Preparing builds one, so Archive Finalization
+    /// never sees a preparation no profile produced (#595).
+    pub(crate) fn new(
         mod_roots: Vec<PathBuf>,
         selected_profile: SelectedProfile,
         policy: RoutingPolicy,

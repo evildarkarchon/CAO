@@ -35,8 +35,12 @@ pub(crate) struct CapacityCheck<'p> {
 
 impl<'p> CapacityCheck<'p> {
     /// A check over `probe` with volume identities of its own, frozen for as
-    /// long as it lives, so a standalone Archive extractor or Archive
-    /// Finalization behaves like a one-phase run.
+    /// long as it lives.
+    ///
+    /// Test-only: every production check shares the run's frozen volumes
+    /// through [`Self::sharing`], so a check of its own exists only for this
+    /// module's unit tests (#598).
+    #[cfg(test)]
     pub(crate) fn new(probe: &'p dyn VolumeProbe) -> Self {
         Self::sharing(probe, &FrozenVolumes::default())
     }

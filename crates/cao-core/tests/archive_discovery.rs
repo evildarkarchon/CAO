@@ -23,7 +23,8 @@
 //! own records only for what Run Evidence does not hold.
 //!
 //! Ported elsewhere: the scenarios that drove `ArchiveExtractor` with a
-//! hand-built plan are in `archive_extraction.rs`.
+//! hand-built plan are in `archive_extraction.rs`, now as whole runs that
+//! change the Mod Root or the Archive after preflight (#597).
 //!
 //! Not ported, with reasons:
 //! - `removedExplicitArchiveRootDoesNotThrow`,

@@ -10,14 +10,13 @@ use std::path::Path;
 
 use super::planning::{FinalizationPlan, PlanningStop, estimate_packed_capacity};
 use super::plugins::ensure_output_loading_plugin;
-use super::{
-    ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationMutation, Seams,
-};
+use super::{ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationMutation};
 use crate::execution::MutationState;
 use crate::run::capacity::{CapacityCheck, Demand};
 use crate::run::source_pin::{LoadingPluginPin, SourceDirectoryPins, SourceFilePin};
 use crate::run::{
-    PublicationPolicy, PublicationState, TemporaryArtifactRegistry, take_panic_message,
+    ArchiveSeams, PublicationPolicy, PublicationState, TemporaryArtifactRegistry,
+    take_panic_message,
 };
 
 /// How far one attempt got, for classifying its failure.
@@ -45,7 +44,7 @@ pub(super) fn attempt_output(
     plan: &FinalizationPlan,
     index: usize,
     artifacts: &mut TemporaryArtifactRegistry,
-    seams: Seams<'_>,
+    seams: &ArchiveSeams,
     capacity: &CapacityCheck<'_>,
     dummy_demand: &Demand,
     mutations: &mut Vec<ArchiveFinalizationMutation>,
@@ -115,7 +114,7 @@ fn try_attempt(
     plan: &FinalizationPlan,
     index: usize,
     artifacts: &mut TemporaryArtifactRegistry,
-    seams: Seams<'_>,
+    seams: &ArchiveSeams,
     capacity: &CapacityCheck<'_>,
     dummy_demand: &Demand,
     mutations: &mut Vec<ArchiveFinalizationMutation>,
@@ -215,7 +214,7 @@ fn try_attempt(
 
 /// Whether the committed Archive still reads back through the reader, which
 /// is then told to release it.
-fn archive_reads_back(seams: Seams<'_>, archive: &Path) -> bool {
+fn archive_reads_back(seams: &ArchiveSeams, archive: &Path) -> bool {
     let listed = seams.reader.list_entries(archive).is_ok();
     seams.reader.release();
     listed
