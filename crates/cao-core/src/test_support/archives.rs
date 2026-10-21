@@ -176,10 +176,17 @@ pub struct FakeArchivePacker {
     pub writes: Mutex<Vec<FakeWrite>>,
     /// Runs after each Archive is written, once its sources were read.
     pub after_write: Option<AfterWrite>,
+    /// Runs before each [`ArchivePacker::list_names`] call reads its
+    /// directory.
+    pub before_list: Option<BeforeList>,
 }
 
 /// A hook [`FakeArchivePacker`] runs after writing one Archive.
 pub type AfterWrite = Box<dyn Fn(&PlannedArchive) + Send + Sync>;
+
+/// A hook [`FakeArchivePacker`] runs before listing the names of one kind in
+/// one directory.
+pub type BeforeList = Box<dyn Fn(&Path, ArchiveNameKind) + Send + Sync>;
 
 impl Default for FakeArchivePacker {
     /// SSE-like rules: `.bsa`, a `Textures` suffix only for Textures, and
@@ -197,6 +204,7 @@ impl Default for FakeArchivePacker {
             max_size: u64::MAX,
             writes: Mutex::default(),
             after_write: None,
+            before_list: None,
         }
     }
 }
@@ -231,6 +239,27 @@ impl FakeArchivePacker {
             after_write: Some(Box::new(move |_| {
                 if written.fetch_add(1, Ordering::SeqCst) >= kept {
                     panic!("the archive writer panicked");
+                }
+            })),
+            ..Self::default()
+        }
+    }
+
+    /// SSE-like rules, but [`ArchivePacker::list_names`] panics with "the
+    /// archive name listing panicked" on every call after the first `kept`.
+    ///
+    /// Archive Finalization lists names while planning and again while
+    /// maintaining Loading Plugins, so `kept` chooses the step that fails:
+    /// with Dummy Plugins enabled, planning lists Archives then Plugins for
+    /// each root, and maintenance lists each root's Archives again.
+    pub fn panicking_list_names_beyond(kept: usize) -> Self {
+        // The hook is `Fn` and shared across threads, so it counts calls
+        // through an atomic rather than captured mutable state.
+        let listed = AtomicUsize::new(0);
+        Self {
+            before_list: Some(Box::new(move |_, _| {
+                if listed.fetch_add(1, Ordering::SeqCst) >= kept {
+                    panic!("the archive name listing panicked");
                 }
             })),
             ..Self::default()
@@ -324,6 +353,9 @@ impl ArchivePacker for FakeArchivePacker {
     }
 
     fn list_names(&self, dir: &Path, kind: ArchiveNameKind) -> Result<Vec<ArchiveName>, Error> {
+        if let Some(before_list) = &self.before_list {
+            before_list(dir, kind);
+        }
         let mut names = Vec::new();
         for entry in std::fs::read_dir(dir)? {
             let path = entry?.path();

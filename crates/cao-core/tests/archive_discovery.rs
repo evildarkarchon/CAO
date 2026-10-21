@@ -339,6 +339,54 @@ fn an_unidentified_volume_with_work_keeps_the_whole_batch_estimate() {
     assert!(result.archive_extraction_attempts().is_empty());
 }
 
+/// Rust-only, for #592: a free-space probe that panics during the preflight
+/// is unknown capacity, so the Capacity Check passes and the run's work
+/// does not escape.
+#[test]
+fn a_panicking_capacity_probe_in_the_preflight_is_unknown_capacity() {
+    let base = canonical(&scratch_dir("archive-capacity-panic"));
+    sized_archive(&base.join("first/source.bsa"), 1_000_000);
+    sized_archive(&base.join("last/source.bsa"), 1_000_000);
+    let toolset = Arc::new(with_capacity(|_| panic!("the free-space query failed")));
+
+    let result = execute(&several_archives_and_textures(&base), &toolset);
+
+    assert!(result.failures().is_empty(), "{:?}", result.failures());
+    assert_ne!(result.outcome(), RunOutcome::Failed);
+    let attempts = result.archive_extraction_attempts();
+    assert_eq!(attempts.len(), 2);
+    assert!(attempts.iter().all(|attempt| attempt.succeeded()));
+}
+
+/// Rust-only, for #592: a volume probe that panics during the preflight is an
+/// unknown volume, so the run's work does not escape and that root is checked
+/// against the whole batch's estimate. On their own volumes each root would
+/// fit, as `independent_volumes_each_need_only_their_own_estimate` shows, so
+/// the shortage is the whole-batch rule's.
+#[test]
+fn a_panicking_volume_probe_in_the_preflight_keeps_the_whole_batch_estimate() {
+    let base = canonical(&scratch_dir("archive-capacity-volume-panic"));
+    sized_archive(&base.join("first/source.bsa"), 1_000_000);
+    sized_archive(&base.join("last/source.bsa"), 1_000_000);
+    let first = base.join("first");
+    let toolset = Arc::new(ScriptedToolset {
+        volumes: Arc::new(FakeVolumes(Some(Box::new(move |root| {
+            assert!(root != first, "the volume query failed");
+            Some("last-volume".to_owned())
+        })))),
+        ..with_capacity(|_| Some(1_500_000))
+    });
+
+    let result = execute(&several_archives_and_textures(&base), &toolset);
+
+    assert_blocked_before_extraction(
+        &result,
+        &toolset,
+        RunFailureCode::ArchiveInsufficientCapacity,
+        &base.join("first"),
+    );
+}
+
 /// Origin: ArchiveFirstAssetDiscoveryTests::compressedShadowedEntryRequiresCapacity.
 /// A compressed entry a Loose Asset shadows still needs its full decompressed
 /// size staged.

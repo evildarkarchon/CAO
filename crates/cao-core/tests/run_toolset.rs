@@ -24,7 +24,7 @@ use cao_core::run::{
 };
 use cao_core::test_support::{
     CallbackConfiguration, CountingCleanup, FakeArchivePacker, FakeArchiveReader,
-    FakeBackendFactory, FakeVolumes, FixedConfiguration, Observed, RecordingSink, ScriptedToolset,
+    FakeBackendFactory, FixedConfiguration, Observed, RecordingSink, ScriptedToolset,
     ToolsetConfiguration, entry, execute_run, sse_profile, write_archive,
 };
 use common::{canonical, request, scratch_dir, write_tree};
@@ -470,20 +470,27 @@ fn a_packer_panic_is_an_unexpected_exception_keeping_earlier_attempts() {
 }
 
 /// Core's real Archive Finalization contains a failure of its own work
-/// outside any output attempt: here the volume probe panics once the output
-/// total is planned. It is one phase-level Unexpected Exception that forbids
-/// continuation, so the run is Failed with no Run Failure, and nothing is
-/// packed.
+/// outside any output attempt: here the packer's name listing panics in
+/// Loading Plugin maintenance, once planning is done. It is one phase-level
+/// Unexpected Exception that forbids continuation, so the run is Failed with
+/// no Run Failure, and nothing is packed. The Texture is a Packing Exclusion,
+/// so it is still attempted but plans no output that could commit before
+/// maintenance. A panicking volume probe is no such failure: it is an
+/// unknown volume (#592).
 #[test]
 fn an_archive_finalization_failure_outside_any_attempt_is_an_unexpected_exception() {
     let root = canonical(&scratch_dir("toolset-finalization-unexpected"));
     write_tree(&root, &["textures/asset.dds"]);
     let toolset = Arc::new(ScriptedToolset {
-        volumes: Arc::new(FakeVolumes(Some(Box::new(|_| {
-            panic!("the volume query failed")
-        })))),
+        // Planning lists the root's Archives and then its Plugins;
+        // maintenance's first listing panics.
+        packer: Arc::new(FakeArchivePacker::panicking_list_names_beyond(2)),
         ..ScriptedToolset::default()
     });
+    let configuration = ToolsetConfiguration::new(
+        sse_profile().with_packing_exclusions(vec!["textures/".to_owned()]),
+        Arc::clone(&toolset),
+    );
 
     let result = execute(
         &request(
@@ -494,7 +501,7 @@ fn an_archive_finalization_failure_outside_any_attempt_is_an_unexpected_exceptio
                 RequestedWork::ArchiveCreation,
             ],
         ),
-        &ToolsetConfiguration::sse(Arc::clone(&toolset)),
+        &configuration,
         &RecordingSink::default(),
         &mut CountingCleanup::default(),
         &CancellationToken::new(),
@@ -509,15 +516,15 @@ fn an_archive_finalization_failure_outside_any_attempt_is_an_unexpected_exceptio
         Some(ArchiveFinalizationFailure::UnexpectedException)
     );
     assert!(!finalization.safe_to_continue);
-    assert_eq!(finalization.detail, "the volume query failed");
+    assert_eq!(finalization.detail, "the archive name listing panicked");
     assert!(finalization.attempts.is_empty());
     assert_eq!(
         result
             .phase(RunPhase::ArchiveFinalization)
             .and_then(|record| record.progress())
             .map(|progress| progress.total()),
-        Some(1),
-        "the output was planned"
+        Some(0),
+        "planning finished, with nothing to pack"
     );
     assert!(toolset.packer.writes().is_empty());
     assert!(root.join("textures/asset.dds").exists());

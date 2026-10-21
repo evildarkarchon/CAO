@@ -456,6 +456,97 @@ fn an_idle_root_of_unknown_volume_does_not_inflate_capacity() {
     assert!(artifacts.cleanup().is_empty());
 }
 
+/// Rust-only, for #592: a volume probe that panics is an unknown volume, not
+/// an Unexpected Exception, so the phase proceeds. Its root is checked against
+/// the whole phase's estimate: with room for one output each root would fit
+/// on its own volume, as in `capacity_is_grouped_by_volume`, but the root on
+/// the unknown volume is rejected before mutation.
+#[test]
+fn a_panicking_volume_probe_is_an_unknown_volume() {
+    for shortage in [false, true] {
+        let parent = scratch(&format!("volume-panic-{shortage}"));
+        let roots = [parent.join("mod-a"), parent.join("mod-b")];
+        for root in &roots {
+            write_file(&root.join("textures/asset.dds"), b"source bytes");
+        }
+        let mut finalizer = Finalizer {
+            settings: ArchiveFinalizationSettings {
+                create_dummy_plugins: false,
+                compress: false,
+                delete_sources: false,
+                ..ArchiveFinalizationSettings::default()
+            },
+            ..Finalizer::default()
+        };
+        let estimate = finalizer.reported_estimate(&roots[0]);
+        let available = if shortage { estimate } else { UNLIMITED };
+        finalizer.capacity = capacity(move |_| Some(available));
+        let first = roots[0].clone();
+        finalizer.volumes = volumes(move |root| {
+            assert!(*root != first, "the volume query failed");
+            Some("second-volume".to_owned())
+        });
+        let mut evidence = Evidence::new();
+        let mut artifacts = registry();
+        finalizer
+            .run(&roots, &mut evidence, &mut artifacts)
+            .unwrap();
+
+        let result = evidence.finalization();
+        assert_eq!(result.failure, None, "{shortage}: {}", result.detail);
+        assert!(result.safe_to_continue, "{shortage}");
+        if shortage {
+            assert_eq!(result.attempts.len(), 1, "{shortage}");
+            let rejected = &result.attempts[0];
+            assert_eq!(
+                rejected.failure,
+                Some(ArchiveFinalizationFailure::InsufficientCapacity)
+            );
+            assert_eq!(rejected.mod_root, roots[0]);
+            assert_eq!(rejected.mutation, MutationState::None);
+            assert!(roots.iter().all(|root| archives_in(root).is_empty()));
+        } else {
+            assert_eq!(result.attempts.len(), 2);
+            for attempt in &result.attempts {
+                assert!(attempt.succeeded(), "{}", attempt.detail);
+                assert!(attempt.archive_path.exists());
+            }
+        }
+        assert!(artifacts.cleanup().is_empty());
+    }
+}
+
+/// Rust-only, for #592: a free-space probe that panics is unknown capacity,
+/// which never fails the phase's check or an attempt's recheck.
+#[test]
+fn a_panicking_capacity_probe_is_unknown_capacity() {
+    let parent = scratch("capacity-panic");
+    let root = parent.join("mod");
+    write_file(&root.join("textures/asset.dds"), b"source bytes");
+    let finalizer = Finalizer {
+        capacity: capacity(|_| panic!("the free-space query failed")),
+        ..Finalizer::default()
+    };
+    let mut evidence = Evidence::new();
+    let mut artifacts = registry();
+    finalizer
+        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
+        .unwrap();
+
+    let result = evidence.finalization();
+    assert_eq!(result.failure, None, "{}", result.detail);
+    assert!(result.safe_to_continue);
+    assert_eq!(result.attempts.len(), 1);
+    assert!(
+        result.attempts[0].succeeded(),
+        "{}",
+        result.attempts[0].detail
+    );
+    assert_eq!(archives_in(&root).len(), 1);
+    assert!(root_plugin(&root).exists());
+    assert!(artifacts.cleanup().is_empty());
+}
+
 /// Origin: dummyCapacityDecreasesAfterEachRoot. Plugin maintenance rechecks
 /// only the allowance the remaining roots still need, and each root's volume
 /// is queried once.
@@ -2249,18 +2340,26 @@ fn deviation_21_separate_texture_games_never_merge_textures() {
 /// Origin: unexpectedExceptionIsRecordedOnce (both rows). A failure of the
 /// phase's own work, in planning or after the output total, is recorded once
 /// as an unsafe phase-level failure.
+///
+/// The after-plan failure is a packer whose name listing panics once
+/// planning is done, in Loading Plugin maintenance: a panicking volume query
+/// is an unknown volume, not a failure (#592). The root holds only an
+/// existing Archive, so it plans no output and nothing is mutated before
+/// maintenance fails.
 #[test]
 fn an_unexpected_failure_is_recorded_once() {
     for after_plan in [false, true] {
         let parent = scratch(&format!("unexpected-{after_plan}"));
         let root = parent.join("mod");
-        let source = root.join("textures/asset.dds");
-        write_file(&source, b"source bytes");
+        let source = root.join("existing.bsa");
+        write_file(&source, b"retained archive");
         let finalizer = Finalizer {
-            volumes: volumes(|_| panic!("volume query failed")),
+            // Planning lists the root's Archives and then its Plugins;
+            // maintenance's first listing panics.
+            packer: FakeArchivePacker::panicking_list_names_beyond(2),
             ..Finalizer::default()
         };
-        // A missing Mod Root fails planning; the panicking volume query
+        // A missing Mod Root fails planning; the panicking name listing
         // fails after the plan.
         let selected = if after_plan {
             root.clone()
@@ -2281,14 +2380,15 @@ fn an_unexpected_failure_is_recorded_once() {
         assert!(!result.safe_to_continue);
         assert!(!result.detail.is_empty());
         if after_plan {
-            assert_eq!(result.detail, "volume query failed");
-            assert_eq!(evidence.progress().unwrap().total(), 1);
+            assert_eq!(result.detail, "the archive name listing panicked");
+            assert_eq!(evidence.progress().unwrap().total(), 0);
         } else {
             assert_eq!(evidence.progress(), None);
         }
         assert!(result.attempts.is_empty());
-        assert!(source.exists());
-        assert!(archives_in(&root).is_empty());
+        assert_eq!(std::fs::read(&source).unwrap(), b"retained archive");
+        assert_eq!(archives_in(&root), std::slice::from_ref(&source));
+        assert!(!root.join("existing.esp").exists(), "no Dummy Plugin");
         assert!(artifacts.cleanup().is_empty());
     }
 }

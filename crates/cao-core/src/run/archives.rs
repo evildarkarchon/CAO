@@ -233,7 +233,9 @@ impl<'a> ArchiveExtractor<'a> {
         let required = plan
             .estimated_capacity_bytes
             .max(estimated_capacity_bytes(&entries));
-        if let Some(available) = self.capacity.available_bytes(&root)
+        // Sampled inside its own containment: a panicking probe is unknown
+        // capacity, not an extraction failure from the attempt's boundary.
+        if let Some(available) = sample_available_bytes(self.capacity, &root)
             && available < required
         {
             result.failure = Some(ArchiveExtractionFailure::InsufficientCapacity);
@@ -631,6 +633,41 @@ pub(crate) fn capacity_detail(required: u64, available: u64) -> String {
     )
 }
 
+/// Samples `root`'s free space for a Capacity Check, `None` when it is
+/// unknown.
+///
+/// A probe that panics cannot answer, so its panic is caught here and the
+/// free space is unknown, as an `Err` from the production probe already is.
+/// The check is advisory: unknown free space never fails it, and the staged
+/// writers still handle real I/O errors, so no Run Diagnostic is emitted and
+/// the panic never escapes to fail the run or the attempt it guards.
+pub(crate) fn sample_available_bytes(capacity: &dyn CapacityProbe, root: &Path) -> Option<u64> {
+    catch_unwind(AssertUnwindSafe(|| capacity.available_bytes(root))).unwrap_or_else(|payload| {
+        take_panic_message(payload);
+        None
+    })
+}
+
+/// Queries `root`'s volume identity for a Capacity Check, `None` when it is
+/// unknown.
+///
+/// A probe that panics cannot answer, so its panic is caught here and the
+/// volume is unknown, as an `Err` from the production probe already is. An
+/// unknown volume keeps the check conservative: a root on it is checked
+/// against the whole run's estimated Archive work. No Run Diagnostic is
+/// emitted.
+pub(crate) fn sample_volume_identity(
+    volume_identity: &dyn VolumeIdentityProbe,
+    root: &Path,
+) -> Option<String> {
+    catch_unwind(AssertUnwindSafe(|| volume_identity.volume_identity(root))).unwrap_or_else(
+        |payload| {
+            take_panic_message(payload);
+            None
+        },
+    )
+}
+
 /// Accumulates staging estimates by volume, so each Mod Root is checked only
 /// against the work sharing its volume.
 ///
@@ -655,13 +692,14 @@ impl<'p> CapacityRequirements<'p> {
         }
     }
 
-    /// Adds an estimate to the root's volume, probing each root once.
+    /// Adds an estimate to the root's volume, probing each root once. A
+    /// panicking probe leaves the root's volume unknown.
     pub(crate) fn add(&mut self, root: &Path, bytes: u64) {
         let probe = self.probe;
         let volume = self
             .volumes
             .entry(root.to_path_buf())
-            .or_insert_with(|| probe.volume_identity(root))
+            .or_insert_with(|| sample_volume_identity(probe, root))
             .clone();
         // A root needing no bytes cannot consume another volume's capacity,
         // even if its identity is unknown.
@@ -720,7 +758,8 @@ fn discovery_failure(code: RunFailureCode, path: &Path, detail: impl Into<String
 /// manifest is read and each entry checked; winners are frozen; collisions
 /// are calculated; and the Capacity Check runs. Nothing on disk changes.
 /// Manifests are read through `reader` and capacity checked through the two
-/// probes; extraction is the caller's.
+/// probes; extraction is the caller's. A probe that panics gives an unknown
+/// answer, so it never fails or escapes the preflight.
 pub(crate) fn preflight(
     roots: Vec<RootArchives>,
     precedence: &ArchivePrecedence,
@@ -883,7 +922,9 @@ pub(crate) fn preflight(
     }
     for (_, plan, _) in &plans {
         let required = requirements.required_at(&plan.mod_root);
-        if let Some(available) = capacity.available_bytes(&plan.mod_root)
+        // A probe that panics is unknown capacity, which never fails the
+        // check; it must not escape the run as Run Work Escaped.
+        if let Some(available) = sample_available_bytes(capacity, &plan.mod_root)
             && available < required
         {
             return Preflight::Failed(discovery_failure(

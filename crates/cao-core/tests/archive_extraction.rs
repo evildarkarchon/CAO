@@ -77,6 +77,34 @@ fn the_capacity_check_is_repeated_before_staging() {
     }
 }
 
+/// Rust-only, for #592: a free-space probe that panics in the recheck is
+/// unknown capacity, so the attempt proceeds rather than failing as an
+/// extraction failure.
+#[test]
+fn a_panicking_capacity_probe_in_the_recheck_is_unknown_capacity() {
+    let root = canonical(&scratch_dir("extractor-capacity-panic"));
+    let archive = root.join("source.bsa");
+    write_archive(&archive, &[entry("textures/fixture.dds", b"fixture")]);
+    let reader = FakeArchiveReader::default();
+    let capacity = FakeCapacity(Some(Box::new(|_| panic!("the free-space query failed"))));
+    let mut artifacts = registry();
+
+    let result = ArchiveExtractor::new(&reader, &capacity).extract(
+        &plan(&archive, &root, &["textures/fixture.dds"]),
+        &mut artifacts,
+    );
+
+    assert!(result.succeeded(), "{}", result.detail);
+    assert_eq!(result.failure, None);
+    assert_eq!(result.mutation, MutationState::Committed);
+    assert!(result.safe_to_continue);
+    assert_eq!(
+        std::fs::read(root.join("textures/fixture.dds")).unwrap(),
+        b"fixture"
+    );
+    assert!(artifacts.cleanup().is_empty());
+}
+
 /// Origin: extractionFailureBeforeMergeCommitsNothing.
 #[test]
 fn a_source_lost_after_preflight_commits_nothing() {

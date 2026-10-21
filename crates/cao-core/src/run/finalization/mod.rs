@@ -34,7 +34,9 @@ use cao_winfs::is_reparse_point;
 use crate::Error;
 use crate::execution::MutationState;
 use crate::routing::RequestedWork;
-use crate::run::archives::{CapacityRequirements, capacity_detail};
+use crate::run::archives::{
+    CapacityRequirements, capacity_detail, sample_available_bytes, sample_volume_identity,
+};
 use crate::run::staging::has_staging_component;
 use crate::run::{
     ArchivePacker, ArchiveReader, CapacityProbe, RunPreparation, TemporaryArtifactRegistry,
@@ -346,11 +348,16 @@ impl<'a> ArchiveFinalization<'a> {
             return Ok(());
         }
         // Freeze each root's volume once for the preflight and every later
-        // recheck, so Several Mods never repeats native volume queries.
+        // recheck, so Several Mods never repeats native volume queries. A
+        // panicking query is an unknown volume, not the phase's Unexpected
+        // Exception: the unknown-volume rule keeps the check conservative.
         let volumes = CachedVolumes(
             plan.roots
                 .iter()
-                .map(|root| (root.clone(), self.volume_identity.volume_identity(root)))
+                .map(|root| {
+                    let volume = sample_volume_identity(self.volume_identity, root);
+                    (root.clone(), volume)
+                })
                 .collect(),
         );
         let mut phase_capacity = CapacityRequirements::new(&volumes);
@@ -575,11 +582,7 @@ pub(crate) fn capacity_shortfall(
     root: &Path,
     required: u64,
 ) -> Option<String> {
-    let available = catch_unwind(AssertUnwindSafe(|| capacity.available_bytes(root)))
-        .unwrap_or_else(|payload| {
-            take_panic_message(payload);
-            None
-        })?;
+    let available = sample_available_bytes(capacity, root)?;
     (available < required).then(|| capacity_detail(required, available))
 }
 
