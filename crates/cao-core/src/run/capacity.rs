@@ -130,11 +130,7 @@ impl<'p> CapacityCheck<'p> {
         // The probe runs outside the lock, inside its own containment, so a
         // panicking probe can never poison the frozen volumes and a slow one
         // never holds the lock while it queries the volume.
-        let volume = catch_unwind(AssertUnwindSafe(|| self.probe.volume_identity(root)))
-            .unwrap_or_else(|payload| {
-                take_panic_message(payload);
-                None
-            });
+        let volume = contained_probe(|| self.probe.volume_identity(root));
         // Should another check have frozen this root meanwhile, its answer
         // stands, so every check sees one identity per root.
         self.volumes
@@ -153,13 +149,25 @@ impl<'p> CapacityCheck<'p> {
     /// handle real I/O errors, so no Run Diagnostic is emitted and the panic
     /// never escapes to fail the run or the attempt it guards.
     fn available_bytes(&self, root: &Path) -> Option<u64> {
-        catch_unwind(AssertUnwindSafe(|| self.probe.available_bytes(root))).unwrap_or_else(
-            |payload| {
-                take_panic_message(payload);
-                None
-            },
-        )
+        contained_probe(|| self.probe.available_bytes(root))
     }
+}
+
+/// Runs one [`VolumeProbe`] query, turning a panic into the unknown answer
+/// `None`.
+///
+/// Both of the probe's answers share the panic rule: a probe that cannot
+/// answer, even by panicking, gives an unknown answer, so the advisory check
+/// never fails the run or the attempt it guards. The payload is disposed of
+/// through [`take_panic_message`] and its message dropped, since an unknown
+/// answer emits no Run Diagnostic. `AssertUnwindSafe` is sound because a
+/// panicking query leaves nothing of the check half-updated: callers touch
+/// no shared state inside `query`.
+fn contained_probe<T>(query: impl FnOnce() -> Option<T>) -> Option<T> {
+    catch_unwind(AssertUnwindSafe(query)).unwrap_or_else(|payload| {
+        take_panic_message(payload);
+        None
+    })
 }
 
 /// The volume identities one Optimization Run's Capacity Checks share, each
