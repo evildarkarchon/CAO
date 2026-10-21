@@ -21,7 +21,16 @@
 //! [`ToolsetConfiguration::sse`] provides the all-supported [`sse_profile`]
 //! most scenarios configure, and [`execute_run`] runs a request through the
 //! real Run Executor with the services a scenario supplies.
+//!
+//! [`ArchiveRunRequest`] builds an Apply request over one Mod Root that
+//! requests Archive creation, with the profile and Archive work settings its
+//! configuration supplies, so a scenario drives Archive extraction and
+//! Archive Finalization through a whole Optimization Run (#596).
+//! [`SeamsConfiguration`] builds each run's Toolset over the Archive seams a
+//! scenario's builder makes, so `cao-optimizers` can run the same way over
+//! its production reader, packer and volume probes.
 
+mod archive_run;
 mod archives;
 mod backend;
 mod cleanup;
@@ -31,6 +40,7 @@ mod observation;
 mod scheduling;
 mod toolset;
 
+pub use archive_run::ArchiveRunRequest;
 pub use archives::{
     AfterWrite, BeforeList, ExtractHook, FakeArchivePacker, FakeArchiveReader, FakeEntry,
     FakeVolumeProbe, FakeWrite, RootProbe, entry, fake_dummy_plugin, write_archive,
@@ -46,6 +56,6 @@ pub use scheduling::{
     CountingInlineScheduler, DeferredScheduler, ExhaustedScheduler, GatedScheduler, WorkerHook,
 };
 pub use toolset::{
-    AssetAdapterMaker, AssetAttemptScript, AssetAttempts, ScriptedToolset, ToolsetConfiguration,
-    execute_run,
+    AssetAdapterMaker, AssetAttemptScript, AssetAttempts, ScriptedToolset, SeamsBuilder,
+    SeamsConfiguration, ToolsetConfiguration, execute_run,
 };
