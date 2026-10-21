@@ -192,7 +192,7 @@ fn prepare_run(
 /// Phases are observed only through the run's Run Observation Sink and
 /// cancellation only through `stop`. Each panic is contained once, by the
 /// module that owns its rule: the work phases contain an Asset attempt's,
-/// and the Archive extractor and Archive Finalization their own. Errors are
+/// and Archive extraction and Archive Finalization their own. Errors are
 /// Run Evidence invariant violations.
 fn execute_toolset(
     preparation: &RunPreparation,

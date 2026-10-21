@@ -1,26 +1,22 @@
 //! Whole Optimization Runs over the production Archive adapters (#596).
 //!
-//! The run's Toolset is built from a seams builder over [`ArchiveFileReader`],
-//! [`GameArchivePacker`] and [`VolumeProbes`], so core's real Archive
+//! The run's Toolset is built from a seams builder over
+//! [`ArchiveFileReader`](cao_optimizers::archives::ArchiveFileReader),
+//! [`GameArchivePacker`](cao_optimizers::archives::GameArchivePacker) and
+//! [`VolumeProbes`](cao_optimizers::archives::VolumeProbes), so core's real Archive
 //! extraction and Archive Finalization run over each game's real rules
 //! through the only interface production uses. Each scenario asserts on the
 //! run's Run Evidence and on the Archives it really wrote.
 
 mod common;
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 
 use cao_archive::{Game, ReadArchive, Settings};
-use cao_core::run::{ArchiveSeams, CancellationToken, RunOutcome, RunPhase, RunPhaseStatus};
-use cao_core::test_support::{ArchiveRunRequest, CountingCleanup, execute_run};
-use cao_optimizers::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
-use common::{scratch_dir, write};
-
-/// The canonical form of a directory, as Preparing resolves it.
-fn canonical(path: &Path) -> PathBuf {
-    cao_winfs::msvc_canonical(path).unwrap()
-}
+use cao_core::run::{CancellationToken, RunOutcome, RunPhase, RunPhaseStatus};
+use cao_core::test_support::ArchiveRunRequest;
+use common::archive_run::production_seams;
+use common::{canonical, scratch_dir, write};
 
 /// The lowercase, backslash-separated names stored in the real Archive at
 /// `archive`, which must open as a known format.
@@ -43,20 +39,10 @@ fn a_run_over_the_production_adapters_packs_a_loose_asset_into_a_loadable_archiv
     let root = canonical(&scratch_dir("archive-run-seams")).join("mod");
     write(&root, "meshes/asset.nif", b"mesh bytes");
     let archive_run = ArchiveRunRequest::new(&root);
-    let configuration = archive_run.seams_configuration(|| ArchiveSeams {
-        reader: Arc::new(ArchiveFileReader::default()),
-        volume_probe: Arc::new(VolumeProbes),
-        packer: Arc::new(GameArchivePacker::new(Settings::get(Game::Sse))),
-    });
-    let mut cleanup = CountingCleanup::default();
+    let configuration = archive_run.seams_configuration(production_seams());
 
-    let result = execute_run(
-        &archive_run.request(),
-        &mut cleanup,
-        None,
-        Some(&configuration),
-        &CancellationToken::new(),
-    );
+    // `execute` also asserts the run made its one Safety Cleanup pass.
+    let result = archive_run.execute(&configuration, None, &CancellationToken::new());
 
     assert_eq!(
         result.outcome(),
@@ -81,5 +67,4 @@ fn a_run_over_the_production_adapters_packs_a_loose_asset_into_a_loadable_archiv
         std::fs::read(root.join("mod.esp")).unwrap(),
         Settings::get(Game::Sse).dummy_plugin
     );
-    assert_eq!(cleanup.passes, 1, "Safety Cleanup always runs once");
 }

@@ -1,6 +1,7 @@
 //! Archive Finalization against real Archives: core's phase over
-//! [`GameArchivePacker`], [`ArchiveFileReader`] and each game's real rules,
-//! and the production wiring that runs it.
+//! [`GameArchivePacker`],
+//! [`ArchiveFileReader`](cao_optimizers::archives::ArchiveFileReader) and
+//! each game's real rules, and the production wiring that runs it.
 //!
 //! These are the real-archive cases of `tests/ArchiveFinalizationTests.cpp`,
 //! each naming its origin: Loading Plugin names per game, Dummy Plugin bytes,
@@ -25,13 +26,14 @@ use cao_archive::{ArchiveFormat, Fo4Container, Game, ReadArchive, Settings};
 use cao_core::execution::MutationState;
 use cao_core::run::{
     ArchiveFinalizationMutationKind, ArchiveFinalizationResult, ArchiveFinalizationSettings,
-    ArchiveNameKind, ArchivePacker, ArchiveSeams, ArchiveWorkSettings, CancellationToken,
-    MutationKind, RunOutcome, VolumeProbe,
+    ArchiveNameKind, ArchivePacker, ArchiveWorkSettings, CancellationToken, MutationKind,
+    RunOutcome, VolumeProbe,
 };
 use cao_core::test_support::ArchiveRunRequest;
-use cao_optimizers::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
+use cao_optimizers::archives::{GameArchivePacker, VolumeProbes};
 use cao_optimizers::composition::ApplicationRun;
-use common::{app_dir, profile_options, scratch_dir, serial, write, write_dds};
+use common::archive_run::production_seams_for;
+use common::{app_dir, canonical, profile_options, scratch_dir, serial, write, write_dds};
 use directxtex::DXGI_FORMAT_R8G8B8A8_UNORM;
 
 /// A volume probe answering the same free space for every Mod Root, and each
@@ -46,11 +48,6 @@ impl VolumeProbe for Capacity {
     fn volume_identity(&self, root: &Path) -> Option<String> {
         VolumeProbes.volume_identity(root)
     }
-}
-
-/// The canonical form of a directory, as Preparing resolves it.
-fn canonical(path: &Path) -> PathBuf {
-    cao_winfs::msvc_canonical(path).unwrap()
 }
 
 /// A fresh, canonical Mod Root named `name` for one scenario.
@@ -89,11 +86,7 @@ fn finalize_probing(
             finalization: settings,
             ..ArchiveWorkSettings::default()
         });
-    let configuration = archive_run.seams_configuration(move || ArchiveSeams {
-        reader: Arc::new(ArchiveFileReader::default()),
-        volume_probe: Arc::clone(&capacity),
-        packer: Arc::new(GameArchivePacker::new(Settings::get(game))),
-    });
+    let configuration = archive_run.seams_configuration(production_seams_for(game, capacity));
 
     let result = archive_run.execute(&configuration, None, &CancellationToken::new());
 

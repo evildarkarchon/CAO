@@ -188,7 +188,7 @@ fn attributed_mod_root<'p>(path: &Path, mod_roots: &'p [PathBuf]) -> Option<&'p 
 /// stops all further work.
 ///
 /// An Asset attempt's panic is contained here, as an unsafe Operation
-/// Failure with unknown mutation. The Archive extractor and Archive
+/// Failure with unknown mutation. Archive extraction and Archive
 /// Finalization contain their own panics, so they are called without a
 /// second layer. Archive Finalization runs only in Apply, once its executed
 /// phase is recorded. Errors are Run Evidence invariant violations, which

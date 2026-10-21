@@ -14,7 +14,7 @@ use cao_core::run::{
     ArchiveFinalizationSettings, ArchiveWorkSettings, CancellationToken, RunOutcome, RunPhase,
     RunPhaseStatus,
 };
-use cao_core::test_support::{ArchiveRunRequest, CountingCleanup, ScriptedToolset, execute_run};
+use cao_core::test_support::{ArchiveRunRequest, ScriptedToolset};
 use common::{canonical, scratch_dir, write_tree};
 
 /// An Apply run built by the request builder reaches Archive Finalization
@@ -36,15 +36,9 @@ fn an_archive_run_packs_loose_assets_with_its_profile_exclusions_and_settings() 
             ..ArchiveWorkSettings::default()
         });
     let configuration = archive_run.configuration(ScriptedToolset::default());
-    let mut cleanup = CountingCleanup::default();
 
-    let result = execute_run(
-        &archive_run.request(),
-        &mut cleanup,
-        None,
-        Some(&configuration),
-        &CancellationToken::new(),
-    );
+    // `execute` also asserts the run made its one Safety Cleanup pass.
+    let result = archive_run.execute(&configuration, None, &CancellationToken::new());
 
     assert_eq!(
         result.outcome(),
@@ -73,5 +67,4 @@ fn an_archive_run_packs_loose_assets_with_its_profile_exclusions_and_settings() 
     assert!(root.join("meshes/keep/kept.nif").exists());
     // The chosen settings create no Dummy Plugin for the new Archive.
     assert!(!root.join("mod.esp").exists());
-    assert_eq!(cleanup.passes, 1, "Safety Cleanup always runs once");
 }

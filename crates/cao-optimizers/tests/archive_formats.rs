@@ -9,18 +9,16 @@
 mod common;
 
 use std::path::Path;
-use std::sync::Arc;
 
 use ba2::prelude::*;
 use ba2::{fo4, tes3, tes4};
-use cao_archive::{Game, Settings};
 use cao_core::execution::MutationState;
 use cao_core::routing::RequestedWork;
-use cao_core::run::{ArchiveSeams, CancellationToken, RunFailureCode, RunOutcome, RunPhase};
+use cao_core::run::{CancellationToken, RunFailureCode, RunOutcome, RunPhase};
 use cao_core::test_support::ArchiveRunRequest;
-use cao_optimizers::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
 use cao_optimizers::composition::ApplicationRun;
 use cao_winfs::msvc_canonical;
+use common::archive_run::{only_attempt, production_seams};
 use common::{app_dir, profile_options, scratch_dir, serial};
 
 /// A raw Archive container, as C++ `createRawArchive` numbered them.
@@ -126,17 +124,11 @@ fn every_container_commits_its_staged_payload() {
         let original = std::fs::read(&archive).unwrap();
         let archive_run =
             ArchiveRunRequest::new(&root).with_work([RequestedWork::ArchiveExtraction]);
-        let configuration = archive_run.seams_configuration(|| ArchiveSeams {
-            reader: Arc::new(ArchiveFileReader::default()),
-            volume_probe: Arc::new(VolumeProbes),
-            packer: Arc::new(GameArchivePacker::new(Settings::get(Game::Sse))),
-        });
+        let configuration = archive_run.seams_configuration(production_seams());
 
         let run = archive_run.execute(&configuration, None, &CancellationToken::new());
 
-        let attempts = run.archive_extraction_attempts();
-        assert_eq!(attempts.len(), 1, "{format:?}: {:?}", run.failures());
-        let result = &attempts[0];
+        let result = only_attempt(&run);
         assert!(result.succeeded(), "{format:?}: {}", result.detail);
         assert_eq!(result.mutation, MutationState::Committed, "{format:?}");
         assert_eq!(std::fs::read(root.join("textures/a.dds")).unwrap(), b"B");

@@ -52,6 +52,6 @@ pub use scheduling::{
     CountingInlineScheduler, DeferredScheduler, ExhaustedScheduler, GatedScheduler, WorkerHook,
 };
 pub use toolset::{
-    AssetAdapterMaker, AssetAttemptScript, AssetAttempts, ScriptedToolset, SeamsBuilder,
-    SeamsConfiguration, ToolsetConfiguration, execute_run,
+    AssetAdapterMaker, AssetAttemptScript, AssetAttempts, ProviderLoads, ScriptedToolset,
+    SeamsBuilder, SeamsConfiguration, ToolsetConfiguration, execute_run,
 };

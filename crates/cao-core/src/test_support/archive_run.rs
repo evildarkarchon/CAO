@@ -6,16 +6,16 @@ use std::sync::Arc;
 
 use crate::routing::{ExecutionMode, RequestedWork};
 use crate::run::{
-    ArchiveSeams, ArchiveWorkSettings, CancellationToken, ModSelection, OptimizationRunResult,
+    ArchiveWorkSettings, CancellationToken, ModSelection, OptimizationRunResult,
     RunConfigurationProvider, RunObservationSink, RunRequest, SelectedProfile,
 };
 use crate::test_support::{
-    CountingCleanup, ScriptedToolset, SeamsConfiguration, ToolsetConfiguration, execute_run,
-    sse_capabilities,
+    CountingCleanup, ScriptedToolset, SeamsBuilder, SeamsConfiguration, ToolsetConfiguration,
+    execute_run, sse_capabilities,
 };
 
-/// An Apply run over one Mod Root that requests Archive creation, and the
-/// configuration its Preparing loads.
+/// An Apply run that requests Archive creation, by default over one Mod Root,
+/// and the configuration its Preparing loads.
 ///
 /// The Archive creation request and the Packing Exclusions reach Archive
 /// Finalization as they do in production: the request asks for the work, the
@@ -42,7 +42,8 @@ pub struct ArchiveRunRequest {
     /// spells them.
     packing_exclusions: Vec<String>,
     /// The source cleanup and Archive Finalization settings the run's Toolset
-    /// is built with.
+    /// is built with. The request is their one source: every provider it
+    /// makes builds its Toolsets with them.
     archive_work: ArchiveWorkSettings,
 }
 
@@ -136,15 +137,12 @@ impl ArchiveRunRequest {
     /// A provider of [`Self::profile`] and of Run Toolsets over `toolset`'s
     /// typed fakes, for runs over the fakes.
     ///
-    /// The chosen Archive work settings replace `toolset`'s own
-    /// [`ScriptedToolset::archive_work`], so the request alone decides them.
+    /// The provider builds every Toolset with the chosen Archive work
+    /// settings, so the request alone decides them; `toolset` carries none.
     /// Read the fakes' records through the provider's `toolset`.
     pub fn configuration(&self, toolset: ScriptedToolset) -> ToolsetConfiguration {
-        let toolset = ScriptedToolset {
-            archive_work: self.archive_work,
-            ..toolset
-        };
         ToolsetConfiguration::new(self.profile(), Arc::new(toolset))
+            .with_archive_work(self.archive_work)
     }
 
     /// A provider of [`Self::profile`] and, for each run, of a Run Toolset
@@ -152,10 +150,7 @@ impl ArchiveRunRequest {
     /// builds, such as `cao-optimizers`' production adapters. Its Asset
     /// attempts succeed with no mutation until
     /// [`SeamsConfiguration::with_assets`] scripts them.
-    pub fn seams_configuration(
-        &self,
-        seams: impl Fn() -> ArchiveSeams + Send + Sync + 'static,
-    ) -> SeamsConfiguration {
+    pub fn seams_configuration(&self, seams: SeamsBuilder) -> SeamsConfiguration {
         SeamsConfiguration::new(self.profile(), seams, self.archive_work)
     }
 

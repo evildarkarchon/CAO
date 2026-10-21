@@ -29,8 +29,8 @@ pub struct ArchiveEntry {
 /// an Archive's handles and maps are released is part of the contract:
 /// [`Self::list_entries`] releases everything before it returns, while
 /// [`Self::extract_entry`] may keep its Archive open for the next entry, as
-/// C++ read an Archive once per extraction, until [`Self::release`]. The
-/// extractor calls `release` at the end of every attempt, before the source
+/// C++ read an Archive once per extraction, until [`Self::release`]. Archive
+/// extraction calls `release` at the end of every attempt, before the source
 /// Archive can be removed or renamed.
 pub trait ArchiveReader: Send + Sync {
     /// Lists every entry without extracting or decompressing it, holding
