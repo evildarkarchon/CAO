@@ -22,7 +22,7 @@ use cao_core::run::{
     ArchiveExtractionFailure, ArchiveExtractionPlan, ArchiveExtractor, TemporaryArtifactRegistry,
     create_run_id,
 };
-use cao_core::test_support::{FakeArchiveReader, FakeCapacity, entry, write_archive};
+use cao_core::test_support::{FakeArchiveReader, FakeVolumeProbe, entry, write_archive};
 use common::{canonical, junction, scratch_dir};
 
 /// A plan that publishes every one of `entries` from `archive`.
@@ -53,7 +53,7 @@ fn the_capacity_check_is_repeated_before_staging() {
         write_archive(&archive, &[entry("textures/fixture.dds", b"fixture")]);
         let original = std::fs::read(&archive).unwrap();
         let reader = FakeArchiveReader::default();
-        let capacity = FakeCapacity(Some(Box::new(move |_| (!unknown).then_some(0))));
+        let capacity = FakeVolumeProbe::default().with_capacity(move |_| (!unknown).then_some(0));
         let mut artifacts = registry();
 
         let result = ArchiveExtractor::new(&reader, &capacity).extract(
@@ -86,7 +86,8 @@ fn a_panicking_capacity_probe_in_the_recheck_is_unknown_capacity() {
     let archive = root.join("source.bsa");
     write_archive(&archive, &[entry("textures/fixture.dds", b"fixture")]);
     let reader = FakeArchiveReader::default();
-    let capacity = FakeCapacity(Some(Box::new(|_| panic!("the free-space query failed"))));
+    let capacity =
+        FakeVolumeProbe::default().with_capacity(|_| panic!("the free-space query failed"));
     let mut artifacts = registry();
 
     let result = ArchiveExtractor::new(&reader, &capacity).extract(
@@ -112,7 +113,7 @@ fn a_source_lost_after_preflight_commits_nothing() {
     let reader = FakeArchiveReader::default();
     let mut artifacts = registry();
 
-    let result = ArchiveExtractor::new(&reader, &FakeCapacity::default()).extract(
+    let result = ArchiveExtractor::new(&reader, &FakeVolumeProbe::default()).extract(
         &plan(&root.join("missing.bsa"), &root, &["textures/a.dds"]),
         &mut artifacts,
     );
@@ -139,7 +140,7 @@ fn a_staged_payload_commits_and_the_source_archive_is_kept() {
     let reader = FakeArchiveReader::default();
     let mut artifacts = registry();
 
-    let result = ArchiveExtractor::new(&reader, &FakeCapacity::default())
+    let result = ArchiveExtractor::new(&reader, &FakeVolumeProbe::default())
         .extract(&plan(&archive, &root, &["textures/a.dds"]), &mut artifacts);
 
     assert!(result.succeeded(), "{}", result.detail);
@@ -160,7 +161,7 @@ fn extraction_publishes_beneath_the_existing_parent_casing() {
     let reader = FakeArchiveReader::default();
     let mut artifacts = registry();
 
-    let result = ArchiveExtractor::new(&reader, &FakeCapacity::default())
+    let result = ArchiveExtractor::new(&reader, &FakeVolumeProbe::default())
         .extract(&plan(&archive, &root, &["textures/a.dds"]), &mut artifacts);
 
     assert!(result.succeeded(), "{}", result.detail);
@@ -191,7 +192,7 @@ fn a_failure_after_the_first_commit_is_partial_and_unsafe() {
     let reader = FakeArchiveReader::default();
     let mut artifacts = registry();
 
-    let result = ArchiveExtractor::new(&reader, &FakeCapacity::default()).extract(
+    let result = ArchiveExtractor::new(&reader, &FakeVolumeProbe::default()).extract(
         &plan(&archive, &root, &["a.dds", "z/b.dds"]),
         &mut artifacts,
     );
@@ -220,7 +221,7 @@ fn a_reader_panicking_before_any_commit_is_a_safe_failure() {
     };
     let mut artifacts = registry();
 
-    let result = ArchiveExtractor::new(&reader, &FakeCapacity::default())
+    let result = ArchiveExtractor::new(&reader, &FakeVolumeProbe::default())
         .extract(&plan(&archive, &root, &["textures/a.dds"]), &mut artifacts);
 
     assert_eq!(
@@ -246,7 +247,7 @@ fn a_manifest_changed_after_preflight_fails_before_any_merge() {
     let reader = FakeArchiveReader::default();
     let mut artifacts = registry();
 
-    let result = ArchiveExtractor::new(&reader, &FakeCapacity::default()).extract(
+    let result = ArchiveExtractor::new(&reader, &FakeVolumeProbe::default()).extract(
         &plan(&archive, &root, &["textures/expected.dds"]),
         &mut artifacts,
     );
@@ -277,7 +278,7 @@ fn a_linked_parent_cannot_redirect_a_merge() {
     let reader = FakeArchiveReader::default();
     let mut artifacts = registry();
 
-    let result = ArchiveExtractor::new(&reader, &FakeCapacity::default())
+    let result = ArchiveExtractor::new(&reader, &FakeVolumeProbe::default())
         .extract(&plan(&archive, &root, &["textures/a.dds"]), &mut artifacts);
     // Remove only the link, never its independent target.
     std::fs::remove_dir(&link).unwrap();
@@ -314,7 +315,7 @@ fn every_attempt_releases_the_reader_before_returning() {
 
     for (reader, planned, succeeds) in attempts {
         let mut artifacts = registry();
-        let result = ArchiveExtractor::new(reader, &FakeCapacity::default())
+        let result = ArchiveExtractor::new(reader, &FakeVolumeProbe::default())
             .extract(&plan(&archive, &root, &[planned]), &mut artifacts);
 
         assert_eq!(result.succeeded(), succeeds, "{planned}: {}", result.detail);

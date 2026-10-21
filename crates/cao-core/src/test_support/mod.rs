@@ -32,8 +32,8 @@ mod scheduling;
 mod toolset;
 
 pub use archives::{
-    AfterWrite, BeforeList, ExtractHook, FakeArchivePacker, FakeArchiveReader, FakeCapacity,
-    FakeEntry, FakeVolumes, FakeWrite, RootProbe, entry, fake_dummy_plugin, write_archive,
+    AfterWrite, BeforeList, ExtractHook, FakeArchivePacker, FakeArchiveReader, FakeEntry,
+    FakeVolumeProbe, FakeWrite, RootProbe, entry, fake_dummy_plugin, write_archive,
 };
 pub use backend::{FakeBackend, FakeBackendFactory, FinishedAttempt};
 pub use cleanup::{CountingCleanup, ScriptedCleanup};

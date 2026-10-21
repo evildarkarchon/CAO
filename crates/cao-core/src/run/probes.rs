@@ -1,4 +1,4 @@
-//! The archive reader and packer, and the capacity and volume-identity probes.
+//! The archive reader and packer, and the volume probe.
 //!
 //! These seams are declared here so `cao-core` never depends on `ba2` or on a
 //! filesystem-space API (#468). Archive discovery, extraction and the Capacity
@@ -46,15 +46,17 @@ pub trait ArchiveReader: Send + Sync {
     fn release(&self) {}
 }
 
-/// Samples the bytes available to the caller at a Mod Root.
-pub trait CapacityProbe: Send + Sync {
+/// Answers the Capacity Check's two questions about a Mod Root's volume: the
+/// bytes available to the caller there, and which volume it is, so the check
+/// groups roots by volume.
+///
+/// Either answer may be unknown. A probe that panics gives an unknown answer
+/// too: the Capacity Check contains it.
+pub trait VolumeProbe: Send + Sync {
     /// The available bytes, or `None` when capacity is unknown. Unknown is not
     /// unlimited, but it never fails a Capacity Check.
     fn available_bytes(&self, root: &Path) -> Option<u64>;
-}
 
-/// Identifies the volume containing a Mod Root, so Capacity Checks group roots by volume.
-pub trait VolumeIdentityProbe: Send + Sync {
     /// An opaque volume identity, or `None` when unknown; an unknown root may
     /// share any other root's volume, which keeps the check conservative.
     fn volume_identity(&self, root: &Path) -> Option<String>;
