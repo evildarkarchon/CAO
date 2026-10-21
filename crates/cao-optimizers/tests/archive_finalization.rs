@@ -7,24 +7,28 @@
 //! the capacity estimate against what is really published, and FO4's DX10
 //! Textures BA2 (deviation 21). Every other scenario is ported in `cao-core`
 //! against a fake packer.
+//!
+//! Each phase scenario is a whole Apply run that requests only Archive
+//! creation, over a Toolset built from the production reader and packer and
+//! a scenario's own volume probe, so the phase runs through the only
+//! interface production uses (#597). With no Archive extraction requested,
+//! every free-space sample is Archive Finalization's, and an existing
+//! "Archive" of placeholder bytes is never read.
 
 mod common;
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use cao_archive::{ArchiveFormat, Fo4Container, Game, ReadArchive, Settings};
 use cao_core::execution::MutationState;
-use cao_core::routing::{
-    ExecutionMode, ProfileCapabilities, ProfileCapability, RequestedWork, RoutingPolicyRequest,
-};
 use cao_core::run::{
-    ArchiveFinalization, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
-    ArchiveFinalizationSettings, ArchiveNameKind, ArchivePacker, ArchivePrecedence, MutationKind,
-    RunOutcome, RunPreparation, SelectedProfile, TemporaryArtifactRegistry, VolumeProbe,
-    create_run_id,
+    ArchiveFinalizationMutationKind, ArchiveFinalizationResult, ArchiveFinalizationSettings,
+    ArchiveNameKind, ArchivePacker, ArchiveSeams, ArchiveWorkSettings, CancellationToken,
+    MutationKind, RunOutcome, VolumeProbe,
 };
-use cao_core::test_support::ArchiveFinalizationEvidence;
+use cao_core::test_support::ArchiveRunRequest;
 use cao_optimizers::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
 use cao_optimizers::composition::ApplicationRun;
 use common::{app_dir, profile_options, scratch_dir, serial, write, write_dds};
@@ -56,58 +60,52 @@ fn mod_root(scenario: &str, name: &str) -> PathBuf {
     root
 }
 
-/// An Apply preparation over `roots` that requests only Archive creation.
-fn preparation(roots: &[PathBuf], extension: &str) -> RunPreparation {
-    let profile = SelectedProfile::new(ProfileCapabilities::define(
-        extension,
-        &[ProfileCapability::ArchiveCreation],
-    ));
-    let policy = profile
-        .compile_policy(RoutingPolicyRequest::for_work(
-            ExecutionMode::Apply,
-            &[RequestedWork::ArchiveCreation],
-        ))
-        .unwrap();
-    RunPreparation::new(
-        roots.to_vec(),
-        profile,
-        policy,
-        ArchivePrecedence::DeterministicDiscovery,
-    )
-}
-
-/// Runs Archive Finalization once over `root` with `game`'s real rules and
-/// returns its recorded result. Safety Cleanup must find nothing left.
+/// Runs one Apply run over `root` that requests only Archive creation, with
+/// `game`'s real rules and its Archive extension, and returns its recorded
+/// Archive Finalization result. Safety Cleanup must find nothing left.
 fn finalize(
     game: Game,
     root: &Path,
     settings: ArchiveFinalizationSettings,
     capacity: Option<u64>,
 ) -> ArchiveFinalizationResult {
-    finalize_probing(game, root, settings, &Capacity(capacity))
+    finalize_probing(game, root, settings, Arc::new(Capacity(capacity)))
 }
 
-/// [`finalize`] with any volume probe.
+/// [`finalize`] with any volume probe, which the run's Toolset shares.
 fn finalize_probing(
     game: Game,
     root: &Path,
     settings: ArchiveFinalizationSettings,
-    capacity: &dyn VolumeProbe,
+    capacity: Arc<dyn VolumeProbe>,
 ) -> ArchiveFinalizationResult {
-    let packer = GameArchivePacker::new(Settings::get(game));
-    let reader = ArchiveFileReader::default();
-    let mut evidence = ArchiveFinalizationEvidence::new();
-    let mut artifacts = TemporaryArtifactRegistry::new(create_run_id());
-    ArchiveFinalization::new(&packer, &reader, capacity, settings)
-        .run(
-            &preparation(&[root.to_path_buf()], packer.rules().extension.as_str()),
-            &mut evidence.recorder(),
-            &mut artifacts,
-            &|| false,
-        )
-        .unwrap();
-    assert!(artifacts.cleanup().is_empty());
-    evidence.finalization()
+    let extension = GameArchivePacker::new(Settings::get(game))
+        .rules()
+        .extension
+        .clone();
+    let archive_run = ArchiveRunRequest::new(root)
+        .with_archive_extension(extension)
+        .with_archive_work(ArchiveWorkSettings {
+            finalization: settings,
+            ..ArchiveWorkSettings::default()
+        });
+    let configuration = archive_run.seams_configuration(move || ArchiveSeams {
+        reader: Arc::new(ArchiveFileReader::default()),
+        volume_probe: Arc::clone(&capacity),
+        packer: Arc::new(GameArchivePacker::new(Settings::get(game))),
+    });
+
+    let result = archive_run.execute(&configuration, None, &CancellationToken::new());
+
+    assert!(
+        result.cleanup_failures().is_empty(),
+        "{:?}",
+        result.cleanup_failures()
+    );
+    result
+        .archive_finalization()
+        .unwrap_or_else(|| panic!("no Archive Finalization: {:?}", result.failures()))
+        .clone()
 }
 
 /// The canonical Dummy Plugin of `game`.
@@ -314,18 +312,19 @@ fn a_plugin_appearing_at_another_recognized_name_is_reused() {
         };
         write(&root, source, b"source bytes");
         let alternate = root.join(plugin_name);
-        let appeared = std::sync::Mutex::new(None);
-        struct Appearing<'a> {
-            plugin: &'a Path,
-            appeared: &'a std::sync::Mutex<Option<SystemTime>>,
+        let appeared: Arc<Mutex<Option<SystemTime>>> = Arc::default();
+        // The run's Toolset shares the probe, so it owns what it touches.
+        struct Appearing {
+            plugin: PathBuf,
+            appeared: Arc<Mutex<Option<SystemTime>>>,
         }
-        impl VolumeProbe for Appearing<'_> {
+        impl VolumeProbe for Appearing {
             fn available_bytes(&self, _: &Path) -> Option<u64> {
                 // Planning found no Loading Plugin; one appears now.
                 let mut appeared = self.appeared.lock().unwrap();
                 if appeared.is_none() {
-                    std::fs::write(self.plugin, b"existing loading plugin").unwrap();
-                    *appeared = Some(age(self.plugin));
+                    std::fs::write(&self.plugin, b"existing loading plugin").unwrap();
+                    *appeared = Some(age(&self.plugin));
                 }
                 None
             }
@@ -343,10 +342,10 @@ fn a_plugin_appearing_at_another_recognized_name_is_reused() {
             game,
             &root,
             settings,
-            &Appearing {
-                plugin: &alternate,
-                appeared: &appeared,
-            },
+            Arc::new(Appearing {
+                plugin: alternate.clone(),
+                appeared: Arc::clone(&appeared),
+            }),
         );
 
         let original = appeared.lock().unwrap().expect("the plugin appeared");
