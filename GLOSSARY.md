@@ -49,7 +49,7 @@ The internal synchronous component that traverses the Run Phase sequence for one
 _Avoid_: Runner, engine, worker
 
 **Run Toolset**:
-The Asset attempt port and Archive seams (Archive reader, packer and volume probe) one Optimization Run's work goes through, built by Preparing from the same profile read as its Routing Policy. Core assembles Archive extraction and Archive Finalization over these seams, so one reader serves discovery, extraction and finalization.
+The Asset attempt port and Archive seams (Archive reader, packer and volume probe) one Optimization Run's work goes through, built by Preparing from the same profile read as its Routing Policy. An Optimization Run reaches Archive discovery's checks, Archive extraction and Archive Finalization only through it, so one reader and one Capacity Check serve all three.
 _Avoid_: Run Work Service, adapters
 
 **Optimization Run Service**:
