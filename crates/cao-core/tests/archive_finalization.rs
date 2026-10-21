@@ -40,7 +40,7 @@ use cao_core::run::{
     ArchiveFinalizationResult, ArchiveFinalizationSettings, ArchivePrecedence, ArchiveReader,
     CancellationToken, MutationKind, PackedArchiveKind, RunDiagnostic, RunFailure,
     RunObservationSink, RunPhase, RunPhaseRecord, RunPreparation, TemporaryArtifactRegistry,
-    VolumeProbe, create_run_id,
+    create_run_id,
 };
 use cao_core::test_support::{
     ArchiveFinalizationEvidence as Evidence, FakeArchivePacker, FakeArchiveReader, FakeVolumeProbe,
@@ -153,39 +153,16 @@ fn capacity(probe: impl Fn(&Path) -> Option<u64> + Send + Sync + 'static) -> Fak
     FakeVolumeProbe::default().with_capacity(probe)
 }
 
-/// A volume probe answering `probe` for every Mod Root's volume identity; its
-/// free space is unknown.
-fn volumes(probe: impl Fn(&Path) -> Option<String> + Send + Sync + 'static) -> FakeVolumeProbe {
-    FakeVolumeProbe::default().with_volumes(probe)
-}
-
-/// The one volume probe a [`Finalizer`] hands the phase: free space from one
-/// fake, volume identities from another, so scenarios set each separately.
-struct SplitProbe<'a> {
-    capacity: &'a FakeVolumeProbe,
-    volumes: &'a FakeVolumeProbe,
-}
-
-impl VolumeProbe for SplitProbe<'_> {
-    fn available_bytes(&self, root: &Path) -> Option<u64> {
-        self.capacity.available_bytes(root)
-    }
-
-    fn volume_identity(&self, root: &Path) -> Option<String> {
-        self.volumes.volume_identity(root)
-    }
-}
-
 /// One Archive Finalization configuration; scenarios override only what they
 /// depend on. The settings default to the options model's.
 #[derive(Default)]
 struct Finalizer {
     packer: FakeArchivePacker,
     reader: FakeArchiveReader,
-    /// Answers free space; its volume answers are never asked.
-    capacity: FakeVolumeProbe,
-    /// Answers volume identities; its free-space answers are never asked.
-    volumes: FakeVolumeProbe,
+    /// Answers free space and volume identities; scenarios set the knobs
+    /// they depend on through [`capacity`] and
+    /// [`FakeVolumeProbe::with_volumes`].
+    probe: FakeVolumeProbe,
     settings: ArchiveFinalizationSettings,
     /// When set, the Routing Policy requests only Texture work.
     no_archive_creation: bool,
@@ -213,11 +190,7 @@ impl Finalizer {
         artifacts: &mut TemporaryArtifactRegistry,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(), Error> {
-        let probe = SplitProbe {
-            capacity: &self.capacity,
-            volumes: &self.volumes,
-        };
-        ArchiveFinalization::new(&self.packer, &self.reader, &probe, self.settings).run(
+        ArchiveFinalization::new(&self.packer, &self.reader, &self.probe, self.settings).run(
             &preparation_for(roots, !self.no_archive_creation, &self.files_to_not_pack),
             &mut evidence.recorder(),
             artifacts,
@@ -228,14 +201,12 @@ impl Finalizer {
     /// The staging estimate the phase reports when `root` has no capacity at
     /// all: one planned output's estimate plus its plugin reserve.
     fn reported_estimate(&self, root: &Path) -> u64 {
+        // A lone Mod Root carries the whole demand, so its volume is never
+        // looked up and the finalizer's own volume answers are not needed.
         let zero = capacity(|_| Some(0));
         let mut evidence = Evidence::new();
         let mut artifacts = registry();
-        let probe = SplitProbe {
-            capacity: &zero,
-            volumes: &self.volumes,
-        };
-        ArchiveFinalization::new(&self.packer, &self.reader, &probe, self.settings)
+        ArchiveFinalization::new(&self.packer, &self.reader, &zero, self.settings)
             .run(
                 &preparation_for(&[root.to_path_buf()], true, &self.files_to_not_pack),
                 &mut evidence.recorder(),
@@ -304,16 +275,12 @@ fn capacity_shortages_stop_before_mutation() {
             write_file(&root.join("meshes/asset.nif"), &[b'x'; 8192]);
             std::fs::create_dir(root.join("empty")).unwrap();
         }
-        let mut finalizer = Finalizer {
-            // Both roots share one volume, so the phase sums both outputs.
-            volumes: volumes(|_| Some("shared-volume".to_owned())),
-            ..Finalizer::default()
-        };
+        let mut finalizer = Finalizer::default();
         // Identical roots plan identical outputs, so one estimate stands for both.
         let estimate = finalizer.reported_estimate(&roots[0]);
         let grown = AtomicBool::new(false);
         let (first, second) = (roots[0].clone(), roots[1].clone());
-        finalizer.capacity = capacity(move |root| {
+        let probe = capacity(move |root| {
             if scenario == 1 {
                 return None;
             }
@@ -330,6 +297,8 @@ fn capacity_shortages_stop_before_mutation() {
             }
             Some(UNLIMITED)
         });
+        // Both roots share one volume, so the phase sums both outputs.
+        finalizer.probe = probe.with_volumes(|_| Some("shared-volume".to_owned()));
         let mut evidence = Evidence::new();
         let mut artifacts = registry();
         finalizer
@@ -394,9 +363,8 @@ fn capacity_is_grouped_by_volume() {
         ..Finalizer::default()
     };
     let estimate = finalizer.reported_estimate(&roots[0]);
-    finalizer.capacity = capacity(move |_| Some(estimate));
     let first = roots[0].clone();
-    finalizer.volumes = volumes(move |root| {
+    finalizer.probe = capacity(move |_| Some(estimate)).with_volumes(move |root| {
         Some(
             if root == first {
                 "first-volume"
@@ -448,17 +416,17 @@ fn an_idle_root_of_unknown_volume_does_not_inflate_capacity() {
     let estimate = finalizer.reported_estimate(&roots[0]);
     let (first, idle) = (roots[0].clone(), roots[2].clone());
     let idle_root = idle.clone();
-    finalizer.capacity = capacity(move |root| Some(if root == idle { 0 } else { estimate }));
-    finalizer.volumes = volumes(move |root| {
-        (root != idle_root).then(|| {
-            if root == first {
-                "first-volume"
-            } else {
-                "second-volume"
-            }
-            .to_owned()
-        })
-    });
+    finalizer.probe = capacity(move |root| Some(if root == idle { 0 } else { estimate }))
+        .with_volumes(move |root| {
+            (root != idle_root).then(|| {
+                if root == first {
+                    "first-volume"
+                } else {
+                    "second-volume"
+                }
+                .to_owned()
+            })
+        });
     let mut evidence = Evidence::new();
     let mut artifacts = registry();
     finalizer
@@ -496,9 +464,8 @@ fn a_panicking_volume_probe_is_an_unknown_volume() {
         };
         let estimate = finalizer.reported_estimate(&roots[0]);
         let available = if shortage { estimate } else { UNLIMITED };
-        finalizer.capacity = capacity(move |_| Some(available));
         let first = roots[0].clone();
-        finalizer.volumes = volumes(move |root| {
+        finalizer.probe = capacity(move |_| Some(available)).with_volumes(move |root| {
             assert!(*root != first, "the volume query failed");
             Some("second-volume".to_owned())
         });
@@ -540,7 +507,7 @@ fn a_panicking_capacity_probe_is_unknown_capacity() {
     let root = parent.join("mod");
     write_file(&root.join("textures/asset.dds"), b"source bytes");
     let finalizer = Finalizer {
-        capacity: capacity(|_| panic!("the free-space query failed")),
+        probe: capacity(|_| panic!("the free-space query failed")),
         ..Finalizer::default()
     };
     let mut evidence = Evidence::new();
@@ -578,10 +545,10 @@ fn the_plugin_allowance_shrinks_after_each_root() {
     let queries = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&queries);
     let finalizer = Finalizer {
-        capacity: capacity(move |_| {
+        probe: capacity(move |_| {
             Some(std::fs::metadata(&probed_plugin).map_or(UNLIMITED, |metadata| metadata.len()))
-        }),
-        volumes: volumes(move |_| {
+        })
+        .with_volumes(move |_| {
             counted.fetch_add(1, Ordering::SeqCst);
             Some("shared-volume".to_owned())
         }),
@@ -612,7 +579,7 @@ fn a_plugin_only_shortage_fails_the_phase_without_progress() {
     write_file(&root.join("existing.bsa"), b"retained archive");
     std::fs::create_dir(root.join("empty")).unwrap();
     let finalizer = Finalizer {
-        capacity: capacity(|_| Some(0)),
+        probe: capacity(|_| Some(0)),
         ..Finalizer::default()
     };
     let mut evidence = Evidence::new();
@@ -661,7 +628,7 @@ fn a_disappearing_loading_plugin_keeps_its_fallback_reserved() {
         finalizer.settings.create_dummy_plugins = true;
         let queries = AtomicUsize::new(0);
         let vanishing = earlier_plugin.clone();
-        finalizer.capacity = capacity(move |_| {
+        finalizer.probe = capacity(move |_| {
             // Planning saw the Loading Plugin; it disappears before any mutation.
             if queries.fetch_add(1, Ordering::SeqCst) == 0 {
                 let _ = std::fs::remove_file(&vanishing);
@@ -752,7 +719,7 @@ fn the_total_is_frozen_and_cancellation_falls_between_outputs() {
         let probes = AtomicUsize::new(0);
         // One phase preflight per root, then one recheck per attempt.
         // Stopping during an attempt's recheck lets that attempt finish.
-        finalizer.capacity = capacity(move |_| {
+        finalizer.probe = capacity(move |_| {
             let probe = probes.fetch_add(1, Ordering::SeqCst) + 1;
             if probe == 1 {
                 frozen.store(
@@ -846,7 +813,7 @@ fn cancellation_keeps_the_committed_archive_loadable() {
         finalizer.stop.clone(),
     );
     let probes = AtomicUsize::new(0);
-    finalizer.capacity = capacity(move |_| {
+    finalizer.probe = capacity(move |_| {
         let probe = probes.fetch_add(1, Ordering::SeqCst) + 1;
         if probe == 1 {
             flag.store(
@@ -897,7 +864,7 @@ fn cancellation_stops_plugin_maintenance_between_roots() {
         first_plugin.clone(),
         finalizer.stop.clone(),
     );
-    finalizer.capacity = capacity(move |root| {
+    finalizer.probe = capacity(move |root| {
         if root == second && probed_plugin.exists() {
             stop.cancel();
         }
@@ -941,7 +908,7 @@ fn a_blocked_dummy_plugin_removal_is_a_contained_failure() {
             ..ArchiveFinalizationSettings::default()
         },
         // After planning, block only the deletion; reads stay shared.
-        capacity: capacity(move |_| {
+        probe: capacity(move |_| {
             holder
                 .lock()
                 .unwrap()
@@ -1228,7 +1195,7 @@ fn a_dummy_plugin_replaced_after_planning_is_kept() {
             ..ArchiveFinalizationSettings::default()
         },
         // Planning recognized the exact dummy; replace it before cleanup.
-        capacity: capacity(move |_| {
+        probe: capacity(move |_| {
             if !flag.swap(true, Ordering::SeqCst) {
                 std::fs::rename(&probed, &moved).unwrap();
                 write_file(&probed, &written);
@@ -1318,7 +1285,7 @@ fn an_occupied_plugin_name_for_an_existing_archive_fails_safely() {
     let probed = occupied.clone();
     let finalizer = Finalizer {
         // A non-plugin entry takes the Loading Plugin name after planning.
-        capacity: capacity(move |_| {
+        probe: capacity(move |_| {
             let _ = std::fs::create_dir(&probed);
             Some(UNLIMITED)
         }),
@@ -1548,7 +1515,7 @@ fn a_source_parent_swapped_for_a_junction_fails_the_write() {
             ..ArchiveFinalizationSettings::default()
         },
         // Swap the parent for a junction before the output attempt starts.
-        capacity: capacity(move |_| {
+        probe: capacity(move |_| {
             if !flag.load(Ordering::SeqCst) && std::fs::rename(&link, &moved).is_ok() {
                 junction(&link, &target);
                 flag.store(true, Ordering::SeqCst);
@@ -1607,7 +1574,7 @@ fn planned_names_are_distinct_and_a_late_destination_wins() {
             ..ArchiveFinalizationSettings::default()
         },
         // A competing creator after planning, before the first attempt.
-        capacity: capacity(move |_| {
+        probe: capacity(move |_| {
             if !competed.swap(true, Ordering::SeqCst) {
                 write_file(&competitor, b"competing creator bytes");
             }
@@ -1668,7 +1635,7 @@ fn a_competing_plugin_at_the_planned_name_keeps_archive_and_sources() {
             compress: false,
             ..ArchiveFinalizationSettings::default()
         },
-        capacity: capacity(move |_| {
+        probe: capacity(move |_| {
             if !occupied.swap(true, Ordering::SeqCst) {
                 write_file(&competitor, b"competing plugin bytes");
             }
@@ -1730,7 +1697,7 @@ fn an_exact_dummy_at_the_planned_name_is_reused() {
             compress: false,
             ..ArchiveFinalizationSettings::default()
         },
-        capacity: capacity(move |_| {
+        probe: capacity(move |_| {
             let mut recorded = recorded.lock().unwrap();
             if recorded.is_none() {
                 write_file(&plugin, &fake_dummy_plugin());
@@ -1839,7 +1806,7 @@ fn a_vanished_loading_plugin_gets_its_fallback() {
             compress: false,
             ..ArchiveFinalizationSettings::default()
         },
-        capacity: capacity(move |_| {
+        probe: capacity(move |_| {
             if !flag.load(Ordering::SeqCst) {
                 flag.store(std::fs::remove_file(&vanishing).is_ok(), Ordering::SeqCst);
             }
@@ -1973,7 +1940,7 @@ fn links_at_every_plugin_name_keep_the_sources() {
             ..ArchiveFinalizationSettings::default()
         },
         // After planning, links occupy every recognized Loading Plugin name.
-        capacity: capacity(move |_| {
+        probe: capacity(move |_| {
             if !flag.swap(true, Ordering::SeqCst) {
                 for name in &names {
                     assert!(symlink(&link_target, name));
@@ -2165,7 +2132,7 @@ fn without_archive_creation_only_pruning_runs() {
     let counted = Arc::clone(&probes);
     let finalizer = Finalizer {
         no_archive_creation: true,
-        capacity: capacity(move |_| {
+        probe: capacity(move |_| {
             counted.fetch_add(1, Ordering::SeqCst);
             Some(UNLIMITED)
         }),
@@ -2499,7 +2466,7 @@ fn a_plugin_maintenance_failure_keeps_recorded_attempts() {
         },
         // mod-b's plugin allowance is rechecked after mod-a's output; moving
         // mod-b away then makes its Loading Plugin maintenance fail.
-        capacity: capacity(move |root| {
+        probe: capacity(move |root| {
             if root == existing_root
                 && !archives_in(&packed_root).is_empty()
                 && !flag.load(Ordering::SeqCst)

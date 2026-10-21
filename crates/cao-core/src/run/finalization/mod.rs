@@ -381,7 +381,7 @@ impl<'a> ArchiveFinalization<'a> {
             return record_shortfall(shortfall, archive, recorder, result);
         }
 
-        for index in 0..plan.outputs.len() {
+        for (index, _) in plan.outputs.iter().enumerate() {
             if cancelled() {
                 result.cancelled = true;
                 break;

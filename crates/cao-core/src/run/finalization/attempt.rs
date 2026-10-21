@@ -34,8 +34,8 @@ struct AttemptProgress {
 /// A capacity rejection returns `InsufficientCapacity` before any mutation.
 /// `dummy_demand` holds every Mod Root's Loading Plugin allowance, so the
 /// recheck through `capacity` also charges the allowance still needed on
-/// this output's volume. The Archive's mutation and continuation verdict come from
-/// its publication. After a commit, a later failure stays safe to continue
+/// this output's volume. The Archive's mutation and continuation verdict come
+/// from its publication. After a commit, a later failure stays safe to continue
 /// only while the Archive reads back and every source not yet deleted is
 /// still readable recovery material; a Loading Plugin failure never is.
 /// Plugin publication facts are appended to `mutations` as they happen, so
