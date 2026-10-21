@@ -15,13 +15,13 @@ use crate::run::{ArchiveFinalizationAttempt, ArchiveFinalizationResult, MutableR
 ///
 /// It borrows the run's evidence exclusively for as long as it lives, so
 /// nothing else writes Run Evidence while Archive Finalization holds it.
-pub struct ArchiveFinalizationRecorder<'e, 'a> {
+pub(crate) struct ArchiveFinalizationRecorder<'e, 'a> {
     evidence: &'e mut MutableRunEvidence<'a>,
 }
 
 impl<'e, 'a> ArchiveFinalizationRecorder<'e, 'a> {
     /// A recorder lent the run's evidence owner. Crate-private, so only the
-    /// run and `test_support` can open one.
+    /// run can open one.
     pub(crate) fn new(evidence: &'e mut MutableRunEvidence<'a>) -> Self {
         Self { evidence }
     }

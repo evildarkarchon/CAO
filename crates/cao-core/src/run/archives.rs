@@ -3,8 +3,8 @@
 //! Ported from `src/Run/ArchiveFirstAssetDiscovery.cpp`,
 //! `src/Run/ArchiveExtraction.cpp` and `src/Run/ArchiveCapacity.h`. Archives
 //! are read only through the [`ArchiveReader`] seam, and capacity and volume
-//! identity only through the Capacity Check over the [`VolumeProbe`], so none
-//! of this needs `ba2`.
+//! identity only through the Capacity Check over the
+//! [`VolumeProbe`](crate::run::VolumeProbe), so none of this needs `ba2`.
 //!
 //! The preflight runs before any extraction and is all-or-nothing: every
 //! selected Archive's manifest is read, every entry is checked for an Unsafe
@@ -31,9 +31,9 @@ use crate::run::capacity::CapacityCheck;
 use crate::run::source_pin::SourceFilePin;
 use crate::run::staging::{has_staging_component, pin_directory};
 use crate::run::{
-    ArchiveEntry, ArchivePrecedence, ArchiveReader, CancellationToken, PublicationPolicy,
-    PublicationReceipt, PublicationState, RunFailure, RunFailureCode, RunPhase,
-    TemporaryArtifactRegistry, VolumeProbe, is_staging_name, take_panic_message,
+    ArchiveEntry, ArchivePrecedence, ArchiveReader, ArchiveSeams, CancellationToken,
+    PublicationPolicy, PublicationReceipt, PublicationState, RunFailure, RunFailureCode, RunPhase,
+    TemporaryArtifactRegistry, is_staging_name, take_panic_message,
 };
 
 /// A game path compared as a case-insensitive Windows volume compares names.
@@ -66,7 +66,7 @@ pub struct ArchiveCollision {
 /// A winner failing later never promotes a shadowed Archive, and a Loose
 /// Asset removed later keeps its preflight precedence.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArchiveExtractionPlan {
+pub(crate) struct ArchiveExtractionPlan {
     pub archive_path: PathBuf,
     /// The canonical Mod Root, independent of the Archive's own directory.
     pub mod_root: PathBuf,
@@ -110,7 +110,7 @@ pub struct ArchiveExtractionResult {
 
 impl ArchiveExtractionResult {
     /// A successful attempt for `plan` that has mutated nothing yet.
-    pub fn new(plan: &ArchiveExtractionPlan) -> Self {
+    pub(crate) fn new(plan: &ArchiveExtractionPlan) -> Self {
         Self {
             archive_path: plan.archive_path.clone(),
             mod_root: plan.mod_root.clone(),
@@ -133,200 +133,186 @@ impl ArchiveExtractionResult {
     }
 }
 
-/// Stages a whole Archive, then publishes only the entries it won.
+/// Stages a whole Archive by its frozen plan, then publishes only the
+/// entries it won, never failing outright: the step of [`extract_archive`]
+/// between pinning the source and cleaning it up.
 ///
 /// The source Archive is never removed here: backing it up or deleting it
-/// belongs to the caller (C++ `BSAOptimizer::extract`).
-pub struct ArchiveExtractor<'a> {
-    reader: &'a dyn ArchiveReader,
-    capacity: CapacityCheck<'a>,
+/// belongs to [`extract_archive`] (C++ `BSAOptimizer::extract`).
+///
+/// The manifest and free space are rechecked first, since either can
+/// change after preflight; a shortage stops the attempt before any
+/// staging. A failure before the first published entry reports no
+/// mutation and stays safe to continue; one after it reports
+/// `PartialOrUnknown` and is unsafe. Publication never replaces an
+/// existing entry, so a Loose Asset that appeared after preflight wins.
+/// Staged entries that are not published stay registered, so Safety
+/// Cleanup removes them.
+///
+/// Reads go through `reader`, which is released before this returns, and
+/// the recheck through `capacity`, the run's Capacity Check.
+fn extract_staged(
+    reader: &dyn ArchiveReader,
+    capacity: &CapacityCheck<'_>,
+    plan: &ArchiveExtractionPlan,
+    artifacts: &mut TemporaryArtifactRegistry,
+) -> ArchiveExtractionResult {
+    let mut result = ArchiveExtractionResult::new(plan);
+    let mut progress = ExtractionProgress::default();
+    // A panicking reader is classified like any other failure, by how far
+    // the attempt got: `progress` survives the unwind, so a panic while
+    // staging stays safe and one after a commit stays partial (C++
+    // `catch (...)`).
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        try_extract(
+            reader,
+            capacity,
+            plan,
+            artifacts,
+            &mut result,
+            &mut progress,
+        )
+    }))
+    .unwrap_or_else(|payload| Err(take_panic_message(payload)));
+    // Whatever happened, nothing reads this Archive again in the attempt,
+    // and the caller may remove or rename it next. A panicking release is
+    // ignored: the attempt's own outcome is the fact worth reporting, and
+    // source cleanup still fails safely on a source left mapped.
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| reader.release())) {
+        take_panic_message(payload);
+    }
+    match outcome {
+        Ok(()) => result,
+        Err(detail) => {
+            result.detail = detail;
+            result.failure = Some(if progress.merging {
+                ArchiveExtractionFailure::MergeFailed
+            } else {
+                ArchiveExtractionFailure::ExtractionFailed
+            });
+            // A half-merged Effective Asset Tree must never be optimized
+            // as if it were complete.
+            result.mutation = if progress.committed {
+                MutationState::PartialOrUnknown
+            } else {
+                MutationState::None
+            };
+            result.safe_to_continue = !progress.committed;
+            result
+        }
+    }
 }
 
-impl<'a> ArchiveExtractor<'a> {
-    /// An extractor reading through `reader` and rechecking capacity through
-    /// `volume_probe`.
-    ///
-    /// It builds its own Capacity Check, so a standalone extractor behaves
-    /// like a one-phase run; the Run Toolset uses
-    /// [`Self::with_capacity_check`] to share the run's.
-    pub fn new(reader: &'a dyn ArchiveReader, volume_probe: &'a dyn VolumeProbe) -> Self {
-        Self::with_capacity_check(reader, CapacityCheck::new(volume_probe))
+/// Performs the attempt, recording how far it got in `progress` so the
+/// caller can classify an `Err` detail as an extraction or merge failure.
+///
+/// A failed capacity recheck is not an `Err`: it returns `Ok` with
+/// `result.failure` already set, because it is never a mutation.
+fn try_extract(
+    reader: &dyn ArchiveReader,
+    capacity: &CapacityCheck<'_>,
+    plan: &ArchiveExtractionPlan,
+    artifacts: &mut TemporaryArtifactRegistry,
+    result: &mut ArchiveExtractionResult,
+    progress: &mut ExtractionProgress,
+) -> Result<(), String> {
+    let root = msvc_canonical(&plan.mod_root).map_err(|error| error.to_string())?;
+    let source = std::path::absolute(&plan.archive_path).map_err(|error| error.to_string())?;
+    let contained = source.strip_prefix(&root).is_ok_and(|relative| {
+        !relative.as_os_str().is_empty()
+            && relative
+                .components()
+                .all(|component| matches!(component, Component::Normal(_)))
+            && !has_staging_component(relative)
+    });
+    if !contained {
+        return Err("Archive source is outside its Mod Root.".to_owned());
+    }
+    let directory = source.parent().unwrap_or(&root).to_path_buf();
+
+    let entries = reader
+        .list_entries(&source)
+        .map_err(|error| error.to_string())?;
+    let required = plan
+        .estimated_capacity_bytes
+        .max(estimated_capacity_bytes(&entries));
+    // Only this Archive's work is charged, at its canonical root. The
+    // Capacity Check samples inside its own containment: a panicking
+    // probe is unknown capacity, not an extraction failure from the
+    // attempt's boundary.
+    let mut demand = capacity.demand();
+    demand.add(&root, required);
+    if let Some(shortfall) = capacity.shortfall_at(&demand, &root) {
+        result.failure = Some(ArchiveExtractionFailure::InsufficientCapacity);
+        result.detail = shortfall.to_string();
+        return Ok(());
     }
 
-    /// An extractor reading through `reader` and rechecking capacity with
-    /// `capacity`, the run's Capacity Check.
-    pub(crate) fn with_capacity_check(
-        reader: &'a dyn ArchiveReader,
-        capacity: CapacityCheck<'a>,
-    ) -> Self {
-        Self { reader, capacity }
+    let expected: BTreeSet<&str> = plan.entries.iter().map(String::as_str).collect();
+    if expected.len() != plan.entries.len() {
+        return Err("Archive manifest contains duplicate canonical entries.".to_owned());
     }
-
-    /// Extracts one Archive by its frozen plan, never failing outright.
-    ///
-    /// The manifest and free space are rechecked first, since either can
-    /// change after preflight; a shortage stops the attempt before any
-    /// staging. A failure before the first published entry reports no
-    /// mutation and stays safe to continue; one after it reports
-    /// `PartialOrUnknown` and is unsafe. Publication never replaces an
-    /// existing entry, so a Loose Asset that appeared after preflight wins.
-    /// Staged entries that are not published stay registered, so Safety
-    /// Cleanup removes them.
-    pub fn extract(
-        &self,
-        plan: &ArchiveExtractionPlan,
-        artifacts: &mut TemporaryArtifactRegistry,
-    ) -> ArchiveExtractionResult {
-        let mut result = ArchiveExtractionResult::new(plan);
-        let mut progress = ExtractionProgress::default();
-        // A panicking reader is classified like any other failure, by how far
-        // the attempt got: `progress` survives the unwind, so a panic while
-        // staging stays safe and one after a commit stays partial (C++
-        // `catch (...)`).
-        let outcome = catch_unwind(AssertUnwindSafe(|| {
-            self.try_extract(plan, artifacts, &mut result, &mut progress)
-        }))
-        .unwrap_or_else(|payload| Err(take_panic_message(payload)));
-        // Whatever happened, nothing reads this Archive again in the attempt,
-        // and the caller may remove or rename it next. A panicking release is
-        // ignored: the attempt's own outcome is the fact worth reporting, and
-        // source cleanup still fails safely on a source left mapped.
-        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| self.reader.release())) {
-            take_panic_message(payload);
+    let mut keys = BTreeSet::new();
+    for entry in &expected {
+        if canonical_archive_entry_path(entry).as_deref() != Ok(*entry) {
+            return Err("Archive plan contains a noncanonical entry.".to_owned());
         }
-        match outcome {
-            Ok(()) => result,
-            Err(detail) => {
-                result.detail = detail;
-                result.failure = Some(if progress.merging {
-                    ArchiveExtractionFailure::MergeFailed
-                } else {
-                    ArchiveExtractionFailure::ExtractionFailed
-                });
-                // A half-merged Effective Asset Tree must never be optimized
-                // as if it were complete.
-                result.mutation = if progress.committed {
-                    MutationState::PartialOrUnknown
-                } else {
-                    MutationState::None
-                };
-                result.safe_to_continue = !progress.committed;
-                result
-            }
+        if !keys.insert(OrdinalIgnoreCase(*entry)) {
+            return Err("Archive manifest contains aliased entries.".to_owned());
         }
     }
+    if plan
+        .merge_entries
+        .iter()
+        .any(|entry| !expected.contains(entry.as_str()))
+    {
+        return Err("Archive merge entry is absent from its manifest.".to_owned());
+    }
 
-    /// Performs the attempt, recording how far it got in `progress` so the
-    /// caller can classify an `Err` detail as an extraction or merge failure.
-    ///
-    /// A failed capacity recheck is not an `Err`: it returns `Ok` with
-    /// `result.failure` already set, because it is never a mutation.
-    fn try_extract(
-        &self,
-        plan: &ArchiveExtractionPlan,
-        artifacts: &mut TemporaryArtifactRegistry,
-        result: &mut ArchiveExtractionResult,
-        progress: &mut ExtractionProgress,
-    ) -> Result<(), String> {
-        let root = msvc_canonical(&plan.mod_root).map_err(|error| error.to_string())?;
-        let source = std::path::absolute(&plan.archive_path).map_err(|error| error.to_string())?;
-        let contained = source.strip_prefix(&root).is_ok_and(|relative| {
-            !relative.as_os_str().is_empty()
-                && relative
-                    .components()
-                    .all(|component| matches!(component, Component::Normal(_)))
-                && !has_staging_component(relative)
-        });
-        if !contained {
-            return Err("Archive source is outside its Mod Root.".to_owned());
-        }
-        let directory = source.parent().unwrap_or(&root).to_path_buf();
-
-        let entries = self
-            .reader
-            .list_entries(&source)
-            .map_err(|error| error.to_string())?;
-        let required = plan
-            .estimated_capacity_bytes
-            .max(estimated_capacity_bytes(&entries));
-        // Only this Archive's work is charged, at its canonical root. The
-        // Capacity Check samples inside its own containment: a panicking
-        // probe is unknown capacity, not an extraction failure from the
-        // attempt's boundary.
-        let mut demand = self.capacity.demand();
-        demand.add(&root, required);
-        if let Some(shortfall) = self.capacity.shortfall_at(&demand, &root) {
-            result.failure = Some(ArchiveExtractionFailure::InsufficientCapacity);
-            result.detail = shortfall.to_string();
-            return Ok(());
-        }
-
-        let expected: BTreeSet<&str> = plan.entries.iter().map(String::as_str).collect();
-        if expected.len() != plan.entries.len() {
-            return Err("Archive manifest contains duplicate canonical entries.".to_owned());
-        }
-        let mut keys = BTreeSet::new();
-        for entry in &expected {
-            if canonical_archive_entry_path(entry).as_deref() != Ok(*entry) {
-                return Err("Archive plan contains a noncanonical entry.".to_owned());
-            }
-            if !keys.insert(OrdinalIgnoreCase(*entry)) {
-                return Err("Archive manifest contains aliased entries.".to_owned());
-            }
-        }
-        if plan
-            .merge_entries
-            .iter()
-            .any(|entry| !expected.contains(entry.as_str()))
-        {
-            return Err("Archive merge entry is absent from its manifest.".to_owned());
-        }
-
-        // Every entry is staged, shadowed ones too, before anything is published.
-        let changed = || "Archive manifest changed after preflight.".to_owned();
-        let mut staged: HashMap<String, PublicationReceipt> = HashMap::new();
-        for entry in &entries {
-            let canonical = canonical_archive_entry_path(&entry.name).map_err(|_| changed())?;
-            if !expected.contains(canonical.as_str()) || staged.contains_key(&canonical) {
-                return Err(changed());
-            }
-            let receipt = artifacts
-                .stage_archive_file_for_publication(&root)
-                .map_err(|error| error.to_string())?;
-            let path = receipt
-                .path()
-                .map_err(|error| error.to_string())?
-                .to_path_buf();
-            self.reader
-                .extract_entry(&source, &entry.name, &path)
-                .map_err(|error| error.to_string())?;
-            staged.insert(canonical, receipt);
-        }
-        if staged.len() != expected.len() {
+    // Every entry is staged, shadowed ones too, before anything is published.
+    let changed = || "Archive manifest changed after preflight.".to_owned();
+    let mut staged: HashMap<String, PublicationReceipt> = HashMap::new();
+    for entry in &entries {
+        let canonical = canonical_archive_entry_path(&entry.name).map_err(|_| changed())?;
+        if !expected.contains(canonical.as_str()) || staged.contains_key(&canonical) {
             return Err(changed());
         }
-
-        progress.merging = true;
-        for entry in &plan.merge_entries {
-            let receipt = staged.remove(entry).ok_or_else(changed)?;
-            let target = prepare_merge_target(&root, &join_game_path(&directory, entry))?;
-            let publication = receipt.publish(&target.path, PublicationPolicy::NoReplace);
-            // Record the commit before inspecting the state, so a release
-            // failure on this entry already counts as a partial merge.
-            if publication.mutation() == MutationState::Committed {
-                progress.committed = true;
-            }
-            if publication.state != PublicationState::PublishedAndReleased {
-                return Err(if publication.error_detail.is_empty() {
-                    "Archive publication did not complete.".to_owned()
-                } else {
-                    publication.error_detail
-                });
-            }
-            result.mutation = MutationState::Committed;
-        }
-        Ok(())
+        let receipt = artifacts
+            .stage_archive_file_for_publication(&root)
+            .map_err(|error| error.to_string())?;
+        let path = receipt
+            .path()
+            .map_err(|error| error.to_string())?
+            .to_path_buf();
+        reader
+            .extract_entry(&source, &entry.name, &path)
+            .map_err(|error| error.to_string())?;
+        staged.insert(canonical, receipt);
     }
+    if staged.len() != expected.len() {
+        return Err(changed());
+    }
+
+    progress.merging = true;
+    for entry in &plan.merge_entries {
+        let receipt = staged.remove(entry).ok_or_else(changed)?;
+        let target = prepare_merge_target(&root, &join_game_path(&directory, entry))?;
+        let publication = receipt.publish(&target.path, PublicationPolicy::NoReplace);
+        // Record the commit before inspecting the state, so a release
+        // failure on this entry already counts as a partial merge.
+        if publication.mutation() == MutationState::Committed {
+            progress.committed = true;
+        }
+        if publication.state != PublicationState::PublishedAndReleased {
+            return Err(if publication.error_detail.is_empty() {
+                "Archive publication did not complete.".to_owned()
+            } else {
+                publication.error_detail
+            });
+        }
+        result.mutation = MutationState::Committed;
+    }
+    Ok(())
 }
 
 /// What becomes of a source Archive once every entry it won is published.
@@ -338,107 +324,114 @@ pub enum SourceCleanup {
     Remove,
 }
 
-impl ArchiveExtractor<'_> {
-    /// Extracts one Archive, then backs up or removes its source, as C++
-    /// `BSAOptimizer::extract` did.
-    ///
-    /// The source and its ancestors are pinned before the first read and
-    /// until cleanup ends, so no read follows a substituted file or parent,
-    /// and cleanup acts only on the very file object that was read, unchanged.
-    /// The source keeps its name and bytes until the merge has succeeded, so a
-    /// failed attempt leaves it recoverable. The reader is released before
-    /// cleanup, since a memory-mapped source cannot be deleted.
-    ///
-    /// A pin that cannot be taken fails the attempt before anything is read.
-    /// A failed cleanup is [`ArchiveExtractionFailure::SourceCleanupFailed`]
-    /// and unsafe to continue, unless entries were committed and the source is
-    /// still the same readable Archive: then the run may go on, because the
-    /// retained source is still recovery material for what was extracted.
-    /// Otherwise the mutation becomes unknown.
-    ///
-    /// Every panic is contained here, classified like `extract`'s by how far
-    /// the attempt got. One while pinning comes before any read, so it is an
-    /// [`ArchiveExtractionFailure::ExtractionFailed`] with no mutation, safe
-    /// to continue. One during cleanup or its recovery check is a
-    /// [`ArchiveExtractionFailure::SourceCleanupFailed`] with
-    /// `PartialOrUnknown` mutation, unsafe whatever was committed.
-    pub fn extract_with_source_cleanup(
-        &self,
-        plan: &ArchiveExtractionPlan,
-        cleanup: SourceCleanup,
-        artifacts: &mut TemporaryArtifactRegistry,
-    ) -> ArchiveExtractionResult {
-        // The pin and cleanup act only on the filesystem through `cao_winfs`,
-        // never through the reader or volume probe, so no seam can make
-        // them panic and no test reaches these arms; they are contained
-        // anyway, because the Run Executor relies on this extractor to own
-        // every panic of an extraction attempt.
-        let pinned = catch_unwind(AssertUnwindSafe(|| {
-            SourceFilePin::new(&plan.archive_path, &plan.mod_root)
-                .map_err(|error| error.to_string())
-        }))
-        .unwrap_or_else(|payload| Err(take_panic_message(payload)));
-        let mut pin = match pinned {
-            Ok(pin) => pin,
-            Err(detail) => {
-                return ArchiveExtractionResult {
-                    failure: Some(ArchiveExtractionFailure::ExtractionFailed),
-                    detail,
-                    ..ArchiveExtractionResult::new(plan)
-                };
-            }
-        };
-        // `extract` releases the reader before it returns.
-        let mut result = self.extract(plan, artifacts);
-        if !result.succeeded() {
-            return result;
+/// Extracts one planned Archive, then backs up or removes its source with
+/// `cleanup`, as C++ `BSAOptimizer::extract` did. Archive extraction's only
+/// entry point: the Run Toolset calls it for each plan the preflight made.
+///
+/// It reads through `seams.reader` and rechecks free space through
+/// `capacity`, the run's Capacity Check. [`CapacityCheck`] is the only
+/// caller of `seams.volume_probe`: this function never samples the probe
+/// itself, so its recheck groups Mod Roots by the volume identities the run
+/// froze.
+///
+/// The source and its ancestors are pinned before the first read and
+/// until cleanup ends, so no read follows a substituted file or parent,
+/// and cleanup acts only on the very file object that was read, unchanged.
+/// The source keeps its name and bytes until the merge has succeeded, so a
+/// failed attempt leaves it recoverable. The reader is released before
+/// cleanup, since a memory-mapped source cannot be deleted.
+///
+/// A pin that cannot be taken fails the attempt before anything is read.
+/// A failed cleanup is [`ArchiveExtractionFailure::SourceCleanupFailed`]
+/// and unsafe to continue, unless entries were committed and the source is
+/// still the same readable Archive: then the run may go on, because the
+/// retained source is still recovery material for what was extracted.
+/// Otherwise the mutation becomes unknown.
+///
+/// Never fails outright and never panics. Every panic is contained here,
+/// classified like [`extract_staged`]'s by how far the attempt got. One
+/// while pinning comes before any read, so it is an
+/// [`ArchiveExtractionFailure::ExtractionFailed`] with no mutation, safe
+/// to continue. One during cleanup or its recovery check is a
+/// [`ArchiveExtractionFailure::SourceCleanupFailed`] with
+/// `PartialOrUnknown` mutation, unsafe whatever was committed.
+pub(crate) fn extract_archive(
+    seams: &ArchiveSeams,
+    capacity: &CapacityCheck<'_>,
+    plan: &ArchiveExtractionPlan,
+    cleanup: SourceCleanup,
+    artifacts: &mut TemporaryArtifactRegistry,
+) -> ArchiveExtractionResult {
+    let reader = &*seams.reader;
+    // The pin and cleanup act only on the filesystem through `cao_winfs`,
+    // never through the reader or volume probe, so no seam can make
+    // them panic and no test reaches these arms; they are contained
+    // anyway, because the Run Executor relies on this function to own
+    // every panic of an extraction attempt.
+    let pinned = catch_unwind(AssertUnwindSafe(|| {
+        SourceFilePin::new(&plan.archive_path, &plan.mod_root).map_err(|error| error.to_string())
+    }))
+    .unwrap_or_else(|payload| Err(take_panic_message(payload)));
+    let mut pin = match pinned {
+        Ok(pin) => pin,
+        Err(detail) => {
+            return ArchiveExtractionResult {
+                failure: Some(ArchiveExtractionFailure::ExtractionFailed),
+                detail,
+                ..ArchiveExtractionResult::new(plan)
+            };
         }
-        let cleaned = catch_unwind(AssertUnwindSafe(|| match cleanup {
-            SourceCleanup::Remove => pin.remove_if_unchanged(),
-            SourceCleanup::Backup => pin.backup_if_unchanged().map(|_| ()),
-        }));
-        match cleaned {
-            Ok(Ok(())) => result.mutation = MutationState::Committed,
-            Ok(Err(error)) => {
-                result.failure = Some(ArchiveExtractionFailure::SourceCleanupFailed);
-                result.safe_to_continue = false;
-                result.detail = error.to_string();
-                // Existence alone cannot prove the retained source is still
-                // usable: reopen its manifest, through the same pin, before
-                // letting later phases proceed.
-                if result.mutation == MutationState::Committed {
-                    // A panic while re-pinning or reading leaves the source's
-                    // state unproven, so it counts as unreadable.
-                    let readable = catch_unwind(AssertUnwindSafe(|| {
-                        if pin.pin_unchanged_for_recovery().is_err() {
-                            return false;
-                        }
-                        let listed = self.reader.list_entries(pin.path()).is_ok();
-                        self.reader.release();
-                        listed
-                    }));
-                    result.safe_to_continue = readable.unwrap_or_else(|payload| {
-                        take_panic_message(payload);
-                        false
-                    });
-                }
-                if !result.safe_to_continue {
-                    result.mutation = MutationState::PartialOrUnknown;
-                }
+    };
+    // `extract_staged` releases the reader before it returns.
+    let mut result = extract_staged(reader, capacity, plan, artifacts);
+    if !result.succeeded() {
+        return result;
+    }
+    let cleaned = catch_unwind(AssertUnwindSafe(|| match cleanup {
+        SourceCleanup::Remove => pin.remove_if_unchanged(),
+        SourceCleanup::Backup => pin.backup_if_unchanged().map(|_| ()),
+    }));
+    match cleaned {
+        Ok(Ok(())) => result.mutation = MutationState::Committed,
+        Ok(Err(error)) => {
+            result.failure = Some(ArchiveExtractionFailure::SourceCleanupFailed);
+            result.safe_to_continue = false;
+            result.detail = error.to_string();
+            // Existence alone cannot prove the retained source is still
+            // usable: reopen its manifest, through the same pin, before
+            // letting later phases proceed.
+            if result.mutation == MutationState::Committed {
+                // A panic while re-pinning or reading leaves the source's
+                // state unproven, so it counts as unreadable.
+                let readable = catch_unwind(AssertUnwindSafe(|| {
+                    if pin.pin_unchanged_for_recovery().is_err() {
+                        return false;
+                    }
+                    let listed = reader.list_entries(pin.path()).is_ok();
+                    reader.release();
+                    listed
+                }));
+                result.safe_to_continue = readable.unwrap_or_else(|payload| {
+                    take_panic_message(payload);
+                    false
+                });
             }
-            Err(payload) => {
-                // A rename or delete that panicked may or may not have
-                // happened, and the pin it ran through is no longer
-                // trustworthy, so the source is not reopened to prove
-                // recovery: the mutation is unknown and the run stops.
-                result.failure = Some(ArchiveExtractionFailure::SourceCleanupFailed);
-                result.safe_to_continue = false;
-                result.detail = take_panic_message(payload);
+            if !result.safe_to_continue {
                 result.mutation = MutationState::PartialOrUnknown;
             }
         }
-        result
+        Err(payload) => {
+            // A rename or delete that panicked may or may not have
+            // happened, and the pin it ran through is no longer
+            // trustworthy, so the source is not reopened to prove
+            // recovery: the mutation is unknown and the run stops.
+            result.failure = Some(ArchiveExtractionFailure::SourceCleanupFailed);
+            result.safe_to_continue = false;
+            result.detail = take_panic_message(payload);
+            result.mutation = MutationState::PartialOrUnknown;
+        }
     }
+    result
 }
 
 /// How far one extraction attempt got, for classifying its failure.

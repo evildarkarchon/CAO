@@ -663,10 +663,10 @@ impl<'a> MutableRunEvidence<'a> {
 
     /// Archive Finalization's attempts and result so far, once its output
     /// total or result is recorded.
-    // Only the evidence suite and the `test_support` finalization harness
-    // read the result back from the crate-private store: Archive
-    // Finalization keeps its own attempts when it contains a panic (#588).
-    #[cfg(any(test, feature = "test-support"))]
+    // Only the evidence suite reads the result back from the crate-private
+    // store: Archive Finalization keeps its own attempts when it contains a
+    // panic (#588).
+    #[cfg(test)]
     pub fn archive_finalization(&self) -> Option<&ArchiveFinalizationResult> {
         self.storage.archive_finalization.as_ref()
     }
@@ -827,9 +827,9 @@ impl<'a> MutableRunEvidence<'a> {
     }
 
     /// The latest record of one phase, or `None` when it was never reached.
-    // Only the evidence suite and the `test_support` finalization harness
-    // read a phase back from the crate-private store (#561).
-    #[cfg(any(test, feature = "test-support"))]
+    // Only the evidence suite reads a phase back from the crate-private
+    // store (#561).
+    #[cfg(test)]
     pub fn phase(&self, phase: RunPhase) -> Option<&RunPhaseRecord> {
         self.storage.phase(phase)
     }

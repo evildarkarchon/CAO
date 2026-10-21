@@ -4,13 +4,12 @@
 //! Ported from `src/Run/AssetRun.h` and `src/Run/ArchiveFirstAssetDiscovery.h`.
 //! The executor calls [`run_work_phases`] with its Run Toolset; the
 //! function walks each Mod Root for Archives, extracts the enabled ones in
-//! Apply with the core [`ArchiveExtractor`](crate::run::ArchiveExtractor)
-//! over the Toolset's seams, routes the Effective Asset Tree once, offers
-//! every Routed Asset to the Asset attempt port in Texture, Mesh, Animation
-//! order, recording each completed attempt before reporting it, and in Apply
-//! runs [`ArchiveFinalization`](crate::run::ArchiveFinalization) over the
-//! same seams. The Toolset assembles both over its seams, so this module
-//! never reaches into them.
+//! Apply through [`RunToolset::extract_archive`], routes the Effective Asset
+//! Tree once, offers every Routed Asset to the Asset attempt port in Texture,
+//! Mesh, Animation order, recording each completed attempt before reporting
+//! it, and in Apply runs Archive Finalization through
+//! [`RunToolset::finalize_archives`]. The Toolset runs both over its seams,
+//! so this module never reaches into them.
 //!
 //! Loose Assets take precedence over Archived Assets, and Archive Precedence
 //! decides between Archives in one Mod Root. Before the first extraction, a
@@ -491,13 +490,12 @@ enum ExtractionStop {
 }
 
 /// Extracts each planned Archive in order through
-/// [`RunToolset::extract_archive`], the core
-/// [`ArchiveExtractor`](crate::run::ArchiveExtractor) over `toolset`'s reader
-/// and the run's Capacity Check with its source cleanup, retaining every
-/// completed attempt before it is reported.
+/// [`RunToolset::extract_archive`], over `toolset`'s seams and the run's
+/// Capacity Check with its source cleanup, retaining every completed attempt
+/// before it is reported.
 ///
 /// An attempt in flight always finishes, so cancellation never leaves a
-/// partial Archive. The extractor contains its own panics, classified by how
+/// partial Archive. Extraction contains its own panics, classified by how
 /// far the attempt got, so it is called without a second layer.
 /// `PartialOrUnknown` mutation is unsafe even when the attempt claims
 /// otherwise, and stops extraction. Returns `None` when every plan was
