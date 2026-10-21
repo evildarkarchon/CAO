@@ -36,6 +36,11 @@
 //!   Evidence no run leaves it in (the phase already left, or its result or
 //!   output total already recorded). The evidence invariants it relied on are
 //!   pinned in `cao-core`'s own `run/evidence/tests.rs` (#597).
+//! - `finalizationRejectsChangedDummyPluginParent`: unreachable, because
+//!   Apply Preparing pins every Mod Root for the whole run, so a run's Mod
+//!   Root cannot be swapped for a junction (the rename fails with a sharing
+//!   violation). The guard in Dummy Plugin removal stays as defense in depth
+//!   (#595, #598).
 
 mod common;
 
@@ -47,18 +52,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use cao_core::execution::{AssetExecutionResult, MutationState};
-use cao_core::routing::{ExecutionMode, RequestedWork, RoutingPolicyRequest};
+use cao_core::routing::RequestedWork;
 use cao_core::run::{
-    ArchiveFinalization, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
-    ArchiveFinalizationResult, ArchiveFinalizationSettings, ArchiveNameKind, ArchivePrecedence,
-    ArchiveReader, ArchiveWorkSettings, CancellationToken, MutationKind, MutationSummary,
-    OptimizationRunResult, PackedArchiveKind, RunDiagnostic, RunFailure, RunObservationSink,
-    RunPhase, RunPhaseRecord, RunPreparation, RunProgress, TemporaryArtifactRegistry,
-    create_run_id,
+    ArchiveFinalizationFailure, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
+    ArchiveFinalizationSettings, ArchiveNameKind, ArchiveReader, ArchiveWorkSettings,
+    CancellationToken, MutationKind, MutationSummary, OptimizationRunResult, PackedArchiveKind,
+    RunDiagnostic, RunFailure, RunObservationSink, RunPhase, RunPhaseRecord, RunProgress,
 };
 use cao_core::test_support::{
-    ArchiveFinalizationEvidence, ArchiveRunRequest, FakeArchivePacker, FakeArchiveReader,
-    FakeVolumeProbe, Observed, RecordingSink, ScriptedToolset, fake_dummy_plugin, sse_profile,
+    ArchiveRunRequest, FakeArchivePacker, FakeArchiveReader, FakeVolumeProbe, Observed,
+    RecordingSink, ScriptedToolset, fake_dummy_plugin,
 };
 use common::{archives_in, canonical, junction, scratch_dir};
 
@@ -317,50 +320,6 @@ fn hold(path: &Path, share: u32) -> File {
         .share_mode(share)
         .open(path)
         .unwrap()
-}
-
-/// Runs Archive Finalization alone over `root`, outside any run, through the
-/// standalone constructor and a hand-built preparation, as the C++ suite did.
-///
-/// Only `a_mod_root_swapped_for_a_junction_stops_removal` uses it: its swap
-/// is unreachable in a run, which pins every Mod Root from Preparing on, and
-/// is raised on #595 rather than deleted here (#597). Slice 3 seals
-/// everything this calls.
-fn finalize_outside_a_run(
-    packer: &FakeArchivePacker,
-    settings: ArchiveFinalizationSettings,
-    root: &Path,
-) -> ArchiveFinalizationResult {
-    let profile = sse_profile();
-    let policy = profile
-        .compile_policy(RoutingPolicyRequest::for_work(
-            ExecutionMode::Apply,
-            &[RequestedWork::ArchiveCreation],
-        ))
-        .unwrap();
-    let preparation = RunPreparation::new(
-        vec![root.to_path_buf()],
-        profile,
-        policy,
-        ArchivePrecedence::DeterministicDiscovery,
-    );
-    let mut evidence = ArchiveFinalizationEvidence::new();
-    let mut artifacts = TemporaryArtifactRegistry::new(create_run_id());
-    ArchiveFinalization::new(
-        packer,
-        &FakeArchiveReader::default(),
-        &FakeVolumeProbe::default(),
-        settings,
-    )
-    .run(
-        &preparation,
-        &mut evidence.recorder(),
-        &mut artifacts,
-        &|| false,
-    )
-    .unwrap();
-    assert!(artifacts.cleanup().is_empty());
-    evidence.finalization()
 }
 
 /// Origin: finalizationCapacityChecks (all four rows). Each output fits by
@@ -1145,69 +1104,6 @@ fn linked_dummy_plugins_are_never_removed() {
         assert_eq!(std::fs::read(&target).unwrap(), bytes);
         assert!(run.cleaned_up());
     }
-}
-
-/// Origin: finalizationRejectsChangedDummyPluginParent. A Mod Root swapped
-/// for a junction after planning cannot lead removal outside it.
-///
-/// Not a run: Apply Preparing pins every Mod Root for the whole run, so a
-/// run's Mod Root cannot be renamed away (the rename fails with a sharing
-/// violation). Whether the guard is reachable at all is raised on #595, so
-/// this still drives the phase outside a run until that is decided (#597).
-#[test]
-fn a_mod_root_swapped_for_a_junction_stops_removal() {
-    let parent = scratch("swapped-root");
-    let root = parent.join("mod");
-    let outside = parent.join("outside");
-    let retained = parent.join("retained-mod");
-    let bytes = fake_dummy_plugin();
-    write_file(&root.join("existing.bsa"), b"retained archive");
-    write_file(&root.join("original.esp"), &bytes);
-    write_file(&outside.join("external.esp"), &bytes);
-    let swapped = Arc::new(AtomicBool::new(false));
-    let (flag, link, target, moved) = (
-        Arc::clone(&swapped),
-        root.clone(),
-        outside.clone(),
-        retained.clone(),
-    );
-    let listings = AtomicUsize::new(0);
-    let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
-            create_dummy_plugins: false,
-            ..ArchiveFinalizationSettings::default()
-        },
-        // With no output or plugin reserve no Capacity Check asks about the
-        // Mod Root, so the swap waits for the second plugin listing:
-        // maintenance's, the phase's first look at the root after planning
-        // froze it.
-        packer: FakeArchivePacker {
-            before_list: Some(Box::new(move |_, _| {
-                if listings.fetch_add(1, Ordering::SeqCst) == 1
-                    && std::fs::rename(&link, &moved).is_ok()
-                {
-                    junction(&link, &target);
-                    flag.store(true, Ordering::SeqCst);
-                }
-            })),
-            ..FakeArchivePacker::default()
-        },
-        ..Finalizer::default()
-    };
-    // It also asserts that Safety Cleanup of its own registry finds nothing.
-    let result = finalize_outside_a_run(&finalizer.packer, finalizer.settings, &root);
-    std::fs::remove_dir(&root).unwrap();
-
-    assert!(swapped.load(Ordering::SeqCst));
-    assert!(result.attempts.is_empty());
-    assert_eq!(
-        result.failure,
-        Some(ArchiveFinalizationFailure::PluginRemovalFailed)
-    );
-    assert!(result.safe_to_continue);
-    assert!(result.mutations.is_empty());
-    assert!(retained.join("original.esp").exists());
-    assert_eq!(std::fs::read(outside.join("external.esp")).unwrap(), bytes);
 }
 
 /// Origin: finalizationPreservesReplacedDummyPlugin. A plugin replaced with
