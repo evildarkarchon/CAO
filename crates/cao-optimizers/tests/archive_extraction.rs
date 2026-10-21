@@ -5,18 +5,28 @@
 //! The source-cleanup scenarios port C++ `tests/MainOptimizerTests.cpp`,
 //! which drove `BSAOptimizer::extract` against real BSAs; each names its
 //! origin. The rest are Rust-only.
+//!
+//! The extraction scenarios are whole Apply runs that request only Archive
+//! extraction, over a Toolset built from the production reader, packer and
+//! volume probes (#597). Every plan comes from the run's own preflight, so a
+//! scenario that needs a source the preflight would refuse changes it after
+//! preflight, on the run's first Archive extraction phase record.
 
 mod common;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use cao_archive::{ArchiveData, ArchiveType, Game, Settings, write_archive};
 use cao_core::execution::MutationState;
+use cao_core::routing::RequestedWork;
 use cao_core::run::{
-    ArchiveExtractionFailure, ArchiveExtractionPlan, ArchiveExtractor, ArchiveReader, RunOutcome,
-    SourceCleanup, SourceFilePin, TemporaryArtifactRegistry, create_run_id,
+    ArchiveExtractionFailure, ArchiveExtractionResult, ArchiveReader, ArchiveSeams,
+    ArchiveWorkSettings, CancellationToken, OptimizationRunResult, RunOutcome, RunPhase,
+    SourceCleanup, SourceFilePin,
 };
-use cao_optimizers::archives::{ArchiveFileReader, VolumeProbes};
+use cao_core::test_support::{ArchiveRunRequest, RecordingSink};
+use cao_optimizers::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
 use cao_optimizers::composition::ApplicationRun;
 use cao_profiles::Options;
 use cao_winfs::{Access, Open, Share, msvc_canonical};
@@ -61,16 +71,41 @@ fn mod_root(name: &str) -> PathBuf {
     msvc_canonical(&root).unwrap()
 }
 
-/// A plan that publishes every one of `entries` from `archive`.
-fn plan(archive: &Path, root: &Path, entries: &[&str]) -> ArchiveExtractionPlan {
-    let entries: Vec<String> = entries.iter().map(|entry| (*entry).to_owned()).collect();
-    ArchiveExtractionPlan {
-        archive_path: archive.to_path_buf(),
-        mod_root: root.to_path_buf(),
-        merge_entries: entries.clone(),
-        entries,
-        estimated_capacity_bytes: 0,
-    }
+/// Runs one Apply run over `root` that requests only Archive extraction,
+/// with `cleanup` for each extracted source, over the production reader, the
+/// SSE packer and the real volume probes. `after_preflight` runs on the
+/// run's first Archive extraction phase record: after preflight planned
+/// every Archive, before the first attempt.
+fn extract(
+    root: &Path,
+    cleanup: SourceCleanup,
+    after_preflight: impl Fn() + 'static,
+) -> OptimizationRunResult {
+    let archive_run = ArchiveRunRequest::new(root)
+        .with_work([RequestedWork::ArchiveExtraction])
+        .with_archive_work(ArchiveWorkSettings {
+            source_cleanup: cleanup,
+            ..ArchiveWorkSettings::default()
+        });
+    let configuration = archive_run.seams_configuration(|| ArchiveSeams {
+        reader: Arc::new(ArchiveFileReader::default()),
+        volume_probe: Arc::new(VolumeProbes),
+        packer: Arc::new(GameArchivePacker::new(Settings::get(Game::Sse))),
+    });
+    let sink = RecordingSink::on_first_record_of(RunPhase::ExtractingArchives, after_preflight);
+    archive_run.execute(&configuration, Some(&sink), &CancellationToken::new())
+}
+
+/// The run's one Archive extraction attempt.
+///
+/// # Panics
+///
+/// When the run made no attempt or several, such as when its preflight
+/// failed.
+fn only_attempt(result: &OptimizationRunResult) -> &ArchiveExtractionResult {
+    let attempts = result.archive_extraction_attempts();
+    assert_eq!(attempts.len(), 1, "{:?}", result.failures());
+    &attempts[0]
 }
 
 /// One row of `archiveSourceCleanupRequiresSuccessfulMerge`.
@@ -88,6 +123,9 @@ struct CleanupRow {
 /// dangling link at a backup name, is never replaced; and a cleanup blocked
 /// by another handle keeps the committed entries and, since the source is
 /// still the same readable Archive, stays safe to continue.
+///
+/// A run's preflight refuses an Archive it cannot read, so the failed rows
+/// corrupt the source after preflight.
 #[test]
 fn source_cleanup_requires_a_successful_merge() {
     let row =
@@ -125,37 +163,38 @@ fn source_cleanup_row(row: CleanupRow) {
         eprintln!("{name}: not run, the process cannot create symlinks");
         return;
     }
-    if row.valid_archive {
-        write_test_archive(
-            &source,
-            Game::Sse,
-            ArchiveType::Textures,
-            false,
-            &[(FIXTURE, b"archived bytes".to_vec())],
-        );
+    write_test_archive(
+        &source,
+        Game::Sse,
+        ArchiveType::Textures,
+        false,
+        &[(FIXTURE, b"archived bytes".to_vec())],
+    );
+    const CORRUPT: &[u8] = b"corrupt archive bytes";
+    let original = if row.valid_archive {
+        std::fs::read(&source).unwrap()
     } else {
-        std::fs::write(&source, b"corrupt archive bytes").unwrap();
-    }
-    let original = std::fs::read(&source).unwrap();
+        CORRUPT.to_vec()
+    };
     // Permits extraction's reads while denying rename and delete, so the
     // failure comes after the merge.
     let lock = row
         .block_source_cleanup
         .then(|| Open::new(Access::READ, Share::READ).open(&source).unwrap());
-    let reader = ArchiveFileReader::default();
-    let mut artifacts = TemporaryArtifactRegistry::new(create_run_id());
     let cleanup = if row.delete_backup {
         SourceCleanup::Remove
     } else {
         SourceCleanup::Backup
     };
+    let (corrupted, valid) = (source.clone(), row.valid_archive);
 
-    let result = ArchiveExtractor::new(&reader, &VolumeProbes).extract_with_source_cleanup(
-        &plan(&source, &root, &[FIXTURE]),
-        cleanup,
-        &mut artifacts,
-    );
+    let run = extract(&root, cleanup, move || {
+        if !valid {
+            std::fs::write(&corrupted, CORRUPT).unwrap();
+        }
+    });
     drop(lock);
+    let result = only_attempt(&run);
 
     let extracted = row.valid_archive;
     let cleaned = extracted && !row.block_source_cleanup;
@@ -187,43 +226,48 @@ fn source_cleanup_row(row: CleanupRow) {
     if row.linked_backup {
         assert_eq!(std::fs::read_link(&occupied).unwrap(), root.join("absent"));
     }
-    assert!(artifacts.cleanup().is_empty(), "{name}");
+    assert!(run.cleanup_failures().is_empty(), "{name}");
 }
 
 /// Origin: archiveSourceLinkIsNotCleaned. A source that is a link is refused
 /// by the pin before anything is read, so neither the link nor its target is
 /// cleaned and nothing is extracted.
+///
+/// Discovery already excludes a linked entry, so the run's source becomes a
+/// link only after preflight planned it: the Archive moves to a name no
+/// discovery would take for an Archive, and a link to it takes its place.
 #[test]
 fn a_linked_source_is_not_extracted_or_cleaned() {
     for cleanup in [SourceCleanup::Backup, SourceCleanup::Remove] {
         let root = mod_root(&format!("linked-source-{cleanup:?}"));
-        let target = root.join("original.bsa");
+        let target = root.join("original.dat");
         let source = root.join("assets.bsa");
+        let probe = root.join("symlink-probe");
+        if std::os::windows::fs::symlink_file(&target, &probe).is_err() {
+            eprintln!("not run: the process cannot create symlinks");
+            return;
+        }
+        std::fs::remove_file(&probe).unwrap();
         write_test_archive(
-            &target,
+            &source,
             Game::Sse,
             ArchiveType::Textures,
             false,
             &[(FIXTURE, b"archived bytes".to_vec())],
         );
-        if std::os::windows::fs::symlink_file(&target, &source).is_err() {
-            eprintln!("not run: the process cannot create symlinks");
-            return;
-        }
-        let reader = ArchiveFileReader::default();
-        let mut artifacts = TemporaryArtifactRegistry::new(create_run_id());
+        let (planned, moved) = (source.clone(), target.clone());
 
-        let result = ArchiveExtractor::new(&reader, &VolumeProbes).extract_with_source_cleanup(
-            &plan(&source, &root, &[FIXTURE]),
-            cleanup,
-            &mut artifacts,
-        );
+        let run = extract(&root, cleanup, move || {
+            std::fs::rename(&planned, &moved).unwrap();
+            std::os::windows::fs::symlink_file(&moved, &planned).unwrap();
+        });
 
+        let result = only_attempt(&run);
         assert!(result.failure.is_some());
         assert!(source.symlink_metadata().unwrap().is_symlink());
         assert!(target.exists());
         assert!(!root.join(FIXTURE).exists());
-        assert!(artifacts.cleanup().is_empty());
+        assert!(run.cleanup_failures().is_empty());
     }
 }
 
@@ -245,11 +289,10 @@ fn a_replaced_source_is_not_cleaned() {
             &[(FIXTURE, b"archived bytes".to_vec())],
         );
         let mut pin = SourceFilePin::new(&source, &root).unwrap();
-        let reader = ArchiveFileReader::default();
-        let mut artifacts = TemporaryArtifactRegistry::new(create_run_id());
-        let result = ArchiveExtractor::new(&reader, &VolumeProbes)
-            .extract(&plan(&source, &root, &[FIXTURE]), &mut artifacts);
-        assert!(result.succeeded(), "{}", result.detail);
+        // The extracted entry, as extraction would have published it. No run
+        // can replace a source its extraction pinned, so this drives the pin
+        // alone; whether the scenario is reachable is raised on #595 (#597).
+        write(&root, FIXTURE, b"archived bytes");
 
         pin.release_for_cleanup();
         std::fs::rename(&source, &displaced).unwrap();
@@ -275,7 +318,6 @@ fn a_replaced_source_is_not_cleaned() {
             std::fs::read(root.join(FIXTURE)).unwrap(),
             b"archived bytes"
         );
-        assert!(artifacts.cleanup().is_empty());
     }
 }
 
