@@ -10,6 +10,7 @@ use std::sync::{Mutex, MutexGuard};
 use cao_profiles::{Options, Profiles};
 use directxtex::{CP_FLAGS_NONE, DDS_FLAGS_NONE, DXGI_FORMAT, ScratchImage};
 
+pub mod archive_run;
 pub mod plugin;
 
 /// Serializes scenarios that start runs: one run may be active per process,
@@ -30,6 +31,11 @@ pub fn scratch_dir(name: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// The canonical form of a directory, as Preparing resolves it.
+pub fn canonical(path: &Path) -> PathBuf {
+    cao_winfs::msvc_canonical(path).unwrap()
 }
 
 /// An app directory holding a copy of the repository's shipped `profiles/`.

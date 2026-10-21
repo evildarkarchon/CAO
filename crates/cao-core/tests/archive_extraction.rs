@@ -161,7 +161,12 @@ fn a_panicking_capacity_probe_in_the_recheck_is_unknown_capacity() {
     let archive = root.join("source.bsa");
     write_archive(&archive, &[entry("textures/fixture.dds", b"fixture")]);
     let probe = FakeVolumeProbe::default().with_counted_capacity(|call, _| {
-        assert!(call == 1, "the free-space query failed");
+        // The panic is the probe failure under test: the preflight's sample
+        // (call 1) answers, and every later query, the recheck's, panics as
+        // a broken free-space query would.
+        if call != 1 {
+            panic!("the free-space query failed");
+        }
         Some(UNLIMITED)
     });
 
@@ -320,11 +325,21 @@ fn a_manifest_changed_after_preflight_fails_before_any_merge() {
 /// the reader again.
 #[test]
 fn every_attempt_releases_the_reader_before_returning() {
-    for (row, succeeds) in [("succeeded", true), ("failed", false), ("panicked", false)] {
-        let root = canonical(&scratch_dir(&format!("extractor-releases-{row}")));
+    /// How a row's one extraction attempt ends.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Ending {
+        Succeeded,
+        /// The manifest changes after preflight, so the attempt fails.
+        Failed,
+        /// The reader panics while staging.
+        Panicked,
+    }
+
+    for row in [Ending::Succeeded, Ending::Failed, Ending::Panicked] {
+        let root = canonical(&scratch_dir(&format!("extractor-releases-{row:?}")));
         let archive = root.join("source.bsa");
         write_archive(&archive, &[entry("textures/a.dds", b"B")]);
-        let toolset = if row == "panicked" {
+        let toolset = if row == Ending::Panicked {
             panicking_reader()
         } else {
             ScriptedToolset::default()
@@ -332,14 +347,19 @@ fn every_attempt_releases_the_reader_before_returning() {
         let changed = archive.clone();
 
         let (result, toolset) = run_extraction(&root, toolset, move || {
-            if row == "failed" {
+            if row == Ending::Failed {
                 rewrite_manifest(&changed);
             }
         });
 
         let attempt = only_attempt(&result);
-        assert_eq!(attempt.succeeded(), succeeds, "{row}: {}", attempt.detail);
-        assert_eq!(toolset.reader.releases.load(Ordering::SeqCst), 1, "{row}");
-        assert!(result.cleanup_failures().is_empty(), "{row}");
+        assert_eq!(
+            attempt.succeeded(),
+            row == Ending::Succeeded,
+            "{row:?}: {}",
+            attempt.detail
+        );
+        assert_eq!(toolset.reader.releases.load(Ordering::SeqCst), 1, "{row:?}");
+        assert!(result.cleanup_failures().is_empty(), "{row:?}");
     }
 }

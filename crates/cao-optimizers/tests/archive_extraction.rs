@@ -15,21 +15,20 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use cao_archive::{ArchiveData, ArchiveType, Game, Settings, write_archive};
 use cao_core::execution::MutationState;
 use cao_core::routing::RequestedWork;
 use cao_core::run::{
-    ArchiveExtractionFailure, ArchiveExtractionResult, ArchiveReader, ArchiveSeams,
-    ArchiveWorkSettings, CancellationToken, OptimizationRunResult, RunOutcome, RunPhase,
-    SourceCleanup, SourceFilePin,
+    ArchiveExtractionFailure, ArchiveReader, ArchiveWorkSettings, CancellationToken,
+    OptimizationRunResult, RunOutcome, RunPhase, SourceCleanup, SourceFilePin,
 };
 use cao_core::test_support::{ArchiveRunRequest, RecordingSink};
-use cao_optimizers::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
+use cao_optimizers::archives::ArchiveFileReader;
 use cao_optimizers::composition::ApplicationRun;
 use cao_profiles::Options;
 use cao_winfs::{Access, Open, Share, msvc_canonical};
+use common::archive_run::{only_attempt, production_seams};
 use common::{app_dir, profile_options, scratch_dir, serial, write};
 use directxtex::{
     CP_FLAGS_NONE, DDS_FLAGS_NONE, DXGI_FORMAT, DXGI_FORMAT_BC1_UNORM_SRGB, DXGI_FORMAT_BC6H_UF16,
@@ -87,25 +86,9 @@ fn extract(
             source_cleanup: cleanup,
             ..ArchiveWorkSettings::default()
         });
-    let configuration = archive_run.seams_configuration(|| ArchiveSeams {
-        reader: Arc::new(ArchiveFileReader::default()),
-        volume_probe: Arc::new(VolumeProbes),
-        packer: Arc::new(GameArchivePacker::new(Settings::get(Game::Sse))),
-    });
+    let configuration = archive_run.seams_configuration(production_seams());
     let sink = RecordingSink::on_first_record_of(RunPhase::ExtractingArchives, after_preflight);
     archive_run.execute(&configuration, Some(&sink), &CancellationToken::new())
-}
-
-/// The run's one Archive extraction attempt.
-///
-/// # Panics
-///
-/// When the run made no attempt or several, such as when its preflight
-/// failed.
-fn only_attempt(result: &OptimizationRunResult) -> &ArchiveExtractionResult {
-    let attempts = result.archive_extraction_attempts();
-    assert_eq!(attempts.len(), 1, "{:?}", result.failures());
-    &attempts[0]
 }
 
 /// One row of `archiveSourceCleanupRequiresSuccessfulMerge`.
@@ -290,8 +273,9 @@ fn a_replaced_source_is_not_cleaned() {
         );
         let mut pin = SourceFilePin::new(&source, &root).unwrap();
         // The extracted entry, as extraction would have published it. No run
-        // can replace a source its extraction pinned, so this drives the pin
-        // alone; whether the scenario is reachable is raised on #595 (#597).
+        // can replace a source its extraction pinned, so this scenario is
+        // unreachable through a run; by the user's decision on #595 it is
+        // kept as a `SourceFilePin` contract test that drives the pin alone.
         write(&root, FIXTURE, b"archived bytes");
 
         pin.release_for_cleanup();
