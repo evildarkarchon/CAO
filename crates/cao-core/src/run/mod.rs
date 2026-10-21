@@ -7,6 +7,7 @@
 mod archives;
 mod artifacts;
 mod asset_attempt;
+mod capacity;
 mod evidence;
 mod executor;
 mod finalization;
@@ -53,8 +54,7 @@ pub use preparation::{
 };
 pub use probes::{
     ArchiveEntry, ArchiveMerge, ArchiveName, ArchiveNameKind, ArchiveNamingRules, ArchivePacker,
-    ArchiveReader, CapacityProbe, PackedArchiveKind, PackedFile, PlannedArchive,
-    VolumeIdentityProbe,
+    ArchiveReader, PackedArchiveKind, PackedFile, PlannedArchive, VolumeProbe,
 };
 pub use scheduler::{
     InlineRunScheduler, RunScheduler, RunWork, ScheduledRunWorker, StandardRunScheduler,

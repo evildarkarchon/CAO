@@ -1,5 +1,5 @@
 //! Archive fakes: fake Archive files, their reader and packer, and the
-//! capacity and volume-identity probes.
+//! volume probe.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -8,8 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::Error;
 use crate::run::{
     ArchiveEntry, ArchiveMerge, ArchiveName, ArchiveNameKind, ArchiveNamingRules, ArchivePacker,
-    ArchiveReader, CapacityProbe, PackedArchiveKind, PackedFile, PlannedArchive,
-    VolumeIdentityProbe,
+    ArchiveReader, PackedArchiveKind, PackedFile, PlannedArchive, VolumeProbe,
 };
 
 /// The magic opening every fake Archive file.
@@ -125,23 +124,49 @@ impl ArchiveReader for FakeArchiveReader {
 /// A closure answering a probe for one Mod Root.
 pub type RootProbe<T> = Box<dyn Fn(&Path) -> Option<T> + Send + Sync>;
 
-/// A capacity probe; without a closure, capacity is unknown everywhere.
+/// A volume probe built from two optional closures, each answering one of
+/// its questions per Mod Root. Without the `capacity` closure capacity is
+/// unknown everywhere; without the `volumes` closure every volume is
+/// unknown. Either closure may panic, as a probe that cannot answer might.
 #[derive(Default)]
-pub struct FakeCapacity(pub Option<RootProbe<u64>>);
+pub struct FakeVolumeProbe {
+    /// Answers [`VolumeProbe::available_bytes`].
+    pub capacity: Option<RootProbe<u64>>,
+    /// Answers [`VolumeProbe::volume_identity`].
+    pub volumes: Option<RootProbe<String>>,
+}
 
-impl CapacityProbe for FakeCapacity {
-    fn available_bytes(&self, root: &Path) -> Option<u64> {
-        self.0.as_ref().and_then(|probe| probe(root))
+impl FakeVolumeProbe {
+    /// This probe with free space answered by `capacity`.
+    pub fn with_capacity(
+        self,
+        capacity: impl Fn(&Path) -> Option<u64> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            capacity: Some(Box::new(capacity)),
+            ..self
+        }
+    }
+
+    /// This probe with volume identities answered by `volumes`.
+    pub fn with_volumes(
+        self,
+        volumes: impl Fn(&Path) -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            volumes: Some(Box::new(volumes)),
+            ..self
+        }
     }
 }
 
-/// A volume-identity probe; without a closure, every volume is unknown.
-#[derive(Default)]
-pub struct FakeVolumes(pub Option<RootProbe<String>>);
+impl VolumeProbe for FakeVolumeProbe {
+    fn available_bytes(&self, root: &Path) -> Option<u64> {
+        self.capacity.as_ref().and_then(|probe| probe(root))
+    }
 
-impl VolumeIdentityProbe for FakeVolumes {
     fn volume_identity(&self, root: &Path) -> Option<String> {
-        self.0.as_ref().and_then(|probe| probe(root))
+        self.volumes.as_ref().and_then(|probe| probe(root))
     }
 }
 
@@ -176,10 +201,17 @@ pub struct FakeArchivePacker {
     pub writes: Mutex<Vec<FakeWrite>>,
     /// Runs after each Archive is written, once its sources were read.
     pub after_write: Option<AfterWrite>,
+    /// Runs before each [`ArchivePacker::list_names`] call reads its
+    /// directory.
+    pub before_list: Option<BeforeList>,
 }
 
 /// A hook [`FakeArchivePacker`] runs after writing one Archive.
 pub type AfterWrite = Box<dyn Fn(&PlannedArchive) + Send + Sync>;
+
+/// A hook [`FakeArchivePacker`] runs before listing the names of one kind in
+/// one directory.
+pub type BeforeList = Box<dyn Fn(&Path, ArchiveNameKind) + Send + Sync>;
 
 impl Default for FakeArchivePacker {
     /// SSE-like rules: `.bsa`, a `Textures` suffix only for Textures, and
@@ -197,6 +229,7 @@ impl Default for FakeArchivePacker {
             max_size: u64::MAX,
             writes: Mutex::default(),
             after_write: None,
+            before_list: None,
         }
     }
 }
@@ -231,6 +264,27 @@ impl FakeArchivePacker {
             after_write: Some(Box::new(move |_| {
                 if written.fetch_add(1, Ordering::SeqCst) >= kept {
                     panic!("the archive writer panicked");
+                }
+            })),
+            ..Self::default()
+        }
+    }
+
+    /// SSE-like rules, but [`ArchivePacker::list_names`] panics with "the
+    /// archive name listing panicked" on every call after the first `kept`.
+    ///
+    /// Archive Finalization lists names while planning and again while
+    /// maintaining Loading Plugins, so `kept` chooses the step that fails:
+    /// with Dummy Plugins enabled, planning lists Archives then Plugins for
+    /// each root, and maintenance lists each root's Archives again.
+    pub fn panicking_list_names_beyond(kept: usize) -> Self {
+        // The hook is `Fn` and shared across threads, so it counts calls
+        // through an atomic rather than captured mutable state.
+        let listed = AtomicUsize::new(0);
+        Self {
+            before_list: Some(Box::new(move |_, _| {
+                if listed.fetch_add(1, Ordering::SeqCst) >= kept {
+                    panic!("the archive name listing panicked");
                 }
             })),
             ..Self::default()
@@ -324,6 +378,9 @@ impl ArchivePacker for FakeArchivePacker {
     }
 
     fn list_names(&self, dir: &Path, kind: ArchiveNameKind) -> Result<Vec<ArchiveName>, Error> {
+        if let Some(before_list) = &self.before_list {
+            before_list(dir, kind);
+        }
         let mut names = Vec::new();
         for entry in std::fs::read_dir(dir)? {
             let path = entry?.path();

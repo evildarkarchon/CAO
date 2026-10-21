@@ -458,14 +458,12 @@ impl RunWorkSettings {
     fn toolset(&self, profile: Arc<PreparedProfile>) -> RunToolset {
         // One reader serves discovery, extraction and finalization for the
         // whole run: the Toolset holds only this one.
-        let probes = Arc::new(VolumeProbes);
         // C++ always wires Archive Finalization, so Apply executes the phase:
         // it packs only when the Routing Policy requests Archive creation, and
         // prunes empty directories either way.
         let seams = ArchiveSeams {
             reader: Arc::new(ArchiveFileReader::default()),
-            capacity: probes.clone(),
-            volume_identity: probes,
+            volume_probe: Arc::new(VolumeProbes),
             packer: Arc::new(archive_packer(&profile.settings)),
         };
         let archive_work = ArchiveWorkSettings {

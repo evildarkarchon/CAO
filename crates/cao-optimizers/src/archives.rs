@@ -1,8 +1,8 @@
 //! Core's Archive seams over the real libraries (#497, #498).
 //!
 //! [`ArchiveFileReader`] is the archive reader over `cao-archive`,
-//! [`GameArchivePacker`] the packer, and [`VolumeProbes`] answers the capacity
-//! and volume-identity probes through `cao-winfs`, as C++
+//! [`GameArchivePacker`] the packer, and [`VolumeProbes`] answers the volume
+//! probe's capacity and volume-identity questions through `cao-winfs`, as C++
 //! `availableArchiveCapacity` and `archiveVolumeIdentity` did. `cao-core` owns
 //! everything they feed: discovery's preflight, the Capacity Check,
 //! extraction with source cleanup, and Archive Finalization.
@@ -19,8 +19,7 @@ use cao_archive::{
 use cao_core::Error;
 use cao_core::run::{
     ArchiveEntry, ArchiveMerge, ArchiveName, ArchiveNameKind, ArchiveNamingRules, ArchivePacker,
-    ArchiveReader, CapacityProbe, PackedArchiveKind, PackedFile, PlannedArchive,
-    VolumeIdentityProbe,
+    ArchiveReader, PackedArchiveKind, PackedFile, PlannedArchive, VolumeProbe,
 };
 use cao_winfs::{Access, Open, Share};
 
@@ -102,10 +101,10 @@ impl ArchiveReader for ArchiveFileReader {
     }
 }
 
-/// The capacity and volume-identity probes over the real volumes.
+/// The volume probe over the real volumes.
 pub struct VolumeProbes;
 
-impl CapacityProbe for VolumeProbes {
+impl VolumeProbe for VolumeProbes {
     /// The bytes available to this process at `root`, honouring quotas. A
     /// failed query is unknown capacity, and so is an all-ones answer, which
     /// C++ treated as the library's "unknown" sentinel.
@@ -114,9 +113,7 @@ impl CapacityProbe for VolumeProbes {
             .ok()
             .filter(|&available| available != u64::MAX)
     }
-}
 
-impl VolumeIdentityProbe for VolumeProbes {
     /// The volume GUID path of the volume holding `root`, mounted folders
     /// included; a failed query leaves the identity unknown, which keeps the
     /// Capacity Check conservative.

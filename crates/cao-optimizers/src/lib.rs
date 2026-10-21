@@ -17,7 +17,7 @@
 //!   `bin/hkxcmd.exe` as a subprocess (#502).
 //! - [`backend`] is the one Asset Execution Backend over every optimizer.
 //! - [`archives`] implements core's archive reader over `cao-archive`, and the
-//!   capacity and volume-identity probes over `cao-winfs` (#497).
+//!   volume probe over `cao-winfs` (#497).
 //! - [`composition`] is the composition root both binaries share: given the app
 //!   directory, a profile and the options model, it builds the Run Request, the
 //!   profile-backed Run Configuration Provider and the per-run optimizer settings,

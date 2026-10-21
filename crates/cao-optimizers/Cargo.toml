@@ -21,8 +21,9 @@ unsafe_code = "deny"
 cao-archive.workspace = true
 cao-core.workspace = true
 cao-profiles.workspace = true
-# The capacity and volume-identity probes of the Capacity Check (#497). The
-# scenarios also predict Mod Roots in the MSVC-canonical form Preparing gives them.
+# The volume probe of the Capacity Check, its free space and volume identity
+# (#497). The scenarios also predict Mod Roots in the MSVC-canonical form
+# Preparing gives them.
 cao-winfs.workspace = true
 # The Application Log sink's timestamps (#470).
 chrono.workspace = true

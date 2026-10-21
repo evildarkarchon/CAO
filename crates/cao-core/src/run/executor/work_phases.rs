@@ -493,8 +493,8 @@ enum ExtractionStop {
 /// Extracts each planned Archive in order through
 /// [`RunToolset::extract_archive`], the core
 /// [`ArchiveExtractor`](crate::run::ArchiveExtractor) over `toolset`'s reader
-/// and capacity probe with its source cleanup, retaining every completed
-/// attempt before it is reported.
+/// and the run's Capacity Check with its source cleanup, retaining every
+/// completed attempt before it is reported.
 ///
 /// An attempt in flight always finishes, so cancellation never leaves a
 /// partial Archive. The extractor contains its own panics, classified by how

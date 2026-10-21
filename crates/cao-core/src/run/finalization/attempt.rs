@@ -12,9 +12,9 @@ use super::planning::{FinalizationPlan, PlanningStop, estimate_packed_capacity};
 use super::plugins::ensure_output_loading_plugin;
 use super::{
     ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationMutation, Seams,
-    capacity_shortfall,
 };
 use crate::execution::MutationState;
+use crate::run::capacity::{CapacityCheck, Demand};
 use crate::run::source_pin::{LoadingPluginPin, SourceDirectoryPins, SourceFilePin};
 use crate::run::{
     PublicationPolicy, PublicationState, TemporaryArtifactRegistry, take_panic_message,
@@ -32,9 +32,10 @@ struct AttemptProgress {
 /// failure is reported in the returned attempt.
 ///
 /// A capacity rejection returns `InsufficientCapacity` before any mutation.
-/// `dummy_reserve` is the Loading Plugin allowance still needed on this
-/// output's volume. The Archive's mutation and continuation verdict come from
-/// its publication. After a commit, a later failure stays safe to continue
+/// `dummy_demand` holds every Mod Root's Loading Plugin allowance, so the
+/// recheck through `capacity` also charges the allowance still needed on
+/// this output's volume. The Archive's mutation and continuation verdict come
+/// from its publication. After a commit, a later failure stays safe to continue
 /// only while the Archive reads back and every source not yet deleted is
 /// still readable recovery material; a Loading Plugin failure never is.
 /// Plugin publication facts are appended to `mutations` as they happen, so
@@ -45,7 +46,8 @@ pub(super) fn attempt_output(
     index: usize,
     artifacts: &mut TemporaryArtifactRegistry,
     seams: Seams<'_>,
-    dummy_reserve: u64,
+    capacity: &CapacityCheck<'_>,
+    dummy_demand: &Demand,
     mutations: &mut Vec<ArchiveFinalizationMutation>,
 ) -> ArchiveFinalizationAttempt {
     let output = &plan.outputs[index];
@@ -61,7 +63,8 @@ pub(super) fn attempt_output(
             index,
             artifacts,
             seams,
-            dummy_reserve,
+            capacity,
+            dummy_demand,
             mutations,
             &mut attempt,
             &mut progress,
@@ -113,7 +116,8 @@ fn try_attempt(
     index: usize,
     artifacts: &mut TemporaryArtifactRegistry,
     seams: Seams<'_>,
-    dummy_reserve: u64,
+    capacity: &CapacityCheck<'_>,
+    dummy_demand: &Demand,
     mutations: &mut Vec<ArchiveFinalizationMutation>,
     attempt: &mut ArchiveFinalizationAttempt,
     progress: &mut AttemptProgress,
@@ -128,13 +132,16 @@ fn try_attempt(
                 PlanningStop::Failed(detail) => detail,
                 PlanningStop::Cancelled => unreachable!("the recheck never polls cancellation"),
             })?;
-    let required = output
-        .estimated_capacity_bytes
-        .max(current)
-        .saturating_add(dummy_reserve);
-    if let Some(shortfall) = capacity_shortfall(seams.capacity, &output.mod_root, required) {
+    // The output joins every root's plugin allowance, so its volume is
+    // charged with the output plus the allowance still needed there.
+    let mut demand = dummy_demand.clone();
+    demand.add(
+        &output.mod_root,
+        output.estimated_capacity_bytes.max(current),
+    );
+    if let Some(shortfall) = capacity.shortfall_at(&demand, &output.mod_root) {
         attempt.failure = Some(ArchiveFinalizationFailure::InsufficientCapacity);
-        attempt.detail = shortfall;
+        attempt.detail = shortfall.to_string();
         return Ok(());
     }
 
