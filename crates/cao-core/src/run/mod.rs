@@ -21,9 +21,9 @@ mod source_pin;
 mod staging;
 mod toolset;
 
+pub(crate) use archives::ArchiveExtractionPlan;
 pub use archives::{
-    ArchiveCollision, ArchiveExtractionFailure, ArchiveExtractionPlan, ArchiveExtractionResult,
-    ArchiveExtractor, SourceCleanup,
+    ArchiveCollision, ArchiveExtractionFailure, ArchiveExtractionResult, SourceCleanup,
 };
 pub(crate) use artifacts::fingerprint;
 pub use artifacts::{
@@ -38,10 +38,10 @@ pub use executor::{
     RunEvidenceInvariantPanic, RunExecutor, RunServices, SafetyCleanupService,
     collect_safety_cleanup_failures,
 };
+pub(crate) use finalization::ArchiveFinalizationRecorder;
 pub use finalization::{
-    ArchiveFinalization, ArchiveFinalizationAttempt, ArchiveFinalizationFailure,
-    ArchiveFinalizationMutation, ArchiveFinalizationMutationKind, ArchiveFinalizationRecorder,
-    ArchiveFinalizationResult, ArchiveFinalizationSettings,
+    ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationMutation,
+    ArchiveFinalizationMutationKind, ArchiveFinalizationResult, ArchiveFinalizationSettings,
 };
 pub use lifecycle::{
     CancellationToken, ModSelection, MutationKind, MutationSummary, OptimizationRunResult,

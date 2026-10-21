@@ -8,10 +8,6 @@
 //! here stands in for one ported seam trait, and fixture trees are real
 //! directories the scenarios create themselves.
 //!
-//! [`ArchiveFinalizationEvidence`] is not a fake: it opens the real
-//! finalization recorder over fresh evidence already in the Archive
-//! Finalization phase, so that phase is tested at its own interface (#548).
-//!
 //! [`ScriptedToolset`] scripts a run's Asset attempt results, and
 //! [`ToolsetConfiguration`] returns a fresh Run Toolset over it to each run,
 //! so a scenario drives the real Run Executor through its Toolset path
@@ -37,7 +33,6 @@ mod archives;
 mod backend;
 mod cleanup;
 mod configuration;
-mod finalization;
 mod observation;
 mod scheduling;
 mod toolset;
@@ -52,7 +47,6 @@ pub use cleanup::{CountingCleanup, ScriptedCleanup};
 pub use configuration::{
     CallbackConfiguration, FixedConfiguration, Loader, sse_capabilities, sse_profile,
 };
-pub use finalization::ArchiveFinalizationEvidence;
 pub use observation::{EventLog, ObservationHook, Observed, RecordingSink};
 pub use scheduling::{
     CountingInlineScheduler, DeferredScheduler, ExhaustedScheduler, GatedScheduler, WorkerHook,
