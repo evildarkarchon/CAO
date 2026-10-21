@@ -20,8 +20,8 @@ use cao_core::routing::{
 };
 use cao_core::run::{
     ArchiveFinalization, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
-    ArchiveFinalizationSettings, ArchiveNameKind, ArchivePacker, ArchivePrecedence, CapacityProbe,
-    MutationKind, RunOutcome, RunPreparation, SelectedProfile, TemporaryArtifactRegistry,
+    ArchiveFinalizationSettings, ArchiveNameKind, ArchivePacker, ArchivePrecedence, MutationKind,
+    RunOutcome, RunPreparation, SelectedProfile, TemporaryArtifactRegistry, VolumeProbe,
     create_run_id,
 };
 use cao_core::test_support::ArchiveFinalizationEvidence;
@@ -30,12 +30,17 @@ use cao_optimizers::composition::ApplicationRun;
 use common::{app_dir, profile_options, scratch_dir, serial, write, write_dds};
 use directxtex::DXGI_FORMAT_R8G8B8A8_UNORM;
 
-/// A capacity probe answering the same for every Mod Root.
+/// A volume probe answering the same free space for every Mod Root, and each
+/// root's real volume identity.
 struct Capacity(Option<u64>);
 
-impl CapacityProbe for Capacity {
+impl VolumeProbe for Capacity {
     fn available_bytes(&self, _: &Path) -> Option<u64> {
         self.0
+    }
+
+    fn volume_identity(&self, root: &Path) -> Option<String> {
+        VolumeProbes.volume_identity(root)
     }
 }
 
@@ -82,18 +87,18 @@ fn finalize(
     finalize_probing(game, root, settings, &Capacity(capacity))
 }
 
-/// [`finalize`] with any capacity probe.
+/// [`finalize`] with any volume probe.
 fn finalize_probing(
     game: Game,
     root: &Path,
     settings: ArchiveFinalizationSettings,
-    capacity: &dyn CapacityProbe,
+    capacity: &dyn VolumeProbe,
 ) -> ArchiveFinalizationResult {
     let packer = GameArchivePacker::new(Settings::get(game));
     let reader = ArchiveFileReader::default();
     let mut evidence = ArchiveFinalizationEvidence::new();
     let mut artifacts = TemporaryArtifactRegistry::new(create_run_id());
-    ArchiveFinalization::new(&packer, &reader, capacity, &VolumeProbes, settings)
+    ArchiveFinalization::new(&packer, &reader, capacity, settings)
         .run(
             &preparation(&[root.to_path_buf()], packer.rules().extension.as_str()),
             &mut evidence.recorder(),
@@ -314,7 +319,7 @@ fn a_plugin_appearing_at_another_recognized_name_is_reused() {
             plugin: &'a Path,
             appeared: &'a std::sync::Mutex<Option<SystemTime>>,
         }
-        impl CapacityProbe for Appearing<'_> {
+        impl VolumeProbe for Appearing<'_> {
             fn available_bytes(&self, _: &Path) -> Option<u64> {
                 // Planning found no Loading Plugin; one appears now.
                 let mut appeared = self.appeared.lock().unwrap();
@@ -323,6 +328,10 @@ fn a_plugin_appearing_at_another_recognized_name_is_reused() {
                     *appeared = Some(age(self.plugin));
                 }
                 None
+            }
+
+            fn volume_identity(&self, root: &Path) -> Option<String> {
+                VolumeProbes.volume_identity(root)
             }
         }
         let settings = ArchiveFinalizationSettings {

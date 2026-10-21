@@ -40,11 +40,11 @@ use cao_core::run::{
     ArchiveFinalizationResult, ArchiveFinalizationSettings, ArchivePrecedence, ArchiveReader,
     CancellationToken, MutationKind, PackedArchiveKind, RunDiagnostic, RunFailure,
     RunObservationSink, RunPhase, RunPhaseRecord, RunPreparation, TemporaryArtifactRegistry,
-    create_run_id,
+    VolumeProbe, create_run_id,
 };
 use cao_core::test_support::{
-    ArchiveFinalizationEvidence as Evidence, FakeArchivePacker, FakeArchiveReader, FakeCapacity,
-    FakeVolumes, fake_dummy_plugin, sse_profile,
+    ArchiveFinalizationEvidence as Evidence, FakeArchivePacker, FakeArchiveReader, FakeVolumeProbe,
+    fake_dummy_plugin, sse_profile,
 };
 use common::{archives_in, canonical, junction, scratch_dir};
 
@@ -147,14 +147,33 @@ impl Log {
     }
 }
 
-/// A capacity probe answering `probe` for every Mod Root.
-fn capacity(probe: impl Fn(&Path) -> Option<u64> + Send + Sync + 'static) -> FakeCapacity {
-    FakeCapacity(Some(Box::new(probe)))
+/// A volume probe answering `probe` for every Mod Root's free space; its
+/// volumes are unknown.
+fn capacity(probe: impl Fn(&Path) -> Option<u64> + Send + Sync + 'static) -> FakeVolumeProbe {
+    FakeVolumeProbe::default().with_capacity(probe)
 }
 
-/// A volume-identity probe answering `probe` for every Mod Root.
-fn volumes(probe: impl Fn(&Path) -> Option<String> + Send + Sync + 'static) -> FakeVolumes {
-    FakeVolumes(Some(Box::new(probe)))
+/// A volume probe answering `probe` for every Mod Root's volume identity; its
+/// free space is unknown.
+fn volumes(probe: impl Fn(&Path) -> Option<String> + Send + Sync + 'static) -> FakeVolumeProbe {
+    FakeVolumeProbe::default().with_volumes(probe)
+}
+
+/// The one volume probe a [`Finalizer`] hands the phase: free space from one
+/// fake, volume identities from another, so scenarios set each separately.
+struct SplitProbe<'a> {
+    capacity: &'a FakeVolumeProbe,
+    volumes: &'a FakeVolumeProbe,
+}
+
+impl VolumeProbe for SplitProbe<'_> {
+    fn available_bytes(&self, root: &Path) -> Option<u64> {
+        self.capacity.available_bytes(root)
+    }
+
+    fn volume_identity(&self, root: &Path) -> Option<String> {
+        self.volumes.volume_identity(root)
+    }
 }
 
 /// One Archive Finalization configuration; scenarios override only what they
@@ -163,8 +182,10 @@ fn volumes(probe: impl Fn(&Path) -> Option<String> + Send + Sync + 'static) -> F
 struct Finalizer {
     packer: FakeArchivePacker,
     reader: FakeArchiveReader,
-    capacity: FakeCapacity,
-    volumes: FakeVolumes,
+    /// Answers free space; its volume answers are never asked.
+    capacity: FakeVolumeProbe,
+    /// Answers volume identities; its free-space answers are never asked.
+    volumes: FakeVolumeProbe,
     settings: ArchiveFinalizationSettings,
     /// When set, the Routing Policy requests only Texture work.
     no_archive_creation: bool,
@@ -192,14 +213,11 @@ impl Finalizer {
         artifacts: &mut TemporaryArtifactRegistry,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(), Error> {
-        ArchiveFinalization::new(
-            &self.packer,
-            &self.reader,
-            &self.capacity,
-            &self.volumes,
-            self.settings,
-        )
-        .run(
+        let probe = SplitProbe {
+            capacity: &self.capacity,
+            volumes: &self.volumes,
+        };
+        ArchiveFinalization::new(&self.packer, &self.reader, &probe, self.settings).run(
             &preparation_for(roots, !self.no_archive_creation, &self.files_to_not_pack),
             &mut evidence.recorder(),
             artifacts,
@@ -213,20 +231,18 @@ impl Finalizer {
         let zero = capacity(|_| Some(0));
         let mut evidence = Evidence::new();
         let mut artifacts = registry();
-        ArchiveFinalization::new(
-            &self.packer,
-            &self.reader,
-            &zero,
-            &self.volumes,
-            self.settings,
-        )
-        .run(
-            &preparation_for(&[root.to_path_buf()], true, &self.files_to_not_pack),
-            &mut evidence.recorder(),
-            &mut artifacts,
-            &|| false,
-        )
-        .unwrap();
+        let probe = SplitProbe {
+            capacity: &zero,
+            volumes: &self.volumes,
+        };
+        ArchiveFinalization::new(&self.packer, &self.reader, &probe, self.settings)
+            .run(
+                &preparation_for(&[root.to_path_buf()], true, &self.files_to_not_pack),
+                &mut evidence.recorder(),
+                &mut artifacts,
+                &|| false,
+            )
+            .unwrap();
         assert!(artifacts.cleanup().is_empty());
         let result = evidence.finalization();
         let detail = result
@@ -1140,20 +1156,27 @@ fn a_mod_root_swapped_for_a_junction_stops_removal() {
         outside.clone(),
         retained.clone(),
     );
+    let listings = AtomicUsize::new(0);
     let finalizer = Finalizer {
         settings: ArchiveFinalizationSettings {
             create_dummy_plugins: false,
             ..ArchiveFinalizationSettings::default()
         },
-        // With no output or plugin reserve, the volume query is the phase's
-        // only probe after planning froze the Mod Root.
-        volumes: volumes(move |_| {
-            if std::fs::rename(&link, &moved).is_ok() {
-                junction(&link, &target);
-                flag.store(true, Ordering::SeqCst);
-            }
-            Some("volume".to_owned())
-        }),
+        // With no output or plugin reserve no Capacity Check asks about the
+        // Mod Root, so the swap waits for the second plugin listing:
+        // maintenance's, the phase's first look at the root after planning
+        // froze it.
+        packer: FakeArchivePacker {
+            before_list: Some(Box::new(move |_, _| {
+                if listings.fetch_add(1, Ordering::SeqCst) == 1
+                    && std::fs::rename(&link, &moved).is_ok()
+                {
+                    junction(&link, &target);
+                    flag.store(true, Ordering::SeqCst);
+                }
+            })),
+            ..FakeArchivePacker::default()
+        },
         ..Finalizer::default()
     };
     let mut evidence = Evidence::new();

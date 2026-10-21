@@ -1,5 +1,5 @@
 //! Archive fakes: fake Archive files, their reader and packer, and the
-//! capacity and volume-identity probes.
+//! volume probe.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -8,8 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::Error;
 use crate::run::{
     ArchiveEntry, ArchiveMerge, ArchiveName, ArchiveNameKind, ArchiveNamingRules, ArchivePacker,
-    ArchiveReader, CapacityProbe, PackedArchiveKind, PackedFile, PlannedArchive,
-    VolumeIdentityProbe,
+    ArchiveReader, PackedArchiveKind, PackedFile, PlannedArchive, VolumeProbe,
 };
 
 /// The magic opening every fake Archive file.
@@ -125,23 +124,49 @@ impl ArchiveReader for FakeArchiveReader {
 /// A closure answering a probe for one Mod Root.
 pub type RootProbe<T> = Box<dyn Fn(&Path) -> Option<T> + Send + Sync>;
 
-/// A capacity probe; without a closure, capacity is unknown everywhere.
+/// A volume probe built from two optional closures, each answering one of
+/// its questions per Mod Root. Without the `capacity` closure capacity is
+/// unknown everywhere; without the `volumes` closure every volume is
+/// unknown. Either closure may panic, as a probe that cannot answer might.
 #[derive(Default)]
-pub struct FakeCapacity(pub Option<RootProbe<u64>>);
+pub struct FakeVolumeProbe {
+    /// Answers [`VolumeProbe::available_bytes`].
+    pub capacity: Option<RootProbe<u64>>,
+    /// Answers [`VolumeProbe::volume_identity`].
+    pub volumes: Option<RootProbe<String>>,
+}
 
-impl CapacityProbe for FakeCapacity {
-    fn available_bytes(&self, root: &Path) -> Option<u64> {
-        self.0.as_ref().and_then(|probe| probe(root))
+impl FakeVolumeProbe {
+    /// This probe with free space answered by `capacity`.
+    pub fn with_capacity(
+        self,
+        capacity: impl Fn(&Path) -> Option<u64> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            capacity: Some(Box::new(capacity)),
+            ..self
+        }
+    }
+
+    /// This probe with volume identities answered by `volumes`.
+    pub fn with_volumes(
+        self,
+        volumes: impl Fn(&Path) -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            volumes: Some(Box::new(volumes)),
+            ..self
+        }
     }
 }
 
-/// A volume-identity probe; without a closure, every volume is unknown.
-#[derive(Default)]
-pub struct FakeVolumes(pub Option<RootProbe<String>>);
+impl VolumeProbe for FakeVolumeProbe {
+    fn available_bytes(&self, root: &Path) -> Option<u64> {
+        self.capacity.as_ref().and_then(|probe| probe(root))
+    }
 
-impl VolumeIdentityProbe for FakeVolumes {
     fn volume_identity(&self, root: &Path) -> Option<String> {
-        self.0.as_ref().and_then(|probe| probe(root))
+        self.volumes.as_ref().and_then(|probe| probe(root))
     }
 }
 

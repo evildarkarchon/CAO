@@ -23,7 +23,6 @@ mod planning;
 mod plugins;
 mod recorder;
 
-use std::collections::BTreeMap;
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::fs::MetadataExt as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -34,13 +33,11 @@ use cao_winfs::is_reparse_point;
 use crate::Error;
 use crate::execution::MutationState;
 use crate::routing::RequestedWork;
-use crate::run::archives::{
-    CapacityRequirements, capacity_detail, sample_available_bytes, sample_volume_identity,
-};
+use crate::run::capacity::{CapacityCheck, Shortfall};
 use crate::run::staging::has_staging_component;
 use crate::run::{
-    ArchivePacker, ArchiveReader, CapacityProbe, RunPreparation, TemporaryArtifactRegistry,
-    VolumeIdentityProbe, take_panic_message,
+    ArchivePacker, ArchiveReader, RunPreparation, TemporaryArtifactRegistry, VolumeProbe,
+    take_panic_message,
 };
 
 use attempt::attempt_output;
@@ -188,20 +185,24 @@ impl Default for ArchiveFinalizationSettings {
 pub(crate) struct Seams<'a> {
     pub packer: &'a dyn ArchivePacker,
     pub reader: &'a dyn ArchiveReader,
-    pub capacity: &'a dyn CapacityProbe,
 }
 
 /// The Archive Finalization Run Phase for one Optimization Run.
 pub struct ArchiveFinalization<'a> {
     seams: Seams<'a>,
-    volume_identity: &'a dyn VolumeIdentityProbe,
+    /// Every Capacity Check of the phase, its attempts' rechecks included.
+    capacity: CapacityCheck<'a>,
     settings: ArchiveFinalizationSettings,
 }
 
 impl<'a> ArchiveFinalization<'a> {
     /// The phase over the run's seams: `packer` holds the game's rules and
     /// writes Archives, `reader` verifies a committed Archive is readable, and
-    /// the probes are the phase's only other filesystem seams.
+    /// the volume probe is the phase's only other filesystem seam.
+    ///
+    /// It builds its own Capacity Check over `volume_probe`, so a standalone
+    /// phase behaves like a one-phase run; the Run Toolset uses
+    /// [`Self::with_capacity_check`] to share the run's.
     ///
     /// The Packing Exclusions come from the Selected Profile
     /// ([`SelectedProfile::packing_exclusions`]) in the [`RunPreparation`]
@@ -212,17 +213,23 @@ impl<'a> ArchiveFinalization<'a> {
     pub fn new(
         packer: &'a dyn ArchivePacker,
         reader: &'a dyn ArchiveReader,
-        capacity: &'a dyn CapacityProbe,
-        volume_identity: &'a dyn VolumeIdentityProbe,
+        volume_probe: &'a dyn VolumeProbe,
+        settings: ArchiveFinalizationSettings,
+    ) -> Self {
+        Self::with_capacity_check(packer, reader, CapacityCheck::new(volume_probe), settings)
+    }
+
+    /// The phase over `packer` and `reader`, as [`Self::new`], checking
+    /// capacity with `capacity`, the run's Capacity Check.
+    pub(crate) fn with_capacity_check(
+        packer: &'a dyn ArchivePacker,
+        reader: &'a dyn ArchiveReader,
+        capacity: CapacityCheck<'a>,
         settings: ArchiveFinalizationSettings,
     ) -> Self {
         Self {
-            seams: Seams {
-                packer,
-                reader,
-                capacity,
-            },
-            volume_identity,
+            seams: Seams { packer, reader },
+            capacity,
             settings,
         }
     }
@@ -347,49 +354,34 @@ impl<'a> ArchiveFinalization<'a> {
             result.cancelled = true;
             return Ok(());
         }
-        // Freeze each root's volume once for the preflight and every later
-        // recheck, so Several Mods never repeats native volume queries. A
-        // panicking query is an unknown volume, not the phase's Unexpected
-        // Exception: the unknown-volume rule keeps the check conservative.
-        let volumes = CachedVolumes(
-            plan.roots
-                .iter()
-                .map(|root| {
-                    let volume = sample_volume_identity(self.volume_identity, root);
-                    (root.clone(), volume)
-                })
-                .collect(),
-        );
-        let mut phase_capacity = CapacityRequirements::new(&volumes);
-        let mut dummy_capacity = CapacityRequirements::new(&volumes);
+        // Each root's volume is frozen the first time the Capacity Check asks
+        // for it, for this check and every later recheck, so Several Mods
+        // never repeats native volume queries. A panicking query is an
+        // unknown volume, not the phase's Unexpected Exception: the
+        // unknown-volume rule keeps the check conservative.
+        let mut phase_demand = self.capacity.demand();
+        let mut dummy_demand = self.capacity.demand();
         for root in &plan.roots {
             let required = plan.dummy_capacity_by_root[root];
-            phase_capacity.add(root, required);
-            dummy_capacity.add(root, required);
+            phase_demand.add(root, required);
+            dummy_demand.add(root, required);
         }
         for output in &plan.outputs {
-            phase_capacity.add(&output.mod_root, output.estimated_capacity_bytes);
+            phase_demand.add(&output.mod_root, output.estimated_capacity_bytes);
         }
-        for root in &plan.roots {
-            let output = plan.outputs.iter().find(|output| output.mod_root == *root);
-            // A Mod Root with no planned writes cannot run out of staging
-            // space during this phase.
-            if output.is_none() && plan.dummy_capacity_by_root[root] == 0 {
-                continue;
-            }
-            let archive = output.map(|output| output.archive_path.as_path());
-            if !self.has_capacity(
-                root,
-                archive,
-                phase_capacity.required_at(root),
-                recorder,
-                result,
-            )? {
-                return Ok(());
-            }
+        // A Mod Root with no planned writes cannot run out of staging space
+        // during this phase, so only roots with demand are checked, in root
+        // order.
+        if let Some(shortfall) = self.capacity.first_shortfall(&phase_demand) {
+            let archive = plan
+                .outputs
+                .iter()
+                .find(|output| output.mod_root == shortfall.root)
+                .map(|output| output.archive_path.as_path());
+            return record_shortfall(shortfall, archive, recorder, result);
         }
 
-        for (index, output) in plan.outputs.iter().enumerate() {
+        for index in 0..plan.outputs.len() {
             if cancelled() {
                 result.cancelled = true;
                 break;
@@ -399,7 +391,8 @@ impl<'a> ArchiveFinalization<'a> {
                 index,
                 artifacts,
                 self.seams,
-                dummy_capacity.required_at(&output.mod_root),
+                &self.capacity,
+                &dummy_demand,
                 &mut result.mutations,
             );
             // Only the attempt's own capacity recheck reports this, before
@@ -425,7 +418,7 @@ impl<'a> ArchiveFinalization<'a> {
         }
 
         let cleanup = catch_unwind(AssertUnwindSafe(|| {
-            self.maintain_and_prune(plan, &volumes, artifacts, cancelled, recorder, result)
+            self.maintain_and_prune(plan, artifacts, cancelled, recorder, result)
         }));
         let detail = match cleanup {
             Ok(Ok(())) => return Ok(()),
@@ -446,7 +439,6 @@ impl<'a> ArchiveFinalization<'a> {
     fn maintain_and_prune(
         &self,
         plan: &FinalizationPlan,
-        volumes: &CachedVolumes,
         artifacts: &mut TemporaryArtifactRegistry,
         cancelled: &dyn Fn() -> bool,
         recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
@@ -461,12 +453,12 @@ impl<'a> ArchiveFinalization<'a> {
                 // Earlier roots have already used their plugin allowance, so
                 // rechecking it would reject later roots despite a sufficient
                 // phase budget.
-                let mut remaining = CapacityRequirements::new(volumes);
+                let mut remaining = self.capacity.demand();
                 for later in &plan.roots[index..] {
                     remaining.add(later, plan.dummy_capacity_by_root[later]);
                 }
-                if !self.has_capacity(root, None, remaining.required_at(root), recorder, result)? {
-                    return Ok(());
+                if let Some(shortfall) = self.capacity.shortfall_at(&remaining, root) {
+                    return record_shortfall(shortfall, None, recorder, result);
                 }
             }
             // A probe may block while cancellation arrives; do not start the
@@ -495,37 +487,33 @@ impl<'a> ArchiveFinalization<'a> {
         }
         Ok(())
     }
+}
 
-    /// Checks `required` bytes at `root`, recording a known shortfall as the
-    /// attempt of `archive`, or as a phase-level failure when the root has no
-    /// planned output. Returns whether the phase may go on.
-    fn has_capacity(
-        &self,
-        root: &Path,
-        archive: Option<&Path>,
-        required: u64,
-        recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
-        result: &mut ArchiveFinalizationResult,
-    ) -> Result<bool, Escape> {
-        let Some(shortfall) = capacity_shortfall(self.seams.capacity, root, required) else {
-            return Ok(true);
-        };
-        match archive {
-            None => {
-                result.failure = Some(ArchiveFinalizationFailure::InsufficientCapacity);
-                result.detail = shortfall;
-            }
-            Some(archive) => {
-                let mut attempt =
-                    ArchiveFinalizationAttempt::new(archive.to_path_buf(), root.to_path_buf());
-                attempt.failure = Some(ArchiveFinalizationFailure::InsufficientCapacity);
-                attempt.detail = shortfall;
-                result.attempts.push(attempt);
-                record_last_attempt(recorder, result)?;
-            }
+/// Records a known `shortfall` at its Mod Root as the attempt of `archive`,
+/// or as a phase-level failure when the root has no planned output. The
+/// phase stops after it, before any further mutation.
+fn record_shortfall(
+    shortfall: Shortfall,
+    archive: Option<&Path>,
+    recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
+    result: &mut ArchiveFinalizationResult,
+) -> Result<(), Escape> {
+    let detail = shortfall.to_string();
+    match archive {
+        None => {
+            result.failure = Some(ArchiveFinalizationFailure::InsufficientCapacity);
+            result.detail = detail;
         }
-        Ok(false)
+        Some(archive) => {
+            let mut attempt =
+                ArchiveFinalizationAttempt::new(archive.to_path_buf(), shortfall.root);
+            attempt.failure = Some(ArchiveFinalizationFailure::InsufficientCapacity);
+            attempt.detail = detail;
+            result.attempts.push(attempt);
+            record_last_attempt(recorder, result)?;
+        }
     }
+    Ok(())
 }
 
 /// How the phase's work stopped short of recording its own result.
@@ -562,28 +550,6 @@ fn record_last_attempt(
 ) -> Result<(), Escape> {
     let attempt = result.attempts.last().expect("just pushed").clone();
     recorder.record_attempt(attempt).map_err(Escape::Evidence)
-}
-
-/// Volume identities frozen once per Mod Root for the whole phase.
-struct CachedVolumes(BTreeMap<PathBuf, Option<String>>);
-
-impl VolumeIdentityProbe for CachedVolumes {
-    fn volume_identity(&self, root: &Path) -> Option<String> {
-        self.0.get(root).cloned().flatten()
-    }
-}
-
-/// Samples `root`'s capacity against `required`: the rejection detail when
-/// the estimate is known not to fit, `None` when it fits or capacity is
-/// unknown. A panicking probe is unknown capacity, as a throwing one was in
-/// C++: the atomic writer still handles real I/O errors.
-pub(crate) fn capacity_shortfall(
-    capacity: &dyn CapacityProbe,
-    root: &Path,
-    required: u64,
-) -> Option<String> {
-    let available = sample_available_bytes(capacity, root)?;
-    (available < required).then(|| capacity_detail(required, available))
 }
 
 /// Prunes empty directories beneath each Mod Root, recording one mutation per

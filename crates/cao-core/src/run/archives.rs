@@ -3,7 +3,8 @@
 //! Ported from `src/Run/ArchiveFirstAssetDiscovery.cpp`,
 //! `src/Run/ArchiveExtraction.cpp` and `src/Run/ArchiveCapacity.h`. Archives
 //! are read only through the [`ArchiveReader`] seam, and capacity and volume
-//! identity only through their probes, so none of this needs `ba2`.
+//! identity only through the Capacity Check over the [`VolumeProbe`], so none
+//! of this needs `ba2`.
 //!
 //! The preflight runs before any extraction and is all-or-nothing: every
 //! selected Archive's manifest is read, every entry is checked for an Unsafe
@@ -26,12 +27,13 @@ use cao_winfs::{
 
 use crate::execution::MutationState;
 use crate::run::artifacts::reserved_device_name;
+use crate::run::capacity::CapacityCheck;
 use crate::run::source_pin::SourceFilePin;
 use crate::run::staging::{has_staging_component, pin_directory};
 use crate::run::{
-    ArchiveEntry, ArchivePrecedence, ArchiveReader, CancellationToken, CapacityProbe,
-    PublicationPolicy, PublicationReceipt, PublicationState, RunFailure, RunFailureCode, RunPhase,
-    TemporaryArtifactRegistry, VolumeIdentityProbe, is_staging_name, take_panic_message,
+    ArchiveEntry, ArchivePrecedence, ArchiveReader, CancellationToken, PublicationPolicy,
+    PublicationReceipt, PublicationState, RunFailure, RunFailureCode, RunPhase,
+    TemporaryArtifactRegistry, VolumeProbe, is_staging_name, take_panic_message,
 };
 
 /// A game path compared as a case-insensitive Windows volume compares names.
@@ -137,12 +139,26 @@ impl ArchiveExtractionResult {
 /// belongs to the caller (C++ `BSAOptimizer::extract`).
 pub struct ArchiveExtractor<'a> {
     reader: &'a dyn ArchiveReader,
-    capacity: &'a dyn CapacityProbe,
+    capacity: CapacityCheck<'a>,
 }
 
 impl<'a> ArchiveExtractor<'a> {
-    /// An extractor reading through `reader` and rechecking capacity through `capacity`.
-    pub fn new(reader: &'a dyn ArchiveReader, capacity: &'a dyn CapacityProbe) -> Self {
+    /// An extractor reading through `reader` and rechecking capacity through
+    /// `volume_probe`.
+    ///
+    /// It builds its own Capacity Check, so a standalone extractor behaves
+    /// like a one-phase run; the Run Toolset uses
+    /// [`Self::with_capacity_check`] to share the run's.
+    pub fn new(reader: &'a dyn ArchiveReader, volume_probe: &'a dyn VolumeProbe) -> Self {
+        Self::with_capacity_check(reader, CapacityCheck::new(volume_probe))
+    }
+
+    /// An extractor reading through `reader` and rechecking capacity with
+    /// `capacity`, the run's Capacity Check.
+    pub(crate) fn with_capacity_check(
+        reader: &'a dyn ArchiveReader,
+        capacity: CapacityCheck<'a>,
+    ) -> Self {
         Self { reader, capacity }
     }
 
@@ -233,13 +249,15 @@ impl<'a> ArchiveExtractor<'a> {
         let required = plan
             .estimated_capacity_bytes
             .max(estimated_capacity_bytes(&entries));
-        // Sampled inside its own containment: a panicking probe is unknown
-        // capacity, not an extraction failure from the attempt's boundary.
-        if let Some(available) = sample_available_bytes(self.capacity, &root)
-            && available < required
-        {
+        // Only this Archive's work is charged, at its canonical root. The
+        // Capacity Check samples inside its own containment: a panicking
+        // probe is unknown capacity, not an extraction failure from the
+        // attempt's boundary.
+        let mut demand = self.capacity.demand();
+        demand.add(&root, required);
+        if let Some(shortfall) = self.capacity.shortfall_at(&demand, &root) {
             result.failure = Some(ArchiveExtractionFailure::InsufficientCapacity);
-            result.detail = capacity_detail(required, available);
+            result.detail = shortfall.to_string();
             return Ok(());
         }
 
@@ -351,7 +369,7 @@ impl ArchiveExtractor<'_> {
         artifacts: &mut TemporaryArtifactRegistry,
     ) -> ArchiveExtractionResult {
         // The pin and cleanup act only on the filesystem through `cao_winfs`,
-        // never through the reader or capacity probe, so no seam can make
+        // never through the reader or volume probe, so no seam can make
         // them panic and no test reaches these arms; they are contained
         // anyway, because the Run Executor relies on this extractor to own
         // every panic of an extraction attempt.
@@ -624,104 +642,6 @@ pub(crate) fn estimated_capacity_bytes(entries: &[ArchiveEntry]) -> u64 {
     })
 }
 
-/// Explains a failed Capacity Check without promising a reservation.
-pub(crate) fn capacity_detail(required: u64, available: u64) -> String {
-    format!(
-        "Insufficient Archive staging capacity: estimated {required} bytes, available \
-         {available} bytes. Estimates include staging overhead allowances but do not reserve \
-         space or guarantee filesystem metadata, quotas, or concurrent writes."
-    )
-}
-
-/// Samples `root`'s free space for a Capacity Check, `None` when it is
-/// unknown.
-///
-/// A probe that panics cannot answer, so its panic is caught here and the
-/// free space is unknown, as an `Err` from the production probe already is.
-/// The check is advisory: unknown free space never fails it, and the staged
-/// writers still handle real I/O errors, so no Run Diagnostic is emitted and
-/// the panic never escapes to fail the run or the attempt it guards.
-pub(crate) fn sample_available_bytes(capacity: &dyn CapacityProbe, root: &Path) -> Option<u64> {
-    catch_unwind(AssertUnwindSafe(|| capacity.available_bytes(root))).unwrap_or_else(|payload| {
-        take_panic_message(payload);
-        None
-    })
-}
-
-/// Queries `root`'s volume identity for a Capacity Check, `None` when it is
-/// unknown.
-///
-/// A probe that panics cannot answer, so its panic is caught here and the
-/// volume is unknown, as an `Err` from the production probe already is. An
-/// unknown volume keeps the check conservative: a root on it is checked
-/// against the whole run's estimated Archive work. No Run Diagnostic is
-/// emitted.
-pub(crate) fn sample_volume_identity(
-    volume_identity: &dyn VolumeIdentityProbe,
-    root: &Path,
-) -> Option<String> {
-    catch_unwind(AssertUnwindSafe(|| volume_identity.volume_identity(root))).unwrap_or_else(
-        |payload| {
-            take_panic_message(payload);
-            None
-        },
-    )
-}
-
-/// Accumulates staging estimates by volume, so each Mod Root is checked only
-/// against the work sharing its volume.
-///
-/// A root with positive work and an unknown volume could share any volume,
-/// so it makes every root carry the whole batch's total.
-pub(crate) struct CapacityRequirements<'p> {
-    probe: &'p dyn VolumeIdentityProbe,
-    volumes: BTreeMap<PathBuf, Option<String>>,
-    required_by_volume: HashMap<String, u64>,
-    total: u64,
-    unknown_volume: bool,
-}
-
-impl<'p> CapacityRequirements<'p> {
-    pub(crate) fn new(probe: &'p dyn VolumeIdentityProbe) -> Self {
-        Self {
-            probe,
-            volumes: BTreeMap::new(),
-            required_by_volume: HashMap::new(),
-            total: 0,
-            unknown_volume: false,
-        }
-    }
-
-    /// Adds an estimate to the root's volume, probing each root once. A
-    /// panicking probe leaves the root's volume unknown.
-    pub(crate) fn add(&mut self, root: &Path, bytes: u64) {
-        let probe = self.probe;
-        let volume = self
-            .volumes
-            .entry(root.to_path_buf())
-            .or_insert_with(|| sample_volume_identity(probe, root))
-            .clone();
-        // A root needing no bytes cannot consume another volume's capacity,
-        // even if its identity is unknown.
-        if volume.is_none() && bytes != 0 {
-            self.unknown_volume = true;
-        }
-        self.total = self.total.saturating_add(bytes);
-        if let Some(volume) = volume {
-            let required = self.required_by_volume.entry(volume).or_default();
-            *required = required.saturating_add(bytes);
-        }
-    }
-
-    /// The estimate sharing this previously added root's volume.
-    pub(crate) fn required_at(&self, root: &Path) -> u64 {
-        match self.volumes.get(root) {
-            Some(Some(volume)) if !self.unknown_volume => self.required_by_volume[volume],
-            _ => self.total,
-        }
-    }
-}
-
 /// One Mod Root's Archive pass, as the preflight receives it.
 pub(crate) struct RootArchives {
     /// The canonical Mod Root.
@@ -757,15 +677,14 @@ fn discovery_failure(code: RunFailureCode, path: &Path, detail: impl Into<String
 /// Explicit Archive Precedence is validated per Mod Root first. Then every
 /// manifest is read and each entry checked; winners are frozen; collisions
 /// are calculated; and the Capacity Check runs. Nothing on disk changes.
-/// Manifests are read through `reader` and capacity checked through the two
-/// probes; extraction is the caller's. A probe that panics gives an unknown
-/// answer, so it never fails or escapes the preflight.
+/// Manifests are read through `reader` and capacity checked with `capacity`,
+/// the run's Capacity Check; extraction is the caller's. A probe that panics
+/// gives an unknown answer, so it never fails or escapes the preflight.
 pub(crate) fn preflight(
     roots: Vec<RootArchives>,
     precedence: &ArchivePrecedence,
     reader: &dyn ArchiveReader,
-    capacity: &dyn CapacityProbe,
-    volume_identity: &dyn VolumeIdentityProbe,
+    capacity: &CapacityCheck<'_>,
     stop: &CancellationToken,
 ) -> Preflight {
     let mut roots = roots;
@@ -916,23 +835,18 @@ pub(crate) fn preflight(
     }
     // A volume must fit all of its roots before extraction begins. No credit
     // is taken for source deletion or for cleanup of shadowed staging.
-    let mut requirements = CapacityRequirements::new(volume_identity);
+    let mut demand = capacity.demand();
     for (_, plan, _) in &plans {
-        requirements.add(&plan.mod_root, plan.estimated_capacity_bytes);
+        demand.add(&plan.mod_root, plan.estimated_capacity_bytes);
     }
-    for (_, plan, _) in &plans {
-        let required = requirements.required_at(&plan.mod_root);
-        // A probe that panics is unknown capacity, which never fails the
-        // check; it must not escape the run as Run Work Escaped.
-        if let Some(available) = sample_available_bytes(capacity, &plan.mod_root)
-            && available < required
-        {
-            return Preflight::Failed(discovery_failure(
-                RunFailureCode::ArchiveInsufficientCapacity,
-                &plan.mod_root,
-                capacity_detail(required, available),
-            ));
-        }
+    // A probe that panics is unknown capacity, which never fails the check;
+    // it must not escape the run as Run Work Escaped.
+    if let Some(shortfall) = capacity.first_shortfall(&demand) {
+        return Preflight::Failed(discovery_failure(
+            RunFailureCode::ArchiveInsufficientCapacity,
+            &shortfall.root,
+            shortfall.to_string(),
+        ));
     }
 
     Preflight::Planned {

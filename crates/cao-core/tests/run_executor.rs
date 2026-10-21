@@ -56,7 +56,7 @@ use cao_core::run::{
     SafetyCleanupService, SelectedProfile, TemporaryArtifactRegistry, create_run_id,
 };
 use cao_core::test_support::{
-    CallbackConfiguration, CountingCleanup, FakeArchivePacker, FakeArchiveReader, FakeCapacity,
+    CallbackConfiguration, CountingCleanup, FakeArchivePacker, FakeArchiveReader, FakeVolumeProbe,
     Observed, RecordingSink, ScriptedCleanup, ScriptedToolset, ToolsetConfiguration, entry,
     execute_run, sse_capabilities, sse_profile, write_archive,
 };
@@ -1666,12 +1666,12 @@ fn a_committed_archive_without_its_loading_plugin_fails_the_run() {
     let competitor = planned_plugin.clone();
     let occupied = AtomicBool::new(false);
     let toolset = Arc::new(ScriptedToolset {
-        capacity: Arc::new(FakeCapacity(Some(Box::new(move |_| {
+        volume_probe: Arc::new(FakeVolumeProbe::default().with_capacity(move |_| {
             if !occupied.swap(true, Ordering::SeqCst) {
                 std::fs::write(&competitor, "competing plugin").unwrap();
             }
             None
-        })))),
+        })),
         ..ScriptedToolset::default()
     });
     let mut cleanup = CountingCleanup::default();
@@ -1788,7 +1788,7 @@ fn a_discovery_diagnostic_survives_a_failure_later_in_discovery() {
     let link = root.join("linked");
     common::junction(&link, &outside);
     let toolset = Arc::new(ScriptedToolset {
-        capacity: Arc::new(FakeCapacity(Some(Box::new(|_| Some(0))))),
+        volume_probe: Arc::new(FakeVolumeProbe::default().with_capacity(|_| Some(0))),
         ..ScriptedToolset::default()
     });
     let mut cleanup = CountingCleanup::default();

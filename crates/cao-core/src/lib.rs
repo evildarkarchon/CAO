@@ -4,7 +4,7 @@
 //! Its seams are object-safe traits (#468): the Run Scheduler, Safety Cleanup
 //! Service, Run Configuration Provider and Run Observation Sink, the Run
 //! Toolset's seams (the Asset attempt port, the archive reader and packer,
-//! and the capacity and volume-identity probes, over which core assembles
+//! and the volume probe, over which core assembles
 //! Archive extraction and Archive Finalization), and one Asset Execution
 //! Backend. A filesystem abstraction, a clock and the staging nonce are not
 //! seams; tests reach faults through the seams plus real temporary

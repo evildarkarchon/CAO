@@ -16,8 +16,7 @@ use crate::run::{
     create_run_id,
 };
 use crate::test_support::{
-    FakeArchivePacker, FakeArchiveReader, FakeBackendFactory, FakeCapacity, FakeVolumes,
-    sse_profile,
+    FakeArchivePacker, FakeArchiveReader, FakeBackendFactory, FakeVolumeProbe, sse_profile,
 };
 
 /// What a scripted Asset attempt returns for one Routed Asset and its frozen
@@ -57,7 +56,7 @@ pub enum AssetAttempts {
 /// provider that hands a fresh [`RunToolset`] over it to each run.
 ///
 /// Asset attempts are produced as `assets` says. Archive work is never
-/// scripted: `reader`, `capacity`, `volumes` and `packer` are the Toolset's
+/// scripted: `reader`, `volume_probe` and `packer` are the Toolset's
 /// Archive seams, and `archive_work` its Archive work settings, and every
 /// Toolset is built through the production [`RunToolset::new`] over them.
 /// Every run therefore does core's real Archive extraction and Archive
@@ -74,8 +73,7 @@ pub struct ScriptedToolset {
     /// itself still runs and completes.
     pub cancel_at_attempt: Option<usize>,
     pub reader: Arc<FakeArchiveReader>,
-    pub capacity: Arc<FakeCapacity>,
-    pub volumes: Arc<FakeVolumes>,
+    pub volume_probe: Arc<FakeVolumeProbe>,
     /// The Archive packer core's Archive Finalization packs through; keep a
     /// clone to read its writes.
     pub packer: Arc<FakeArchivePacker>,
@@ -159,8 +157,7 @@ impl ScriptedToolset {
             }),
             ArchiveSeams {
                 reader: self.reader.clone(),
-                capacity: self.capacity.clone(),
-                volume_identity: self.volumes.clone(),
+                volume_probe: self.volume_probe.clone(),
                 packer: self.packer.clone(),
             },
             self.archive_work,

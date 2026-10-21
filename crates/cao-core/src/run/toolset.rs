@@ -10,20 +10,25 @@
 //! discovery, extraction and finalization by construction.
 //!
 //! The Run Executor runs every work phase over it: Archive discovery and the
-//! Capacity Check through the Archive reader and the two probes, then, in
+//! Capacity Check through the Archive reader and the volume probe, then, in
 //! Apply, the core [`ArchiveExtractor`](crate::run::ArchiveExtractor) over the
-//! reader and capacity probe for each planned Archive, one
+//! reader and the Capacity Check for each planned Archive, one
 //! [`AssetAttemptPort`] call per Routed Asset, and, in Apply,
 //! [`ArchiveFinalization`](crate::run::ArchiveFinalization) over the packer,
-//! reader and probes. Observation goes only through the Run Observation Sink
-//! and cancellation only through the run's token.
+//! reader and the Capacity Check. Observation goes only through the Run
+//! Observation Sink and cancellation only through the run's token.
+//!
+//! The Toolset holds the run's one Capacity Check state: each Mod Root's
+//! volume identity is looked up the first time any of those checks asks for
+//! it and frozen for the rest of the run, so preflight, extraction and
+//! Archive Finalization agree on volume grouping.
 //!
 //! Each panic is contained once, by the module that owns its rule: the
 //! executor turns an Asset attempt's into an unsafe Operation Failure with
 //! unknown mutation, the Archive extractor classifies its own by how far the
 //! attempt got, and Archive Finalization turns its own into an Unexpected
-//! Exception that forbids continuation. The Capacity Check owns the probes'
-//! panics wherever it runs, in the preflight, the extraction recheck and
+//! Exception that forbids continuation. The Capacity Check owns the volume
+//! probe's panics wherever it runs, in the preflight, the extraction recheck and
 //! Archive Finalization: a probe that cannot answer, even by panicking, gives
 //! an unknown answer, which never fails the check, so a probe panic is never
 //! Run Work Escaped, an extraction failure or an Unexpected Exception.
@@ -35,11 +40,12 @@ use crate::Error;
 use crate::execution::AssetExecutionResult;
 use crate::routing::RoutedAsset;
 use crate::run::archives::{Preflight, RootArchives, preflight};
+use crate::run::capacity::{CapacityCheck, FrozenVolumes};
 use crate::run::{
     ArchiveExtractionPlan, ArchiveExtractionResult, ArchiveExtractor, ArchiveFinalization,
     ArchiveFinalizationRecorder, ArchiveFinalizationSettings, ArchivePacker, ArchivePrecedence,
-    ArchiveReader, CancellationToken, CapacityProbe, RunDiagnostic, RunPreparation, SourceCleanup,
-    TemporaryArtifactRegistry, VolumeIdentityProbe,
+    ArchiveReader, CancellationToken, RunDiagnostic, RunPreparation, SourceCleanup,
+    TemporaryArtifactRegistry, VolumeProbe,
 };
 
 /// Cancellation observed while an Asset backend initialized, before any attempt existed.
@@ -81,11 +87,9 @@ pub trait AssetAttemptPort {
 pub struct ArchiveSeams {
     /// Reads Archive manifests and entries, and verifies packed Archives.
     pub reader: Arc<dyn ArchiveReader>,
-    /// Samples free space for the Capacity Check and Archive Finalization.
-    pub capacity: Arc<dyn CapacityProbe>,
-    /// Groups Mod Roots by volume for the Capacity Check and Archive
-    /// Finalization.
-    pub volume_identity: Arc<dyn VolumeIdentityProbe>,
+    /// Samples free space and groups Mod Roots by volume for the Capacity
+    /// Check, in the preflight, extraction and Archive Finalization.
+    pub volume_probe: Arc<dyn VolumeProbe>,
     /// Packs Loose Assets into Archives during Archive Finalization.
     pub packer: Arc<dyn ArchivePacker>,
 }
@@ -130,6 +134,9 @@ pub struct RunToolset {
     seams: ArchiveSeams,
     /// The run's source cleanup and Archive Finalization settings.
     settings: ArchiveWorkSettings,
+    /// The volume identities every Capacity Check of the run shares, so each
+    /// Mod Root's volume is looked up at most once per run.
+    volumes: FrozenVolumes,
 }
 
 impl RunToolset {
@@ -138,12 +145,12 @@ impl RunToolset {
     ///
     /// The Run Executor extracts each planned Archive with the core
     /// [`ArchiveExtractor`](crate::run::ArchiveExtractor) over the seams'
-    /// reader and capacity probe with `settings.source_cleanup`, logging each
-    /// success to the Application Log, and runs
+    /// reader and the run's Capacity Check with `settings.source_cleanup`,
+    /// logging each success to the Application Log, and runs
     /// [`ArchiveFinalization`](crate::run::ArchiveFinalization) over the
-    /// packer, reader and probes with `settings.finalization`. The seams'
-    /// single reader therefore serves Archive discovery, extraction and
-    /// finalization alike.
+    /// packer, reader and the run's Capacity Check with
+    /// `settings.finalization`. The seams' single reader therefore serves
+    /// Archive discovery, extraction and finalization alike.
     pub fn new(
         asset_attempt: Box<dyn AssetAttemptPort>,
         seams: ArchiveSeams,
@@ -153,6 +160,7 @@ impl RunToolset {
             asset_attempt,
             seams,
             settings,
+            volumes: FrozenVolumes::default(),
         }
     }
 
@@ -161,8 +169,19 @@ impl RunToolset {
         &mut *self.asset_attempt
     }
 
+    /// The run's Capacity Check: the seams' volume probe over the volume
+    /// identities the whole run shares.
+    ///
+    /// A check borrows its probe, and the Toolset owns the probe through the
+    /// seams' `Arc`, so it cannot also hold a check borrowing from itself.
+    /// It holds the frozen volumes instead and hands each phase a check over
+    /// them; every such check therefore behaves as the run's one check.
+    fn capacity_check(&self) -> CapacityCheck<'_> {
+        CapacityCheck::sharing(&*self.seams.volume_probe, &self.volumes)
+    }
+
     /// Runs Archive discovery's all-or-nothing preflight over `roots` through
-    /// the seams' reader, capacity probe and volume identity probe.
+    /// the seams' reader and the run's Capacity Check.
     ///
     /// Nothing on disk changes; see [`preflight`] for what is checked. A
     /// probe that panics gives the Capacity Check an unknown answer rather
@@ -177,15 +196,15 @@ impl RunToolset {
             roots,
             precedence,
             &*self.seams.reader,
-            &*self.seams.capacity,
-            &*self.seams.volume_identity,
+            &self.capacity_check(),
             stop,
         )
     }
 
     /// Extracts one planned Archive with the core [`ArchiveExtractor`] over
-    /// the seams' reader and capacity probe, then cleans up its source with
-    /// the run's [`SourceCleanup`], logging a success to the Application Log.
+    /// the seams' reader and the run's Capacity Check, then cleans up its
+    /// source with the run's [`SourceCleanup`], logging a success to the
+    /// Application Log.
     ///
     /// Never fails outright and never panics: the extractor contains its own
     /// panics and classifies every failure by how far the attempt got.
@@ -194,8 +213,9 @@ impl RunToolset {
         plan: &ArchiveExtractionPlan,
         artifacts: &mut TemporaryArtifactRegistry,
     ) -> ArchiveExtractionResult {
-        let attempt = ArchiveExtractor::new(&*self.seams.reader, &*self.seams.capacity)
-            .extract_with_source_cleanup(plan, self.settings.source_cleanup, artifacts);
+        let attempt =
+            ArchiveExtractor::with_capacity_check(&*self.seams.reader, self.capacity_check())
+                .extract_with_source_cleanup(plan, self.settings.source_cleanup, artifacts);
         if attempt.succeeded() {
             // The Application Log line C++ `BSAOptimizer::extract` wrote. It
             // is logged from this module so its module path, which the debug
@@ -208,8 +228,9 @@ impl RunToolset {
         attempt
     }
 
-    /// Runs [`ArchiveFinalization`] over the seams' packer, reader and probes
-    /// with the run's finalization settings, recording through `recorder`.
+    /// Runs [`ArchiveFinalization`] over the seams' packer, reader and the
+    /// run's Capacity Check with the run's finalization settings, recording
+    /// through `recorder`.
     ///
     /// Archive Finalization contains its own panics as an Unexpected
     /// Exception, so callers need no second layer.
@@ -223,11 +244,10 @@ impl RunToolset {
         artifacts: &mut TemporaryArtifactRegistry,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(), Error> {
-        ArchiveFinalization::new(
+        ArchiveFinalization::with_capacity_check(
             &*self.seams.packer,
             &*self.seams.reader,
-            &*self.seams.capacity,
-            &*self.seams.volume_identity,
+            self.capacity_check(),
             self.settings.finalization,
         )
         .run(preparation, recorder, artifacts, cancelled)
