@@ -1,11 +1,21 @@
-//! The Archive Finalization phase over a fake packer and reader, fake probes
-//! and real Mod Root directories, as the C++ suite drove
-//! `ArchiveFinalization::run`.
+//! The Archive Finalization phase through whole Optimization Runs over a fake
+//! packer and reader, fake probes and real Mod Root directories, as the C++
+//! suite drove `ArchiveFinalization::run`.
 //!
 //! Each scenario names its C++ origin in `tests/ArchiveFinalizationTests.cpp`.
 //! The fake packer stands in for one game's rules and writer, so these pin
 //! the phase's own logic: capacity, naming, Loading Plugins, publication,
 //! source cleanup, cancellation and evidence.
+//!
+//! Every scenario is an Apply run over Mod Roots holding only Loose Assets
+//! and existing Archives, and requests no Archive extraction, so the
+//! preflight and extraction have nothing to do and never sample free space:
+//! every volume probe call comes from Archive Finalization (#597). The
+//! request asks for Archive creation, or only Texture work, and the Packing
+//! Exclusions come from the run's Selected Profile, so Preparing makes the
+//! phase's preparation as production does. A scenario acts mid-phase from a
+//! fake the phase calls, such as the volume probe or the packer, and asserts
+//! on the run's Run Evidence and the filesystem.
 //!
 //! Ported in `cao-optimizers` against real Archives, each naming its origin:
 //! `finalizationCapacityEstimateCoversPublishedOutput`,
@@ -22,6 +32,10 @@
 //!   both; `cao-archive` pins each game's bytes.
 //! - The non-Windows branches of the linked Loading Plugin scenarios: the
 //!   port is Windows only.
+//! - `evidenceFailuresPropagateUnchanged`: every row ran the phase over Run
+//!   Evidence no run leaves it in (the phase already left, or its result or
+//!   output total already recorded). The evidence invariants it relied on are
+//!   pinned in `cao-core`'s own `run/evidence/tests.rs` (#597).
 
 mod common;
 
@@ -32,19 +46,19 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use cao_core::Error;
-use cao_core::execution::MutationState;
+use cao_core::execution::{AssetExecutionResult, MutationState};
 use cao_core::routing::{ExecutionMode, RequestedWork, RoutingPolicyRequest};
 use cao_core::run::{
     ArchiveFinalization, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
-    ArchiveFinalizationResult, ArchiveFinalizationSettings, ArchivePrecedence, ArchiveReader,
-    CancellationToken, MutationKind, PackedArchiveKind, RunDiagnostic, RunFailure,
-    RunObservationSink, RunPhase, RunPhaseRecord, RunPreparation, TemporaryArtifactRegistry,
+    ArchiveFinalizationResult, ArchiveFinalizationSettings, ArchiveNameKind, ArchivePrecedence,
+    ArchiveReader, ArchiveWorkSettings, CancellationToken, MutationKind, MutationSummary,
+    OptimizationRunResult, PackedArchiveKind, RunDiagnostic, RunFailure, RunObservationSink,
+    RunPhase, RunPhaseRecord, RunPreparation, RunProgress, TemporaryArtifactRegistry,
     create_run_id,
 };
 use cao_core::test_support::{
-    ArchiveFinalizationEvidence as Evidence, FakeArchivePacker, FakeArchiveReader, FakeVolumeProbe,
-    fake_dummy_plugin, sse_profile,
+    ArchiveFinalizationEvidence, ArchiveRunRequest, FakeArchivePacker, FakeArchiveReader,
+    FakeVolumeProbe, Observed, RecordingSink, ScriptedToolset, fake_dummy_plugin, sse_profile,
 };
 use common::{archives_in, canonical, junction, scratch_dir};
 
@@ -67,41 +81,6 @@ fn scratch(name: &str) -> PathBuf {
     canonical(&scratch_dir(&format!("finalization-{name}")))
 }
 
-/// A fresh Temporary Ownership scope.
-fn registry() -> TemporaryArtifactRegistry {
-    TemporaryArtifactRegistry::new(create_run_id())
-}
-
-/// An Apply run over `roots` whose Routing Policy requests Archive creation,
-/// or only Texture work when `create_archives` is false.
-///
-/// `files_to_not_pack` becomes the Selected Profile's Packing Exclusions, as
-/// Preparing hands them to the phase in production.
-fn preparation_for(
-    roots: &[PathBuf],
-    create_archives: bool,
-    files_to_not_pack: &[String],
-) -> RunPreparation {
-    let work = if create_archives {
-        RequestedWork::ArchiveCreation
-    } else {
-        RequestedWork::NativeTextureOptimization
-    };
-    let profile = sse_profile().with_packing_exclusions(files_to_not_pack.to_vec());
-    let policy = profile
-        .compile_policy(RoutingPolicyRequest::for_work(
-            ExecutionMode::Apply,
-            &[work],
-        ))
-        .unwrap();
-    RunPreparation::new(
-        roots.to_vec(),
-        profile,
-        policy,
-        ArchivePrecedence::DeterministicDiscovery,
-    )
-}
-
 /// A sink retaining every Archive Finalization progress account, as
 /// `completed/total ok=succeeded failed=failed`, in a log probes also write.
 struct ProgressLog(Log);
@@ -119,7 +98,8 @@ impl RunObservationSink for ProgressLog {
         }
     }
 
-    // Archive Finalization reports no Run Failures or diagnostics.
+    // Archive Finalization reports no Run Failures or diagnostics; the run's
+    // other phases' stay in its Run Evidence.
     fn record_failure(&self, _: &RunFailure) {}
 
     fn record_diagnostic(&self, _: &RunDiagnostic) {}
@@ -153,8 +133,8 @@ fn capacity(probe: impl Fn(&Path) -> Option<u64> + Send + Sync + 'static) -> Fak
     FakeVolumeProbe::default().with_capacity(probe)
 }
 
-/// One Archive Finalization configuration; scenarios override only what they
-/// depend on. The settings default to the options model's.
+/// One Archive Finalization run's configuration; scenarios override only what
+/// they depend on. The settings default to the options model's.
 #[derive(Default)]
 struct Finalizer {
     packer: FakeArchivePacker,
@@ -164,58 +144,141 @@ struct Finalizer {
     /// [`FakeVolumeProbe::with_volumes`].
     probe: FakeVolumeProbe,
     settings: ArchiveFinalizationSettings,
-    /// When set, the Routing Policy requests only Texture work.
+    /// When set, the run requests only Texture work.
     no_archive_creation: bool,
     /// The Selected Profile's Packing Exclusions, as the profile writes them.
     files_to_not_pack: Vec<String>,
+    /// Asset attempts, for a scenario that requests Texture work and acts
+    /// from them; by default they succeed with no mutation.
+    assets: ScriptedToolset,
+    /// The run's cancellation token; a fake the phase calls may cancel a
+    /// clone of it mid-phase.
     stop: CancellationToken,
 }
 
-impl Finalizer {
-    /// Runs the phase once over `roots`, polling the finalizer's token.
-    fn run(
-        &self,
-        roots: &[PathBuf],
-        evidence: &mut Evidence<'_>,
-        artifacts: &mut TemporaryArtifactRegistry,
-    ) -> Result<(), Error> {
-        self.run_polling(roots, evidence, artifacts, &|| self.stop.is_cancelled())
+/// One finished run and the fakes it ran over.
+struct Finalized {
+    result: OptimizationRunResult,
+    /// The run's fakes, whose records outlive it.
+    toolset: Arc<ScriptedToolset>,
+}
+
+impl Finalized {
+    /// The run's Archive Finalization result.
+    ///
+    /// # Panics
+    ///
+    /// When the run never reached Archive Finalization.
+    fn finalization(&self) -> &ArchiveFinalizationResult {
+        self.result
+            .archive_finalization()
+            .unwrap_or_else(|| panic!("no Archive Finalization: {:?}", self.result.failures()))
     }
 
-    /// Runs the phase once over `roots`, polling `cancelled`.
-    fn run_polling(
-        &self,
+    /// The Archive Finalization phase's progress account, or `None` when it
+    /// recorded no output total.
+    fn progress(&self) -> Option<RunProgress> {
+        self.result
+            .phase(RunPhase::ArchiveFinalization)
+            .and_then(RunPhaseRecord::progress)
+    }
+
+    /// Whether the run's Safety Cleanup, and every attempt's, failed nothing.
+    fn cleaned_up(&self) -> bool {
+        self.result.cleanup_failures().is_empty()
+    }
+
+    /// Drops the run's fakes, and with them whatever their hooks hold, such
+    /// as a scenario's file handle; the run's result stays readable.
+    fn release_fakes(&mut self) {
+        self.toolset = Arc::default();
+    }
+
+    /// The run's Mutation Summaries of Archive Finalization's own effects.
+    fn finalization_summaries(&self) -> Vec<&MutationSummary> {
+        self.result
+            .mutation_summaries()
+            .iter()
+            .filter(|summary| summary.kind == MutationKind::ArchiveFinalization)
+            .collect()
+    }
+}
+
+impl Finalizer {
+    /// Runs one Apply run over `roots`, which must be one Mod Root or every
+    /// child Mod Root of one mods directory.
+    fn run(self, roots: &[PathBuf]) -> Finalized {
+        self.run_observed(roots, None)
+    }
+
+    /// [`Self::run`], publishing the run's live facts to `observations`.
+    fn run_observed(
+        self,
         roots: &[PathBuf],
-        evidence: &mut Evidence<'_>,
-        artifacts: &mut TemporaryArtifactRegistry,
-        cancelled: &dyn Fn() -> bool,
-    ) -> Result<(), Error> {
-        ArchiveFinalization::new(&self.packer, &self.reader, &self.probe, self.settings).run(
-            &preparation_for(roots, !self.no_archive_creation, &self.files_to_not_pack),
-            &mut evidence.recorder(),
-            artifacts,
-            cancelled,
-        )
+        observations: Option<&dyn RunObservationSink>,
+    ) -> Finalized {
+        let run = self.request(roots);
+        let configuration = run.configuration(ScriptedToolset {
+            reader: Arc::new(self.reader),
+            volume_probe: Arc::new(self.probe),
+            packer: Arc::new(self.packer),
+            ..self.assets
+        });
+        let result = run.execute(&configuration, observations, &self.stop);
+        // Preparing resolved exactly the scenario's roots, in its order, so
+        // every root-indexed assertion means what it says.
+        assert_eq!(result.mod_roots(), roots, "{:?}", result.failures());
+        Finalized {
+            result,
+            toolset: configuration.toolset,
+        }
+    }
+
+    /// The run over `roots` with this configuration's work, Packing
+    /// Exclusions and settings.
+    fn request(&self, roots: &[PathBuf]) -> ArchiveRunRequest {
+        let run = match roots {
+            [root] => ArchiveRunRequest::new(root),
+            _ => {
+                let parent = roots[0].parent().unwrap();
+                assert!(roots.iter().all(|root| root.parent() == Some(parent)));
+                ArchiveRunRequest::over_mods(parent)
+            }
+        };
+        let mut work = vec![RequestedWork::NativeTextureOptimization];
+        if !self.no_archive_creation {
+            work.push(RequestedWork::ArchiveCreation);
+        }
+        run.with_work(work)
+            .with_packing_exclusions(self.files_to_not_pack.clone())
+            .with_archive_work(ArchiveWorkSettings {
+                finalization: self.settings,
+                ..ArchiveWorkSettings::default()
+            })
     }
 
     /// The staging estimate the phase reports when `root` has no capacity at
     /// all: one planned output's estimate plus its plugin reserve.
+    ///
+    /// It runs a separate run over `root` with this configuration's settings,
+    /// exclusions and packer rules, which a shortage leaves unmutated.
     fn reported_estimate(&self, root: &Path) -> u64 {
         // A lone Mod Root carries the whole demand, so its volume is never
         // looked up and the finalizer's own volume answers are not needed.
-        let zero = capacity(|_| Some(0));
-        let mut evidence = Evidence::new();
-        let mut artifacts = registry();
-        ArchiveFinalization::new(&self.packer, &self.reader, &zero, self.settings)
-            .run(
-                &preparation_for(&[root.to_path_buf()], true, &self.files_to_not_pack),
-                &mut evidence.recorder(),
-                &mut artifacts,
-                &|| false,
-            )
-            .unwrap();
-        assert!(artifacts.cleanup().is_empty());
-        let result = evidence.finalization();
+        let estimating = Finalizer {
+            packer: FakeArchivePacker {
+                rules: self.packer.rules.clone(),
+                max_size: self.packer.max_size,
+                ..FakeArchivePacker::default()
+            },
+            probe: capacity(|_| Some(0)),
+            settings: self.settings,
+            files_to_not_pack: self.files_to_not_pack.clone(),
+            ..Finalizer::default()
+        };
+        let run = estimating.run(&[root.to_path_buf()]);
+        assert!(run.cleaned_up());
+        let result = run.finalization();
         let detail = result
             .attempts
             .first()
@@ -254,6 +317,50 @@ fn hold(path: &Path, share: u32) -> File {
         .share_mode(share)
         .open(path)
         .unwrap()
+}
+
+/// Runs Archive Finalization alone over `root`, outside any run, through the
+/// standalone constructor and a hand-built preparation, as the C++ suite did.
+///
+/// Only `a_mod_root_swapped_for_a_junction_stops_removal` uses it: its swap
+/// is unreachable in a run, which pins every Mod Root from Preparing on, and
+/// is raised on #595 rather than deleted here (#597). Slice 3 seals
+/// everything this calls.
+fn finalize_outside_a_run(
+    packer: &FakeArchivePacker,
+    settings: ArchiveFinalizationSettings,
+    root: &Path,
+) -> ArchiveFinalizationResult {
+    let profile = sse_profile();
+    let policy = profile
+        .compile_policy(RoutingPolicyRequest::for_work(
+            ExecutionMode::Apply,
+            &[RequestedWork::ArchiveCreation],
+        ))
+        .unwrap();
+    let preparation = RunPreparation::new(
+        vec![root.to_path_buf()],
+        profile,
+        policy,
+        ArchivePrecedence::DeterministicDiscovery,
+    );
+    let mut evidence = ArchiveFinalizationEvidence::new();
+    let mut artifacts = TemporaryArtifactRegistry::new(create_run_id());
+    ArchiveFinalization::new(
+        packer,
+        &FakeArchiveReader::default(),
+        &FakeVolumeProbe::default(),
+        settings,
+    )
+    .run(
+        &preparation,
+        &mut evidence.recorder(),
+        &mut artifacts,
+        &|| false,
+    )
+    .unwrap();
+    assert!(artifacts.cleanup().is_empty());
+    evidence.finalization()
 }
 
 /// Origin: finalizationCapacityChecks (all four rows). Each output fits by
@@ -299,16 +406,12 @@ fn capacity_shortages_stop_before_mutation() {
         });
         // Both roots share one volume, so the phase sums both outputs.
         finalizer.probe = probe.with_volumes(|_| Some("shared-volume".to_owned()));
-        let mut evidence = Evidence::new();
-        let mut artifacts = registry();
-        finalizer
-            .run(&roots, &mut evidence, &mut artifacts)
-            .unwrap();
+        let run = finalizer.run(&roots);
 
-        let result = evidence.finalization();
+        let result = run.finalization();
         assert!(result.safe_to_continue, "{name}");
         assert!(!result.cancelled, "{name}");
-        let progress = evidence.progress().unwrap();
+        let progress = run.progress().unwrap();
         assert_eq!(progress.total(), 2, "{name}");
         assert_eq!(progress.completed(), result.attempts.len(), "{name}");
         let committed = match scenario {
@@ -340,7 +443,7 @@ fn capacity_shortages_stop_before_mutation() {
             assert_eq!(rejected.mod_root, roots[1]);
             assert!(!rejected.detail.is_empty());
         }
-        assert!(artifacts.cleanup().is_empty());
+        assert!(run.cleaned_up());
     }
 }
 
@@ -374,13 +477,9 @@ fn capacity_is_grouped_by_volume() {
             .to_owned(),
         )
     });
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(&roots, &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(&roots);
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.attempts.len(), 2);
     assert!(result.safe_to_continue);
     assert_eq!(result.failure, None);
@@ -388,7 +487,7 @@ fn capacity_is_grouped_by_volume() {
         assert!(attempt.succeeded(), "{}", attempt.detail);
         assert!(attempt.archive_path.exists());
     }
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: idleUnknownVolumeDoesNotInflateCapacity. A root with no planned
@@ -427,17 +526,13 @@ fn an_idle_root_of_unknown_volume_does_not_inflate_capacity() {
                 .to_owned()
             })
         });
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(&roots, &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(&roots);
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.attempts.len(), 2);
     assert_eq!(result.failure, None);
     assert!(result.attempts.iter().all(|attempt| attempt.succeeded()));
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Rust-only, for #592: a volume probe that panics is an unknown volume, not
@@ -469,13 +564,9 @@ fn a_panicking_volume_probe_is_an_unknown_volume() {
             assert!(*root != first, "the volume query failed");
             Some("second-volume".to_owned())
         });
-        let mut evidence = Evidence::new();
-        let mut artifacts = registry();
-        finalizer
-            .run(&roots, &mut evidence, &mut artifacts)
-            .unwrap();
+        let run = finalizer.run(&roots);
 
-        let result = evidence.finalization();
+        let result = run.finalization();
         assert_eq!(result.failure, None, "{shortage}: {}", result.detail);
         assert!(result.safe_to_continue, "{shortage}");
         if shortage {
@@ -495,7 +586,7 @@ fn a_panicking_volume_probe_is_an_unknown_volume() {
                 assert!(attempt.archive_path.exists());
             }
         }
-        assert!(artifacts.cleanup().is_empty());
+        assert!(run.cleaned_up());
     }
 }
 
@@ -510,13 +601,9 @@ fn a_panicking_capacity_probe_is_unknown_capacity() {
         probe: capacity(|_| panic!("the free-space query failed")),
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.failure, None, "{}", result.detail);
     assert!(result.safe_to_continue);
     assert_eq!(result.attempts.len(), 1);
@@ -527,7 +614,7 @@ fn a_panicking_capacity_probe_is_unknown_capacity() {
     );
     assert_eq!(archives_in(&root).len(), 1);
     assert!(root_plugin(&root).exists());
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: dummyCapacityDecreasesAfterEachRoot. Plugin maintenance rechecks
@@ -554,21 +641,17 @@ fn the_plugin_allowance_shrinks_after_each_root() {
         }),
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(&roots, &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(&roots);
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.failure, None, "{}", result.detail);
     assert!(result.attempts.is_empty());
-    assert_eq!(evidence.progress().unwrap().total(), 0);
+    assert_eq!(run.progress().unwrap().total(), 0);
     assert_eq!(queries.load(Ordering::SeqCst), roots.len());
     for root in &roots {
         assert!(root.join("existing.esp").exists());
     }
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: finalizationCapacityWithoutOutputs. A plugin-only shortage is a
@@ -582,13 +665,9 @@ fn a_plugin_only_shortage_fails_the_phase_without_progress() {
         probe: capacity(|_| Some(0)),
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(
         result.failure,
         Some(ArchiveFinalizationFailure::InsufficientCapacity)
@@ -596,12 +675,12 @@ fn a_plugin_only_shortage_fails_the_phase_without_progress() {
     assert!(result.attempts.is_empty());
     assert!(result.safe_to_continue);
     assert!(!result.detail.is_empty());
-    let progress = evidence.progress().unwrap();
+    let progress = run.progress().unwrap();
     assert_eq!((progress.completed(), progress.total()), (0, 0));
     assert!(root.join("empty").exists());
     assert!(!root.join("existing.esp").exists());
     assert!(!root.join(".cao-staging").exists());
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: disappearingLoadingPluginCapacityIsReserved (both rows). A
@@ -638,13 +717,9 @@ fn a_disappearing_loading_plugin_keeps_its_fallback_reserved() {
             }
             Some(archive_only)
         });
-        let mut evidence = Evidence::new();
-        let mut artifacts = registry();
-        finalizer
-            .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-            .unwrap();
+        let run = finalizer.run(std::slice::from_ref(&root));
 
-        let result = evidence.finalization();
+        let result = run.finalization();
         assert!(!earlier_plugin.exists());
         assert_eq!(result.attempts.len(), 1);
         assert_eq!(
@@ -656,34 +731,34 @@ fn a_disappearing_loading_plugin_keeps_its_fallback_reserved() {
         assert!(archives_in(&root).is_empty());
         assert!(!root.join("mod.esp").exists());
         assert!(source.exists());
-        assert!(artifacts.cleanup().is_empty());
+        assert!(run.cleaned_up());
     }
 }
 
 /// Origin: finalizationPlanningObservesCancellation. Cancelled planning
 /// records a cancelled result with no output total.
+///
+/// A run cancelled before Archive Finalization never enters it, so the
+/// cancellation comes from the packer as planning lists the root's names.
 #[test]
 fn cancelled_planning_records_no_output_total() {
     let root = scratch("planning-cancelled").join("mod");
     let source = root.join("textures/asset.dds");
     write_file(&source, b"source bytes");
-    let finalizer = Finalizer::default();
-    finalizer.stop.cancel();
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let mut finalizer = Finalizer::default();
+    let stop = finalizer.stop.clone();
+    finalizer.packer.before_list = Some(Box::new(move |_, _| stop.cancel()));
+    let run = finalizer.run(std::slice::from_ref(&root));
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert!(result.cancelled);
     assert_eq!(result.failure, None);
     assert!(result.attempts.is_empty());
-    assert_eq!(evidence.progress(), None);
+    assert_eq!(run.progress(), None);
     assert!(source.exists());
     assert!(!root.join(".cao-staging").exists());
-    assert!(artifacts.cleanup().is_empty());
-    assert!(evidence.seal().cancellation_observed());
+    assert!(run.cleaned_up());
+    assert!(run.result.cancellation_observed());
 }
 
 /// Origin: finalizationFreezesTotalAndCancelsBetweenOutputs (all four rows).
@@ -700,7 +775,6 @@ fn the_total_is_frozen_and_cancellation_falls_between_outputs() {
         }
         let log = Log::default();
         let sink = ProgressLog(log.clone());
-        let mut evidence = Evidence::observed(&sink);
         let frozen_before_mutation = Arc::new(AtomicBool::new(false));
         let first_recorded_before_second = Arc::new(AtomicBool::new(false));
         let mut finalizer = Finalizer {
@@ -743,10 +817,7 @@ fn the_total_is_frozen_and_cancellation_falls_between_outputs() {
             }
             Some(UNLIMITED)
         });
-        let mut artifacts = registry();
-        finalizer
-            .run(&roots, &mut evidence, &mut artifacts)
-            .unwrap();
+        let run = finalizer.run_observed(&roots, Some(&sink));
 
         let label = format!("{cancel_after:?}");
         assert!(frozen_before_mutation.load(Ordering::SeqCst), "{label}");
@@ -757,7 +828,7 @@ fn the_total_is_frozen_and_cancellation_falls_between_outputs() {
                 "{label}"
             );
         }
-        let result = evidence.finalization();
+        let result = run.finalization();
         for root in &roots {
             // Pruning belongs to finalization and waits for the whole plan.
             assert_eq!(
@@ -785,7 +856,7 @@ fn the_total_is_frozen_and_cancellation_falls_between_outputs() {
                 assert!(reads_back(&attempt.archive_path));
             }
         }
-        assert!(artifacts.cleanup().is_empty());
+        assert!(run.cleaned_up());
     }
 }
 
@@ -827,14 +898,10 @@ fn cancellation_keeps_the_committed_archive_loadable() {
         }
         Some(UNLIMITED)
     });
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(&roots, &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(&roots);
 
     assert!(no_plugin_before_attempts.load(Ordering::SeqCst));
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert!(result.cancelled);
     assert!(result.attempts[0].succeeded());
@@ -844,7 +911,7 @@ fn cancellation_keeps_the_committed_archive_loadable() {
     assert!(roots[1].join("textures/asset.dds").exists());
     assert!(archives_in(&roots[1]).is_empty());
     assert!(!root_plugin(&roots[1]).exists());
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: finalizationCancelsPluginCleanupBetweenRoots.
@@ -870,13 +937,9 @@ fn cancellation_stops_plugin_maintenance_between_roots() {
         }
         Some(UNLIMITED)
     });
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(&roots, &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(&roots);
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert!(result.attempts.is_empty());
     assert!(result.cancelled);
     assert!(result.safe_to_continue);
@@ -885,7 +948,7 @@ fn cancellation_stops_plugin_maintenance_between_roots() {
     for root in &roots {
         assert!(root.join("empty/nested").exists());
     }
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: finalizationReportsGuardedPluginRemovalFailure. A Dummy Plugin
@@ -917,14 +980,10 @@ fn a_blocked_dummy_plugin_removal_is_a_contained_failure() {
         }),
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
     assert!(held.lock().unwrap().take().is_some());
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert!(
         result.attempts[0].succeeded(),
@@ -940,7 +999,7 @@ fn a_blocked_dummy_plugin_removal_is_a_contained_failure() {
     assert!(!result.detail.is_empty());
     assert!(result.attempts[0].archive_path.exists());
     assert!(plugin.exists());
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: finalizationRetainsPluginMutations (both rows). Plugin actions for
@@ -961,13 +1020,9 @@ fn plugin_actions_for_existing_archives_are_mutation_facts() {
             },
             ..Finalizer::default()
         };
-        let mut evidence = Evidence::new();
-        let mut artifacts = registry();
-        finalizer
-            .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-            .unwrap();
+        let run = finalizer.run(std::slice::from_ref(&root));
 
-        let result = evidence.finalization();
+        let result = run.finalization();
         assert!(result.attempts.is_empty());
         assert_eq!(result.failure, None, "{}", result.detail);
         assert!(result.safe_to_continue);
@@ -986,17 +1041,13 @@ fn plugin_actions_for_existing_archives_are_mutation_facts() {
         assert_eq!(mutation.mutation, MutationState::Committed);
         assert_eq!(mutation.count, 1);
         assert_eq!(plugin.exists(), create_dummies);
-        assert!(artifacts.cleanup().is_empty());
+        assert!(run.cleaned_up());
 
-        let terminal = evidence.seal();
-        assert!(terminal.archive_finalization().unwrap().attempts.is_empty());
-        let progress = terminal
-            .phase(RunPhase::ArchiveFinalization)
-            .and_then(RunPhaseRecord::progress)
-            .unwrap();
+        let progress = run.progress().unwrap();
         assert_eq!(progress.total(), 0);
-        assert_eq!(terminal.mutation_summaries().len(), 1);
-        assert_eq!(terminal.mutation_summaries()[0].committed, 1);
+        let summaries = run.finalization_summaries();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].committed, 1);
     }
 }
 
@@ -1027,17 +1078,13 @@ fn only_exact_dummy_plugins_are_removed() {
         },
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert!(result.attempts.is_empty());
     assert_eq!(result.failure, None, "{}", result.detail);
     assert!(result.safe_to_continue);
-    let progress = evidence.progress().unwrap();
+    let progress = run.progress().unwrap();
     assert_eq!((progress.completed(), progress.total()), (0, 0));
     assert_eq!(result.mutations.len(), 1);
     assert_eq!(result.mutations[0].mod_root, root);
@@ -1051,7 +1098,7 @@ fn only_exact_dummy_plugins_are_removed() {
     assert_eq!(std::fs::read(&different).unwrap(), same_size);
     assert_eq!(std::fs::read(&full).unwrap(), b"full loading plugin");
     assert_eq!(std::fs::read(&unrelated).unwrap(), dummy);
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: finalizationRejectsLinkedDummyPlugins (both rows). A hard-linked
@@ -1081,13 +1128,9 @@ fn linked_dummy_plugins_are_never_removed() {
             },
             ..Finalizer::default()
         };
-        let mut evidence = Evidence::new();
-        let mut artifacts = registry();
-        finalizer
-            .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-            .unwrap();
+        let run = finalizer.run(std::slice::from_ref(&root));
 
-        let result = evidence.finalization();
+        let result = run.finalization();
         assert!(result.attempts.is_empty());
         assert_eq!(
             result.failure,
@@ -1100,12 +1143,17 @@ fn linked_dummy_plugins_are_never_removed() {
             use_symlink
         );
         assert_eq!(std::fs::read(&target).unwrap(), bytes);
-        assert!(artifacts.cleanup().is_empty());
+        assert!(run.cleaned_up());
     }
 }
 
 /// Origin: finalizationRejectsChangedDummyPluginParent. A Mod Root swapped
 /// for a junction after planning cannot lead removal outside it.
+///
+/// Not a run: Apply Preparing pins every Mod Root for the whole run, so a
+/// run's Mod Root cannot be renamed away (the rename fails with a sharing
+/// violation). Whether the guard is reachable at all is raised on #595, so
+/// this still drives the phase outside a run until that is decided (#597).
 #[test]
 fn a_mod_root_swapped_for_a_junction_stops_removal() {
     let parent = scratch("swapped-root");
@@ -1146,15 +1194,11 @@ fn a_mod_root_swapped_for_a_junction_stops_removal() {
         },
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    // It also asserts that Safety Cleanup of its own registry finds nothing.
+    let result = finalize_outside_a_run(&finalizer.packer, finalizer.settings, &root);
     std::fs::remove_dir(&root).unwrap();
 
     assert!(swapped.load(Ordering::SeqCst));
-    let result = evidence.finalization();
     assert!(result.attempts.is_empty());
     assert_eq!(
         result.failure,
@@ -1164,7 +1208,6 @@ fn a_mod_root_swapped_for_a_junction_stops_removal() {
     assert!(result.mutations.is_empty());
     assert!(retained.join("original.esp").exists());
     assert_eq!(std::fs::read(outside.join("external.esp")).unwrap(), bytes);
-    assert!(artifacts.cleanup().is_empty());
 }
 
 /// Origin: finalizationPreservesReplacedDummyPlugin. A plugin replaced with
@@ -1204,14 +1247,10 @@ fn a_dummy_plugin_replaced_after_planning_is_kept() {
         }),
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
 
     assert!(replaced.load(Ordering::SeqCst));
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert!(
         result.attempts[0].succeeded(),
@@ -1222,7 +1261,7 @@ fn a_dummy_plugin_replaced_after_planning_is_kept() {
     assert!(result.mutations.is_empty());
     assert_eq!(std::fs::read(&plugin).unwrap(), replacement);
     assert_eq!(std::fs::read(&displaced).unwrap(), bytes);
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: finalizationRetainsRemovalPrefixOnGuardFailure. Removals in
@@ -1246,14 +1285,10 @@ fn earlier_removals_survive_a_later_guard_failure() {
         },
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(&roots, &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(&roots);
     drop(held);
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert!(result.attempts.is_empty());
     assert_eq!(
         result.failure,
@@ -1270,9 +1305,9 @@ fn earlier_removals_survive_a_later_guard_failure() {
     assert_eq!(result.mutations[0].mutation, MutationState::Committed);
     assert!(!roots[0].join("external.esp").exists());
     assert!(blocked.exists());
-    let progress = evidence.progress().unwrap();
+    let progress = run.progress().unwrap();
     assert_eq!((progress.completed(), progress.total()), (0, 0));
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: existingArchivePluginCollisionFailsSafely. A non-plugin entry
@@ -1291,13 +1326,9 @@ fn an_occupied_plugin_name_for_an_existing_archive_fails_safely() {
         }),
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert!(result.attempts.is_empty());
     assert_eq!(
         result.failure,
@@ -1305,10 +1336,10 @@ fn an_occupied_plugin_name_for_an_existing_archive_fails_safely() {
     );
     assert!(result.safe_to_continue);
     assert!(result.mutations.is_empty());
-    let progress = evidence.progress().unwrap();
+    let progress = run.progress().unwrap();
     assert_eq!((progress.completed(), progress.total()), (0, 0));
     assert!(occupied.is_dir());
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: packingPreservesStagingFiles. Temporary bytes, ours or another
@@ -1316,42 +1347,64 @@ fn an_occupied_plugin_name_for_an_existing_archive_fails_safely() {
 #[test]
 fn staging_files_are_never_packed() {
     let root = scratch("staging-not-packed").join("mod");
-    std::fs::create_dir_all(&root).unwrap();
-    let mut artifacts = registry();
-    let staged = artifacts.stage_archive_file(&root).unwrap().path;
     let nested = root.join("textures/.cao-staging-old/pending.dds");
-    std::fs::write(&staged, b"temporary bytes").unwrap();
     write_file(&nested, b"unverified temporary bytes");
     write_file(&root.join("textures/complete.dds"), b"committed bytes");
+    // Ours: the run's own Asset attempt stages a temporary file through the
+    // run's registry, which only Safety Cleanup removes, after the phase.
+    let staged: Arc<Mutex<Option<PathBuf>>> = Arc::default();
+    let staging = Arc::clone(&staged);
+    let assets = ScriptedToolset::default().with_assets(move |_, mod_root, artifacts| {
+        let mut staged = staging.lock().unwrap();
+        if staged.is_none() {
+            let path = artifacts.stage_archive_file(mod_root).unwrap().path;
+            std::fs::write(&path, b"temporary bytes").unwrap();
+            *staged = Some(path);
+        }
+        Ok(AssetExecutionResult::success(MutationState::None))
+    });
+    // Once the output's attempt, source deletion included, is recorded, both
+    // temporaries must still be there.
+    let survived = Arc::new(AtomicBool::new(false));
+    let (flag, temporary, foreign) = (Arc::clone(&survived), Arc::clone(&staged), nested.clone());
+    let sink = RecordingSink::with_hook(move |observed| {
+        if let Observed::Phase(record) = observed
+            && record.phase() == RunPhase::ArchiveFinalization
+            && record
+                .progress()
+                .is_some_and(|progress| progress.completed() == 1)
+        {
+            let ours = temporary.lock().unwrap().clone().expect("ours was staged");
+            flag.store(ours.exists() && foreign.exists(), Ordering::SeqCst);
+        }
+    });
     let finalizer = Finalizer {
         settings: ArchiveFinalizationSettings {
             create_dummy_plugins: false,
             compress: false,
             ..ArchiveFinalizationSettings::default()
         },
+        assets,
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run_observed(std::slice::from_ref(&root), Some(&sink));
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert!(
         result.attempts[0].succeeded(),
         "{}",
         result.attempts[0].detail
     );
-    assert!(staged.exists());
+    assert!(survived.load(Ordering::SeqCst));
     assert!(nested.exists());
     assert!(!root.join("textures/complete.dds").exists());
     assert_eq!(
-        finalizer.packer.writes()[0].names,
+        run.toolset.packer.writes()[0].names,
         ["textures/complete.dds"]
     );
     assert!(!archives_in(&root).is_empty());
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: filesToNotPackAreNeitherPackedNorDeleted. A Packing Exclusion
@@ -1372,13 +1425,9 @@ fn packing_exclusions_are_neither_packed_nor_deleted() {
         files_to_not_pack: vec!["TEXTURES/KEEP/".to_owned()],
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert!(
         result.attempts[0].succeeded(),
@@ -1391,7 +1440,7 @@ fn packing_exclusions_are_neither_packed_nor_deleted() {
         .list_entries(&result.attempts[0].archive_path)
         .unwrap();
     assert_eq!(entries.len(), 1);
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// **Deviation 16.** A Packing Exclusion matches the path within the Mod
@@ -1417,20 +1466,17 @@ fn deviation_16_packing_exclusions_match_within_the_mod_root() {
         files_to_not_pack: vec!["CalienteTools/".to_owned(), "textures\\keep\\".to_owned()],
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert!(
         result.attempts[0].succeeded(),
         "{}",
         result.attempts[0].detail
     );
-    let names: Vec<_> = finalizer
+    let names: Vec<_> = run
+        .toolset
         .packer
         .writes()
         .into_iter()
@@ -1440,7 +1486,7 @@ fn deviation_16_packing_exclusions_match_within_the_mod_root() {
     assert!(!packed.exists());
     assert!(excluded.exists());
     assert!(backslashed.exists());
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: failedPackingRetainsSourcesAndExistingArchives. A source that
@@ -1468,21 +1514,17 @@ fn a_failed_write_keeps_sources_and_existing_archives() {
         },
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
     drop(locked);
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert!(!result.attempts[0].succeeded());
     assert_eq!(result.attempts[0].mutation, MutationState::None);
     assert!(available.exists());
     assert!(unavailable.exists());
     assert_eq!(std::fs::read(&existing).unwrap(), b"previous archive bytes");
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: packedSourceParentJunctionIsRejected. A planned source whose
@@ -1524,15 +1566,11 @@ fn a_source_parent_swapped_for_a_junction_fails_the_write() {
         }),
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
     std::fs::remove_dir(&source_parent).unwrap();
 
     assert!(swapped.load(Ordering::SeqCst));
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert_eq!(
         result.attempts[0].failure,
@@ -1545,7 +1583,7 @@ fn a_source_parent_swapped_for_a_junction_fails_the_write() {
         std::fs::read(&outside_source).unwrap(),
         b"outside source bytes"
     );
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: plannedNamesAreDistinctAndCommitPreservesNewDestination. Each
@@ -1559,7 +1597,6 @@ fn planned_names_are_distinct_and_a_late_destination_wins() {
     write_file(&sound, b"sound bytes");
     let log = Log::default();
     let sink = ProgressLog(log.clone());
-    let mut evidence = Evidence::observed(&sink);
     // The Standard Archive takes the Mod Root's name; the Incompressible one
     // needs another.
     let first_destination = root.join("mod.bsa");
@@ -1582,12 +1619,9 @@ fn planned_names_are_distinct_and_a_late_destination_wins() {
         }),
         ..Finalizer::default()
     };
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run_observed(std::slice::from_ref(&root), Some(&sink));
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.attempts.len(), 2);
     assert!(result.safe_to_continue);
     assert!(!result.cancelled);
@@ -1616,7 +1650,7 @@ fn planned_names_are_distinct_and_a_late_destination_wins() {
         b"competing creator bytes"
     );
     assert!(reads_back(&result.attempts[1].archive_path));
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: plannedPluginCollisionRetainsCommittedArchive. A competitor at
@@ -1643,13 +1677,9 @@ fn a_competing_plugin_at_the_planned_name_keeps_archive_and_sources() {
         }),
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     let attempt = &result.attempts[0];
     assert_eq!(
@@ -1666,7 +1696,7 @@ fn a_competing_plugin_at_the_planned_name_keeps_archive_and_sources() {
         std::fs::read(&planned_plugin).unwrap(),
         b"competing plugin bytes"
     );
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Sets `path`'s modification time a day back and returns it, so a later
@@ -1707,14 +1737,10 @@ fn an_exact_dummy_at_the_planned_name_is_reused() {
         }),
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
 
     let original = written.lock().unwrap().expect("the dummy appeared");
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert!(
         result.attempts[0].succeeded(),
@@ -1738,7 +1764,7 @@ fn an_exact_dummy_at_the_planned_name_is_reused() {
             .iter()
             .all(|mutation| mutation.kind != ArchiveFinalizationMutationKind::PluginCreation)
     );
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: plannedOutputsRecordSharedDummyPublication. Two outputs share one
@@ -1757,13 +1783,9 @@ fn outputs_sharing_a_dummy_plugin_publish_it_once() {
         },
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.attempts.len(), 2);
     for attempt in &result.attempts {
         assert!(attempt.succeeded(), "{}", attempt.detail);
@@ -1779,11 +1801,12 @@ fn outputs_sharing_a_dummy_plugin_publish_it_once() {
     );
     assert_eq!(mutation.mutation, MutationState::Committed);
     assert_eq!(std::fs::read(&mutation.path).unwrap(), fake_dummy_plugin());
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 
-    let sealed = evidence.seal();
-    assert_eq!(sealed.mutation_summaries().len(), 1);
-    let summary = &sealed.mutation_summaries()[0];
+    // The run's whole Run Evidence also summarizes its other phases' effects.
+    let summaries = run.finalization_summaries();
+    assert_eq!(summaries.len(), 1);
+    let summary = summaries[0];
     assert_eq!(summary.mod_root, root);
     assert_eq!(summary.kind, MutationKind::ArchiveFinalization);
     assert_eq!((summary.committed, summary.partial_or_unknown), (3, 0));
@@ -1814,14 +1837,10 @@ fn a_vanished_loading_plugin_gets_its_fallback() {
         }),
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
 
     assert!(removed.load(Ordering::SeqCst));
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert!(
         result.attempts[0].succeeded(),
@@ -1839,7 +1858,7 @@ fn a_vanished_loading_plugin_gets_its_fallback() {
     assert_eq!(creations[0].mod_root, root);
     assert_eq!(creations[0].path, root.join("mod.esp"));
     assert_eq!(creations[0].mutation, MutationState::Committed);
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// The names an SSE-like game recognizes as loading `mod - Textures.bsa`:
@@ -1880,13 +1899,9 @@ fn a_linked_loading_plugin_gets_an_ordinary_fallback() {
             },
             ..Finalizer::default()
         };
-        let mut evidence = Evidence::new();
-        let mut artifacts = registry();
-        finalizer
-            .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-            .unwrap();
+        let run = finalizer.run(std::slice::from_ref(&root));
 
-        let result = evidence.finalization();
+        let result = run.finalization();
         assert_eq!(result.attempts.len(), 1);
         assert!(
             result.attempts[0].succeeded(),
@@ -1909,7 +1924,7 @@ fn a_linked_loading_plugin_gets_an_ordinary_fallback() {
         assert!(recognized.contains(fallback), "{}", fallback.display());
         let metadata = std::fs::symlink_metadata(fallback).unwrap();
         assert!(metadata.is_file() && !metadata.is_symlink());
-        assert!(artifacts.cleanup().is_empty());
+        assert!(run.cleaned_up());
         std::fs::remove_file(&link).unwrap();
         assert!(fallback.exists());
     }
@@ -1950,14 +1965,10 @@ fn links_at_every_plugin_name_keep_the_sources() {
         }),
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
 
     assert!(linked.load(Ordering::SeqCst));
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert_eq!(
         result.attempts[0].failure,
@@ -1965,7 +1976,7 @@ fn links_at_every_plugin_name_keep_the_sources() {
     );
     assert!(source.exists());
     assert!(reads_back(&result.attempts[0].archive_path));
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
     for name in &recognized {
         std::fs::remove_file(name).unwrap();
     }
@@ -1997,10 +2008,8 @@ fn the_loading_plugin_stays_pinned_through_source_cleanup() {
             },
             ..Finalizer::default()
         };
-        let mut evidence = Evidence::new();
-        let mut artifacts = registry();
         let stop = AtomicBool::new(false);
-        let (saw_cleanup_gap, removed_plugin) = std::thread::scope(|scope| {
+        let (run, (saw_cleanup_gap, removed_plugin)) = std::thread::scope(|scope| {
             let remover = scope.spawn(|| {
                 while !stop.load(Ordering::SeqCst) {
                     // Cleanup is in progress once exactly one end of the
@@ -2018,14 +2027,12 @@ fn the_loading_plugin_stays_pinned_through_source_cleanup() {
                 }
                 (false, false)
             });
-            finalizer
-                .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-                .unwrap();
+            let run = finalizer.run(std::slice::from_ref(&root));
             stop.store(true, Ordering::SeqCst);
-            remover.join().unwrap()
+            (run, remover.join().unwrap())
         });
 
-        let result = evidence.finalization();
+        let result = run.finalization();
         assert_eq!(result.attempts.len(), 1);
         assert!(
             result.attempts[0].succeeded(),
@@ -2041,7 +2048,7 @@ fn the_loading_plugin_stays_pinned_through_source_cleanup() {
         assert!(sources.iter().all(|source| !source.exists()));
         assert!(plugin.is_file());
         std::fs::remove_file(&plugin).unwrap();
-        assert!(artifacts.cleanup().is_empty());
+        assert!(run.cleaned_up());
     }
 }
 
@@ -2082,19 +2089,11 @@ fn a_locked_source_after_commit_continues_only_while_readable() {
                 }
             }));
         }
-        let mut evidence = Evidence::new();
-        let mut artifacts = registry();
-        finalizer
-            .run(
-                &[root.clone(), later_root.clone()],
-                &mut evidence,
-                &mut artifacts,
-            )
-            .unwrap();
-        drop(finalizer);
+        let mut run = finalizer.run(&[root.clone(), later_root.clone()]);
+        run.release_fakes();
         drop(locked);
 
-        let result = evidence.finalization();
+        let result = run.finalization();
         assert_eq!(result.attempts.len(), if deny_reads { 1 } else { 2 });
         let first = &result.attempts[0];
         assert!(!first.succeeded());
@@ -2114,7 +2113,7 @@ fn a_locked_source_after_commit_continues_only_while_readable() {
             assert!(reads_back(&last.archive_path));
         }
         assert_eq!(std::fs::read(&source).unwrap(), b"retained source bytes");
-        assert!(artifacts.cleanup().is_empty());
+        assert!(run.cleaned_up());
     }
 }
 
@@ -2138,17 +2137,13 @@ fn without_archive_creation_only_pruning_runs() {
         }),
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert!(result.attempts.is_empty());
     assert_eq!(result.failure, None);
     assert!(result.safe_to_continue);
-    assert_eq!(evidence.progress().unwrap().total(), 0);
+    assert_eq!(run.progress().unwrap().total(), 0);
     // Neither packing nor plugin maintenance for the existing Archive ran.
     assert_eq!(probes.load(Ordering::SeqCst), 0);
     assert!(source.exists());
@@ -2163,7 +2158,7 @@ fn without_archive_creation_only_pruning_runs() {
     );
     assert_eq!(result.mutations[0].mutation, MutationState::Committed);
     assert_eq!(result.mutations[0].count, 2);
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// **Deviation 20 (pruning).** An empty directory is pruned even when its
@@ -2178,17 +2173,13 @@ fn deviation_20_pruning_has_no_separator_rule() {
         no_archive_creation: true,
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     assert!(std::fs::read_dir(&root).unwrap().next().is_none());
     assert_eq!(result.mutations.len(), 1);
     assert_eq!(result.mutations[0].count, 3);
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Split points: sources over the size limit split into several Archives of
@@ -2211,13 +2202,9 @@ fn split_outputs_take_counter_names_and_their_own_plugins() {
     };
     // Room for one source per Archive.
     finalizer.packer.max_size = 20;
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(std::slice::from_ref(&root));
 
-    let result = evidence.finalization();
+    let result = run.finalization();
     let archives: Vec<_> = result
         .attempts
         .iter()
@@ -2234,7 +2221,8 @@ fn split_outputs_take_counter_names_and_their_own_plugins() {
             root.join("mod1.bsa")
         ]
     );
-    let names: Vec<_> = finalizer
+    let names: Vec<_> = run
+        .toolset
         .packer
         .writes()
         .into_iter()
@@ -2251,7 +2239,7 @@ fn split_outputs_take_counter_names_and_their_own_plugins() {
         );
     }
     assert!(!root.join("meshes").exists());
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// **Deviation 21 (core side).** A game that keeps Textures separate never
@@ -2279,15 +2267,12 @@ fn deviation_21_separate_texture_games_never_merge_textures() {
             },
             ..Finalizer::default()
         };
-        let mut evidence = Evidence::new();
-        let mut artifacts = registry();
-        finalizer
-            .run(std::slice::from_ref(&root), &mut evidence, &mut artifacts)
-            .unwrap();
+        let run = finalizer.run(std::slice::from_ref(&root));
 
-        let result = evidence.finalization();
+        let result = run.finalization();
         assert!(result.attempts.iter().all(|attempt| attempt.succeeded()));
-        let kinds: Vec<_> = finalizer
+        let kinds: Vec<_> = run
+            .toolset
             .packer
             .writes()
             .into_iter()
@@ -2323,7 +2308,7 @@ fn deviation_21_separate_texture_games_never_merge_textures() {
                 )]
             );
         }
-        assert!(artifacts.cleanup().is_empty());
+        assert!(run.cleaned_up());
     }
 }
 
@@ -2336,6 +2321,10 @@ fn deviation_21_separate_texture_games_never_merge_textures() {
 /// is an unknown volume, not a failure (#592). The root holds only an
 /// existing Archive, so it plans no output and nothing is mutated before
 /// maintenance fails.
+///
+/// The in-planning failure is the same packer panicking at planning's first
+/// listing. C++ used a missing Mod Root, which Preparing now rejects before
+/// any run reaches the phase (#597).
 #[test]
 fn an_unexpected_failure_is_recorded_once() {
     for after_plan in [false, true] {
@@ -2345,24 +2334,14 @@ fn an_unexpected_failure_is_recorded_once() {
         write_file(&source, b"retained archive");
         let finalizer = Finalizer {
             // Planning lists the root's Archives and then its Plugins;
-            // maintenance's first listing panics.
-            packer: FakeArchivePacker::panicking_list_names_beyond(2),
+            // maintenance's first listing panics. Before the plan, planning's
+            // own first listing panics.
+            packer: FakeArchivePacker::panicking_list_names_beyond(if after_plan { 2 } else { 0 }),
             ..Finalizer::default()
         };
-        // A missing Mod Root fails planning; the panicking name listing
-        // fails after the plan.
-        let selected = if after_plan {
-            root.clone()
-        } else {
-            parent.join("missing")
-        };
-        let mut evidence = Evidence::new();
-        let mut artifacts = registry();
-        finalizer
-            .run(&[selected], &mut evidence, &mut artifacts)
-            .unwrap();
+        let run = finalizer.run(std::slice::from_ref(&root));
 
-        let result = evidence.finalization();
+        let result = run.finalization();
         assert_eq!(
             result.failure,
             Some(ArchiveFinalizationFailure::UnexpectedException)
@@ -2371,15 +2350,15 @@ fn an_unexpected_failure_is_recorded_once() {
         assert!(!result.detail.is_empty());
         if after_plan {
             assert_eq!(result.detail, "the archive name listing panicked");
-            assert_eq!(evidence.progress().unwrap().total(), 0);
+            assert_eq!(run.progress().unwrap().total(), 0);
         } else {
-            assert_eq!(evidence.progress(), None);
+            assert_eq!(run.progress(), None);
         }
         assert!(result.attempts.is_empty());
         assert_eq!(std::fs::read(&source).unwrap(), b"retained archive");
         assert_eq!(archives_in(&root), std::slice::from_ref(&source));
         assert!(!root.join("existing.esp").exists(), "no Dummy Plugin");
-        assert!(artifacts.cleanup().is_empty());
+        assert!(run.cleaned_up());
     }
 }
 
@@ -2408,18 +2387,10 @@ fn a_packer_panicking_after_its_write_is_an_unexpected_exception_that_stops_late
         packer: FakeArchivePacker::panicking_after_write(),
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(
-            &[root.clone(), later_root.clone()],
-            &mut evidence,
-            &mut artifacts,
-        )
-        .unwrap();
+    let run = finalizer.run(&[root.clone(), later_root.clone()]);
 
-    let result = evidence.finalization();
-    assert_eq!(evidence.progress().unwrap().total(), 2);
+    let result = run.finalization();
+    assert_eq!(run.progress().unwrap().total(), 2);
     assert_eq!(
         result.attempts.len(),
         1,
@@ -2434,17 +2405,21 @@ fn a_packer_panicking_after_its_write_is_an_unexpected_exception_that_stops_late
     assert!(!attempt.safe_to_continue);
     assert_eq!(attempt.mutation, MutationState::None);
     assert!(!result.safe_to_continue);
-    assert_eq!(finalizer.packer.writes().len(), 1);
+    assert_eq!(run.toolset.packer.writes().len(), 1);
     assert!(source.exists());
     assert!(later_source.exists());
     assert!(archives_in(&root).is_empty());
     assert!(archives_in(&later_root).is_empty());
     assert!(empty_directory.exists(), "pruning does not run");
-    assert!(artifacts.cleanup().is_empty());
+    assert!(run.cleaned_up());
 }
 
 /// Origin: cleanupExceptionKeepsRecordedAttempts. A failure in Loading
 /// Plugin maintenance keeps the committed attempt before it.
+///
+/// C++ moved mod-b away after mod-a's output; a run pins every Mod Root, so
+/// here the packer panics as maintenance lists mod-b's Archives once mod-a's
+/// output is committed (#597).
 #[test]
 fn a_plugin_maintenance_failure_keeps_recorded_attempts() {
     let parent = scratch("cleanup-failure");
@@ -2452,42 +2427,34 @@ fn a_plugin_maintenance_failure_keeps_recorded_attempts() {
     let existing = parent.join("mod-b");
     write_file(&packed.join("textures/asset.dds"), b"source bytes");
     write_file(&existing.join("existing.bsa"), b"retained archive");
-    let moved = Arc::new(AtomicBool::new(false));
-    let (flag, packed_root, existing_root, destination) = (
-        Arc::clone(&moved),
-        packed.clone(),
-        existing.clone(),
-        parent.join("moved"),
-    );
+    let failed = Arc::new(AtomicBool::new(false));
+    let (flag, packed_root, existing_root) =
+        (Arc::clone(&failed), packed.clone(), existing.clone());
     let finalizer = Finalizer {
         settings: ArchiveFinalizationSettings {
             compress: false,
             ..ArchiveFinalizationSettings::default()
         },
-        // mod-b's plugin allowance is rechecked after mod-a's output; moving
-        // mod-b away then makes its Loading Plugin maintenance fail.
-        probe: capacity(move |root| {
-            if root == existing_root
-                && !archives_in(&packed_root).is_empty()
-                && !flag.load(Ordering::SeqCst)
-            {
-                flag.store(
-                    std::fs::rename(&existing_root, &destination).is_ok(),
-                    Ordering::SeqCst,
-                );
-            }
-            Some(UNLIMITED)
-        }),
+        // Planning lists mod-b before any output exists, so only
+        // maintenance's listing comes after mod-a's commit.
+        packer: FakeArchivePacker {
+            before_list: Some(Box::new(move |dir, kind| {
+                if dir == existing_root
+                    && kind == ArchiveNameKind::Archive
+                    && !archives_in(&packed_root).is_empty()
+                {
+                    flag.store(true, Ordering::SeqCst);
+                    panic!("the archive name listing panicked");
+                }
+            })),
+            ..FakeArchivePacker::default()
+        },
         ..Finalizer::default()
     };
-    let mut evidence = Evidence::new();
-    let mut artifacts = registry();
-    finalizer
-        .run(&[packed, existing], &mut evidence, &mut artifacts)
-        .unwrap();
+    let run = finalizer.run(&[packed, existing]);
 
-    assert!(moved.load(Ordering::SeqCst));
-    let result = evidence.finalization();
+    assert!(failed.load(Ordering::SeqCst));
+    let result = run.finalization();
     assert_eq!(
         result.failure,
         Some(ArchiveFinalizationFailure::UnexpectedException)
@@ -2500,81 +2467,7 @@ fn a_plugin_maintenance_failure_keeps_recorded_attempts() {
         result.attempts[0].detail
     );
     assert_eq!(result.attempts[0].mutation, MutationState::Committed);
-    assert_eq!(evidence.progress().unwrap().completed(), 1);
+    assert_eq!(run.progress().unwrap().completed(), 1);
     assert!(reads_back(&result.attempts[0].archive_path));
-    assert!(artifacts.cleanup().is_empty());
-}
-
-/// Origin: evidenceFailuresPropagateUnchanged, reworked. A Run Evidence
-/// invariant violation reaches the caller unchanged and is never converted
-/// into a finalization result.
-///
-/// Each row leaves the evidence in a state a run can reach, which the
-/// phase's output total must violate: the phase already left, a result
-/// already recorded (as cancelled planning records one), or an output total
-/// already recorded. The C++ rows at a capacity rejection and after a commit
-/// left the phase mid-run from the cancellation poll; the recorder now holds
-/// the evidence exclusively for the whole run, and every later evidence call
-/// is preceded by the output total that establishes its preconditions, so
-/// only the first call can meet a violated state.
-///
-/// Each row pins the output total's own invariant. Had the phase converted
-/// it into an Unexpected Exception result, its result's record would either
-/// fail with a different invariant or, after a recorded total, succeed, so
-/// every row would notice.
-#[test]
-fn evidence_failures_reach_the_caller_unchanged() {
-    /// What one row calls itself, and how it brings the evidence to the
-    /// state the output total must violate.
-    type Row = (&'static str, fn(&mut Evidence<'_>));
-    let rows: [Row; 3] = [
-        ("phase-left", |evidence| evidence.leave_phase()),
-        ("result-recorded", |evidence| {
-            evidence
-                .recorder()
-                .record_result(ArchiveFinalizationResult {
-                    cancelled: true,
-                    ..ArchiveFinalizationResult::default()
-                })
-                .unwrap();
-        }),
-        ("total-recorded", |evidence| {
-            evidence.recorder().record_output_total(0).unwrap();
-        }),
-    ];
-    for (row, reach) in rows {
-        let root = scratch(&format!("evidence-failure-{row}")).join("mod");
-        let source = root.join("textures/asset.dds");
-        write_file(&source, b"source bytes");
-        let mut evidence = Evidence::new();
-        reach(&mut evidence);
-        let before = evidence.recorded();
-        let finalizer = Finalizer {
-            settings: ArchiveFinalizationSettings {
-                create_dummy_plugins: false,
-                compress: false,
-                ..ArchiveFinalizationSettings::default()
-            },
-            ..Finalizer::default()
-        };
-        let mut artifacts = registry();
-        let outcome = finalizer.run_polling(
-            std::slice::from_ref(&root),
-            &mut evidence,
-            &mut artifacts,
-            &|| false,
-        );
-
-        let Err(Error::EvidenceInvariant(violated)) = outcome else {
-            panic!("{row}: {outcome:?}");
-        };
-        assert_eq!(
-            violated, "Archive Finalization needs an executed phase and one immutable plan",
-            "{row}"
-        );
-        assert_eq!(evidence.recorded(), before, "{row}");
-        assert!(source.exists(), "{row}");
-        assert!(archives_in(&root).is_empty(), "{row}");
-        assert!(artifacts.cleanup().is_empty(), "{row}");
-    }
+    assert!(run.cleaned_up());
 }
