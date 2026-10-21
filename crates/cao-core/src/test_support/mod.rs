@@ -25,7 +25,9 @@
 //! [`ArchiveRunRequest`] builds an Apply request over one Mod Root that
 //! requests Archive creation, with the profile and Archive work settings its
 //! configuration supplies, so a scenario drives Archive extraction and
-//! Archive Finalization through a whole Optimization Run (#596).
+//! Archive Finalization through a whole Optimization Run (#596). It can
+//! also select several Mod Roots, request other work, or give the profile
+//! another Archive extension, and executes its run (#597).
 //! [`SeamsConfiguration`] builds each run's Toolset over the Archive seams a
 //! scenario's builder makes, so `cao-optimizers` can run the same way over
 //! its production reader, packer and volume probes.
