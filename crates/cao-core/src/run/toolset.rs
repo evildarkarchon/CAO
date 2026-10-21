@@ -22,7 +22,11 @@
 //! executor turns an Asset attempt's into an unsafe Operation Failure with
 //! unknown mutation, the Archive extractor classifies its own by how far the
 //! attempt got, and Archive Finalization turns its own into an Unexpected
-//! Exception that forbids continuation.
+//! Exception that forbids continuation. The Capacity Check owns the probes'
+//! panics wherever it runs, in the preflight, the extraction recheck and
+//! Archive Finalization: a probe that cannot answer, even by panicking, gives
+//! an unknown answer, which never fails the check, so a probe panic is never
+//! Run Work Escaped, an extraction failure or an Unexpected Exception.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -160,7 +164,9 @@ impl RunToolset {
     /// Runs Archive discovery's all-or-nothing preflight over `roots` through
     /// the seams' reader, capacity probe and volume identity probe.
     ///
-    /// Nothing on disk changes; see [`preflight`] for what is checked.
+    /// Nothing on disk changes; see [`preflight`] for what is checked. A
+    /// probe that panics gives the Capacity Check an unknown answer rather
+    /// than escaping the run's work.
     pub(crate) fn preflight_archives(
         &self,
         roots: Vec<RootArchives>,

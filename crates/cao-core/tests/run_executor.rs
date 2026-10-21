@@ -1772,10 +1772,11 @@ fn an_unsafe_attempt_cancelled_mid_flight_fails_and_leaves_pending_work_untouche
 
 /// Origin: RunExecutorTests::discoveryDiagnosticsSurviveInterruption: a
 /// linked entry diagnosed by the Archive pass is retained when discovery then
-/// fails, and no routing is invented. The later failure is a panicking
-/// capacity probe during the Capacity Check, the one Toolset port discovery
-/// calls after the Archive pass, so the run selects an Archive; nothing holds
-/// the run's registry that early, so no temporary is staged.
+/// fails, and no routing is invented. The later failure is a shortage found
+/// by the Capacity Check, the one Toolset port discovery calls after the
+/// Archive pass, so the run selects an Archive; nothing holds the run's
+/// registry that early, so no temporary is staged. A panicking probe would
+/// no longer fail discovery: it is unknown capacity, which passes (#592).
 #[test]
 fn a_discovery_diagnostic_survives_a_failure_later_in_discovery() {
     let root = mod_root("diagnostic-survives-failure", &["textures/asset.dds"]);
@@ -1787,9 +1788,7 @@ fn a_discovery_diagnostic_survives_a_failure_later_in_discovery() {
     let link = root.join("linked");
     common::junction(&link, &outside);
     let toolset = Arc::new(ScriptedToolset {
-        capacity: Arc::new(FakeCapacity(Some(Box::new(|_| {
-            panic!("the Capacity Check failed")
-        })))),
+        capacity: Arc::new(FakeCapacity(Some(Box::new(|_| Some(0))))),
         ..ScriptedToolset::default()
     });
     let mut cleanup = CountingCleanup::default();
@@ -1811,14 +1810,13 @@ fn a_discovery_diagnostic_survives_a_failure_later_in_discovery() {
 
     assert_eq!(result.outcome(), RunOutcome::Failed);
     assert_eq!(result.failures().len(), 1);
-    assert_eq!(result.failures()[0].code, RunFailureCode::RunWorkEscaped);
-    assert!(
-        result.failures()[0]
-            .detail
-            .contains("the Capacity Check failed"),
+    assert_eq!(
+        result.failures()[0].code,
+        RunFailureCode::ArchiveInsufficientCapacity,
         "{:?}",
         result.failures()
     );
+    assert_eq!(result.failures()[0].phase, RunPhase::DiscoveringArchives);
     assert_eq!(result.diagnostics().len(), 1);
     assert_eq!(
         result.diagnostics()[0].code,
