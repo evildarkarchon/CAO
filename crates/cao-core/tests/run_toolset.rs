@@ -275,7 +275,7 @@ fn a_reader_panicking_while_staging_is_a_safe_failed_extraction() {
         panic!("one extraction attempt");
     };
     assert_eq!(
-        attempt.outcome.failure().map(|failure| failure.category()),
+        attempt.outcome.failure_category(),
         Some(ArchiveExtractionFailure::ExtractionFailed)
     );
     assert_eq!(attempt.outcome.mutation(), MutationState::None);
@@ -340,7 +340,7 @@ fn an_extraction_left_partial_is_unknown_mutation_that_stops_the_run() {
         panic!("one extraction attempt");
     };
     assert_eq!(
-        attempt.outcome.failure().map(|failure| failure.category()),
+        attempt.outcome.failure_category(),
         Some(ArchiveExtractionFailure::MergeFailed)
     );
     assert_eq!(attempt.outcome.mutation(), MutationState::PartialOrUnknown);

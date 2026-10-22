@@ -231,7 +231,7 @@ impl AssetExecutionResult {
 
     /// The stable failure category, or `None` after success.
     pub fn failure(&self) -> Option<AssetExecutionFailure> {
-        self.outcome.failure().map(OperationFailure::category)
+        self.outcome.failure_category()
     }
 
     /// The presentable diagnostic, which is the Operation Failure's detail;

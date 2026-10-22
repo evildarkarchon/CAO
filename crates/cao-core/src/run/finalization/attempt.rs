@@ -41,10 +41,11 @@ struct AttemptProgress {
 /// A capacity rejection returns `InsufficientCapacity` before any mutation.
 /// `dummy_demand` holds every Mod Root's Loading Plugin allowance, so the
 /// recheck through `capacity` also charges the allowance still needed on
-/// this output's volume. The Archive's mutation and continuation verdict come
-/// from its publication. After a commit, a later failure stays safe to continue
-/// only while the Archive reads back and every source not yet deleted is
-/// still readable recovery material; a Loading Plugin failure never is.
+/// this output's volume. Publication sets the Archive's mutation and the
+/// attempt's continuation claim; the verdict is the Attempt Outcome's
+/// `safe_to_continue`. After a commit, a later failure keeps its claim only
+/// while the Archive reads back and every source not yet deleted is still
+/// readable recovery material; a Loading Plugin failure never does.
 /// Plugin publication facts are appended to `mutations` as they happen, so
 /// the caller keeps them even if the attempt then fails. A panic is an
 /// unsafe `UnexpectedException` that keeps any committed mutation.
@@ -133,7 +134,7 @@ pub(super) fn attempt_output(
 /// boundary, returned before any mutation, so its claim stays safe.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the attempt's inputs, plus the two records its caller classifies"
+    reason = "the attempt's inputs, plus the mutation log and progress record its caller reads after it returns"
 )]
 fn try_attempt(
     plan: &FinalizationPlan,

@@ -186,7 +186,7 @@ fn source_cleanup_row(row: CleanupRow) {
     assert_eq!(root.join(FIXTURE).exists(), extracted, "{name}");
     if row.block_source_cleanup {
         assert_eq!(
-            result.outcome.failure().map(|failure| failure.category()),
+            result.outcome.failure_category(),
             Some(ArchiveExtractionFailure::SourceCleanupFailed),
             "{name}"
         );

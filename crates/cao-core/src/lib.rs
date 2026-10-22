@@ -13,8 +13,9 @@
 //! The crate needs no C++ toolchain, logs through the `log` facade (a run that
 //! aborts for destroying its own worker also writes that diagnostic straight
 //! to stderr, which no log sink would flush in time), and keeps its domain
-//! records (`StartError`, `RunFailure`, `OperationFailure` state,
-//! `RunOutcome`) as plain data. [`Error`] is the crate's error type for the
+//! records (`StartError`, `RunFailure`, `AttemptOutcome` with its mutation
+//! state, continuation and any `OperationFailure`, `RunOutcome`) as plain
+//! data. [`Error`] is the crate's error type for the
 //! places where C++ threw.
 //!
 //! The `test-support` feature adds `test_support`, the fakes of these seams

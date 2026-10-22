@@ -400,7 +400,7 @@ fn capacity_shortages_stop_before_mutation() {
         if scenario != 1 {
             let rejected = result.attempts.last().unwrap();
             assert_eq!(
-                rejected.outcome.failure().map(|failure| failure.category()),
+                rejected.outcome.failure_category(),
                 Some(ArchiveFinalizationFailure::InsufficientCapacity),
                 "{name}"
             );
@@ -544,7 +544,7 @@ fn a_panicking_volume_probe_is_an_unknown_volume() {
             assert_eq!(result.attempts.len(), 1, "{shortage}");
             let rejected = &result.attempts[0];
             assert_eq!(
-                rejected.outcome.failure().map(|failure| failure.category()),
+                rejected.outcome.failure_category(),
                 Some(ArchiveFinalizationFailure::InsufficientCapacity)
             );
             assert_eq!(rejected.mod_root, roots[0]);
@@ -694,10 +694,7 @@ fn a_disappearing_loading_plugin_keeps_its_fallback_reserved() {
         assert!(!earlier_plugin.exists());
         assert_eq!(result.attempts.len(), 1);
         assert_eq!(
-            result.attempts[0]
-                .outcome
-                .failure()
-                .map(|failure| failure.category()),
+            result.attempts[0].outcome.failure_category(),
             Some(ArchiveFinalizationFailure::InsufficientCapacity)
         );
         assert_eq!(result.attempts[0].outcome.mutation(), MutationState::None);
@@ -1484,10 +1481,7 @@ fn a_source_parent_swapped_for_a_junction_fails_the_write() {
     let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert_eq!(
-        result.attempts[0]
-            .outcome
-            .failure()
-            .map(|failure| failure.category()),
+        result.attempts[0].outcome.failure_category(),
         Some(ArchiveFinalizationFailure::WriteFailed)
     );
     assert_eq!(result.attempts[0].outcome.mutation(), MutationState::None);
@@ -1600,7 +1594,7 @@ fn a_competing_plugin_at_the_planned_name_keeps_archive_and_sources() {
     assert_eq!(result.attempts.len(), 1);
     let attempt = &result.attempts[0];
     assert_eq!(
-        attempt.outcome.failure().map(|failure| failure.category()),
+        attempt.outcome.failure_category(),
         Some(ArchiveFinalizationFailure::PluginCreationFailed)
     );
     assert_eq!(attempt.outcome.mutation(), MutationState::Committed);
@@ -1950,10 +1944,7 @@ fn links_at_every_plugin_name_keep_the_sources() {
     let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert_eq!(
-        result.attempts[0]
-            .outcome
-            .failure()
-            .map(|failure| failure.category()),
+        result.attempts[0].outcome.failure_category(),
         Some(ArchiveFinalizationFailure::PluginCreationFailed)
     );
     assert!(source.exists());
@@ -2080,7 +2071,7 @@ fn a_locked_source_after_commit_continues_only_while_readable() {
         let first = &result.attempts[0];
         assert!(!first.succeeded());
         assert_eq!(
-            first.outcome.failure().map(|failure| failure.category()),
+            first.outcome.failure_category(),
             Some(ArchiveFinalizationFailure::SourceCleanupFailed)
         );
         assert_eq!(first.outcome.mutation(), MutationState::Committed);
@@ -2380,7 +2371,7 @@ fn a_packer_panicking_after_its_write_is_an_unexpected_exception_that_stops_late
     );
     let attempt = &result.attempts[0];
     assert_eq!(
-        attempt.outcome.failure().map(|failure| failure.category()),
+        attempt.outcome.failure_category(),
         Some(ArchiveFinalizationFailure::UnexpectedException)
     );
     assert_eq!(

@@ -148,6 +148,15 @@ impl<F> AttemptOutcome<F> {
         }
     }
 
+    /// The stable category of a failed outcome's Operation Failure, or `None`
+    /// after success.
+    pub fn failure_category(&self) -> Option<F>
+    where
+        F: Copy,
+    {
+        self.failure().map(OperationFailure::category)
+    }
+
     /// The durable mutation the attempt left behind, as the three-state
     /// [`MutationState`].
     pub fn mutation(&self) -> MutationState {

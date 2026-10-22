@@ -375,10 +375,7 @@ fn a_finalization_plan_needs_its_phase_and_cleanup_failures_stay_separate() {
     );
     assert!(finalization.attempts[0].succeeded());
     assert_eq!(
-        finalization.attempts[1]
-            .outcome
-            .failure()
-            .map(OperationFailure::category),
+        finalization.attempts[1].outcome.failure_category(),
         Some(ArchiveFinalizationFailure::SourceCleanupFailed)
     );
     assert!(finalization.attempts[1].safe_to_continue());
@@ -881,7 +878,7 @@ fn asset_attempt(asset: RoutedAsset, failed: bool) -> RoutedAssetAttempt {
         result: if failed {
             AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed, "contained")
         } else {
-            AssetExecutionResult::success(crate::CompletedMutation::None)
+            AssetExecutionResult::success(CompletedMutation::None)
         },
     }
 }

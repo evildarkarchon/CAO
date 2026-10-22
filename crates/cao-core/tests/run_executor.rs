@@ -45,7 +45,6 @@ use std::sync::{Arc, Mutex};
 
 use cao_core::CompletedMutation;
 use cao_core::Error;
-use cao_core::OperationFailure;
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use cao_core::routing::{
     AssetOperation, ExecutionMode, PolicyValidationError, ProfileCapabilities, RequestedWork,
@@ -853,7 +852,7 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
                 panic!("{row}: one output attempt: {finalization:?}");
             };
             assert_eq!(
-                attempt.outcome.failure().map(OperationFailure::category),
+                attempt.outcome.failure_category(),
                 Some(ArchiveFinalizationFailure::UnexpectedException)
             );
             assert!(!finalization.safe_to_continue, "{row}");
@@ -1693,7 +1692,7 @@ fn a_committed_archive_without_its_loading_plugin_fails_the_run() {
     assert_eq!(finalization.attempts.len(), 1);
     let attempt = &finalization.attempts[0];
     assert_eq!(
-        attempt.outcome.failure().map(OperationFailure::category),
+        attempt.outcome.failure_category(),
         Some(ArchiveFinalizationFailure::PluginCreationFailed),
         "{:?}",
         attempt.outcome
@@ -1937,10 +1936,7 @@ fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
             assert_eq!(result.outcome(), RunOutcome::Failed, "{row}");
             let finalization = result.archive_finalization().unwrap();
             assert_eq!(
-                finalization.attempts[0]
-                    .outcome
-                    .failure()
-                    .map(OperationFailure::category),
+                finalization.attempts[0].outcome.failure_category(),
                 Some(ArchiveFinalizationFailure::UnexpectedException)
             );
             assert!(!finalization.safe_to_continue, "{row}");

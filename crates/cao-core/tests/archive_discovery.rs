@@ -1155,7 +1155,7 @@ fn a_loose_asset_created_after_preflight_blocks_the_merge() {
     // publication is what fails.
     let attempt = attempt_for(&result, "source.bsa");
     assert_eq!(
-        attempt.outcome.failure().map(|failure| failure.category()),
+        attempt.outcome.failure_category(),
         Some(cao_core::run::ArchiveExtractionFailure::MergeFailed)
     );
     assert_eq!(
@@ -1288,7 +1288,7 @@ fn every_attempt_repeats_containment_after_a_safe_rejection() {
     for name in ["a.bsa", "b.bsa"] {
         let attempt = attempt_for(&result, name);
         assert_eq!(
-            attempt.outcome.failure().map(|failure| failure.category()),
+            attempt.outcome.failure_category(),
             Some(cao_core::run::ArchiveExtractionFailure::MergeFailed),
             "{name}"
         );
@@ -1770,7 +1770,7 @@ fn assert_packing_failed_unexpectedly(result: &OptimizationRunResult) {
         panic!("one output attempt: {finalization:?}");
     };
     assert_eq!(
-        attempt.outcome.failure().map(|failure| failure.category()),
+        attempt.outcome.failure_category(),
         Some(ArchiveFinalizationFailure::UnexpectedException)
     );
     assert!(!finalization.safe_to_continue);
@@ -1932,7 +1932,7 @@ fn archive_failures_control_continuation() {
         assert_eq!(failure.safe_to_continue(), !partial);
         if partial {
             assert_eq!(
-                failure.outcome.failure().map(|failure| failure.category()),
+                failure.outcome.failure_category(),
                 Some(ArchiveExtractionFailure::MergeFailed)
             );
             assert_eq!(failure.outcome.mutation(), MutationState::PartialOrUnknown);

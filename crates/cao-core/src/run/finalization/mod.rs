@@ -385,7 +385,7 @@ fn finalize_plan(
         );
         // Only the attempt's own capacity recheck reports this, before
         // any mutation; it ends the phase without plugin work or pruning.
-        let capacity_rejected = attempt.outcome.failure().map(OperationFailure::category)
+        let capacity_rejected = attempt.outcome.failure_category()
             == Some(ArchiveFinalizationFailure::InsufficientCapacity);
         if !capacity_rejected {
             // The verdict, not the producer's raw claim: partial or unknown
