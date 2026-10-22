@@ -12,10 +12,13 @@ use cao_core::routing::{
     RequestedWork, SkipReason,
 };
 use cao_core::run::{
-    ModSelection, OptimizationRunResult, RunConfigurationProvider, RunDiagnosticCode,
-    RunFailureCode, RunOutcome, RunPhase,
+    ArchiveFinalizationSettings, MeshChoices, MeshLevel, ModSelection, OptimizationRunResult,
+    ResizeRatio, ResizeSize, RunConfigurationProvider, RunDiagnosticCode, RunFailureCode,
+    RunOutcome, RunPhase, SourceCleanup, TextureChoices, TextureResizeChoice, WorkChoices,
 };
-use cao_optimizers::composition::{ApplicationRun, ProfileConfigurationProvider, run_request};
+use cao_optimizers::composition::{
+    ApplicationRun, ProfileConfigurationProvider, RunSetupError, run_request,
+};
 use cao_profiles::{OptimizationMode, Options};
 use common::{
     app_dir, dry_run_textures, edit_profile, profile_options, serial, snapshot_tree, write,
@@ -119,6 +122,117 @@ fn the_request_owns_the_caller_intent() {
             RequestedWork::StandardMeshOptimization,
             RequestedWork::TerrainMeshOptimization,
         ]
+    );
+}
+
+/// Core cannot see the options model, so this pins core's default Work
+/// Choices to an untouched options form.
+#[test]
+fn a_default_options_form_carries_the_default_work_choices() {
+    let app = app_dir("default-work-choices");
+    let options = Options {
+        user_path: app.join("mods/Mod").to_string_lossy().into_owned(),
+        ..Options::default()
+    };
+
+    let request = run_request("SSE", &options).unwrap();
+
+    assert_eq!(request.work_choices(), &WorkChoices::default());
+}
+
+#[test]
+fn the_request_carries_the_forms_work_choices_with_ratio_winning() {
+    let app = app_dir("chosen-work-choices");
+    let options = Options {
+        user_path: app.join("mods/Mod").to_string_lossy().into_owned(),
+        textures_necessary: false,
+        textures_compress: true,
+        textures_mipmaps: true,
+        // Both resize modes are on: ratio wins, as in C++.
+        textures_resize_ratio: true,
+        textures_target_width_ratio: 2,
+        textures_target_height_ratio: 4,
+        textures_resize_size: true,
+        textures_target_width: 1024,
+        textures_target_height: 512,
+        meshes_optimization_level: 2,
+        meshes_headparts: false,
+        meshes_resave: true,
+        bsa_delete_backup: true,
+        bsa_compress: false,
+        bsa_delete_source: false,
+        bsa_create_dummies: false,
+        bsa_merge_incompressible: false,
+        bsa_merge_textures: true,
+        ..Options::default()
+    };
+
+    let request = run_request("SSE", &options).unwrap();
+
+    assert_eq!(
+        request.work_choices(),
+        &WorkChoices {
+            textures: TextureChoices {
+                necessary: false,
+                compress: true,
+                mipmaps: true,
+                resize: TextureResizeChoice::Ratio(ResizeRatio::new(2, 4).unwrap()),
+            },
+            meshes: MeshChoices {
+                level: MeshLevel::new(2).unwrap(),
+                headparts: false,
+                resave: true,
+            },
+            archive_extraction: SourceCleanup::Remove,
+            archive_finalization: ArchiveFinalizationSettings {
+                compress: false,
+                delete_sources: false,
+                create_dummy_plugins: false,
+                merge_incompressible: false,
+                merge_textures: true,
+            },
+        }
+    );
+}
+
+#[test]
+fn an_odd_target_size_is_rejected_even_when_resizing_by_ratio_wins() {
+    // C++ checked the size whenever resizing by size was on, although ratio
+    // wins and the size is never used.
+    let app = app_dir("odd-size-ratio-wins");
+    let options = Options {
+        user_path: app.join("mods/Mod").to_string_lossy().into_owned(),
+        textures_resize_ratio: true,
+        textures_resize_size: true,
+        textures_target_width: 513,
+        ..Options::default()
+    };
+
+    let error = run_request("SSE", &options).unwrap_err();
+
+    assert!(matches!(error, RunSetupError::OddTextureSize), "{error:?}");
+    assert_eq!(
+        error.to_string(),
+        "Texture target width and height must be even."
+    );
+}
+
+#[test]
+fn resizing_by_size_alone_carries_the_target_size() {
+    let app = app_dir("size-work-choice");
+    let options = Options {
+        user_path: app.join("mods/Mod").to_string_lossy().into_owned(),
+        textures_resize_size: true,
+        textures_target_width: 1024,
+        textures_target_height: 512,
+        ..Options::default()
+    };
+
+    let request = run_request("SSE", &options).unwrap();
+
+    assert_eq!(
+        request.work_choices().textures.resize,
+        TextureResizeChoice::Size(ResizeSize::new(1024, 512).unwrap())
     );
 }
 

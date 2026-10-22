@@ -22,10 +22,11 @@ use cao_core::Error;
 use cao_core::routing::{ExecutionMode, ProfileCapabilities, ProfileCapability, RequestedWork};
 use cao_core::run::{
     ArchiveFinalizationSettings, ArchiveSeams, ArchiveWorkSettings, AssetAttemptAdapter,
-    AssetBackendFactory, BackendCreation, BackendCreationError, CancellationToken, ModSelection,
-    OptimizationRunService, RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode,
-    RunEventDispatcher, RunHandle, RunPhase, RunRequest, RunToolset, SelectedProfile,
-    SourceCleanup, StartError,
+    AssetBackendFactory, BackendCreation, BackendCreationError, CancellationToken, MeshChoices,
+    MeshLevel, ModSelection, OptimizationRunService, ResizeRatio, ResizeSize,
+    RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode, RunEventDispatcher, RunHandle,
+    RunPhase, RunRequest, RunToolset, SelectedProfile, SourceCleanup, StartError, TextureChoices,
+    TextureResizeChoice, WorkChoiceError, WorkChoices,
 };
 use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
 use directxtex::DXGI_FORMAT;
@@ -123,6 +124,11 @@ impl ApplicationRun {
 /// work is requested when the level is above 0 or resaving is on; it covers
 /// both Standard and Terrain Meshes.
 ///
+/// The request also carries the form's Work Choices: its Texture, Mesh,
+/// Archive extraction and Archive Finalization choices, with ratio winning
+/// when both resize modes are on. They are carried whether or not their work
+/// is requested; requested work alone decides routing.
+///
 /// # Errors
 /// [`RunSetupError`] when an option is invalid or the selected folder is
 /// relative.
@@ -169,7 +175,70 @@ pub fn run_request(profile: &str, options: &Options) -> Result<RunRequest, RunSe
     } else {
         ExecutionMode::Apply
     };
-    Ok(RunRequest::new(profile, mode, mod_selection, work))
+    Ok(RunRequest::new(profile, mode, mod_selection, work)
+        .with_work_choices(work_choices(options).map_err(setup_error)?))
+}
+
+/// The Work Choices of `options`, which [`validate`] has already checked.
+///
+/// Ratio wins when both resize modes are on, as in
+/// `MainOptimizer::optimizeTexture`; `validate` still rejects an odd size in
+/// that case, as C++ did.
+///
+/// # Errors
+/// The core constructor's [`WorkChoiceError`], which `validate` makes
+/// unreachable; the caller still maps it rather than panicking.
+fn work_choices(options: &Options) -> Result<WorkChoices, WorkChoiceError> {
+    let resize = if options.textures_resize_ratio {
+        TextureResizeChoice::Ratio(ResizeRatio::new(
+            options.textures_target_width_ratio,
+            options.textures_target_height_ratio,
+        )?)
+    } else if options.textures_resize_size {
+        TextureResizeChoice::Size(ResizeSize::new(
+            options.textures_target_width,
+            options.textures_target_height,
+        )?)
+    } else {
+        TextureResizeChoice::None
+    };
+    Ok(WorkChoices {
+        textures: TextureChoices {
+            necessary: options.textures_necessary,
+            compress: options.textures_compress,
+            mipmaps: options.textures_mipmaps,
+            resize,
+        },
+        meshes: MeshChoices {
+            level: MeshLevel::new(options.meshes_optimization_level)?,
+            headparts: options.meshes_headparts,
+            resave: options.meshes_resave,
+        },
+        // "Delete backup" (`bBsaDeleteBackup`) removes an extracted Archive;
+        // otherwise it is kept as a `.bak`.
+        archive_extraction: if options.bsa_delete_backup {
+            SourceCleanup::Remove
+        } else {
+            SourceCleanup::Backup
+        },
+        archive_finalization: ArchiveFinalizationSettings {
+            compress: options.bsa_compress,
+            delete_sources: options.bsa_delete_source,
+            create_dummy_plugins: options.bsa_create_dummies,
+            merge_incompressible: options.bsa_merge_incompressible,
+            merge_textures: options.bsa_merge_textures,
+        },
+    })
+}
+
+/// The [`RunSetupError`] matching a core Work Choice constructor's failure.
+fn setup_error(error: WorkChoiceError) -> RunSetupError {
+    match error {
+        WorkChoiceError::MeshLevel(level) => RunSetupError::MeshLevel(level),
+        WorkChoiceError::ZeroResizeRatio => RunSetupError::ZeroTextureRatio,
+        WorkChoiceError::OddResizeSize => RunSetupError::OddTextureSize,
+        WorkChoiceError::ZeroResizeSize => RunSetupError::ZeroTextureSize,
+    }
 }
 
 /// Whether the options ask for Mesh work: a level above 0, or resaving, which
