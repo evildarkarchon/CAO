@@ -38,6 +38,7 @@ use crate::run::{
     RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunProgress, SelectedProfile,
 };
 use crate::test_support::{Observed, RecordingSink, sse_capabilities, sse_profile};
+use crate::{AttemptOutcome, CompletedMutation, OperationFailure};
 
 /// The preparation of a Dry Run with no work, as Preparing would retain it.
 fn successful_preparation() -> RunPreparation {
@@ -520,13 +521,17 @@ fn finalization_attempts_need_a_recorded_total() {
 /// kind; an attempt that mutated nothing adds nothing.
 #[test]
 fn sealed_mutation_summaries_count_completed_attempts() {
-    let extraction = |archive: &str, root: &str, mutation, failure| ArchiveExtractionResult {
+    let extraction = |archive: &str, root: &str, outcome| ArchiveExtractionResult {
         archive_path: archive.into(),
         mod_root: root.into(),
-        mutation,
-        failure,
-        safe_to_continue: mutation != MutationState::PartialOrUnknown,
-        detail: String::new(),
+        outcome,
+    };
+    let failed = |category, mutation| {
+        AttemptOutcome::failed(
+            OperationFailure::new(category, String::new()),
+            mutation,
+            mutation != MutationState::PartialOrUnknown,
+        )
     };
     let mut evidence = MutableRunEvidence::new(None);
     evidence
@@ -537,18 +542,26 @@ fn sealed_mutation_summaries_count_completed_attempts() {
         .unwrap();
     evidence.record_archive_extraction_plan(3).unwrap();
     for attempt in [
-        extraction("first.bsa", "alpha", MutationState::Committed, None),
+        extraction(
+            "first.bsa",
+            "alpha",
+            AttemptOutcome::success(CompletedMutation::Committed),
+        ),
         extraction(
             "second.bsa",
             "alpha",
-            MutationState::PartialOrUnknown,
-            Some(ArchiveExtractionFailure::MergeFailed),
+            failed(
+                ArchiveExtractionFailure::MergeFailed,
+                MutationState::PartialOrUnknown,
+            ),
         ),
         extraction(
             "third.bsa",
             "beta",
-            MutationState::None,
-            Some(ArchiveExtractionFailure::ExtractionFailed),
+            failed(
+                ArchiveExtractionFailure::ExtractionFailed,
+                MutationState::None,
+            ),
         ),
     ] {
         evidence.record_archive_extraction_attempt(attempt).unwrap();
@@ -771,10 +784,14 @@ fn extraction_attempt(
     ArchiveExtractionResult {
         archive_path: archive.into(),
         mod_root: "extracted-mod".into(),
-        mutation: MutationState::None,
-        failure,
-        safe_to_continue: true,
-        detail: String::new(),
+        outcome: match failure {
+            None => AttemptOutcome::success(CompletedMutation::None),
+            Some(category) => AttemptOutcome::failed(
+                OperationFailure::new(category, String::new()),
+                MutationState::None,
+                true,
+            ),
+        },
     }
 }
 

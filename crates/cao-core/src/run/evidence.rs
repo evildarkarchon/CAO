@@ -909,7 +909,7 @@ fn derive_mutation_summaries(
             (
                 &attempt.mod_root,
                 MutationKind::ArchiveExtraction,
-                attempt.mutation,
+                attempt.outcome.mutation(),
                 1,
             )
         })

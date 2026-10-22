@@ -35,6 +35,7 @@ use crate::run::{
     PublicationPolicy, PublicationReceipt, PublicationState, RunFailure, RunFailureCode, RunPhase,
     TemporaryArtifactRegistry, is_staging_name, take_panic_message,
 };
+use crate::{AttemptOutcome, CompletedMutation, OperationFailure};
 
 /// A game path compared as a case-insensitive Windows volume compares names.
 ///
@@ -100,36 +101,34 @@ pub struct ArchiveExtractionResult {
     pub archive_path: PathBuf,
     /// The frozen preflight scope; the Run Executor sets it from the plan.
     pub mod_root: PathBuf,
-    pub mutation: MutationState,
-    pub failure: Option<ArchiveExtractionFailure>,
-    /// Whether the run may continue. An attempt with `PartialOrUnknown`
-    /// mutation stops the run whatever this says.
-    pub safe_to_continue: bool,
-    pub detail: String,
+    /// What the attempt left behind: its mutation, its Operation Failure if
+    /// it failed, and whether the run may continue. A public field is safe
+    /// because the Attempt Outcome protects its own invariants.
+    pub outcome: AttemptOutcome<ArchiveExtractionFailure>,
 }
 
 impl ArchiveExtractionResult {
-    /// A successful attempt for `plan` that has mutated nothing yet.
-    pub(crate) fn new(plan: &ArchiveExtractionPlan) -> Self {
+    /// The attempt for `plan` that ended with `outcome`.
+    fn new(
+        plan: &ArchiveExtractionPlan,
+        outcome: AttemptOutcome<ArchiveExtractionFailure>,
+    ) -> Self {
         Self {
             archive_path: plan.archive_path.clone(),
             mod_root: plan.mod_root.clone(),
-            mutation: MutationState::None,
-            failure: None,
-            safe_to_continue: true,
-            detail: String::new(),
+            outcome,
         }
     }
 
     /// Whether extraction, merge and any requested source cleanup completed.
     pub fn succeeded(&self) -> bool {
-        self.failure.is_none()
+        self.outcome.succeeded()
     }
 
-    /// Whether this attempt must stop the run: it said so, or it left
-    /// unknown mutation, whatever it claimed about continuing.
-    pub fn is_unsafe(&self) -> bool {
-        !self.safe_to_continue || self.mutation == MutationState::PartialOrUnknown
+    /// The Attempt Outcome's safe-to-continue verdict: whether the run may
+    /// go on after this attempt.
+    pub fn safe_to_continue(&self) -> bool {
+        self.outcome.safe_to_continue()
     }
 }
 
@@ -151,27 +150,22 @@ impl ArchiveExtractionResult {
 ///
 /// Reads go through `reader`, which is released before this returns, and
 /// the recheck through `capacity`, the run's Capacity Check.
+///
+/// Returns the Attempt Outcome of staging and merging alone, built once the
+/// attempt ends; a success here still leaves source cleanup to the caller.
 fn extract_staged(
     reader: &dyn ArchiveReader,
     capacity: &CapacityCheck<'_>,
     plan: &ArchiveExtractionPlan,
     artifacts: &mut TemporaryArtifactRegistry,
-) -> ArchiveExtractionResult {
-    let mut result = ArchiveExtractionResult::new(plan);
+) -> AttemptOutcome<ArchiveExtractionFailure> {
     let mut progress = ExtractionProgress::default();
     // A panicking reader is classified like any other failure, by how far
     // the attempt got: `progress` survives the unwind, so a panic while
     // staging stays safe and one after a commit stays partial (C++
     // `catch (...)`).
     let outcome = catch_unwind(AssertUnwindSafe(|| {
-        try_extract(
-            reader,
-            capacity,
-            plan,
-            artifacts,
-            &mut result,
-            &mut progress,
-        )
+        try_extract(reader, capacity, plan, artifacts, &mut progress)
     }))
     .unwrap_or_else(|payload| Err(take_panic_message(payload)));
     // Whatever happened, nothing reads this Archive again in the attempt,
@@ -182,23 +176,32 @@ fn extract_staged(
         take_panic_message(payload);
     }
     match outcome {
-        Ok(()) => result,
+        // Every merged entry was published and released, so the attempt
+        // committed exactly when it published anything.
+        Ok(None) => AttemptOutcome::success(if progress.committed {
+            CompletedMutation::Committed
+        } else {
+            CompletedMutation::None
+        }),
+        Ok(Some(rejection)) => AttemptOutcome::failed(rejection, MutationState::None, true),
         Err(detail) => {
-            result.detail = detail;
-            result.failure = Some(if progress.merging {
+            let category = if progress.merging {
                 ArchiveExtractionFailure::MergeFailed
             } else {
                 ArchiveExtractionFailure::ExtractionFailed
-            });
+            };
             // A half-merged Effective Asset Tree must never be optimized
             // as if it were complete.
-            result.mutation = if progress.committed {
+            let mutation = if progress.committed {
                 MutationState::PartialOrUnknown
             } else {
                 MutationState::None
             };
-            result.safe_to_continue = !progress.committed;
-            result
+            AttemptOutcome::failed(
+                OperationFailure::new(category, detail),
+                mutation,
+                !progress.committed,
+            )
         }
     }
 }
@@ -206,16 +209,17 @@ fn extract_staged(
 /// Performs the attempt, recording how far it got in `progress` so the
 /// caller can classify an `Err` detail as an extraction or merge failure.
 ///
-/// A failed capacity recheck is not an `Err`: it returns `Ok` with
-/// `result.failure` already set, because it is never a mutation.
+/// Returns `Ok(None)` once every winning entry is merged. A failed capacity
+/// recheck is not an `Err`: it returns `Ok` with its
+/// [`ArchiveExtractionFailure::InsufficientCapacity`] Operation Failure,
+/// because it is never a mutation.
 fn try_extract(
     reader: &dyn ArchiveReader,
     capacity: &CapacityCheck<'_>,
     plan: &ArchiveExtractionPlan,
     artifacts: &mut TemporaryArtifactRegistry,
-    result: &mut ArchiveExtractionResult,
     progress: &mut ExtractionProgress,
-) -> Result<(), String> {
+) -> Result<Option<OperationFailure<ArchiveExtractionFailure>>, String> {
     let root = msvc_canonical(&plan.mod_root).map_err(|error| error.to_string())?;
     let source = std::path::absolute(&plan.archive_path).map_err(|error| error.to_string())?;
     let contained = source.strip_prefix(&root).is_ok_and(|relative| {
@@ -243,9 +247,10 @@ fn try_extract(
     let mut demand = capacity.demand();
     demand.add(&root, required);
     if let Some(shortfall) = capacity.shortfall_at(&demand, &root) {
-        result.failure = Some(ArchiveExtractionFailure::InsufficientCapacity);
-        result.detail = shortfall.to_string();
-        return Ok(());
+        return Ok(Some(OperationFailure::new(
+            ArchiveExtractionFailure::InsufficientCapacity,
+            shortfall.to_string(),
+        )));
     }
 
     let expected: BTreeSet<&str> = plan.entries.iter().map(String::as_str).collect();
@@ -310,9 +315,8 @@ fn try_extract(
                 publication.error_detail
             });
         }
-        result.mutation = MutationState::Committed;
     }
-    Ok(())
+    Ok(None)
 }
 
 /// What becomes of a source Archive once every entry it won is published.
@@ -375,32 +379,31 @@ pub(crate) fn extract_archive(
     let mut pin = match pinned {
         Ok(pin) => pin,
         Err(detail) => {
-            return ArchiveExtractionResult {
-                failure: Some(ArchiveExtractionFailure::ExtractionFailed),
-                detail,
-                ..ArchiveExtractionResult::new(plan)
-            };
+            let failure = OperationFailure::new(ArchiveExtractionFailure::ExtractionFailed, detail);
+            return ArchiveExtractionResult::new(
+                plan,
+                AttemptOutcome::failed(failure, MutationState::None, true),
+            );
         }
     };
     // `extract_staged` releases the reader before it returns.
-    let mut result = extract_staged(reader, capacity, plan, artifacts);
-    if !result.succeeded() {
-        return result;
+    let staged = extract_staged(reader, capacity, plan, artifacts);
+    if !staged.succeeded() {
+        return ArchiveExtractionResult::new(plan, staged);
     }
     let cleaned = catch_unwind(AssertUnwindSafe(|| match cleanup {
         SourceCleanup::Remove => pin.remove_if_unchanged(),
         SourceCleanup::Backup => pin.backup_if_unchanged().map(|_| ()),
     }));
-    match cleaned {
-        Ok(Ok(())) => result.mutation = MutationState::Committed,
+    let outcome = match cleaned {
+        Ok(Ok(())) => AttemptOutcome::success(CompletedMutation::Committed),
         Ok(Err(error)) => {
-            result.failure = Some(ArchiveExtractionFailure::SourceCleanupFailed);
-            result.safe_to_continue = false;
-            result.detail = error.to_string();
+            let mut mutation = staged.mutation();
+            let mut safe_to_continue = false;
             // Existence alone cannot prove the retained source is still
             // usable: reopen its manifest, through the same pin, before
             // letting later phases proceed.
-            if result.mutation == MutationState::Committed {
+            if mutation == MutationState::Committed {
                 // A panic while re-pinning or reading leaves the source's
                 // state unproven, so it counts as unreadable.
                 let readable = catch_unwind(AssertUnwindSafe(|| {
@@ -411,27 +414,42 @@ pub(crate) fn extract_archive(
                     reader.release();
                     listed
                 }));
-                result.safe_to_continue = readable.unwrap_or_else(|payload| {
+                safe_to_continue = readable.unwrap_or_else(|payload| {
                     take_panic_message(payload);
                     false
                 });
             }
-            if !result.safe_to_continue {
-                result.mutation = MutationState::PartialOrUnknown;
+            // Extraction's own policy, stricter than the shared
+            // safe-to-continue rule: a source cleanup that ends unsafe
+            // leaves the mutation unknown, not merely unsafe.
+            if !safe_to_continue {
+                mutation = MutationState::PartialOrUnknown;
             }
+            AttemptOutcome::failed(
+                OperationFailure::new(
+                    ArchiveExtractionFailure::SourceCleanupFailed,
+                    error.to_string(),
+                ),
+                mutation,
+                safe_to_continue,
+            )
         }
         Err(payload) => {
             // A rename or delete that panicked may or may not have
             // happened, and the pin it ran through is no longer
             // trustworthy, so the source is not reopened to prove
             // recovery: the mutation is unknown and the run stops.
-            result.failure = Some(ArchiveExtractionFailure::SourceCleanupFailed);
-            result.safe_to_continue = false;
-            result.detail = take_panic_message(payload);
-            result.mutation = MutationState::PartialOrUnknown;
+            AttemptOutcome::failed(
+                OperationFailure::new(
+                    ArchiveExtractionFailure::SourceCleanupFailed,
+                    take_panic_message(payload),
+                ),
+                MutationState::PartialOrUnknown,
+                false,
+            )
         }
-    }
-    result
+    };
+    ArchiveExtractionResult::new(plan, outcome)
 }
 
 /// How far one extraction attempt got, for classifying its failure.

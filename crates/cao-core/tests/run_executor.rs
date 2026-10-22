@@ -2932,7 +2932,7 @@ fn cancelling_at_each_work_milestone_stops_at_that_phase() {
         assert!(
             attempts
                 .iter()
-                .all(|attempt| attempt.mutation == MutationState::Committed),
+                .all(|attempt| attempt.outcome.mutation() == MutationState::Committed),
             "{milestone:?}: {attempts:?}"
         );
         assert_eq!(
