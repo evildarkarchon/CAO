@@ -8,7 +8,7 @@
 //! these, and the GUI gates its asset tabs from the same Profile
 //! Capabilities, so the two never disagree about what a Profile supports.
 
-use cao_archive::{Game, Settings};
+use cao_archive::Settings;
 use cao_core::routing::{ProfileCapabilities, ProfileCapability};
 use cao_profiles::{ClosedSet, ProfileSettings};
 use directxtex::DXGI_FORMAT;
@@ -64,29 +64,6 @@ pub fn profile_capabilities(
         .map(|(_, capability)| capability)
         .collect();
     ProfileCapabilities::define(archive_rules.extension, &capabilities)
-}
-
-// TODO(#632): delete once cao-gui stops importing this
-/// Whether `game` keeps Textures in their own Archive: its Textures Archive is
-/// written as a different container than its Standard one (FO4's DX10 BA2
-/// beside its `GNRL` Main BA2), so DDS files can never be merged into the
-/// Standard Archive.
-///
-/// Only the GUI's "Separate textures BSA" rule still reads this; the packer
-/// reads [`Settings::keeps_textures_separate`] directly.
-pub fn keeps_textures_separate(game: Game) -> bool {
-    Settings::get(game).keeps_textures_separate()
-}
-
-// TODO(#632): delete once cao-gui stops importing this
-/// The most bytes one written Archive of `game` may ever take, whatever its
-/// Profile's maximum Archive size asks: 2 GiB for the BSA games, the practical
-/// limit Skyrim loads, and `None` for FO4, whose BA2s have no such limit.
-///
-/// Only the GUI's Maximum size spin box still reads this; the packer reads
-/// the cap from its [`archive_rules`].
-pub fn archive_size_cap(game: Game) -> Option<u64> {
-    Settings::get(game).size_cap()
 }
 
 /// The profile's Texture settings, as the texture optimizer takes them: its
