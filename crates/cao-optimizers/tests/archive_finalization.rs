@@ -575,3 +575,66 @@ fn an_sse_apply_packs_loose_assets_into_loadable_archives() {
     // Two Archives, one Dummy Plugin and five pruned directories.
     assert_eq!(summary.committed, 2 + 1 + 5);
 }
+
+/// Spec (#618): one production service serves a session. Two Apply runs
+/// started on it in turn, the first compressing and deleting the packed
+/// sources and the second doing neither, each pack by their own Run
+/// Request's Archive Finalization choices, not the choices of the run before.
+#[test]
+fn one_service_finalizes_each_run_with_its_own_archive_finalization_choices() {
+    let _serial = serial();
+    let app = app_dir("finalization-one-service");
+    let service = run_service(&app);
+    let roots = ["First", "Second"].map(|name| {
+        let root = app.join("mods").join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        let root = canonical(&root);
+        // Repetitive bytes, so a compressed Archive really compresses them.
+        write(&root, "meshes/thing.nif", &b"NiTriShape ".repeat(300));
+        root
+    });
+
+    let mut options = profile_options(&app, "SSE");
+    options.dry_run = false;
+    options.textures_necessary = false;
+    options.textures_compress = false;
+    options.textures_mipmaps = false;
+    options.textures_resize_ratio = false;
+    options.textures_resize_size = false;
+    options.meshes_optimization_level = 0;
+    options.meshes_resave = false;
+    options.animations_optimization = false;
+    options.bsa_extract = false;
+    options.bsa_create = true;
+
+    options.user_path = roots[0].to_string_lossy().into_owned();
+    options.bsa_compress = true;
+    options.bsa_delete_source = true;
+    let first = start_and_wait(&service, "SSE", &options);
+
+    options.user_path = roots[1].to_string_lossy().into_owned();
+    options.bsa_compress = false;
+    options.bsa_delete_source = false;
+    let second = start_and_wait(&service, "SSE", &options);
+
+    for result in [&first, &second] {
+        assert_eq!(result.outcome(), RunOutcome::Succeeded, "{result:?}");
+    }
+    let packed = |archive: &Path| {
+        let assets = open(archive).archived_assets().unwrap();
+        assert_eq!(assets.len(), 1, "{}", archive.display());
+        (assets[0].name.to_lowercase(), assets[0].compressed)
+    };
+    // The first run compressed its Archive and deleted the packed source.
+    assert_eq!(
+        packed(&roots[0].join("First.bsa")),
+        (r"meshes\thing.nif".to_owned(), true)
+    );
+    assert!(!roots[0].join("meshes/thing.nif").exists());
+    // The second run neither compressed nor deleted.
+    assert_eq!(
+        packed(&roots[1].join("Second.bsa")),
+        (r"meshes\thing.nif".to_owned(), false)
+    );
+    assert!(roots[1].join("meshes/thing.nif").exists());
+}
