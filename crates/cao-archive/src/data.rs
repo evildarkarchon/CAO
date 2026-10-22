@@ -5,6 +5,7 @@
 //! bethutil `81f882ed`, and the splitter in C++ CAO's `planFinalization`
 //! (`src/Run/ArchiveFinalizationPlanning.cpp`), which replaced bethutil's `split`.
 
+use std::collections::BTreeSet;
 use std::os::windows::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 
@@ -36,6 +37,9 @@ pub struct PackSource {
 ///
 /// bethutil tracks a "compressed" and an "uncompressed" size, but CAO never
 /// overrides them, so both are always the summed source sizes; this holds one.
+///
+/// A BSA whose game has a [`Settings::size_cap`] also counts the most bytes
+/// its written file can take ([`CappedLayout`]), and never plans past the cap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveData {
     size: u64,
@@ -43,32 +47,62 @@ pub struct ArchiveData {
     archive_type: ArchiveType,
     version: ArchiveVersion,
     files: Vec<PathBuf>,
+    layout: Option<CappedLayout>,
 }
 
 impl ArchiveData {
     /// An empty Archive of `archive_type`, in the container `settings` gives that
-    /// type, limited to `settings.max_size` source bytes.
+    /// type, limited to `settings.max_size` source bytes and, for a BSA, to
+    /// `settings.size_cap` written bytes.
     pub fn new(settings: &Settings, archive_type: ArchiveType) -> Self {
+        let version = settings.version_for(archive_type);
         Self {
             size: 0,
             max_size: settings.max_size,
             archive_type,
-            version: settings.version_for(archive_type),
+            version,
             files: Vec::new(),
+            layout: settings
+                .size_cap
+                .and_then(|cap| CappedLayout::new(cap, version)),
         }
     }
 
     /// Adds `path` unless its `size` would take the total past the limit (strict
-    /// `>`: filling to exactly the limit is allowed). Returns whether it was added.
+    /// `>`: filling to exactly the limit is allowed), or the written BSA past
+    /// its game's size cap. Returns whether it was added.
     pub fn add_file(&mut self, path: PathBuf, size: u64) -> bool {
-        match self.size.checked_add(size) {
-            Some(total) if total <= self.max_size => {
-                self.size = total;
-                self.files.push(path);
-                true
-            }
-            _ => false,
+        let Some(total) = self.size.checked_add(size) else {
+            return false;
+        };
+        if total > self.max_size {
+            return false;
         }
+        if let Some(layout) = &mut self.layout
+            && !layout.add(&path, size)
+        {
+            return false;
+        }
+        self.size = total;
+        self.files.push(path);
+        true
+    }
+
+    /// The most bytes the written Archive may take, when its game caps them:
+    /// planning keeps it there, and writing refuses an Archive that is not.
+    pub fn size_cap(&self) -> Option<u64> {
+        self.layout.as_ref().map(|layout| layout.cap)
+    }
+
+    /// Whether `other` may join this Archive in a merge: their summed source
+    /// sizes are strictly under the limit (bethutil's test), and the merged
+    /// BSA's layout fits its game's size cap.
+    fn can_absorb(&self, other: &Self) -> bool {
+        let layout_fits = match (&self.layout, &other.layout) {
+            (Some(layout), Some(other)) => layout.merged_bound(other) <= layout.cap,
+            _ => true,
+        };
+        self.size + other.size < self.max_size && layout_fits
     }
 
     /// The Archive's type. A merge can change it; see [`SplitArchives::merge`].
@@ -113,6 +147,9 @@ impl ArchiveData {
         debug_assert!(self.size + other.size <= self.max_size);
         self.size += other.size;
         self.files.append(&mut other.files);
+        if let (Some(layout), Some(other)) = (&mut self.layout, &mut other.layout) {
+            layout.absorb(other);
+        }
         if self.archive_type == ArchiveType::Incompressible
             || other.archive_type == ArchiveType::Incompressible
         {
@@ -207,7 +244,8 @@ impl SplitArchives {
     /// what is left of the open Standard, Incompressible and Textures partitions.
     ///
     /// - Incompressible joins Standard when their sizes sum to strictly less than
-    ///   the limit. Even an empty Incompressible partition joins, which makes the
+    ///   the limit and, for a BSA under a size cap, their merged layout fits it.
+    ///   Even an empty Incompressible partition joins, which makes the
     ///   Standard Archive Incompressible, so it is written uncompressed.
     /// - Textures then join Standard on the same strict test. The merged Archive
     ///   keeps Standard's container: under FO4 the DDS files go into the `GNRL`
@@ -219,16 +257,109 @@ impl SplitArchives {
             mut incompressible,
             mut textures,
         } = self;
-        if merge.incompressible && incompressible.size + standard.size < standard.max_size {
+        if merge.incompressible && standard.can_absorb(&incompressible) {
             standard.absorb(&mut incompressible);
         }
-        if merge.textures && textures.size + standard.size < standard.max_size {
+        if merge.textures && standard.can_absorb(&textures) {
             standard.absorb(&mut textures);
         }
         full.extend([standard, incompressible, textures]);
         full.retain(|archive| !archive.is_empty());
         full
     }
+}
+
+/// The most bytes a planned BSA can take once written, kept against its game's
+/// size cap so every Archive CAO writes is one the game loads.
+///
+/// A BSA is its 36-byte header, one record per folder (16 bytes in v104, 24 in
+/// v105) with the folder's name as a length-prefixed, null-terminated string,
+/// one 16-byte record per file, every file name null-terminated, and then the
+/// file data. Writing never stores a file in more bytes than its source (see
+/// `write.rs`: a file compression would grow is stored as it is), so the source
+/// size bounds each file's data. Folder names are counted as the absolute
+/// parent paths, which are longer than the Mod-Root-relative names written, so
+/// the bound is safe without the Mod Root; it is the same whether an Archive is
+/// planned whole, merged, or rebuilt file by file for writing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CappedLayout {
+    cap: u64,
+    directory_record: u64,
+    directories: BTreeSet<PathBuf>,
+    bound: u64,
+}
+
+/// A BSA header's size.
+const BSA_HEADER: u64 = 36;
+/// A BSA file record's size: name hash, size and offset.
+const BSA_FILE_RECORD: u64 = 16;
+
+impl CappedLayout {
+    /// An empty BSA's layout under `cap`, or `None` for a container this does
+    /// not model: BA2s have no size cap.
+    fn new(cap: u64, version: ArchiveVersion) -> Option<Self> {
+        let directory_record = match version {
+            ArchiveVersion::Tes5 => 16,
+            ArchiveVersion::Sse => 24,
+            ArchiveVersion::Fo4 | ArchiveVersion::Fo4Dx => return None,
+        };
+        Some(Self {
+            cap,
+            directory_record,
+            directories: BTreeSet::new(),
+            bound: BSA_HEADER,
+        })
+    }
+
+    /// Counts `path`'s `size` bytes, its file record and name, and its folder
+    /// when the folder is new, unless that would take the bound past the cap.
+    /// Returns whether it was counted.
+    fn add(&mut self, path: &Path, size: u64) -> bool {
+        let parent = path.parent().unwrap_or(Path::new(""));
+        let folder = if self.directories.contains(parent) {
+            0
+        } else {
+            self.folder_bytes(parent)
+        };
+        let file = size
+            .saturating_add(BSA_FILE_RECORD)
+            .saturating_add(name_bytes(path.file_name().unwrap_or_default().as_ref()) + 1);
+        let bound = self.bound.saturating_add(folder).saturating_add(file);
+        if bound > self.cap {
+            return false;
+        }
+        self.bound = bound;
+        self.directories.insert(parent.to_path_buf());
+        true
+    }
+
+    /// The bound of this layout and `other` written as one BSA: one header, and
+    /// each folder both hold counted once.
+    fn merged_bound(&self, other: &Self) -> u64 {
+        let shared: u64 = self
+            .directories
+            .intersection(&other.directories)
+            .map(|folder| self.folder_bytes(folder))
+            .sum();
+        self.bound + other.bound - BSA_HEADER - shared
+    }
+
+    /// Takes `other`'s files into this layout, leaving `other` empty.
+    fn absorb(&mut self, other: &mut Self) {
+        self.bound = self.merged_bound(other);
+        self.directories.append(&mut other.directories);
+        other.bound = BSA_HEADER;
+    }
+
+    /// A folder's record and its name, length-prefixed and null-terminated.
+    fn folder_bytes(&self, folder: &Path) -> u64 {
+        self.directory_record + 1 + name_bytes(folder) + 1
+    }
+}
+
+/// The bytes `name` takes as UTF-8, which `ba2` writes no longer.
+fn name_bytes(name: &Path) -> u64 {
+    name.to_string_lossy().len() as u64
 }
 
 /// The sort key that orders paths as MSVC's `std::filesystem::path::compare`:
