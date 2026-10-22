@@ -21,8 +21,10 @@ use crate::textures::TextureProfile;
 /// past the game's Archive Size Cap (see [`Settings::for_profile`]).
 ///
 /// Build it once per Profile read and derive every Archive fact from that
-/// one value: the packer (`GameArchivePacker::new`) and the Archive
-/// extension [`profile_capabilities`] declares, so the two cannot disagree.
+/// one value: a run takes it with its Profile Capabilities from
+/// [`rules_and_capabilities`], and builds its packer (`GameArchivePacker::new`)
+/// from it, so the packer and the Archive extension the capabilities declare
+/// cannot disagree.
 pub fn archive_rules(settings: &ProfileSettings) -> Settings {
     Settings::for_profile(
         settings.bsa_game,
@@ -30,17 +32,28 @@ pub fn archive_rules(settings: &ProfileSettings) -> Settings {
     )
 }
 
+/// A profile's [`archive_rules`] and the Profile Capabilities its settings
+/// declare, built from that one rules value, so the capabilities' Archive
+/// extension is the one those rules write. A run hands the rules to its
+/// packer and compiles its routing from the capabilities.
+pub fn rules_and_capabilities(settings: &ProfileSettings) -> (Settings, ProfileCapabilities) {
+    let rules = archive_rules(settings);
+    let capabilities = capabilities_with(settings, &rules);
+    (rules, capabilities)
+}
+
 /// The Profile Capabilities a profile's settings declare, with the Archive
-/// extension its `archive_rules` write. This is the one place profile
-/// settings become capabilities.
-///
-/// `archive_rules` must be [`archive_rules`] of the same `settings`; taking
-/// the value rather than rebuilding it lets a caller hand the very same
-/// rules to its packer.
-pub fn profile_capabilities(
-    settings: &ProfileSettings,
-    archive_rules: &Settings,
-) -> ProfileCapabilities {
+/// extension its own [`archive_rules`] write; for a caller, such as the
+/// GUI's asset tabs, that needs no rules of its own.
+pub fn profile_capabilities(settings: &ProfileSettings) -> ProfileCapabilities {
+    rules_and_capabilities(settings).1
+}
+
+/// The Profile Capabilities `settings` declare, with the Archive extension
+/// `archive_rules` write. This is the one place profile settings become
+/// capabilities; it is private so every caller gets `archive_rules` from
+/// [`rules_and_capabilities`], and so from the same `settings`.
+fn capabilities_with(settings: &ProfileSettings, archive_rules: &Settings) -> ProfileCapabilities {
     let textures = settings.textures_enabled;
     let meshes = settings.meshes_enabled;
     let archives = settings.bsa_enabled;

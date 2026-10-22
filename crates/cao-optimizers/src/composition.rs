@@ -35,7 +35,7 @@ use crate::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
 use crate::backend::{OptimizerBackend, TextureResize, TextureSettings};
 use crate::headparts::{HeadpartList, ScanCancelled, scan_headparts};
 use crate::meshes::{MeshOptimizer, MeshSettings};
-use crate::profile::{archive_rules, mesh_target, profile_capabilities, texture_profile};
+use crate::profile::{mesh_target, rules_and_capabilities, texture_profile};
 
 /// Why the options cannot start a run. Nothing has run and nothing has changed.
 ///
@@ -308,8 +308,8 @@ impl ProfileConfigurationProvider {
         // Every Archive fact of the run comes from this one value: the
         // Archive extension routing compiles from here, and the packer and
         // the headpart scan's plugin extensions later.
-        let archive_rules = archive_rules(&settings);
-        let selected = SelectedProfile::new(profile_capabilities(&settings, &archive_rules))
+        let (archive_rules, capabilities) = rules_and_capabilities(&settings);
+        let selected = SelectedProfile::new(capabilities)
             .with_conversion_preference(settings.textures_convert_tga)
             .with_ignored_mods(ignored_mods)
             .with_packing_exclusions(files_to_not_pack);
@@ -542,7 +542,7 @@ mod tests {
             profile: Arc::new({
                 let settings = profile.load_settings().unwrap();
                 PreparedProfile {
-                    archive_rules: archive_rules(&settings),
+                    archive_rules: crate::profile::archive_rules(&settings),
                     settings: Arc::new(settings),
                     custom_headparts: Vec::new(),
                 }
