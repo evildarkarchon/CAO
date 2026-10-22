@@ -194,7 +194,13 @@ pub(crate) struct ArchiveFinalizationAccount {
     /// Whether the phase observed cancellation; it marks the run's
     /// cancellation observed when the phase finishes.
     pub(crate) cancelled: bool,
+    /// The phase-level verdict on whether the run may continue after the
+    /// phase: false after an unsafe output attempt, an unsafe Loading Plugin
+    /// publication, or a phase-level Unexpected Exception, whose durable
+    /// effects have no reliable boundary.
     pub(crate) safe_to_continue: bool,
+    /// What a phase-level failure reported, such as a capacity shortfall or
+    /// the escaped panic's message; empty when the phase did not fail.
     pub(crate) detail: String,
     /// Completed effects that no output attempt accounts for.
     pub(crate) mutations: Vec<ArchiveFinalizationMutation>,
