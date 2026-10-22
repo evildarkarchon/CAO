@@ -24,12 +24,24 @@ _Avoid_: Unpacked Asset, standalone file
 An Asset stored inside an Archive. It is shadowed by a Loose Asset with the same game path.
 _Avoid_: Packed file, archive entry
 
+**Profile**:
+A named set of one game's rules and the user's preferences for optimizing it: its Profile Capabilities, the game whose Archive naming rules apply, its Texture Target and Mesh Target, its Conversion Preference, and its Packing Exclusions, ignored-mods list and custom Headpart Meshes. Cathedral Assets Optimizer ships base Profiles and lets the user create and edit others.
+_Avoid_: Game mode, profile settings, preset
+
 **Profile Capability**:
 An Asset Kind or optimization behavior supported by the selected game profile. A run request that contradicts a Profile Capability is invalid.
 _Avoid_: Feature flag, UI availability
 
+**Texture Target**:
+The format a Profile compresses Textures to, and the formats it converts Textures away from.
+_Avoid_: Texture profile, output format
+
+**Mesh Target**:
+The NIF file, user and stream version a Profile writes Meshes as.
+_Avoid_: NIF version, mesh format
+
 **Selected Profile**:
-The profile facts one Optimization Run reads once, during Preparing: its Profile Capabilities, Conversion Preference, Archive naming rules, Texture and Mesh targets, Packing Exclusions, ignored-mods list, and custom Headpart Meshes. Every part of the run uses this one read.
+One Optimization Run's read of its Profile, taken once during Preparing: its Profile Capabilities, Conversion Preference, Archive naming rules, Texture Target and Mesh Target, Packing Exclusions, ignored-mods list, and custom Headpart Meshes. Every part of the run uses this one read.
 _Avoid_: Profile snapshot, profile settings
 
 **Conversion Preference**:
