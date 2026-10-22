@@ -28,7 +28,6 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::Error;
-use crate::execution::MutationState;
 use crate::routing::{ExecutionMode, RoutingPolicyRequest};
 use crate::run::mod_selection::resolve_mod_roots;
 use crate::run::{
@@ -229,52 +228,21 @@ fn escaped_work_detail(
 ///
 /// Unsafe work wins over cancellation; cancellation wins over cleanup errors;
 /// a failed cleanup service is fatal; any contained failure completes with failures.
+///
+/// Every completed attempt is read through Run Evidence's one
+/// completed-attempts view, and its Attempt Outcome alone decides whether it
+/// was safe to continue. Run Failures, finalization's phase-level verdict,
+/// cancellation and cleanup failures are read separately.
 fn classify_terminal_outcome(evidence: &RunEvidence) -> RunOutcome {
     let mut unsafe_work = !evidence.failures().is_empty();
     let mut contained_failure = false;
-    let attempts = evidence
-        .asset_attempts()
-        .iter()
-        .map(|attempt| {
-            let result = attempt.result.outcome();
-            (
-                result.mutation(),
-                result.succeeded(),
-                result.safe_to_continue(),
-            )
-        })
-        .chain(
-            evidence
-                .archive_extraction_attempts()
-                .iter()
-                .map(|attempt| {
-                    (
-                        attempt.outcome.mutation(),
-                        attempt.succeeded(),
-                        attempt.safe_to_continue(),
-                    )
-                }),
-        );
-    let finalization = evidence.archive_finalization();
-    if let Some(finalization) = finalization {
+    if let Some(finalization) = evidence.archive_finalization() {
         unsafe_work |= !finalization.safe_to_continue;
         contained_failure |= finalization.failure.is_some();
     }
-    let attempts = attempts.chain(
-        finalization
-            .into_iter()
-            .flat_map(|finalization| &finalization.attempts)
-            .map(|attempt| {
-                (
-                    attempt.outcome.mutation(),
-                    attempt.succeeded(),
-                    attempt.safe_to_continue(),
-                )
-            }),
-    );
-    for (mutation, succeeded, safe_to_continue) in attempts {
-        unsafe_work |= !safe_to_continue || mutation == MutationState::PartialOrUnknown;
-        contained_failure |= !succeeded;
+    for attempt in evidence.completed_attempts() {
+        unsafe_work |= !attempt.facts.safe_to_continue();
+        contained_failure |= !attempt.facts.succeeded();
     }
     if unsafe_work {
         return RunOutcome::Failed;
