@@ -55,11 +55,10 @@ use cao_core::CompletedMutation;
 use cao_core::execution::{AssetExecutionResult, MutationState};
 use cao_core::routing::RequestedWork;
 use cao_core::run::{
-    ArchiveFinalizationFailure, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
-    ArchiveFinalizationSettings, ArchiveNameKind, ArchiveReader, ArchiveWorkSettings,
-    CancellationToken, MutationKind, MutationSummary, OptimizationRunResult, PackedArchiveKind,
-    RunDiagnostic, RunFailure, RunObservationSink, RunOutcome, RunPhase, RunPhaseRecord,
-    RunProgress,
+    ArchiveFinalizationChoices, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
+    ArchiveFinalizationResult, ArchiveNameKind, ArchiveReader, CancellationToken, MutationKind,
+    MutationSummary, OptimizationRunResult, PackedArchiveKind, RunDiagnostic, RunFailure,
+    RunObservationSink, RunOutcome, RunPhase, RunPhaseRecord, RunProgress,
 };
 use cao_core::test_support::{
     ArchiveRunRequest, FakeArchivePacker, FakeArchiveReader, FakeVolumeProbe, Observed,
@@ -148,7 +147,7 @@ struct Finalizer {
     /// they depend on through [`capacity`] and
     /// [`FakeVolumeProbe::with_volumes`].
     probe: FakeVolumeProbe,
-    settings: ArchiveFinalizationSettings,
+    settings: ArchiveFinalizationChoices,
     /// When set, the run requests only Texture work.
     no_archive_creation: bool,
     /// The Selected Profile's Packing Exclusions, as the profile writes them.
@@ -256,10 +255,7 @@ impl Finalizer {
         }
         run.with_work(work)
             .with_packing_exclusions(self.files_to_not_pack.clone())
-            .with_archive_work(ArchiveWorkSettings {
-                finalization: self.settings,
-                ..ArchiveWorkSettings::default()
-            })
+            .with_archive_finalization(self.settings)
     }
 
     /// The staging estimate the phase reports when `root` has no capacity at
@@ -428,11 +424,11 @@ fn capacity_is_grouped_by_volume() {
         write_file(&root.join("textures/asset.dds"), b"source bytes");
     }
     let mut finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
             compress: false,
             delete_sources: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         ..Finalizer::default()
     };
@@ -476,10 +472,10 @@ fn an_idle_root_of_unknown_volume_does_not_inflate_capacity() {
     }
     std::fs::create_dir(&roots[2]).unwrap();
     let mut finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         ..Finalizer::default()
     };
@@ -520,11 +516,11 @@ fn a_panicking_volume_probe_is_an_unknown_volume() {
             write_file(&root.join("textures/asset.dds"), b"source bytes");
         }
         let mut finalizer = Finalizer {
-            settings: ArchiveFinalizationSettings {
+            settings: ArchiveFinalizationChoices {
                 create_dummy_plugins: false,
                 compress: false,
                 delete_sources: false,
-                ..ArchiveFinalizationSettings::default()
+                ..ArchiveFinalizationChoices::default()
             },
             ..Finalizer::default()
         };
@@ -666,10 +662,10 @@ fn a_disappearing_loading_plugin_keeps_its_fallback_reserved() {
         let earlier_plugin = root.join("mod.esm");
         write_file(&earlier_plugin, b"existing loading plugin");
         let mut finalizer = Finalizer {
-            settings: ArchiveFinalizationSettings {
+            settings: ArchiveFinalizationChoices {
                 compress: false,
                 create_dummy_plugins: false,
-                ..ArchiveFinalizationSettings::default()
+                ..ArchiveFinalizationChoices::default()
             },
             ..Finalizer::default()
         };
@@ -749,10 +745,10 @@ fn the_total_is_frozen_and_cancellation_falls_between_outputs() {
         let frozen_before_mutation = Arc::new(AtomicBool::new(false));
         let first_recorded_before_second = Arc::new(AtomicBool::new(false));
         let mut finalizer = Finalizer {
-            settings: ArchiveFinalizationSettings {
+            settings: ArchiveFinalizationChoices {
                 create_dummy_plugins: false,
                 compress: false,
-                ..ArchiveFinalizationSettings::default()
+                ..ArchiveFinalizationChoices::default()
             },
             ..Finalizer::default()
         };
@@ -843,9 +839,9 @@ fn cancellation_keeps_the_committed_archive_loadable() {
     }
     let no_plugin_before_attempts = Arc::new(AtomicBool::new(false));
     let mut finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         ..Finalizer::default()
     };
@@ -935,11 +931,11 @@ fn a_blocked_dummy_plugin_removal_is_a_contained_failure() {
     let holder = Arc::clone(&held);
     let probed = plugin.clone();
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
             compress: false,
             delete_sources: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         // After planning, block only the deletion; reads stay shared.
         probe: capacity(move |_| {
@@ -985,9 +981,9 @@ fn plugin_actions_for_existing_archives_are_mutation_facts() {
             write_file(&plugin, &fake_dummy_plugin());
         }
         let finalizer = Finalizer {
-            settings: ArchiveFinalizationSettings {
+            settings: ArchiveFinalizationChoices {
                 create_dummy_plugins: create_dummies,
-                ..ArchiveFinalizationSettings::default()
+                ..ArchiveFinalizationChoices::default()
             },
             ..Finalizer::default()
         };
@@ -1043,9 +1039,9 @@ fn only_exact_dummy_plugins_are_removed() {
     write_file(&full, b"full loading plugin");
     write_file(&unrelated, &dummy);
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         ..Finalizer::default()
     };
@@ -1093,9 +1089,9 @@ fn linked_dummy_plugins_are_never_removed() {
             std::fs::hard_link(&target, &plugin).unwrap();
         }
         let finalizer = Finalizer {
-            settings: ArchiveFinalizationSettings {
+            settings: ArchiveFinalizationChoices {
                 create_dummy_plugins: false,
-                ..ArchiveFinalizationSettings::default()
+                ..ArchiveFinalizationChoices::default()
             },
             ..Finalizer::default()
         };
@@ -1139,11 +1135,11 @@ fn a_dummy_plugin_replaced_after_planning_is_kept() {
         replacement.clone(),
     );
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
             compress: false,
             delete_sources: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         // Planning recognized the exact dummy; replace it before cleanup.
         probe: capacity(move |_| {
@@ -1187,9 +1183,9 @@ fn earlier_removals_survive_a_later_guard_failure() {
     // Shared reads let planning recognize the dummy; deletion stays blocked.
     let held = hold(&blocked, SHARE_READ);
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         ..Finalizer::default()
     };
@@ -1287,10 +1283,10 @@ fn staging_files_are_never_packed() {
         }
     });
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         assets,
         ..Finalizer::default()
@@ -1325,10 +1321,10 @@ fn packing_exclusions_are_neither_packed_nor_deleted() {
     write_file(&packed, b"packed bytes");
     write_file(&retained, b"retained bytes");
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         files_to_not_pack: vec!["TEXTURES/KEEP/".to_owned()],
         ..Finalizer::default()
@@ -1366,10 +1362,10 @@ fn deviation_16_packing_exclusions_match_within_the_mod_root() {
     write_file(&excluded, b"excluded bytes");
     write_file(&backslashed, b"backslash rule bytes");
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         files_to_not_pack: vec!["CalienteTools/".to_owned(), "textures\\keep\\".to_owned()],
         ..Finalizer::default()
@@ -1415,10 +1411,10 @@ fn a_failed_write_keeps_sources_and_existing_archives() {
         .open(&unavailable)
         .unwrap();
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         ..Finalizer::default()
     };
@@ -1459,10 +1455,10 @@ fn a_source_parent_swapped_for_a_junction_fails_the_write() {
         retained_parent.clone(),
     );
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         // Swap the parent for a junction before the output attempt starts.
         probe: capacity(move |_| {
@@ -1511,12 +1507,12 @@ fn planned_names_are_distinct_and_a_late_destination_wins() {
     let competed = AtomicBool::new(false);
     let competitor = first_destination.clone();
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
             compress: false,
             merge_incompressible: false,
             merge_textures: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         // A competing creator after planning, before the first attempt.
         probe: capacity(move |_| {
@@ -1576,9 +1572,9 @@ fn a_competing_plugin_at_the_planned_name_keeps_archive_and_sources() {
     let competitor = planned_plugin.clone();
     let occupied = AtomicBool::new(false);
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         probe: capacity(move |_| {
             if !occupied.swap(true, Ordering::SeqCst) {
@@ -1627,9 +1623,9 @@ fn an_unsafe_committed_output_attempt_stops_later_outputs_and_fails_the_run() {
     let competitor = root_plugin(&root);
     let occupied = AtomicBool::new(false);
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         // The first capacity sample comes after planning froze mod-a's
         // planned Dummy Plugin name and before any output attempt.
@@ -1690,9 +1686,9 @@ fn an_exact_dummy_at_the_planned_name_is_reused() {
     let written: Arc<Mutex<Option<SystemTime>>> = Arc::default();
     let (recorded, plugin) = (Arc::clone(&written), planned_plugin.clone());
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         probe: capacity(move |_| {
             let mut recorded = recorded.lock().unwrap();
@@ -1745,11 +1741,11 @@ fn outputs_sharing_a_dummy_plugin_publish_it_once() {
     write_file(&root.join("meshes/asset.nif"), b"mesh bytes");
     write_file(&root.join("textures/asset.dds"), b"texture bytes");
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             compress: false,
             delete_sources: false,
             merge_textures: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         ..Finalizer::default()
     };
@@ -1795,9 +1791,9 @@ fn a_vanished_loading_plugin_gets_its_fallback() {
     let removed = Arc::new(AtomicBool::new(false));
     let (flag, vanishing) = (Arc::clone(&removed), earlier_plugin.clone());
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         probe: capacity(move |_| {
             if !flag.load(Ordering::SeqCst) {
@@ -1866,9 +1862,9 @@ fn a_linked_loading_plugin_gets_an_ordinary_fallback() {
             return;
         }
         let finalizer = Finalizer {
-            settings: ArchiveFinalizationSettings {
+            settings: ArchiveFinalizationChoices {
                 compress: false,
-                ..ArchiveFinalizationSettings::default()
+                ..ArchiveFinalizationChoices::default()
             },
             ..Finalizer::default()
         };
@@ -1923,9 +1919,9 @@ fn links_at_every_plugin_name_keep_the_sources() {
     let linked = Arc::new(AtomicBool::new(false));
     let (flag, names, link_target) = (Arc::clone(&linked), recognized.clone(), target.clone());
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         // After planning, links occupy every recognized Loading Plugin name.
         probe: capacity(move |_| {
@@ -1975,9 +1971,9 @@ fn the_loading_plugin_stays_pinned_through_source_cleanup() {
             write_file(&plugin, b"existing loading plugin");
         }
         let finalizer = Finalizer {
-            settings: ArchiveFinalizationSettings {
+            settings: ArchiveFinalizationChoices {
                 compress: false,
-                ..ArchiveFinalizationSettings::default()
+                ..ArchiveFinalizationChoices::default()
             },
             ..Finalizer::default()
         };
@@ -2043,10 +2039,10 @@ fn a_locked_source_after_commit_continues_only_while_readable() {
         // Permit packing and verification reads, but deny deletion.
         let locked = Arc::new(hold(&source, SHARE_READ));
         let mut finalizer = Finalizer {
-            settings: ArchiveFinalizationSettings {
+            settings: ArchiveFinalizationChoices {
                 create_dummy_plugins: false,
                 compress: false,
-                ..ArchiveFinalizationSettings::default()
+                ..ArchiveFinalizationChoices::default()
             },
             ..Finalizer::default()
         };
@@ -2167,9 +2163,9 @@ fn split_outputs_take_counter_names_and_their_own_plugins() {
         write_file(&root.join(format!("meshes/{name}.nif")), b"twelve bytes");
     }
     let mut finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         ..Finalizer::default()
     };
@@ -2232,11 +2228,11 @@ fn deviation_21_separate_texture_games_never_merge_textures() {
             },
             // Merging even an empty Incompressible partition would make the
             // Standard Archive Incompressible, so leave it out of the picture.
-            settings: ArchiveFinalizationSettings {
+            settings: ArchiveFinalizationChoices {
                 create_dummy_plugins: false,
                 merge_incompressible: false,
                 merge_textures: true,
-                ..ArchiveFinalizationSettings::default()
+                ..ArchiveFinalizationChoices::default()
             },
             ..Finalizer::default()
         };
@@ -2309,9 +2305,9 @@ fn an_unexpected_failure_is_recorded_once() {
         write_file(&source, b"retained archive");
         write_file(&loose, b"source bytes");
         let finalizer = Finalizer {
-            settings: ArchiveFinalizationSettings {
+            settings: ArchiveFinalizationChoices {
                 compress: false,
-                ..ArchiveFinalizationSettings::default()
+                ..ArchiveFinalizationChoices::default()
             },
             // Planning lists the root's Archives and then its Plugins; the
             // output attempt lists nothing, so maintenance's first listing
@@ -2367,10 +2363,10 @@ fn a_packer_panicking_after_its_write_is_an_unexpected_exception_that_stops_late
     let empty_directory = root.join("empty/nested");
     std::fs::create_dir_all(&empty_directory).unwrap();
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         packer: FakeArchivePacker::panicking_after_write(),
         ..Finalizer::default()
@@ -2422,9 +2418,9 @@ fn a_plugin_maintenance_failure_keeps_recorded_attempts() {
     let (flag, packed_root, existing_root) =
         (Arc::clone(&failed), packed.clone(), existing.clone());
     let finalizer = Finalizer {
-        settings: ArchiveFinalizationSettings {
+        settings: ArchiveFinalizationChoices {
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
         // Planning lists mod-b before any output exists, so only
         // maintenance's listing comes after mod-a's commit.

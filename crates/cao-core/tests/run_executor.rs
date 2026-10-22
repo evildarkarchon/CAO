@@ -50,11 +50,13 @@ use cao_core::routing::{
     AssetOperation, ExecutionMode, PolicyValidationError, ProfileCapabilities, RequestedWork,
 };
 use cao_core::run::{
-    ArchiveFinalizationFailure, ArchiveFinalizationMutationKind, ArchivePrecedence, ArchiveReader,
-    CancellationToken, ModSelection, MutationKind, OptimizationRunResult, PhaseSkipReason,
-    RunConfigurationProvider, RunDiagnosticCode, RunExecutor, RunFailure, RunFailureCode,
-    RunOutcome, RunPhase, RunPhaseRecord, RunPhaseStatus, RunProgress, RunRequest,
-    SafetyCleanupService, SelectedProfile, TemporaryArtifactRegistry, create_run_id,
+    ArchiveFinalizationChoices, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
+    ArchivePrecedence, ArchiveReader, CancellationToken, MeshChoices, MeshLevel, ModSelection,
+    MutationKind, OptimizationRunResult, PhaseSkipReason, ResizeRatio, RunConfigurationProvider,
+    RunDiagnosticCode, RunExecutor, RunFailure, RunFailureCode, RunOutcome, RunPhase,
+    RunPhaseRecord, RunPhaseStatus, RunProgress, RunRequest, SafetyCleanupService, SelectedProfile,
+    SourceCleanup, TemporaryArtifactRegistry, TextureChoices, TextureResizeChoice, WorkChoices,
+    create_run_id,
 };
 use cao_core::test_support::{
     CallbackConfiguration, CountingCleanup, FakeArchivePacker, FakeArchiveReader, FakeVolumeProbe,
@@ -2374,7 +2376,8 @@ fn an_unowned_staging_directory_blocks_apply_and_is_untouched() {
 #[test]
 fn preparing_retains_the_resolved_root_and_policy() {
     let root = scratch_dir("executor/resolved-root");
-    let provider = CallbackConfiguration(Box::new(|identity| {
+    let provider = CallbackConfiguration(Box::new(|request| {
+        let identity = request.profile_identity();
         if identity != "test-profile" {
             return Err(Error::ConfigurationLoading(format!(
                 "unexpected profile {identity}"
@@ -2415,6 +2418,68 @@ fn preparing_retains_the_resolved_root_and_policy() {
     assert!(profile.prefers_conversion());
     assert_eq!(profile.ignored_mods(), ["ignored-mod"]);
     assert_eq!(profile.packing_exclusions(), ["readme.txt"]);
+}
+
+/// Spec #614: Preparing hands the provider the run's whole Run Request, so a
+/// provider reads the run's profile identity, Mod Selection and Work Choices
+/// from the request it is given at load rather than capturing them when it is
+/// built.
+#[test]
+fn the_provider_loads_from_the_runs_run_request() {
+    let root = scratch_dir("executor/provider-request");
+    let choices = WorkChoices {
+        textures: TextureChoices {
+            necessary: false,
+            compress: true,
+            mipmaps: true,
+            resize: TextureResizeChoice::Ratio(ResizeRatio::new(2, 4).unwrap()),
+        },
+        meshes: MeshChoices {
+            level: MeshLevel::new(2).unwrap(),
+            headparts: false,
+            resave: true,
+        },
+        archive_extraction: SourceCleanup::Remove,
+        archive_finalization: ArchiveFinalizationChoices {
+            compress: false,
+            merge_textures: true,
+            ..ArchiveFinalizationChoices::default()
+        },
+    };
+    let request = RunRequest::new(
+        "chosen-profile",
+        ExecutionMode::DryRun,
+        ModSelection::SingleModRoot(root.clone()),
+        Vec::new(),
+    )
+    .with_work_choices(choices);
+    let loaded = Arc::new(Mutex::new(Vec::<RunRequest>::new()));
+    let recorder = Arc::clone(&loaded);
+    let provider = CallbackConfiguration(Box::new(move |request: &RunRequest| {
+        recorder.lock().unwrap().push(request.clone());
+        Ok(sse_profile())
+    }));
+
+    let result = execute(
+        &request,
+        &mut CountingCleanup::default(),
+        Some(&provider),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.failures()
+    );
+    let loaded = loaded.lock().unwrap();
+    let [given] = loaded.as_slice() else {
+        panic!("Preparing loads exactly once: {loaded:?}");
+    };
+    assert_eq!(given.profile_identity(), "chosen-profile");
+    assert_eq!(given.mod_selection(), &ModSelection::SingleModRoot(root));
+    assert_eq!(given.work_choices(), &choices);
 }
 
 /// Origin: RunExecutorTests::policyConflictsFailPreparing (the ambiguous

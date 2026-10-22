@@ -1,14 +1,15 @@
 //! The composition root: `cao-gui`'s production wiring.
 //!
 //! Ported from C++ `ApplicationRunSetup` and `ApplicationRunWork`. Given the app
-//! directory, the selected profile and the options model, [`ApplicationRun::new`]
-//! validates the options, builds the Run Request, and wires a profile-backed
-//! Run Configuration Provider into an Optimization Run Service. During each
-//! run's Preparing, that provider builds the production Run Toolset from the
-//! same profile read as the run's Routing Policy, and a request that
+//! directory, [`run_service`] wires a profile-backed Run Configuration Provider
+//! into the Optimization Run Service that serves a whole session. Given the
+//! selected profile and the options model, [`run_request`] validates the
+//! options and builds each run's Run Request. During each run's Preparing, the
+//! provider builds the production Run Toolset from the same profile read as
+//! the run's Routing Policy and from the run's Run Request, and a request that
 //! contradicts the profile's Profile Capabilities fails there with a Policy
 //! Conflict. The integration tests go through
-//! it too, so they exercise the wiring users run.
+//! them too, so they exercise the wiring users run.
 //!
 //! Everything resolves against the app directory the caller passes: `profiles/`
 //! and `bin/hkxcmd.exe` here, and later `logs/` (deviation 1). Only `cao-gui`'s
@@ -21,11 +22,11 @@ use cao_archive::{Game, Settings};
 use cao_core::Error;
 use cao_core::routing::{ExecutionMode, ProfileCapabilities, ProfileCapability, RequestedWork};
 use cao_core::run::{
-    ArchiveFinalizationSettings, ArchiveSeams, ArchiveWorkSettings, AssetAttemptAdapter,
-    AssetBackendFactory, BackendCreation, BackendCreationError, CancellationToken, ModSelection,
-    OptimizationRunService, RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode,
-    RunEventDispatcher, RunHandle, RunPhase, RunRequest, RunToolset, SelectedProfile,
-    SourceCleanup, StartError,
+    ArchiveFinalizationChoices, ArchiveSeams, AssetAttemptAdapter, AssetBackendFactory,
+    BackendCreation, BackendCreationError, CancellationToken, MeshChoices, MeshLevel, ModSelection,
+    OptimizationRunService, ResizeRatio, ResizeSize, RunConfigurationProvider, RunDiagnostic,
+    RunDiagnosticCode, RunPhase, RunRequest, RunToolset, SelectedProfile, SourceCleanup,
+    TextureChoices, TextureResizeChoice, WorkChoiceError, WorkChoices,
 };
 use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
 use directxtex::DXGI_FORMAT;
@@ -40,78 +41,42 @@ use crate::textures::TextureProfile;
 
 /// Why the options cannot start a run. Nothing has run and nothing has changed.
 ///
-/// The option checks are C++ `makeApplicationRunRequest`'s; the C++ messages are
-/// kept so the GUI can show them unchanged.
+/// The form's mode and folder are checked here; every Work Choice invariant is
+/// checked only by its core constructor, whose [`WorkChoiceError`] this wraps.
+/// The messages are C++ `makeApplicationRunRequest`'s, so the GUI shows them
+/// unchanged.
 #[derive(Debug, thiserror::Error)]
 pub enum RunSetupError {
     /// A `mode` other than one mod or several mods, from a hand-edited file.
     #[error("This mode does not exist.")]
     UnsupportedMode(i32),
-    #[error("Mesh optimization level must be between 0 and 3.")]
-    MeshLevel(i32),
-    /// Deviation 18: checked only when resizing by size is enabled.
-    #[error("Texture target width and height must be even.")]
-    OddTextureSize,
-    #[error("Texture resizing requires non-zero width and height ratios.")]
-    ZeroTextureRatio,
-    #[error("Texture resizing requires non-zero width and height.")]
-    ZeroTextureSize,
     /// A relative folder would resolve against the working directory.
     #[error("The selected folder `{}` is not an absolute path.", .0.display())]
     RelativeSelection(PathBuf),
+    /// A Work Choice the form holds cannot be built: a Mesh level outside 0
+    /// to 3, or a zero ratio or a zero or odd size for the resize mode the
+    /// run uses.
+    #[error(transparent)]
+    WorkChoice(#[from] WorkChoiceError),
 }
 
-/// One run, set up and ready to start: its Run Request and the service that
-/// owns its production wiring.
+/// The production Optimization Run Service for the install at `app_dir`,
+/// wired with the profile-backed Run Configuration Provider.
 ///
-/// Keep it alive while the run executes: dropping it cancels and joins any run
-/// it started, as the C++ GUI's `_runService` did.
-pub struct ApplicationRun {
-    service: OptimizationRunService,
-    request: RunRequest,
-}
-
-impl ApplicationRun {
-    /// Sets up a run of `options` under `profile`, in the install at `app_dir`.
-    ///
-    /// The Run Request takes its intent from `options` alone; nothing is read
-    /// from the profile now. Everything the run needs from the profile,
-    /// including its Conversion Preference, is read once by its Run
-    /// Configuration Provider during Preparing, so an edit made before the run
-    /// starts is honoured.
-    ///
-    /// The request is not checked against the profile's Profile Capabilities
-    /// here: a request the profile cannot honour starts, and its Preparing
-    /// fails with a Policy Conflict Run Failure.
-    ///
-    /// # Errors
-    /// [`RunSetupError`] when the options are invalid.
-    pub fn new(app_dir: &Path, profile: &str, options: &Options) -> Result<Self, RunSetupError> {
-        // `run_request` is the one validation of `options`; the provider is
-        // wired from the request it built.
-        let request = run_request(profile, options)?;
-        let configuration = Arc::new(ProfileConfigurationProvider::new(
-            app_dir, &request, options,
-        ));
-        Ok(Self {
-            // The provider's Run Toolset does the work.
-            service: OptimizationRunService::new(Some(configuration)),
-            request,
-        })
-    }
-
-    /// The Run Request this run starts with.
-    pub fn request(&self) -> &RunRequest {
-        &self.request
-    }
-
-    /// Starts the run, sending its events to `dispatcher` on the Run Worker.
-    ///
-    /// # Errors
-    /// The service's synchronous [`StartError`], such as another active run.
-    pub fn start(&self, dispatcher: Option<RunEventDispatcher>) -> Result<RunHandle, StartError> {
-        self.service.start(self.request.clone(), dispatcher)
-    }
+/// One service serves every run of a session: the provider captures nothing
+/// per run, so each run's request, built by [`run_request`], carries all its
+/// intent. Nothing is read from the profile now. Everything a run needs from
+/// the profile, including its Conversion Preference, is read once by the
+/// provider during that run's Preparing, so an edit made before the run starts
+/// is honoured. A request the profile's Profile Capabilities cannot honour
+/// still starts, and its Preparing fails with a Policy Conflict Run Failure.
+///
+/// Keep the service alive while its runs execute: dropping it cancels and
+/// joins every run it still retains (ADR-0001), as the C++ GUI's
+/// `_runService` did.
+pub fn run_service(app_dir: &Path) -> OptimizationRunService {
+    // The provider's Run Toolset does the work.
+    OptimizationRunService::new(Some(Arc::new(ProfileConfigurationProvider::new(app_dir))))
 }
 
 /// Builds the Run Request for `options` under the profile identity `profile`:
@@ -123,21 +88,28 @@ impl ApplicationRun {
 /// work is requested when the level is above 0 or resaving is on; it covers
 /// both Standard and Terrain Meshes.
 ///
+/// The request also carries the form's Work Choices: its Texture, Mesh,
+/// Archive extraction and Archive Finalization choices, with ratio winning
+/// when both resize modes are on. They are carried whether or not their work
+/// is requested; requested work alone decides routing.
+///
 /// # Errors
-/// [`RunSetupError`] when an option is invalid or the selected folder is
-/// relative.
+/// The first [`RunSetupError`] found. The form's structure is checked first,
+/// its mode and then its selected folder, and its Work Choices only after
+/// that, in the order [`work_choices`] builds them.
 pub fn run_request(profile: &str, options: &Options) -> Result<RunRequest, RunSetupError> {
-    validate(options)?;
+    let mod_selection: fn(PathBuf) -> ModSelection = match options.mode {
+        OptimizationMode::SingleMod => ModSelection::SingleModRoot,
+        OptimizationMode::SeveralMods => ModSelection::ChildModRoots,
+        OptimizationMode::Unsupported(mode) => return Err(RunSetupError::UnsupportedMode(mode)),
+    };
     let selected = PathBuf::from(&options.user_path);
     // An empty folder is a structural Start Error the service reports itself.
     if !options.user_path.is_empty() && !selected.is_absolute() {
         return Err(RunSetupError::RelativeSelection(selected));
     }
-    let mod_selection = match options.mode {
-        OptimizationMode::SingleMod => ModSelection::SingleModRoot(selected),
-        OptimizationMode::SeveralMods => ModSelection::ChildModRoots(selected),
-        OptimizationMode::Unsupported(mode) => return Err(RunSetupError::UnsupportedMode(mode)),
-    };
+    let mod_selection = mod_selection(selected);
+    let work_choices = work_choices(options)?;
 
     let optimize_native_textures = options.textures_necessary
         || options.textures_compress
@@ -169,7 +141,61 @@ pub fn run_request(profile: &str, options: &Options) -> Result<RunRequest, RunSe
     } else {
         ExecutionMode::Apply
     };
-    Ok(RunRequest::new(profile, mode, mod_selection, work))
+    Ok(RunRequest::new(profile, mode, mod_selection, work).with_work_choices(work_choices))
+}
+
+/// The Work Choices of `options`, each built by its core constructor, the only
+/// place its invariant is checked.
+///
+/// Ratio wins when both resize modes are on, as in
+/// `MainOptimizer::optimizeTexture`. Only the resize mode the run uses is
+/// checked, so the unused one may hold any value (deviation 18: C++ rejected
+/// an odd size even when resizing by size was off or ratio won).
+///
+/// # Errors
+/// The first [`WorkChoiceError`] found: the resize choice's, then the Mesh
+/// level's.
+fn work_choices(options: &Options) -> Result<WorkChoices, WorkChoiceError> {
+    let resize = if options.textures_resize_ratio {
+        TextureResizeChoice::Ratio(ResizeRatio::new(
+            options.textures_target_width_ratio,
+            options.textures_target_height_ratio,
+        )?)
+    } else if options.textures_resize_size {
+        TextureResizeChoice::Size(ResizeSize::new(
+            options.textures_target_width,
+            options.textures_target_height,
+        )?)
+    } else {
+        TextureResizeChoice::None
+    };
+    Ok(WorkChoices {
+        textures: TextureChoices {
+            necessary: options.textures_necessary,
+            compress: options.textures_compress,
+            mipmaps: options.textures_mipmaps,
+            resize,
+        },
+        meshes: MeshChoices {
+            level: MeshLevel::new(options.meshes_optimization_level)?,
+            headparts: options.meshes_headparts,
+            resave: options.meshes_resave,
+        },
+        // "Delete backup" (`bBsaDeleteBackup`) removes an extracted Archive;
+        // otherwise it is kept as a `.bak`.
+        archive_extraction: if options.bsa_delete_backup {
+            SourceCleanup::Remove
+        } else {
+            SourceCleanup::Backup
+        },
+        archive_finalization: ArchiveFinalizationChoices {
+            compress: options.bsa_compress,
+            delete_sources: options.bsa_delete_source,
+            create_dummy_plugins: options.bsa_create_dummies,
+            merge_incompressible: options.bsa_merge_incompressible,
+            merge_textures: options.bsa_merge_textures,
+        },
+    })
 }
 
 /// Whether the options ask for Mesh work: a level above 0, or resaving, which
@@ -178,93 +204,37 @@ fn requests_mesh_work(options: &Options) -> bool {
     options.meshes_optimization_level > 0 || options.meshes_resave
 }
 
-/// C++ `makeApplicationRunRequest`'s numeric checks, in its order.
-fn validate(options: &Options) -> Result<(), RunSetupError> {
-    if let OptimizationMode::Unsupported(mode) = options.mode {
-        return Err(RunSetupError::UnsupportedMode(mode));
+/// The backend's Texture settings for a run's Texture choices.
+///
+/// The choice already holds one resize mode at most, since [`run_request`]
+/// let ratio win, and its constructors kept ratios and sizes non-zero.
+fn texture_settings(choices: &TextureChoices) -> TextureSettings {
+    let resize = match choices.resize {
+        TextureResizeChoice::None => TextureResize::None,
+        TextureResizeChoice::Ratio(ratio) => TextureResize::Ratio {
+            width: ratio.width(),
+            height: ratio.height(),
+        },
+        TextureResizeChoice::Size(size) => TextureResize::Size {
+            width: size.width(),
+            height: size.height(),
+        },
+    };
+    TextureSettings {
+        necessary: choices.necessary,
+        compress: choices.compress,
+        mipmaps: choices.mipmaps,
+        resize,
     }
-    if !(0..=3).contains(&options.meshes_optimization_level) {
-        return Err(RunSetupError::MeshLevel(options.meshes_optimization_level));
-    }
-    if options.textures_resize_size
-        && (!options.textures_target_width.is_multiple_of(2)
-            || !options.textures_target_height.is_multiple_of(2))
-    {
-        return Err(RunSetupError::OddTextureSize);
-    }
-    if options.textures_resize_ratio
-        && (options.textures_target_width_ratio == 0 || options.textures_target_height_ratio == 0)
-    {
-        return Err(RunSetupError::ZeroTextureRatio);
-    }
-    if options.textures_resize_size
-        && (options.textures_target_width == 0 || options.textures_target_height == 0)
-    {
-        return Err(RunSetupError::ZeroTextureSize);
-    }
-    Ok(())
 }
 
-/// The per-run optimizer settings, taken from the options model when the run is
-/// set up, as C++ `OptionsSnapshot` captures them.
-#[derive(Debug, Clone, Copy)]
-struct OptimizerSettings {
-    textures: TextureSettings,
-    meshes: MeshSettings,
-    /// What becomes of an extracted Archive: removed when "delete backup" is
-    /// on (`bBsaDeleteBackup`), otherwise kept as a `.bak`.
-    extracted_archive_cleanup: SourceCleanup,
-    /// Archive Finalization's choices. Whether it packs at all is the Routing
-    /// Policy's Archive creation request.
-    finalization: ArchiveFinalizationSettings,
-}
-
-impl OptimizerSettings {
-    /// Captures the options, which [`validate`] has already checked.
-    ///
-    /// # Panics
-    /// If the mesh level is outside 0 to 3, which `validate` rejects first.
-    fn from_options(options: &Options) -> Self {
-        // Ratio wins when both are on, as in `MainOptimizer::optimizeTexture`.
-        let resize = if options.textures_resize_ratio {
-            TextureResize::Ratio {
-                width: options.textures_target_width_ratio,
-                height: options.textures_target_height_ratio,
-            }
-        } else if options.textures_resize_size {
-            TextureResize::Size {
-                width: options.textures_target_width,
-                height: options.textures_target_height,
-            }
-        } else {
-            TextureResize::None
-        };
-        Self {
-            textures: TextureSettings {
-                necessary: options.textures_necessary,
-                compress: options.textures_compress,
-                mipmaps: options.textures_mipmaps,
-                resize,
-            },
-            meshes: MeshSettings {
-                level: u8::try_from(options.meshes_optimization_level)
-                    .expect("validate() keeps the mesh level within 0 to 3"),
-                headparts: options.meshes_headparts,
-                resave: options.meshes_resave,
-            },
-            extracted_archive_cleanup: if options.bsa_delete_backup {
-                SourceCleanup::Remove
-            } else {
-                SourceCleanup::Backup
-            },
-            finalization: ArchiveFinalizationSettings {
-                compress: options.bsa_compress,
-                delete_sources: options.bsa_delete_source,
-                create_dummy_plugins: options.bsa_create_dummies,
-                merge_incompressible: options.bsa_merge_incompressible,
-                merge_textures: options.bsa_merge_textures,
-            },
-        }
+/// The backend's Mesh settings for a run's Mesh choices. The level is
+/// already within 0 to 3, so nothing here can fail.
+fn mesh_settings(choices: &MeshChoices) -> MeshSettings {
+    MeshSettings {
+        level: choices.level.get(),
+        headparts: choices.headparts,
+        resave: choices.resave,
     }
 }
 
@@ -284,36 +254,31 @@ struct PreparedProfile {
 /// The Run Configuration Provider over a `profiles/` directory, ported from C++
 /// `ApplicationRunConfigurationProvider`.
 ///
-/// Each load re-reads the named profile's `profile.ini`, `ignoredMods.txt`,
-/// `FilesToNotPack.txt` and `customHeadparts.txt` during Preparing, on the
-/// Run Worker. From that one read it builds the run's [`SelectedProfile`]
-/// and its production Run Toolset, so the run's work uses the very same
-/// profile facts its routing did.
+/// Each load re-reads the profile the run's Run Request names
+/// (`profile.ini`, `ignoredMods.txt`, `FilesToNotPack.txt` and
+/// `customHeadparts.txt`) during Preparing, on the Run Worker. From that one
+/// read it builds the run's [`SelectedProfile`] and its production Run
+/// Toolset, so the run's work uses the very same profile facts its routing
+/// did. The run's Work Choices and Mod Selection come from the same request,
+/// so the provider holds no per-run state and can serve any number of runs.
 pub struct ProfileConfigurationProvider {
     profiles: Profiles,
-    /// The per-run choices the Run Toolset is built with.
-    work: RunWorkSettings,
+    /// The app directory's `bin/hkxcmd.exe`. It is never used to convert:
+    /// each run's backend gets a fresh copy, so each run checks for the exe
+    /// once, as each C++ run did.
+    hkxcmd: Hkxcmd,
 }
 
 impl ProfileConfigurationProvider {
-    /// A provider for the profiles of the install in `app_dir` that builds
-    /// each run's production Run Toolset with `options`. The headpart scan
-    /// walks the directory of `request`'s Mod Selection.
+    /// A provider for the profiles and `hkxcmd.exe` of the install in
+    /// `app_dir`.
     ///
-    /// This only wires; it does not validate. `request` must be the one
-    /// [`run_request`] built from `options`, which is where the options were
-    /// checked.
-    ///
-    /// # Panics
-    /// If `options` carries a mesh level [`run_request`] would have rejected.
-    pub fn new(app_dir: &Path, request: &RunRequest, options: &Options) -> Self {
+    /// It reads nothing now: each run's profile, Work Choices and Mod
+    /// Selection are read at load, from that run's Run Request.
+    pub fn new(app_dir: &Path) -> Self {
         Self {
             profiles: Profiles::new(app_dir),
-            work: RunWorkSettings {
-                settings: OptimizerSettings::from_options(options),
-                selected_folder: request.mod_selection().directory().to_path_buf(),
-                hkxcmd: Hkxcmd::in_app_dir(app_dir),
-            },
+            hkxcmd: Hkxcmd::in_app_dir(app_dir),
         }
     }
 
@@ -352,12 +317,25 @@ impl ProfileConfigurationProvider {
 }
 
 impl RunConfigurationProvider for ProfileConfigurationProvider {
-    /// Reads the profile once and builds the run's Selected Profile and
-    /// production Run Toolset from that read. Built only after every read
-    /// succeeded, so work never sees a partial profile.
-    fn load(&self, profile_identity: &str) -> Result<(SelectedProfile, RunToolset), Error> {
-        let (selected, profile) = self.read_profile(profile_identity)?;
-        let toolset = self.work.toolset(Arc::new(profile));
+    /// Reads the profile `request` names once and builds the run's Selected
+    /// Profile and production Run Toolset from that read. Built only after
+    /// every read succeeded, so work never sees a partial profile.
+    ///
+    /// The backend's Texture and Mesh settings come from the request's Work
+    /// Choices, and the headpart scan walks the request's Mod Selection
+    /// directory.
+    fn load(&self, request: &RunRequest) -> Result<(SelectedProfile, RunToolset), Error> {
+        let (selected, profile) = self.read_profile(request.profile_identity())?;
+        let choices = request.work_choices();
+        let work = RunWorkSettings {
+            textures: texture_settings(&choices.textures),
+            meshes: mesh_settings(&choices.meshes),
+            selected_folder: request.mod_selection().directory().to_path_buf(),
+            hkxcmd: self.hkxcmd.clone(),
+        };
+        // Core's Archive work reads its Archive choices from the request
+        // itself, so none of them enters the Toolset.
+        let toolset = work.toolset(Arc::new(profile));
         Ok((selected, toolset))
     }
 }
@@ -439,11 +417,15 @@ fn mesh_target(settings: &ProfileSettings) -> NifVersion {
     }
 }
 
-/// The per-run choices the production Run Toolset is built with, ported from
-/// what C++ `ApplicationRunWork` held.
+/// One run's backend settings, built at load from its Run Request, that the
+/// production Run Toolset is built with, ported from what C++
+/// `ApplicationRunWork` held.
 #[derive(Clone)]
 struct RunWorkSettings {
-    settings: OptimizerSettings,
+    /// The backend's Texture settings, from the request's Texture choices.
+    textures: TextureSettings,
+    /// The backend's Mesh settings, from the request's Mesh choices.
+    meshes: MeshSettings,
     /// The selected folder, which the headpart scan walks whole: C++ scanned
     /// `userPath`, so mods with a Mod Exclusion are scanned too.
     selected_folder: PathBuf,
@@ -466,10 +448,6 @@ impl RunWorkSettings {
             volume_probe: Arc::new(VolumeProbes),
             packer: Arc::new(archive_packer(&profile.settings)),
         };
-        let archive_work = ArchiveWorkSettings {
-            source_cleanup: self.settings.extracted_archive_cleanup,
-            finalization: self.settings.finalization,
-        };
         RunToolset::new(
             // The adapter creates the backend on the first Asset, as C++
             // creates its MainOptimizer, so a run with nothing to process
@@ -479,7 +457,6 @@ impl RunWorkSettings {
                 profile,
             })),
             seams,
-            archive_work,
         )
     }
 }
@@ -517,7 +494,7 @@ impl OptimizerBackendFactory {
         &self,
         stop: &CancellationToken,
     ) -> Result<(HeadpartList, Vec<RunDiagnostic>), ScanCancelled> {
-        if !self.work.settings.meshes.recognises_headparts() {
+        if !self.work.meshes.recognises_headparts() {
             return Ok((HeadpartList::default(), Vec::new()));
         }
         let profile = &self.profile;
@@ -561,15 +538,15 @@ impl AssetBackendFactory for OptimizerBackendFactory {
             return Ok(BackendCreation::Cancelled);
         };
         let settings = &self.profile.settings;
-        let meshes = MeshOptimizer::new(self.work.settings.meshes, mesh_target(settings))
-            .with_headparts(headparts);
+        let meshes =
+            MeshOptimizer::new(self.work.meshes, mesh_target(settings)).with_headparts(headparts);
         // The adapter calls this on the Run Worker, the thread that must join
         // COM. C++'s texture optimizer threw when it could not, and its run
         // contained the exception as an unsafe Operation Failure; the adapter
         // contains this error the same way. The scan's diagnostics travel with
         // the error, so the run still retains the plugins it could not read.
         let backend = match OptimizerBackend::new(
-            self.work.settings.textures,
+            self.work.textures,
             texture_profile(settings),
             meshes,
             self.work.hkxcmd.clone(),
@@ -614,16 +591,20 @@ mod tests {
     fn a_backend_failure_still_hands_back_the_unreadable_plugins() {
         let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let profile = Profiles::new(&app_dir).open("SSE");
-        let mut options = profile.load_options(&Options::default()).unwrap();
-        options.meshes_optimization_level = 1;
         let selection = std::env::temp_dir().join("cao-optimizers-unit/backend-failure");
         // A missing directory is the expected case; anything else surfaces below.
         let _ = std::fs::remove_dir_all(&selection);
         std::fs::create_dir_all(&selection).unwrap();
         std::fs::write(selection.join("Broken.esp"), truncated_headpart_plugin()).unwrap();
+        // The necessary Mesh level, so the headpart scan runs.
+        let meshes = MeshChoices {
+            level: MeshLevel::new(1).unwrap(),
+            ..MeshChoices::default()
+        };
         let mut factory = OptimizerBackendFactory {
             work: RunWorkSettings {
-                settings: OptimizerSettings::from_options(&options),
+                textures: texture_settings(&TextureChoices::default()),
+                meshes: mesh_settings(&meshes),
                 selected_folder: selection.clone(),
                 hkxcmd: Hkxcmd::in_app_dir(&app_dir),
             },

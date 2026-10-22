@@ -35,7 +35,7 @@ use crate::run::{
     CancellationToken, MutableRunEvidence, OptimizationRunResult, PhaseSkipReason,
     RunConfigurationProvider, RunEvidence, RunFailure, RunFailureCode, RunId, RunObservationSink,
     RunOutcome, RunPhase, RunPhaseRecord, RunPreparation, RunRequest, RunToolset, SelectedProfile,
-    TemporaryArtifactRegistry, run_worker_panic_detail, take_panic_message,
+    TemporaryArtifactRegistry, WorkChoices, run_worker_panic_detail, take_panic_message,
 };
 
 mod work_phases;
@@ -60,8 +60,13 @@ pub(crate) enum Stop {
 }
 
 /// The work phases of one run, as the executor's traversal calls them: with
-/// the run's preparation, its Run Toolset, its evidence lent mutably for the
-/// call, its Temporary Ownership registry and its token.
+/// the run's preparation, the Work Choices of its Run Request, its Run
+/// Toolset, its evidence lent mutably for the call, its Temporary Ownership
+/// registry and its token.
+///
+/// The Work Choices come from the Run Request, never from the Toolset or the
+/// preparation, so Archive extraction and Archive Finalization take their
+/// choices the same way the rest of the run's work does.
 ///
 /// Production work is the Run Toolset's work phases; the executor's own unit
 /// tests inject work that escapes as an error or a panic through
@@ -71,6 +76,7 @@ pub(crate) enum Stop {
 pub(crate) trait RunWork:
     FnOnce(
     &RunPreparation,
+    &WorkChoices,
     RunToolset,
     &mut MutableRunEvidence<'_>,
     &mut TemporaryArtifactRegistry,
@@ -82,6 +88,7 @@ pub(crate) trait RunWork:
 impl<F> RunWork for F where
     F: FnOnce(
         &RunPreparation,
+        &WorkChoices,
         RunToolset,
         &mut MutableRunEvidence<'_>,
         &mut TemporaryArtifactRegistry,
@@ -148,9 +155,7 @@ fn load_selected_profile(
     };
     let provider =
         provider.ok_or_else(|| failure("No run configuration provider is available".to_owned()))?;
-    match catch_unwind(AssertUnwindSafe(|| {
-        provider.load(request.profile_identity())
-    })) {
+    match catch_unwind(AssertUnwindSafe(|| provider.load(request))) {
         Ok(Ok(loaded)) => Ok(loaded),
         Ok(Err(error)) => Err(failure(error.to_string())),
         Err(payload) => Err(failure(format!(
@@ -207,7 +212,8 @@ fn prepare_run(
 }
 
 /// Runs every work phase, from Archive discovery through Archive
-/// Finalization, over the Run Toolset.
+/// Finalization, over the Run Toolset, with Archive extraction and Archive
+/// Finalization following `choices`, the Run Request's Work Choices.
 ///
 /// Phases are observed only through the run's Run Observation Sink and
 /// cancellation only through `stop`. Each panic is contained once, by the
@@ -216,12 +222,20 @@ fn prepare_run(
 /// Run Evidence invariant violations; a stop says why the work stopped.
 fn execute_toolset(
     preparation: &RunPreparation,
+    choices: &WorkChoices,
     mut toolset: RunToolset,
     evidence: &mut MutableRunEvidence<'_>,
     artifacts: &mut TemporaryArtifactRegistry,
     stop: &CancellationToken,
 ) -> Result<ControlFlow<Stop>, Error> {
-    work_phases::run_work_phases(preparation, &mut toolset, evidence, artifacts, stop)
+    work_phases::run_work_phases(
+        preparation,
+        choices,
+        &mut toolset,
+        evidence,
+        artifacts,
+        stop,
+    )
 }
 
 /// The Run Work Escaped detail of work that escaped with `outcome`, or
@@ -350,7 +364,8 @@ impl RunExecutor {
     /// lets the executor's own unit tests inject work that escapes as an
     /// error or a panic, which the work phases' own containment stops before
     /// it could. `run_work` is called only when Preparing succeeded for a
-    /// request with work, with the Run Toolset Preparing produced.
+    /// request with work, with the Run Toolset Preparing produced and the
+    /// request's Work Choices.
     ///
     /// # Panics
     ///
@@ -532,7 +547,14 @@ impl RunExecutor {
             (&preparation, request.has_requested_work(), toolset)
         {
             let outcome = catch_unwind(AssertUnwindSafe(|| {
-                run_work(prepared, toolset, evidence, artifacts, stop)
+                run_work(
+                    prepared,
+                    request.work_choices(),
+                    toolset,
+                    evidence,
+                    artifacts,
+                    stop,
+                )
             }));
             backend_cancelled =
                 matches!(outcome, Ok(Ok(ControlFlow::Break(Stop::BackendCancelled))));

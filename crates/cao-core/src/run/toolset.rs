@@ -4,10 +4,12 @@
 //!
 //! The configuration provider returns a [`RunToolset`] beside the
 //! [`SelectedProfile`](crate::run::SelectedProfile), built through
-//! [`RunToolset::new`] from the Asset attempt port, the run's
-//! [`ArchiveSeams`] and its [`ArchiveWorkSettings`]. Core runs Archive
-//! extraction and Archive Finalization over those seams, so one reader serves
-//! discovery, extraction and finalization by construction.
+//! [`RunToolset::new`] from the Asset attempt port and the run's
+//! [`ArchiveSeams`]. Core runs Archive extraction and Archive Finalization
+//! over those seams, so one reader serves discovery, extraction and
+//! finalization by construction. The Toolset carries no Work Choices: the
+//! Run Executor hands extraction and Archive Finalization their choices from
+//! the run's Run Request.
 //!
 //! The Toolset is the only way to the Archive work. The Run Executor reaches
 //! it through three crate-private steps, in phase order: Archive discovery's
@@ -51,10 +53,9 @@ use crate::run::archives::{self, Preflight, RootArchives, preflight};
 use crate::run::capacity::{CapacityCheck, FrozenVolumes};
 use crate::run::finalization;
 use crate::run::{
-    ArchiveExtractionPlan, ArchiveExtractionResult, ArchiveFinalizationHandle,
-    ArchiveFinalizationSettings, ArchivePacker, ArchivePrecedence, ArchiveReader,
-    CancellationToken, RunDiagnostic, RunPreparation, SourceCleanup, TemporaryArtifactRegistry,
-    VolumeProbe,
+    ArchiveExtractionPlan, ArchiveExtractionResult, ArchiveFinalizationChoices,
+    ArchiveFinalizationHandle, ArchivePacker, ArchivePrecedence, ArchiveReader, CancellationToken,
+    RunDiagnostic, RunPreparation, SourceCleanup, TemporaryArtifactRegistry, VolumeProbe,
 };
 
 /// Cancellation observed while an Asset backend initialized, before any attempt existed.
@@ -107,27 +108,6 @@ pub struct ArchiveSeams {
     pub packer: Arc<dyn ArchivePacker>,
 }
 
-/// The run's Archive work choices, captured from its options before
-/// scheduling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ArchiveWorkSettings {
-    /// What becomes of each source Archive once it is extracted.
-    pub source_cleanup: SourceCleanup,
-    /// How Archive Finalization packs and maintains Loading Plugins.
-    pub finalization: ArchiveFinalizationSettings,
-}
-
-impl Default for ArchiveWorkSettings {
-    /// The options model's defaults: extracted sources are backed up, and
-    /// Archive Finalization uses its default settings.
-    fn default() -> Self {
-        Self {
-            source_cleanup: SourceCleanup::Backup,
-            finalization: ArchiveFinalizationSettings::default(),
-        }
-    }
-}
-
 /// The Asset attempt port and Archive seams one Optimization Run's work goes
 /// through, built by Preparing from the same profile read as its Routing
 /// Policy.
@@ -145,8 +125,6 @@ pub struct RunToolset {
     /// The seams core assembles Archive discovery, extraction and Archive
     /// Finalization over.
     seams: ArchiveSeams,
-    /// The run's source cleanup and Archive Finalization settings.
-    settings: ArchiveWorkSettings,
     /// The volume identities every Capacity Check of the run shares, so each
     /// Mod Root's volume is looked up at most once per run.
     volumes: FrozenVolumes,
@@ -154,23 +132,19 @@ pub struct RunToolset {
 
 impl RunToolset {
     /// A Run Toolset whose Asset attempts go through `asset_attempt` and
-    /// whose Archive work core assembles over `seams` with `settings`.
+    /// whose Archive work core assembles over `seams`.
     ///
     /// The Run Executor extracts each planned Archive over the seams' reader
-    /// and the run's Capacity Check with `settings.source_cleanup`, logging
-    /// each success to the Application Log, and runs Archive Finalization
-    /// over the packer, reader and the run's Capacity Check with
-    /// `settings.finalization`. The seams' single reader therefore serves
-    /// Archive discovery, extraction and finalization alike.
-    pub fn new(
-        asset_attempt: Box<dyn AssetAttemptPort>,
-        seams: ArchiveSeams,
-        settings: ArchiveWorkSettings,
-    ) -> Self {
+    /// and the run's Capacity Check with the Run Request's Archive extraction
+    /// choice, logging each success to the Application Log, and runs Archive
+    /// Finalization over the packer, reader and the run's Capacity Check with
+    /// the Run Request's Archive Finalization choices. The seams' single
+    /// reader therefore serves Archive discovery, extraction and finalization
+    /// alike.
+    pub fn new(asset_attempt: Box<dyn AssetAttemptPort>, seams: ArchiveSeams) -> Self {
         Self {
             asset_attempt,
             seams,
-            settings,
             volumes: FrozenVolumes::default(),
         }
     }
@@ -214,20 +188,22 @@ impl RunToolset {
 
     /// Extracts one planned Archive with [`archives::extract_archive`] over
     /// the seams and the run's Capacity Check, cleaning up its source with
-    /// the run's [`SourceCleanup`], and logs a success to the Application Log.
+    /// `cleanup`, the Run Request's Archive extraction choice, and logs a
+    /// success to the Application Log.
     ///
     /// Never fails outright and never panics: extraction contains its own
     /// panics and classifies every failure by how far the attempt got.
     pub(crate) fn extract_archive(
         &self,
         plan: &ArchiveExtractionPlan,
+        cleanup: SourceCleanup,
         artifacts: &mut TemporaryArtifactRegistry,
     ) -> ArchiveExtractionResult {
         let attempt = archives::extract_archive(
             &self.seams,
             &self.capacity_check(),
             plan,
-            self.settings.source_cleanup,
+            cleanup,
             artifacts,
         );
         if attempt.succeeded() {
@@ -243,9 +219,9 @@ impl RunToolset {
     }
 
     /// Runs Archive Finalization with [`finalization::finalize_archives`]
-    /// over the seams and the run's Capacity Check with the run's
-    /// finalization settings, handing it `phase`, the just-opened Archive
-    /// Finalization phase, which it plans and finishes.
+    /// over the seams and the run's Capacity Check with `choices`, the Run
+    /// Request's Archive Finalization choices, handing it `phase`, the
+    /// just-opened Archive Finalization phase, which it plans and finishes.
     ///
     /// Archive Finalization contains its own panics as an Unexpected
     /// Exception, so callers need no second layer.
@@ -256,6 +232,7 @@ impl RunToolset {
     pub(crate) fn finalize_archives(
         &self,
         preparation: &RunPreparation,
+        choices: &ArchiveFinalizationChoices,
         phase: ArchiveFinalizationHandle<'_, '_>,
         artifacts: &mut TemporaryArtifactRegistry,
         cancelled: &dyn Fn() -> bool,
@@ -263,7 +240,7 @@ impl RunToolset {
         finalization::finalize_archives(
             &self.seams,
             &self.capacity_check(),
-            &self.settings.finalization,
+            choices,
             preparation,
             phase,
             artifacts,

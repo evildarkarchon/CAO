@@ -14,11 +14,11 @@ use std::sync::Arc;
 
 use cao_core::execution::{AssetExecutionFailure, MutationState};
 use cao_core::run::{OptimizationRunResult, RunOutcome};
-use cao_optimizers::composition::ApplicationRun;
+use cao_optimizers::composition::run_service;
 use cao_profiles::Options;
 use common::{
     STAGING_CONTROL_FILES, app_dir, edit_profile, profile_options, scratch_dir, serial,
-    snapshot_tree, staging_leftovers, write,
+    snapshot_tree, staging_leftovers, start_and_wait, write,
 };
 use nifly_sys::{LoadOptions, Nif};
 
@@ -88,8 +88,7 @@ fn mod_with_meshes(name: &str, meshes: &[(&str, &str)]) -> (PathBuf, PathBuf) {
 
 /// Runs `options` under `profile` to completion.
 fn run(app: &Path, profile: &str, options: &Options) -> Arc<OptimizationRunResult> {
-    let run = ApplicationRun::new(app, profile, options).unwrap();
-    run.start(None).unwrap().wait()
+    start_and_wait(&run_service(app), profile, options)
 }
 
 /// Asserts the run succeeded, showing its Run Failures otherwise.

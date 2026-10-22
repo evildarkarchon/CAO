@@ -19,8 +19,8 @@ use std::path::PathBuf;
 
 use crate::execution::MutationState;
 use crate::run::{
-    ArchiveFinalizationFailure, ArchiveFinalizationSettings, ArchiveWorkSettings,
-    CancellationToken, RunExecutor, RunOutcome, RunPhase, RunServices, create_run_id,
+    ArchiveFinalizationChoices, ArchiveFinalizationFailure, CancellationToken, RunExecutor,
+    RunOutcome, RunPhase, RunServices, create_run_id,
 };
 use crate::test_support::{ArchiveRunRequest, CountingCleanup, ScriptedToolset};
 
@@ -51,14 +51,13 @@ fn a_panic_after_the_plan_reaching_the_outer_containment_keeps_the_streamed_atte
         std::fs::write(&texture, b"source bytes").unwrap();
     }
     // One Texture per Mod Root plans one output each.
-    let run = ArchiveRunRequest::over_mods(&parent).with_archive_work(ArchiveWorkSettings {
-        finalization: ArchiveFinalizationSettings {
+    let run = ArchiveRunRequest::over_mods(&parent).with_archive_finalization(
+        ArchiveFinalizationChoices {
             compress: false,
             create_dummy_plugins: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
-        ..ArchiveWorkSettings::default()
-    });
+    );
     let configuration = run.configuration(ScriptedToolset::default());
     let packer = configuration.toolset.packer.clone();
     let mut cleanup = CountingCleanup::default();
@@ -72,7 +71,7 @@ fn a_panic_after_the_plan_reaching_the_outer_containment_keeps_the_streamed_atte
         },
         &CancellationToken::new(),
         create_run_id(),
-        move |preparation, toolset, evidence, artifacts, _stop| {
+        move |preparation, choices, toolset, evidence, artifacts, _stop| {
             let finalization = evidence.open_archive_finalization()?;
             // Planning and the first output poll before anything is
             // written; the poll before the second output is the first to
@@ -83,7 +82,13 @@ fn a_panic_after_the_plan_reaching_the_outer_containment_keeps_the_streamed_atte
                 }
                 false
             };
-            toolset.finalize_archives(preparation, finalization, artifacts, &panicking_poll)?;
+            toolset.finalize_archives(
+                preparation,
+                &choices.archive_finalization,
+                finalization,
+                artifacts,
+                &panicking_poll,
+            )?;
             Ok(ControlFlow::Continue(()))
         },
     );

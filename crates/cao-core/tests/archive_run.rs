@@ -1,8 +1,8 @@
 //! The test-support harness that drives Archive work through a whole
 //! Optimization Run (#596).
 //!
-//! [`ArchiveRunRequest`] builds an Apply request over one Mod Root, and the
-//! configuration that supplies its profile and Archive work settings, so a
+//! [`ArchiveRunRequest`] builds an Apply request over one Mod Root, carrying
+//! its Archive choices, and the configuration that supplies its profile, so a
 //! scenario reaches Archive Finalization as production does: the Archive
 //! creation request and the Packing Exclusions come from the profile, and
 //! Preparing makes the run's preparation. Each scenario asserts on the run's
@@ -11,29 +11,25 @@
 mod common;
 
 use cao_core::run::{
-    ArchiveFinalizationSettings, ArchiveWorkSettings, CancellationToken, RunOutcome, RunPhase,
-    RunPhaseStatus,
+    ArchiveFinalizationChoices, CancellationToken, RunOutcome, RunPhase, RunPhaseStatus,
 };
 use cao_core::test_support::{ArchiveRunRequest, ScriptedToolset};
 use common::{canonical, scratch_dir, write_tree};
 
 /// An Apply run built by the request builder reaches Archive Finalization
 /// with Archive creation requested, packs the Loose Asset its Packing
-/// Exclusion does not match, and packs it with the chosen Archive work
-/// settings.
+/// Exclusion does not match, and packs it with the Archive Finalization
+/// choices its Run Request carries.
 #[test]
 fn an_archive_run_packs_loose_assets_with_its_profile_exclusions_and_settings() {
     let root = canonical(&scratch_dir("archive-run-request")).join("mod");
     write_tree(&root, &["meshes/packed.nif", "meshes/keep/kept.nif"]);
     let archive_run = ArchiveRunRequest::new(&root)
         .with_packing_exclusions(["MESHES/KEEP/"])
-        .with_archive_work(ArchiveWorkSettings {
-            finalization: ArchiveFinalizationSettings {
-                compress: false,
-                create_dummy_plugins: false,
-                ..ArchiveFinalizationSettings::default()
-            },
-            ..ArchiveWorkSettings::default()
+        .with_archive_finalization(ArchiveFinalizationChoices {
+            compress: false,
+            create_dummy_plugins: false,
+            ..ArchiveFinalizationChoices::default()
         });
     let configuration = archive_run.configuration(ScriptedToolset::default());
 

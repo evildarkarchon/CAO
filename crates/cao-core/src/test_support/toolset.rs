@@ -10,7 +10,7 @@ use crate::Error;
 use crate::execution::AssetExecutionResult;
 use crate::routing::RoutedAsset;
 use crate::run::{
-    ArchiveSeams, ArchiveWorkSettings, AssetAttemptAdapter, AssetAttemptPort, AssetBackendFactory,
+    ArchiveSeams, AssetAttemptAdapter, AssetAttemptPort, AssetBackendFactory,
     AssetInitializationCancelled, CancellationToken, OptimizationRunResult,
     RunConfigurationProvider, RunDiagnostic, RunExecutor, RunObservationSink, RunRequest,
     RunServices, RunToolset, SafetyCleanupService, SelectedProfile, TemporaryArtifactRegistry,
@@ -59,9 +59,9 @@ pub enum AssetAttempts {
 /// Asset attempts are produced as `assets` says. Archive work is never
 /// scripted: `reader`, `volume_probe` and `packer` are the Toolset's
 /// Archive seams, and every Toolset is built through the production
-/// [`RunToolset::new`] over them. The Archive work settings are not part of
-/// the script: the provider that builds each Toolset owns them (see
-/// [`ProviderLoads::archive_work`]). Every run therefore does core's real
+/// [`RunToolset::new`] over them. The Archive choices are not part of the
+/// script, nor of any provider: the run's Archive work takes them from its
+/// Run Request, as in production. Every run therefore does core's real
 /// Archive extraction and Archive Finalization over the fakes, and a
 /// scenario observes that work through the run's Run Evidence and, only for
 /// what Run Evidence does not hold, the fakes' own records.
@@ -138,12 +138,10 @@ impl ScriptedToolset {
 
     /// A fresh Run Toolset over this script, as a provider returns for one
     /// run, built through the production [`RunToolset::new`] over the fake
-    /// Archive seams with the default Archive work settings: extracted
-    /// sources are backed up, as in production, and finalization uses its
-    /// default settings. A scripted fake backend, or a scripted adapter, is
+    /// Archive seams. A scripted fake backend, or a scripted adapter, is
     /// created afresh for each Toolset.
     pub fn toolset(self: &Arc<Self>) -> RunToolset {
-        self.toolset_over(self.fake_seams(), ArchiveWorkSettings::default())
+        self.toolset_over(self.fake_seams())
     }
 
     /// The Archive seams over this script's shared fakes: `reader`,
@@ -158,15 +156,11 @@ impl ScriptedToolset {
     }
 
     /// A fresh Run Toolset whose Asset attempts follow this script and whose
-    /// Archive work goes over `seams` with `settings`, which may be this
-    /// script's [`Self::fake_seams`] or any other reader, packer and volume
-    /// probe. It is built through the production [`RunToolset::new`], as
+    /// Archive work goes over `seams`, which may be this script's
+    /// [`Self::fake_seams`] or any other reader, packer and volume probe. It
+    /// is built through the production [`RunToolset::new`], as
     /// [`Self::toolset`] is.
-    pub fn toolset_over(
-        self: &Arc<Self>,
-        seams: ArchiveSeams,
-        settings: ArchiveWorkSettings,
-    ) -> RunToolset {
+    pub fn toolset_over(self: &Arc<Self>, seams: ArchiveSeams) -> RunToolset {
         let backend: Option<Box<dyn AssetAttemptPort>> = match &self.assets {
             AssetAttempts::FakeBackend(factory) => {
                 Some(Box::new(AssetAttemptAdapter::new(factory.clone())))
@@ -180,7 +174,6 @@ impl ScriptedToolset {
                 backend,
             }),
             seams,
-            settings,
         )
     }
 
@@ -236,44 +229,35 @@ impl AssetAttemptPort for ScriptedAssetAttempt {
 /// Archive seams, and the count of those loads.
 ///
 /// [`ToolsetConfiguration`] and [`SeamsConfiguration`] share it; they differ
-/// only in the Archive seams each load's Run Toolset goes over. It is the
-/// one owner of a provider's Archive work settings, as the production
-/// provider is: neither the Asset attempt script nor the seams carry them.
+/// only in the Archive seams each load's Run Toolset goes over. It carries no
+/// Archive choice, as the production provider carries none: the run's
+/// Archive work takes them from its Run Request.
 pub struct ProviderLoads {
     /// The Selected Profile every load returns.
     pub profile: SelectedProfile,
-    /// The source cleanup and Archive Finalization settings every load's Run
-    /// Toolset is built with. By default, extracted sources are backed up,
-    /// as in production, and finalization uses its default settings.
-    pub archive_work: ArchiveWorkSettings,
     /// How many times Preparing has loaded the provider so far.
     pub count: AtomicUsize,
 }
 
 impl ProviderLoads {
-    /// Loads of `profile` whose Toolsets are built with `archive_work`, none
-    /// made yet.
-    fn new(profile: SelectedProfile, archive_work: ArchiveWorkSettings) -> Self {
+    /// Loads of `profile`, none made yet.
+    fn new(profile: SelectedProfile) -> Self {
         Self {
             profile,
-            archive_work,
             count: AtomicUsize::new(0),
         }
     }
 
     /// Counts one load and returns the profile with a fresh Run Toolset whose
     /// Asset attempts follow `assets` and whose Archive work goes over
-    /// `seams` with [`Self::archive_work`].
+    /// `seams`.
     fn load(
         &self,
         assets: &Arc<ScriptedToolset>,
         seams: ArchiveSeams,
     ) -> Result<(SelectedProfile, RunToolset), Error> {
         self.count.fetch_add(1, Ordering::SeqCst);
-        Ok((
-            self.profile.clone(),
-            assets.toolset_over(seams, self.archive_work),
-        ))
+        Ok((self.profile.clone(), assets.toolset_over(seams)))
     }
 }
 
@@ -282,7 +266,7 @@ impl ProviderLoads {
 ///
 /// A scenario that scripts nothing passes a default [`ScriptedToolset`].
 pub struct ToolsetConfiguration {
-    /// The profile, Archive work settings and load count of every load.
+    /// The profile and load count of every load.
     pub loads: ProviderLoads,
     /// The Asset attempt script and the fake Archive seams every load's
     /// Toolset goes over; keep a clone, or read it here, to observe them.
@@ -290,11 +274,10 @@ pub struct ToolsetConfiguration {
 }
 
 impl ToolsetConfiguration {
-    /// A provider of `profile` and of `toolset`'s Toolsets, with the default
-    /// Archive work settings.
+    /// A provider of `profile` and of `toolset`'s Toolsets.
     pub fn new(profile: SelectedProfile, toolset: Arc<ScriptedToolset>) -> Self {
         Self {
-            loads: ProviderLoads::new(profile, ArchiveWorkSettings::default()),
+            loads: ProviderLoads::new(profile),
             toolset,
         }
     }
@@ -302,13 +285,6 @@ impl ToolsetConfiguration {
     /// A provider of the SSE-like [`sse_profile`] and of `toolset`'s Toolsets.
     pub fn sse(toolset: Arc<ScriptedToolset>) -> Self {
         Self::new(sse_profile(), toolset)
-    }
-
-    /// Builds every run's Toolset with `archive_work` instead of the default
-    /// Archive work settings.
-    pub fn with_archive_work(mut self, archive_work: ArchiveWorkSettings) -> Self {
-        self.loads.archive_work = archive_work;
-        self
     }
 }
 
@@ -335,7 +311,7 @@ pub fn execute_run(
 }
 
 impl RunConfigurationProvider for ToolsetConfiguration {
-    fn load(&self, _profile_identity: &str) -> Result<(SelectedProfile, RunToolset), Error> {
+    fn load(&self, _request: &RunRequest) -> Result<(SelectedProfile, RunToolset), Error> {
         self.loads.load(&self.toolset, self.toolset.fake_seams())
     }
 }
@@ -350,13 +326,13 @@ pub type SeamsBuilder = Box<dyn Fn() -> ArchiveSeams + Send + Sync>;
 /// Unlike [`ToolsetConfiguration`], its Archive seams are not the typed
 /// fakes, so a scenario can drive a run over any reader, packer and volume
 /// probe, such as `cao-optimizers`' production adapters with its own probes.
-/// The Toolset is built through the production [`RunToolset::new`] with
-/// [`ProviderLoads::archive_work`], so the run does core's real Archive work
-/// over the seams. Asset attempts follow `assets` as [`ScriptedToolset`]
+/// The Toolset is built through the production [`RunToolset::new`], so the
+/// run does core's real Archive work over the seams, with the choices its
+/// Run Request carries. Asset attempts follow `assets` as [`ScriptedToolset`]
 /// scripts them; only its Asset attempt script is used, never its fake
 /// Archive seams.
 pub struct SeamsConfiguration {
-    /// The profile, Archive work settings and load count of every load.
+    /// The profile and load count of every load.
     pub loads: ProviderLoads,
     /// Called once per run, as Preparing loads the configuration, so each
     /// run's Toolset has seams of its own.
@@ -366,15 +342,11 @@ pub struct SeamsConfiguration {
 }
 
 impl SeamsConfiguration {
-    /// A provider of `profile` and of Toolsets over the seams `seams` builds,
-    /// with `archive_work`. Every Asset attempt succeeds with no mutation.
-    pub fn new(
-        profile: SelectedProfile,
-        seams: SeamsBuilder,
-        archive_work: ArchiveWorkSettings,
-    ) -> Self {
+    /// A provider of `profile` and of Toolsets over the seams `seams` builds.
+    /// Every Asset attempt succeeds with no mutation.
+    pub fn new(profile: SelectedProfile, seams: SeamsBuilder) -> Self {
         Self {
-            loads: ProviderLoads::new(profile, archive_work),
+            loads: ProviderLoads::new(profile),
             seams,
             assets: Arc::new(ScriptedToolset::default()),
         }
@@ -388,7 +360,7 @@ impl SeamsConfiguration {
 }
 
 impl RunConfigurationProvider for SeamsConfiguration {
-    fn load(&self, _profile_identity: &str) -> Result<(SelectedProfile, RunToolset), Error> {
+    fn load(&self, _request: &RunRequest) -> Result<(SelectedProfile, RunToolset), Error> {
         self.loads.load(&self.assets, (self.seams)())
     }
 }

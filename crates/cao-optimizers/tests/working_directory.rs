@@ -7,8 +7,8 @@
 mod common;
 
 use cao_core::run::RunOutcome;
-use cao_optimizers::composition::ApplicationRun;
-use common::{app_dir, dry_run_textures, edit_profile, write_dds};
+use cao_optimizers::composition::run_service;
+use common::{app_dir, dry_run_textures, edit_profile, start_and_wait, write_dds};
 use directxtex::DXGI_FORMAT_R8G8B8A8_UNORM;
 
 #[test]
@@ -27,8 +27,11 @@ fn profiles_resolve_against_the_app_directory_not_the_working_directory() {
     edit_profile(&decoy, "SSE", "bsaGame", "7");
     std::env::set_current_dir(&decoy).unwrap();
 
-    let run = ApplicationRun::new(&app, "SSE", &dry_run_textures(&app, &mod_root)).unwrap();
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(
+        &run_service(&app),
+        "SSE",
+        &dry_run_textures(&app, &mod_root),
+    );
 
     assert_eq!(
         result.outcome(),

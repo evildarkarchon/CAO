@@ -170,7 +170,7 @@ fn escaped_work_fails_the_run_at_its_phase_and_safety_cleanup_still_removes_its_
             execute(
                 &request,
                 &mut cleanup,
-                |preparation, _toolset, evidence, artifacts, _stop| {
+                |preparation, _choices, _toolset, evidence, artifacts, _stop| {
                     staged = Some(discover_and_stage(preparation, evidence, artifacts)?);
                     fault()
                 },
@@ -235,7 +235,7 @@ fn a_diagnostic_retained_before_contained_work_panics_is_published_before_safety
         &request,
         &mut cleanup,
         Some(&sink),
-        move |_preparation, _toolset, evidence, _artifacts, _stop| {
+        move |_preparation, _choices, _toolset, evidence, _artifacts, _stop| {
             evidence.record_phase(RunPhaseRecord::executed(
                 RunPhase::DiscoveringArchives,
                 None,
@@ -299,7 +299,7 @@ fn a_stop_reporting_backend_cancellation_is_recorded_at_safety_cleanup() {
             },
             &stop,
             create_run_id(),
-            move |_preparation, _toolset, evidence, _artifacts, _stop| {
+            move |_preparation, _choices, _toolset, evidence, _artifacts, _stop| {
                 evidence.record_phase(RunPhaseRecord::executed(
                     RunPhase::DiscoveringArchives,
                     None,
@@ -339,7 +339,7 @@ fn an_evidence_invariant_violation_panics_only_after_safety_cleanup() {
         execute(
             &request,
             &mut cleanup,
-            |preparation, _toolset, evidence, artifacts, _stop| {
+            |preparation, _choices, _toolset, evidence, artifacts, _stop| {
                 staged = Some(discover_and_stage(preparation, evidence, artifacts)?);
                 // Opening Processing Assets before any Effective Asset Tree
                 // discovery is a producer bug.

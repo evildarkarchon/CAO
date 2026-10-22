@@ -25,15 +25,16 @@ use std::time::{Duration, SystemTime};
 use cao_archive::{ArchiveFormat, Fo4Container, Game, ReadArchive, Settings};
 use cao_core::execution::MutationState;
 use cao_core::run::{
-    ArchiveFinalizationMutationKind, ArchiveFinalizationResult, ArchiveFinalizationSettings,
-    ArchiveNameKind, ArchivePacker, ArchiveWorkSettings, CancellationToken, MutationKind,
-    RunOutcome, VolumeProbe,
+    ArchiveFinalizationChoices, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
+    ArchiveNameKind, ArchivePacker, CancellationToken, MutationKind, RunOutcome, VolumeProbe,
 };
 use cao_core::test_support::ArchiveRunRequest;
 use cao_optimizers::archives::{GameArchivePacker, VolumeProbes};
-use cao_optimizers::composition::ApplicationRun;
+use cao_optimizers::composition::run_service;
 use common::archive_run::production_seams_for;
-use common::{app_dir, canonical, profile_options, scratch_dir, serial, write, write_dds};
+use common::{
+    app_dir, canonical, profile_options, scratch_dir, serial, start_and_wait, write, write_dds,
+};
 use directxtex::DXGI_FORMAT_R8G8B8A8_UNORM;
 
 /// A volume probe answering the same free space for every Mod Root, and each
@@ -63,7 +64,7 @@ fn mod_root(scenario: &str, name: &str) -> PathBuf {
 fn finalize(
     game: Game,
     root: &Path,
-    settings: ArchiveFinalizationSettings,
+    settings: ArchiveFinalizationChoices,
     capacity: Option<u64>,
 ) -> ArchiveFinalizationResult {
     finalize_probing(game, root, settings, Arc::new(Capacity(capacity)))
@@ -73,7 +74,7 @@ fn finalize(
 fn finalize_probing(
     game: Game,
     root: &Path,
-    settings: ArchiveFinalizationSettings,
+    settings: ArchiveFinalizationChoices,
     capacity: Arc<dyn VolumeProbe>,
 ) -> ArchiveFinalizationResult {
     let extension = GameArchivePacker::new(Settings::get(game))
@@ -82,10 +83,7 @@ fn finalize_probing(
         .clone();
     let archive_run = ArchiveRunRequest::new(root)
         .with_archive_extension(extension)
-        .with_archive_work(ArchiveWorkSettings {
-            finalization: settings,
-            ..ArchiveWorkSettings::default()
-        });
+        .with_archive_finalization(settings);
     let configuration = archive_run.seams_configuration(production_seams_for(game, capacity));
 
     let result = archive_run.execute(&configuration, None, &CancellationToken::new());
@@ -142,7 +140,7 @@ fn the_capacity_estimate_covers_the_published_archive_and_plugin() {
     ] {
         let root = mod_root(&format!("estimate-{game:?}"), "mod");
         write(&root, "meshes/asset.nif", &[b'x'; 8192]);
-        let settings = ArchiveFinalizationSettings::default();
+        let settings = ArchiveFinalizationChoices::default();
 
         let rejected = finalize(game, &root, settings, Some(0));
         let detail = rejected.attempts[0].outcome.failure().unwrap().detail();
@@ -180,7 +178,7 @@ fn existing_archive_plugin_names_follow_the_profile() {
         let root = mod_root(&format!("existing-names-{archive}"), "mod");
         write(&root, archive, b"retained archive");
 
-        let result = finalize(game, &root, ArchiveFinalizationSettings::default(), None);
+        let result = finalize(game, &root, ArchiveFinalizationChoices::default(), None);
 
         assert!(result.attempts.is_empty());
         assert_eq!(result.failure, None, "{archive}: {}", result.detail);
@@ -225,7 +223,7 @@ fn existing_fo4_archives_share_one_loading_plugin() {
         let result = finalize(
             Game::Fo4,
             &root,
-            ArchiveFinalizationSettings::default(),
+            ArchiveFinalizationChoices::default(),
             None,
         );
 
@@ -266,9 +264,9 @@ fn output_names_come_from_full_plugins_not_exact_dummies() {
         );
         write(&root, "dummy.esp", &dummy(game));
         write(&root, "loader.esm", &vec![0u8; dummy(game).len()]);
-        let settings = ArchiveFinalizationSettings {
+        let settings = ArchiveFinalizationChoices {
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         };
 
         let result = finalize(game, &root, settings, None);
@@ -326,9 +324,9 @@ fn a_plugin_appearing_at_another_recognized_name_is_reused() {
                 VolumeProbes.volume_identity(root)
             }
         }
-        let settings = ArchiveFinalizationSettings {
+        let settings = ArchiveFinalizationChoices {
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         };
 
         let result = finalize_probing(
@@ -375,10 +373,10 @@ fn deviation_21_fo4_textures_always_get_a_compressed_dx10_ba2() {
         64,
     );
     write(&root, "meshes/asset.nif", &b"NiTriShape ".repeat(200));
-    let settings = ArchiveFinalizationSettings {
+    let settings = ArchiveFinalizationChoices {
         compress: false,
         merge_textures: true,
-        ..ArchiveFinalizationSettings::default()
+        ..ArchiveFinalizationChoices::default()
     };
 
     let result = finalize(Game::Fo4, &root, settings, None);
@@ -418,7 +416,7 @@ fn quarantined_files_are_never_packed() {
             b"quarantined texture bytes",
         );
 
-        let result = finalize(game, &root, ArchiveFinalizationSettings::default(), None);
+        let result = finalize(game, &root, ArchiveFinalizationChoices::default(), None);
 
         assert_eq!(result.attempts.len(), 1, "{game:?}");
         let attempt = &result.attempts[0];
@@ -522,8 +520,7 @@ fn an_sse_apply_packs_loose_assets_into_loadable_archives() {
     options.bsa_create = true;
     // The options model's default; the shipped `settings.ini` lacks the key.
     options.bsa_merge_incompressible = true;
-    let run = ApplicationRun::new(&app, "SSE", &options).unwrap();
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(&run_service(&app), "SSE", &options);
 
     assert_eq!(result.outcome(), RunOutcome::Succeeded, "{result:?}");
     let finalization = result.archive_finalization().unwrap();
@@ -577,4 +574,67 @@ fn an_sse_apply_packs_loose_assets_into_loadable_archives() {
         .unwrap();
     // Two Archives, one Dummy Plugin and five pruned directories.
     assert_eq!(summary.committed, 2 + 1 + 5);
+}
+
+/// Spec (#618): one production service serves a session. Two Apply runs
+/// started on it in turn, the first compressing and deleting the packed
+/// sources and the second doing neither, each pack by their own Run
+/// Request's Archive Finalization choices, not the choices of the run before.
+#[test]
+fn one_service_finalizes_each_run_with_its_own_archive_finalization_choices() {
+    let _serial = serial();
+    let app = app_dir("finalization-one-service");
+    let service = run_service(&app);
+    let roots = ["First", "Second"].map(|name| {
+        let root = app.join("mods").join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        let root = canonical(&root);
+        // Repetitive bytes, so a compressed Archive really compresses them.
+        write(&root, "meshes/thing.nif", &b"NiTriShape ".repeat(300));
+        root
+    });
+
+    let mut options = profile_options(&app, "SSE");
+    options.dry_run = false;
+    options.textures_necessary = false;
+    options.textures_compress = false;
+    options.textures_mipmaps = false;
+    options.textures_resize_ratio = false;
+    options.textures_resize_size = false;
+    options.meshes_optimization_level = 0;
+    options.meshes_resave = false;
+    options.animations_optimization = false;
+    options.bsa_extract = false;
+    options.bsa_create = true;
+
+    options.user_path = roots[0].to_string_lossy().into_owned();
+    options.bsa_compress = true;
+    options.bsa_delete_source = true;
+    let first = start_and_wait(&service, "SSE", &options);
+
+    options.user_path = roots[1].to_string_lossy().into_owned();
+    options.bsa_compress = false;
+    options.bsa_delete_source = false;
+    let second = start_and_wait(&service, "SSE", &options);
+
+    for result in [&first, &second] {
+        assert_eq!(result.outcome(), RunOutcome::Succeeded, "{result:?}");
+    }
+    let packed = |archive: &Path| {
+        let assets = open(archive).archived_assets().unwrap();
+        assert_eq!(assets.len(), 1, "{}", archive.display());
+        (assets[0].name.to_lowercase(), assets[0].compressed)
+    };
+    // The first run compressed its Archive and deleted the packed source.
+    assert_eq!(
+        packed(&roots[0].join("First.bsa")),
+        (r"meshes\thing.nif".to_owned(), true)
+    );
+    assert!(!roots[0].join("meshes/thing.nif").exists());
+    // The second run neither compressed nor deleted.
+    assert_eq!(
+        packed(&roots[1].join("Second.bsa")),
+        (r"meshes\thing.nif".to_owned(), false)
+    );
+    assert!(roots[1].join("meshes/thing.nif").exists());
 }

@@ -19,8 +19,9 @@
 //! real Run Executor with the services a scenario supplies.
 //!
 //! [`ArchiveRunRequest`] builds an Apply request over one Mod Root that
-//! requests Archive creation, with the profile and Archive work settings its
-//! configuration supplies, so a scenario drives Archive extraction and
+//! requests Archive creation, carrying the run's Archive choices on the Run
+//! Request and supplying the profile through its configuration, so a
+//! scenario drives Archive extraction and
 //! Archive Finalization through a whole Optimization Run (#596). It can
 //! also select several Mod Roots, request other work, or give the profile
 //! another Archive extension, and executes its run (#597).

@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use crate::routing::{ExecutionMode, RequestedWork};
 use crate::run::{
-    ArchiveWorkSettings, CancellationToken, ModSelection, OptimizationRunResult,
-    RunConfigurationProvider, RunObservationSink, RunRequest, SelectedProfile,
+    ArchiveFinalizationChoices, CancellationToken, ModSelection, OptimizationRunResult,
+    RunConfigurationProvider, RunObservationSink, RunRequest, SelectedProfile, SourceCleanup,
+    WorkChoices,
 };
 use crate::test_support::{
     CountingCleanup, ScriptedToolset, SeamsBuilder, SeamsConfiguration, ToolsetConfiguration,
@@ -29,7 +30,10 @@ use crate::test_support::{
 /// A scenario may instead select every child Mod Root of a mods directory
 /// ([`Self::over_mods`]), request other work ([`Self::with_work`]), or give
 /// the profile another Archive extension ([`Self::with_archive_extension`]),
-/// such as FO4's `.ba2` (#597).
+/// such as FO4's `.ba2` (#597). It may also set the Run Request's Archive
+/// extraction ([`Self::with_archive_extraction`]) and Archive Finalization
+/// ([`Self::with_archive_finalization`]) choices, which the run's Archive
+/// work reads from the request, as production's does.
 pub struct ArchiveRunRequest {
     /// The Mod Selection the run resolves: one Mod Root by default.
     selection: ModSelection,
@@ -41,15 +45,16 @@ pub struct ArchiveRunRequest {
     /// The Selected Profile's Packing Exclusion rules, as `FilesToNotPack.txt`
     /// spells them.
     packing_exclusions: Vec<String>,
-    /// The source cleanup and Archive Finalization settings the run's Toolset
-    /// is built with. The request is their one source: every provider it
-    /// makes builds its Toolsets with them.
-    archive_work: ArchiveWorkSettings,
+    /// The Work Choices the Run Request carries, of which only the Archive
+    /// extraction and Archive Finalization choices are ever changed here.
+    /// The Run Request is their one source, as in production: no provider
+    /// this builder makes carries any choice.
+    work_choices: WorkChoices,
 }
 
 impl ArchiveRunRequest {
     /// An Apply run over `mod_root` that requests only Archive creation, with
-    /// no Packing Exclusions and the default Archive work settings.
+    /// no Packing Exclusions and the default Work Choices.
     pub fn new(mod_root: impl Into<PathBuf>) -> Self {
         Self::selecting(ModSelection::SingleModRoot(mod_root.into()))
     }
@@ -68,7 +73,7 @@ impl ArchiveRunRequest {
             work: vec![RequestedWork::ArchiveCreation],
             archive_extension: ".bsa".to_owned(),
             packing_exclusions: Vec::new(),
-            archive_work: ArchiveWorkSettings::default(),
+            work_choices: WorkChoices::default(),
         }
     }
 
@@ -103,15 +108,22 @@ impl ArchiveRunRequest {
         }
     }
 
-    /// Replaces the Archive work settings the run's Toolset is built with.
-    pub fn with_archive_work(self, archive_work: ArchiveWorkSettings) -> Self {
-        Self {
-            archive_work,
-            ..self
-        }
+    /// Replaces the Run Request's Archive extraction choice: what becomes of
+    /// each source Archive once it is extracted. By default it is backed up.
+    pub fn with_archive_extraction(mut self, cleanup: SourceCleanup) -> Self {
+        self.work_choices.archive_extraction = cleanup;
+        self
     }
 
-    /// The Apply request over the Mod Selection.
+    /// Replaces the Run Request's Archive Finalization choices. By default
+    /// they are [`ArchiveFinalizationChoices::default`].
+    pub fn with_archive_finalization(mut self, choices: ArchiveFinalizationChoices) -> Self {
+        self.work_choices.archive_finalization = choices;
+        self
+    }
+
+    /// The Apply request over the Mod Selection, carrying the chosen Work
+    /// Choices.
     pub fn request(&self) -> RunRequest {
         RunRequest::new(
             "SkyrimSE",
@@ -119,6 +131,7 @@ impl ArchiveRunRequest {
             self.selection.clone(),
             self.work.clone(),
         )
+        .with_work_choices(self.work_choices)
     }
 
     /// The Selected Profile the run's configuration supplies: SSE-like, with
@@ -129,29 +142,24 @@ impl ArchiveRunRequest {
             .with_packing_exclusions(self.packing_exclusions.clone())
     }
 
-    /// The Archive work settings the run's Toolset is built with.
-    pub fn archive_work(&self) -> ArchiveWorkSettings {
-        self.archive_work
-    }
-
     /// A provider of [`Self::profile`] and of Run Toolsets over `toolset`'s
     /// typed fakes, for runs over the fakes.
     ///
-    /// The provider builds every Toolset with the chosen Archive work
-    /// settings, so the request alone decides them; `toolset` carries none.
-    /// Read the fakes' records through the provider's `toolset`.
+    /// Neither the provider nor `toolset` carries any Archive choice: the
+    /// run's Archive work takes them from [`Self::request`]. Read the fakes'
+    /// records through the provider's `toolset`.
     pub fn configuration(&self, toolset: ScriptedToolset) -> ToolsetConfiguration {
         ToolsetConfiguration::new(self.profile(), Arc::new(toolset))
-            .with_archive_work(self.archive_work)
     }
 
     /// A provider of [`Self::profile`] and, for each run, of a Run Toolset
-    /// with the chosen Archive work settings over the Archive seams `seams`
-    /// builds, such as `cao-optimizers`' production adapters. Its Asset
+    /// over the Archive seams `seams` builds, such as `cao-optimizers`'
+    /// production adapters. As with [`Self::configuration`], the run's
+    /// Archive work takes its choices from [`Self::request`]. Its Asset
     /// attempts succeed with no mutation until
     /// [`SeamsConfiguration::with_assets`] scripts them.
     pub fn seams_configuration(&self, seams: SeamsBuilder) -> SeamsConfiguration {
-        SeamsConfiguration::new(self.profile(), seams, self.archive_work)
+        SeamsConfiguration::new(self.profile(), seams)
     }
 
     /// Executes [`Self::request`] through the real Run Executor with

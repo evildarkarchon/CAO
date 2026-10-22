@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::Error;
 use crate::routing::{ProfileCapabilities, ProfileCapability};
-use crate::run::{RunConfigurationProvider, RunToolset, SelectedProfile};
+use crate::run::{RunConfigurationProvider, RunRequest, RunToolset, SelectedProfile};
 use crate::test_support::ScriptedToolset;
 
 /// Every Profile Capability, as an SSE-like profile supports them.
@@ -51,22 +51,23 @@ pub struct FixedConfiguration {
 }
 
 impl RunConfigurationProvider for FixedConfiguration {
-    fn load(&self, _profile_identity: &str) -> Result<(SelectedProfile, RunToolset), Error> {
+    fn load(&self, _request: &RunRequest) -> Result<(SelectedProfile, RunToolset), Error> {
         self.loads.fetch_add(1, Ordering::SeqCst);
         Ok((self.profile.clone(), default_toolset()))
     }
 }
 
-/// A closure standing in for a profile load.
-pub type Loader = Box<dyn Fn(&str) -> Result<SelectedProfile, Error> + Send + Sync>;
+/// A closure standing in for a profile load, given the run's Run Request.
+pub type Loader = Box<dyn Fn(&RunRequest) -> Result<SelectedProfile, Error> + Send + Sync>;
 
-/// A provider delegating to a closure, to observe thread identity or fail.
+/// A provider delegating to a closure, to observe thread identity, observe
+/// the Run Request a load is given, or fail.
 ///
 /// A successful load comes with a fresh default scripted Run Toolset.
 pub struct CallbackConfiguration(pub Loader);
 
 impl RunConfigurationProvider for CallbackConfiguration {
-    fn load(&self, profile_identity: &str) -> Result<(SelectedProfile, RunToolset), Error> {
-        (self.0)(profile_identity).map(|profile| (profile, default_toolset()))
+    fn load(&self, request: &RunRequest) -> Result<(SelectedProfile, RunToolset), Error> {
+        (self.0)(request).map(|profile| (profile, default_toolset()))
     }
 }

@@ -10,11 +10,13 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Weak;
 
-use cao_core::run::{RunEvent, RunEventDispatcher, RunHandle, RunId, RunOutcome, StartError};
-use cao_optimizers::composition::ApplicationRun;
+use cao_core::run::{
+    OptimizationRunService, RunEvent, RunEventDispatcher, RunHandle, RunId, RunOutcome, StartError,
+};
+use cao_optimizers::composition::{run_request, run_service};
 use slint::{ComponentHandle, SharedString};
 
 use super::App;
@@ -23,24 +25,37 @@ use crate::log_tab;
 use crate::run_view::RunView;
 
 /// The window's run state.
-#[derive(Default)]
 pub(super) struct Runs {
+    /// The production Optimization Run Service for the CAO install the window
+    /// works over, built once at startup and serving every run of the session.
+    ///
+    /// Declared before `active`, so at shutdown it drops first: dropping it
+    /// cancels and joins any run it retains (ADR-0001), and the Run Handle
+    /// dropped after it finds its run already joined and neither blocks nor
+    /// panics. A handle owns its run's state and join obligation rather than
+    /// borrowing the service, so either drop order is safe.
+    service: OptimizationRunService,
     /// The log file of the profile selected in this session, stamped when it
     /// was selected (C++ `Profiles::logPath`), even if it could not be opened
     /// then. `None` for the startup profile, whose file `main` opened.
     log_path: RefCell<Option<PathBuf>>,
     /// The run in flight, from its start until its terminal result arrives.
-    active: RefCell<Option<ActiveRun>>,
+    active: RefCell<Option<RunHandle>>,
     /// What the window shows of the latest run.
     view: RefCell<RunView>,
 }
 
-/// A started run and the composition root that wired it.
-struct ActiveRun {
-    // Declared first, so it drops first: dropping the handle cancels the run
-    // and joins its worker before the service that owns the wiring goes.
-    handle: RunHandle,
-    _setup: ApplicationRun,
+impl Runs {
+    /// The run state of a window over the CAO install in `app_dir`, which
+    /// every run resolves against. No run is active yet.
+    pub(super) fn new(app_dir: &Path) -> Self {
+        Self {
+            service: run_service(app_dir),
+            log_path: RefCell::default(),
+            active: RefCell::default(),
+            view: RefCell::default(),
+        }
+    }
 }
 
 thread_local! {
@@ -70,9 +85,9 @@ impl App {
         }
     }
 
-    /// Saves the window, redirects the log, sets up and starts the run, and
-    /// locks the controls. Each refusal is shown and leaves the window as it
-    /// was.
+    /// Saves the window, redirects the log, builds the run's Run Request and
+    /// starts it on the window's service, and locks the controls. Each refusal
+    /// is shown and leaves the window as it was.
     fn start_run(&self) {
         // Settles the options, the profile and the debug-log choice the run
         // and its log use. The run reads its settings from `profile.ini`, so
@@ -102,14 +117,18 @@ impl App {
             }
         }
 
-        let setup = match ApplicationRun::new(&self.app_dir, &profile, &options) {
-            Ok(setup) => setup,
+        let request = match run_request(&profile, &options) {
+            Ok(request) => request,
             Err(error) => {
                 self.error("Start Error", &error.to_string());
                 return;
             }
         };
-        let handle = match setup.start(Some(self.run_dispatcher())) {
+        let handle = match self
+            .runs
+            .service
+            .start(request, Some(self.run_dispatcher()))
+        {
             Ok(handle) => handle,
             Err(error) => {
                 self.error("Start Error", &start_error_message(error));
@@ -122,10 +141,7 @@ impl App {
         let run_id = handle.run_id().to_owned();
         RUN_WINDOWS.with(|windows| windows.borrow_mut().insert(run_id.clone(), self.weak()));
         self.runs.view.borrow_mut().begin(run_id);
-        *self.runs.active.borrow_mut() = Some(ActiveRun {
-            handle,
-            _setup: setup,
-        });
+        *self.runs.active.borrow_mut() = Some(handle);
         self.locked.set(true);
         self.window.set_cancelling(false);
         self.window.set_running(true);
@@ -149,13 +165,13 @@ impl App {
         {
             let active = self.runs.active.borrow();
             let mut view = self.runs.view.borrow_mut();
-            let Some(run) = active.as_ref() else {
+            let Some(handle) = active.as_ref() else {
                 return;
             };
             if !view.state().active {
                 return;
             }
-            run.handle.request_cancellation();
+            handle.request_cancellation();
             view.request_cancellation();
         }
         self.window.set_cancelling(true);
@@ -183,10 +199,10 @@ impl App {
     /// finished. Either closes the window a close was waiting on, or unlocks
     /// the controls and shows the Run Outcome.
     fn end_run(&self) {
-        if let Some(run) = self.runs.active.borrow_mut().take() {
-            RUN_WINDOWS.with(|windows| windows.borrow_mut().remove(run.handle.run_id()));
+        if let Some(handle) = self.runs.active.borrow_mut().take() {
+            RUN_WINDOWS.with(|windows| windows.borrow_mut().remove(handle.run_id()));
             // The worker has dispatched its last event, so this join is brief.
-            drop(run);
+            drop(handle);
         }
 
         if self.runs.view.borrow().state().close_requested {
