@@ -281,20 +281,22 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
         ));
     }
     for attempt in result.asset_attempts() {
-        if !attempt.result.succeeded() {
+        // The presentable detail comes from the Attempt Outcome's Operation
+        // Failure, so a success never shows a row and a failure always has one.
+        if let Some(failure) = attempt.result.outcome().failure() {
             details.push(format!(
                 "Asset Failure: {} | {} | {} | {} | {}",
                 shown(attempt.asset.execution_path()),
                 attempt.result.operation(),
-                attempt.result.message(),
+                failure.detail(),
                 shown(attempt.result.affected_path()),
                 attempt.result.service_detail()
             ));
         }
     }
     for attempt in result.archive_extraction_attempts() {
-        if !attempt.succeeded() {
-            details.push(archive_failure_row(&attempt.archive_path, &attempt.detail));
+        if let Some(failure) = attempt.outcome.failure() {
+            details.push(archive_failure_row(&attempt.archive_path, failure.detail()));
         }
     }
     if let Some(finalization) = result.archive_finalization() {
@@ -302,8 +304,8 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
             details.push(format!("Finalization Failure: {}", finalization.detail));
         }
         for attempt in &finalization.attempts {
-            if !attempt.succeeded() {
-                details.push(archive_failure_row(&attempt.archive_path, &attempt.detail));
+            if let Some(failure) = attempt.outcome.failure() {
+                details.push(archive_failure_row(&attempt.archive_path, failure.detail()));
             }
         }
     }

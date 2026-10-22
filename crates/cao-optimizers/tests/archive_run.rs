@@ -59,7 +59,7 @@ fn a_run_over_the_production_adapters_packs_a_loose_asset_into_a_loadable_archiv
     let finalization = result.archive_finalization().unwrap();
     assert_eq!(finalization.attempts.len(), 1, "{}", finalization.detail);
     let attempt = &finalization.attempts[0];
-    assert!(attempt.succeeded(), "{}", attempt.detail);
+    assert!(attempt.succeeded(), "{:?}", attempt.outcome);
     assert_eq!(attempt.archive_path, root.join("mod.bsa"));
     assert_eq!(archived_names(&attempt.archive_path), [r"meshes\asset.nif"]);
     assert!(!root.join("meshes/asset.nif").exists());

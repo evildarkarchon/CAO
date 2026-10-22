@@ -69,15 +69,16 @@ use cao_core::execution::{
 };
 use cao_core::routing::{AssetOperation, ExecutionMode, RequestedWork, SkipReason};
 use cao_core::run::{
-    AssetInitializationCancelled, CancellationToken, InlineRunScheduler, OptimizationRunResult,
-    OptimizationRunService, PhaseSkipReason, RunDiagnosticCode, RunEvent, RunEventPayload,
-    RunExecutor, RunOutcome, RunPhase, RunPhaseRecord, RunPhaseStatus, RunProgress, RunRequest,
-    RunServices, create_run_id,
+    AssetInitializationCancelled, CancellationToken, InlineRunScheduler, MutationKind,
+    OptimizationRunResult, OptimizationRunService, PhaseSkipReason, RunDiagnosticCode, RunEvent,
+    RunEventPayload, RunExecutor, RunOutcome, RunPhase, RunPhaseRecord, RunPhaseStatus,
+    RunProgress, RunRequest, RunServices, create_run_id,
 };
 use cao_core::test_support::{
     CountingCleanup, EventLog, FakeArchivePacker, FakeBackendFactory, GatedScheduler, Observed,
     RecordingSink, ScriptedToolset,
 };
+use cao_core::{AttemptOutcome, CompletedMutation};
 use common::{
     HandleSlot, backend_toolset, canonical, converting_configuration, junction, reclaim, request,
     run_with, scratch_dir, serial, snapshot_tree, toolset_configuration, write_tree,
@@ -141,7 +142,7 @@ fn processing_progress(events: &EventLog) -> Vec<(usize, usize)> {
 /// A scripted Toolset whose every Asset attempt commits.
 fn committing() -> ScriptedToolset {
     ScriptedToolset::default()
-        .with_assets(|_, _, _| Ok(AssetExecutionResult::success(MutationState::Committed)))
+        .with_assets(|_, _, _| Ok(AssetExecutionResult::success(CompletedMutation::Committed)))
 }
 
 /// The file names of the completed attempts, in execution order.
@@ -547,6 +548,10 @@ fn a_contained_load_failure_completes_with_failures_and_the_run_continues() {
 }
 
 /// Origin: AssetRunTests::mutationAwareFailuresControlContinuation (the unsafe rows).
+///
+/// Spec (#605): the failed attempt still claims it is safe to continue; only
+/// its partial or unknown mutation makes the Attempt Outcome unsafe, which
+/// stops the Asset phase, fails the run and is counted in the summaries.
 #[test]
 fn an_unsafe_operation_failure_stops_every_later_attempt_and_fails_the_run() {
     let _serial = serial();
@@ -557,7 +562,7 @@ fn an_unsafe_operation_failure_stops_every_later_attempt_and_fails_the_run() {
     );
     let toolset = Arc::new(ScriptedToolset::default().with_assets(|asset, _, _| {
         Ok(if asset.execution_path().ends_with("a.dds") {
-            AssetExecutionResult::success(MutationState::Committed)
+            AssetExecutionResult::success(CompletedMutation::Committed)
         } else {
             AssetExecutionResult::failed(
                 AssetExecutionFailure::CommitFailed,
@@ -578,8 +583,21 @@ fn an_unsafe_operation_failure_stops_every_later_attempt_and_fails_the_run() {
 
     assert_eq!(result.outcome(), RunOutcome::Failed);
     assert_eq!(attempted_names(&result), ["a.dds", "b.dds"]);
-    let summary = &result.mutation_summaries()[0];
-    assert_eq!((summary.committed, summary.partial_or_unknown), (1, 1));
+    let unsafe_attempt = result.asset_attempts()[1].result.outcome();
+    assert!(matches!(
+        unsafe_attempt,
+        AttemptOutcome::Failed {
+            claimed_safe_to_continue: true,
+            ..
+        }
+    ));
+    assert!(!unsafe_attempt.safe_to_continue());
+    let summaries: Vec<_> = result
+        .mutation_summaries()
+        .iter()
+        .map(|summary| (summary.kind, summary.committed, summary.partial_or_unknown))
+        .collect();
+    assert_eq!(summaries, [(MutationKind::AssetProcessing, 1, 1)]);
     assert!(result.phase(RunPhase::ArchiveFinalization).is_none());
 }
 
@@ -725,7 +743,7 @@ fn attempt_evidence_outlives_its_adapters() {
     write_tree(&root, &["textures/a.dds", "textures/b.dds"]);
     let toolset = Arc::new(ScriptedToolset::default().with_assets(|asset, _, _| {
         Ok(if asset.execution_path().ends_with("a.dds") {
-            AssetExecutionResult::success(MutationState::Committed)
+            AssetExecutionResult::success(CompletedMutation::Committed)
         } else {
             AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed, "retained")
         })
@@ -751,9 +769,9 @@ fn attempt_evidence_outlives_its_adapters() {
     let [packed] = result.archive_finalization().unwrap().attempts.as_slice() else {
         panic!("one output: {:?}", result.archive_finalization());
     };
-    assert!(packed.succeeded(), "{}", packed.detail);
+    assert!(packed.succeeded(), "{:?}", packed.outcome);
     assert_eq!(packed.mod_root, root);
-    assert_eq!(packed.mutation, MutationState::Committed);
+    assert_eq!(packed.outcome.mutation(), MutationState::Committed);
     assert!(packed.archive_path.exists());
     assert!(result.routing_ledger().is_some());
 }
@@ -799,7 +817,7 @@ fn a_cancelled_finalization_is_reported() {
     let [packed] = finalization.attempts.as_slice() else {
         panic!("only the first output is attempted: {finalization:?}");
     };
-    assert_eq!(packed.mutation, MutationState::Committed);
+    assert_eq!(packed.outcome.mutation(), MutationState::Committed);
     assert_eq!(toolset.packer.writes().len(), 1);
     assert_eq!(
         result
@@ -890,7 +908,7 @@ fn a_relative_selection_records_the_canonical_mod_root() {
     write_tree(&root, &["a.dds"]);
     let toolset = Arc::new(ScriptedToolset::default().with_assets(|asset, _, _| {
         std::fs::remove_file(asset.execution_path()).unwrap();
-        Ok(AssetExecutionResult::success(MutationState::Committed))
+        Ok(AssetExecutionResult::success(CompletedMutation::Committed))
     }));
     let relative = common::relative_to_working_directory(&root);
 
@@ -924,7 +942,7 @@ fn mutation_aware_failures_control_continuation_and_finalization() {
                 let mut attempts = attempts.lock().unwrap();
                 *attempts += 1;
                 if *attempts != failed_attempt {
-                    return Ok(AssetExecutionResult::success(MutationState::None));
+                    return Ok(AssetExecutionResult::success(CompletedMutation::None));
                 }
                 let mutation = if safe {
                     MutationState::None
@@ -1008,7 +1026,7 @@ fn animation_failures_preserve_progress_and_evidence() {
                 let mut attempts = attempts.lock().unwrap();
                 *attempts += 1;
                 if *attempts != failed_attempt {
-                    return Ok(AssetExecutionResult::success(MutationState::Committed));
+                    return Ok(AssetExecutionResult::success(CompletedMutation::Committed));
                 }
                 Ok(AssetExecutionResult::failed(failure, "Animation failed")
                     .with_mutation(mutation)
@@ -1126,7 +1144,7 @@ fn apply_publishes_diagnostics_between_execution_and_finalization() {
         let order = order.clone();
         move |_, _, _| {
             order.lock().unwrap().push("execute");
-            Ok(AssetExecutionResult::success(MutationState::None))
+            Ok(AssetExecutionResult::success(CompletedMutation::None))
         }
     });
     let service = OptimizationRunService::with_scheduler(

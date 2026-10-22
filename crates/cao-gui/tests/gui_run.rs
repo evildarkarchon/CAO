@@ -143,7 +143,7 @@ fn classified_run(scenario: Scenario) -> Arc<OptimizationRunResult> {
                     "third attempt failed",
                 )
             } else {
-                AssetExecutionResult::success(MutationState::None)
+                AssetExecutionResult::success(cao_core::CompletedMutation::None)
             })
         })
     } else {
@@ -503,22 +503,22 @@ fn the_terminal_result_lists_its_evidence() {
             result.archive_extraction_attempts()
         );
     };
-    assert_eq!(winner.mutation, MutationState::Committed);
-    assert!(!shadowed.succeeded() && shadowed.safe_to_continue);
+    assert_eq!(winner.outcome.mutation(), MutationState::Committed);
+    assert!(!shadowed.succeeded() && shadowed.safe_to_continue());
     let finalization = result.archive_finalization().unwrap();
     let [packed] = finalization.attempts.as_slice() else {
         panic!("one output: {finalization:?}");
     };
     assert_eq!(
-        packed.failure,
+        packed.outcome.failure_category(),
         Some(ArchiveFinalizationFailure::SourceCleanupFailed)
     );
-    assert_eq!(packed.mutation, MutationState::Committed);
+    assert_eq!(packed.outcome.mutation(), MutationState::Committed);
     assert!(!finalization.safe_to_continue);
     let source_cleanup_row = format!(
         "Archive Failure: {} | {}",
         packed.archive_path.display(),
-        packed.detail
+        packed.outcome.failure().unwrap().detail()
     );
 
     let mut view = RunView::default();

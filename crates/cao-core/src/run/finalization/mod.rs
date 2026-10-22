@@ -31,12 +31,12 @@ use std::path::{Path, PathBuf};
 
 use cao_winfs::is_reparse_point;
 
-use crate::Error;
 use crate::execution::MutationState;
 use crate::routing::RequestedWork;
 use crate::run::capacity::{CapacityCheck, Shortfall};
 use crate::run::staging::has_staging_component;
 use crate::run::{ArchiveSeams, RunPreparation, TemporaryArtifactRegistry, take_panic_message};
+use crate::{AttemptOutcome, Error, OperationFailure};
 
 use attempt::attempt_output;
 use planning::{FinalizationPlan, PlanningStop, plan_finalization};
@@ -70,30 +70,38 @@ pub struct ArchiveFinalizationAttempt {
     pub archive_path: PathBuf,
     /// The frozen plan's canonical Mod Root, independent of directory depth.
     pub mod_root: PathBuf,
-    pub mutation: MutationState,
-    pub failure: Option<ArchiveFinalizationFailure>,
-    /// Whether the run may continue after this attempt.
-    pub safe_to_continue: bool,
-    pub detail: String,
+    /// What the attempt left behind: its mutation, its Operation Failure if
+    /// it failed, and whether the run may continue after it. Public because
+    /// the Attempt Outcome protects its own invariants.
+    pub outcome: AttemptOutcome<ArchiveFinalizationFailure>,
 }
 
 impl ArchiveFinalizationAttempt {
-    /// A successful attempt at `archive_path` that has mutated nothing yet.
-    pub fn new(archive_path: PathBuf, mod_root: PathBuf) -> Self {
+    /// The completed attempt at `archive_path` in `mod_root`, which left
+    /// `outcome` behind.
+    pub fn new(
+        archive_path: PathBuf,
+        mod_root: PathBuf,
+        outcome: AttemptOutcome<ArchiveFinalizationFailure>,
+    ) -> Self {
         Self {
             archive_path,
             mod_root,
-            mutation: MutationState::None,
-            failure: None,
-            safe_to_continue: true,
-            detail: String::new(),
+            outcome,
         }
     }
 
     /// Whether staging, publication, the Loading Plugin and any requested
     /// source cleanup all finished.
     pub fn succeeded(&self) -> bool {
-        self.failure.is_none()
+        self.outcome.succeeded()
+    }
+
+    /// The Attempt Outcome's verdict on whether the run may start the next
+    /// output after this attempt; partial or unknown mutation is never safe,
+    /// whatever the producer claimed.
+    pub fn safe_to_continue(&self) -> bool {
+        self.outcome.safe_to_continue()
     }
 }
 
@@ -377,10 +385,12 @@ fn finalize_plan(
         );
         // Only the attempt's own capacity recheck reports this, before
         // any mutation; it ends the phase without plugin work or pruning.
-        let capacity_rejected =
-            attempt.failure == Some(ArchiveFinalizationFailure::InsufficientCapacity);
+        let capacity_rejected = attempt.outcome.failure_category()
+            == Some(ArchiveFinalizationFailure::InsufficientCapacity);
         if !capacity_rejected {
-            result.safe_to_continue = attempt.safe_to_continue;
+            // The verdict, not the producer's raw claim: partial or unknown
+            // mutation stops the phase even when the attempt claims safety.
+            result.safe_to_continue = attempt.safe_to_continue();
         }
         result.attempts.push(attempt);
         // Evidence owns each atomic result before the next output starts.
@@ -487,10 +497,15 @@ fn record_shortfall(
             result.detail = detail;
         }
         Some(archive) => {
-            let mut attempt =
-                ArchiveFinalizationAttempt::new(archive.to_path_buf(), shortfall.root);
-            attempt.failure = Some(ArchiveFinalizationFailure::InsufficientCapacity);
-            attempt.detail = detail;
+            // A known shortage is found before any mutation, so the producer
+            // still claims it safe; the phase stops after it regardless.
+            let outcome = AttemptOutcome::failed(
+                OperationFailure::new(ArchiveFinalizationFailure::InsufficientCapacity, detail),
+                MutationState::None,
+                true,
+            );
+            let attempt =
+                ArchiveFinalizationAttempt::new(archive.to_path_buf(), shortfall.root, outcome);
             result.attempts.push(attempt);
             record_last_attempt(recorder, result)?;
         }

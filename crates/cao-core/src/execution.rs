@@ -22,6 +22,7 @@ use cao_winfs::{
     Access, FileFacts, FileIdentity, Open, RenameMode, Share, delete_by_handle, rename_by_handle,
 };
 
+use crate::attempt::{AttemptOutcome, CompletedMutation, OperationFailure};
 use crate::routing::{
     AssetIdentity, AssetOperation, AssetOperations, ExecutionMode, MeshVariant, OptimizerTarget,
     RoutedAsset, TextureVariant,
@@ -119,15 +120,15 @@ impl OperationResult {
 
 /// The observable outcome of executing one Routed Asset.
 ///
-/// A failed result is an Operation Failure: it records its mutation state and
-/// whether the run can safely continue. Partial or unknown mutation is always
-/// unsafe, whatever the producer claimed.
+/// It embeds the attempt's [`AttemptOutcome`], which owns the mutation state,
+/// the Operation Failure (category plus presentable message) and the
+/// safe-to-continue verdict; partial or unknown mutation is always unsafe,
+/// whatever the producer claimed. The Asset-only failure context (operation,
+/// affected path, service detail and attempt-local cleanup failures) stays on
+/// the result itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssetExecutionResult {
-    failure: Option<AssetExecutionFailure>,
-    message: String,
-    mutation: MutationState,
-    safe_to_continue: bool,
+    outcome: AttemptOutcome<AssetExecutionFailure>,
     path: PathBuf,
     operation: String,
     service_detail: String,
@@ -135,13 +136,11 @@ pub struct AssetExecutionResult {
 }
 
 impl AssetExecutionResult {
-    /// A completed attempt that committed exactly `mutation`.
-    pub fn success(mutation: MutationState) -> Self {
+    /// A completed attempt that left exactly `mutation`: no mutation or a
+    /// Committed Mutation, never partial or unknown.
+    pub fn success(mutation: CompletedMutation) -> Self {
         Self {
-            failure: None,
-            message: String::new(),
-            mutation,
-            safe_to_continue: mutation != MutationState::PartialOrUnknown,
+            outcome: AttemptOutcome::success(mutation),
             path: PathBuf::new(),
             operation: String::new(),
             service_detail: String::new(),
@@ -153,10 +152,11 @@ impl AssetExecutionResult {
     /// `execute_asset` boundary. Refine it with the `with_*` builders.
     pub fn failed(failure: AssetExecutionFailure, message: impl Into<String>) -> Self {
         Self {
-            failure: Some(failure),
-            message: message.into(),
-            mutation: MutationState::None,
-            safe_to_continue: true,
+            outcome: AttemptOutcome::failed(
+                OperationFailure::new(failure, message),
+                MutationState::None,
+                true,
+            ),
             path: PathBuf::new(),
             operation: "execute_asset".to_owned(),
             service_detail: String::new(),
@@ -165,14 +165,38 @@ impl AssetExecutionResult {
     }
 
     /// Sets the durable mutation known at the failed boundary.
+    ///
+    /// Failure-only: on a successful result this trips a debug assertion and
+    /// is otherwise ignored, because a success cannot carry partial or
+    /// unknown mutation.
     pub fn with_mutation(mut self, mutation: MutationState) -> Self {
-        self.mutation = mutation;
+        match &mut self.outcome {
+            AttemptOutcome::Failed { mutation: held, .. } => *held = mutation,
+            AttemptOutcome::Succeeded { .. } => {
+                debug_assert!(false, "failure-only builder `with_mutation` on a success");
+            }
+        }
         self
     }
 
-    /// Sets whether the run may continue; partial mutation still forces `false`.
+    /// Sets the producer's continuation claim; partial or unknown mutation
+    /// still makes the verdict `false`.
+    ///
+    /// Failure-only: on a successful result this trips a debug assertion and
+    /// is otherwise ignored, because a success is always safe to continue.
     pub fn with_safe_to_continue(mut self, safe_to_continue: bool) -> Self {
-        self.safe_to_continue = safe_to_continue;
+        match &mut self.outcome {
+            AttemptOutcome::Failed {
+                claimed_safe_to_continue,
+                ..
+            } => *claimed_safe_to_continue = safe_to_continue,
+            AttemptOutcome::Succeeded { .. } => {
+                debug_assert!(
+                    false,
+                    "failure-only builder `with_safe_to_continue` on a success"
+                );
+            }
+        }
         self
     }
 
@@ -194,19 +218,26 @@ impl AssetExecutionResult {
         self
     }
 
+    /// The attempt's Attempt Outcome: its mutation state, its Operation
+    /// Failure if it failed, and the safe-to-continue verdict.
+    pub fn outcome(&self) -> &AttemptOutcome<AssetExecutionFailure> {
+        &self.outcome
+    }
+
     /// Reports whether every carried operation completed.
     pub fn succeeded(&self) -> bool {
-        self.failure.is_none()
+        self.outcome.succeeded()
     }
 
     /// The stable failure category, or `None` after success.
     pub fn failure(&self) -> Option<AssetExecutionFailure> {
-        self.failure
+        self.outcome.failure_category()
     }
 
-    /// The presentable diagnostic; empty after success.
+    /// The presentable diagnostic, which is the Operation Failure's detail;
+    /// empty after success.
     pub fn message(&self) -> &str {
-        &self.message
+        self.outcome.failure().map_or("", OperationFailure::detail)
     }
 
     /// Backend-specific detail, kept apart from the message.
@@ -216,12 +247,13 @@ impl AssetExecutionResult {
 
     /// The exact durable mutation known at the failed or completed boundary.
     pub fn mutation_state(&self) -> MutationState {
-        self.mutation
+        self.outcome.mutation()
     }
 
-    /// Whether the run may continue. Partial or unknown mutation is never safe.
+    /// Whether the run may continue: the Attempt Outcome's verdict, so partial
+    /// or unknown mutation is never safe.
     pub fn safe_to_continue(&self) -> bool {
-        self.safe_to_continue && self.mutation != MutationState::PartialOrUnknown
+        self.outcome.safe_to_continue()
     }
 
     /// The failing boundary's affected path.
@@ -236,7 +268,7 @@ impl AssetExecutionResult {
 
     /// Safety Cleanup for cleanup failures, Processing Assets for everything else.
     pub fn phase(&self) -> RunPhase {
-        if self.failure == Some(AssetExecutionFailure::CleanupFailed) {
+        if self.failure() == Some(AssetExecutionFailure::CleanupFailed) {
             RunPhase::SafetyCleanup
         } else {
             RunPhase::ProcessingAssets
@@ -246,7 +278,7 @@ impl AssetExecutionResult {
     /// The stable category of a failed attempt, or `None` after success.
     pub fn failure_category(&self) -> Option<ExecutionFailureCategory> {
         use AssetExecutionFailure::*;
-        self.failure.map(|failure| match failure {
+        self.failure().map(|failure| match failure {
             UnsupportedTarget | IdentityMismatch | BackendException => {
                 ExecutionFailureCategory::Contract
             }
@@ -624,7 +656,7 @@ impl<'b> AssetExecutor<'b> {
             .with_service_detail(operation.message());
         }
         let Some(target) = target.filter(|_| operation.would_change()) else {
-            return AssetExecutionResult::success(MutationState::None);
+            return AssetExecutionResult::success(CompletedMutation::None);
         };
 
         let receipt = match artifacts.stage_file_for_publication(target) {
@@ -673,8 +705,11 @@ impl<'b> AssetExecutor<'b> {
         ) {
             return failure;
         }
+        // Past `publication_failure` the publication was released, so the
+        // output is a Committed Mutation; `mutation` is that same fact, kept
+        // as a three-state value for the source-removal failures below.
         if !converting {
-            return AssetExecutionResult::success(mutation);
+            return AssetExecutionResult::success(CompletedMutation::Committed);
         }
 
         let retained_usable = |pin: &Option<PinnedSource>| {
@@ -723,7 +758,7 @@ impl<'b> AssetExecutor<'b> {
             )
             .with_service_detail(self.backend.texture_failure_detail());
         }
-        AssetExecutionResult::success(mutation)
+        AssetExecutionResult::success(CompletedMutation::Committed)
     }
 
     /// Loads a Mesh, runs its independent operations, and in Apply publishes
@@ -805,7 +840,7 @@ impl<'b> AssetExecutor<'b> {
         // Dry Run evaluates both operations against the loaded Mesh but never
         // persists their results; it captured no target.
         let Some(target) = target.filter(|_| would_change) else {
-            return AssetExecutionResult::success(MutationState::None);
+            return AssetExecutionResult::success(CompletedMutation::None);
         };
         let receipt = match artifacts.stage_file_for_publication(target) {
             Ok(receipt) => receipt,
@@ -836,7 +871,9 @@ impl<'b> AssetExecutor<'b> {
         ) {
             return failure;
         }
-        AssetExecutionResult::success(publication.mutation())
+        // Past `publication_failure` the publication was released: a Committed
+        // Mutation.
+        AssetExecutionResult::success(CompletedMutation::Committed)
     }
 
     /// Optimizes an Animation. Apply stages its output before the backend
@@ -903,10 +940,10 @@ impl<'b> AssetExecutor<'b> {
         }
         // An unpublished receipt leaves its empty sibling to Safety Cleanup.
         let (Some(receipt), Some(staged)) = (receipt, staged) else {
-            return AssetExecutionResult::success(MutationState::None);
+            return AssetExecutionResult::success(CompletedMutation::None);
         };
         if !operation.would_change() {
-            return AssetExecutionResult::success(MutationState::None);
+            return AssetExecutionResult::success(CompletedMutation::None);
         }
         if asset_fingerprint(&staged).is_none() {
             return AssetExecutionResult::failed(
@@ -927,7 +964,9 @@ impl<'b> AssetExecutor<'b> {
         ) {
             return failure;
         }
-        AssetExecutionResult::success(publication.mutation())
+        // Past `publication_failure` the publication was released: a Committed
+        // Mutation.
+        AssetExecutionResult::success(CompletedMutation::Committed)
     }
 }
 

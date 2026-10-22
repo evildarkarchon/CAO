@@ -51,13 +51,15 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
+use cao_core::CompletedMutation;
 use cao_core::execution::{AssetExecutionResult, MutationState};
 use cao_core::routing::RequestedWork;
 use cao_core::run::{
     ArchiveFinalizationFailure, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
     ArchiveFinalizationSettings, ArchiveNameKind, ArchiveReader, ArchiveWorkSettings,
     CancellationToken, MutationKind, MutationSummary, OptimizationRunResult, PackedArchiveKind,
-    RunDiagnostic, RunFailure, RunObservationSink, RunPhase, RunPhaseRecord, RunProgress,
+    RunDiagnostic, RunFailure, RunObservationSink, RunOutcome, RunPhase, RunPhaseRecord,
+    RunProgress,
 };
 use cao_core::test_support::{
     ArchiveRunRequest, FakeArchivePacker, FakeArchiveReader, FakeVolumeProbe, Observed,
@@ -285,7 +287,12 @@ impl Finalizer {
         let detail = result
             .attempts
             .first()
-            .map_or(result.detail.as_str(), |attempt| attempt.detail.as_str());
+            .map_or(result.detail.as_str(), |attempt| {
+                attempt
+                    .outcome
+                    .failure()
+                    .map_or("", |failure| failure.detail())
+            });
         let digits: String = detail
             .split_once("estimated ")
             .expect("the detail reports an estimate")
@@ -393,14 +400,19 @@ fn capacity_shortages_stop_before_mutation() {
         if scenario != 1 {
             let rejected = result.attempts.last().unwrap();
             assert_eq!(
-                rejected.failure,
+                rejected.outcome.failure_category(),
                 Some(ArchiveFinalizationFailure::InsufficientCapacity),
                 "{name}"
             );
-            assert_eq!(rejected.mutation, MutationState::None);
+            assert_eq!(rejected.outcome.mutation(), MutationState::None);
             // Every rejection is at the later root: its preflight or attempt.
             assert_eq!(rejected.mod_root, roots[1]);
-            assert!(!rejected.detail.is_empty());
+            assert!(
+                rejected
+                    .outcome
+                    .failure()
+                    .is_some_and(|failure| !failure.detail().is_empty())
+            );
         }
         assert!(run.cleaned_up());
     }
@@ -443,7 +455,7 @@ fn capacity_is_grouped_by_volume() {
     assert!(result.safe_to_continue);
     assert_eq!(result.failure, None);
     for attempt in &result.attempts {
-        assert!(attempt.succeeded(), "{}", attempt.detail);
+        assert!(attempt.succeeded(), "{:?}", attempt.outcome);
         assert!(attempt.archive_path.exists());
     }
     assert!(run.cleaned_up());
@@ -532,16 +544,16 @@ fn a_panicking_volume_probe_is_an_unknown_volume() {
             assert_eq!(result.attempts.len(), 1, "{shortage}");
             let rejected = &result.attempts[0];
             assert_eq!(
-                rejected.failure,
+                rejected.outcome.failure_category(),
                 Some(ArchiveFinalizationFailure::InsufficientCapacity)
             );
             assert_eq!(rejected.mod_root, roots[0]);
-            assert_eq!(rejected.mutation, MutationState::None);
+            assert_eq!(rejected.outcome.mutation(), MutationState::None);
             assert!(roots.iter().all(|root| archives_in(root).is_empty()));
         } else {
             assert_eq!(result.attempts.len(), 2);
             for attempt in &result.attempts {
-                assert!(attempt.succeeded(), "{}", attempt.detail);
+                assert!(attempt.succeeded(), "{:?}", attempt.outcome);
                 assert!(attempt.archive_path.exists());
             }
         }
@@ -568,8 +580,8 @@ fn a_panicking_capacity_probe_is_unknown_capacity() {
     assert_eq!(result.attempts.len(), 1);
     assert!(
         result.attempts[0].succeeded(),
-        "{}",
-        result.attempts[0].detail
+        "{:?}",
+        result.attempts[0].outcome
     );
     assert_eq!(archives_in(&root).len(), 1);
     assert!(root_plugin(&root).exists());
@@ -682,10 +694,10 @@ fn a_disappearing_loading_plugin_keeps_its_fallback_reserved() {
         assert!(!earlier_plugin.exists());
         assert_eq!(result.attempts.len(), 1);
         assert_eq!(
-            result.attempts[0].failure,
+            result.attempts[0].outcome.failure_category(),
             Some(ArchiveFinalizationFailure::InsufficientCapacity)
         );
-        assert_eq!(result.attempts[0].mutation, MutationState::None);
+        assert_eq!(result.attempts[0].outcome.mutation(), MutationState::None);
         assert!(result.mutations.is_empty());
         assert!(archives_in(&root).is_empty());
         assert!(!root.join("mod.esp").exists());
@@ -809,9 +821,9 @@ fn the_total_is_frozen_and_cancellation_falls_between_outputs() {
             assert_eq!(root.join("textures/asset.dds").exists(), !done, "{label}");
             if done {
                 let attempt = &result.attempts[index];
-                assert!(attempt.succeeded(), "{}", attempt.detail);
+                assert!(attempt.succeeded(), "{:?}", attempt.outcome);
                 assert_eq!(attempt.mod_root, *root);
-                assert_eq!(attempt.mutation, MutationState::Committed);
+                assert_eq!(attempt.outcome.mutation(), MutationState::Committed);
                 assert!(reads_back(&attempt.archive_path));
             }
         }
@@ -946,8 +958,8 @@ fn a_blocked_dummy_plugin_removal_is_a_contained_failure() {
     assert_eq!(result.attempts.len(), 1);
     assert!(
         result.attempts[0].succeeded(),
-        "{}",
-        result.attempts[0].detail
+        "{:?}",
+        result.attempts[0].outcome
     );
     assert!(result.safe_to_continue);
     assert_eq!(
@@ -1150,8 +1162,8 @@ fn a_dummy_plugin_replaced_after_planning_is_kept() {
     assert_eq!(result.attempts.len(), 1);
     assert!(
         result.attempts[0].succeeded(),
-        "{}",
-        result.attempts[0].detail
+        "{:?}",
+        result.attempts[0].outcome
     );
     assert_eq!(result.failure, None, "{}", result.detail);
     assert!(result.mutations.is_empty());
@@ -1257,7 +1269,7 @@ fn staging_files_are_never_packed() {
             std::fs::write(&path, b"temporary bytes").unwrap();
             *staged = Some(path);
         }
-        Ok(AssetExecutionResult::success(MutationState::None))
+        Ok(AssetExecutionResult::success(CompletedMutation::None))
     });
     // Once the output's attempt, source deletion included, is recorded, both
     // temporaries must still be there.
@@ -1289,8 +1301,8 @@ fn staging_files_are_never_packed() {
     assert_eq!(result.attempts.len(), 1);
     assert!(
         result.attempts[0].succeeded(),
-        "{}",
-        result.attempts[0].detail
+        "{:?}",
+        result.attempts[0].outcome
     );
     assert!(survived.load(Ordering::SeqCst));
     assert!(nested.exists());
@@ -1327,8 +1339,8 @@ fn packing_exclusions_are_neither_packed_nor_deleted() {
     assert_eq!(result.attempts.len(), 1);
     assert!(
         result.attempts[0].succeeded(),
-        "{}",
-        result.attempts[0].detail
+        "{:?}",
+        result.attempts[0].outcome
     );
     assert!(!packed.exists());
     assert_eq!(std::fs::read(&retained).unwrap(), b"retained bytes");
@@ -1368,8 +1380,8 @@ fn deviation_16_packing_exclusions_match_within_the_mod_root() {
     assert_eq!(result.attempts.len(), 1);
     assert!(
         result.attempts[0].succeeded(),
-        "{}",
-        result.attempts[0].detail
+        "{:?}",
+        result.attempts[0].outcome
     );
     let names: Vec<_> = run
         .toolset
@@ -1416,7 +1428,7 @@ fn a_failed_write_keeps_sources_and_existing_archives() {
     let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert!(!result.attempts[0].succeeded());
-    assert_eq!(result.attempts[0].mutation, MutationState::None);
+    assert_eq!(result.attempts[0].outcome.mutation(), MutationState::None);
     assert!(available.exists());
     assert!(unavailable.exists());
     assert_eq!(std::fs::read(&existing).unwrap(), b"previous archive bytes");
@@ -1469,10 +1481,10 @@ fn a_source_parent_swapped_for_a_junction_fails_the_write() {
     let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert_eq!(
-        result.attempts[0].failure,
+        result.attempts[0].outcome.failure_category(),
         Some(ArchiveFinalizationFailure::WriteFailed)
     );
-    assert_eq!(result.attempts[0].mutation, MutationState::None);
+    assert_eq!(result.attempts[0].outcome.mutation(), MutationState::None);
     assert!(!result.attempts[0].archive_path.exists());
     assert!(retained_parent.join("armor/asset.dds").exists());
     assert_eq!(
@@ -1524,13 +1536,16 @@ fn planned_names_are_distinct_and_a_late_destination_wins() {
     assert_eq!(result.attempts[0].archive_path, first_destination);
     assert_ne!(result.attempts[1].archive_path, first_destination);
     assert!(!result.attempts[0].succeeded());
-    assert_eq!(result.attempts[0].mutation, MutationState::None);
+    assert_eq!(result.attempts[0].outcome.mutation(), MutationState::None);
     assert!(
         result.attempts[1].succeeded(),
-        "{}",
-        result.attempts[1].detail
+        "{:?}",
+        result.attempts[1].outcome
     );
-    assert_eq!(result.attempts[1].mutation, MutationState::Committed);
+    assert_eq!(
+        result.attempts[1].outcome.mutation(),
+        MutationState::Committed
+    );
     assert_eq!(
         log.progress(),
         [
@@ -1579,11 +1594,11 @@ fn a_competing_plugin_at_the_planned_name_keeps_archive_and_sources() {
     assert_eq!(result.attempts.len(), 1);
     let attempt = &result.attempts[0];
     assert_eq!(
-        attempt.failure,
+        attempt.outcome.failure_category(),
         Some(ArchiveFinalizationFailure::PluginCreationFailed)
     );
-    assert_eq!(attempt.mutation, MutationState::Committed);
-    assert!(!attempt.safe_to_continue);
+    assert_eq!(attempt.outcome.mutation(), MutationState::Committed);
+    assert!(!attempt.safe_to_continue());
     assert!(!result.safe_to_continue);
     assert!(result.mutations.is_empty());
     assert!(reads_back(&attempt.archive_path));
@@ -1592,6 +1607,62 @@ fn a_competing_plugin_at_the_planned_name_keeps_archive_and_sources() {
         std::fs::read(&planned_plugin).unwrap(),
         b"competing plugin bytes"
     );
+    assert!(run.cleaned_up());
+}
+
+/// Rust-only, for #602: the phase loop starts the next output only on an
+/// attempt's safe-to-continue verdict. A competitor at the first Mod Root's
+/// planned Dummy Plugin name leaves its committed output attempt an unsafe
+/// Operation Failure, so the later Mod Root's output is never attempted and
+/// the run is Failed, with the failure's detail in the run's evidence.
+#[test]
+fn an_unsafe_committed_output_attempt_stops_later_outputs_and_fails_the_run() {
+    let parent = scratch("unsafe-committed-stops");
+    let root = parent.join("mod-a");
+    let later_root = parent.join("mod-b");
+    let source = root.join("textures/asset.dds");
+    write_file(&source, b"source bytes");
+    let later_source = later_root.join("textures/later.dds");
+    write_file(&later_source, b"later source bytes");
+    let competitor = root_plugin(&root);
+    let occupied = AtomicBool::new(false);
+    let finalizer = Finalizer {
+        settings: ArchiveFinalizationSettings {
+            compress: false,
+            ..ArchiveFinalizationSettings::default()
+        },
+        // The first capacity sample comes after planning froze mod-a's
+        // planned Dummy Plugin name and before any output attempt.
+        probe: capacity(move |_| {
+            if !occupied.swap(true, Ordering::SeqCst) {
+                write_file(&competitor, b"competing plugin bytes");
+            }
+            Some(UNLIMITED)
+        }),
+        ..Finalizer::default()
+    };
+    let run = finalizer.run(&[root.clone(), later_root.clone()]);
+
+    assert_eq!(run.result.outcome(), RunOutcome::Failed);
+    let result = run.finalization();
+    assert_eq!(run.progress().unwrap().total(), 2);
+    let [attempt] = result.attempts.as_slice() else {
+        panic!("only the first output is attempted: {result:?}");
+    };
+    assert!(!attempt.succeeded());
+    assert!(!attempt.safe_to_continue());
+    assert_eq!(attempt.outcome.mutation(), MutationState::Committed);
+    let failure = attempt.outcome.failure().expect("an Operation Failure");
+    assert_eq!(
+        failure.category(),
+        ArchiveFinalizationFailure::PluginCreationFailed
+    );
+    assert!(!failure.detail().is_empty());
+    assert!(!result.safe_to_continue);
+    assert!(reads_back(&attempt.archive_path));
+    assert!(source.exists());
+    assert!(later_source.exists());
+    assert!(archives_in(&later_root).is_empty());
     assert!(run.cleaned_up());
 }
 
@@ -1640,10 +1711,13 @@ fn an_exact_dummy_at_the_planned_name_is_reused() {
     assert_eq!(result.attempts.len(), 1);
     assert!(
         result.attempts[0].succeeded(),
-        "{}",
-        result.attempts[0].detail
+        "{:?}",
+        result.attempts[0].outcome
     );
-    assert_eq!(result.attempts[0].mutation, MutationState::Committed);
+    assert_eq!(
+        result.attempts[0].outcome.mutation(),
+        MutationState::Committed
+    );
     assert!(reads_back(&result.attempts[0].archive_path));
     assert!(!source.exists());
     assert_eq!(
@@ -1684,8 +1758,8 @@ fn outputs_sharing_a_dummy_plugin_publish_it_once() {
     let result = run.finalization();
     assert_eq!(result.attempts.len(), 2);
     for attempt in &result.attempts {
-        assert!(attempt.succeeded(), "{}", attempt.detail);
-        assert_eq!(attempt.mutation, MutationState::Committed);
+        assert!(attempt.succeeded(), "{:?}", attempt.outcome);
+        assert_eq!(attempt.outcome.mutation(), MutationState::Committed);
     }
     assert_eq!(result.mutations.len(), 1);
     let mutation = &result.mutations[0];
@@ -1740,10 +1814,13 @@ fn a_vanished_loading_plugin_gets_its_fallback() {
     assert_eq!(result.attempts.len(), 1);
     assert!(
         result.attempts[0].succeeded(),
-        "{}",
-        result.attempts[0].detail
+        "{:?}",
+        result.attempts[0].outcome
     );
-    assert_eq!(result.attempts[0].mutation, MutationState::Committed);
+    assert_eq!(
+        result.attempts[0].outcome.mutation(),
+        MutationState::Committed
+    );
     assert!(!source.exists());
     let creations: Vec<_> = result
         .mutations
@@ -1801,8 +1878,8 @@ fn a_linked_loading_plugin_gets_an_ordinary_fallback() {
         assert_eq!(result.attempts.len(), 1);
         assert!(
             result.attempts[0].succeeded(),
-            "{}",
-            result.attempts[0].detail
+            "{:?}",
+            result.attempts[0].outcome
         );
         assert!(reads_back(&result.attempts[0].archive_path));
         assert!(!source.exists());
@@ -1867,7 +1944,7 @@ fn links_at_every_plugin_name_keep_the_sources() {
     let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert_eq!(
-        result.attempts[0].failure,
+        result.attempts[0].outcome.failure_category(),
         Some(ArchiveFinalizationFailure::PluginCreationFailed)
     );
     assert!(source.exists());
@@ -1932,8 +2009,8 @@ fn the_loading_plugin_stays_pinned_through_source_cleanup() {
         assert_eq!(result.attempts.len(), 1);
         assert!(
             result.attempts[0].succeeded(),
-            "{}",
-            result.attempts[0].detail
+            "{:?}",
+            result.attempts[0].outcome
         );
         assert!(
             saw_cleanup_gap,
@@ -1994,10 +2071,10 @@ fn a_locked_source_after_commit_continues_only_while_readable() {
         let first = &result.attempts[0];
         assert!(!first.succeeded());
         assert_eq!(
-            first.failure,
+            first.outcome.failure_category(),
             Some(ArchiveFinalizationFailure::SourceCleanupFailed)
         );
-        assert_eq!(first.mutation, MutationState::Committed);
+        assert_eq!(first.outcome.mutation(), MutationState::Committed);
         assert_eq!(result.safe_to_continue, !deny_reads);
         assert!(reads_back(&first.archive_path));
         assert_eq!(later_source.exists(), deny_reads);
@@ -2005,7 +2082,7 @@ fn a_locked_source_after_commit_continues_only_while_readable() {
         assert_eq!(empty_directory.exists(), deny_reads);
         if !deny_reads {
             let last = result.attempts.last().unwrap();
-            assert!(last.succeeded(), "{}", last.detail);
+            assert!(last.succeeded(), "{:?}", last.outcome);
             assert!(reads_back(&last.archive_path));
         }
         assert_eq!(std::fs::read(&source).unwrap(), b"retained source bytes");
@@ -2105,7 +2182,7 @@ fn split_outputs_take_counter_names_and_their_own_plugins() {
         .attempts
         .iter()
         .map(|attempt| {
-            assert!(attempt.succeeded(), "{}", attempt.detail);
+            assert!(attempt.succeeded(), "{:?}", attempt.outcome);
             attempt.archive_path.clone()
         })
         .collect();
@@ -2294,12 +2371,15 @@ fn a_packer_panicking_after_its_write_is_an_unexpected_exception_that_stops_late
     );
     let attempt = &result.attempts[0];
     assert_eq!(
-        attempt.failure,
+        attempt.outcome.failure_category(),
         Some(ArchiveFinalizationFailure::UnexpectedException)
     );
-    assert_eq!(attempt.detail, "the archive writer panicked");
-    assert!(!attempt.safe_to_continue);
-    assert_eq!(attempt.mutation, MutationState::None);
+    assert_eq!(
+        attempt.outcome.failure().map(|failure| failure.detail()),
+        Some("the archive writer panicked")
+    );
+    assert!(!attempt.safe_to_continue());
+    assert_eq!(attempt.outcome.mutation(), MutationState::None);
     assert!(!result.safe_to_continue);
     assert_eq!(run.toolset.packer.writes().len(), 1);
     assert!(source.exists());
@@ -2359,10 +2439,13 @@ fn a_plugin_maintenance_failure_keeps_recorded_attempts() {
     assert_eq!(result.attempts.len(), 1);
     assert!(
         result.attempts[0].succeeded(),
-        "{}",
-        result.attempts[0].detail
+        "{:?}",
+        result.attempts[0].outcome
     );
-    assert_eq!(result.attempts[0].mutation, MutationState::Committed);
+    assert_eq!(
+        result.attempts[0].outcome.mutation(),
+        MutationState::Committed
+    );
     assert_eq!(run.progress().unwrap().completed(), 1);
     assert!(reads_back(&result.attempts[0].archive_path));
     assert!(run.cleaned_up());

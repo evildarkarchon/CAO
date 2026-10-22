@@ -493,6 +493,11 @@ fn a_change_to_profile_ini_between_two_runs_is_picked_up_at_preparing() {
 }
 
 /// An 8×8 TGA, small enough to convert quickly.
+///
+/// Passing the metadata makes DirectXTex write a TGA 2.0 extension area
+/// stamped with the current time to the second, so two calls can differ.
+/// A test that checks a file is unchanged must compare against the bytes it
+/// wrote, not against a second call.
 fn tga_bytes() -> Vec<u8> {
     let mut scratch = ScratchImage::default();
     scratch
@@ -533,7 +538,8 @@ fn a_conversion_preference_turned_off_before_the_start_converts_nothing() {
     let _serial = serial();
     let app = app_dir("conversion-preference-off");
     let mod_root = app.join("mods").join("Mod");
-    write(&mod_root, "textures/armor.tga", &tga_bytes());
+    let tga = tga_bytes();
+    write(&mod_root, "textures/armor.tga", &tga);
     write(&mod_root, "meshes/armor.nif", b"not a mesh");
     // The shipped SSE profile prefers conversion when the run is set up.
     let run = ApplicationRun::new(&app, "SSE", &apply_necessary_textures(&app, &mod_root)).unwrap();
@@ -549,7 +555,7 @@ fn a_conversion_preference_turned_off_before_the_start_converts_nothing() {
     );
     assert_eq!(
         std::fs::read(mod_root.join("textures/armor.tga")).unwrap(),
-        tga_bytes()
+        tga
     );
     assert!(!mod_root.join("textures/armor.dds").exists());
     assert!(result.asset_attempts().is_empty());

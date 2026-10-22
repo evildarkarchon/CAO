@@ -129,8 +129,12 @@ fn every_container_commits_its_staged_payload() {
         let run = archive_run.execute(&configuration, None, &CancellationToken::new());
 
         let result = only_attempt(&run);
-        assert!(result.succeeded(), "{format:?}: {}", result.detail);
-        assert_eq!(result.mutation, MutationState::Committed, "{format:?}");
+        assert!(result.succeeded(), "{format:?}: {:?}", result.outcome);
+        assert_eq!(
+            result.outcome.mutation(),
+            MutationState::Committed,
+            "{format:?}"
+        );
         assert_eq!(std::fs::read(root.join("textures/a.dds")).unwrap(), b"B");
         // The default source cleanup backs the source up under a new name.
         assert!(!archive.exists(), "{format:?}");

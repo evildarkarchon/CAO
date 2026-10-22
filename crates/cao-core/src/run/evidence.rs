@@ -14,7 +14,6 @@ use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 
-use crate::Error;
 use crate::execution::{AssetExecutionResult, MutationState};
 use crate::routing::{RoutedAsset, RoutingLedger, SkipReason};
 use crate::run::{
@@ -23,6 +22,7 @@ use crate::run::{
     RunDiagnostic, RunDiagnosticCode, RunFailure, RunFailureCode, RunPhase, RunPhaseRecord,
     RunPhaseStatus, RunPreparation, RunProgress, take_panic_message,
 };
+use crate::{AttemptFacts, Error};
 
 /// One completed attempt: its routed identity, resolved Mod Root and durable outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +109,54 @@ impl Storage {
                 .as_ref()
                 .map_or(0, |ledger| ledger.skipped_asset_count(reason))
     }
+
+    /// Every recorded Archive extraction, Asset and Archive Finalization
+    /// output attempt, in that kind order and each kind in attempt order.
+    ///
+    /// This is the one place that projects the three attempt types onto
+    /// their shared [`AttemptFacts`]; Run Outcome classification and mutation
+    /// summaries both read it, so neither can disagree with the other about
+    /// what an attempt mutated or whether it was safe to continue.
+    /// Finalization effects outside any output attempt are not attempts and
+    /// are absent.
+    fn completed_attempts(&self) -> impl Iterator<Item = CompletedAttempt<'_>> {
+        let extractions = self
+            .archive_extraction_attempts
+            .iter()
+            .map(|attempt| CompletedAttempt {
+                kind: MutationKind::ArchiveExtraction,
+                mod_root: &attempt.mod_root,
+                facts: attempt.outcome.facts(),
+            });
+        let assets = self.asset_attempts.iter().map(|attempt| CompletedAttempt {
+            kind: MutationKind::AssetProcessing,
+            mod_root: &attempt.mod_root,
+            facts: attempt.result.outcome().facts(),
+        });
+        let finalizations = self
+            .archive_finalization
+            .iter()
+            .flat_map(|finalization| &finalization.attempts)
+            .map(|attempt| CompletedAttempt {
+                kind: MutationKind::ArchiveFinalization,
+                mod_root: &attempt.mod_root,
+                facts: attempt.outcome.facts(),
+            });
+        extractions.chain(assets).chain(finalizations)
+    }
+}
+
+/// One recorded attempt of any kind, reduced to what classification and
+/// mutation summaries need: its kind, its Mod Root and its Attempt Outcome's
+/// facts. Crate-private, so the view never becomes public API.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CompletedAttempt<'a> {
+    /// The attempt's kind, which maps one-to-one onto the three attempt types.
+    pub(crate) kind: MutationKind,
+    /// The Mod Root the attempt is attributed to.
+    pub(crate) mod_root: &'a PathBuf,
+    /// The attempt's mutation, succeeded and safe-to-continue facts.
+    pub(crate) facts: AttemptFacts,
 }
 
 /// The immutable factual record of one finished Optimization Run.
@@ -205,6 +253,14 @@ impl RunEvidence {
     /// Whether cooperative cancellation was observed before the evidence was sealed.
     pub fn cancellation_observed(&self) -> bool {
         self.storage.cancellation_observed
+    }
+
+    /// Every completed Archive extraction, Asset and Archive Finalization
+    /// output attempt as one view, for Run Outcome classification. The
+    /// mutation summaries are derived from the same view when the evidence
+    /// is sealed.
+    pub(crate) fn completed_attempts(&self) -> impl Iterator<Item = CompletedAttempt<'_>> {
+        self.storage.completed_attempts()
     }
 }
 
@@ -871,11 +927,7 @@ impl<'a> MutableRunEvidence<'a> {
             ));
         }
         let storage = &mut self.storage;
-        storage.mutation_summaries = derive_mutation_summaries(
-            &storage.archive_extraction_attempts,
-            &storage.asset_attempts,
-            storage.archive_finalization.as_ref(),
-        );
+        storage.mutation_summaries = derive_mutation_summaries(storage);
         storage.cleanup_failures = storage
             .asset_attempts
             .iter()
@@ -895,40 +947,20 @@ impl<'a> MutableRunEvidence<'a> {
 
 /// Groups durable effects of completed attempts, and finalization effects
 /// outside its output attempts, by Mod Root and kind.
-fn derive_mutation_summaries(
-    extractions: &[ArchiveExtractionResult],
-    attempts: &[RoutedAssetAttempt],
-    finalization: Option<&ArchiveFinalizationResult>,
-) -> Vec<MutationSummary> {
+///
+/// Attempts come from [`Storage::completed_attempts`], the same view Run
+/// Outcome classification reads; each counts once. The finalization effects
+/// that are not output attempts (pruned directories, Dummy Plugin changes)
+/// keep their own record type and add their recorded counts.
+fn derive_mutation_summaries(storage: &Storage) -> Vec<MutationSummary> {
     let mut grouped: BTreeMap<(PathBuf, MutationKind), MutationSummary> = BTreeMap::new();
-    let finalization_attempts = finalization.map_or(&[][..], |result| &result.attempts);
-    let finalization_mutations = finalization.map_or(&[][..], |result| &result.mutations);
-    let effects = extractions
-        .iter()
-        .map(|attempt| {
-            (
-                &attempt.mod_root,
-                MutationKind::ArchiveExtraction,
-                attempt.mutation,
-                1,
-            )
-        })
-        .chain(attempts.iter().map(|attempt| {
-            (
-                &attempt.mod_root,
-                MutationKind::AssetProcessing,
-                attempt.result.mutation_state(),
-                1,
-            )
-        }))
-        .chain(finalization_attempts.iter().map(|attempt| {
-            (
-                &attempt.mod_root,
-                MutationKind::ArchiveFinalization,
-                attempt.mutation,
-                1,
-            )
-        }))
+    let finalization_mutations = storage
+        .archive_finalization
+        .as_ref()
+        .map_or(&[][..], |result| &result.mutations);
+    let effects = storage
+        .completed_attempts()
+        .map(|attempt| (attempt.mod_root, attempt.kind, attempt.facts.mutation(), 1))
         .chain(finalization_mutations.iter().map(|mutation| {
             (
                 &mutation.mod_root,
