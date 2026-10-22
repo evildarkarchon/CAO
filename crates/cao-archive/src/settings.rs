@@ -379,11 +379,17 @@ impl Settings {
         settings
     }
 
-    /// `game`'s rules with an Archive Limit of `archive_limit` and an Archive
-    /// Size Cap of `size_cap`, neither checked against the game's own, so a
-    /// test can reach a cap with small files. Only the `test-support` feature,
-    /// enabled from `[dev-dependencies]`, compiles it.
+    /// For tests only: `game`'s rules with an Archive Limit of `archive_limit`
+    /// and an Archive Size Cap of `size_cap`, neither checked against the
+    /// game's own, so a test can reach a cap with small files.
+    ///
+    /// It ignores the game's Archive Size Cap: `archive_limit` may pass it,
+    /// and `size_cap` replaces it, even with `None`. Rules built here can plan
+    /// a BSA the game cannot load, so only tests may use them; every other
+    /// caller goes through [`Settings::for_profile`]. Only the `test-support`
+    /// feature, enabled from `[dev-dependencies]`, compiles it.
     #[cfg(feature = "test-support")]
+    #[doc(hidden)]
     pub fn for_test(game: Game, archive_limit: u64, size_cap: Option<u64>) -> Self {
         Self {
             archive_limit,
