@@ -242,7 +242,7 @@ fn a_diagnostic_retained_before_contained_work_panics_is_published_before_safety
     );
 
     assert_eq!(result.outcome(), RunOutcome::Failed);
-    assert_eq!(result.diagnostics(), [expected.clone()]);
+    assert_eq!(result.diagnostics(), std::slice::from_ref(&expected));
     let observed = sink.observed();
     let published: Vec<usize> = observed
         .iter()
