@@ -11,7 +11,7 @@ use cao_core::routing::{ProfileCapabilities, ProfileCapability};
 use cao_core::run::ArchivePacker as _;
 use cao_optimizers::archives::GameArchivePacker;
 use cao_optimizers::profile::{
-    archive_game, archive_packer, keeps_textures_separate, profile_capabilities,
+    archive_game, archive_packer, archive_size_cap, keeps_textures_separate, profile_capabilities,
 };
 use cao_profiles::{BsaGame, ProfileSettings, Profiles};
 
@@ -37,6 +37,22 @@ fn only_fallout_4_keeps_textures_in_their_own_archive() {
     assert!(!keeps_textures_separate(BsaGame::Tes5));
     assert!(!keeps_textures_separate(BsaGame::Sse));
     assert!(keeps_textures_separate(BsaGame::Fo4));
+}
+
+#[test]
+fn only_the_bsa_games_cap_the_maximum_archive_size_at_2_gib() {
+    // The GUI's Maximum size spin box reads this cap; the packer applies the
+    // same one from the game's `cao-archive` tables.
+    for game in EVERY_GAME {
+        assert_eq!(
+            archive_size_cap(game),
+            Settings::get(archive_game(game)).size_cap,
+            "{game:?}"
+        );
+    }
+    assert_eq!(archive_size_cap(BsaGame::Tes5), Some(2_147_483_648));
+    assert_eq!(archive_size_cap(BsaGame::Sse), Some(2_147_483_648));
+    assert_eq!(archive_size_cap(BsaGame::Fo4), None);
 }
 
 #[test]

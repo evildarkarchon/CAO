@@ -36,6 +36,9 @@ export global BsaTab {
     // into `games`, the Game combo's items, which Rust builds from the typed
     // Profile model (`cao_profiles::BsaGame`).
     in-out property <float> max-size: 1.96;
+    // The most GB the game in the Game combo's Archives may hold, or 0 for no
+    // cap: the BSA games stop at 2 GB. Rust's UI rules set it from the game.
+    in property <float> max-size-cap: 0;
     in-out property <int> game-index: 1;
     in property <[string]> games;
 }
@@ -463,6 +466,7 @@ export component MainWindow inherits Window {
                                         label: @tr("Maximum size");
                                         enabled: root.adv-ed;
                                         value <=> BsaTab.max-size;
+                                        maximum: BsaTab.max-size-cap > 0 ? BsaTab.max-size-cap : 99.99;
                                     }
                                 }
 

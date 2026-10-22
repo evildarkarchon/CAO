@@ -60,13 +60,14 @@ fn shipped_profile_limits_give_the_effective_maximum_sizes() {
 fn every_shipped_profile_limit_gives_every_game_the_maximum_it_always_had() {
     // The effective maxima the double limits `2104533975.04` (TES5, SSE) and
     // `4187593113.6` (FO4) gave each game when the packer truncated them;
-    // the whole-byte limits must give the same.
+    // the whole-byte limits must give the same, except that FO4's limit under
+    // a BSA game now stops at the 2 GiB BSA cap.
     for (limit, game, expected) in [
         (2_104_533_975, Game::Tes5, 2_104_533_975),
         (2_104_533_975, Game::Sse, 2_104_533_975),
         (2_104_533_975, Game::Fo4, 4_194_304_000),
-        (4_187_593_113, Game::Tes5, 4_187_593_113),
-        (4_187_593_113, Game::Sse, 4_187_593_113),
+        (4_187_593_113, Game::Tes5, 2_147_483_648),
+        (4_187_593_113, Game::Sse, 2_147_483_648),
         (4_187_593_113, Game::Fo4, 4_194_304_000),
     ] {
         let sets = Settings::get(game).with_profile_max_size(limit);
@@ -83,7 +84,34 @@ fn a_profile_limit_never_lowers_the_table_maximum() {
 }
 
 #[test]
-fn a_profile_limit_can_raise_the_maximum_to_the_largest_size() {
-    let sets = Settings::get(Game::Sse).with_profile_max_size(u64::MAX);
+fn a_profile_limit_can_raise_a_ba2_maximum_to_the_largest_size() {
+    // FO4's 4000 MiB is only the Creation Kit's limit; the BA2 itself and
+    // the game take far larger Archives.
+    assert_eq!(Settings::get(Game::Fo4).size_cap, None);
+    let sets = Settings::get(Game::Fo4).with_profile_max_size(u64::MAX);
     assert_eq!(sets.max_size, u64::MAX);
+}
+
+#[test]
+fn a_bsa_game_caps_any_profile_limit_at_2_gib() {
+    // 2 GiB is the practical limit of a Skyrim BSA, so no Profile, copied or
+    // not, packs one past it.
+    for game in [Game::Tes5, Game::Sse] {
+        assert_eq!(
+            Settings::get(game).size_cap,
+            Some(2_147_483_648),
+            "{game:?}"
+        );
+        for (limit, expected) in [
+            (0, 2_097_152_000),
+            (2_147_483_647, 2_147_483_647),
+            (2_147_483_648, 2_147_483_648),
+            (2_147_483_649, 2_147_483_648),
+            (8_589_934_592, 2_147_483_648),
+            (u64::MAX, 2_147_483_648),
+        ] {
+            let sets = Settings::get(game).with_profile_max_size(limit);
+            assert_eq!(sets.max_size, expected, "{limit} under {game:?}");
+        }
+    }
 }

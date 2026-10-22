@@ -422,7 +422,12 @@ fn gigabytes(shown: f32) -> f64 {
 
 /// The maximum Archive size as the spin box shows it, in gigabytes.
 fn shown_gigabytes(size: &ArchiveSize) -> f32 {
-    (size.bytes() as f64 / GIGABYTE) as f32
+    gigabytes_of(size.bytes())
+}
+
+/// `bytes` in the spin box's gigabytes (1024³ bytes each).
+pub(crate) fn gigabytes_of(bytes: u64) -> f32 {
+    (bytes as f64 / GIGABYTE) as f32
 }
 
 /// The maximum Archive size the spin box's gigabytes stand for, truncated to

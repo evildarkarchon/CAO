@@ -255,17 +255,28 @@ const INCOMPRESSIBLE: &[AllowedPath] = &[
 const BSA_MAX_SIZE: u64 = 2000 * 1024 * 1024;
 /// The 4000 MiB btu maximum for FO4.
 const BA2_MAX_SIZE: u64 = 4000 * 1024 * 1024;
+/// The 2 GiB cap on TES5 and SSE BSAs, the practical limit Skyrim loads; no
+/// Profile, copied or shipped, packs a BSA past it. FO4's BA2 has no such cap:
+/// its 4000 MiB is only the Creation Kit's limit, which users work around.
+const BSA_SIZE_CAP: u64 = 2 * 1024 * 1024 * 1024;
 
 /// One game's archive rules (`btu::bsa::Settings`).
 ///
-/// Every field is public so callers can adjust [`Settings::max_size`], as C++
-/// CAO's `archiveSettings` did; see [`Settings::with_profile_max_size`].
+/// Every field is public so callers can read a game's rules. A Profile adjusts
+/// [`Settings::max_size`] through [`Settings::with_profile_max_size`], which
+/// keeps it within the game's [`Settings::size_cap`]; setting the field by hand
+/// skips that cap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
     /// The game these rules belong to.
     pub game: Game,
     /// The most source bytes one Archive may hold; split and merge compare against it.
     pub max_size: u64,
+    /// The most source bytes one Archive of this game may ever hold, whatever a
+    /// Profile asks for; `None` when the container has no practical limit.
+    /// [`Settings::with_profile_max_size`] never raises [`Settings::max_size`]
+    /// past it.
+    pub size_cap: Option<u64>,
     /// The container for Standard and Incompressible Archives, and for merged ones.
     pub format: ArchiveVersion,
     /// The container for Textures Archives; `None` means [`Settings::format`].
@@ -296,6 +307,7 @@ impl Settings {
         let sse = Self {
             game: Game::Sse,
             max_size: BSA_MAX_SIZE,
+            size_cap: Some(BSA_SIZE_CAP),
             format: ArchiveVersion::Sse,
             texture_format: Some(ArchiveVersion::Sse),
             suffix: None,
@@ -324,6 +336,7 @@ impl Settings {
                 format: ArchiveVersion::Fo4,
                 texture_format: Some(ArchiveVersion::Fo4Dx),
                 max_size: BA2_MAX_SIZE,
+                size_cap: None,
                 extension: ".ba2",
                 suffix: Some("Main"),
                 texture_files: TEXTURE_FO4,
@@ -338,10 +351,14 @@ impl Settings {
     /// whole bytes, when that is larger, so a profile can let Archives grow past
     /// the game's table maximum. A smaller limit changes nothing: the table
     /// maximum is a floor, so a missing size (read as `0`) still packs at the
-    /// game's own maximum.
+    /// game's own maximum. A game with a [`Settings::size_cap`] stops there,
+    /// however large the profile's limit.
     #[must_use]
     pub fn with_profile_max_size(mut self, profile_max_size: u64) -> Self {
         self.max_size = self.max_size.max(profile_max_size);
+        if let Some(cap) = self.size_cap {
+            self.max_size = self.max_size.min(cap);
+        }
         self
     }
 

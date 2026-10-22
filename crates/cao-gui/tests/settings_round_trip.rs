@@ -54,7 +54,8 @@ fn settings_saved_from_the_window_reload_identically() {
     click(ui, "Extract BSA");
     click(ui, "Create BSA");
     click(ui, "Separate textures BSA");
-    enter(ui, "Maximum size", "3.5");
+    // Under the 2 GB cap of the Skyrim games, which would hold a larger size there.
+    enter(ui, "Maximum size", "1.5");
     // Not FO4, whose UI rule (#509) would force "Separate textures BSA" back on.
     choose(ui, "Game", "Skyrim LE");
 
@@ -99,10 +100,10 @@ fn settings_saved_from_the_window_reload_identically() {
     assert!(options.animations_optimization);
     let settings = profile.load_settings().unwrap();
     assert_eq!(settings.bsa_game, BsaGame::Tes5);
-    // 3.5 GiB, in whole bytes.
+    // 1.5 GiB, in whole bytes.
     assert_eq!(
         settings.max_bsa_uncompressed_size,
-        ArchiveSize::from_bytes(3_758_096_384)
+        ArchiveSize::from_bytes(1_610_612_736)
     );
     assert_eq!(settings.meshes_stream, MeshStreamVersion::V130);
     assert_eq!(settings.textures_format, TextureFormat::Bc3Unorm);
@@ -135,7 +136,7 @@ fn settings_saved_from_the_window_reload_identically() {
     assert!(!checked(ui, "Separate textures BSA"));
     assert_eq!(
         control(ui, "Maximum size").accessible_value().as_deref(),
-        Some("3.50")
+        Some("1.50")
     );
     assert_eq!(
         control(ui, "Game").accessible_value().as_deref(),

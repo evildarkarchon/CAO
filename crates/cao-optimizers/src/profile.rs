@@ -3,7 +3,8 @@
 //! From a Profile's settings (`profile.ini`), this module derives its Profile
 //! Capabilities with its game's Archive extension, the `cao-archive` game and
 //! packer its Archives follow, whether that game keeps Textures in their own
-//! Archive, and the backend's `TextureProfile` (its per-run texture settings)
+//! Archive and how large its Archives may ever grow, and the backend's
+//! `TextureProfile` (its per-run texture settings)
 //! and Mesh Target. Preparing compiles a run's routing and builds its work
 //! from these, and the GUI gates its asset tabs from the same Profile
 //! Capabilities, so the two never disagree about what a Profile supports.
@@ -77,9 +78,20 @@ pub(crate) fn textures_need_own_archive(settings: &Settings) -> bool {
     settings.version_for(ArchiveType::Textures) != settings.version_for(ArchiveType::Standard)
 }
 
+/// The most source bytes one Archive of `game` may ever hold, whatever its
+/// Profile's maximum Archive size asks: 2 GiB for the BSA games, the practical
+/// limit Skyrim loads, and `None` for FO4, whose BA2s have no such limit.
+///
+/// The packer stops there ([`archive_packer`]), and the GUI's Maximum size spin
+/// box reads this so it never shows a size the run would not use.
+pub fn archive_size_cap(game: BsaGame) -> Option<u64> {
+    Settings::get(archive_game(game)).size_cap
+}
+
 /// The packer for a profile's game, with its maximum Archive size raised to
-/// the profile's `maxBsaUncompressedSize` when that is larger (see
-/// [`Settings::with_profile_max_size`]: the game's table maximum is a floor).
+/// the profile's `maxBsaUncompressedSize` when that is larger, and never past
+/// the game's [`archive_size_cap`] (see [`Settings::with_profile_max_size`]:
+/// the game's table maximum is a floor and its cap a ceiling).
 pub fn archive_packer(settings: &ProfileSettings) -> GameArchivePacker {
     GameArchivePacker::new(
         Settings::get(archive_game(settings.bsa_game))
