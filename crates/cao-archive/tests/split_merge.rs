@@ -5,8 +5,8 @@
 use std::path::Path;
 
 use cao_archive::{
-    ArchiveData, ArchiveError, ArchiveType, ArchiveVersion, AssetLimit, Game, MergeSettings,
-    PackSource, Settings, SplitArchives,
+    ArchiveData, ArchiveError, ArchiveType, ArchiveVersion, Game, MergeSettings, PackSource,
+    Settings, SplitArchives,
 };
 
 const ROOT: &str = r"C:\Mods\Example";
@@ -131,6 +131,28 @@ fn an_asset_larger_than_the_archive_limit_gets_an_archive_of_its_own() {
 }
 
 #[test]
+fn a_skyrim_asset_of_1_gib_or_more_within_the_cap_is_planned_alone() {
+    // A BSA file record cannot store 1 GiB or more, but that bounds the
+    // stored (compressed) bytes, not the source: planning sees only source
+    // sizes, so it must not refuse a file the writer may compress under it.
+    // The writer's own check fails a file whose stored form is still too big.
+    const SIZE: u64 = 3 << 29; // 1.5 GiB
+    for game in [Game::Tes5, Game::Sse] {
+        let archives = split(
+            &Settings::for_profile(game, None),
+            vec![source(r"meshes\big.nif", SIZE)],
+        )
+        .merge(NO_MERGE);
+        assert_eq!(
+            layout(&archives),
+            [(ArchiveType::Standard, files(&[r"meshes\big.nif"]))],
+            "{game:?}"
+        );
+        assert_eq!(archives[0].size(), SIZE, "{game:?}");
+    }
+}
+
+#[test]
 fn an_asset_past_a_bsas_size_cap_is_an_error_naming_the_cap() {
     // A 1000-byte cap stands in for the 2 GiB one. A 150-byte Asset is past
     // the Archive Limit but packs alone; a 1000-byte one cannot fit even an
@@ -144,68 +166,16 @@ fn an_asset_past_a_bsas_size_cap_is_an_error_naming_the_cap() {
         )
         .unwrap_err();
         let message = error.to_string();
-        let ArchiveError::AssetTooLarge { path, size, limit } = error else {
+        let ArchiveError::AssetTooLarge { path, size, cap } = error else {
             panic!("expected AssetTooLarge, got {error:?}");
         };
         assert_eq!(path, Path::new(ROOT).join(r"meshes\b.nif"), "{game:?}");
-        assert_eq!(
-            (size, limit),
-            (1000, AssetLimit::ArchiveSizeCap(1000)),
-            "{game:?}"
-        );
+        assert_eq!((size, cap), (1000, 1000), "{game:?}");
         assert!(
             message.contains("1000-byte Archive Size Cap"),
             "{game:?}: {message}"
         );
     }
-}
-
-#[test]
-fn an_asset_of_1_gib_or_more_is_too_large_for_a_bsa_and_the_error_names_that_limit() {
-    // A BSA file record keeps a file's size in 30 bits, so a 1 GiB Asset can
-    // never be written into one, though it is well within the game's 2 GiB
-    // Archive Size Cap. Planning refuses it, rather than packing it alone
-    // for the writer to fail.
-    const GIB: u64 = 1 << 30;
-    for game in [Game::Tes5, Game::Sse] {
-        let error = SplitArchives::split(
-            Path::new(ROOT),
-            vec![
-                source(r"meshes\a.nif", GIB - 1),
-                source(r"meshes\b.nif", GIB),
-            ],
-            &Settings::get(game),
-        )
-        .unwrap_err();
-        let message = error.to_string();
-        let ArchiveError::AssetTooLarge { path, size, limit } = error else {
-            panic!("expected AssetTooLarge, got {error:?}");
-        };
-        assert_eq!(path, Path::new(ROOT).join(r"meshes\b.nif"), "{game:?}");
-        assert_eq!((size, limit), (GIB, AssetLimit::BsaFile(GIB)), "{game:?}");
-        assert!(
-            message.contains("BSA") && message.contains("1073741824 bytes"),
-            "{game:?}: {message}"
-        );
-        assert!(!message.contains("Archive Size Cap"), "{game:?}: {message}");
-    }
-
-    // A BA2 has no such limit: FO4 packs the same Asset alone.
-    let archives = split(
-        &Settings::get(Game::Fo4),
-        vec![
-            source(r"meshes\a.nif", GIB - 1),
-            source(r"meshes\b.nif", GIB),
-        ],
-    )
-    .merge(NO_MERGE);
-    assert_eq!(
-        layout(&archives),
-        [(
-            ArchiveType::Standard,
-            files(&[r"meshes\a.nif", r"meshes\b.nif"])
-        )]
-    );
 }
 
 #[test]

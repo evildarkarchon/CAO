@@ -6,15 +6,15 @@ use std::path::PathBuf;
 /// Why an Archive could not be planned, written or read.
 #[derive(Debug, thiserror::Error)]
 pub enum ArchiveError {
-    /// One file is too large for even an Archive of its own, so no Archive the
-    /// game can load may hold it: `limit` says why. A file past only the
+    /// One file is too large for even an Archive of its own under its game's
+    /// Archive Size Cap ([`crate::Settings::size_cap`], 2 GiB for TES5 and
+    /// SSE), so no Archive the game can load may hold it. A file past only the
     /// Archive Limit is never this: it is packed alone.
-    #[error("`{}` is {size} bytes, too large for {limit}", path.display())]
-    AssetTooLarge {
-        path: PathBuf,
-        size: u64,
-        limit: AssetLimit,
-    },
+    #[error(
+        "`{}` is {size} bytes, too large for an Archive within its game's {cap}-byte Archive Size Cap",
+        path.display()
+    )]
+    AssetTooLarge { path: PathBuf, size: u64, cap: u64 },
     /// A file or directory could not be read, created or removed.
     #[error("cannot access `{}`: {source}", path.display())]
     Io {
@@ -74,39 +74,4 @@ pub enum ArchiveError {
         #[source]
         source: ba2::fo4::Error,
     },
-}
-
-/// The limit that leaves no Archive able to hold an Asset
-/// ([`ArchiveError::AssetTooLarge`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AssetLimit {
-    /// The game's Archive Size Cap in bytes ([`crate::Settings::size_cap`],
-    /// 2 GiB for TES5 and SSE): the Asset passes it even in a BSA of its own,
-    /// once the BSA's header and records are counted.
-    ArchiveSizeCap(u64),
-    /// The BSA format's per-file limit in bytes, 1 GiB: a BSA file record keeps
-    /// a file's size in its low 30 bits, the two above being flags, so a file
-    /// of this size or more cannot be written into any BSA, under any cap.
-    BsaFile(u64),
-}
-
-impl std::fmt::Display for AssetLimit {
-    /// The limit as the end of [`ArchiveError::AssetTooLarge`]'s message:
-    /// "too large for ...".
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ArchiveSizeCap(cap) => {
-                write!(
-                    f,
-                    "an Archive within its game's {cap}-byte Archive Size Cap"
-                )
-            }
-            Self::BsaFile(limit) => {
-                write!(
-                    f,
-                    "a BSA, which cannot hold a file of {limit} bytes or more"
-                )
-            }
-        }
-    }
 }
