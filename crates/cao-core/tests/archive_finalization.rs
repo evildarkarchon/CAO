@@ -2211,6 +2211,61 @@ fn split_outputs_take_counter_names_and_their_own_plugins() {
     assert!(run.cleaned_up());
 }
 
+/// Spec (#628): the size limit only groups sources. A source larger than it
+/// is packed into an Archive of its own rather than failing, and the sources
+/// around it still split at the limit.
+#[test]
+fn a_source_over_the_size_limit_is_packed_into_an_archive_of_its_own() {
+    let root = scratch("split-oversize").join("mod");
+    write_file(&root.join("meshes/a.nif"), b"five!");
+    write_file(&root.join("meshes/b.nif"), &[b'b'; 30]);
+    write_file(&root.join("meshes/c.nif"), b"five!");
+    let mut finalizer = Finalizer {
+        settings: ArchiveFinalizationChoices {
+            compress: false,
+            ..ArchiveFinalizationChoices::default()
+        },
+        ..Finalizer::default()
+    };
+    // Room for both small sources, but not for the 30-byte one.
+    finalizer.packer.max_size = 20;
+    let run = finalizer.run(std::slice::from_ref(&root));
+
+    let result = run.finalization();
+    assert_eq!(result.failure, None);
+    let archives: Vec<_> = result
+        .attempts
+        .iter()
+        .map(|attempt| {
+            assert!(attempt.succeeded(), "{:?}", attempt.outcome);
+            attempt.archive_path.clone()
+        })
+        .collect();
+    assert_eq!(
+        archives,
+        [
+            root.join("mod.bsa"),
+            root.join("mod0.bsa"),
+            root.join("mod1.bsa")
+        ]
+    );
+    let names: Vec<_> = run
+        .toolset
+        .packer
+        .writes()
+        .into_iter()
+        .map(|write| write.names)
+        .collect();
+    // Sorted order: `a` opens the first Archive, `b` cannot join it and gets
+    // its own, and `c` cannot join `b`'s, which is already past the limit.
+    assert_eq!(
+        names,
+        [["meshes/a.nif"], ["meshes/b.nif"], ["meshes/c.nif"]]
+    );
+    assert!(!root.join("meshes").exists());
+    assert!(run.cleaned_up());
+}
+
 /// **Deviation 21 (core side).** A game that keeps Textures separate never
 /// merges them into the Main Archive, even when asked; a game that allows it
 /// merges them.
