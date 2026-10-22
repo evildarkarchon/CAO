@@ -8,10 +8,10 @@ use std::path::{Component, Path};
 use crate::name::split_file_name;
 
 /// A game whose archive rules CAO applies, as a profile's `[BSA] bsaGame` names it.
+/// `cao-profiles` reads `bsaGame` straight into this enum, so a game has one name.
 ///
-/// **Deviation 11:** bethutil also has TES3, TES4 and FNV tables, and fell back to
-/// SSE's for any other value. The port has only these three; `cao-profiles`
-/// rejects any other `bsaGame`.
+/// CAO has Archive Rules for these three games only, so `cao-profiles` rejects
+/// any other `bsaGame` rather than packing by another game's rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Game {
     /// Skyrim Legendary Edition (`btu::Game::SLE`, `bsaGame=3`).

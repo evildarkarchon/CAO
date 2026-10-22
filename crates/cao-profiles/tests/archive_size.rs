@@ -1,8 +1,11 @@
 //! A Profile's maximum Archive size (`[BSA] maxBsaUncompressedSize`): a whole
 //! number of bytes, read strictly from bytes or a size with a unit, and written
-//! as integer text unless the user's text still holds it.
+//! as integer text unless the user's text still holds it; or not given, when
+//! the key is missing, and then still missing after a save.
 
 mod common;
+
+use std::num::NonZeroU64;
 
 use cao_profiles::{ArchiveSize, Profile, ProfileError, Profiles};
 
@@ -42,29 +45,91 @@ fn a_fractional_size_loads_truncated_to_whole_bytes() {
 
     let settings = profile.load_settings().unwrap();
 
+    assert_eq!(settings.max_bsa_uncompressed_size, size(2_104_533_975));
     assert_eq!(
-        settings.max_bsa_uncompressed_size,
-        ArchiveSize::from_bytes(2_104_533_975)
+        settings.max_bsa_uncompressed_size.requested(),
+        Some(2_104_533_975)
     );
-    assert_eq!(settings.max_bsa_uncompressed_size.bytes(), 2_104_533_975);
+}
+
+/// The size of `bytes` bytes, which must not be `0`.
+fn size(bytes: u64) -> ArchiveSize {
+    ArchiveSize::from_bytes(NonZeroU64::new(bytes).unwrap())
 }
 
 #[test]
-fn a_missing_size_reads_as_zero_so_the_games_table_maximum_applies() {
+fn a_missing_size_loads_as_not_given_and_saves_without_the_key() {
     let profile = shipped_copy("archive-size-missing", "SSE");
     replace_size_line(&profile, "");
+    let before = common::read(&profile.profile_ini());
 
     let settings = profile.load_settings().unwrap();
 
-    assert_eq!(
-        settings.max_bsa_uncompressed_size,
-        ArchiveSize::from_bytes(0)
+    // Not given, so the game's default applies; nothing asks for a size.
+    assert_eq!(settings.max_bsa_uncompressed_size, ArchiveSize::NOT_GIVEN);
+    assert_eq!(settings.max_bsa_uncompressed_size.requested(), None);
+
+    // A save leaves the key out, so the Profile keeps following the default.
+    profile.save_settings(&settings).unwrap();
+    let saved = String::from_utf8(common::read(&profile.profile_ini())).unwrap();
+    assert!(!saved.contains("maxBsaUncompressedSize"), "{saved}");
+    assert_eq!(saved, String::from_utf8(before).unwrap());
+    assert_eq!(profile.load_settings().unwrap(), settings);
+}
+
+#[test]
+fn a_size_set_to_not_given_saves_by_removing_the_key() {
+    let profile = shipped_copy("archive-size-cleared", "SSE");
+    let mut settings = profile.load_settings().unwrap();
+    assert_ne!(settings.max_bsa_uncompressed_size, ArchiveSize::NOT_GIVEN);
+    settings.max_bsa_uncompressed_size = ArchiveSize::NOT_GIVEN;
+
+    profile.save_settings(&settings).unwrap();
+
+    let saved = String::from_utf8(common::read(&profile.profile_ini())).unwrap();
+    assert!(!saved.contains("maxBsaUncompressedSize"), "{saved}");
+    // The rest of `[BSA]` is kept, in its order.
+    assert!(
+        saved.contains("[BSA]\r\nbsaEnabled=true\r\nbsaGame=4\r\n"),
+        "{saved}"
     );
+    assert_eq!(profile.load_settings().unwrap(), settings);
+}
+
+#[test]
+fn an_explicit_zero_size_makes_the_profile_unreadable() {
+    // A limit of 0 could never pack anything, so it is reported rather than
+    // silently replaced by the game's default; a size whose whole bytes
+    // truncate to 0 is the same 0.
+    for value in ["0", "0.0", "0.5", "0GB", "0.1B"] {
+        let profile = shipped_copy(&format!("archive-size-zero-{value}"), "SSE");
+        replace_size_line(&profile, &format!("maxBsaUncompressedSize={value}"));
+
+        let error = profile.load_settings().unwrap_err();
+
+        assert!(
+            matches!(
+                &error,
+                ProfileError::UnsupportedValue { file, key, value: found, .. }
+                    if file == "profile.ini"
+                        && key == "BSA/maxBsaUncompressedSize"
+                        && found.as_deref() == Some(value)
+            ),
+            "{value}: {error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "`profile.ini`: `BSA/maxBsaUncompressedSize` is `{value}`; expected {ACCEPTED}"
+            )
+        );
+    }
 }
 
 /// What a rejected size's error says the key accepts.
-const ACCEPTED: &str = "a whole number of bytes from 0 to 18446744073709551615, or a size \
-                        such as `8GB` in B, KB, MB, GB or TB, counted in 1024s";
+const ACCEPTED: &str = "a whole number of bytes from 1 to 18446744073709551615, or a size \
+                        such as `8GB` in B, KB, MB, GB or TB, counted in 1024s; leave the \
+                        key out for the game's default";
 
 #[test]
 fn a_size_with_a_unit_loads_counted_in_1024s() {
@@ -90,7 +155,11 @@ fn a_size_with_a_unit_loads_counted_in_1024s() {
 
         let settings = profile.load_settings().unwrap();
 
-        assert_eq!(settings.max_bsa_uncompressed_size.bytes(), bytes, "{value}");
+        assert_eq!(
+            settings.max_bsa_uncompressed_size.requested(),
+            Some(bytes),
+            "{value}"
+        );
     }
 }
 
@@ -113,7 +182,7 @@ fn a_size_with_a_unit_saves_as_written_until_it_changes() {
     assert_eq!(profile.load_settings().unwrap(), settings);
 
     // A size set in bytes is written in bytes.
-    settings.max_bsa_uncompressed_size = ArchiveSize::from_bytes(6_442_450_944);
+    settings.max_bsa_uncompressed_size = size(6_442_450_944);
     profile.save_settings(&settings).unwrap();
 
     let saved = String::from_utf8(common::read(&profile.profile_ini())).unwrap();
@@ -159,13 +228,13 @@ fn a_size_saves_as_whole_byte_integer_text_and_reloads_exactly() {
     // Qt's double writer would store 4 TB as `4e+12`, and a double cannot hold
     // the largest size at all.
     for (bytes, line) in [
-        (0, "maxBsaUncompressedSize=0"),
+        (1, "maxBsaUncompressedSize=1"),
         (4_000_000_000_000, "maxBsaUncompressedSize=4000000000000"),
         (u64::MAX, "maxBsaUncompressedSize=18446744073709551615"),
     ] {
         let profile = shipped_copy(&format!("archive-size-saved-{bytes}"), "SSE");
         let mut settings = profile.load_settings().unwrap();
-        settings.max_bsa_uncompressed_size = ArchiveSize::from_bytes(bytes);
+        settings.max_bsa_uncompressed_size = size(bytes);
 
         profile.save_settings(&settings).unwrap();
 

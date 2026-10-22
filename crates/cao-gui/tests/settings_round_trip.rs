@@ -4,6 +4,8 @@
 
 mod common;
 
+use std::num::NonZeroU64;
+
 use cao_archive::Game;
 use cao_gui::ui::{MeshesTab, TexturesTab};
 use cao_profiles::ArchiveSize;
@@ -104,7 +106,7 @@ fn settings_saved_from_the_window_reload_identically() {
     // 1.5 GiB, in whole bytes.
     assert_eq!(
         settings.max_bsa_uncompressed_size,
-        ArchiveSize::from_bytes(1_610_612_736)
+        ArchiveSize::from_bytes(NonZeroU64::new(1_610_612_736).unwrap())
     );
     assert_eq!(settings.meshes_stream, MeshStreamVersion::V130);
     assert_eq!(settings.textures_format, TextureFormat::Bc3Unorm);

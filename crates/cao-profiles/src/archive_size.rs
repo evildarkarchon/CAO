@@ -1,10 +1,18 @@
 //! A Profile's maximum Archive size (`[BSA] maxBsaUncompressedSize`): a whole
-//! number of bytes, so no floating-point value leaves the read of `profile.ini`.
+//! number of bytes, so no floating-point value leaves the read of `profile.ini`,
+//! or not given at all.
+
+use std::num::NonZeroU64;
 
 use crate::error::ProfileError;
 use crate::ini::{IniFile, Value};
 
-/// The largest uncompressed Archive a Profile creates, in whole bytes.
+/// The largest uncompressed Archive a Profile asks to create, in whole bytes,
+/// or [`ArchiveSize::NOT_GIVEN`] when it asks for none.
+///
+/// This is only the Profile's request. `cao-archive`'s `Settings::for_profile`
+/// turns it into the Profile's Archive Limit: the game's default when it is not
+/// given, and never past the game's Archive Size Cap.
 ///
 /// `profile.ini` has always stored it as a double (the shipped Profiles hold
 /// `2104533975.04`); the packer truncated it to whole bytes, so the read does
@@ -12,73 +20,90 @@ use crate::ini::{IniFile, Value};
 /// also give it with a unit, such as `8GB`, counted in 1024s like the window's
 /// gigabytes: a copied Profile may raise its Archives well past the game's
 /// table maximum (FO4's 4 GB is only the Creation Kit's limit), and a unit is
-/// how a person writes such a size. A missing key reads as `0`. Any other text,
-/// or a negative, non-finite or overflowing size, makes the Profile unreadable
-/// with [`ProfileError::UnsupportedValue`].
+/// how a person writes such a size. A missing key reads as not given. A size of
+/// `0` bytes (after truncation), any other text, or a negative, non-finite or
+/// overflowing size, makes the Profile unreadable with
+/// [`ProfileError::UnsupportedValue`]: a limit of `0` could never group
+/// anything, and silently replacing it would hide the mistake.
 ///
 /// A size read with a unit remembers its text, and writing puts that text back,
 /// so a save that leaves the size alone leaves the user's line alone. Every
 /// other size is written as integer bytes, which older builds read as the same
-/// double; they read a unit as `0`, and so fall back to the game's maximum.
+/// double; they read a unit as `0`, and so fall back to the game's maximum. A
+/// size not given is written by leaving the key out, so the Profile keeps
+/// following its game's default.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
-pub struct ArchiveSize {
-    bytes: u64,
+pub struct ArchiveSize(Option<Given>);
+
+/// A size the Profile gives.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Given {
+    bytes: NonZeroU64,
     /// The text this size was read from, when that text has a unit.
     written: Option<String>,
 }
 
 impl ArchiveSize {
-    /// The size of `bytes` bytes, written as integer bytes.
-    pub const fn from_bytes(bytes: u64) -> Self {
-        Self {
+    /// No size: the Profile leaves its Archive Limit to its game's default.
+    /// This is also [`ArchiveSize::default`].
+    pub const NOT_GIVEN: Self = Self(None);
+
+    /// The size of `bytes` bytes, written as integer bytes. A size is never
+    /// `0`; [`ArchiveSize::NOT_GIVEN`] is how a Profile asks for no size.
+    pub const fn from_bytes(bytes: NonZeroU64) -> Self {
+        Self(Some(Given {
             bytes,
             written: None,
-        }
+        }))
     }
 
-    /// The size in bytes.
-    pub const fn bytes(&self) -> u64 {
-        self.bytes
+    /// The size in bytes the Profile asks for, or `None` when it gives none:
+    /// the request `cao_archive::Settings::for_profile` takes.
+    pub fn requested(&self) -> Option<u64> {
+        self.0.as_ref().map(|given| given.bytes.get())
     }
 
     /// Reads `key` (`Section/key`) of `profile.ini` as a size: whole or
     /// fractional bytes, or a number with a unit. A fraction of a byte is
-    /// truncated. A missing key reads as `0`, which the game's Archive-table
-    /// maximum then raises, as it always has.
+    /// truncated. A missing key reads as [`ArchiveSize::NOT_GIVEN`].
     ///
     /// # Errors
     /// [`ProfileError::UnsupportedValue`] when the value is neither, or is
-    /// negative, not finite or past [`u64::MAX`] bytes.
+    /// `0` bytes once truncated, negative, not finite or past [`u64::MAX`]
+    /// bytes.
     pub(crate) fn read(ini: &IniFile, key: &str) -> Result<Self, ProfileError> {
         let value = ini.value(key);
         if matches!(value, Value::Invalid) {
-            return Ok(Self::default());
+            return Ok(Self::NOT_GIVEN);
         }
         let text = value.to_qstring();
         let text = text.trim();
         let unsupported = || ProfileError::unsupported_value(key, value, ACCEPTED);
-        match split_unit(text) {
-            None => whole_bytes(text)
-                .map(Self::from_bytes)
-                .ok_or_else(unsupported),
-            Some((number, unit)) => {
-                let bytes = unit_scale(unit)
-                    .and_then(|scale| scaled_bytes(number, scale))
-                    .ok_or_else(unsupported)?;
-                Ok(Self {
-                    bytes,
-                    written: Some(text.to_owned()),
-                })
-            }
-        }
+        let (bytes, written) = match split_unit(text) {
+            None => (whole_bytes(text), None),
+            Some((number, unit)) => (
+                unit_scale(unit).and_then(|scale| scaled_bytes(number, scale)),
+                Some(text.to_owned()),
+            ),
+        };
+        let bytes = bytes.and_then(NonZeroU64::new).ok_or_else(unsupported)?;
+        Ok(Self(Some(Given { bytes, written })))
     }
 
-    /// The text `profile.ini` holds for this size: the user's text when it was
-    /// read with a unit, otherwise integer bytes.
-    pub(crate) fn to_written(&self) -> String {
-        self.written
-            .clone()
-            .unwrap_or_else(|| self.bytes.to_string())
+    /// Writes this size to `key` (`Section/key`) of `profile.ini`: the user's
+    /// text when it was read with a unit, otherwise integer bytes. A size not
+    /// given removes the key, so a Profile that gave none still gives none.
+    pub(crate) fn write(&self, ini: &mut IniFile, key: &str) {
+        match &self.0 {
+            None => ini.remove(key),
+            Some(given) => ini.set(
+                key,
+                given
+                    .written
+                    .clone()
+                    .unwrap_or_else(|| given.bytes.to_string()),
+            ),
+        }
     }
 }
 
@@ -141,8 +166,9 @@ fn in_range(size: f64) -> Option<u64> {
 }
 
 /// What a rejection says the size accepts, phrased to follow "expected".
-const ACCEPTED: &str = "a whole number of bytes from 0 to 18446744073709551615, or a size \
-                        such as `8GB` in B, KB, MB, GB or TB, counted in 1024s";
+const ACCEPTED: &str = "a whole number of bytes from 1 to 18446744073709551615, or a size \
+                        such as `8GB` in B, KB, MB, GB or TB, counted in 1024s; leave the \
+                        key out for the game's default";
 
 /// 2^64, the first double past [`u64::MAX`]; a double cannot hold `u64::MAX`
 /// itself, so the bound is exclusive.

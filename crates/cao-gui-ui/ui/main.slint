@@ -34,7 +34,7 @@ export global BsaTab {
     in-out property <bool> separate-incompressible: true;
     // Advanced: the maximum uncompressed size in GB, and the game as an index
     // into `games`, the Game combo's items, which Rust builds from the typed
-    // Profile model (`cao_profiles::BsaGame`).
+    // Profile model's game (`cao_archive::Game`).
     in-out property <float> max-size: 1.96;
     // The most GB the game in the Game combo's Archives may hold, or 0 for no
     // cap: the BSA games stop at 2 GB. Rust's UI rules set it from the game.

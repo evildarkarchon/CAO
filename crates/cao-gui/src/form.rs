@@ -6,6 +6,8 @@
 //! reloads the same. #509's UI rules (Dry Run, Several Mods, FO4 textures; `rules.rs`) are
 //! not applied here; they run after [`show_options`] and [`show_settings`].
 
+use std::num::NonZeroU64;
+
 use cao_archive::Game;
 use cao_core::routing::{ProfileCapabilities, ProfileCapability};
 use cao_gui_ui::{AnimationsTab, BsaTab, MainWindow, MeshesTab, TexturesTab};
@@ -421,9 +423,12 @@ fn gigabytes(shown: f32) -> f64 {
     format!("{shown:.2}").parse().unwrap_or_default()
 }
 
-/// The maximum Archive size as the spin box shows it, in gigabytes.
+/// The maximum Archive size as the spin box shows it, in gigabytes. A size not
+/// given shows as 0, as a missing key always has.
 fn shown_gigabytes(size: &ArchiveSize) -> f32 {
-    gigabytes_of(size.bytes())
+    // A stopgap until the window shows the game's default for a size not
+    // given (#632, from `cao_archive::Settings::for_profile`).
+    gigabytes_of(size.requested().unwrap_or(0))
 }
 
 /// `bytes` in the spin box's gigabytes (1024³ bytes each).
@@ -433,9 +438,14 @@ pub(crate) fn gigabytes_of(bytes: u64) -> f32 {
 
 /// The maximum Archive size the spin box's gigabytes stand for, truncated to
 /// whole bytes as the read of `profile.ini` truncates a fraction. The spin box
-/// holds 0 to 99.99, so the bytes always fit.
+/// holds 0 to 99.99, so the bytes always fit. A spin box at 0 is a size not
+/// given.
 fn archive_size(shown: f32) -> ArchiveSize {
-    ArchiveSize::from_bytes((gigabytes(shown) * GIGABYTE) as u64)
+    // `profile.ini` refuses an explicit `0`, so the window must never save one;
+    // 0 is what the spin box shows for a size not given, so it saves as one.
+    // #632 raises the spin box's minimum to 0.01 GB, which retires this.
+    NonZeroU64::new((gigabytes(shown) * GIGABYTE) as u64)
+        .map_or(ArchiveSize::NOT_GIVEN, ArchiveSize::from_bytes)
 }
 
 /// The index of `value` among a combo's item data.

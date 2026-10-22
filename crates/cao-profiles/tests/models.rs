@@ -3,6 +3,8 @@
 
 mod common;
 
+use std::num::NonZeroU64;
+
 use cao_archive::Game;
 use cao_profiles::ArchiveSize;
 use cao_profiles::{
@@ -17,6 +19,11 @@ fn shipped() -> Profiles {
     Profiles::new(&shipped_app_dir())
 }
 
+/// The size of `bytes` bytes, which must not be `0`.
+fn size(bytes: u64) -> ArchiveSize {
+    ArchiveSize::from_bytes(NonZeroU64::new(bytes).unwrap())
+}
+
 #[test]
 fn the_shipped_tes5_profile_loads_into_the_settings_model() {
     let settings = shipped().open("TES5").load_settings().unwrap();
@@ -25,7 +32,7 @@ fn the_shipped_tes5_profile_loads_into_the_settings_model() {
         settings,
         ProfileSettings {
             bsa_enabled: true,
-            max_bsa_uncompressed_size: ArchiveSize::from_bytes(2_104_533_975),
+            max_bsa_uncompressed_size: size(2_104_533_975),
             bsa_game: Game::Tes5,
             meshes_enabled: true,
             meshes_file_version: MeshFileVersion::V20_2_0_7,
@@ -312,7 +319,7 @@ fn saved_settings_load_back_including_a_one_element_unwanted_format_list() {
     let profile = Profiles::new(&app_dir).open("FO4");
     let mut settings = profile.load_settings().unwrap();
     settings.textures_unwanted_formats = vec![UnwantedFormat::B5G6R5Unorm];
-    settings.max_bsa_uncompressed_size = ArchiveSize::from_bytes(2_147_483_648);
+    settings.max_bsa_uncompressed_size = size(2_147_483_648);
     settings.meshes_enabled = true;
 
     profile.save_settings(&settings).unwrap();
@@ -587,8 +594,5 @@ fn a_clean_profile_reads_without_error() {
             UnwantedFormat::B4G4R4A4Unorm,
         ]
     );
-    assert_eq!(
-        settings.max_bsa_uncompressed_size,
-        ArchiveSize::from_bytes(4_187_593_113)
-    );
+    assert_eq!(settings.max_bsa_uncompressed_size, size(4_187_593_113));
 }

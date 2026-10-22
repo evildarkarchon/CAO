@@ -84,14 +84,10 @@ pub fn archive_size_cap(game: Game) -> Option<u64> {
 /// none, never past the game's [`archive_size_cap`] (see
 /// [`Settings::for_profile`]).
 pub fn archive_packer(settings: &ProfileSettings) -> GameArchivePacker {
-    // `ArchiveSize` still reads a missing key as `0`, which no Profile can
-    // mean as a limit, so it stands for "not given" until `ArchiveSize`
-    // carries that itself.
-    let requested = match settings.max_bsa_uncompressed_size.bytes() {
-        0 => None,
-        bytes => Some(bytes),
-    };
-    GameArchivePacker::new(Settings::for_profile(settings.bsa_game, requested))
+    GameArchivePacker::new(Settings::for_profile(
+        settings.bsa_game,
+        settings.max_bsa_uncompressed_size.requested(),
+    ))
 }
 
 /// The profile's Texture settings, as the texture optimizer takes them: its

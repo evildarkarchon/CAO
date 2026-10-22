@@ -51,7 +51,7 @@ fn read_game(value: &Value) -> Result<Game, ProfileError> {
 /// A profile's `profile.ini`: the per-game settings C++ held in `Profiles`.
 ///
 /// Bools read with `QVariant`'s conversions, so a missing one is `false`, never a
-/// default, and a missing maximum Archive size is `0`; a Mesh Target axis and the Texture format are
+/// default, and a missing maximum Archive size is not given; a Mesh Target axis and the Texture format are
 /// closed sets ([`crate::ClosedSet`]) that `0` is outside, so a missing one is
 /// unreadable. Keys this model does not hold, such as the dead
 /// `[Animations] animationFormat` (deviation 10), are never read and survive a save.
@@ -61,10 +61,11 @@ pub struct ProfileSettings {
     /// (`[BSA] bsaEnabled`); the GUI enables its Archives tab from it.
     pub bsa_enabled: bool,
     /// The largest uncompressed Archive to create, in whole bytes
-    /// (`[BSA] maxBsaUncompressedSize`). The packer groups files by it, as the
-    /// Profile's Archive Limit, never past the game's Archive Size Cap; a
-    /// missing one (`0`) takes the game's default. Those rules live in
-    /// `cao-archive` (`Settings::for_profile`), so the composition root
+    /// (`[BSA] maxBsaUncompressedSize`), or not given when the key is missing.
+    /// The packer groups files by it, as the Profile's Archive Limit, never
+    /// past the game's Archive Size Cap; a size not given takes the game's
+    /// default. Those rules live in `cao-archive` (`Settings::for_profile`,
+    /// which takes [`ArchiveSize::requested`]), so the composition root
     /// applies them.
     pub max_bsa_uncompressed_size: ArchiveSize,
     /// The game whose archive naming, versions and Loading Plugin rules apply
@@ -114,8 +115,8 @@ impl ProfileSettings {
     /// outside its closed set.
     ///
     /// The maximum Archive size is also [`ProfileError::UnsupportedValue`] when
-    /// it is neither a number of bytes nor a size with a unit, or does not fit
-    /// in whole bytes: see [`ArchiveSize`].
+    /// it is neither a number of bytes nor a size with a unit, is `0`, or does
+    /// not fit in whole bytes: see [`ArchiveSize`].
     pub fn read(ini: &IniFile) -> Result<Self, ProfileError> {
         Ok(Self {
             bsa_enabled: ini.value("BSA/bsaEnabled").to_bool(),
@@ -139,10 +140,8 @@ impl ProfileSettings {
     /// the model does not hold are left alone.
     pub fn write(&self, ini: &mut IniFile) {
         ini.set("BSA/bsaEnabled", self.bsa_enabled);
-        ini.set(
-            "BSA/maxBsaUncompressedSize",
-            self.max_bsa_uncompressed_size.to_written(),
-        );
+        self.max_bsa_uncompressed_size
+            .write(ini, "BSA/maxBsaUncompressedSize");
         ini.set("BSA/bsaGame", self.bsa_game.number());
 
         ini.set("Meshes/meshesEnabled", self.meshes_enabled);
