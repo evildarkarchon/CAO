@@ -87,6 +87,78 @@ fn switching_away_from_an_unreadable_profile_keeps_its_asset_options() {
 }
 
 #[test]
+fn a_malformed_profile_ini_is_reported_on_selection_and_never_rewritten() {
+    // Saves rewrite `profile.ini` from its parsed entries, so a lenient read
+    // would let the next save silently delete the line QSettings rejects.
+    let _serial = serial();
+    headless();
+    let app_dir = app_with_sse_asset_options_on("malformed_profile_ini");
+    let profile_ini = app_dir.join("profiles").join("SSE").join("profile.ini");
+    let mut profile_ini_before = std::fs::read(&profile_ini).unwrap();
+    profile_ini_before.extend_from_slice(b"stray words\r\n");
+    std::fs::write(&profile_ini, &profile_ini_before).unwrap();
+    let loaded = sse_options(&app_dir);
+    assert!(loaded.bsa_extract && loaded.textures_compress && loaded.animations_optimization);
+    let unchanged = |when: &str| {
+        assert!(
+            std::fs::read(&profile_ini).unwrap() == profile_ini_before,
+            "`profile.ini` changed after {when}"
+        );
+    };
+
+    let (app, desktop) = open(&app_dir);
+    let ui = app.window();
+    choose(ui, "Profile", "SSE");
+
+    // Selecting the Profile reports the line, as Preparing would.
+    let shown = desktop.shown.borrow().clone();
+    let [Shown::Message { title, text, .. }] = shown.as_slice() else {
+        panic!("expected one message, got {shown:?}");
+    };
+    assert_eq!(title, "Profile");
+    // The shipped file has 21 lines, so the appended one is line 22.
+    let path = Profiles::new(&app_dir).open("SSE").profile_ini();
+    assert_eq!(
+        *text,
+        format!(
+            "The profile `SSE` could not be read: `{}` cannot be read: \
+             line 22 has no `=` and is not a comment",
+            path.display()
+        )
+    );
+    for tab in ["BSA", "Meshes", "Textures", "Animations"] {
+        assert!(!enabled(ui, tab), "{tab} is enabled");
+    }
+
+    assert!(app.save());
+    unchanged("a save");
+
+    // A refused Run saves the window first, then reports a Start Error.
+    ui.set_user_path("".into());
+    click(ui, "Run");
+    assert_eq!(desktop.message_titles(), ["Profile", "Start Error"]);
+    assert!(!ui.get_running());
+    unchanged("a refused Run");
+
+    choose(ui, "Profile", "TES5");
+    choose(ui, "Profile", "SSE");
+    choose(ui, "Profile", "TES5");
+    unchanged("Profile switches");
+    assert_eq!(
+        desktop.message_titles(),
+        ["Profile", "Start Error", "Profile"],
+        "reselecting the Profile reports it again"
+    );
+
+    // Its `settings.ini` asset options are kept as loaded.
+    let expected = Options {
+        user_path: String::new(),
+        ..loaded
+    };
+    assert_eq!(sse_options(&app_dir), expected);
+}
+
+#[test]
 fn a_readable_profile_lacking_a_capability_saves_that_tabs_options_as_off() {
     headless();
     let app_dir = app_with_sse_asset_options_on("profile_lacking_capability");
