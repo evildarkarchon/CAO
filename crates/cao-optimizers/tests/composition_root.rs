@@ -6,6 +6,7 @@ mod common;
 
 use std::path::Path;
 
+use cao_archive::ReadArchive;
 use cao_core::execution::AssetExecutionFailure;
 use cao_core::routing::{
     AssetOperation, ExecutionMode, PolicyValidationError, ProfileCapabilities, ProfileCapability,
@@ -22,7 +23,7 @@ use cao_optimizers::composition::{
 };
 use cao_profiles::{OptimizationMode, Options};
 use common::{
-    app_dir, dry_run_textures, edit_profile, profile_options, serial, snapshot_tree,
+    app_dir, canonical, dry_run_textures, edit_profile, profile_options, serial, snapshot_tree,
     start_and_wait, write, write_dds,
 };
 use directxtex::{
@@ -832,6 +833,63 @@ fn one_service_prepares_each_run_with_its_own_profile() {
             ]
         )
     );
+}
+
+/// Spec (#628): a run packs at its Profile's Archive Limit. An SSE Profile
+/// asking for 1000-byte Archives splits three 400-byte Meshes into one
+/// Archive of two and a counter-named Archive of the third, where the shipped
+/// ~1.96 GiB limit would pack all three together.
+#[test]
+fn a_run_under_a_small_archive_limit_splits_its_archives_at_that_limit() {
+    let _serial = serial();
+    let app = app_dir("small-archive-limit");
+    edit_profile(&app, "SSE", "maxBsaUncompressedSize", "1000");
+    let root = canonical(&{
+        let root = app.join("mods").join("Mod");
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    });
+    for name in ["a", "b", "c"] {
+        write(&root, &format!("meshes/{name}.nif"), &[b'm'; 400]);
+    }
+
+    let mut options = profile_options(&app, "SSE");
+    options.dry_run = false;
+    options.user_path = root.to_string_lossy().into_owned();
+    options.textures_necessary = false;
+    options.textures_compress = false;
+    options.textures_mipmaps = false;
+    options.textures_resize_ratio = false;
+    options.textures_resize_size = false;
+    options.meshes_optimization_level = 0;
+    options.meshes_resave = false;
+    options.animations_optimization = false;
+    options.bsa_extract = false;
+    options.bsa_create = true;
+    let result = start_and_wait(&run_service(&app), "SSE", &options);
+
+    assert_eq!(result.outcome(), RunOutcome::Succeeded, "{result:?}");
+    let finalization = result.archive_finalization().unwrap();
+    let archives: Vec<_> = finalization
+        .attempts
+        .iter()
+        .map(|attempt| attempt.archive_path.clone())
+        .collect();
+    assert_eq!(archives, [root.join("Mod.bsa"), root.join("Mod0.bsa")]);
+    let packed: Vec<usize> = archives
+        .iter()
+        .map(|archive| {
+            ReadArchive::open(archive)
+                .unwrap()
+                .expect("a known Archive format")
+                .archived_assets()
+                .unwrap()
+                .len()
+        })
+        .collect();
+    // 400 + 400 fills the first Archive to 800 bytes; a third would take it
+    // past 1000.
+    assert_eq!(packed, [2, 1]);
 }
 
 /// The metadata of the DDS file at `path`.
