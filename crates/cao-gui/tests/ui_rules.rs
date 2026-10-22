@@ -1,7 +1,7 @@
 //! The window's UI rules (#509), driven headlessly through the real `.slint`
 //! components (spec seam 4). Each rule is pinned twice: when the user changes
 //! the control that triggers it, and when the settings that trigger it load
-//! from the INI files (deviations 3 and 21).
+//! from the INI files (deviation 3).
 
 mod common;
 
@@ -9,7 +9,8 @@ use std::path::Path;
 
 use cao_gui::App;
 use cao_gui::ui::MainWindow;
-use cao_profiles::{Options, Profiles};
+use cao_optimizers::profile::keeps_textures_separate;
+use cao_profiles::{BsaGame, Options, Profiles};
 use common::*;
 
 /// The three base archive options the Dry Run rule clears and disables.
@@ -210,7 +211,7 @@ fn several_mods_chosen_while_mesh_work_is_off_holds_once_it_is_back_on() {
     );
 }
 
-// ---- FO4 (deviation 21)
+// ---- Games that keep Textures in their own Archive (FO4)
 
 #[test]
 fn an_fo4_profile_loads_with_separate_textures_checked_and_disabled() {
@@ -251,6 +252,48 @@ fn choosing_the_fo4_game_checks_and_disables_separate_textures() {
     assert_controls(ui, &["Separate textures BSA"], true, true);
     click(ui, "Separate textures BSA");
     assert!(saved_options(&app, &app_dir, "Custom").bsa_merge_textures);
+}
+
+/// Each Game combo item, with the game it names.
+const GAME_CHOICES: [(&str, BsaGame); 3] = [
+    ("Skyrim LE", BsaGame::Tes5),
+    ("SSE", BsaGame::Sse),
+    ("FO4", BsaGame::Fo4),
+];
+
+#[test]
+fn separate_textures_is_forced_exactly_while_the_game_keeps_textures_separate() {
+    headless();
+    // A custom profile, so its Game combo is editable.
+    let app_dir = app_on("separate_textures_per_game", "Custom");
+    Profiles::new(&app_dir).create("Custom", "SSE").unwrap();
+    edit_ini(&app_dir, "common.ini", "bShowAdvancedSettings", "true");
+    let (app, _desktop) = open(&app_dir);
+    let ui = app.window();
+    select_tab(ui, "BSA");
+
+    // Forward then back, so every game is reached both from a game that
+    // forces the checkbox and from one that gives it back.
+    for (label, game) in GAME_CHOICES.iter().chain(GAME_CHOICES.iter().rev()) {
+        choose(ui, "Game", label);
+        if keeps_textures_separate(*game) {
+            assert_controls(ui, &["Separate textures BSA"], true, false);
+        } else {
+            assert!(enabled(ui, "Separate textures BSA"), "{label} enabled");
+            // The user can clear it, so the next forced game starts unchecked.
+            if checked(ui, "Separate textures BSA") {
+                click(ui, "Separate textures BSA");
+            }
+            assert!(!checked(ui, "Separate textures BSA"), "{label} cleared");
+        }
+    }
+    // At least one game (FO4) keeps Textures in their own Archive, so the
+    // loop above did force the checkbox rather than only giving it back.
+    assert!(
+        GAME_CHOICES
+            .iter()
+            .any(|(_, game)| keeps_textures_separate(*game))
+    );
 }
 
 #[test]
