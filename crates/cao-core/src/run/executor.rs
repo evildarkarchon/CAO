@@ -25,6 +25,7 @@
 //! Evidence invariant violation is a bug: the executor finishes Safety Cleanup
 //! and then panics, and the Run Worker turns that panic into a Failed outcome.
 
+use std::ops::ControlFlow;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::Error;
@@ -39,14 +40,34 @@ use crate::run::{
 
 mod work_phases;
 
+/// Why the work phases stopped short of finishing, carried by their
+/// [`ControlFlow::Break`].
+///
+/// Most stops need nothing further from the executor: cancellation the
+/// run's token shows is sampled once at Safety Cleanup. Only a backend's own
+/// report of cancellation, which the token need not show, has to reach that
+/// sample, so it is the one stop with a reason of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stop {
+    /// The work stopped with nothing more for the executor to record: on
+    /// token cancellation, an unsafe attempt, or a failed or cancelled
+    /// preflight, each already in the evidence or in the token.
+    Halted,
+    /// An Asset backend reported cancellation during its initialization. The
+    /// executor records cancellation observed at Safety Cleanup for it, as
+    /// for the token, without cancelling the caller's token.
+    BackendCancelled,
+}
+
 /// The work phases of one run, as the executor's traversal calls them: with
 /// the run's preparation, its Run Toolset, its evidence lent mutably for the
 /// call, its Temporary Ownership registry and its token.
 ///
 /// Production work is the Run Toolset's work phases; the executor's own unit
 /// tests inject work that escapes as an error or a panic through
-/// [`RunExecutor::execute_with_work`]. An error is a Run Evidence invariant
-/// violation or escaped work.
+/// [`RunExecutor::execute_with_work`]. `Ok` says whether the work finished
+/// or stopped, and why; an error is a Run Evidence invariant violation or
+/// escaped work.
 pub(crate) trait RunWork:
     FnOnce(
     &RunPreparation,
@@ -54,7 +75,7 @@ pub(crate) trait RunWork:
     &mut MutableRunEvidence<'_>,
     &mut TemporaryArtifactRegistry,
     &CancellationToken,
-) -> Result<(), Error>
+) -> Result<ControlFlow<Stop>, Error>
 {
 }
 
@@ -65,7 +86,7 @@ impl<F> RunWork for F where
         &mut MutableRunEvidence<'_>,
         &mut TemporaryArtifactRegistry,
         &CancellationToken,
-    ) -> Result<(), Error>
+    ) -> Result<ControlFlow<Stop>, Error>
 {
 }
 
@@ -192,26 +213,27 @@ fn prepare_run(
 /// cancellation only through `stop`. Each panic is contained once, by the
 /// module that owns its rule: the work phases contain an Asset attempt's,
 /// and Archive extraction and Archive Finalization their own. Errors are
-/// Run Evidence invariant violations.
+/// Run Evidence invariant violations; a stop says why the work stopped.
 fn execute_toolset(
     preparation: &RunPreparation,
     mut toolset: RunToolset,
     evidence: &mut MutableRunEvidence<'_>,
     artifacts: &mut TemporaryArtifactRegistry,
     stop: &CancellationToken,
-) -> Result<(), Error> {
+) -> Result<ControlFlow<Stop>, Error> {
     work_phases::run_work_phases(preparation, &mut toolset, evidence, artifacts, stop)
 }
 
 /// The Run Work Escaped detail of work that escaped with `outcome`, or
-/// `None` when it finished or hit a Run Evidence invariant violation, which
-/// is noted in `invariant` instead. An escaped error keeps its own message.
+/// `None` when it finished, stopped or hit a Run Evidence invariant
+/// violation, which is noted in `invariant` instead. An escaped error keeps
+/// its own message.
 fn escaped_work_detail(
-    outcome: std::thread::Result<Result<(), Error>>,
+    outcome: std::thread::Result<Result<ControlFlow<Stop>, Error>>,
     invariant: &mut DeferredInvariant,
 ) -> Option<String> {
     match outcome {
-        Ok(Ok(())) => None,
+        Ok(Ok(_)) => None,
         Ok(Err(error @ Error::EvidenceInvariant(_))) => {
             invariant.note(Err(error));
             None
@@ -370,12 +392,17 @@ impl RunExecutor {
                 run_work,
             )
         }));
-        if let Err(payload) = traversal {
-            // The traversal's borrow of the evidence ended with the unwind. The
-            // owned evidence keeps every fact recorded before the panic,
-            // including whatever the interrupted step had partly written.
-            Self::fail_at_current_phase(&mut evidence, run_worker_panic_detail(payload));
-        }
+        let backend_cancelled = match traversal {
+            Ok(backend_cancelled) => backend_cancelled,
+            Err(payload) => {
+                // The traversal's borrow of the evidence ended with the
+                // unwind. The owned evidence keeps every fact recorded before
+                // the panic, including whatever the interrupted step had
+                // partly written.
+                Self::fail_at_current_phase(&mut evidence, run_worker_panic_detail(payload));
+                false
+            }
+        };
         // The work phases retain some Run Diagnostics without publishing them.
         // They are published here, once, whether the work returned, stopped
         // early or panicked, so no exit path has to remember them and a panic
@@ -399,9 +426,11 @@ impl RunExecutor {
         }
         // The token never resets, so this one sample covers cancellation the
         // work phases observed through it; they do not record it themselves.
-        // Only cancellation a backend reported, which the token may not show,
-        // is recorded where the work phases establish it.
-        if stop.is_cancelled() {
+        // Cancellation a backend reported, which the token may not show,
+        // reaches this same sample through the work's stop, so cancellation
+        // is recorded here alone and the caller's token is never cancelled
+        // on the backend's behalf.
+        if stop.is_cancelled() || backend_cancelled {
             evidence.record_cancellation_observation();
         }
         let Some(violation) = invariant.into_violation() else {
@@ -428,6 +457,10 @@ impl RunExecutor {
     /// cleanup. `artifacts` is the run's Temporary Ownership scope, which the
     /// caller cleans up whatever happens here. `run_work` runs the work
     /// phases when Preparing succeeded for a request with work.
+    ///
+    /// Returns whether the work stopped on a backend's report of
+    /// cancellation, which the caller records with its Safety Cleanup sample
+    /// of `stop`.
     fn traverse(
         request: &RunRequest,
         configuration: Option<&dyn RunConfigurationProvider>,
@@ -436,8 +469,9 @@ impl RunExecutor {
         invariant: &mut DeferredInvariant,
         stop: &CancellationToken,
         run_work: impl RunWork,
-    ) {
+    ) -> bool {
         let mut failed = false;
+        let mut backend_cancelled = false;
 
         // Preparing always executes: it is where the request becomes run-scoped
         // state. It is indeterminate work, so it reports no progress.
@@ -500,6 +534,8 @@ impl RunExecutor {
             let outcome = catch_unwind(AssertUnwindSafe(|| {
                 run_work(prepared, toolset, evidence, artifacts, stop)
             }));
+            backend_cancelled =
+                matches!(outcome, Ok(Ok(ControlFlow::Break(Stop::BackendCancelled))));
             if let Some(detail) = escaped_work_detail(outcome, invariant) {
                 Self::fail_at_current_phase(evidence, detail);
             }
@@ -521,6 +557,7 @@ impl RunExecutor {
                 )));
             }
         }
+        backend_cancelled
     }
 
     /// Records work that escaped with `detail` as a fatal Run Failure at the

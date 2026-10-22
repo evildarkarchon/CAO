@@ -7,11 +7,12 @@
 //! crate-private [`RunExecutor::execute_with_work`] instead of the Toolset's
 //! work phases.
 
+use std::ops::ControlFlow;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::{RunEvidenceInvariantPanic, RunExecutor, RunServices, RunWork};
+use super::{RunEvidenceInvariantPanic, RunExecutor, RunServices, RunWork, Stop};
 use crate::Error;
 use crate::routing::{ExecutionMode, RequestedWork, RoutingLedger};
 use crate::run::{
@@ -139,7 +140,7 @@ impl Drop for PanicsAgainOnDrop {
 /// panics again when dropped, which must not escape the boundary.
 #[test]
 fn escaped_work_fails_the_run_at_its_phase_and_safety_cleanup_still_removes_its_staging() {
-    type Fault = fn() -> Result<(), Error>;
+    type Fault = fn() -> Result<ControlFlow<Stop>, Error>;
     let rows: [(&str, Fault, &str); 3] = [
         (
             "error",
@@ -274,6 +275,58 @@ fn a_diagnostic_retained_before_contained_work_panics_is_published_before_safety
     );
 }
 
+/// Spec #607: cancellation is recorded once, by the Run Executor at Safety
+/// Cleanup. Work that stops because a backend reported cancellation, which
+/// the run's token need not show, says so in its stop, and the executor
+/// records it there without cancelling the caller's token; any other stop
+/// over an uncancelled token observes no cancellation.
+#[test]
+fn a_stop_reporting_backend_cancellation_is_recorded_at_safety_cleanup() {
+    for (name, stopped) in [
+        ("backend cancellation", Stop::BackendCancelled),
+        ("an ordinary stop", Stop::Halted),
+    ] {
+        let (request, _root) = texture_request(&format!("stop-{}", name.replace(' ', "-")));
+        let mut cleanup = CountingCleanup::default();
+        let provider = provider();
+        let stop = CancellationToken::new();
+        let result = RunExecutor.execute_with_work(
+            &request,
+            RunServices {
+                safety_cleanup: &mut cleanup,
+                observations: None,
+                configuration: Some(&provider),
+            },
+            &stop,
+            create_run_id(),
+            move |_preparation, _toolset, evidence, _artifacts, _stop| {
+                evidence.record_phase(RunPhaseRecord::executed(
+                    RunPhase::DiscoveringArchives,
+                    None,
+                ))?;
+                Ok(ControlFlow::Break(stopped))
+            },
+        );
+
+        let backend = stopped == Stop::BackendCancelled;
+        assert_eq!(result.cancellation_observed(), backend, "{name}");
+        assert_eq!(
+            result.outcome(),
+            if backend {
+                RunOutcome::Cancelled
+            } else {
+                RunOutcome::Succeeded
+            },
+            "{name}"
+        );
+        assert!(
+            !stop.is_cancelled(),
+            "{name}: the caller's token is untouched"
+        );
+        assert_eq!(cleanup.passes, 1, "{name}");
+    }
+}
+
 /// Origin: RunExecutorTests::evidenceInvariantViolationsRemainProgrammingDefects.
 /// The violation is raised only after Safety Cleanup has removed the run's
 /// staging, carrying a Failed sealed result that keeps the earlier facts.
@@ -292,7 +345,7 @@ fn an_evidence_invariant_violation_panics_only_after_safety_cleanup() {
                 // discovery is a producer bug.
                 evidence
                     .open_processing_assets(RoutingLedger::default())
-                    .map(drop)
+                    .map(|_| ControlFlow::Continue(()))
             },
         )
     }));
