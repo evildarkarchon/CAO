@@ -74,9 +74,12 @@ export global TexturesTab {
     in-out property <int> ratio-width: 2;
     in-out property <int> size-height: 2048;
     in-out property <int> size-width: 2048;
-    // Advanced.
+    // Advanced. `output-format-index` indexes into `output-formats`, the Output
+    // format combo's items, which Rust builds from the typed Texture Target
+    // (`cao_profiles::TextureFormat`).
     in-out property <bool> tga-conversion;
     in-out property <int> output-format-index;
+    in property <[string]> output-formats;
     in-out property <bool> compress-interface;
     in property <[string]> unwanted;
 }
@@ -771,7 +774,7 @@ export component MainWindow inherits Window {
                                         colspan: 2;
                                         accessible-label: @tr("Output format");
                                         enabled: root.adv-ed;
-                                        model: [@tr("BC7 (BC7_UNORM)"), "BC5 (BC5_UNORM)", @tr("BC3 (BC3_UNORM)"), @tr("BC1 (BC1_UNORM)"), @tr("Uncompressed (R8G8B8A8_UNORM)")];
+                                        model: TexturesTab.output-formats;
                                         current-index <=> TexturesTab.output-format-index;
                                     }
                                 }

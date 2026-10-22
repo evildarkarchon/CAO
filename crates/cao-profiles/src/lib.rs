@@ -24,6 +24,7 @@ mod mesh;
 mod options;
 mod profiles;
 mod settings;
+mod texture;
 
 pub use closed::ClosedSet;
 pub use common::CommonSettings;
@@ -33,3 +34,4 @@ pub use mesh::{MeshFileVersion, MeshStreamVersion, MeshUserVersion};
 pub use options::{OptimizationMode, Options};
 pub use profiles::{DEFAULT_PROFILE, Profile, Profiles};
 pub use settings::{BsaGame, ProfileSettings};
+pub use texture::{TextureFormat, UnwantedFormat};

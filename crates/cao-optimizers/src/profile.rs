@@ -86,14 +86,19 @@ pub fn archive_packer(settings: &ProfileSettings) -> GameArchivePacker {
     )
 }
 
-/// The profile's Texture settings, as the texture optimizer takes them.
+/// The profile's Texture settings, as the texture optimizer takes them: its
+/// Texture Target (`texturesFormat`, `texturesUnwantedFormats`) and whether
+/// interface Textures are compressed (`texturesCompressInterface`).
+///
+/// Each Texture Target member's stored number is its `DXGI_FORMAT` value, so
+/// every member maps to the format of that number.
 pub fn texture_profile(settings: &ProfileSettings) -> TextureProfile {
     TextureProfile {
-        format: DXGI_FORMAT::from(settings.textures_format),
+        format: DXGI_FORMAT::from(settings.textures_format.number()),
         unwanted_formats: settings
             .textures_unwanted_formats
             .iter()
-            .map(|&format| DXGI_FORMAT::from(format))
+            .map(|format| DXGI_FORMAT::from(format.number()))
             .collect(),
         compress_interface: settings.textures_compress_interface,
     }

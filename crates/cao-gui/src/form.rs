@@ -10,11 +10,9 @@ use cao_core::routing::{ProfileCapabilities, ProfileCapability};
 use cao_gui_ui::{AnimationsTab, BsaTab, MainWindow, MeshesTab, TexturesTab};
 use cao_profiles::{
     BsaGame, ClosedSet, MeshFileVersion, MeshStreamVersion, MeshUserVersion, OptimizationMode,
-    Options, ProfileSettings,
+    Options, ProfileSettings, TextureFormat, UnwantedFormat,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-
-use crate::formats::{format_name, format_number};
 
 /// C++ `GigaByte`: the maximum archive size is stored in bytes, shown in GB.
 const GIGABYTE: f64 = 1024.0 * 1024.0 * 1024.0;
@@ -25,9 +23,6 @@ const MODES: [OptimizationMode; 2] = [OptimizationMode::SingleMod, OptimizationM
 const RESIZE_BY_RATIO: i32 = 0;
 /// `TexturesTab.resize-mode` of the "By fixed size" Downsizing radio.
 const RESIZE_BY_SIZE: i32 = 1;
-/// The Output format combo's `DXGI_FORMAT`s: BC7, BC5, BC3, BC1 and R8G8B8A8,
-/// all `_UNORM`.
-const OUTPUT_FORMATS: [u32; 5] = [98, 83, 77, 71, 28];
 
 /// QSpinBox ranges of the Downsizing spin boxes, which clamp what they are set to.
 const RATIO_RANGE: (u32, u32) = (2, 10);
@@ -124,15 +119,18 @@ pub(crate) fn game_at(index: i32) -> Option<BsaGame> {
     item(BsaGame::ALL, index).copied()
 }
 
-/// Fills the Game, Version, User and Stream combos with every member of the
-/// typed Profile model's sets, in [`ClosedSet::ALL`] order, so a combo index is
-/// an index into that set and every value a Profile can hold has an item.
+/// Fills the Game, Version, User, Stream and Output format combos with every
+/// member of the typed Profile model's sets, in [`ClosedSet::ALL`] order, so a
+/// combo index is an index into that set and every value a Profile can hold has
+/// an item.
 pub(crate) fn show_choices(ui: &MainWindow) {
     ui.global::<BsaTab>().set_games(choices(game_label));
     let meshes = ui.global::<MeshesTab>();
     meshes.set_versions(choices(version_label));
     meshes.set_users(choices(user_label));
     meshes.set_streams(choices(stream_label));
+    ui.global::<TexturesTab>()
+        .set_output_formats(choices(output_format_label));
 }
 
 /// A combo model holding `label` of each member of `T`, in [`ClosedSet::ALL`]
@@ -174,6 +172,18 @@ fn stream_label(stream: MeshStreamVersion) -> &'static str {
         MeshStreamVersion::V83 => "Skyrim (83)",
         MeshStreamVersion::V100 => "Skyrim SE (100)",
         MeshStreamVersion::V130 => "Fallout 4 (130)",
+    }
+}
+
+/// The Output format combo's text for a Texture format: its kind, then its
+/// `DXGI_FORMAT` name.
+fn output_format_label(format: TextureFormat) -> &'static str {
+    match format {
+        TextureFormat::Bc7Unorm => "BC7 (BC7_UNORM)",
+        TextureFormat::Bc5Unorm => "BC5 (BC5_UNORM)",
+        TextureFormat::Bc3Unorm => "BC3 (BC3_UNORM)",
+        TextureFormat::Bc1Unorm => "BC1 (BC1_UNORM)",
+        TextureFormat::R8G8B8A8Unorm => "Uncompressed (R8G8B8A8_UNORM)",
     }
 }
 
@@ -324,10 +334,10 @@ pub(crate) fn read_options(
     options
 }
 
-/// Shows the settings model (`profile.ini`) in the advanced groups. The Game
-/// and Mesh Target combos hold every value the typed model can, so each always
-/// selects the loaded value. A Texture format no Output format item holds
-/// leaves that combo as it was, as C++'s `iterateComboBox` does.
+/// Shows the settings model (`profile.ini`) in the advanced groups. The Game,
+/// Mesh Target and Output format combos hold every value the typed model can,
+/// so each always selects the loaded value, and every unwanted format has the
+/// name the window lists it by.
 pub(crate) fn show_settings(ui: &MainWindow, settings: &ProfileSettings) {
     let bsa = ui.global::<BsaTab>();
     bsa.set_max_size((settings.max_bsa_uncompressed_size / GIGABYTE) as f32);
@@ -339,15 +349,13 @@ pub(crate) fn show_settings(ui: &MainWindow, settings: &ProfileSettings) {
     meshes.set_version_index(choice_index(settings.meshes_file_version));
 
     let textures = ui.global::<TexturesTab>();
-    if let Some(index) = index_of(&OUTPUT_FORMATS, &settings.textures_format) {
-        textures.set_output_format_index(index);
-    }
+    textures.set_output_format_index(choice_index(settings.textures_format));
     textures.set_tga_conversion(settings.textures_convert_tga);
     textures.set_compress_interface(settings.textures_compress_interface);
     let names: Vec<SharedString> = settings
         .textures_unwanted_formats
         .iter()
-        .map(|&format| format_name(format).into())
+        .map(|format| format.name().into())
         .collect();
     textures.set_unwanted(ModelRc::new(VecModel::from(names)));
 }
@@ -376,7 +384,7 @@ pub(crate) fn read_settings(ui: &MainWindow, current: &ProfileSettings) -> Profi
     }
 
     let textures = ui.global::<TexturesTab>();
-    if let Some(&format) = item(&OUTPUT_FORMATS, textures.get_output_format_index()) {
+    if let Some(&format) = item(TextureFormat::ALL, textures.get_output_format_index()) {
         settings.textures_format = format;
     }
     settings.textures_convert_tga = textures.get_tga_conversion();
@@ -384,7 +392,7 @@ pub(crate) fn read_settings(ui: &MainWindow, current: &ProfileSettings) -> Profi
     // C++ maps the listed names back, dropping repeats and names it does not know.
     let mut unwanted = Vec::new();
     for name in textures.get_unwanted().iter() {
-        if let Some(format) = format_number(&name)
+        if let Some(format) = UnwantedFormat::from_name(&name)
             && !unwanted.contains(&format)
         {
             unwanted.push(format);

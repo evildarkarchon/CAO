@@ -30,8 +30,6 @@ cao-winfs.workspace = true
 # The Application Log sink the window bootstraps, stamps and shows (#470, #511),
 # and the composition root that starts runs (#510).
 cao-optimizers.workspace = true
-# The `DXGI_FORMAT` numbers behind the unwanted-format names the window shows (#508, #509).
-directxtex.workspace = true
 # The startup records the window logs, and the sink's install error (#470, #511).
 log.workspace = true
 # The dialog owner's HWND, read from Slint's window handle (#462).

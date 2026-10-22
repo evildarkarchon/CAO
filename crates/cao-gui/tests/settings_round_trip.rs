@@ -5,7 +5,9 @@
 mod common;
 
 use cao_gui::ui::{MeshesTab, TexturesTab};
-use cao_profiles::{BsaGame, MeshStreamVersion, OptimizationMode, Options, Profiles};
+use cao_profiles::{
+    BsaGame, MeshStreamVersion, OptimizationMode, Options, Profiles, TextureFormat, UnwantedFormat,
+};
 use common::*;
 use slint::ComponentHandle;
 use slint::platform::WindowEvent;
@@ -101,9 +103,16 @@ fn settings_saved_from_the_window_reload_identically() {
         3.5 * 1024.0 * 1024.0 * 1024.0
     );
     assert_eq!(settings.meshes_stream, MeshStreamVersion::V130);
-    assert_eq!(settings.textures_format, 77);
+    assert_eq!(settings.textures_format, TextureFormat::Bc3Unorm);
     assert!(!settings.textures_convert_tga);
-    assert_eq!(settings.textures_unwanted_formats, [85, 86, 115]);
+    assert_eq!(
+        settings.textures_unwanted_formats,
+        [
+            UnwantedFormat::B5G6R5Unorm,
+            UnwantedFormat::B5G5R5A1Unorm,
+            UnwantedFormat::B4G4R4A4Unorm,
+        ]
+    );
     assert!(profiles.load_common().unwrap().show_advanced_settings);
 
     // ---- A new window shows them all, and saving it changes no byte.

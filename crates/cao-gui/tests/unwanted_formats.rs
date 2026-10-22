@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use cao_gui::App;
 use cao_gui::modal_depth;
 use cao_gui::ui::{FormatsDialog, TexturesTab};
-use cao_profiles::Profiles;
+use cao_profiles::{ClosedSet, Profiles};
 use common::*;
 use slint::platform::WindowEvent;
 use slint::{ComponentHandle, Model};
@@ -41,7 +41,8 @@ fn listed(app: &App) -> Vec<String> {
         .collect()
 }
 
-/// Saves the window and reads back what `profile.ini` of Custom now lists.
+/// Saves the window and reads back what `profile.ini` of Custom now lists, as
+/// the numbers it stores.
 fn saved_unwanted(app: &App, app_dir: &Path) -> Vec<u32> {
     app.save();
     Profiles::new(app_dir)
@@ -49,6 +50,9 @@ fn saved_unwanted(app: &App, app_dir: &Path) -> Vec<u32> {
         .load_settings()
         .unwrap()
         .textures_unwanted_formats
+        .iter()
+        .map(|format| format.number())
+        .collect()
 }
 
 /// Clicks the Textures tab's Edit button and returns the dialog it opens.

@@ -5,6 +5,7 @@ use crate::closed::{self, ClosedSet};
 use crate::error::ProfileError;
 use crate::ini::{IniFile, Value};
 use crate::mesh::{MeshFileVersion, MeshStreamVersion, MeshUserVersion};
+use crate::texture::{TextureFormat, UnwantedFormat};
 
 /// The game whose archive rules a profile uses (`[BSA] bsaGame`), numbered as
 /// bethutil's `btu::Game` numbers them.
@@ -54,8 +55,9 @@ impl BsaGame {
 /// A profile's `profile.ini`: the per-game settings C++ held in `Profiles`.
 ///
 /// Fields read with `QVariant`'s conversions, as C++ reads them: a missing key is
-/// `false` or `0`, never a default; a Mesh Target axis is a closed set
-/// ([`crate::ClosedSet`]) that `0` is outside, so a missing one is unreadable. Keys this model does not hold, such as the dead
+/// `false` or `0`, never a default; a Mesh Target axis and the Texture format are
+/// closed sets ([`crate::ClosedSet`]) that `0` is outside, so a missing one is
+/// unreadable. Keys this model does not hold, such as the dead
 /// `[Animations] animationFormat` (deviation 10), are never read and survive a save.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProfileSettings {
@@ -86,13 +88,17 @@ pub struct ProfileSettings {
     /// The Profile Capability for Texture optimization and conversion
     /// (`[Textures] texturesEnabled`).
     pub textures_enabled: bool,
-    /// The `DXGI_FORMAT` Textures are compressed to.
-    pub textures_format: u32,
+    /// The format Textures are compressed to (`[Textures] texturesFormat`), one
+    /// part of the Texture Target.
+    pub textures_format: TextureFormat,
     /// Whether TGA Textures are converted to DDS.
     pub textures_convert_tga: bool,
-    /// The `DXGI_FORMAT`s a Texture is converted away from, in the user's order.
-    pub textures_unwanted_formats: Vec<u32>,
-    /// Whether interface Textures are compressed.
+    /// The formats a Texture is converted away from
+    /// (`[Textures] texturesUnwantedFormats`), the other part of the Texture
+    /// Target: in the user's order, each listed once.
+    pub textures_unwanted_formats: Vec<UnwantedFormat>,
+    /// Whether interface Textures are compressed. Not part of the Texture
+    /// Target: it decides which Textures are compressed, not what they become.
     pub textures_compress_interface: bool,
 }
 
@@ -101,11 +107,10 @@ impl ProfileSettings {
     ///
     /// # Errors
     /// [`ProfileError::UnsupportedBsaGame`] when `bsaGame` is not 3, 4 or 5, and
-    /// [`ProfileError::UnsupportedValue`] when a Mesh Target axis is outside its
-    /// closed set or missing.
+    /// [`ProfileError::UnsupportedValue`] when a Mesh Target axis or the Texture
+    /// format is outside its closed set or missing, or an unwanted format is
+    /// outside its closed set.
     pub fn read(ini: &IniFile) -> Result<Self, ProfileError> {
-        // `texturesFormat` is `toInt()` cast to an unsigned enum.
-        let enum_value = |key| ini.value(key).to_i32() as u32;
         Ok(Self {
             bsa_enabled: ini.value("BSA/bsaEnabled").to_bool(),
             max_bsa_uncompressed_size: ini.value("BSA/maxBsaUncompressedSize").to_f64(),
@@ -116,14 +121,9 @@ impl ProfileSettings {
             meshes_user: closed::read(ini, "Meshes/meshesUser")?,
             animations_enabled: ini.value("Animations/animationsEnabled").to_bool(),
             textures_enabled: ini.value("Textures/texturesEnabled").to_bool(),
-            textures_format: enum_value("Textures/texturesFormat"),
+            textures_format: closed::read(ini, "Textures/texturesFormat")?,
             textures_convert_tga: ini.value("Textures/texturesConvertTga").to_bool(),
-            textures_unwanted_formats: ini
-                .value("Textures/texturesUnwantedFormats")
-                .to_int_list()
-                .into_iter()
-                .map(|format| format as u32)
-                .collect(),
+            textures_unwanted_formats: closed::read_list(ini, "Textures/texturesUnwantedFormats")?,
             textures_compress_interface: ini.value("Textures/texturesCompressInterface").to_bool(),
         })
     }
@@ -147,13 +147,14 @@ impl ProfileSettings {
         ini.set("Animations/animationsEnabled", self.animations_enabled);
 
         // `DXGI_FORMAT` has no fixed underlying type, so C++ stores it as an `int`.
+        // Every unwanted format's number is at most 115, so it fits.
         let formats: Vec<i32> = self
             .textures_unwanted_formats
             .iter()
-            .map(|&format| format as i32)
+            .map(|format| format.number() as i32)
             .collect();
         ini.set("Textures/texturesEnabled", self.textures_enabled);
-        ini.set("Textures/texturesFormat", self.textures_format as i32);
+        ini.set("Textures/texturesFormat", self.textures_format.number());
         ini.set("Textures/texturesConvertTga", self.textures_convert_tga);
         ini.set(
             "Textures/texturesUnwantedFormats",

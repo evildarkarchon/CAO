@@ -13,14 +13,16 @@ use cao_gui_ui::{AboutSlintDialog, ChoiceDialog, MainWindow, TabInfo, TextInputD
 use cao_gui_ui::{FormatItem, FormatsDialog, TexturesTab};
 use cao_optimizers::application_log::ApplicationLog;
 use cao_optimizers::profile::profile_capabilities;
-use cao_profiles::{CommonSettings, Options, Profile, ProfileError, ProfileSettings, Profiles};
+use cao_profiles::{
+    ClosedSet, CommonSettings, Options, Profile, ProfileError, ProfileSettings, Profiles,
+    UnwantedFormat,
+};
 use slint::{
     CloseRequestResponse, ComponentHandle, FilterModel, Model, ModelRc, SharedString, VecModel,
 };
 
 use crate::desktop::{Desktop, MessageLevel};
 use crate::form::{self, Tab};
-use crate::formats;
 use crate::log_tab::AttachedLog;
 use crate::modal::ModalSlot;
 use crate::rules;
@@ -655,11 +657,11 @@ impl App {
             .iter()
             .collect();
         let scratch = Rc::new(VecModel::from(
-            formats::UNWANTED_FORMAT_CHOICES
+            UnwantedFormat::ALL
                 .iter()
-                .map(|&(name, _)| FormatItem {
-                    name: name.into(),
-                    checked: listed.iter().any(|listed| listed == name),
+                .map(|format| FormatItem {
+                    name: format.name().into(),
+                    checked: listed.iter().any(|listed| listed == format.name()),
                 })
                 .collect::<Vec<_>>(),
         ));
