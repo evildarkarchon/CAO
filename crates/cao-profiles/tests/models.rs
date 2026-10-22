@@ -208,13 +208,13 @@ fn saving_an_unchanged_profile_ini_rewrites_the_shipped_bytes() {
         let app_dir = common::copy_of_shipped(&format!("save-settings-{name}"));
         let profile = Profiles::new(&app_dir).open(name);
         let original = common::read(&profile.profile_ini());
+        let loaded = profile.load_settings().unwrap();
 
-        profile
-            .save_settings(&profile.load_settings().unwrap())
-            .unwrap();
+        profile.save_settings(&loaded).unwrap();
 
         let saved = common::read(&profile.profile_ini());
         assert!(saved == original, "{name}:\n{}", common::show(&saved));
+        assert_eq!(profile.load_settings().unwrap(), loaded, "{name} reloads");
     }
 }
 
@@ -322,24 +322,24 @@ fn a_profile_without_profile_ini_is_unavailable() {
         profile.load_settings(),
         Err(ProfileError::Unavailable { path }) if path == profile.profile_ini()
     ));
-    assert!(matches!(
-        profile.load_settings_checked(),
-        Err(ProfileError::Unavailable { .. })
-    ));
+}
+
+/// Appends `line` to `profile`'s `profile.ini`, keeping every byte before it.
+fn append_line(profile: &cao_profiles::Profile, line: &[u8]) {
+    let mut bytes = common::read(&profile.profile_ini());
+    bytes.extend_from_slice(line);
+    std::fs::write(profile.profile_ini(), &bytes).unwrap();
 }
 
 #[test]
-fn a_format_error_makes_the_profile_unreadable_only_for_the_checked_load() {
-    // The C++ GUI ignored QSettings' status; run setup failed with "Selected profile
-    // could not be read".
+fn a_format_error_makes_the_profile_unreadable() {
+    // The GUI and Preparing share this read, so a line a save would drop is reported
+    // when the Profile is selected rather than silently lost.
     let app_dir = common::copy_of_shipped("settings-format-error");
     let profile = Profiles::new(&app_dir).open("SSE");
-    let mut bytes = common::read(&profile.profile_ini());
-    bytes.extend_from_slice(b"stray words\r\n");
-    std::fs::write(profile.profile_ini(), &bytes).unwrap();
+    append_line(&profile, b"stray words\r\n");
 
-    assert_eq!(profile.load_settings().unwrap().bsa_game, BsaGame::Sse);
-    let error = profile.load_settings_checked().unwrap_err();
+    let error = profile.load_settings().unwrap_err();
     assert!(
         matches!(
             &error,
@@ -347,6 +347,23 @@ fn a_format_error_makes_the_profile_unreadable_only_for_the_checked_load() {
                 if *path == profile.profile_ini()
                     && error.kind == FormatErrorKind::MissingEquals
         ),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_format_error_is_reported_before_an_unsupported_bsa_game() {
+    let app_dir = common::copy_of_shipped("settings-format-error-first");
+    let profile = Profiles::new(&app_dir).open("SSE");
+    let text = String::from_utf8(common::read(&profile.profile_ini())).unwrap();
+    let text = text.replace("bsaGame=4", "bsaGame=99");
+    assert!(text.contains("bsaGame=99"));
+    std::fs::write(profile.profile_ini(), text).unwrap();
+    append_line(&profile, b"stray words\r\n");
+
+    let error = profile.load_settings().unwrap_err();
+    assert!(
+        matches!(&error, ProfileError::Malformed { .. }),
         "{error:?}"
     );
 }
@@ -361,7 +378,7 @@ fn every_shipped_profile_loads_cleanly() {
 
     for name in profiles.list() {
         let profile = profiles.open(&name);
-        profile.load_settings_checked().unwrap();
+        profile.load_settings().unwrap();
         let options = profile.load_options(&Options::default()).unwrap();
         // The shipped settings.ini files differ only in FO4's headpart choice.
         let expected = Options {
@@ -457,8 +474,8 @@ fn a_remembered_profile_that_does_not_exist_resolves_to_sse() {
 }
 
 #[test]
-fn the_checked_load_reads_a_clean_profile() {
-    let settings = shipped().open("FO4").load_settings_checked().unwrap();
+fn a_clean_profile_reads_without_error() {
+    let settings = shipped().open("FO4").load_settings().unwrap();
 
     assert_eq!(settings.bsa_game, BsaGame::Fo4);
     assert_eq!(settings.textures_unwanted_formats, [86, 85, 115]);

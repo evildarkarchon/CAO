@@ -295,8 +295,9 @@ impl ProfileConfigurationProvider {
     ) -> Result<(SelectedProfile, PreparedProfile), Error> {
         let failed = |error: ProfileError| Error::ConfigurationLoading(error.to_string());
         let profile = self.profiles.open(profile_identity);
-        // Strict, as C++ run setup rejected any QSettings status but NoError.
-        let settings = profile.load_settings_checked().map_err(failed)?;
+        // The same strict read the GUI made when the Profile was selected, so
+        // the run refuses exactly the Profiles the window reported.
+        let settings = profile.load_settings().map_err(failed)?;
         let ignored_mods = profile.ignored_mods().map_err(failed)?;
         // A missing or unreadable list is empty, as in C++; finalization logs it.
         let files_to_not_pack = profile.files_to_not_pack();
@@ -609,7 +610,7 @@ mod tests {
                 hkxcmd: Hkxcmd::in_app_dir(&app_dir),
             },
             profile: Arc::new(PreparedProfile {
-                settings: Arc::new(profile.load_settings_checked().unwrap()),
+                settings: Arc::new(profile.load_settings().unwrap()),
                 custom_headparts: Vec::new(),
             }),
         };

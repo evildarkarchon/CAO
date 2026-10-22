@@ -56,8 +56,8 @@ struct Entry {
 
 /// A line QSettings cannot read, which sets its `FormatError` status.
 ///
-/// The rest of the file is still read, as in Qt. Run setup treats a profile with a
-/// format error as unreadable; the GUI ignores it.
+/// The rest of the file is still read, as in Qt. A `profile.ini` with a format error
+/// is unreadable, in the GUI and in Preparing alike.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FormatError {
     /// The 1-based physical line the error starts on.

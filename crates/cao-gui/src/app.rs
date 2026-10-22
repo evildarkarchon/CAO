@@ -280,6 +280,8 @@ impl App {
                 loaded.options.clone()
             }
         };
+        // Preparing's read: a Profile the run would refuse, including one with a
+        // line a save would drop, is reported now and its `profile.ini` never saved.
         let settings = match profile.load_settings() {
             Ok(settings) => Some(settings),
             Err(error) => {
