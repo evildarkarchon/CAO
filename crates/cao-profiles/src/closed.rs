@@ -63,10 +63,10 @@ pub(crate) fn read<T: ClosedSet>(ini: &IniFile, key: &str) -> Result<T, ProfileE
 }
 
 /// The file every closed set is read from.
-const PROFILE_INI: &str = "profile.ini";
+pub(crate) const PROFILE_INI: &str = "profile.ini";
 
 /// The text of a value as written, or `None` when the key is missing.
-fn raw(value: &Value) -> Option<String> {
+pub(crate) fn raw(value: &Value) -> Option<String> {
     match value {
         Value::Invalid => None,
         value => Some(value.to_qstring()),

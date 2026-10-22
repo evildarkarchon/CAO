@@ -334,27 +334,12 @@ impl Settings {
         }
     }
 
-    /// Raises [`Settings::max_size`] to a profile's `maxBsaUncompressedSize` when
-    /// that is larger, truncating it to whole bytes, as C++ CAO's
-    /// `archiveSettings` did. A smaller, negative or NaN limit changes nothing.
+    /// Raises [`Settings::max_size`] to a profile's `maxBsaUncompressedSize`, in
+    /// whole bytes, when that is larger, as C++ CAO's `archiveSettings` did. A
+    /// smaller limit changes nothing: the table maximum is a floor.
     #[must_use]
-    pub fn with_profile_max_size(mut self, profile_max_size: f64) -> Self {
-        // C++ compares the double against the table value, then assigns it to an
-        // integer, truncating; `as` truncates the same way (and saturates).
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "C++ converts the table value to double for this comparison"
-        )]
-        let table = self.max_size as f64;
-        if profile_max_size > table {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "truncating the profile's double is the C++ behaviour"
-            )]
-            let max_size = profile_max_size as u64;
-            self.max_size = max_size;
-        }
+    pub fn with_profile_max_size(mut self, profile_max_size: u64) -> Self {
+        self.max_size = self.max_size.max(profile_max_size);
         self
     }
 

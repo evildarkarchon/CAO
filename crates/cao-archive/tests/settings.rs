@@ -46,20 +46,44 @@ fn fo4_uses_gnrl_and_dx10_ba2s_with_main_and_textures_suffixes() {
 
 #[test]
 fn shipped_profile_limits_give_the_effective_maximum_sizes() {
-    // `maxBsaUncompressedSize` from `profiles/*/profile.ini`. The BSA profiles'
-    // value beats btu's 2000 MiB and is truncated; FO4's is smaller, so btu wins.
-    let tes5 = Settings::get(Game::Tes5).with_profile_max_size(2_104_533_975.04);
-    let sse = Settings::get(Game::Sse).with_profile_max_size(2_104_533_975.04);
-    let fo4 = Settings::get(Game::Fo4).with_profile_max_size(4_187_593_113.6);
+    // `maxBsaUncompressedSize` from `profiles/*/profile.ini`, as whole bytes. The
+    // BSA profiles' value beats btu's 2000 MiB; FO4's is smaller, so btu wins.
+    let tes5 = Settings::get(Game::Tes5).with_profile_max_size(2_104_533_975);
+    let sse = Settings::get(Game::Sse).with_profile_max_size(2_104_533_975);
+    let fo4 = Settings::get(Game::Fo4).with_profile_max_size(4_187_593_113);
     assert_eq!(tes5.max_size, 2_104_533_975);
     assert_eq!(sse.max_size, 2_104_533_975);
     assert_eq!(fo4.max_size, 4_194_304_000);
 }
 
 #[test]
+fn every_shipped_profile_limit_gives_every_game_the_maximum_it_always_had() {
+    // The effective maxima the double limits `2104533975.04` (TES5, SSE) and
+    // `4187593113.6` (FO4) gave each game when the packer truncated them;
+    // the whole-byte limits must give the same.
+    for (limit, game, expected) in [
+        (2_104_533_975, Game::Tes5, 2_104_533_975),
+        (2_104_533_975, Game::Sse, 2_104_533_975),
+        (2_104_533_975, Game::Fo4, 4_194_304_000),
+        (4_187_593_113, Game::Tes5, 4_187_593_113),
+        (4_187_593_113, Game::Sse, 4_187_593_113),
+        (4_187_593_113, Game::Fo4, 4_194_304_000),
+    ] {
+        let sets = Settings::get(game).with_profile_max_size(limit);
+        assert_eq!(sets.max_size, expected, "{limit} under {game:?}");
+    }
+}
+
+#[test]
 fn a_profile_limit_never_lowers_the_table_maximum() {
-    let sets = Settings::get(Game::Sse).with_profile_max_size(0.0);
+    let sets = Settings::get(Game::Sse).with_profile_max_size(0);
     assert_eq!(sets.max_size, 2_097_152_000);
-    let sets = Settings::get(Game::Sse).with_profile_max_size(f64::NAN);
-    assert_eq!(sets.max_size, 2_097_152_000);
+    let sets = Settings::get(Game::Fo4).with_profile_max_size(4_194_303_999);
+    assert_eq!(sets.max_size, 4_194_304_000);
+}
+
+#[test]
+fn a_profile_limit_can_raise_the_maximum_to_the_largest_size() {
+    let sets = Settings::get(Game::Sse).with_profile_max_size(u64::MAX);
+    assert_eq!(sets.max_size, u64::MAX);
 }

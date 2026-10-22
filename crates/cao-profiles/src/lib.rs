@@ -15,6 +15,7 @@
 //! app directory the caller passes to [`Profiles::new`], never against the working
 //! directory.
 
+mod archive_size;
 mod auxiliary;
 mod closed;
 mod common;
@@ -25,6 +26,7 @@ mod options;
 mod profiles;
 mod settings;
 
+pub use archive_size::ArchiveSize;
 pub use closed::ClosedSet;
 pub use common::CommonSettings;
 pub use error::ProfileError;
