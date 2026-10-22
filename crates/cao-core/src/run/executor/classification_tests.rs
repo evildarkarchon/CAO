@@ -128,23 +128,32 @@ fn sealed_evidence(fact: WorkFact, terminal: Terminal) -> Result<RunEvidence, Er
         ArchivePrecedence::DeterministicDiscovery,
     ))?;
 
-    evidence.record_archive_discovery_started()?;
+    evidence.record_phase(RunPhaseRecord::executed(
+        RunPhase::DiscoveringArchives,
+        None,
+    ))?;
     evidence.record_archive_collisions(&[])?;
-    evidence.record_archive_extraction_plan(0)?;
-    evidence.record_effective_asset_tree_started()?;
+    // The empty extraction plan closes as soon as its handle's borrow ends.
+    evidence.open_archive_extraction(0)?;
+    evidence.record_phase(RunPhaseRecord::executed(
+        RunPhase::BuildingEffectiveAssetTree,
+        None,
+    ))?;
     evidence.record_archive_discovery(ArchiveDiscoveryEvidence::default())?;
     // Routing decides from the file name alone, so the Texture never has to exist.
-    evidence.record_routing_ledger(router.route_all([mod_root.join("textures/a.dds")]))?;
-    let asset = evidence
-        .routing_ledger()
-        .and_then(|ledger| ledger.routed_assets().first().cloned())
+    let ledger = router.route_all([mod_root.join("textures/a.dds")]);
+    let asset = ledger
+        .routed_assets()
+        .first()
+        .cloned()
         .expect("the Texture is routed for Native Texture Optimization");
-    evidence.record_asset_processing_plan(1)?;
-    evidence.record_asset_attempt(RoutedAssetAttempt {
-        mod_root,
-        asset,
-        result: asset_result(fact),
-    })?;
+    evidence
+        .open_processing_assets(ledger)?
+        .record(RoutedAssetAttempt {
+            mod_root,
+            asset,
+            result: asset_result(fact),
+        })?;
 
     // An unsafe attempt stops every later attempt and Archive Finalization.
     if fact != WorkFact::UnsafeMutation {
