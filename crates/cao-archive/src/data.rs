@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::os::windows::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 
-use crate::error::ArchiveError;
+use crate::error::{ArchiveError, AssetLimit};
 use crate::settings::{ArchiveVersion, FileType, Settings, file_type};
 
 /// What an output Archive holds (`btu::bsa::ArchiveType`).
@@ -70,13 +70,18 @@ impl ArchiveData {
 
     /// Adds `path` unless its `size` would take the total past the Archive
     /// Limit (strict `>`: filling to exactly the limit is allowed), or the
-    /// written BSA past its game's Archive Size Cap. Returns whether it was
-    /// added.
+    /// written BSA past its game's Archive Size Cap, or the file is too large
+    /// for any BSA ([`AssetLimit::BsaFile`]). Returns whether it was added.
     ///
-    /// An empty Archive takes any one file the size cap allows, however far
-    /// past the Archive Limit: the limit only groups files, so a file larger
-    /// than it gets an Archive of its own rather than none.
+    /// An empty Archive takes any one file the size cap and the container
+    /// allow, however far past the Archive Limit: the limit only groups files,
+    /// so a file larger than it gets an Archive of its own rather than none.
     pub fn add_file(&mut self, path: PathBuf, size: u64) -> bool {
+        // Refused while planning, so split fails the file naming the limit
+        // that applies, rather than packing it alone for the writer to fail.
+        if self.file_limit().is_some_and(|limit| size >= limit) {
+            return false;
+        }
         let Some(total) = self.size.checked_add(size) else {
             return false;
         };
@@ -97,6 +102,15 @@ impl ArchiveData {
     /// planning keeps it there, and writing refuses an Archive that is not.
     pub fn size_cap(&self) -> Option<u64> {
         self.layout.as_ref().map(|layout| layout.cap)
+    }
+
+    /// The bytes from which no file fits the container, whatever its game's
+    /// cap: [`BSA_FILE_LIMIT`] for a BSA, `None` for a BA2.
+    fn file_limit(&self) -> Option<u64> {
+        match self.version {
+            ArchiveVersion::Tes5 | ArchiveVersion::Sse => Some(BSA_FILE_LIMIT),
+            ArchiveVersion::Fo4 | ArchiveVersion::Fo4Dx => None,
+        }
     }
 
     /// Whether `other` may join this Archive in a merge: their summed source
@@ -210,9 +224,10 @@ impl SplitArchives {
     /// # Errors
     ///
     /// [`ArchiveError::AssetTooLarge`] when one file is too large for even a
-    /// BSA of its own under its game's Archive Size Cap. bethutil's own `split`
-    /// dropped a file past the Archive Limit; CAO packs it alone instead, and
-    /// fails only where the game could not load the result.
+    /// BSA of its own: past its game's Archive Size Cap, or 1 GiB or more,
+    /// which no BSA file record can hold. bethutil's own `split` dropped a file
+    /// past the Archive Limit; CAO packs it alone instead, and fails only where
+    /// the game could not load the result.
     pub fn split(
         root: &Path,
         mut sources: Vec<PackSource>,
@@ -239,10 +254,13 @@ impl SplitArchives {
             split.full.push(std::mem::replace(partition, fresh));
             if !partition.add_file(path.clone(), size) {
                 // An empty partition takes any file past the Archive Limit, so
-                // only its BSA layout's size cap can refuse one; the fallback
-                // is never reached.
-                let cap = partition.size_cap().unwrap_or(u64::MAX);
-                return Err(ArchiveError::AssetTooLarge { path, size, cap });
+                // only the BSA file limit or its layout's size cap can refuse
+                // one; the cap's fallback is never reached.
+                let limit = match partition.file_limit() {
+                    Some(limit) if size >= limit => AssetLimit::BsaFile(limit),
+                    _ => AssetLimit::ArchiveSizeCap(partition.size_cap().unwrap_or(u64::MAX)),
+                };
+                return Err(ArchiveError::AssetTooLarge { path, size, limit });
             }
         }
         Ok(split)
@@ -298,6 +316,12 @@ struct CappedLayout {
     bound: u64,
 }
 
+/// The bytes from which a file cannot go into a BSA: a BSA file record keeps
+/// the file's stored size in its low 30 bits, with the compression toggle and
+/// a second flag above them, so `ba2` refuses a stored size of 1 GiB or more.
+/// Writing never stores a file in more bytes than its source, so a source
+/// under this always fits.
+const BSA_FILE_LIMIT: u64 = 1 << 30;
 /// A BSA header's size.
 const BSA_HEADER: u64 = 36;
 /// A BSA file record's size: name hash, size and offset.

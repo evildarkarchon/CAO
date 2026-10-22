@@ -13,7 +13,7 @@ mod settings;
 mod write;
 
 pub use data::{ArchiveData, ArchiveType, MergeSettings, PackSource, SplitArchives};
-pub use error::ArchiveError;
+pub use error::{ArchiveError, AssetLimit};
 pub use name::{FilePath, NameKind, list_archives, list_plugins};
 pub use read::{ArchiveFormat, ArchiveHeader, ArchivedAsset, Fo4Container, ReadArchive};
 pub use settings::{AllowedPath, ArchiveVersion, FileType, Game, Settings, file_type};
