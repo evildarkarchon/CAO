@@ -1,6 +1,6 @@
-//! Splitting a Mod Root's sources into Archives (strict `>`) and merging the open
-//! partitions (strict `<`), as C++ CAO's `planFinalization` and bethutil's
-//! `ArchiveData` and `merge` do (#461).
+//! Splitting a Mod Root's sources into Archives (strict `>`, an Asset past the
+//! Archive Limit packed alone) and merging the open partitions (strict `<`, as
+//! bethutil's `merge` does) (#461, #628).
 
 use std::path::Path;
 
@@ -11,12 +11,9 @@ use cao_archive::{
 
 const ROOT: &str = r"C:\Mods\Example";
 
-/// `game`'s rules with a 100-byte limit, so boundaries are easy to reach.
+/// `game`'s rules with a 100-byte Archive Limit, so boundaries are easy to reach.
 fn small(game: Game) -> Settings {
-    Settings {
-        max_size: 100,
-        ..Settings::get(game)
-    }
+    Settings::for_profile(game, Some(100))
 }
 
 fn source(relative: &str, size: u64) -> PackSource {
@@ -106,23 +103,98 @@ fn an_asset_of_exactly_the_limit_fits_an_empty_partition() {
 }
 
 #[test]
-fn an_asset_larger_than_the_limit_is_an_error() {
-    let error = SplitArchives::split(
-        Path::new(ROOT),
-        vec![source(r"meshes\a.nif", 101)],
+fn an_asset_larger_than_the_archive_limit_gets_an_archive_of_its_own() {
+    // The Archive Limit only groups files: `b` is past it, but well within
+    // the game's Archive Size Cap, so it is packed alone, and `c` starts
+    // another Archive rather than joining it.
+    for game in [Game::Tes5, Game::Sse, Game::Fo4] {
+        let archives = split(
+            &small(game),
+            vec![
+                source(r"meshes\a.nif", 60),
+                source(r"meshes\b.nif", 150),
+                source(r"meshes\c.nif", 30),
+            ],
+        )
+        .merge(NO_MERGE);
+        assert_eq!(
+            layout(&archives),
+            [
+                (ArchiveType::Standard, files(&[r"meshes\a.nif"])),
+                (ArchiveType::Standard, files(&[r"meshes\b.nif"])),
+                (ArchiveType::Standard, files(&[r"meshes\c.nif"])),
+            ],
+            "{game:?}"
+        );
+        assert_eq!(archives[1].size(), 150, "{game:?}");
+    }
+}
+
+#[test]
+fn a_skyrim_asset_of_1_gib_or_more_within_the_cap_is_planned_alone() {
+    // A BSA file record cannot store 1 GiB or more, but that bounds the
+    // stored (compressed) bytes, not the source: planning sees only source
+    // sizes, so it must not refuse a file the writer may compress under it.
+    // The writer's own check fails a file whose stored form is still too big.
+    const SIZE: u64 = 3 << 29; // 1.5 GiB
+    for game in [Game::Tes5, Game::Sse] {
+        let archives = split(
+            &Settings::for_profile(game, None),
+            vec![source(r"meshes\big.nif", SIZE)],
+        )
+        .merge(NO_MERGE);
+        assert_eq!(
+            layout(&archives),
+            [(ArchiveType::Standard, files(&[r"meshes\big.nif"]))],
+            "{game:?}"
+        );
+        assert_eq!(archives[0].size(), SIZE, "{game:?}");
+    }
+}
+
+#[test]
+fn an_asset_past_a_bsas_size_cap_is_an_error_naming_the_cap() {
+    // A 1000-byte cap stands in for the 2 GiB one. A 150-byte Asset is past
+    // the Archive Limit but packs alone; a 1000-byte one cannot fit even an
+    // Archive of its own once the BSA's header and records are counted.
+    for game in [Game::Tes5, Game::Sse] {
+        let settings = Settings::for_test(game, 100, Some(1000));
+        let error = SplitArchives::split(
+            Path::new(ROOT),
+            vec![source(r"meshes\a.nif", 150), source(r"meshes\b.nif", 1000)],
+            &settings,
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        let ArchiveError::AssetTooLarge { path, size, cap } = error else {
+            panic!("expected AssetTooLarge, got {error:?}");
+        };
+        assert_eq!(path, Path::new(ROOT).join(r"meshes\b.nif"), "{game:?}");
+        assert_eq!((size, cap), (1000, 1000), "{game:?}");
+        assert!(
+            message.contains("1000-byte Archive Size Cap"),
+            "{game:?}: {message}"
+        );
+    }
+}
+
+#[test]
+fn an_oversize_asset_never_merges_with_another_partition() {
+    let archives = split(
         &small(Game::Sse),
+        vec![source(r"meshes\a.nif", 150), source(r"sound\a.wav", 1)],
     )
-    .unwrap_err();
-    let ArchiveError::AssetTooLarge {
-        path,
-        size,
-        max_size,
-    } = error
-    else {
-        panic!("expected AssetTooLarge, got {error:?}");
-    };
-    assert_eq!(path, Path::new(ROOT).join(r"meshes\a.nif"));
-    assert_eq!((size, max_size), (101, 100));
+    .merge(MergeSettings {
+        textures: true,
+        incompressible: true,
+    });
+    assert_eq!(
+        layout(&archives),
+        [
+            (ArchiveType::Standard, files(&[r"meshes\a.nif"])),
+            (ArchiveType::Incompressible, files(&[r"sound\a.wav"])),
+        ]
+    );
 }
 
 #[test]
@@ -221,7 +293,7 @@ fn partitions_take_the_games_versions() {
     assert_eq!(versions(Game::Sse), [Sse, Sse, Sse]);
     assert_eq!(versions(Game::Fo4), [Fo4, Fo4, Fo4Dx]);
     assert_eq!(
-        split(&Settings::get(Game::Fo4), sources()).merge(NO_MERGE)[0].max_size(),
+        split(&Settings::get(Game::Fo4), sources()).merge(NO_MERGE)[0].archive_limit(),
         4_194_304_000
     );
 }
@@ -229,11 +301,7 @@ fn partitions_take_the_games_versions() {
 /// `game`'s rules with a roomy 1000-byte limit and a `cap`-byte size cap, so
 /// only the cap, which counts the written layout, can split or block a merge.
 fn capped(game: Game, cap: u64) -> Settings {
-    Settings {
-        max_size: 1000,
-        size_cap: Some(cap),
-        ..Settings::get(game)
-    }
+    Settings::for_test(game, 1000, Some(cap))
 }
 
 #[test]

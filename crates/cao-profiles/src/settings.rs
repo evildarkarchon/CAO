@@ -1,6 +1,8 @@
 //! The settings model of a profile's `profile.ini`: the game it targets and what
 //! each Asset Kind may do under it.
 
+use cao_archive::Game;
+
 use crate::archive_size::ArchiveSize;
 use crate::closed::{self, ClosedSet};
 use crate::error::ProfileError;
@@ -8,25 +10,15 @@ use crate::ini::{IniFile, Value};
 use crate::mesh::{MeshFileVersion, MeshStreamVersion, MeshUserVersion};
 use crate::texture::{TextureFormat, UnwantedFormat};
 
-/// The game whose archive rules a profile uses (`[BSA] bsaGame`), numbered as
-/// bethutil's `btu::Game` numbers them.
+/// The games a Profile may name in `[BSA] bsaGame`, as `cao-archive` names
+/// them, numbered as bethutil's `btu::Game` numbers them, so files stay
+/// readable by older builds.
 ///
-/// **Deviation 11:** only these three exist. C++ also accepted TES3 (0, which is also
-/// what text or a missing key reads as), TES4 (1) and FNV (2), and silently used SSE's
-/// rules for any other number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BsaGame {
-    /// Skyrim Legendary Edition, `bsaGame=3`.
-    Tes5,
-    /// Skyrim Special Edition, `bsaGame=4`.
-    Sse,
-    /// Fallout 4, `bsaGame=5`.
-    Fo4,
-}
-
-/// The games the GUI offers. `bsaGame` keeps its own read and error
+/// Only these three exist because `cao-archive` has Archive Rules only for
+/// them; any other number is refused rather than packed by another game's
+/// rules. `bsaGame` keeps its own read and error
 /// ([`ProfileError::UnsupportedBsaGame`]) rather than [`closed::read`]'s.
-impl ClosedSet for BsaGame {
+impl ClosedSet for Game {
     const ALL: &'static [Self] = &[Self::Tes5, Self::Sse, Self::Fo4];
 
     /// The `bsaGame` number written to `profile.ini`.
@@ -39,24 +31,27 @@ impl ClosedSet for BsaGame {
     }
 }
 
-impl BsaGame {
-    /// Reads `bsaGame` as C++ does (`toInt()`), then rejects anything but 3, 4 or 5.
-    fn read(value: &Value) -> Result<Self, ProfileError> {
-        match value.to_i32() {
-            3 => Ok(Self::Tes5),
-            4 => Ok(Self::Sse),
-            5 => Ok(Self::Fo4),
-            _ => Err(ProfileError::UnsupportedBsaGame {
-                value: value.to_qstring(),
-            }),
-        }
+/// Reads `bsaGame` as `QVariant::toInt()` reads it, then rejects anything but
+/// 3, 4 or 5.
+///
+/// # Errors
+/// [`ProfileError::UnsupportedBsaGame`] for any other number, for text and for
+/// a missing key, which all read as a number no game has.
+fn read_game(value: &Value) -> Result<Game, ProfileError> {
+    match value.to_i32() {
+        3 => Ok(Game::Tes5),
+        4 => Ok(Game::Sse),
+        5 => Ok(Game::Fo4),
+        _ => Err(ProfileError::UnsupportedBsaGame {
+            value: value.to_qstring(),
+        }),
     }
 }
 
 /// A profile's `profile.ini`: the per-game settings C++ held in `Profiles`.
 ///
 /// Bools read with `QVariant`'s conversions, so a missing one is `false`, never a
-/// default, and a missing maximum Archive size is `0`; a Mesh Target axis and the Texture format are
+/// default, and a missing maximum Archive size is not given; a Mesh Target axis and the Texture format are
 /// closed sets ([`crate::ClosedSet`]) that `0` is outside, so a missing one is
 /// unreadable. Keys this model does not hold, such as the dead
 /// `[Animations] animationFormat` (deviation 10), are never read and survive a save.
@@ -66,14 +61,16 @@ pub struct ProfileSettings {
     /// (`[BSA] bsaEnabled`); the GUI enables its Archives tab from it.
     pub bsa_enabled: bool,
     /// The largest uncompressed Archive to create, in whole bytes
-    /// (`[BSA] maxBsaUncompressedSize`). The packer raises it to the game's
-    /// archive-table maximum when that is larger, so a Profile can only allow
-    /// larger Archives; those tables live in `cao-archive`, so the composition
-    /// root applies that floor.
+    /// (`[BSA] maxBsaUncompressedSize`), or not given when the key is missing.
+    /// The packer groups files by it, as the Profile's Archive Limit, never
+    /// past the game's Archive Size Cap; a size not given takes the game's
+    /// default. Those rules live in `cao-archive` (`Settings::for_profile`,
+    /// which takes [`ArchiveSize::requested`]), so the composition root
+    /// applies them.
     pub max_bsa_uncompressed_size: ArchiveSize,
     /// The game whose archive naming, versions and Loading Plugin rules apply
     /// (`[BSA] bsaGame`).
-    pub bsa_game: BsaGame,
+    pub bsa_game: Game,
     /// The Profile Capability for Mesh optimization (`[Meshes] meshesEnabled`).
     pub meshes_enabled: bool,
     /// The NIF file version Meshes are written as (`[Meshes] meshesFileVersion`),
@@ -118,13 +115,13 @@ impl ProfileSettings {
     /// outside its closed set.
     ///
     /// The maximum Archive size is also [`ProfileError::UnsupportedValue`] when
-    /// it is neither a number of bytes nor a size with a unit, or does not fit
-    /// in whole bytes: see [`ArchiveSize`].
+    /// it is neither a number of bytes nor a size with a unit, is `0`, or does
+    /// not fit in whole bytes: see [`ArchiveSize`].
     pub fn read(ini: &IniFile) -> Result<Self, ProfileError> {
         Ok(Self {
             bsa_enabled: ini.value("BSA/bsaEnabled").to_bool(),
             max_bsa_uncompressed_size: ArchiveSize::read(ini, "BSA/maxBsaUncompressedSize")?,
-            bsa_game: BsaGame::read(ini.value("BSA/bsaGame"))?,
+            bsa_game: read_game(ini.value("BSA/bsaGame"))?,
             meshes_enabled: ini.value("Meshes/meshesEnabled").to_bool(),
             meshes_file_version: closed::read(ini, "Meshes/meshesFileVersion")?,
             meshes_stream: closed::read(ini, "Meshes/meshesStream")?,
@@ -143,10 +140,8 @@ impl ProfileSettings {
     /// the model does not hold are left alone.
     pub fn write(&self, ini: &mut IniFile) {
         ini.set("BSA/bsaEnabled", self.bsa_enabled);
-        ini.set(
-            "BSA/maxBsaUncompressedSize",
-            self.max_bsa_uncompressed_size.to_written(),
-        );
+        self.max_bsa_uncompressed_size
+            .write(ini, "BSA/maxBsaUncompressedSize");
         ini.set("BSA/bsaGame", self.bsa_game.number());
 
         ini.set("Meshes/meshesEnabled", self.meshes_enabled);

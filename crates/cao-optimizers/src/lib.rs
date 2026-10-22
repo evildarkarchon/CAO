@@ -18,15 +18,15 @@
 //! - [`backend`] is the one Asset Execution Backend over every optimizer.
 //! - [`archives`] implements core's archive reader over `cao-archive`, and the
 //!   volume probe over `cao-winfs` (#497).
-//! - [`profile`] is the one place a Profile becomes run facts: its Profile
-//!   Capabilities with its Archive extension, its Archive game and packer, and
-//!   the backend's `TextureProfile` and Mesh Target, for Preparing and the GUI
-//!   alike (#621).
-//! - [`composition`] is the composition root both binaries share: given the app
+//! - [`profile`] is the one place a Profile becomes run facts: its Archive
+//!   Rules, its Profile Capabilities with the Archive extension those rules
+//!   write, and the backend's `TextureProfile` and Mesh Target, for Preparing
+//!   and the GUI alike (#621, #628).
+//! - [`composition`] is `cao-gui`'s composition root: given the app
 //!   directory, a profile and the options model, it builds the Run Request, the
 //!   profile-backed Run Configuration Provider and the per-run optimizer settings,
 //!   and wires them into an Optimization Run Service (spec #476).
-//! - [`application_log`] is the `log` facade's sink both binaries install: the
+//! - [`application_log`] is the `log` facade's sink `cao-gui` installs: the
 //!   Application Log's HTML file, and the rows the Log tab shows (#470).
 
 pub mod animations;

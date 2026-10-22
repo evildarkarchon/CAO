@@ -315,7 +315,8 @@ impl App {
         // the run will actually do (deviation 3).
         rules::apply(ui);
         // An unreadable profile enables no asset tab.
-        self.enable_tabs(settings.as_ref().map(profile_capabilities).as_ref());
+        let capabilities = settings.as_ref().map(profile_capabilities);
+        self.enable_tabs(capabilities.as_ref());
         ui.set_base_profile(profile.is_base());
 
         loaded.profile = profile;

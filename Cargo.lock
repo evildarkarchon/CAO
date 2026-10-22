@@ -662,6 +662,7 @@ name = "cao-archive"
 version = "0.1.0"
 dependencies = [
  "ba2",
+ "cao-archive",
  "directxtex",
  "embed-resource",
  "rayon",
@@ -684,6 +685,7 @@ name = "cao-gui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cao-archive",
  "cao-core",
  "cao-gui-ui",
  "cao-gui-unsafe",
@@ -734,6 +736,7 @@ dependencies = [
 name = "cao-profiles"
 version = "0.1.0"
 dependencies = [
+ "cao-archive",
  "thiserror 2.0.21",
 ]
 

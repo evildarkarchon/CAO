@@ -9,7 +9,8 @@ mod common;
 
 use std::fs;
 
-use cao_profiles::{BsaGame, Options, Profiles};
+use cao_archive::Game;
+use cao_profiles::{Options, Profiles};
 
 #[test]
 fn deviation_1_profiles_resolve_against_the_app_directory_from_another_working_directory() {
@@ -29,7 +30,7 @@ fn deviation_1_profiles_resolve_against_the_app_directory_from_another_working_d
 
     assert_eq!(profiles.list(), ["FO4", "SSE", "TES5"]);
     assert_eq!(profiles.load_common().unwrap().profile, "TES5");
-    assert_eq!(sse.load_settings().unwrap().bsa_game, BsaGame::Sse);
+    assert_eq!(sse.load_settings().unwrap().bsa_game, Game::Sse);
     assert!(
         sse.load_options(&Options::default())
             .unwrap()

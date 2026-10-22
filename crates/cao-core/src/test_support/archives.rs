@@ -210,11 +210,13 @@ pub struct FakeWrite {
 /// `interface` is a Texture, anything under `sound` or `music` is
 /// Incompressible, plugins and Archives are never packed, and everything else
 /// is Standard. Splitting and merging follow the real strict limits against
-/// [`Self::max_size`]. Names parse as the real `FilePath` does.
+/// [`Self::archive_limit`]. Names parse as the real `FilePath` does.
 pub struct FakeArchivePacker {
     pub rules: ArchiveNamingRules,
-    /// The most source bytes one Archive may hold.
-    pub max_size: u64,
+    /// The most source bytes one Archive groups together, like production's
+    /// Archive Limit: a single source larger than it gets an Archive of its
+    /// own.
+    pub archive_limit: u64,
     /// Every Archive written, in order.
     pub writes: Mutex<Vec<FakeWrite>>,
     /// Runs after each Archive is written, once its sources were read.
@@ -244,7 +246,7 @@ impl Default for FakeArchivePacker {
                 dummy_plugin: fake_dummy_plugin(),
                 separate_textures: false,
             },
-            max_size: u64::MAX,
+            archive_limit: u64::MAX,
             writes: Mutex::default(),
             after_write: None,
             before_list: None,
@@ -434,23 +436,20 @@ impl ArchivePacker for FakeArchivePacker {
                 Some(PackedArchiveKind::Textures) => &mut textures,
                 None => continue,
             };
-            if source.size > self.max_size {
-                return Err(Error::Archive(format!(
-                    "`{}` exceeds the output Archive size limit",
-                    source.path.display()
-                )));
-            }
-            if size(partition) + source.size > self.max_size {
+            // The limit only groups sources, as production's Archive Limit
+            // does: an empty Archive takes any one source, so a source over
+            // the limit is packed into an Archive of its own.
+            if !partition.files.is_empty() && size(partition) + source.size > self.archive_limit {
                 let kind = partition.kind;
                 full.push(std::mem::replace(partition, open(kind)));
             }
             partition.files.push(source);
         }
-        if merge.incompressible && size(&standard) + size(&incompressible) < self.max_size {
+        if merge.incompressible && size(&standard) + size(&incompressible) < self.archive_limit {
             standard.files.append(&mut incompressible.files);
             standard.kind = PackedArchiveKind::Incompressible;
         }
-        if merge.textures && size(&standard) + size(&textures) < self.max_size {
+        if merge.textures && size(&standard) + size(&textures) < self.archive_limit {
             standard.files.append(&mut textures.files);
         }
         full.extend([standard, incompressible, textures]);

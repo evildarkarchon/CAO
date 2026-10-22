@@ -4,10 +4,13 @@
 
 mod common;
 
+use std::num::NonZeroU64;
+
+use cao_archive::Game;
 use cao_gui::ui::{MeshesTab, TexturesTab};
 use cao_profiles::ArchiveSize;
 use cao_profiles::{
-    BsaGame, MeshStreamVersion, OptimizationMode, Options, Profiles, TextureFormat, UnwantedFormat,
+    MeshStreamVersion, OptimizationMode, Options, Profiles, TextureFormat, UnwantedFormat,
 };
 use common::*;
 use slint::ComponentHandle;
@@ -56,7 +59,7 @@ fn settings_saved_from_the_window_reload_identically() {
     click(ui, "Separate textures BSA");
     // Under the 2 GB cap of the Skyrim games, which would hold a larger size there.
     enter(ui, "Maximum size", "1.5");
-    // Not FO4, whose UI rule (#509) would force "Separate textures BSA" back on.
+    // Not FO4, whose UI rule (#509) would show "Separate textures BSA" forced on.
     choose(ui, "Game", "Skyrim LE");
 
     select_tab(ui, "Meshes");
@@ -99,11 +102,11 @@ fn settings_saved_from_the_window_reload_identically() {
     assert_eq!(options.textures_target_width, 1024);
     assert!(options.animations_optimization);
     let settings = profile.load_settings().unwrap();
-    assert_eq!(settings.bsa_game, BsaGame::Tes5);
+    assert_eq!(settings.bsa_game, Game::Tes5);
     // 1.5 GiB, in whole bytes.
     assert_eq!(
         settings.max_bsa_uncompressed_size,
-        ArchiveSize::from_bytes(1_610_612_736)
+        ArchiveSize::from_bytes(NonZeroU64::new(1_610_612_736).unwrap())
     );
     assert_eq!(settings.meshes_stream, MeshStreamVersion::V130);
     assert_eq!(settings.textures_format, TextureFormat::Bc3Unorm);

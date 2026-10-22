@@ -23,8 +23,6 @@ use cao_core::run::{
 };
 use cao_winfs::{Access, Open, Share};
 
-use crate::profile;
-
 /// The archive reader over `cao-archive`, for TES3, TES4 and FO4 Archives.
 ///
 /// `ba2` memory-maps an Archive, and Windows refuses to delete a mapped file.
@@ -134,15 +132,16 @@ pub struct GameArchivePacker {
 }
 
 impl GameArchivePacker {
-    /// A packer for `settings`, already adjusted to the profile's maximum
-    /// Archive size.
+    /// A packer for `settings`, a Profile's Archive Rules
+    /// ([`archive_rules`](crate::profile::archive_rules)), already carrying
+    /// its Archive Limit.
     ///
     /// A game whose Textures need their own container (FO4's DX10 BA2) keeps
     /// them separate whatever the user chose, so Archive Finalization never
     /// merges DDS files into the `GNRL` Main BA2, a container the game's
     /// Textures are not written as. The rule is
-    /// [`keeps_textures_separate`](crate::profile::keeps_textures_separate),
-    /// the same one the GUI forces "Separate textures BSA" by.
+    /// [`Settings::keeps_textures_separate`], the same one the GUI forces
+    /// "Separate textures BSA" by.
     pub fn new(settings: Settings) -> Self {
         let rules = ArchiveNamingRules {
             extension: settings.extension.to_owned(),
@@ -154,7 +153,7 @@ impl GameArchivePacker {
                 .map(|extension| (*extension).to_owned())
                 .collect(),
             dummy_plugin: settings.dummy_plugin.to_vec(),
-            separate_textures: profile::textures_need_own_archive(&settings),
+            separate_textures: settings.keeps_textures_separate(),
         };
         Self { settings, rules }
     }

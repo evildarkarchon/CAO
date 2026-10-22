@@ -30,15 +30,23 @@ export global BsaTab {
     in-out property <bool> delete-source: true;
     in-out property <bool> create-dummies: true;
     in-out property <bool> compress: true;
+    // The user's Work Choice (`bBsaMergeTexture`), which a game that forces the
+    // checkbox (`UiRules.separate-textures-forced`) never writes.
     in-out property <bool> separate-textures: true;
     in-out property <bool> separate-incompressible: true;
-    // Advanced: the maximum uncompressed size in GB, and the game as an index
-    // into `games`, the Game combo's items, which Rust builds from the typed
-    // Profile model (`cao_profiles::BsaGame`).
-    in-out property <float> max-size: 1.96;
-    // The most GB the game in the Game combo's Archives may hold, or 0 for no
-    // cap: the BSA games stop at 2 GB. Rust's UI rules set it from the game.
-    in property <float> max-size-cap: 0;
+    // Advanced: the Archive Limit, the maximum uncompressed size in GB, and the
+    // game as an index into `games`, the Game combo's items, which Rust builds
+    // from the typed Profile model's game (`cao_archive::Game`).
+    in-out property <float> archive-limit: 1.96;
+    // Whether the Profile gives a maximum size. While it gives none, Rust's UI
+    // rules show the default of the game in the Game combo in `archive-limit`,
+    // and the Profile is saved without a size; the user editing the spin box
+    // gives one.
+    in-out property <bool> archive-limit-given: true;
+    // The Archive Size Cap: the most GB the game in the Game combo's Archives
+    // may hold, or 0 for no cap: the BSA games stop at 2 GB. Rust's UI rules
+    // set it from the game.
+    in property <float> archive-size-cap: 0;
     in-out property <int> game-index: 1;
     in property <[string]> games;
 }
@@ -101,8 +109,10 @@ export global UiRules {
     in property <bool> bsa-base-enabled: true;
     // Several Mods: the Medium and Full mesh optimization radios.
     in property <bool> heavy-mesh-levels-enabled: true;
-    // FO4: "Separate textures BSA", which FO4 forces on.
-    in property <bool> separate-textures-enabled: true;
+    // A game that keeps Textures in their own Archive (FO4): "Separate textures
+    // BSA" shows checked and disabled. Unlike the rules above it forces only what
+    // the checkbox shows: the user's choice stays in `BsaTab.separate-textures`.
+    in property <bool> separate-textures-forced;
 }
 
 export component MainWindow inherits Window {
@@ -432,12 +442,30 @@ export component MainWindow inherits Window {
                                 }
 
                                 Row {
-                                    HelpCheckBox {
-                                        text: @tr("Separate textures BSA");
-                                        help: @tr("There are three types of BSAs CAO can create : incompressible, textures and standard. If enabled, this option will always separate textures into their own BSAs. Otherwise, they will be merged into the standard one if possible.");
-                                        // A game that keeps Textures in their own Archive (FO4) forces it on (`UiRules`).
-                                        enabled: root.ed && UiRules.separate-textures-enabled;
-                                        checked <=> BsaTab.separate-textures;
+                                    // The checkbox shows `forced || choice`. A game that keeps
+                                    // Textures in their own Archive (FO4) forces it on (`UiRules`).
+                                    // Two exclusive boxes rather than one bound to that expression:
+                                    // a click writes the box's own `checked`, which would drop a
+                                    // one-way binding for good, and a two-way one to the choice
+                                    // would let the forced value overwrite the user's choice.
+                                    // Both boxes read their label and help from here, so the
+                                    // two stay one checkbox to the user and to translators.
+                                    separate-textures := HorizontalLayout {
+                                        property <string> text: @tr("Separate textures BSA");
+                                        property <string> help: @tr("There are three types of BSAs CAO can create : incompressible, textures and standard. If enabled, this option will always separate textures into their own BSAs. Otherwise, they will be merged into the standard one if possible.");
+
+                                        if UiRules.separate-textures-forced: HelpCheckBox {
+                                            text: separate-textures.text;
+                                            help: separate-textures.help;
+                                            enabled: false;
+                                            checked: true;
+                                        }
+                                        if !UiRules.separate-textures-forced: HelpCheckBox {
+                                            text: separate-textures.text;
+                                            help: separate-textures.help;
+                                            enabled: root.ed;
+                                            checked <=> BsaTab.separate-textures;
+                                        }
                                     }
 
                                     HelpCheckBox {
@@ -465,8 +493,13 @@ export component MainWindow inherits Window {
                                     DoubleSpinBox {
                                         label: @tr("Maximum size");
                                         enabled: root.adv-ed;
-                                        value <=> BsaTab.max-size;
-                                        maximum: BsaTab.max-size-cap > 0 ? BsaTab.max-size-cap : 99.99;
+                                        value <=> BsaTab.archive-limit;
+                                        // `profile.ini` refuses a size of 0, so the box never offers one.
+                                        minimum: 0.01;
+                                        maximum: BsaTab.archive-size-cap > 0 ? BsaTab.archive-size-cap : 99.99;
+                                        edited => {
+                                            BsaTab.archive-limit-given = true;
+                                        }
                                     }
                                 }
 

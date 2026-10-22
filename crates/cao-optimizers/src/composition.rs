@@ -31,13 +31,11 @@ use cao_core::run::{
 use cao_profiles::{OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
 
 use crate::animations::Hkxcmd;
-use crate::archives::{ArchiveFileReader, VolumeProbes};
+use crate::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
 use crate::backend::{OptimizerBackend, TextureResize, TextureSettings};
 use crate::headparts::{HeadpartList, ScanCancelled, scan_headparts};
 use crate::meshes::{MeshOptimizer, MeshSettings};
-use crate::profile::{
-    archive_game, archive_packer, mesh_target, profile_capabilities, texture_profile,
-};
+use crate::profile::{mesh_target, rules_and_capabilities, texture_profile};
 
 /// Why the options cannot start a run. Nothing has run and nothing has changed.
 ///
@@ -246,6 +244,10 @@ fn mesh_settings(choices: &MeshChoices) -> MeshSettings {
 struct PreparedProfile {
     /// `profile.ini`.
     settings: Arc<ProfileSettings>,
+    /// The Profile's Archive Rules, built once from `settings`: the same
+    /// value the Selected Profile's Archive extension came from, so the
+    /// packer and the headpart scan follow exactly the rules routing used.
+    archive_rules: Settings,
     /// The Headpart Meshes `customHeadparts.txt` lists, loaded with
     /// `FilesToNotPack.txt`, as C++'s profile snapshot loaded them.
     custom_headparts: Vec<String>,
@@ -303,7 +305,11 @@ impl ProfileConfigurationProvider {
         let files_to_not_pack = profile.files_to_not_pack();
         // The same holds here; the headpart scan logs it.
         let custom_headparts = profile.custom_headparts();
-        let selected = SelectedProfile::new(profile_capabilities(&settings))
+        // Every Archive fact of the run comes from this one value: the
+        // Archive extension routing compiles from here, and the packer and
+        // the headpart scan's plugin extensions later.
+        let (archive_rules, capabilities) = rules_and_capabilities(&settings);
+        let selected = SelectedProfile::new(capabilities)
             .with_conversion_preference(settings.textures_convert_tga)
             .with_ignored_mods(ignored_mods)
             .with_packing_exclusions(files_to_not_pack);
@@ -311,6 +317,7 @@ impl ProfileConfigurationProvider {
             selected,
             PreparedProfile {
                 settings: Arc::new(settings),
+                archive_rules,
                 custom_headparts,
             },
         ))
@@ -370,7 +377,7 @@ impl RunWorkSettings {
         let seams = ArchiveSeams {
             reader: Arc::new(ArchiveFileReader::default()),
             volume_probe: Arc::new(VolumeProbes),
-            packer: Arc::new(archive_packer(&profile.settings)),
+            packer: Arc::new(GameArchivePacker::new(profile.archive_rules)),
         };
         RunToolset::new(
             // The adapter creates the backend on the first Asset, as C++
@@ -422,7 +429,7 @@ impl OptimizerBackendFactory {
             return Ok((HeadpartList::default(), Vec::new()));
         }
         let profile = &self.profile;
-        let extensions = Settings::get(archive_game(profile.settings.bsa_game)).plugin_extensions;
+        let extensions = profile.archive_rules.plugin_extensions;
         let scan = scan_headparts(
             &profile.custom_headparts,
             &self.work.selected_folder,
@@ -532,9 +539,13 @@ mod tests {
                 selected_folder: selection.clone(),
                 hkxcmd: Hkxcmd::in_app_dir(&app_dir),
             },
-            profile: Arc::new(PreparedProfile {
-                settings: Arc::new(profile.load_settings().unwrap()),
-                custom_headparts: Vec::new(),
+            profile: Arc::new({
+                let settings = profile.load_settings().unwrap();
+                PreparedProfile {
+                    archive_rules: crate::profile::archive_rules(&settings),
+                    settings: Arc::new(settings),
+                    custom_headparts: Vec::new(),
+                }
             }),
         };
 

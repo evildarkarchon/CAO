@@ -789,7 +789,7 @@ fn a_cancelled_finalization_is_reported() {
     write_tree(&root, &["textures/native.dds", "meshes/packed.nif"]);
     let stop = CancellationToken::new();
     let packer = FakeArchivePacker {
-        max_size: 20,
+        archive_limit: 20,
         after_write: Some(Box::new({
             let stop = stop.clone();
             move |_| stop.cancel()

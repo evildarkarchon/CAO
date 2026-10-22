@@ -173,6 +173,22 @@ impl IniFile {
         self.insert(key.to_owned(), value.into());
     }
 
+    /// `QSettings::remove(key)` for a single key: drops `key`, matched ignoring
+    /// case, so a save leaves it out. Every other key keeps its place. Nothing
+    /// happens when `key` is missing.
+    pub fn remove(&mut self, key: &str) {
+        let Some(removed) = self.index.remove(&key.to_lowercase()) else {
+            return;
+        };
+        self.entries.remove(removed);
+        // The entries after the removed one each moved up one place.
+        for i in self.index.values_mut() {
+            if *i > removed {
+                *i -= 1;
+            }
+        }
+    }
+
     /// Stores `value` under `key`, matching an existing key ignoring case. A match
     /// keeps its first spelling and its place and takes the new value, which is how
     /// the reader gets Qt's "last duplicate wins, in the first one's place"; a new key

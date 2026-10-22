@@ -7,11 +7,18 @@ mod common;
 
 use std::path::Path;
 
+use cao_archive::Game;
+use cao_archive::Settings;
 use cao_gui::App;
 use cao_gui::ui::MainWindow;
-use cao_optimizers::profile::keeps_textures_separate;
-use cao_profiles::{BsaGame, Options, Profiles};
+use cao_profiles::{Options, Profiles};
 use common::*;
+
+/// Whether `game` keeps Textures in an Archive of their own, as the run's
+/// Archive Rules say.
+fn keeps_textures_separate(game: Game) -> bool {
+    Settings::get(game).keeps_textures_separate()
+}
 
 /// The three base archive options the Dry Run rule clears and disables.
 const BASE_ARCHIVE_OPTIONS: [&str; 3] = ["Extract BSA", "Create BSA", "Delete backups"];
@@ -227,11 +234,13 @@ fn an_fo4_profile_loads_with_separate_textures_checked_and_disabled() {
     select_tab(ui, "BSA");
 
     assert_controls(ui, &["Separate textures BSA"], true, false);
-    assert!(!saved_options(&app, &app_dir, "FO4").bsa_merge_textures);
+    // The rule only shows what the run does; the user's choice is saved as it
+    // was loaded.
+    assert!(saved_options(&app, &app_dir, "FO4").bsa_merge_textures);
 }
 
 #[test]
-fn choosing_the_fo4_game_checks_and_disables_separate_textures() {
+fn previewing_fo4_forces_separate_textures_then_gives_the_users_choice_back() {
     headless();
     // A custom profile, so its Game combo is editable.
     let app_dir = app_on("fo4_click", "Custom");
@@ -240,25 +249,31 @@ fn choosing_the_fo4_game_checks_and_disables_separate_textures() {
     let (app, _desktop) = open(&app_dir);
     let ui = app.window();
     select_tab(ui, "BSA");
+    // The user's choice on SSE: merge Textures into the Standard Archive.
     click(ui, "Separate textures BSA");
     assert_controls(ui, &["Separate textures BSA"], false, true);
 
     choose(ui, "Game", "FO4");
     assert_controls(ui, &["Separate textures BSA"], true, false);
-    assert!(!saved_options(&app, &app_dir, "Custom").bsa_merge_textures);
-
-    // Another game gives the choice back, as it was left.
-    choose(ui, "Game", "SSE");
-    assert_controls(ui, &["Separate textures BSA"], true, true);
-    click(ui, "Separate textures BSA");
+    // A save while FO4 is shown saves the choice, not what FO4 forces.
     assert!(saved_options(&app, &app_dir, "Custom").bsa_merge_textures);
+
+    // Back on SSE the checkbox shows the user's choice again, and a save
+    // keeps it.
+    choose(ui, "Game", "SSE");
+    assert_controls(ui, &["Separate textures BSA"], false, true);
+    assert!(saved_options(&app, &app_dir, "Custom").bsa_merge_textures);
+
+    // The choice is still the user's to change.
+    click(ui, "Separate textures BSA");
+    assert!(!saved_options(&app, &app_dir, "Custom").bsa_merge_textures);
 }
 
 /// Each Game combo item, with the game it names.
-const GAME_CHOICES: [(&str, BsaGame); 3] = [
-    ("Skyrim LE", BsaGame::Tes5),
-    ("SSE", BsaGame::Sse),
-    ("FO4", BsaGame::Fo4),
+const GAME_CHOICES: [(&str, Game); 3] = [
+    ("Skyrim LE", Game::Tes5),
+    ("SSE", Game::Sse),
+    ("FO4", Game::Fo4),
 ];
 
 #[test]

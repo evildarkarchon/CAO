@@ -6,12 +6,15 @@
 //! reloads the same. #509's UI rules (Dry Run, Several Mods, FO4 textures; `rules.rs`) are
 //! not applied here; they run after [`show_options`] and [`show_settings`].
 
+use std::num::NonZeroU64;
+
+use cao_archive::Game;
 use cao_core::routing::{ProfileCapabilities, ProfileCapability};
 use cao_gui_ui::{AnimationsTab, BsaTab, MainWindow, MeshesTab, TexturesTab};
 use cao_profiles::ArchiveSize;
 use cao_profiles::{
-    BsaGame, ClosedSet, MeshFileVersion, MeshStreamVersion, MeshUserVersion, OptimizationMode,
-    Options, ProfileSettings, TextureFormat, UnwantedFormat,
+    ClosedSet, MeshFileVersion, MeshStreamVersion, MeshUserVersion, OptimizationMode, Options,
+    ProfileSettings, TextureFormat, UnwantedFormat,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
@@ -116,8 +119,8 @@ pub(crate) fn mode_at(index: i32) -> Option<OptimizationMode> {
 }
 
 /// The game the Game combo shows at `index`; `None` for no selection.
-pub(crate) fn game_at(index: i32) -> Option<BsaGame> {
-    item(BsaGame::ALL, index).copied()
+pub(crate) fn game_at(index: i32) -> Option<Game> {
+    item(Game::ALL, index).copied()
 }
 
 /// Fills the Game, Version, User, Stream and Output format combos with every
@@ -142,11 +145,11 @@ fn choices<T: ClosedSet, L: Into<SharedString>>(label: fn(T) -> L) -> ModelRc<Sh
 }
 
 /// The Game combo's text for a game.
-fn game_label(game: BsaGame) -> &'static str {
+fn game_label(game: Game) -> &'static str {
     match game {
-        BsaGame::Tes5 => "Skyrim LE",
-        BsaGame::Sse => "SSE",
-        BsaGame::Fo4 => "FO4",
+        Game::Tes5 => "Skyrim LE",
+        Game::Sse => "SSE",
+        Game::Fo4 => "FO4",
     }
 }
 
@@ -344,7 +347,11 @@ pub(crate) fn read_options(
 /// name the window lists it by.
 pub(crate) fn show_settings(ui: &MainWindow, settings: &ProfileSettings) {
     let bsa = ui.global::<BsaTab>();
-    bsa.set_max_size(shown_gigabytes(&settings.max_bsa_uncompressed_size));
+    let requested = settings.max_bsa_uncompressed_size.requested();
+    bsa.set_archive_limit_given(requested.is_some());
+    // A size not given shows the game's default, which the Archive Limit rule
+    // (`rules.rs`) fills in from the Game combo; 0 only holds its place.
+    bsa.set_archive_limit(requested.map_or(0.0, gigabytes_of));
     bsa.set_game_index(choice_index(settings.bsa_game));
 
     let meshes = ui.global::<MeshesTab>();
@@ -371,17 +378,27 @@ pub(crate) fn read_settings(ui: &MainWindow, current: &ProfileSettings) -> Profi
     let mut settings = current.clone();
 
     let bsa = ui.global::<BsaTab>();
-    if let Some(&game) = item(BsaGame::ALL, bsa.get_game_index()) {
+    if let Some(&game) = item(Game::ALL, bsa.get_game_index()) {
         settings.bsa_game = game;
     }
+    // A size not given shows the game's default until the user edits it, and
+    // is kept not given: saving the default would stop the Profile following
+    // its game's default.
+    //
     // The spin box's two decimals of a gigabyte cannot hold every size, and a
     // size written with a unit keeps its text only while it is unchanged, so a
     // size the user did not change is kept as loaded rather than re-derived.
     // Compared as the spin box displays them, so its own rounding of the
     // loaded value does not count as a change.
-    let shown = bsa.get_max_size();
-    if gigabytes(shown) != gigabytes(shown_gigabytes(&current.max_bsa_uncompressed_size)) {
-        settings.max_bsa_uncompressed_size = archive_size(shown);
+    if bsa.get_archive_limit_given() {
+        let shown = gigabytes(bsa.get_archive_limit());
+        let loaded = current
+            .max_bsa_uncompressed_size
+            .requested()
+            .map(|bytes| gigabytes(gigabytes_of(bytes)));
+        if loaded != Some(shown) {
+            settings.max_bsa_uncompressed_size = archive_size(shown);
+        }
     }
 
     let meshes = ui.global::<MeshesTab>();
@@ -420,21 +437,21 @@ fn gigabytes(shown: f32) -> f64 {
     format!("{shown:.2}").parse().unwrap_or_default()
 }
 
-/// The maximum Archive size as the spin box shows it, in gigabytes.
-fn shown_gigabytes(size: &ArchiveSize) -> f32 {
-    gigabytes_of(size.bytes())
-}
-
 /// `bytes` in the spin box's gigabytes (1024³ bytes each).
 pub(crate) fn gigabytes_of(bytes: u64) -> f32 {
     (bytes as f64 / GIGABYTE) as f32
 }
 
-/// The maximum Archive size the spin box's gigabytes stand for, truncated to
-/// whole bytes as the read of `profile.ini` truncates a fraction. The spin box
-/// holds 0 to 99.99, so the bytes always fit.
-fn archive_size(shown: f32) -> ArchiveSize {
-    ArchiveSize::from_bytes((gigabytes(shown) * GIGABYTE) as u64)
+/// The maximum Archive size `shown` gigabytes stand for, as the spin box
+/// displays them ([`gigabytes`]), truncated to whole bytes as the read of
+/// `profile.ini` truncates a fraction. The spin box holds 0.01 to 99.99, so
+/// the bytes always fit and are never 0.
+fn archive_size(shown: f64) -> ArchiveSize {
+    // `profile.ini` refuses an explicit `0`. The spin box's 0.01 GB minimum
+    // keeps an edited size well above it, so 1 byte only stands in for a
+    // value the box could never have shown.
+    let bytes = NonZeroU64::new((shown * GIGABYTE) as u64).unwrap_or(NonZeroU64::MIN);
+    ArchiveSize::from_bytes(bytes)
 }
 
 /// The index of `value` among a combo's item data.
