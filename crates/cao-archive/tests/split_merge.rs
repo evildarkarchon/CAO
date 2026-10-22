@@ -1,6 +1,6 @@
-//! Splitting a Mod Root's sources into Archives (strict `>`) and merging the open
-//! partitions (strict `<`), as C++ CAO's `planFinalization` and bethutil's
-//! `ArchiveData` and `merge` do (#461).
+//! Splitting a Mod Root's sources into Archives (strict `>`, an Asset past the
+//! Archive Limit packed alone) and merging the open partitions (strict `<`, as
+//! bethutil's `merge` does) (#461, #628).
 
 use std::path::Path;
 

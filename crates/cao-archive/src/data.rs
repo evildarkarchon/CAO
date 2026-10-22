@@ -207,16 +207,18 @@ pub struct SplitArchives {
 }
 
 impl SplitArchives {
-    /// Splits `sources`, files inside the Mod Root `root`, into Archives as C++
-    /// CAO's `planFinalization` does.
+    /// Splits `sources`, files inside the Mod Root `root`, into Archives: one
+    /// open partition per type, each filled in order until the next file no
+    /// longer fits it.
     ///
     /// Sources are sorted first, by component and then by UTF-16 code unit as
     /// MSVC's `std::filesystem::path` compares, because the order decides which
     /// files share an Archive. Each is classified with [`file_type`]; anything not
     /// Standard, Texture or Incompressible is skipped. A file that would take its
-    /// type's open partition past the Archive Limit closes that partition and
-    /// starts a new one. A file larger than the Archive Limit by itself gets
-    /// that new partition to itself, and the next file starts another.
+    /// type's open partition past the Archive Limit, or a BSA past its game's
+    /// Archive Size Cap, closes that partition and starts a new one. A file
+    /// larger than the Archive Limit by itself gets that new partition to
+    /// itself, and the next file starts another.
     ///
     /// Selecting `sources` (skipping root-level files, staging, links and Packing
     /// Exclusions) is the caller's job.
