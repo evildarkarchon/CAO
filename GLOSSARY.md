@@ -25,7 +25,7 @@ An Asset stored inside an Archive. It is shadowed by a Loose Asset with the same
 _Avoid_: Packed file, archive entry
 
 **Profile**:
-A named set of one game's rules and the user's preferences for optimizing it: its Profile Capabilities, the game whose Archive naming rules apply, its Texture Target and Mesh Target, its Conversion Preference, and its Packing Exclusions, ignored-mods list and custom Headpart Meshes. Cathedral Assets Optimizer ships base Profiles and lets the user create and edit others.
+A named set of one game's rules and the user's preferences for optimizing it: its Profile Capabilities, its Archive Rules, its Texture Target and Mesh Target, its Conversion Preference, and its Packing Exclusions, ignored-mods list and custom Headpart Meshes. Cathedral Assets Optimizer ships base Profiles and lets the user create and edit others.
 _Avoid_: Game mode, profile settings, preset
 
 **Profile Capability**:
@@ -40,8 +40,20 @@ _Avoid_: Texture profile, output format
 The NIF file, user and stream version a Profile writes Meshes as.
 _Avoid_: NIF version, mesh format
 
+**Archive Rules**:
+The rules a Profile's Archives are written by: its game's containers, naming and extension, whether that game keeps Textures in their own Archive, and the Profile's Archive Limit.
+_Avoid_: Archive naming rules, BSA settings, archive settings
+
+**Archive Limit**:
+The most source bytes one Archive a Profile creates groups together: the Profile's maximum Archive size, or its game's default when it gives none, never past the game's Archive Size Cap. It only groups files: an Asset larger than it gets an Archive of its own.
+_Avoid_: Max BSA size, Archive Size Cap
+
+**Archive Size Cap**:
+The most bytes one written Archive of a game may ever take, whatever its Profile asks. Skyrim BSAs have one; Fallout 4 BA2s do not. It is the only Archive size that can fail an Asset.
+_Avoid_: Archive Limit, hard limit
+
 **Selected Profile**:
-One Optimization Run's read of its Profile, taken once during Preparing: its Profile Capabilities, Conversion Preference, Archive naming rules, Texture Target and Mesh Target, Packing Exclusions, ignored-mods list, and custom Headpart Meshes. Every part of the run uses this one read.
+One Optimization Run's read of its Profile, taken once during Preparing: its Profile Capabilities, Conversion Preference, Archive Rules, Texture Target and Mesh Target, Packing Exclusions, ignored-mods list, and custom Headpart Meshes. Every part of the run uses this one read.
 _Avoid_: Profile snapshot, profile settings
 
 **Conversion Preference**:
@@ -177,7 +189,7 @@ The Apply-only Run Phase that, when the Routing Policy requests Archive creation
 _Avoid_: Safety Cleanup, packing callback
 
 **Loading Plugin**:
-A game plugin whose presence makes one or more Archives load under the selected game profile's naming rules. It may be a full plugin or a Dummy Plugin.
+A game plugin whose presence makes one or more Archives load under the selected game profile's Archive Rules. It may be a full plugin or a Dummy Plugin.
 _Avoid_: Archive, Dummy Plugin
 
 **Dummy Plugin**:
