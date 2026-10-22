@@ -1,7 +1,6 @@
 //! A Profile's maximum Archive size (`[BSA] maxBsaUncompressedSize`): a whole
 //! number of bytes, so no floating-point value leaves the read of `profile.ini`.
 
-use crate::closed::{PROFILE_INI, raw};
 use crate::error::ProfileError;
 use crate::ini::{IniFile, Value};
 
@@ -39,12 +38,7 @@ impl ArchiveSize {
         let value = ini.value(key);
         whole_bytes(value)
             .map(Self)
-            .ok_or_else(|| ProfileError::UnsupportedValue {
-                file: PROFILE_INI.to_owned(),
-                key: key.to_owned(),
-                value: raw(value),
-                accepted: ACCEPTED.to_owned(),
-            })
+            .ok_or_else(|| ProfileError::unsupported_value(key, value, ACCEPTED))
     }
 }
 

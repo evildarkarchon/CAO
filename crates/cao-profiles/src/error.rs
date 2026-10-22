@@ -3,7 +3,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use crate::ini::{FormatError, IniError};
+use crate::ini::{FormatError, IniError, Value};
 
 /// Why a profile could not be loaded, saved or created.
 #[derive(Debug, thiserror::Error)]
@@ -61,6 +61,26 @@ pub enum ProfileError {
         #[source]
         source: io::Error,
     },
+}
+
+impl ProfileError {
+    /// A [`ProfileError::UnsupportedValue`] for `key` (`Section/key`) of
+    /// `profile.ini`, the only file whose values are checked.
+    ///
+    /// `value` is what was rejected: the key's whole value, or one entry of a
+    /// list. It is quoted as the file writes it, and a missing key
+    /// ([`Value::Invalid`]) shows as missing. `accepted` follows "expected".
+    pub(crate) fn unsupported_value(key: &str, value: &Value, accepted: impl Into<String>) -> Self {
+        Self::UnsupportedValue {
+            file: "profile.ini".to_owned(),
+            key: key.to_owned(),
+            value: match value {
+                Value::Invalid => None,
+                value => Some(value.to_written()),
+            },
+            accepted: accepted.into(),
+        }
+    }
 }
 
 /// A rejected value as [`ProfileError::UnsupportedValue`] shows it: quoted as

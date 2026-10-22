@@ -125,6 +125,124 @@ fn an_unwanted_format_outside_its_set_is_reported_with_its_key_value_and_accepte
 }
 
 #[test]
+fn an_unwanted_format_entry_is_reported_as_written_rather_than_as_a_wrapped_number() {
+    // 4294967381 is 2^32 + 85: a 32-bit read would wrap it to 85, an accepted
+    // member, and the next save would silently rewrite it as `85`. `abc` would
+    // read as `0` and be reported as `0`.
+    for (index, (list, entry)) in [
+        ("85, 4294967381", "4294967381"),
+        ("85, abc, 115", "abc"),
+        ("abc", "abc"),
+        ("-1", "-1"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let profile = sse_copy(&format!("unwanted-format-entry-{index}"));
+        replace_line(
+            &profile,
+            "texturesUnwantedFormats",
+            &format!("texturesUnwantedFormats={list}"),
+        );
+
+        let error = profile.load_settings().unwrap_err();
+
+        assert!(
+            matches!(
+                &error,
+                ProfileError::UnsupportedValue { key, value, .. }
+                    if key == "Textures/texturesUnwantedFormats"
+                        && value.as_deref() == Some(entry)
+            ),
+            "{list}: {error:?}"
+        );
+        assert!(
+            error.to_string().starts_with(&format!(
+                "`profile.ini`: `Textures/texturesUnwantedFormats` is `{entry}`; expected each \
+                 entry to be one of 2 (R32G32B32A32_FLOAT), "
+            )),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn an_unwanted_format_list_encoded_in_a_way_no_list_reads_from_makes_the_profile_unreadable() {
+    // Each would otherwise read as an empty list, which the next save writes
+    // over the user's value.
+    for (index, written) in [
+        // A one-element `QVariantList` cut short before its element's value.
+        r"@Variant(\0\0\0\t\0\0\0\x1\0\0\0\x2)",
+        // A `QVariant` that is not a list at all (a bare `Int`).
+        r"@Variant(\0\0\0\x2\0\0\0U)",
+        // A list element of a type no format is stored as (a `QByteArray`).
+        r"@Variant(\0\0\0\t\0\0\0\x1\0\0\0\f\0\0\0\0)",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let profile = sse_copy(&format!("unwanted-format-broken-{index}"));
+        replace_line(
+            &profile,
+            "texturesUnwantedFormats",
+            &format!("texturesUnwantedFormats={written}"),
+        );
+
+        let error = profile.load_settings().unwrap_err();
+
+        assert!(
+            matches!(
+                &error,
+                ProfileError::UnsupportedValue { key, value, .. }
+                    if key == "Textures/texturesUnwantedFormats"
+                        && value.as_deref() == Some(written)
+            ),
+            "{written}: {error:?}"
+        );
+        assert!(
+            error.to_string().starts_with(&format!(
+                "`profile.ini`: `Textures/texturesUnwantedFormats` is `{written}`; expected a \
+                 list whose entries are each one of 2 (R32G32B32A32_FLOAT), "
+            )),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn every_list_shape_the_file_has_held_still_reads() {
+    for (index, (written, expected)) in [
+        // What Qt writes for one element: a `QVariantList` holding one `Int`.
+        (
+            r"@Variant(\0\0\0\t\0\0\0\x1\0\0\0\x2\0\0\0U)",
+            &[UnwantedFormat::B5G6R5Unorm][..],
+        ),
+        // A hand-edited single number.
+        ("86", &[UnwantedFormat::B5G5R5A1Unorm]),
+        (
+            "85, 86",
+            &[UnwantedFormat::B5G6R5Unorm, UnwantedFormat::B5G5R5A1Unorm],
+        ),
+        ("@Invalid()", &[]),
+        ("", &[]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let profile = sse_copy(&format!("unwanted-format-shape-{index}"));
+        replace_line(
+            &profile,
+            "texturesUnwantedFormats",
+            &format!("texturesUnwantedFormats={written}"),
+        );
+
+        let settings = profile.load_settings().unwrap();
+
+        assert_eq!(settings.textures_unwanted_formats, expected, "{written}");
+    }
+}
+
+#[test]
 fn repeated_unwanted_formats_load_once_each_in_first_occurrence_order() {
     let profile = sse_copy("unwanted-format-repeats");
     replace_line(

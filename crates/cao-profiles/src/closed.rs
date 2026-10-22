@@ -40,66 +40,75 @@ pub trait ClosedSet: Copy + Eq + 'static {
         let members: Vec<String> = Self::ALL.iter().map(|member| member.describe()).collect();
         format!("one of {}", members.join(", "))
     }
+
+    /// `members` with each repeat dropped, keeping every member where it first
+    /// occurs: how a Profile holds a list of members, whether read from
+    /// `profile.ini` or from the window.
+    fn first_occurrences(members: impl IntoIterator<Item = Self>) -> Vec<Self> {
+        let mut kept = Vec::new();
+        for member in members {
+            if !kept.contains(&member) {
+                kept.push(member);
+            }
+        }
+        kept
+    }
 }
 
 /// Reads `key` of `profile.ini` (`Section/key`) as a member of `T`.
 ///
-/// The text is read as `QVariant::toLongLong()` reads it, so surrounding
-/// whitespace is allowed but text, a fraction or a number past 32 bits is not a
-/// member. A missing key reads as `0`, which no set holds.
-///
 /// # Errors
-/// [`ProfileError::UnsupportedValue`] when the value is not one of `T`'s numbers.
+/// [`ProfileError::UnsupportedValue`] when the value is not one of `T`'s numbers
+/// (see [`member`]); a missing key reads as `0`, which no set holds.
 pub(crate) fn read<T: ClosedSet>(ini: &IniFile, key: &str) -> Result<T, ProfileError> {
     let value = ini.value(key);
-    u32::try_from(value.to_i64())
-        .ok()
-        .and_then(T::from_number)
-        .ok_or_else(|| ProfileError::UnsupportedValue {
-            file: PROFILE_INI.to_owned(),
-            key: key.to_owned(),
-            value: raw(value),
-            accepted: T::accepted(),
-        })
+    member(value).ok_or_else(|| ProfileError::unsupported_value(key, value, T::accepted()))
 }
 
 /// Reads `key` of `profile.ini` (`Section/key`) as a list of members of `T`, in
-/// the file's order, keeping only the first occurrence of a repeated member.
+/// the file's order, keeping only the first occurrence of a repeated member
+/// ([`ClosedSet::first_occurrences`]).
 ///
-/// The list is read as `QVariant::toList()` with `toInt()` on each entry
-/// ([`Value::to_int_list`]), so a missing key or an empty value is an empty
-/// list, and an entry that is text reads as `0`, which no set holds.
+/// The list has the shapes [`Value::list_entries`] reads, so a missing key or
+/// an empty value is an empty list. Each entry is checked as [`read`] checks a
+/// whole value, so an entry past 32 bits is rejected rather than wrapped into
+/// the set, and text is rejected as written rather than read as `0`.
 ///
 /// # Errors
 /// [`ProfileError::UnsupportedValue`] for the first entry that is not one of
-/// `T`'s numbers, carrying that entry as its value.
+/// `T`'s numbers, carrying that entry as written; or for the whole value when
+/// it is encoded in a way no list can be read from (a broken `@Variant(…)`),
+/// since reading that as empty would let the next save overwrite it.
 pub(crate) fn read_list<T: ClosedSet>(ini: &IniFile, key: &str) -> Result<Vec<T>, ProfileError> {
-    let mut members: Vec<T> = Vec::new();
-    for entry in ini.value(key).to_int_list() {
-        let member = u32::try_from(entry)
-            .ok()
-            .and_then(T::from_number)
-            .ok_or_else(|| ProfileError::UnsupportedValue {
-                file: PROFILE_INI.to_owned(),
-                key: key.to_owned(),
-                value: Some(entry.to_string()),
-                accepted: format!("each entry to be {}", T::accepted()),
-            })?;
-        // A harmless repeat is dropped rather than making the Profile unreadable.
-        if !members.contains(&member) {
-            members.push(member);
-        }
-    }
-    Ok(members)
+    let value = ini.value(key);
+    let entries = value.list_entries().ok_or_else(|| {
+        ProfileError::unsupported_value(
+            key,
+            value,
+            format!("a list whose entries are each {}", T::accepted()),
+        )
+    })?;
+    let members = entries
+        .iter()
+        .map(|entry| {
+            member(entry).ok_or_else(|| {
+                ProfileError::unsupported_value(
+                    key,
+                    entry,
+                    format!("each entry to be {}", T::accepted()),
+                )
+            })
+        })
+        .collect::<Result<Vec<T>, _>>()?;
+    // A harmless repeat is dropped rather than making the Profile unreadable.
+    Ok(T::first_occurrences(members))
 }
 
-/// The file every closed set is read from.
-pub(crate) const PROFILE_INI: &str = "profile.ini";
-
-/// The text of a value as written, or `None` when the key is missing.
-pub(crate) fn raw(value: &Value) -> Option<String> {
-    match value {
-        Value::Invalid => None,
-        value => Some(value.to_qstring()),
-    }
+/// The member of `T` that `value` holds, if any.
+///
+/// The text is read as `QVariant::toLongLong()` reads it, so surrounding
+/// whitespace is allowed, but text, a fraction or a number past 32 bits is not
+/// a member: a narrower read would wrap `2^32 + 85` to `85` and accept it.
+fn member<T: ClosedSet>(value: &Value) -> Option<T> {
+    u32::try_from(value.to_i64()).ok().and_then(T::from_number)
 }
