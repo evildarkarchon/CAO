@@ -2,12 +2,12 @@
 //!
 //! From a Profile's settings (`profile.ini`), this module derives its Profile
 //! Capabilities with its game's Archive extension, the `cao-archive` game and
-//! packer its Archives follow, and the backend's Texture profile and Mesh
-//! target. Preparing compiles a run's routing and builds its work from these,
+//! packer its Archives follow, whether that game keeps Textures in their own
+//! Archive, and the backend's Texture profile and Mesh target. Preparing compiles a run's routing and builds its work from these,
 //! and the GUI gates its asset tabs from the same Profile Capabilities, so the
 //! two never disagree about what a Profile supports.
 
-use cao_archive::{Game, Settings};
+use cao_archive::{ArchiveType, Game, Settings};
 use cao_core::routing::{ProfileCapabilities, ProfileCapability};
 use cao_profiles::{BsaGame, ProfileSettings};
 use directxtex::DXGI_FORMAT;
@@ -57,6 +57,23 @@ pub fn archive_game(game: BsaGame) -> Game {
         BsaGame::Sse => Game::Sse,
         BsaGame::Fo4 => Game::Fo4,
     }
+}
+
+/// Whether `game` keeps Textures in their own Archive: its Textures Archive is
+/// written as a different container than its Standard one (FO4's DX10 BA2
+/// beside its `GNRL` Main BA2), so DDS files can never be merged into the
+/// Standard Archive.
+///
+/// The packer's `separate_textures` naming rule and the GUI's "Separate
+/// textures BSA" rule both read this, so they always agree.
+pub fn keeps_textures_separate(game: BsaGame) -> bool {
+    textures_need_own_archive(&Settings::get(archive_game(game)))
+}
+
+/// [`keeps_textures_separate`] over a game's `cao-archive` tables, for the
+/// packer, which is built from them rather than from a [`BsaGame`].
+pub(crate) fn textures_need_own_archive(settings: &Settings) -> bool {
+    settings.version_for(ArchiveType::Textures) != settings.version_for(ArchiveType::Standard)
 }
 
 /// The packer for a profile's game, with its maximum Archive size raised to
