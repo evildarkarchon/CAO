@@ -148,7 +148,7 @@ pub(crate) fn resolve_mod_roots(
 ) -> Result<Vec<PathBuf>, RunFailure> {
     // MSVC's canonical text, so a Mod Root compares equal to the one a C++
     // run recorded in its staging manifest.
-    let root = cao_winfs::msvc_canonical(selection.directory())
+    let root = cao_winfs::canonical(selection.directory())
         .ok()
         .filter(|root| root.is_dir())
         .ok_or_else(|| {
@@ -218,7 +218,7 @@ pub(crate) fn resolve_mod_roots(
             evidence.record_diagnostic(diagnostic);
             continue;
         }
-        let resolved = cao_winfs::msvc_canonical(&child.path).map_err(io_failure)?;
+        let resolved = cao_winfs::canonical(&child.path).map_err(io_failure)?;
         if resolved.parent().is_none()
             || contains_directory(&resolved, &root).map_err(io_failure)?
         {

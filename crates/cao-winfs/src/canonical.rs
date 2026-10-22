@@ -1,13 +1,13 @@
-//! MSVC-compatible `canonical` and `weakly_canonical` (#463).
+//! CAO's canonical path text: `canonical` and `weakly_canonical` (#463).
 //!
-//! A C++-written `CAO-STAGING` manifest stores the Mod Root as the generic UTF-8
-//! text of MSVC `std::filesystem::canonical`, and recovery compares it byte for
-//! byte. Neither `std::fs::canonicalize` (which keeps `\\?\` and fails on
-//! volumes with no DOS name) nor `dunce::canonicalize` (which keeps `\\?\` past
-//! 260 characters and never rewrites UNC) produces that text, so this module
-//! ports MSVC STL 14.51's `_Canonical`, `weakly_canonical`, `lexically_normal`
-//! and root-name parser line for line. `tests/msvc_canonical.rs` checks the
-//! port against output recorded from the STL itself.
+//! Every Mod Root identity, containment check and `CAO-STAGING` manifest uses
+//! this text, and recovery compares it byte for byte, so the same location must
+//! always resolve to the same text. Neither `std::fs::canonicalize` (which keeps
+//! `\\?\` and fails on volumes with no DOS name) nor `dunce::canonicalize`
+//! (which keeps `\\?\` past 260 characters and never rewrites UNC) gives one
+//! readable form for every volume. The algorithm is MSVC STL 14.51's
+//! `_Canonical`, `weakly_canonical`, `lexically_normal` and root-name parser,
+//! ported line for line; it is not checked against MSVC.
 //!
 //! Paths are handled as UTF-16 units, as the STL does, so text that is not
 //! valid Unicode passes through unchanged.
@@ -47,14 +47,14 @@ const DOT_DOT: &[u16] = &[b'.' as u16, b'.' as u16];
 ///
 /// Returns the open or `GetFinalPathNameByHandleW` error, with its Win32 code
 /// as the raw OS error, when the path does not exist or cannot be opened.
-pub fn msvc_canonical(path: &Path) -> io::Result<PathBuf> {
+pub fn canonical(path: &Path) -> io::Result<PathBuf> {
     canonical_units(&units(path)).map(path_from_units)
 }
 
 /// Resolves `path` to the exact text MSVC `std::filesystem::weakly_canonical`
 /// returns.
 ///
-/// When the whole path exists this is [`msvc_canonical`]. Otherwise the path is
+/// When the whole path exists this is [`canonical`]. Otherwise the path is
 /// lexically normalized, the longest existing prefix is canonicalized, and the
 /// rest is appended as normalized text, keeping a trailing separator.
 ///
@@ -63,7 +63,7 @@ pub fn msvc_canonical(path: &Path) -> io::Result<PathBuf> {
 /// Returns the error of any canonicalization step that fails for a reason
 /// other than a missing path (MSVC's `__std_is_file_not_found` set), such as
 /// access denied.
-pub fn msvc_weakly_canonical(path: &Path) -> io::Result<PathBuf> {
+pub fn weakly_canonical(path: &Path) -> io::Result<PathBuf> {
     let text = units(path);
     match canonical_units(&text) {
         Ok(result) => return Ok(path_from_units(result)),
@@ -94,7 +94,7 @@ pub fn msvc_weakly_canonical(path: &Path) -> io::Result<PathBuf> {
 
 /// Returns MSVC's `generic_u8string()` of `path`: every `\` becomes `/`.
 ///
-/// This is the form C++ CAO writes into `CAO-STAGING` manifests.
+/// This is the form `CAO-STAGING` manifests record.
 ///
 /// # Errors
 ///

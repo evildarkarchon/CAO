@@ -21,7 +21,7 @@ unsafe_code = "allow"
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Globalization"] }
 # `std` converts its error into `io::Error`.
 getrandom = { workspace = true, features = ["std"] }
-# The exe directory only; never a substitute for `msvc_canonical`.
+# The exe directory only; never a substitute for `canonical`.
 dunce.workspace = true
 thiserror.workspace = true
 

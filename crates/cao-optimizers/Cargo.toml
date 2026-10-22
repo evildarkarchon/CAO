@@ -22,7 +22,7 @@ cao-archive.workspace = true
 cao-core.workspace = true
 cao-profiles.workspace = true
 # The volume probe of the Capacity Check, its free space and volume identity
-# (#497). The scenarios also predict Mod Roots in the MSVC-canonical form
+# (#497). The scenarios also predict Mod Roots in the canonical form
 # Preparing gives them.
 cao-winfs.workspace = true
 # The Application Log sink's timestamps (#470).

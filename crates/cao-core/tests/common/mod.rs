@@ -70,7 +70,7 @@ pub fn snapshot_tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 
 /// The canonical form of a directory, as Preparing resolves it.
 pub fn canonical(path: &Path) -> PathBuf {
-    cao_winfs::msvc_canonical(path).unwrap()
+    cao_winfs::canonical(path).unwrap()
 }
 
 /// Creates the directory junction `link` pointing at `target`.

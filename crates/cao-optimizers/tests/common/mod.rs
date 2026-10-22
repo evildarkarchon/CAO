@@ -54,7 +54,7 @@ pub fn scratch_dir(name: &str) -> PathBuf {
 
 /// The canonical form of a directory, as Preparing resolves it.
 pub fn canonical(path: &Path) -> PathBuf {
-    cao_winfs::msvc_canonical(path).unwrap()
+    cao_winfs::canonical(path).unwrap()
 }
 
 /// An app directory holding a copy of the repository's shipped `profiles/`.

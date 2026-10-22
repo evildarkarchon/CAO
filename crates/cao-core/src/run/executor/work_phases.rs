@@ -86,7 +86,7 @@ impl Discovery<'_> {
             );
             return false;
         }
-        let Ok(resolved) = cao_winfs::msvc_canonical(path) else {
+        let Ok(resolved) = cao_winfs::canonical(path) else {
             self.exclude(
                 evidence,
                 path,
@@ -173,7 +173,7 @@ impl Discovery<'_> {
 /// the root it really leads into, or to none (C++ `weakly_canonical`). A path
 /// that cannot be resolved is attributed by its own spelling.
 fn attributed_mod_root<'p>(path: &Path, mod_roots: &'p [PathBuf]) -> Option<&'p PathBuf> {
-    let resolved = cao_winfs::msvc_weakly_canonical(path).unwrap_or_else(|_| path.to_path_buf());
+    let resolved = cao_winfs::weakly_canonical(path).unwrap_or_else(|_| path.to_path_buf());
     mod_roots
         .iter()
         .filter(|root| resolved.starts_with(root))

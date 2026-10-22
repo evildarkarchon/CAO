@@ -3,8 +3,7 @@
 //!
 //! The manifests under `tests/fixtures/staging/` are reused byte for byte,
 //! except for the Mod Root line, which must name the scratch Mod Root (see the
-//! README there). Two were written by the C++ CLI, so a C++ run's leftover
-//! recovers in the port. The C++ suites had no v1 or v2 fixture.
+//! README there).
 //!
 //! `durable_staging.rs` ports the recovery scenarios of C++
 //! `DurableStagingTests`; this file covers the format and its failure codes.
@@ -21,8 +20,6 @@ use common::{canonical, scratch_dir, snapshot_tree};
 
 const V1: &[u8] = include_bytes!("fixtures/staging/v1.manifest");
 const V2: &[u8] = include_bytes!("fixtures/staging/v2.manifest");
-const CPP_COMPLETED: &[u8] = include_bytes!("fixtures/staging/cpp-v3-completed.manifest");
-const CPP_KILLED: &[u8] = include_bytes!("fixtures/staging/cpp-v3-killed.manifest");
 
 /// The run child every v2 fixture record lives under.
 const V2_CHILD: &str = "run-4f1c2a9e-0123456789abcdef0123456789abcdef";
@@ -55,16 +52,6 @@ fn rehome(fixture: &[u8], root: &Path) -> Vec<u8> {
     bytes.extend_from_slice(format!("\"{generic}\"").as_bytes());
     bytes.extend_from_slice(&fixture[second..]);
     bytes
-}
-
-/// The name in `manifest`'s first record of `kind` (`D`, `F` or `S`), which
-/// the fixtures write as `<kind> "<name>"` with nothing to unescape.
-fn record(manifest: &str, kind: char) -> &str {
-    let prefix = format!("{kind} \"");
-    manifest
-        .lines()
-        .find_map(|line| line.strip_prefix(&prefix)?.strip_suffix('"'))
-        .unwrap_or_else(|| panic!("no {kind} record in:\n{manifest}"))
 }
 
 /// Writes the control files: an empty `owner.lock` and `manifest`.
@@ -186,89 +173,27 @@ fn a_literal_v1_manifest_is_recovered_but_cannot_own_scratch() {
     assert_eq!(snapshot_tree(&root), before);
 }
 
-/// Spec (#492): the leftover of a C++ Apply run that finished, captured from
-/// the C++ CLI, recovers. Its manifest still records the run child Safety
-/// Cleanup removed. The recovered area then serves this run's staging.
-#[test]
-fn a_completed_cpp_leftover_is_recovered() {
-    let root = mod_root("cpp-completed");
-    let manifest = rehome(CPP_COMPLETED, &root);
-    write_controls(&root, &manifest);
-    std::fs::create_dir(root.join("textures")).unwrap();
-    std::fs::write(root.join("textures/a.dds"), "optimized by C++").unwrap();
-
-    let (mut registry, failure) = recover(&root);
-
-    assert!(failure.is_none(), "{failure:?}");
-    assert_eq!(
-        std::fs::read(staging(&root).join("ownership.manifest")).unwrap(),
-        manifest
-    );
-    // The recovered area is reused: its manifest now records this run.
-    let sibling = registry
-        .stage_file(&root, &root.join("textures/a.dds"))
-        .unwrap();
-    let text = std::fs::read_to_string(staging(&root).join("ownership.manifest")).unwrap();
-    assert!(text.starts_with("CAO-STAGING 3\n"), "{text}");
-    assert!(
-        text.contains("S \"textures/.cao-staging-texture-"),
-        "{text}"
-    );
-    assert!(registry.cleanup().is_empty());
-    assert!(!sibling.path.exists());
-    assert_eq!(
-        std::fs::read_to_string(root.join("textures/a.dds")).unwrap(),
-        "optimized by C++"
-    );
-}
-
-/// Spec (#492): the leftover of a C++ Apply run killed mid-run, captured from
-/// the C++ CLI, recovers. Its unpublished Texture sibling and run child go,
-/// and the Textures beside them stay.
-#[test]
-fn a_killed_cpp_leftover_is_recovered() {
-    let root = mod_root("cpp-killed");
-    let manifest = rehome(CPP_KILLED, &root);
-    write_controls(&root, &manifest);
-    let text = String::from_utf8(manifest.clone()).unwrap();
-    let child = record(&text, 'D');
-    let sibling = root.join(record(&text, 'S').replace('/', "\\"));
-    std::fs::create_dir(staging(&root).join(child)).unwrap();
-    std::fs::create_dir_all(sibling.parent().unwrap()).unwrap();
-    std::fs::write(&sibling, "complete staged Texture").unwrap();
-    let original = sibling.with_file_name("t002.dds");
-    std::fs::write(&original, "original Texture").unwrap();
-
-    let (_registry, failure) = recover(&root);
-
-    assert!(failure.is_none(), "{failure:?}");
-    assert!(!sibling.exists());
-    assert_eq!(names(&staging(&root)), ["owner.lock", "ownership.manifest"]);
-    assert_eq!(
-        std::fs::read(staging(&root).join("ownership.manifest")).unwrap(),
-        manifest
-    );
-    assert_eq!(
-        std::fs::read_to_string(&original).unwrap(),
-        "original Texture"
-    );
-}
-
 /// `S` records belong to v3; a v2 manifest naming a sibling is unverified.
+/// The same records under `CAO-STAGING 3` recover, so the version line is the
+/// only reason the v2 manifest is refused.
 #[test]
 fn a_sibling_record_needs_version_3() {
-    let root = mod_root("v2-sibling");
-    let text = String::from_utf8(rehome(CPP_KILLED, &root)).unwrap();
-    let manifest = staging(&root).join("ownership.manifest");
-    write_controls(
-        &root,
-        text.replacen("CAO-STAGING 3", "CAO-STAGING 2", 1)
-            .as_bytes(),
-    );
+    for (version, recovered) in [(3, true), (2, false)] {
+        let root = mod_root(&format!("v{version}-sibling"));
+        let text = format!(
+            "CAO-STAGING {version}\n\"\"\n\"4f1c2a9e\" \"{V2_CHILD}\"\n2\nD \"{V2_CHILD}\"\n\
+             S \"textures/.cao-staging-texture-4f1c2a9e-00112233445566778899aabbccddeeff.dds\"\n"
+        );
+        write_controls(&root, &rehome(text.as_bytes(), &root));
 
-    let (_registry, failure) = recover(&root);
+        let (_registry, failure) = recover(&root);
 
-    assert_unverified(failure, &manifest);
+        if recovered {
+            assert!(failure.is_none(), "{failure:?}");
+        } else {
+            assert_unverified(failure, &staging(&root).join("ownership.manifest"));
+        }
+    }
 }
 
 /// Spec (#492): a manifest of exactly 8 MiB is read, and one byte more is

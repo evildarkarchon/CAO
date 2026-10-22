@@ -4,11 +4,6 @@
 
 use std::path::{Path, PathBuf};
 
-/// The crate's test fixtures directory.
-pub fn fixtures() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
-}
-
 /// The repository's shipped `profiles/` directory.
 pub fn shipped_profiles() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles")

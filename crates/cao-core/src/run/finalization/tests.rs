@@ -34,7 +34,7 @@ fn scratch_dir(name: &str) -> PathBuf {
     // A missing directory is the expected case; anything else surfaces in create_dir_all.
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    cao_winfs::msvc_canonical(&dir).unwrap()
+    cao_winfs::canonical(&dir).unwrap()
 }
 
 /// A panic after the plan that reaches the outer containment finishes the

@@ -27,7 +27,7 @@ use cao_core::test_support::{ArchiveRunRequest, RecordingSink};
 use cao_optimizers::archives::ArchiveFileReader;
 use cao_optimizers::composition::run_service;
 use cao_profiles::Options;
-use cao_winfs::{Access, Open, Share, msvc_canonical};
+use cao_winfs::{Access, Open, Share, canonical};
 use common::archive_run::{only_attempt, production_seams};
 use common::{app_dir, profile_options, scratch_dir, serial, start_and_wait, write};
 use directxtex::{
@@ -67,7 +67,7 @@ fn write_test_archive(
 fn mod_root(name: &str) -> PathBuf {
     let root = scratch_dir(name).join("mod");
     std::fs::create_dir_all(&root).unwrap();
-    msvc_canonical(&root).unwrap()
+    canonical(&root).unwrap()
 }
 
 /// Runs one Apply run over `root` that requests only Archive extraction,
@@ -443,7 +443,7 @@ fn an_sse_apply_packs_what_it_extracted_into_an_archive_at_the_sources_name() {
     let app = app_dir("extract-then-pack-sse");
     let mod_root = app.join("mods").join("Mod");
     write(&mod_root, "meshes/loose.nif", &b"loose mesh".repeat(30));
-    let mod_root = msvc_canonical(&mod_root).unwrap();
+    let mod_root = canonical(&mod_root).unwrap();
     let archive = mod_root.join("Mod.bsa");
     let archived_mesh = b"archived mesh".repeat(40);
     write_test_archive(

@@ -2,9 +2,9 @@
 //! half of C++ `StagingRecovery` (`readManifest`, `validateTree` and `recover`
 //! in `src/Run/StagingRecovery.cpp`).
 //!
-//! Recovery reads `CAO-STAGING` v1, v2 and v3 manifests, including ones C++
-//! CAO wrote: the recorded Mod Root is compared with the MSVC-canonical text
-//! the scope was given, byte for byte. It proves ownership of the whole area
+//! Recovery reads `CAO-STAGING` v1, v2 and v3 manifests: the recorded Mod Root
+//! is compared with the canonical text the scope was given, byte for
+//! byte. It proves ownership of the whole area
 //! before it deletes anything, and fails closed on anything it cannot prove:
 //! a malformed or oversized manifest, an unregistered entry, a link, a
 //! reparse point or a hard-linked file. Then it removes only the recorded,
@@ -18,8 +18,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use cao_winfs::{
-    Access, FileFacts, Open, OwnerLock, Share, delete_by_handle, msvc_canonical,
-    msvc_weakly_canonical,
+    Access, FileFacts, Open, OwnerLock, Share, canonical, delete_by_handle, weakly_canonical,
 };
 
 use super::{
@@ -226,7 +225,7 @@ fn remove_recovered(affected: &Path, directory: bool, pin: File) -> Result<(), H
         }
     };
     let parent = affected.parent().unwrap_or(affected);
-    let resolved = msvc_canonical(parent).map_err(failed("Resolve the parent of"))?;
+    let resolved = canonical(parent).map_err(failed("Resolve the parent of"))?;
     if resolved != parent {
         return Err(StagingError::unverified(
             affected,
@@ -389,8 +388,7 @@ fn validate_tree(
         if !pin_parent_directories(root, parent, parent_pins)? {
             continue;
         }
-        let resolved =
-            msvc_weakly_canonical(parent).map_err(StagingError::io("Resolve", parent))?;
+        let resolved = weakly_canonical(parent).map_err(StagingError::io("Resolve", parent))?;
         if resolved != parent {
             return Err(StagingError::unverified(
                 &path,

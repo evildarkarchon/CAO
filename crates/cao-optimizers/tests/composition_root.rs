@@ -495,7 +495,7 @@ fn several_mods_excludes_separators_and_ignored_mods_from_the_shipped_profile() 
     let result = start_and_wait(&run_service(&app), "SSE", &options);
 
     assert_eq!(result.outcome(), RunOutcome::Succeeded);
-    let root = cao_winfs::msvc_canonical(&mods).unwrap();
+    let root = cao_winfs::canonical(&mods).unwrap();
     // Deviation 20: "separator" inside a name is not a separator. Deviation
     // 19: the staging-named child is neither a Mod Root nor diagnosed.
     assert_eq!(

@@ -1,4 +1,4 @@
-//! Volume identity, free space, and MSVC-canonical text for volumes with no
+//! Volume identity, free space, and canonical text for volumes with no
 //! drive letter, against the host's real volumes.
 
 mod common;
@@ -7,7 +7,7 @@ use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
 
-use cao_winfs::{available_space, msvc_canonical, volume_guid_path, volume_mount_point};
+use cao_winfs::{available_space, canonical, volume_guid_path, volume_mount_point};
 use common::scratch_dir;
 
 #[test]
@@ -87,9 +87,8 @@ fn volumes() -> Vec<(PathBuf, Vec<String>)> {
     volumes
 }
 
-/// MSVC `canonical` names a volume with no DOS name through
-/// `\\?\GLOBALROOT\Device\...\` and a lettered one by its drive root; this was
-/// confirmed against `canonical_probe volumes` on the recording host. A host
+/// `canonical` names a volume with no DOS name through
+/// `\\?\GLOBALROOT\Device\...\` and a lettered one by its drive root. A host
 /// whose every volume has a drive letter only exercises the lettered form.
 #[test]
 fn volume_roots_canonicalize_as_msvc_does() {
@@ -99,7 +98,7 @@ fn volume_roots_canonicalize_as_msvc_does() {
     let mut checked_own_volume = false;
     let mut checked_without_letter = 0;
     for (volume, mounts) in volumes() {
-        let Ok(canonical) = msvc_canonical(&volume) else {
+        let Ok(canonical) = canonical(&volume) else {
             // Removable drives with no media, for example, cannot be opened.
             continue;
         };

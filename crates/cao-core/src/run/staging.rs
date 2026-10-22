@@ -30,9 +30,9 @@ use std::io::{self, Write as _};
 use std::path::{Component, Path, PathBuf};
 
 use cao_winfs::{
-    Access, FileFacts, Open, OwnerLock, OwnerLockError, Share, compare_ordinal_ignore_case,
-    delete_by_handle, generic_utf8, is_reparse_point, move_file_write_through, msvc_canonical,
-    msvc_weakly_canonical, random_nonce, volume_guid_path,
+    Access, FileFacts, Open, OwnerLock, OwnerLockError, Share, canonical,
+    compare_ordinal_ignore_case, delete_by_handle, generic_utf8, is_reparse_point,
+    move_file_write_through, random_nonce, volume_guid_path, weakly_canonical,
 };
 
 use crate::run::{CancellationToken, RunFailure, RunFailureCode, RunId, RunPhase};
@@ -245,10 +245,10 @@ impl StagingScope {
                 "A staged output must belong to its canonical Mod Root.".to_owned(),
             ));
         }
-        let root = msvc_canonical(mod_root).map_err(StagingError::lookup("Resolve", mod_root))?;
+        let root = canonical(mod_root).map_err(StagingError::lookup("Resolve", mod_root))?;
         let parent_path = destination.parent().unwrap_or(destination);
         let parent =
-            msvc_canonical(parent_path).map_err(StagingError::lookup("Resolve", parent_path))?;
+            canonical(parent_path).map_err(StagingError::lookup("Resolve", parent_path))?;
         let Ok(destination_parent) = parent.strip_prefix(&root) else {
             return Err(StagingError::Invalid(
                 "A staged output must belong to its canonical Mod Root.".to_owned(),
@@ -308,7 +308,7 @@ impl StagingScope {
                 "Archive staging requires an absolute Mod Root.".to_owned(),
             ));
         }
-        let root = msvc_canonical(mod_root).map_err(StagingError::lookup("Resolve", mod_root))?;
+        let root = canonical(mod_root).map_err(StagingError::lookup("Resolve", mod_root))?;
         self.prepare_area(&root)?;
         let child = &self.areas[&root].child;
         let relative = format!("{child}/archive-entry-{}", nonce()?);
@@ -507,8 +507,7 @@ fn remove_artifact(
     before_directory: impl FnOnce(),
 ) -> Result<(), StagingError> {
     let parent = affected.parent().unwrap_or(affected);
-    let resolved =
-        msvc_weakly_canonical(parent).map_err(StagingError::lookup("Resolve", parent))?;
+    let resolved = weakly_canonical(parent).map_err(StagingError::lookup("Resolve", parent))?;
     if resolved != parent {
         return Err(StagingError::unverified(
             affected,

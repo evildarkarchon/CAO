@@ -250,7 +250,7 @@ fn game_path(path: &Path, mod_root: &Path) -> String {
     };
     let relative = within(path)
         .or_else(|| {
-            cao_winfs::msvc_weakly_canonical(path)
+            cao_winfs::weakly_canonical(path)
                 .ok()
                 .and_then(|resolved| within(&resolved))
         })

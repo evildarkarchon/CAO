@@ -11,8 +11,8 @@ publish.workspace = true
 workspace = true
 
 # No C++ toolchain is needed to build or test this crate (#476, user story 76).
-# Mod Roots resolve through `cao-winfs`'s MSVC-canonical helper, so the text
-# matches what C++ wrote into `CAO-STAGING` manifests.
+# Mod Roots resolve through `cao-winfs`'s `canonical`, so the text
+# matches what `CAO-STAGING` manifests record.
 [dependencies]
 cao-winfs.workspace = true
 getrandom.workspace = true

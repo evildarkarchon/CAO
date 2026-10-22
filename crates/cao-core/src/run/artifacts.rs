@@ -25,8 +25,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use cao_winfs::{
-    Access, FileFacts, FileIdentity, Open, RenameMode, Share, compare_ordinal_ignore_case,
-    msvc_canonical, msvc_weakly_canonical, rename_by_handle,
+    Access, FileFacts, FileIdentity, Open, RenameMode, Share, canonical,
+    compare_ordinal_ignore_case, rename_by_handle, weakly_canonical,
 };
 
 use crate::Error;
@@ -348,7 +348,7 @@ impl TemporaryArtifactRegistry {
                 "A Mod Root must be absolute.".to_owned(),
             ));
         }
-        let root = msvc_canonical(mod_root).map_err(StagingError::lookup("Resolve", mod_root))?;
+        let root = canonical(mod_root).map_err(StagingError::lookup("Resolve", mod_root))?;
         let pinned = pin_destination(&root, destination, None)?;
         Ok(PublicationTarget {
             root,
@@ -423,7 +423,7 @@ impl TemporaryArtifactRegistry {
                 "A Mod Root must be absolute.".to_owned(),
             ));
         }
-        let root = msvc_canonical(mod_root).map_err(StagingError::lookup("Resolve", mod_root))?;
+        let root = canonical(mod_root).map_err(StagingError::lookup("Resolve", mod_root))?;
         let path = inner.staging.stage_archive_file(&root)?;
         let index = push_durable(&mut inner, path.clone()).registration.index;
         Ok(PublicationReceipt {
@@ -457,7 +457,7 @@ impl TemporaryArtifactRegistry {
         }
         // Resolve parent aliases once, so cleanup never depends on a later
         // working directory.
-        let normalized = msvc_weakly_canonical(parent)
+        let normalized = weakly_canonical(parent)
             .map_err(StagingError::lookup("Resolve", parent))?
             .join(name);
         // Win32 strips trailing dots and spaces and reads colons as streams, so
@@ -590,7 +590,7 @@ fn remove_registered(path: &Path) -> Result<(), String> {
     let parent = path.parent().unwrap_or(path);
     // A link substituted after registration must not redirect a child
     // deletion outside its original parent.
-    match msvc_weakly_canonical(parent) {
+    match weakly_canonical(parent) {
         Ok(resolved) if same_artifact_path(&resolved, parent) => {}
         Ok(_) => return Err("The temporary artifact parent changed.".to_owned()),
         Err(error) => return Err(error.to_string()),
@@ -703,7 +703,7 @@ fn pin_destination(
         }
     }
     let parent = destination.parent().unwrap_or(destination);
-    let unchanged = |path: &Path| msvc_canonical(path).is_ok_and(|resolved| resolved == path);
+    let unchanged = |path: &Path| canonical(path).is_ok_and(|resolved| resolved == path);
     if !unchanged(root) || !unchanged(parent) {
         return Err(StagingError::Invalid(
             "Publication destination parent changed or is linked.".to_owned(),

@@ -11,7 +11,7 @@ use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 
 use cao_winfs::{
-    Access, FileFacts, Open, OwnerLock, OwnerLockError, Share, is_reparse_point, msvc_canonical,
+    Access, FileFacts, Open, OwnerLock, OwnerLockError, Share, canonical, is_reparse_point,
 };
 use common::{junction, scratch_dir, write};
 
@@ -86,11 +86,8 @@ fn file_symlinks_are_rejected() {
     let facts = FileFacts::of(&pin).unwrap();
     assert!(facts.is_reparse_point());
     assert!(!facts.is_ordinary_file());
-    // MSVC canonical follows links, as C++ did.
-    assert_eq!(
-        msvc_canonical(&link).unwrap(),
-        msvc_canonical(&target).unwrap()
-    );
+    // `canonical` follows links.
+    assert_eq!(canonical(&link).unwrap(), canonical(&target).unwrap());
 }
 
 #[test]

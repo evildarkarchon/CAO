@@ -17,9 +17,9 @@
 //! - Mutation: [`rename_by_handle`], [`delete_by_handle`] and
 //!   [`move_file_write_through`]. Flushing is `File::sync_all`, which is
 //!   exactly `FlushFileBuffers`.
-//! - Paths: [`msvc_canonical`], [`msvc_weakly_canonical`] and
-//!   [`generic_utf8`], which reproduce the text C++ wrote into `CAO-STAGING`
-//!   manifests; [`exe_directory`]; [`compare_ordinal_ignore_case`] and
+//! - Paths: [`canonical`], [`weakly_canonical`] and
+//!   [`generic_utf8`], CAO's canonical path text, which `CAO-STAGING`
+//!   manifests record; [`exe_directory`]; [`compare_ordinal_ignore_case`] and
 //!   [`OrdinalIgnoreCase`].
 //! - Volumes: [`volume_mount_point`], [`volume_guid_path`] and
 //!   [`available_space`].
@@ -35,7 +35,7 @@ mod open;
 mod owner_lock;
 mod volume;
 
-pub use canonical::{generic_utf8, msvc_canonical, msvc_weakly_canonical};
+pub use canonical::{canonical, generic_utf8, weakly_canonical};
 pub use compare::{OrdinalIgnoreCase, compare_ordinal_ignore_case};
 pub use exe_dir::exe_directory;
 pub use facts::{FileFacts, FileIdentity, is_reparse_point};

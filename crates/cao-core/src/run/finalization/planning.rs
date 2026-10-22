@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use cao_winfs::{is_reparse_point, msvc_canonical};
+use cao_winfs::{canonical, is_reparse_point};
 
 use super::ArchiveFinalizationChoices;
 use super::plugins::{LoadingPluginStrength, find_loading_plugin, has_exact_dummy_bytes};
@@ -104,7 +104,7 @@ pub(super) fn plan_finalization(
     let mut reserved: BTreeSet<PathBuf> = BTreeSet::new();
     for input_root in roots {
         check()?;
-        let root = msvc_canonical(input_root).map_err(|error| failed(&error))?;
+        let root = canonical(input_root).map_err(|error| failed(&error))?;
         plan.roots.push(root.clone());
         let mut dummy_capacity = 0u64;
         if plan.create_dummies {

@@ -30,7 +30,6 @@ run cannot acquire a new lock identity while an earlier run still owns the old o
 The writer emits v3 manifests; recovery also accepts existing v1 and v2 manifests. All are UTF-8,
 bounded to 8 MiB and 100,000 registrations. Whitespace separates fields;
 strings use C++ `std::quoted` double-quote/backslash escaping. All string fields must be quoted.
-The Rust port keeps this grammar unchanged, so recovery still reads manifests the C++ build wrote.
 The grammar is:
 
 ```text

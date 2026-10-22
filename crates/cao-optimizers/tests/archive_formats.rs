@@ -17,7 +17,7 @@ use cao_core::routing::RequestedWork;
 use cao_core::run::{CancellationToken, RunFailureCode, RunOutcome, RunPhase};
 use cao_core::test_support::ArchiveRunRequest;
 use cao_optimizers::composition::run_service;
-use cao_winfs::msvc_canonical;
+use cao_winfs::canonical;
 use common::archive_run::{only_attempt, production_seams};
 use common::{app_dir, profile_options, scratch_dir, serial, start_and_wait};
 
@@ -118,7 +118,7 @@ fn every_container_commits_its_staged_payload() {
         Format::CompressedTes4,
     ] {
         let root = scratch_dir(&format!("formats-staged-{format:?}"));
-        let root = msvc_canonical(&root).unwrap();
+        let root = canonical(&root).unwrap();
         let archive = root.join("source.bsa");
         raw_archive(&archive, format, "textures/a.dds");
         let original = std::fs::read(&archive).unwrap();
@@ -191,7 +191,7 @@ fn raw_manifest_paths_collide_or_fail_before_extraction() {
             let result = start_and_wait(&run_service(&app), "SSE", &options);
 
             let case = format!("{format:?}, escaping: {escaping}");
-            let canonical_root = msvc_canonical(&mod_root).unwrap();
+            let canonical_root = canonical(&mod_root).unwrap();
             if escaping {
                 assert_eq!(result.outcome(), RunOutcome::Failed, "{case}");
                 let failure = &result.failures()[0];

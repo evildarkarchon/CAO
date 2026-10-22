@@ -21,8 +21,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Component, Path, PathBuf};
 
 use cao_winfs::{
-    OrdinalIgnoreCase, compare_ordinal_ignore_case, is_reparse_point, msvc_canonical,
-    msvc_weakly_canonical,
+    OrdinalIgnoreCase, canonical, compare_ordinal_ignore_case, is_reparse_point, weakly_canonical,
 };
 
 use crate::execution::MutationState;
@@ -220,7 +219,7 @@ fn try_extract(
     artifacts: &mut TemporaryArtifactRegistry,
     progress: &mut ExtractionProgress,
 ) -> Result<Option<OperationFailure<ArchiveExtractionFailure>>, String> {
-    let root = msvc_canonical(&plan.mod_root).map_err(|error| error.to_string())?;
+    let root = canonical(&plan.mod_root).map_err(|error| error.to_string())?;
     let source = std::path::absolute(&plan.archive_path).map_err(|error| error.to_string())?;
     let contained = source.strip_prefix(&root).is_ok_and(|relative| {
         !relative.as_os_str().is_empty()
@@ -767,7 +766,7 @@ pub(crate) fn preflight(
                 // Extraction writes beside the Archive, so the destination,
                 // not the raw name, is what must stay inside the Mod Root.
                 let destination = join_game_path(directory, &local);
-                let contained = msvc_weakly_canonical(&destination)
+                let contained = weakly_canonical(&destination)
                     .is_ok_and(|resolved| resolved.starts_with(&root.root));
                 let Some(relative) = destination
                     .strip_prefix(&root.root)
@@ -908,7 +907,7 @@ fn validate_archive_order(
             ));
         };
         let candidate = root.join(normalized);
-        if let Ok(resolved) = msvc_canonical(&candidate)
+        if let Ok(resolved) = canonical(&candidate)
             && !resolved.starts_with(root)
         {
             return Err(discovery_failure(

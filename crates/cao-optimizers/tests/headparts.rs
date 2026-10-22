@@ -75,7 +75,7 @@ fn saved(result: &OptimizationRunResult, selection: &Path) -> Vec<String> {
         "{:?}",
         result.failures()
     );
-    let selection = cao_winfs::msvc_canonical(selection).unwrap();
+    let selection = cao_winfs::canonical(selection).unwrap();
     let mut saved: Vec<String> = result
         .asset_attempts()
         .iter()
@@ -292,7 +292,7 @@ fn an_unreadable_plugin_is_reported_and_the_run_carries_on() {
     );
 
     assert_eq!(saved(&result, &mod_root), ["meshes/hair/live.nif"]);
-    let root = cao_winfs::msvc_canonical(&mod_root).unwrap();
+    let root = cao_winfs::canonical(&mod_root).unwrap();
     let mut reported: Vec<_> = result
         .diagnostics()
         .iter()
