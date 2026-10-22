@@ -213,7 +213,9 @@ pub struct FakeWrite {
 /// [`Self::max_size`]. Names parse as the real `FilePath` does.
 pub struct FakeArchivePacker {
     pub rules: ArchiveNamingRules,
-    /// The most source bytes one Archive may hold.
+    /// The most source bytes one Archive groups together, like production's
+    /// Archive Limit: a single source larger than it gets an Archive of its
+    /// own.
     pub max_size: u64,
     /// Every Archive written, in order.
     pub writes: Mutex<Vec<FakeWrite>>,
@@ -434,13 +436,10 @@ impl ArchivePacker for FakeArchivePacker {
                 Some(PackedArchiveKind::Textures) => &mut textures,
                 None => continue,
             };
-            if source.size > self.max_size {
-                return Err(Error::Archive(format!(
-                    "`{}` exceeds the output Archive size limit",
-                    source.path.display()
-                )));
-            }
-            if size(partition) + source.size > self.max_size {
+            // The limit only groups sources, as production's Archive Limit
+            // does: an empty Archive takes any one source, so a source over
+            // the limit is packed into an Archive of its own.
+            if !partition.files.is_empty() && size(partition) + source.size > self.max_size {
                 let kind = partition.kind;
                 full.push(std::mem::replace(partition, open(kind)));
             }

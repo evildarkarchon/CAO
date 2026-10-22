@@ -12,7 +12,7 @@ use cao_core::routing::ProfileCapabilities;
 use cao_gui_ui::{AboutSlintDialog, ChoiceDialog, MainWindow, TabInfo, TextInputDialog};
 use cao_gui_ui::{FormatItem, FormatsDialog, TexturesTab};
 use cao_optimizers::application_log::ApplicationLog;
-use cao_optimizers::profile::profile_capabilities;
+use cao_optimizers::profile::{archive_rules, profile_capabilities};
 use cao_profiles::{
     ClosedSet, CommonSettings, Options, Profile, ProfileError, ProfileSettings, Profiles,
     UnwantedFormat,
@@ -315,7 +315,10 @@ impl App {
         // the run will actually do (deviation 3).
         rules::apply(ui);
         // An unreadable profile enables no asset tab.
-        self.enable_tabs(settings.as_ref().map(profile_capabilities).as_ref());
+        let capabilities = settings
+            .as_ref()
+            .map(|settings| profile_capabilities(settings, &archive_rules(settings)));
+        self.enable_tabs(capabilities.as_ref());
         ui.set_base_profile(profile.is_base());
 
         loaded.profile = profile;
@@ -371,7 +374,10 @@ impl App {
         // The capabilities come from the loaded `profile.ini`, not the tab bar:
         // an unreadable one disables every tab, yet says nothing of what the
         // profile supports, so its asset options are kept as loaded (#580).
-        let capabilities = loaded.settings.as_ref().map(profile_capabilities);
+        let capabilities = loaded
+            .settings
+            .as_ref()
+            .map(|settings| profile_capabilities(settings, &archive_rules(settings)));
         let options = form::read_options(ui, &loaded.options, capabilities.as_ref());
         if let Err(error) = loaded.profile.save_options(&options) {
             self.error(
