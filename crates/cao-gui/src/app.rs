@@ -8,16 +8,18 @@ use std::cell::{OnceCell, RefCell};
 use std::path::Path;
 use std::rc::{Rc, Weak};
 
+use cao_core::routing::ProfileCapabilities;
 use cao_gui_ui::{AboutSlintDialog, ChoiceDialog, MainWindow, TabInfo, TextInputDialog};
 use cao_gui_ui::{FormatItem, FormatsDialog, TexturesTab};
 use cao_optimizers::application_log::ApplicationLog;
+use cao_optimizers::profile::profile_capabilities;
 use cao_profiles::{CommonSettings, Options, Profile, ProfileError, ProfileSettings, Profiles};
 use slint::{
     CloseRequestResponse, ComponentHandle, FilterModel, Model, ModelRc, SharedString, VecModel,
 };
 
 use crate::desktop::{Desktop, MessageLevel};
-use crate::form::{self, EnabledTabs, Tab};
+use crate::form::{self, Tab};
 use crate::formats;
 use crate::log_tab::AttachedLog;
 use crate::modal::ModalSlot;
@@ -307,11 +309,7 @@ impl App {
         // The UI rules also hold for what was loaded (deviations 3 and 21).
         rules::apply(ui);
         // An unreadable profile enables no asset tab.
-        self.enable_tabs(
-            settings
-                .as_ref()
-                .map_or(EnabledTabs::NONE, EnabledTabs::of_profile),
-        );
+        self.enable_tabs(settings.as_ref().map(profile_capabilities).as_ref());
         ui.set_base_profile(profile.is_base());
 
         loaded.profile = profile;
@@ -319,14 +317,15 @@ impl App {
         loaded.settings = settings;
     }
 
-    /// Enables the asset tabs the profile allows, and moves the selection off a
-    /// tab that becomes disabled, as QTabBar does.
-    fn enable_tabs(&self, enabled: EnabledTabs) {
+    /// Enables the asset tabs the profile's Profile Capabilities allow (none
+    /// when `capabilities` is `None`, for an unreadable `profile.ini`), and
+    /// moves the selection off a tab that becomes disabled, as QTabBar does.
+    fn enable_tabs(&self, capabilities: Option<&ProfileCapabilities>) {
         for row in 0..self.tabs.row_count() {
             let Some(mut tab) = self.tabs.row_data(row) else {
                 continue;
             };
-            tab.enabled = Tab::from_id(&tab.id).is_none_or(|id| enabled.allows(id));
+            tab.enabled = Tab::from_id(&tab.id).is_none_or(|id| id.enabled_by(capabilities));
             self.tabs.set_row_data(row, tab);
         }
         let current = self.window.get_current_tab();
@@ -366,8 +365,8 @@ impl App {
         // The capabilities come from the loaded `profile.ini`, not the tab bar:
         // an unreadable one disables every tab, yet says nothing of what the
         // profile supports, so its asset options are kept as loaded (#580).
-        let capabilities = loaded.settings.as_ref().map(EnabledTabs::of_profile);
-        let options = form::read_options(ui, &loaded.options, capabilities);
+        let capabilities = loaded.settings.as_ref().map(profile_capabilities);
+        let options = form::read_options(ui, &loaded.options, capabilities.as_ref());
         if let Err(error) = loaded.profile.save_options(&options) {
             self.error(
                 "Save",

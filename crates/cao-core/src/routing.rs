@@ -266,7 +266,10 @@ impl ProfileCapabilities {
         definition
     }
 
-    fn supports(&self, capability: ProfileCapability) -> bool {
+    /// Reports whether the profile supports one capability. The Archive
+    /// extension plays no part: a missing or malformed one is reported only
+    /// when a Routing Policy is compiled.
+    pub fn supports(&self, capability: ProfileCapability) -> bool {
         self.capabilities[capability as usize]
     }
 
