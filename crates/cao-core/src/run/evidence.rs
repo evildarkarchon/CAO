@@ -615,23 +615,16 @@ impl<'a> MutableRunEvidence<'a> {
                 "Archive Finalization results require the executed work phase exactly once",
             ));
         }
-        let ArchiveFinalizationAccount {
-            failure,
-            cancelled,
-            safe_to_continue,
-            detail,
-            mutations,
-        } = account;
+        let cancelled = account.cancelled;
         // The attempts stay as streamed: the evidence is their only holder.
-        let result = self
+        let attempts = self
             .storage
             .archive_finalization
-            .get_or_insert_with(ArchiveFinalizationResult::default);
-        result.failure = failure;
-        result.cancelled = cancelled;
-        result.safe_to_continue = safe_to_continue;
-        result.detail = detail;
-        result.mutations = mutations;
+            .take()
+            .map(|result| result.attempts)
+            .unwrap_or_default();
+        self.storage.archive_finalization =
+            Some(ArchiveFinalizationResult::from_parts(attempts, account));
         if cancelled {
             self.storage.cancellation_observed = true;
         }

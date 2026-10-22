@@ -145,16 +145,37 @@ pub struct ArchiveFinalizationResult {
     pub mutations: Vec<ArchiveFinalizationMutation>,
 }
 
-impl Default for ArchiveFinalizationResult {
-    fn default() -> Self {
+impl ArchiveFinalizationResult {
+    /// The public result of a phase that streamed `attempts` and finished
+    /// with the phase-level `account`: the one place the two halves are put
+    /// together, so the account's fields map onto the result's in one spot.
+    pub(crate) fn from_parts(
+        attempts: Vec<ArchiveFinalizationAttempt>,
+        account: ArchiveFinalizationAccount,
+    ) -> Self {
+        let ArchiveFinalizationAccount {
+            failure,
+            cancelled,
+            safe_to_continue,
+            detail,
+            mutations,
+        } = account;
         Self {
-            attempts: Vec::new(),
-            failure: None,
-            cancelled: false,
-            safe_to_continue: true,
-            detail: String::new(),
-            mutations: Vec::new(),
+            attempts,
+            failure,
+            cancelled,
+            safe_to_continue,
+            detail,
+            mutations,
         }
+    }
+}
+
+impl Default for ArchiveFinalizationResult {
+    /// No attempts, with the default phase-level account: not failed, not
+    /// cancelled and safe to continue after.
+    fn default() -> Self {
+        Self::from_parts(Vec::new(), ArchiveFinalizationAccount::default())
     }
 }
 
