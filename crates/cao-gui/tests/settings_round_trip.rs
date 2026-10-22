@@ -59,7 +59,7 @@ fn settings_saved_from_the_window_reload_identically() {
     click(ui, "Separate textures BSA");
     // Under the 2 GB cap of the Skyrim games, which would hold a larger size there.
     enter(ui, "Maximum size", "1.5");
-    // Not FO4, whose UI rule (#509) would force "Separate textures BSA" back on.
+    // Not FO4, whose UI rule (#509) would show "Separate textures BSA" forced on.
     choose(ui, "Game", "Skyrim LE");
 
     select_tab(ui, "Meshes");

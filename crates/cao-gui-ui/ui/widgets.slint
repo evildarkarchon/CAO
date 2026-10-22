@@ -406,6 +406,9 @@ export component DoubleSpinBox {
     in property <float> minimum: 0;
     in property <float> maximum: 99.99;
     in property <float> step: 1;
+    // The user changed the value: typed a different one, or stepped it. A value
+    // set from outside never raises it.
+    callback edited();
 
     property <bool> editing: le.has-focus;
     // The value as the box shows it: within [minimum, maximum], at two decimals.
@@ -448,11 +451,13 @@ export component DoubleSpinBox {
         // Compared before clamping, so typing past the maximum is still an edit.
         if t.is-float() && round(t.to-float() * 100) / 100 != root.shown {
             root.value = root.within(t.to-float());
+            root.edited();
         }
         root.show-value();
     }
     function bump(d: float) {
         root.value = root.within(root.shown + d);
+        root.edited();
         root.show-value();
     }
 

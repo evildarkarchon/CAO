@@ -17,7 +17,8 @@ path = "src/main.rs"
 [dependencies]
 # Binary-only error reporting in `main` (#468).
 anyhow.workspace = true
-# `Game`, the game a Profile's `bsaGame` names and the Game combo offers (#628).
+# `Game`, the game a Profile's `bsaGame` names and the Game combo offers, and
+# the Archive Rules the window shows for it (#628).
 cao-archive.workspace = true
 # Profiles, the options model and the settings model the window edits (#482).
 cao-profiles.workspace = true
