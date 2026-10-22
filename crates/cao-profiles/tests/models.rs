@@ -402,6 +402,76 @@ fn a_format_error_is_reported_before_an_unsupported_bsa_game() {
 }
 
 #[test]
+fn a_format_error_is_reported_before_an_out_of_set_mesh_or_texture_value() {
+    for (index, (from, to)) in [
+        ("meshesUser=12", "meshesUser=13"),
+        ("texturesFormat=98", "texturesFormat=99"),
+        (
+            "texturesUnwantedFormats=85, 86, 115",
+            "texturesUnwantedFormats=85, 1",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let app_dir = common::copy_of_shipped(&format!("settings-format-error-first-{index}"));
+        let profile = Profiles::new(&app_dir).open("SSE");
+        let text = String::from_utf8(common::read(&profile.profile_ini())).unwrap();
+        assert!(text.contains(from), "{from}");
+        std::fs::write(profile.profile_ini(), text.replace(from, to)).unwrap();
+        append_line(&profile, b"stray words\r\n");
+
+        let error = profile.load_settings().unwrap_err();
+        assert!(
+            matches!(&error, ProfileError::Malformed { .. }),
+            "{to}: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn a_missing_capability_or_texture_switch_loads_as_false() {
+    // Each bool key is checked on its own: removing it from the shipped SSE
+    // Profile, where every one of them is `true`, turns only that field off.
+    type Switch = fn(&mut ProfileSettings) -> &mut bool;
+    let switches: [(&str, Switch); 6] = [
+        ("bsaEnabled", |settings| &mut settings.bsa_enabled),
+        ("meshesEnabled", |settings| &mut settings.meshes_enabled),
+        ("animationsEnabled", |settings| {
+            &mut settings.animations_enabled
+        }),
+        ("texturesEnabled", |settings| &mut settings.textures_enabled),
+        ("texturesConvertTga", |settings| {
+            &mut settings.textures_convert_tga
+        }),
+        ("texturesCompressInterface", |settings| {
+            &mut settings.textures_compress_interface
+        }),
+    ];
+    for (key, field) in switches {
+        let app_dir = common::copy_of_shipped(&format!("settings-missing-{key}"));
+        let profile = Profiles::new(&app_dir).open("SSE");
+        let mut expected = profile.load_settings().unwrap();
+        assert!(*field(&mut expected), "SSE ships {key}=true");
+        *field(&mut expected) = false;
+        let text = String::from_utf8(common::read(&profile.profile_ini())).unwrap();
+        let prefix = format!("{key}=");
+        let kept: Vec<&str> = text
+            .split("\r\n")
+            .filter(|line| !line.starts_with(&prefix))
+            .collect();
+        assert_ne!(
+            kept.len(),
+            text.split("\r\n").count(),
+            "{key} is in the file"
+        );
+        std::fs::write(profile.profile_ini(), kept.join("\r\n")).unwrap();
+
+        assert_eq!(profile.load_settings().unwrap(), expected, "{key}");
+    }
+}
+
+#[test]
 fn every_shipped_profile_loads_cleanly() {
     let profiles = shipped();
     let sse_options = profiles

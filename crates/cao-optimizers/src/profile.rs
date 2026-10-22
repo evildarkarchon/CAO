@@ -3,9 +3,10 @@
 //! From a Profile's settings (`profile.ini`), this module derives its Profile
 //! Capabilities with its game's Archive extension, the `cao-archive` game and
 //! packer its Archives follow, whether that game keeps Textures in their own
-//! Archive, and the backend's Texture profile and Mesh target. Preparing compiles a run's routing and builds its work from these,
-//! and the GUI gates its asset tabs from the same Profile Capabilities, so the
-//! two never disagree about what a Profile supports.
+//! Archive, and the backend's `TextureProfile` (its per-run texture settings)
+//! and Mesh Target. Preparing compiles a run's routing and builds its work
+//! from these, and the GUI gates its asset tabs from the same Profile
+//! Capabilities, so the two never disagree about what a Profile supports.
 
 use cao_archive::{ArchiveType, Game, Settings};
 use cao_core::routing::{ProfileCapabilities, ProfileCapability};
@@ -77,8 +78,8 @@ pub(crate) fn textures_need_own_archive(settings: &Settings) -> bool {
 }
 
 /// The packer for a profile's game, with its maximum Archive size raised to
-/// the profile's `maxBsaUncompressedSize` when that is larger, as C++
-/// `archiveSettings` did.
+/// the profile's `maxBsaUncompressedSize` when that is larger (see
+/// [`Settings::with_profile_max_size`]: the game's table maximum is a floor).
 pub fn archive_packer(settings: &ProfileSettings) -> GameArchivePacker {
     GameArchivePacker::new(
         Settings::get(archive_game(settings.bsa_game))

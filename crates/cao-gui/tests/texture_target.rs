@@ -36,7 +36,7 @@ fn settings(app_dir: &std::path::Path, name: &str) -> ProfileSettings {
 #[test]
 fn switching_to_a_profile_with_an_out_of_set_texture_value_reports_it_and_never_rewrites_it() {
     headless();
-    for (key, value, reason) in [
+    for (index, (key, value, reason)) in [
         (
             "texturesFormat",
             "99",
@@ -49,8 +49,31 @@ fn switching_to_a_profile_with_an_out_of_set_texture_value_reports_it_and_never_
             "`profile.ini`: `Textures/texturesUnwantedFormats` is `1`; expected each entry to \
              be one of 2 (R32G32B32A32_FLOAT), ",
         ),
-    ] {
-        let app_dir = app_dir(&format!("texture_out_of_set_{key}"));
+        // 2^32 + 85, which a 32-bit read would wrap to 85 and save back as `85`.
+        (
+            "texturesUnwantedFormats",
+            "85, 4294967381",
+            "`profile.ini`: `Textures/texturesUnwantedFormats` is `4294967381`; expected each \
+             entry to be one of 2 (R32G32B32A32_FLOAT), ",
+        ),
+        (
+            "texturesUnwantedFormats",
+            "abc",
+            "`profile.ini`: `Textures/texturesUnwantedFormats` is `abc`; expected each entry to \
+             be one of 2 (R32G32B32A32_FLOAT), ",
+        ),
+        // A one-element list cut short, which would read as empty and be saved
+        // back as `@Invalid()`.
+        (
+            "texturesUnwantedFormats",
+            r"@Variant(\0\0\0\t\0\0\0\x1\0\0\0\x2)",
+            r"`profile.ini`: `Textures/texturesUnwantedFormats` is `@Variant(\0\0\0\t\0\0\0\x1\0\0\0\x2)`; expected a list whose entries are each one of 2 (R32G32B32A32_FLOAT), ",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let app_dir = app_dir(&format!("texture_out_of_set_{index}"));
         edit_ini(&app_dir, "common.ini", "profile", "TES5");
         edit_ini(&app_dir, "common.ini", "showTutorial", "false");
         edit_ini(&app_dir, "SSE/profile.ini", key, value);

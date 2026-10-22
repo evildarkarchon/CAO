@@ -32,11 +32,17 @@ impl ClosedSet for MeshFileVersion {
     /// The stored number with its dotted version, since `335675399` alone does
     /// not say which version it is.
     fn describe(self) -> String {
-        let dotted = match self {
+        format!("{} ({})", self.number(), self.dotted())
+    }
+}
+
+impl MeshFileVersion {
+    /// The version as NIF headers spell it, such as `20.2.0.7`.
+    pub fn dotted(self) -> &'static str {
+        match self {
             Self::V20_0_0_5 => "20.0.0.5",
             Self::V20_2_0_7 => "20.2.0.7",
-        };
-        format!("{} ({dotted})", self.number())
+        }
     }
 }
 

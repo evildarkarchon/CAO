@@ -335,8 +335,10 @@ impl Settings {
     }
 
     /// Raises [`Settings::max_size`] to a profile's `maxBsaUncompressedSize`, in
-    /// whole bytes, when that is larger, as C++ CAO's `archiveSettings` did. A
-    /// smaller limit changes nothing: the table maximum is a floor.
+    /// whole bytes, when that is larger, so a profile can let Archives grow past
+    /// the game's table maximum. A smaller limit changes nothing: the table
+    /// maximum is a floor, so a missing size (read as `0`) still packs at the
+    /// game's own maximum.
     #[must_use]
     pub fn with_profile_max_size(mut self, profile_max_size: u64) -> Self {
         self.max_size = self.max_size.max(profile_max_size);

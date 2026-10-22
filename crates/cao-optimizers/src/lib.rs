@@ -20,7 +20,7 @@
 //!   volume probe over `cao-winfs` (#497).
 //! - [`profile`] is the one place a Profile becomes run facts: its Profile
 //!   Capabilities with its Archive extension, its Archive game and packer, and
-//!   the backend's Texture profile and Mesh target, for Preparing and the GUI
+//!   the backend's `TextureProfile` and Mesh Target, for Preparing and the GUI
 //!   alike (#621).
 //! - [`composition`] is the composition root both binaries share: given the app
 //!   directory, a profile and the options model, it builds the Run Request, the

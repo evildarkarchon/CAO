@@ -1040,3 +1040,26 @@ fn a_profile_with_an_out_of_set_mesh_target_fails_preparing_with_the_message_the
         "`profile.ini`: `Meshes/meshesUser` is `13`; expected one of 11, 12"
     );
 }
+
+#[test]
+fn a_profile_with_an_out_of_set_texture_target_fails_preparing_with_the_message_the_gui_shows() {
+    let _serial = serial();
+    let app = app_dir("profile-texture-format-out-of-set");
+    let mod_root = app.join("mods").join("Mod");
+    std::fs::create_dir_all(&mod_root).unwrap();
+    let options = dry_run_textures(&app, &mod_root);
+    let service = run_service(&app);
+    edit_profile(&app, "SSE", "texturesFormat", "99");
+
+    let result = start_and_wait(&service, "SSE", &options);
+
+    assert_eq!(result.outcome(), RunOutcome::Failed);
+    let failure = &result.failures()[0];
+    assert_eq!(failure.code, RunFailureCode::ConfigurationLoadingFailed);
+    // The GUI shows the same `ProfileError` after "could not be read: ".
+    assert_eq!(
+        failure.detail,
+        "`profile.ini`: `Textures/texturesFormat` is `99`; expected one of 98 (BC7_UNORM), \
+         83 (BC5_UNORM), 77 (BC3_UNORM), 71 (BC1_UNORM), 28 (R8G8B8A8_UNORM)"
+    );
+}

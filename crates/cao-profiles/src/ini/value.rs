@@ -119,13 +119,53 @@ impl Value {
             Self::Invalid => Vec::new(),
             Self::List(elements) => elements.iter().map(Self::to_i32).collect(),
             Self::Encoded(raw) if raw.starts_with("@Variant(") => {
-                decode_variant_list(&raw["@Variant(".len()..]).unwrap_or_default()
+                decode_variant_list(&raw["@Variant(".len()..])
+                    .unwrap_or_default()
+                    .iter()
+                    .map(Self::to_i32)
+                    .collect()
             }
             _ => match self.as_str() {
                 Some(text) if !text.trim().is_empty() => vec![self.to_i32()],
                 _ => Vec::new(),
             },
         }
+    }
+
+    /// Each entry of a list value, unconverted, so a strict reader can check
+    /// every entry at full width and quote it as written.
+    ///
+    /// The shapes are those of [`Value::to_int_list`]: a comma list gives its
+    /// elements, a plain scalar gives itself (deviation 12), and `@Invalid()`, a
+    /// missing key or an empty scalar give `[]`. A `@Variant(…)` list's integers
+    /// become their decimal text, untruncated.
+    ///
+    /// Returns `None` where [`Value::to_int_list`] would read `[]` from something
+    /// that is not empty: a `@Variant(…)` that is not a `QVariantList` of
+    /// integers or strings, or is cut short, and any other `@…)` encoding but
+    /// `@String(…)`. Reading those as empty would let the next save overwrite
+    /// the user's value with nothing.
+    pub fn list_entries(&self) -> Option<Vec<Value>> {
+        match self {
+            Self::Invalid => Some(Vec::new()),
+            Self::List(elements) => Some(elements.clone()),
+            Self::Encoded(raw) if raw.starts_with("@Variant(") => {
+                decode_variant_list(&raw["@Variant(".len()..])
+            }
+            _ => match self.as_str() {
+                Some(text) if text.trim().is_empty() => Some(Vec::new()),
+                Some(_) => Some(vec![self.clone()]),
+                None => None,
+            },
+        }
+    }
+
+    /// The text after `key=` that a file holds for this value, escaped as CAO
+    /// writes it, such as `85, 86` or `@Variant(\0\0\0\t…)`. A message quoting
+    /// a rejected value uses it, since [`Value::to_qstring`] gives `""` for a
+    /// list or an encoded value.
+    pub fn to_written(&self) -> String {
+        super::write::value_text(self)
     }
 
     /// The text Qt converts from: a plain string, or the inside of `@String(…)`.
@@ -147,11 +187,15 @@ fn parse_i64(text: &str) -> i64 {
 /// Qt writes for a one-element list. `payload` is Qt's unescaped text, one Latin-1
 /// char per byte; the trailing `)` is ignored because the stream stops before it.
 ///
-/// Returns `None` when the payload is not a `QVariantList` at all. A list whose
-/// elements Qt would fail to read decodes to `[]`, because Qt's QDataStream clears
-/// a container on a short read. Element types CAO never writes (anything but the
-/// integer types and `QString`) also give `[]`.
-fn decode_variant_list(payload: &str) -> Option<Vec<i32>> {
+/// Each element is a [`Value::String`]: a `QString` as is, an integer as its
+/// decimal text at full width, so the caller picks how to convert it.
+///
+/// Returns `None` when the payload is not a `QVariantList`, when Qt would fail to
+/// read its elements (Qt's QDataStream then clears the container, so Qt itself
+/// reads `[]`), or when an element has a type CAO never writes (anything but the
+/// integer types and `QString`). [`Value::to_int_list`] reads all of these as
+/// `[]`; [`Value::list_entries`] reports them.
+fn decode_variant_list(payload: &str) -> Option<Vec<Value>> {
     // `QString::toLatin1` turns anything above U+00FF into `?`.
     let bytes: Vec<u8> = payload
         .encode_utf16()
@@ -161,23 +205,23 @@ fn decode_variant_list(payload: &str) -> Option<Vec<i32>> {
     if stream.u32()? != TYPE_VARIANT_LIST {
         return None;
     }
-    let mut read_elements = || -> Option<Vec<i32>> {
-        let count = stream.u32()?;
-        let mut elements = Vec::new();
-        for _ in 0..count {
-            // Qt_4_0 streams carry no null flag after the type id.
-            let element = match stream.u32()? {
-                TYPE_INT => stream.u32()? as i32,
-                TYPE_UINT => stream.u32()? as i32,
-                TYPE_LONGLONG | TYPE_ULONGLONG => stream.u64()? as i32,
-                TYPE_STRING => parse_i64(&stream.qstring()?) as i32,
-                _ => return None,
-            };
-            elements.push(element);
-        }
-        Some(elements)
-    };
-    Some(read_elements().unwrap_or_default())
+    let count = stream.u32()?;
+    let mut elements = Vec::new();
+    for _ in 0..count {
+        // Qt_4_0 streams carry no null flag after the type id.
+        let element = match stream.u32()? {
+            // The bits as Qt's `QVariant::toInt()` would see them: `Int` signed,
+            // `UInt` unsigned, and the 64-bit types at their own signedness.
+            TYPE_INT => (stream.u32()? as i32).to_string(),
+            TYPE_UINT => stream.u32()?.to_string(),
+            TYPE_LONGLONG => (stream.u64()? as i64).to_string(),
+            TYPE_ULONGLONG => stream.u64()?.to_string(),
+            TYPE_STRING => stream.qstring()?,
+            _ => return None,
+        };
+        elements.push(Value::String(element));
+    }
+    Some(elements)
 }
 
 /// A big-endian QDataStream reader over a byte slice.

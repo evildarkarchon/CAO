@@ -3,7 +3,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use crate::ini::{FormatError, IniError};
+use crate::ini::{FormatError, IniError, Value};
 
 /// Why a profile could not be loaded, saved or created.
 #[derive(Debug, thiserror::Error)]
@@ -15,9 +15,9 @@ pub enum ProfileError {
     /// An INI file exists but could not be read, or could not be written.
     #[error(transparent)]
     Ini(#[from] IniError),
-    /// `profile.ini` has a line QSettings rejects (C++: "Selected profile could not be
-    /// read"). [`crate::Profile::load_settings`] reports this, so the GUI and
-    /// Preparing both refuse the Profile.
+    /// `profile.ini` has a line QSettings rejects, which a save would drop.
+    /// [`crate::Profile::load_settings`] reports this, so the GUI and Preparing
+    /// both refuse the Profile rather than lose the line.
     #[error("`{}` cannot be read: {error}", path.display())]
     Malformed { path: PathBuf, error: FormatError },
     /// **Deviation 11:** `bsaGame` is not 3 (TES5), 4 (SSE) or 5 (FO4). C++ reached
@@ -61,6 +61,26 @@ pub enum ProfileError {
         #[source]
         source: io::Error,
     },
+}
+
+impl ProfileError {
+    /// A [`ProfileError::UnsupportedValue`] for `key` (`Section/key`) of
+    /// `profile.ini`, the only file whose values are checked.
+    ///
+    /// `value` is what was rejected: the key's whole value, or one entry of a
+    /// list. It is quoted as the file writes it, and a missing key
+    /// ([`Value::Invalid`]) shows as missing. `accepted` follows "expected".
+    pub(crate) fn unsupported_value(key: &str, value: &Value, accepted: impl Into<String>) -> Self {
+        Self::UnsupportedValue {
+            file: "profile.ini".to_owned(),
+            key: key.to_owned(),
+            value: match value {
+                Value::Invalid => None,
+                value => Some(value.to_written()),
+            },
+            accepted: accepted.into(),
+        }
+    }
 }
 
 /// A rejected value as [`ProfileError::UnsupportedValue`] shows it: quoted as
