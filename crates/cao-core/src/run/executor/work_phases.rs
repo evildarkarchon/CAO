@@ -43,6 +43,8 @@ use crate::run::{
 /// its linked-entry exclusion diagnostics, since other work phases record
 /// between the two passes.
 struct Discovery<'r> {
+    /// The run's token, polled per entry. The discovery phases read it from
+    /// here rather than taking it again beside their walker.
     stop: &'r CancellationToken,
     /// The phase linked-entry diagnostics are attributed to.
     phase: RunPhase,
@@ -261,7 +263,6 @@ pub(super) fn run_work_phases(
         evidence,
         &router,
         &mut discovery,
-        stop,
     )? {
         ControlFlow::Continue(archives) => archives,
         ControlFlow::Break(stopped) => return Ok(ControlFlow::Break(stopped)),
@@ -277,7 +278,6 @@ pub(super) fn run_work_phases(
         &router,
         &mut discovery,
         &archives.recognized,
-        stop,
     )? {
         ControlFlow::Continue(ledger) => ledger,
         ControlFlow::Break(stopped) => return Ok(ControlFlow::Break(stopped)),
@@ -305,7 +305,6 @@ fn discover_archives(
     evidence: &mut MutableRunEvidence<'_>,
     router: &AssetRouter,
     discovery: &mut Discovery<'_>,
-    stop: &CancellationToken,
 ) -> PhaseFlow<DiscoveredArchives> {
     evidence.record_phase(RunPhaseRecord::executed(
         RunPhase::DiscoveringArchives,
@@ -363,7 +362,11 @@ fn discover_archives(
     // calculates a collision or extracts.
     let mut plans: Vec<ArchiveExtractionPlan> = Vec::new();
     if mode == ExecutionMode::Apply {
-        match toolset.preflight_archives(root_archives, preparation.archive_precedence(), stop) {
+        match toolset.preflight_archives(
+            root_archives,
+            preparation.archive_precedence(),
+            discovery.stop,
+        ) {
             Preflight::Failed(failure) => {
                 // A failed preflight has no trustworthy tree, so the run stops
                 // before any extraction, routing or finalization.
@@ -483,13 +486,12 @@ fn build_effective_asset_tree(
     router: &AssetRouter,
     discovery: &mut Discovery<'_>,
     recognized: &HashSet<PathBuf>,
-    stop: &CancellationToken,
 ) -> PhaseFlow<RoutingLedger> {
     evidence.record_phase(RunPhaseRecord::executed(
         RunPhase::BuildingEffectiveAssetTree,
         None,
     ))?;
-    if stop.is_cancelled() {
+    if discovery.stop.is_cancelled() {
         return Ok(ControlFlow::Break(Stop::Halted));
     }
 
