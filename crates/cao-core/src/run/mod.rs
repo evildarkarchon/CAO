@@ -67,7 +67,7 @@ pub use toolset::{
 };
 // Only an Optimization Run may write Run Evidence, so the store's writing
 // side stays inside the crate; the sealed `RunEvidence` is the public view.
-pub(crate) use evidence::MutableRunEvidence;
+pub(crate) use evidence::{AttemptPhaseHandle, MutableRunEvidence};
 
 /// Extracts the human-readable message from a caught panic payload.
 pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
