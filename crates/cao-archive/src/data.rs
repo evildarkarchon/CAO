@@ -52,30 +52,35 @@ pub struct ArchiveData {
 
 impl ArchiveData {
     /// An empty Archive of `archive_type`, in the container `settings` gives that
-    /// type, limited to `settings.max_size` source bytes and, for a BSA, to
-    /// `settings.size_cap` written bytes.
+    /// type, grouping up to [`Settings::archive_limit`] source bytes and, for a
+    /// BSA, limited to [`Settings::size_cap`] written bytes.
     pub fn new(settings: &Settings, archive_type: ArchiveType) -> Self {
         let version = settings.version_for(archive_type);
         Self {
             size: 0,
-            max_size: settings.max_size,
+            max_size: settings.archive_limit(),
             archive_type,
             version,
             files: Vec::new(),
             layout: settings
-                .size_cap
+                .size_cap()
                 .and_then(|cap| CappedLayout::new(cap, version)),
         }
     }
 
-    /// Adds `path` unless its `size` would take the total past the limit (strict
-    /// `>`: filling to exactly the limit is allowed), or the written BSA past
-    /// its game's size cap. Returns whether it was added.
+    /// Adds `path` unless its `size` would take the total past the Archive
+    /// Limit (strict `>`: filling to exactly the limit is allowed), or the
+    /// written BSA past its game's Archive Size Cap. Returns whether it was
+    /// added.
+    ///
+    /// An empty Archive takes any one file the size cap allows, however far
+    /// past the Archive Limit: the limit only groups files, so a file larger
+    /// than it gets an Archive of its own rather than none.
     pub fn add_file(&mut self, path: PathBuf, size: u64) -> bool {
         let Some(total) = self.size.checked_add(size) else {
             return false;
         };
-        if total > self.max_size {
+        if total > self.max_size && !self.files.is_empty() {
             return false;
         }
         if let Some(layout) = &mut self.layout
@@ -120,7 +125,8 @@ impl ArchiveData {
         self.size
     }
 
-    /// The most source bytes it may hold.
+    /// The Archive Limit it groups files by. It holds more only when one file
+    /// past the limit has it to itself.
     pub fn max_size(&self) -> u64 {
         self.max_size
     }
@@ -194,16 +200,19 @@ impl SplitArchives {
     /// MSVC's `std::filesystem::path` compares, because the order decides which
     /// files share an Archive. Each is classified with [`file_type`]; anything not
     /// Standard, Texture or Incompressible is skipped. A file that would take its
-    /// type's open partition past the limit closes that partition and starts a
-    /// new one.
+    /// type's open partition past the Archive Limit closes that partition and
+    /// starts a new one. A file larger than the Archive Limit by itself gets
+    /// that new partition to itself, and the next file starts another.
     ///
     /// Selecting `sources` (skipping root-level files, staging, links and Packing
     /// Exclusions) is the caller's job.
     ///
     /// # Errors
     ///
-    /// [`ArchiveError::AssetTooLarge`] when one file is larger than the limit by
-    /// itself. bethutil's own `split` dropped such a file; C++ CAO threw.
+    /// [`ArchiveError::AssetTooLarge`] when one file is too large for even a
+    /// BSA of its own under its game's Archive Size Cap. bethutil's own `split`
+    /// dropped a file past the Archive Limit; CAO packs it alone instead, and
+    /// fails only where the game could not load the result.
     pub fn split(
         root: &Path,
         mut sources: Vec<PackSource>,
@@ -229,11 +238,11 @@ impl SplitArchives {
             let fresh = ArchiveData::new(settings, partition.archive_type);
             split.full.push(std::mem::replace(partition, fresh));
             if !partition.add_file(path.clone(), size) {
-                return Err(ArchiveError::AssetTooLarge {
-                    path,
-                    size,
-                    max_size: settings.max_size,
-                });
+                // An empty partition takes any file past the Archive Limit, so
+                // only its BSA layout's size cap can refuse one; the fallback
+                // is never reached.
+                let cap = partition.size_cap().unwrap_or(u64::MAX);
+                return Err(ArchiveError::AssetTooLarge { path, size, cap });
             }
         }
         Ok(split)

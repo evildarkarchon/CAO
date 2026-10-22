@@ -66,10 +66,11 @@ pub struct ProfileSettings {
     /// (`[BSA] bsaEnabled`); the GUI enables its Archives tab from it.
     pub bsa_enabled: bool,
     /// The largest uncompressed Archive to create, in whole bytes
-    /// (`[BSA] maxBsaUncompressedSize`). The packer raises it to the game's
-    /// archive-table maximum when that is larger, so a Profile can only allow
-    /// larger Archives; those tables live in `cao-archive`, so the composition
-    /// root applies that floor.
+    /// (`[BSA] maxBsaUncompressedSize`). The packer groups files by it, as the
+    /// Profile's Archive Limit, never past the game's Archive Size Cap; a
+    /// missing one (`0`) takes the game's default. Those rules live in
+    /// `cao-archive` (`Settings::for_profile`), so the composition root
+    /// applies them.
     pub max_bsa_uncompressed_size: ArchiveSize,
     /// The game whose archive naming, versions and Loading Plugin rules apply
     /// (`[BSA] bsaGame`).

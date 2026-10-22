@@ -662,6 +662,7 @@ name = "cao-archive"
 version = "0.1.0"
 dependencies = [
  "ba2",
+ "cao-archive",
  "directxtex",
  "embed-resource",
  "rayon",

@@ -182,11 +182,7 @@ fn a_bsa_never_exceeds_its_games_size_cap_whatever_its_names_or_data() {
         for compress in [false, true] {
             let label = format!("size_cap_{game:?}_{compress}");
             let (root, sources) = crowded_mod_root(&label);
-            let settings = Settings {
-                max_size: 2048,
-                size_cap: Some(2048),
-                ..Settings::get(game)
-            };
+            let settings = Settings::for_test(game, 2048, Some(2048));
             let archives = SplitArchives::split(&root, sources, &settings)
                 .unwrap()
                 .merge(MergeSettings {

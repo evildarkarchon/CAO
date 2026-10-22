@@ -46,7 +46,7 @@ fn only_the_bsa_games_cap_the_maximum_archive_size_at_2_gib() {
     for game in EVERY_GAME {
         assert_eq!(
             archive_size_cap(game),
-            Settings::get(archive_game(game)).size_cap,
+            Settings::get(archive_game(game)).size_cap(),
             "{game:?}"
         );
     }

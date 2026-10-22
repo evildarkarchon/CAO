@@ -251,32 +251,41 @@ const INCOMPRESSIBLE: &[AllowedPath] = &[
     AllowedPath::new(".xwm", &["music", "sound"]),
 ];
 
-/// The 2000 MiB btu maximum for TES5 and SSE.
+/// The 2000 MiB btu maximum for TES5 and SSE: their default Archive Limit.
 const BSA_MAX_SIZE: u64 = 2000 * 1024 * 1024;
-/// The 4000 MiB btu maximum for FO4.
+/// The 4000 MiB btu maximum for FO4: its default Archive Limit.
 const BA2_MAX_SIZE: u64 = 4000 * 1024 * 1024;
 /// The 2 GiB cap on TES5 and SSE BSAs, the practical limit Skyrim loads; no
 /// Profile, copied or shipped, packs a BSA past it. FO4's BA2 has no such cap:
 /// its 4000 MiB is only the Creation Kit's limit, which users work around.
 const BSA_SIZE_CAP: u64 = 2 * 1024 * 1024 * 1024;
 
-/// One game's archive rules (`btu::bsa::Settings`).
+/// A Profile's Archive Rules: one game's archive tables
+/// (`btu::bsa::Settings`) with the Profile's Archive Limit.
 ///
-/// Every field is public so callers can read a game's rules. A Profile adjusts
-/// [`Settings::max_size`] through [`Settings::with_profile_max_size`], which
-/// keeps it within the game's [`Settings::size_cap`]; setting the field by hand
-/// skips that cap.
+/// The game's tables are public fields so callers can read them. The Archive
+/// Limit and the Archive Size Cap are private, read through
+/// [`Settings::archive_limit`] and [`Settings::size_cap`], so the only way to
+/// choose a limit is [`Settings::for_profile`], which keeps it within the cap.
+///
+/// No caller outside the crate can build or adjust one by hand:
+///
+/// ```compile_fail
+/// use cao_archive::{Game, Settings};
+/// let uncapped = Settings { extension: ".bsa", ..Settings::get(Game::Sse) };
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
     /// The game these rules belong to.
     pub game: Game,
-    /// The most source bytes one Archive may hold; split and merge compare against it.
-    pub max_size: u64,
-    /// The most source bytes one Archive of this game may ever hold, whatever a
-    /// Profile asks for; `None` when the container has no practical limit.
-    /// [`Settings::with_profile_max_size`] never raises [`Settings::max_size`]
-    /// past it.
-    pub size_cap: Option<u64>,
+    /// The Archive Limit: the most source bytes one Archive groups together;
+    /// split and merge compare against it.
+    archive_limit: u64,
+    /// The Archive Size Cap: the most bytes one written Archive of this game
+    /// may ever take, whatever a Profile asks for; `None` when the container
+    /// has no practical limit. [`Settings::for_profile`] never lets
+    /// `archive_limit` past it.
+    size_cap: Option<u64>,
     /// The container for Standard and Incompressible Archives, and for merged ones.
     pub format: ArchiveVersion,
     /// The container for Textures Archives; `None` means [`Settings::format`].
@@ -302,11 +311,11 @@ pub struct Settings {
 
 impl Settings {
     /// The rules bethutil's `Settings::get` returns for `game`, before any profile
-    /// adjustment.
+    /// adjustment: the same as [`Settings::for_profile`] with no limit.
     pub fn get(game: Game) -> Self {
         let sse = Self {
             game: Game::Sse,
-            max_size: BSA_MAX_SIZE,
+            archive_limit: BSA_MAX_SIZE,
             size_cap: Some(BSA_SIZE_CAP),
             format: ArchiveVersion::Sse,
             texture_format: Some(ArchiveVersion::Sse),
@@ -335,7 +344,7 @@ impl Settings {
                 game: Game::Fo4,
                 format: ArchiveVersion::Fo4,
                 texture_format: Some(ArchiveVersion::Fo4Dx),
-                max_size: BA2_MAX_SIZE,
+                archive_limit: BA2_MAX_SIZE,
                 size_cap: None,
                 extension: ".ba2",
                 suffix: Some("Main"),
@@ -347,19 +356,66 @@ impl Settings {
         }
     }
 
-    /// Raises [`Settings::max_size`] to a profile's `maxBsaUncompressedSize`, in
-    /// whole bytes, when that is larger, so a profile can let Archives grow past
-    /// the game's table maximum. A smaller limit changes nothing: the table
-    /// maximum is a floor, so a missing size (read as `0`) still packs at the
-    /// game's own maximum. A game with a [`Settings::size_cap`] stops there,
-    /// however large the profile's limit.
-    #[must_use]
-    pub fn with_profile_max_size(mut self, profile_max_size: u64) -> Self {
-        self.max_size = self.max_size.max(profile_max_size);
-        if let Some(cap) = self.size_cap {
-            self.max_size = self.max_size.min(cap);
+    /// A Profile's Archive Rules for `game`: the one way to choose an Archive
+    /// Limit.
+    ///
+    /// `requested_limit` is the Profile's maximum Archive size in whole bytes,
+    /// or `None` when it gives none, which takes the game's default (its table
+    /// maximum: 2000 MiB for TES5 and SSE, 4000 MiB for FO4). Either is clamped
+    /// to the game's Archive Size Cap (2 GiB for TES5 and SSE; FO4 has none).
+    /// The table maximum is not a floor: a Profile may ask for smaller
+    /// Archives.
+    ///
+    /// A requested `0` is taken as it is, an Archive Limit every file is past,
+    /// so each file is packed alone; rejecting it is the Profile reader's job.
+    pub fn for_profile(game: Game, requested_limit: Option<u64>) -> Self {
+        let mut settings = Self::get(game);
+        if let Some(limit) = requested_limit {
+            settings.archive_limit = limit;
         }
-        self
+        if let Some(cap) = settings.size_cap {
+            settings.archive_limit = settings.archive_limit.min(cap);
+        }
+        settings
+    }
+
+    /// `game`'s rules with an Archive Limit of `archive_limit` and an Archive
+    /// Size Cap of `size_cap`, neither checked against the game's own, so a
+    /// test can reach a cap with small files. Only the `test-support` feature,
+    /// enabled from `[dev-dependencies]`, compiles it.
+    #[cfg(feature = "test-support")]
+    pub fn for_test(game: Game, archive_limit: u64, size_cap: Option<u64>) -> Self {
+        Self {
+            archive_limit,
+            size_cap,
+            ..Self::get(game)
+        }
+    }
+
+    /// The Archive Limit: the most source bytes one Archive groups together.
+    /// It only groups files: split and merge give a file past it an Archive
+    /// of its own.
+    pub fn archive_limit(&self) -> u64 {
+        self.archive_limit
+    }
+
+    /// The Archive Size Cap: the most bytes one written Archive of this game
+    /// may ever take, and the only Archive size that can fail an Asset; `None`
+    /// for FO4, whose BA2s have no practical limit.
+    pub fn size_cap(&self) -> Option<u64> {
+        self.size_cap
+    }
+
+    /// Whether this game keeps Textures in their own Archive: its Textures
+    /// Archive is written as a different container than its Standard one
+    /// (FO4's DX10 BA2 beside its `GNRL` Main BA2), so DDS files can never be
+    /// merged into the Standard Archive.
+    ///
+    /// The packer's `separate_textures` naming rule and the GUI's "Separate
+    /// textures BSA" rule both read this, so they always agree.
+    pub fn keeps_textures_separate(&self) -> bool {
+        self.version_for(crate::ArchiveType::Textures)
+            != self.version_for(crate::ArchiveType::Standard)
     }
 
     /// The container an Archive of `archive_type` is written as: bethutil's

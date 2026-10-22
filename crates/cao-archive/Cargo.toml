@@ -21,7 +21,16 @@ ba2.workspace = true
 rayon.workspace = true
 thiserror.workspace = true
 
+[features]
+# `Settings::for_test`, which sets an Archive Size Cap no game has, so tests
+# can reach the cap with small files. Enable it only from
+# `[dev-dependencies]`, so no caller can skip a game's cap in a release build.
+test-support = []
+
 [dev-dependencies]
+# Enables `test-support` for this crate's own integration tests; Cargo
+# unifies the feature onto the library those tests link.
+cao-archive = { workspace = true, features = ["test-support"] }
 # Builds the DDS fixtures for the DX10 round trips.
 directxtex.workspace = true
 

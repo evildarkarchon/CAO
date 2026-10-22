@@ -6,17 +6,15 @@ use std::path::PathBuf;
 /// Why an Archive could not be planned, written or read.
 #[derive(Debug, thiserror::Error)]
 pub enum ArchiveError {
-    /// One file is larger than the Archive size limit by itself, so no Archive can
-    /// hold it (C++: "An Asset exceeds the output Archive size limit.").
+    /// One file is too large for even an Archive of its own under its game's
+    /// Archive Size Cap ([`crate::Settings::size_cap`], 2 GiB for TES5 and
+    /// SSE), so no Archive the game can load may hold it. A file past only the
+    /// Archive Limit is never this: it is packed alone.
     #[error(
-        "`{}` is {size} bytes, more than the {max_size}-byte output Archive size limit",
+        "`{}` is {size} bytes, too large for an Archive within its game's {cap}-byte Archive Size Cap",
         path.display()
     )]
-    AssetTooLarge {
-        path: PathBuf,
-        size: u64,
-        max_size: u64,
-    },
+    AssetTooLarge { path: PathBuf, size: u64, cap: u64 },
     /// A file or directory could not be read, created or removed.
     #[error("cannot access `{}`: {source}", path.display())]
     Io {
