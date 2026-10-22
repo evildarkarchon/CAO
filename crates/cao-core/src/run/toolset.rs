@@ -53,10 +53,9 @@ use crate::run::archives::{self, Preflight, RootArchives, preflight};
 use crate::run::capacity::{CapacityCheck, FrozenVolumes};
 use crate::run::finalization;
 use crate::run::{
-    ArchiveExtractionPlan, ArchiveExtractionResult, ArchiveFinalizationHandle,
-    ArchiveFinalizationSettings, ArchivePacker, ArchivePrecedence, ArchiveReader,
-    CancellationToken, RunDiagnostic, RunPreparation, SourceCleanup, TemporaryArtifactRegistry,
-    VolumeProbe,
+    ArchiveExtractionPlan, ArchiveExtractionResult, ArchiveFinalizationChoices,
+    ArchiveFinalizationHandle, ArchivePacker, ArchivePrecedence, ArchiveReader, CancellationToken,
+    RunDiagnostic, RunPreparation, SourceCleanup, TemporaryArtifactRegistry, VolumeProbe,
 };
 
 /// Cancellation observed while an Asset backend initialized, before any attempt existed.
@@ -233,7 +232,7 @@ impl RunToolset {
     pub(crate) fn finalize_archives(
         &self,
         preparation: &RunPreparation,
-        choices: &ArchiveFinalizationSettings,
+        choices: &ArchiveFinalizationChoices,
         phase: ArchiveFinalizationHandle<'_, '_>,
         artifacts: &mut TemporaryArtifactRegistry,
         cancelled: &dyn Fn() -> bool,

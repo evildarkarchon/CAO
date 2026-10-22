@@ -11,7 +11,7 @@
 //! does. Choices for work that is not requested are carried and have no
 //! effect.
 
-use super::{ArchiveFinalizationSettings, SourceCleanup};
+use super::{ArchiveFinalizationChoices, SourceCleanup};
 
 /// The user's choices for how one Optimization Run does its requested work,
 /// carried by its Run Request.
@@ -28,7 +28,7 @@ pub struct WorkChoices {
     /// or removed.
     pub archive_extraction: SourceCleanup,
     /// How Archive Finalization packs and maintains Loading Plugins.
-    pub archive_finalization: ArchiveFinalizationSettings,
+    pub archive_finalization: ArchiveFinalizationChoices,
 }
 
 impl Default for WorkChoices {
@@ -43,7 +43,7 @@ impl Default for WorkChoices {
             textures: TextureChoices::default(),
             meshes: MeshChoices::default(),
             archive_extraction: SourceCleanup::Backup,
-            archive_finalization: ArchiveFinalizationSettings::default(),
+            archive_finalization: ArchiveFinalizationChoices::default(),
         }
     }
 }
@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(choices.archive_extraction, SourceCleanup::Backup);
         assert_eq!(
             choices.archive_finalization,
-            ArchiveFinalizationSettings {
+            ArchiveFinalizationChoices {
                 compress: true,
                 delete_sources: true,
                 create_dummy_plugins: true,
@@ -272,7 +272,7 @@ mod tests {
                 resave: true,
             },
             archive_extraction: SourceCleanup::Remove,
-            archive_finalization: ArchiveFinalizationSettings {
+            archive_finalization: ArchiveFinalizationChoices {
                 compress: false,
                 delete_sources: false,
                 create_dummy_plugins: false,

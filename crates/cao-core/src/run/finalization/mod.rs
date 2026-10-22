@@ -222,9 +222,9 @@ impl Default for ArchiveFinalizationAccount {
 
 /// The run's Archive Finalization choices, captured from its options before
 /// scheduling. Whether packing runs at all is the Routing Policy's Archive
-/// creation request, not a setting.
+/// creation request, not one of these choices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ArchiveFinalizationSettings {
+pub struct ArchiveFinalizationChoices {
     /// Compress Standard and Textures Archives (`bBsaCompress`).
     pub compress: bool,
     /// Delete packed Loose Assets once their Archive is loadable (`bBsaDeleteSource`).
@@ -238,7 +238,7 @@ pub struct ArchiveFinalizationSettings {
     pub merge_textures: bool,
 }
 
-impl Default for ArchiveFinalizationSettings {
+impl Default for ArchiveFinalizationChoices {
     /// The options model's defaults.
     fn default() -> Self {
         Self {
@@ -262,7 +262,7 @@ impl Default for ArchiveFinalizationSettings {
 /// filesystem seam. [`CapacityCheck`] is the only caller of
 /// `seams.volume_probe`: the phase never samples the probe itself, so every
 /// check and recheck groups Mod Roots by the volume identities the run froze.
-/// `settings` are the run's Archive Finalization choices.
+/// `choices` are the run's Archive Finalization choices.
 ///
 /// The Packing Exclusions come from the Selected Profile
 /// ([`SelectedProfile::packing_exclusions`]) in `preparation`. Each rule is
@@ -288,7 +288,7 @@ impl Default for ArchiveFinalizationSettings {
 pub(crate) fn finalize_archives(
     seams: &ArchiveSeams,
     capacity: &CapacityCheck<'_>,
-    settings: &ArchiveFinalizationSettings,
+    choices: &ArchiveFinalizationChoices,
     preparation: &RunPreparation,
     mut phase: ArchiveFinalizationHandle<'_, '_>,
     artifacts: &mut TemporaryArtifactRegistry,
@@ -303,7 +303,7 @@ pub(crate) fn finalize_archives(
         run_phase(
             seams,
             capacity,
-            settings,
+            choices,
             preparation,
             &mut phase,
             artifacts,
@@ -336,7 +336,7 @@ pub(crate) fn finalize_archives(
 fn run_phase(
     seams: &ArchiveSeams,
     capacity: &CapacityCheck<'_>,
-    settings: &ArchiveFinalizationSettings,
+    choices: &ArchiveFinalizationChoices,
     preparation: &RunPreparation,
     phase: &mut ArchiveFinalizationHandle<'_, '_>,
     artifacts: &mut TemporaryArtifactRegistry,
@@ -364,7 +364,7 @@ fn run_phase(
         }
         let plan = match plan_finalization(
             preparation.mod_roots(),
-            settings,
+            choices,
             &*seams.packer,
             &exclusions,
             cancelled,

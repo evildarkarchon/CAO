@@ -11,7 +11,7 @@
 mod common;
 
 use cao_core::run::{
-    ArchiveFinalizationSettings, CancellationToken, RunOutcome, RunPhase, RunPhaseStatus,
+    ArchiveFinalizationChoices, CancellationToken, RunOutcome, RunPhase, RunPhaseStatus,
 };
 use cao_core::test_support::{ArchiveRunRequest, ScriptedToolset};
 use common::{canonical, scratch_dir, write_tree};
@@ -26,10 +26,10 @@ fn an_archive_run_packs_loose_assets_with_its_profile_exclusions_and_settings() 
     write_tree(&root, &["meshes/packed.nif", "meshes/keep/kept.nif"]);
     let archive_run = ArchiveRunRequest::new(&root)
         .with_packing_exclusions(["MESHES/KEEP/"])
-        .with_archive_finalization(ArchiveFinalizationSettings {
+        .with_archive_finalization(ArchiveFinalizationChoices {
             compress: false,
             create_dummy_plugins: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         });
     let configuration = archive_run.configuration(ScriptedToolset::default());
 

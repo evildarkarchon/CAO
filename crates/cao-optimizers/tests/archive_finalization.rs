@@ -25,7 +25,7 @@ use std::time::{Duration, SystemTime};
 use cao_archive::{ArchiveFormat, Fo4Container, Game, ReadArchive, Settings};
 use cao_core::execution::MutationState;
 use cao_core::run::{
-    ArchiveFinalizationMutationKind, ArchiveFinalizationResult, ArchiveFinalizationSettings,
+    ArchiveFinalizationChoices, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
     ArchiveNameKind, ArchivePacker, CancellationToken, MutationKind, RunOutcome, VolumeProbe,
 };
 use cao_core::test_support::ArchiveRunRequest;
@@ -64,7 +64,7 @@ fn mod_root(scenario: &str, name: &str) -> PathBuf {
 fn finalize(
     game: Game,
     root: &Path,
-    settings: ArchiveFinalizationSettings,
+    settings: ArchiveFinalizationChoices,
     capacity: Option<u64>,
 ) -> ArchiveFinalizationResult {
     finalize_probing(game, root, settings, Arc::new(Capacity(capacity)))
@@ -74,7 +74,7 @@ fn finalize(
 fn finalize_probing(
     game: Game,
     root: &Path,
-    settings: ArchiveFinalizationSettings,
+    settings: ArchiveFinalizationChoices,
     capacity: Arc<dyn VolumeProbe>,
 ) -> ArchiveFinalizationResult {
     let extension = GameArchivePacker::new(Settings::get(game))
@@ -140,7 +140,7 @@ fn the_capacity_estimate_covers_the_published_archive_and_plugin() {
     ] {
         let root = mod_root(&format!("estimate-{game:?}"), "mod");
         write(&root, "meshes/asset.nif", &[b'x'; 8192]);
-        let settings = ArchiveFinalizationSettings::default();
+        let settings = ArchiveFinalizationChoices::default();
 
         let rejected = finalize(game, &root, settings, Some(0));
         let detail = rejected.attempts[0].outcome.failure().unwrap().detail();
@@ -178,7 +178,7 @@ fn existing_archive_plugin_names_follow_the_profile() {
         let root = mod_root(&format!("existing-names-{archive}"), "mod");
         write(&root, archive, b"retained archive");
 
-        let result = finalize(game, &root, ArchiveFinalizationSettings::default(), None);
+        let result = finalize(game, &root, ArchiveFinalizationChoices::default(), None);
 
         assert!(result.attempts.is_empty());
         assert_eq!(result.failure, None, "{archive}: {}", result.detail);
@@ -223,7 +223,7 @@ fn existing_fo4_archives_share_one_loading_plugin() {
         let result = finalize(
             Game::Fo4,
             &root,
-            ArchiveFinalizationSettings::default(),
+            ArchiveFinalizationChoices::default(),
             None,
         );
 
@@ -264,9 +264,9 @@ fn output_names_come_from_full_plugins_not_exact_dummies() {
         );
         write(&root, "dummy.esp", &dummy(game));
         write(&root, "loader.esm", &vec![0u8; dummy(game).len()]);
-        let settings = ArchiveFinalizationSettings {
+        let settings = ArchiveFinalizationChoices {
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         };
 
         let result = finalize(game, &root, settings, None);
@@ -324,9 +324,9 @@ fn a_plugin_appearing_at_another_recognized_name_is_reused() {
                 VolumeProbes.volume_identity(root)
             }
         }
-        let settings = ArchiveFinalizationSettings {
+        let settings = ArchiveFinalizationChoices {
             compress: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         };
 
         let result = finalize_probing(
@@ -373,10 +373,10 @@ fn deviation_21_fo4_textures_always_get_a_compressed_dx10_ba2() {
         64,
     );
     write(&root, "meshes/asset.nif", &b"NiTriShape ".repeat(200));
-    let settings = ArchiveFinalizationSettings {
+    let settings = ArchiveFinalizationChoices {
         compress: false,
         merge_textures: true,
-        ..ArchiveFinalizationSettings::default()
+        ..ArchiveFinalizationChoices::default()
     };
 
     let result = finalize(Game::Fo4, &root, settings, None);
@@ -416,7 +416,7 @@ fn quarantined_files_are_never_packed() {
             b"quarantined texture bytes",
         );
 
-        let result = finalize(game, &root, ArchiveFinalizationSettings::default(), None);
+        let result = finalize(game, &root, ArchiveFinalizationChoices::default(), None);
 
         assert_eq!(result.attempts.len(), 1, "{game:?}");
         let attempt = &result.attempts[0];

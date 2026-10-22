@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use cao_winfs::{is_reparse_point, msvc_canonical};
 
-use super::ArchiveFinalizationSettings;
+use super::ArchiveFinalizationChoices;
 use super::plugins::{LoadingPluginStrength, find_loading_plugin, has_exact_dummy_bytes};
 use crate::run::staging::has_staging_component;
 use crate::run::{
@@ -72,7 +72,7 @@ const CAPACITY_ALLOWANCE: u64 = 65_536;
 /// [`PlanningStop::Cancelled`] rather than an incomplete plan.
 pub(super) fn plan_finalization(
     roots: &[PathBuf],
-    choices: &ArchiveFinalizationSettings,
+    choices: &ArchiveFinalizationChoices,
     packer: &dyn ArchivePacker,
     files_to_not_pack: &[String],
     cancelled: &dyn Fn() -> bool,

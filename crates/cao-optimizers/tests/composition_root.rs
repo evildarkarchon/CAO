@@ -12,7 +12,7 @@ use cao_core::routing::{
     RequestedWork, SkipReason,
 };
 use cao_core::run::{
-    ArchiveFinalizationSettings, MeshChoices, MeshLevel, ModSelection, OptimizationRunResult,
+    ArchiveFinalizationChoices, MeshChoices, MeshLevel, ModSelection, OptimizationRunResult,
     ResizeRatio, ResizeSize, RunConfigurationProvider, RunDiagnosticCode, RunFailureCode,
     RunOutcome, RunPhase, RunRequest, SourceCleanup, TextureChoices, TextureResizeChoice,
     WorkChoices,
@@ -185,7 +185,7 @@ fn the_request_carries_the_forms_work_choices_with_ratio_winning() {
                 resave: true,
             },
             archive_extraction: SourceCleanup::Remove,
-            archive_finalization: ArchiveFinalizationSettings {
+            archive_finalization: ArchiveFinalizationChoices {
                 compress: false,
                 delete_sources: false,
                 create_dummy_plugins: false,

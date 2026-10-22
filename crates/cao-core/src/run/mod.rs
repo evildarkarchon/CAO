@@ -41,8 +41,8 @@ pub use executor::{
 };
 pub(crate) use finalization::ArchiveFinalizationAccount;
 pub use finalization::{
-    ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationMutation,
-    ArchiveFinalizationMutationKind, ArchiveFinalizationResult, ArchiveFinalizationSettings,
+    ArchiveFinalizationAttempt, ArchiveFinalizationChoices, ArchiveFinalizationFailure,
+    ArchiveFinalizationMutation, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
 };
 pub use lifecycle::{
     CancellationToken, ModSelection, MutationKind, MutationSummary, OptimizationRunResult,

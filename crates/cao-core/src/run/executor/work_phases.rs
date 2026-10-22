@@ -31,7 +31,7 @@ use crate::routing::{
 };
 use crate::run::archives::{Preflight, RootArchives, archive_order_key, relative_game_path};
 use crate::run::{
-    ArchiveExtractionPlan, ArchiveFinalizationSettings, AssetInitializationCancelled,
+    ArchiveExtractionPlan, ArchiveFinalizationChoices, AssetInitializationCancelled,
     CancellationToken, MutableRunEvidence, PhaseSkipReason, RoutedAssetAttempt, RunDiagnostic,
     RunDiagnosticCode, RunPhase, RunPhaseRecord, RunPreparation, RunToolset, SourceCleanup,
     TemporaryArtifactRegistry, WorkChoices, is_staging_name, take_panic_message,
@@ -659,7 +659,7 @@ fn process_assets(
 fn finalize_archives(
     preparation: &RunPreparation,
     mode: ExecutionMode,
-    choices: &ArchiveFinalizationSettings,
+    choices: &ArchiveFinalizationChoices,
     toolset: &RunToolset,
     evidence: &mut MutableRunEvidence<'_>,
     artifacts: &mut TemporaryArtifactRegistry,

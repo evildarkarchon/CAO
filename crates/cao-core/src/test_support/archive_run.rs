@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::routing::{ExecutionMode, RequestedWork};
 use crate::run::{
-    ArchiveFinalizationSettings, CancellationToken, ModSelection, OptimizationRunResult,
+    ArchiveFinalizationChoices, CancellationToken, ModSelection, OptimizationRunResult,
     RunConfigurationProvider, RunObservationSink, RunRequest, SelectedProfile, SourceCleanup,
     WorkChoices,
 };
@@ -116,8 +116,8 @@ impl ArchiveRunRequest {
     }
 
     /// Replaces the Run Request's Archive Finalization choices. By default
-    /// they are [`ArchiveFinalizationSettings::default`].
-    pub fn with_archive_finalization(mut self, choices: ArchiveFinalizationSettings) -> Self {
+    /// they are [`ArchiveFinalizationChoices::default`].
+    pub fn with_archive_finalization(mut self, choices: ArchiveFinalizationChoices) -> Self {
         self.work_choices.archive_finalization = choices;
         self
     }

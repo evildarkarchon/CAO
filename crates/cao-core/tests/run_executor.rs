@@ -50,7 +50,7 @@ use cao_core::routing::{
     AssetOperation, ExecutionMode, PolicyValidationError, ProfileCapabilities, RequestedWork,
 };
 use cao_core::run::{
-    ArchiveFinalizationFailure, ArchiveFinalizationMutationKind, ArchiveFinalizationSettings,
+    ArchiveFinalizationChoices, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
     ArchivePrecedence, ArchiveReader, CancellationToken, MeshChoices, MeshLevel, ModSelection,
     MutationKind, OptimizationRunResult, PhaseSkipReason, ResizeRatio, RunConfigurationProvider,
     RunDiagnosticCode, RunExecutor, RunFailure, RunFailureCode, RunOutcome, RunPhase,
@@ -2440,10 +2440,10 @@ fn the_provider_loads_from_the_runs_run_request() {
             resave: true,
         },
         archive_extraction: SourceCleanup::Remove,
-        archive_finalization: ArchiveFinalizationSettings {
+        archive_finalization: ArchiveFinalizationChoices {
             compress: false,
             merge_textures: true,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
     };
     let request = RunRequest::new(

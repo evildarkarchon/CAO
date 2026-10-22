@@ -22,7 +22,7 @@ use cao_archive::{Game, Settings};
 use cao_core::Error;
 use cao_core::routing::{ExecutionMode, ProfileCapabilities, ProfileCapability, RequestedWork};
 use cao_core::run::{
-    ArchiveFinalizationSettings, ArchiveSeams, AssetAttemptAdapter, AssetBackendFactory,
+    ArchiveFinalizationChoices, ArchiveSeams, AssetAttemptAdapter, AssetBackendFactory,
     BackendCreation, BackendCreationError, CancellationToken, MeshChoices, MeshLevel, ModSelection,
     OptimizationRunService, ResizeRatio, ResizeSize, RunConfigurationProvider, RunDiagnostic,
     RunDiagnosticCode, RunPhase, RunRequest, RunToolset, SelectedProfile, SourceCleanup,
@@ -187,7 +187,7 @@ fn work_choices(options: &Options) -> Result<WorkChoices, WorkChoiceError> {
         } else {
             SourceCleanup::Backup
         },
-        archive_finalization: ArchiveFinalizationSettings {
+        archive_finalization: ArchiveFinalizationChoices {
             compress: options.bsa_compress,
             delete_sources: options.bsa_delete_source,
             create_dummy_plugins: options.bsa_create_dummies,

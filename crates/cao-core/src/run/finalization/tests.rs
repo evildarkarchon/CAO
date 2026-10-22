@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use crate::execution::MutationState;
 use crate::run::{
-    ArchiveFinalizationFailure, ArchiveFinalizationSettings, CancellationToken, RunExecutor,
+    ArchiveFinalizationChoices, ArchiveFinalizationFailure, CancellationToken, RunExecutor,
     RunOutcome, RunPhase, RunServices, create_run_id,
 };
 use crate::test_support::{ArchiveRunRequest, CountingCleanup, ScriptedToolset};
@@ -52,10 +52,10 @@ fn a_panic_after_the_plan_reaching_the_outer_containment_keeps_the_streamed_atte
     }
     // One Texture per Mod Root plans one output each.
     let run = ArchiveRunRequest::over_mods(&parent).with_archive_finalization(
-        ArchiveFinalizationSettings {
+        ArchiveFinalizationChoices {
             compress: false,
             create_dummy_plugins: false,
-            ..ArchiveFinalizationSettings::default()
+            ..ArchiveFinalizationChoices::default()
         },
     );
     let configuration = run.configuration(ScriptedToolset::default());
