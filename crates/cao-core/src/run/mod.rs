@@ -20,6 +20,7 @@ mod service;
 mod source_pin;
 mod staging;
 mod toolset;
+mod work_choices;
 
 pub(crate) use archives::ArchiveExtractionPlan;
 pub use archives::{
@@ -64,6 +65,10 @@ pub use source_pin::{LoadingPluginPin, SourceDirectoryPins, SourceFilePin, Sourc
 pub use staging::{StagingError, is_staging_name};
 pub use toolset::{
     ArchiveSeams, ArchiveWorkSettings, AssetAttemptPort, AssetInitializationCancelled, RunToolset,
+};
+pub use work_choices::{
+    MeshChoices, MeshLevel, ResizeRatio, ResizeSize, TextureChoices, TextureResizeChoice,
+    WorkChoiceError, WorkChoices,
 };
 // Only an Optimization Run may write Run Evidence, so the store's writing
 // side stays inside the crate; the sealed `RunEvidence` is the public view.

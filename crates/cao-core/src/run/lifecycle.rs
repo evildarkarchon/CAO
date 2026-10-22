@@ -14,7 +14,7 @@ use crate::routing::{
 };
 use crate::run::{
     ArchiveCollision, ArchiveExtractionResult, ArchiveFinalizationResult, ArchivePrecedence,
-    RoutedAssetAttempt, RunEvidence, RunPreparation,
+    RoutedAssetAttempt, RunEvidence, RunPreparation, WorkChoices,
 };
 
 /// The unique identity of one Optimization Run, carried by its events and terminal result.
@@ -346,8 +346,10 @@ impl ModSelection {
 /// The immutable intent used to start one Optimization Run.
 ///
 /// It holds the profile identity, execution mode, Mod Selection, Archive
-/// Precedence intent and the closed set of requested work; Preparing loads the
-/// profile's facts from the identity.
+/// Precedence intent, the closed set of requested work and the run's Work
+/// Choices; Preparing loads the profile's facts from the identity. Requested
+/// work alone decides routing: Work Choices only say how requested work is
+/// done.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRequest {
     profile_identity: String,
@@ -355,10 +357,12 @@ pub struct RunRequest {
     mod_selection: ModSelection,
     requested_work: Vec<RequestedWork>,
     archive_precedence: ArchivePrecedence,
+    work_choices: WorkChoices,
 }
 
 impl RunRequest {
-    /// Owns one request's intent with deterministic Archive Precedence.
+    /// Owns one request's intent with deterministic Archive Precedence and
+    /// the default [`WorkChoices`].
     ///
     /// Adapters assemble work from independent choices, so the request keeps
     /// each choice once in enumeration order and repeated runs see one order.
@@ -376,6 +380,7 @@ impl RunRequest {
             mod_selection,
             requested_work,
             archive_precedence: ArchivePrecedence::DeterministicDiscovery,
+            work_choices: WorkChoices::default(),
         }
     }
 
@@ -383,6 +388,19 @@ impl RunRequest {
     pub fn with_archive_precedence(mut self, archive_precedence: ArchivePrecedence) -> Self {
         self.archive_precedence = archive_precedence;
         self
+    }
+
+    /// Replaces the Work Choices. They need no later check: each choice's
+    /// constructor already enforced its invariants, and choices for work that
+    /// is not requested have no effect.
+    pub fn with_work_choices(mut self, work_choices: WorkChoices) -> Self {
+        self.work_choices = work_choices;
+        self
+    }
+
+    /// The user's choices for how this run does its requested work.
+    pub fn work_choices(&self) -> &WorkChoices {
+        &self.work_choices
     }
 
     pub fn profile_identity(&self) -> &str {
