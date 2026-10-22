@@ -395,8 +395,8 @@ struct OptimizerBackendFactory {
     /// headpart scan walks whole, and this run's copy of the app directory's
     /// `hkxcmd.exe`.
     work: RunWorkSettings,
-    /// The profile Preparing read, which the backend's Texture profile, Mesh
-    /// target and custom Headpart Meshes come from.
+    /// The profile Preparing read, which the backend's `TextureProfile`, Mesh
+    /// Target and custom Headpart Meshes come from.
     profile: Arc<PreparedProfile>,
 }
 

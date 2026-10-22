@@ -55,8 +55,8 @@ impl BsaGame {
 
 /// A profile's `profile.ini`: the per-game settings C++ held in `Profiles`.
 ///
-/// Fields read with `QVariant`'s conversions, as C++ reads them: a missing key is
-/// `false` or `0`, never a default; a Mesh Target axis and the Texture format are
+/// Bools read with `QVariant`'s conversions, so a missing one is `false`, never a
+/// default, and a missing maximum Archive size is `0`; a Mesh Target axis and the Texture format are
 /// closed sets ([`crate::ClosedSet`]) that `0` is outside, so a missing one is
 /// unreadable. Keys this model does not hold, such as the dead
 /// `[Animations] animationFormat` (deviation 10), are never read and survive a save.
@@ -66,9 +66,10 @@ pub struct ProfileSettings {
     /// (`[BSA] bsaEnabled`); the GUI enables its Archives tab from it.
     pub bsa_enabled: bool,
     /// The largest uncompressed Archive to create, in whole bytes
-    /// (`[BSA] maxBsaUncompressedSize`). C++ raised it to the
-    /// game's archive-table maximum when that is larger; those tables live in
-    /// `cao-archive`, so the composition root applies that floor.
+    /// (`[BSA] maxBsaUncompressedSize`). The packer raises it to the game's
+    /// archive-table maximum when that is larger, so a Profile can only allow
+    /// larger Archives; those tables live in `cao-archive`, so the composition
+    /// root applies that floor.
     pub max_bsa_uncompressed_size: ArchiveSize,
     /// The game whose archive naming, versions and Loading Plugin rules apply
     /// (`[BSA] bsaGame`).
@@ -105,7 +106,10 @@ pub struct ProfileSettings {
 }
 
 impl ProfileSettings {
-    /// Reads the model from `profile.ini` as C++'s `Profiles::readFromIni` does.
+    /// Reads the model from `profile.ini`. Bools keep `QVariant`'s lenient
+    /// reading (a missing key is `false`), while every value with a closed set
+    /// or a unit is checked, so a value CAO cannot act on makes the Profile
+    /// unreadable instead of being replaced on the next save.
     ///
     /// # Errors
     /// [`ProfileError::UnsupportedBsaGame`] when `bsaGame` is not 3, 4 or 5, and
@@ -133,9 +137,9 @@ impl ProfileSettings {
         })
     }
 
-    /// Writes the model into `profile.ini` as C++'s `Profiles::saveToIni` does, in the
-    /// same key order, so missing keys are appended where Qt appends them. Keys the
-    /// model does not hold are left alone.
+    /// Writes the model into `profile.ini` in the shipped files' key order, so a
+    /// missing key is appended in its section where QSettings appends it. Keys
+    /// the model does not hold are left alone.
     pub fn write(&self, ini: &mut IniFile) {
         ini.set("BSA/bsaEnabled", self.bsa_enabled);
         ini.set(
@@ -154,8 +158,9 @@ impl ProfileSettings {
 
         ini.set("Animations/animationsEnabled", self.animations_enabled);
 
-        // `DXGI_FORMAT` has no fixed underlying type, so C++ stores it as an `int`.
-        // Every unwanted format's number is at most 115, so it fits.
+        // `Value::int_list` writes the `Int` list QSettings reads back, including
+        // the `@Variant(…)` shape of a one-element list. Every unwanted format's
+        // number is at most 115, so it fits an `i32`.
         let formats: Vec<i32> = self
             .textures_unwanted_formats
             .iter()

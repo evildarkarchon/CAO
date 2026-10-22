@@ -310,7 +310,9 @@ impl App {
             form::show_settings(ui, settings);
         }
         form::show_options(ui, &options);
-        // The UI rules also hold for what was loaded (deviations 3 and 21).
+        // The UI rules also hold for what was loaded, so a profile saved with a
+        // combination a rule forbids (Dry Run with Extract BSA, say) shows what
+        // the run will actually do (deviation 3).
         rules::apply(ui);
         // An unreadable profile enables no asset tab.
         self.enable_tabs(settings.as_ref().map(profile_capabilities).as_ref());

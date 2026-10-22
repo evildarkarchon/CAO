@@ -15,9 +15,9 @@ pub enum ProfileError {
     /// An INI file exists but could not be read, or could not be written.
     #[error(transparent)]
     Ini(#[from] IniError),
-    /// `profile.ini` has a line QSettings rejects (C++: "Selected profile could not be
-    /// read"). [`crate::Profile::load_settings`] reports this, so the GUI and
-    /// Preparing both refuse the Profile.
+    /// `profile.ini` has a line QSettings rejects, which a save would drop.
+    /// [`crate::Profile::load_settings`] reports this, so the GUI and Preparing
+    /// both refuse the Profile rather than lose the line.
     #[error("`{}` cannot be read: {error}", path.display())]
     Malformed { path: PathBuf, error: FormatError },
     /// **Deviation 11:** `bsaGame` is not 3 (TES5), 4 (SSE) or 5 (FO4). C++ reached
