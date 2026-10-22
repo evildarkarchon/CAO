@@ -43,6 +43,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use cao_core::CompletedMutation;
 use cao_core::Error;
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use cao_core::routing::{
@@ -564,7 +565,7 @@ fn cancelling_between_assets_keeps_committed_mutations_and_cleans_up() {
         let token = token.clone();
         move |_, _, _| {
             token.cancel();
-            Ok(AssetExecutionResult::success(MutationState::Committed))
+            Ok(AssetExecutionResult::success(CompletedMutation::Committed))
         }
     }));
     let request = request(
@@ -803,7 +804,7 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
                 if cancels {
                     token.cancel();
                 }
-                Ok(AssetExecutionResult::success(MutationState::Committed))
+                Ok(AssetExecutionResult::success(CompletedMutation::Committed))
             }
         });
         let toolset = Arc::new(toolset);
@@ -1113,7 +1114,7 @@ fn each_work_phase_is_published_before_its_work_starts() {
         }
         .with_assets(move |_, _, _| {
             assert_eq!(last_published(), Some(RunPhase::ProcessingAssets));
-            Ok(AssetExecutionResult::success(MutationState::None))
+            Ok(AssetExecutionResult::success(CompletedMutation::None))
         }),
     );
     let mut cleanup = CountingCleanup::default();
@@ -1243,7 +1244,7 @@ fn a_discovery_diagnostic_follows_the_attempt_and_can_cancel_finalization() {
             move |_, mod_root, artifacts| {
                 staged.stage(mod_root, artifacts);
                 order.lock().unwrap().push("asset");
-                Ok(AssetExecutionResult::success(MutationState::None))
+                Ok(AssetExecutionResult::success(CompletedMutation::None))
             }
         }));
         let request = RunRequest::new(
@@ -1422,7 +1423,7 @@ fn mixed_asset_evidence_outlives_every_service() {
                 let path = asset.execution_path();
                 Ok(if path.ends_with("a.dds") {
                     std::fs::write(path, "committed").unwrap();
-                    AssetExecutionResult::success(MutationState::Committed)
+                    AssetExecutionResult::success(CompletedMutation::Committed)
                 } else {
                     AssetExecutionResult::failed(
                         AssetExecutionFailure::LoadFailed,
@@ -1906,7 +1907,7 @@ fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
             move |asset, mod_root, artifacts| {
                 staged.stage(mod_root, artifacts);
                 std::fs::write(asset.execution_path(), "committed asset").unwrap();
-                Ok(AssetExecutionResult::success(MutationState::Committed))
+                Ok(AssetExecutionResult::success(CompletedMutation::Committed))
             }
         });
         let toolset = Arc::new(toolset);
@@ -2115,7 +2116,7 @@ fn terminal_precedence_classifies_each_outcome_and_keeps_every_fact() {
                     AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed, "unknown")
                         .with_mutation(MutationState::PartialOrUnknown)
                 }
-                WorkFact::Succeeded => AssetExecutionResult::success(MutationState::None),
+                WorkFact::Succeeded => AssetExecutionResult::success(CompletedMutation::None),
             })
         }));
         let mut cleanup = ScriptedCleanup {

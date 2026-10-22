@@ -51,6 +51,7 @@ use cao_core::run::{
     RunServices, TemporaryArtifactRegistry, create_run_id, is_staging_name,
 };
 use cao_core::test_support::{CountingCleanup, ScriptedToolset};
+use cao_core::{AttemptOutcome, CompletedMutation};
 use common::{canonical, converting_configuration, scratch_dir};
 
 /// Every capability a routed scenario needs.
@@ -1798,4 +1799,56 @@ fn a_conversion_killed_at_any_boundary_recovers_consistently() {
             names(&root.join(".cao-staging"))
         );
     }
+}
+
+/// Spec #600 (#604): an Asset result carries an Attempt Outcome whose
+/// Operation Failure holds the stable category and the presentable message,
+/// while the Asset-only context stays on the result.
+#[test]
+fn a_failed_asset_result_carries_its_message_as_the_operation_failure_detail() {
+    let result = AssetExecutionResult::failed(AssetExecutionFailure::SaveFailed, "save failed")
+        .with_mutation(MutationState::Committed)
+        .with_safe_to_continue(false)
+        .with_path("textures/a.dds")
+        .with_operation("save_texture")
+        .with_service_detail("backend detail");
+
+    let failure = result
+        .outcome()
+        .failure()
+        .expect("a failed result carries an Operation Failure");
+    assert_eq!(failure.category(), AssetExecutionFailure::SaveFailed);
+    assert_eq!(failure.detail(), "save failed");
+    assert_eq!(result.message(), "save failed");
+    assert_eq!(result.outcome().mutation(), MutationState::Committed);
+    assert!(!result.outcome().safe_to_continue());
+    assert_eq!(result.operation(), "save_texture");
+    assert_eq!(result.affected_path(), Path::new("textures/a.dds"));
+    assert_eq!(result.service_detail(), "backend detail");
+
+    let success = AssetExecutionResult::success(CompletedMutation::Committed);
+    assert_eq!(
+        success.outcome(),
+        &AttemptOutcome::success(CompletedMutation::Committed)
+    );
+    assert_eq!(success.message(), "");
+}
+
+/// Spec #600 user story 18: a failure-only builder applied to a successful
+/// Asset result is misuse, and surfaces as a debug assertion in tests.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "failure-only builder")]
+fn a_failure_only_builder_on_a_successful_asset_result_trips_a_debug_assertion() {
+    let _ = AssetExecutionResult::success(CompletedMutation::None)
+        .with_mutation(MutationState::PartialOrUnknown);
+}
+
+/// Spec #600 user story 18, for the continuation builder.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "failure-only builder")]
+fn a_continuation_builder_on_a_successful_asset_result_trips_a_debug_assertion() {
+    let _ =
+        AssetExecutionResult::success(CompletedMutation::Committed).with_safe_to_continue(false);
 }
