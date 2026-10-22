@@ -269,7 +269,7 @@ impl Finalizer {
         let estimating = Finalizer {
             packer: FakeArchivePacker {
                 rules: self.packer.rules.clone(),
-                max_size: self.packer.max_size,
+                archive_limit: self.packer.archive_limit,
                 ..FakeArchivePacker::default()
             },
             probe: capacity(|_| Some(0)),
@@ -2170,7 +2170,7 @@ fn split_outputs_take_counter_names_and_their_own_plugins() {
         ..Finalizer::default()
     };
     // Room for one source per Archive.
-    finalizer.packer.max_size = 20;
+    finalizer.packer.archive_limit = 20;
     let run = finalizer.run(std::slice::from_ref(&root));
 
     let result = run.finalization();
@@ -2228,7 +2228,7 @@ fn a_source_over_the_size_limit_is_packed_into_an_archive_of_its_own() {
         ..Finalizer::default()
     };
     // Room for both small sources, but not for the 30-byte one.
-    finalizer.packer.max_size = 20;
+    finalizer.packer.archive_limit = 20;
     let run = finalizer.run(std::slice::from_ref(&root));
 
     let result = run.finalization();

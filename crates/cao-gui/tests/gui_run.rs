@@ -126,7 +126,7 @@ fn classified_run(scenario: Scenario) -> Arc<OptimizationRunResult> {
     let mut packer = FakeArchivePacker::default();
     if scenario == Scenario::FailingFinalizer {
         // Room for one seven-byte Texture per Archive.
-        packer.max_size = 10;
+        packer.archive_limit = 10;
         let writes = AtomicUsize::new(0);
         packer.after_write = Some(Box::new(move |_| {
             if writes.fetch_add(1, Ordering::SeqCst) == 1 {

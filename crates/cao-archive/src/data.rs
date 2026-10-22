@@ -43,7 +43,7 @@ pub struct PackSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveData {
     size: u64,
-    max_size: u64,
+    archive_limit: u64,
     archive_type: ArchiveType,
     version: ArchiveVersion,
     files: Vec<PathBuf>,
@@ -58,7 +58,7 @@ impl ArchiveData {
         let version = settings.version_for(archive_type);
         Self {
             size: 0,
-            max_size: settings.archive_limit(),
+            archive_limit: settings.archive_limit(),
             archive_type,
             version,
             files: Vec::new(),
@@ -85,7 +85,7 @@ impl ArchiveData {
         let Some(total) = self.size.checked_add(size) else {
             return false;
         };
-        if total > self.max_size && !self.files.is_empty() {
+        if total > self.archive_limit && !self.files.is_empty() {
             return false;
         }
         if let Some(layout) = &mut self.layout
@@ -121,7 +121,7 @@ impl ArchiveData {
             (Some(layout), Some(other)) => layout.merged_bound(other) <= layout.cap,
             _ => true,
         };
-        self.size + other.size < self.max_size && layout_fits
+        self.size + other.size < self.archive_limit && layout_fits
     }
 
     /// The Archive's type. A merge can change it; see [`SplitArchives::merge`].
@@ -141,8 +141,8 @@ impl ArchiveData {
 
     /// The Archive Limit it groups files by. It holds more only when one file
     /// past the limit has it to itself.
-    pub fn max_size(&self) -> u64 {
-        self.max_size
+    pub fn archive_limit(&self) -> u64 {
+        self.archive_limit
     }
 
     /// Its files, in the order they were added.
@@ -164,7 +164,7 @@ impl ArchiveData {
     /// merged Archive keeps Standard's container.
     fn absorb(&mut self, other: &mut Self) {
         // bethutil throws here; `merge` only calls this after its own size check.
-        debug_assert!(self.size + other.size <= self.max_size);
+        debug_assert!(self.size + other.size <= self.archive_limit);
         self.size += other.size;
         self.files.append(&mut other.files);
         if let (Some(layout), Some(other)) = (&mut self.layout, &mut other.layout) {

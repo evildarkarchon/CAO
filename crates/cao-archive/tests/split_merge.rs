@@ -323,7 +323,7 @@ fn partitions_take_the_games_versions() {
     assert_eq!(versions(Game::Sse), [Sse, Sse, Sse]);
     assert_eq!(versions(Game::Fo4), [Fo4, Fo4, Fo4Dx]);
     assert_eq!(
-        split(&Settings::get(Game::Fo4), sources()).merge(NO_MERGE)[0].max_size(),
+        split(&Settings::get(Game::Fo4), sources()).merge(NO_MERGE)[0].archive_limit(),
         4_194_304_000
     );
 }
