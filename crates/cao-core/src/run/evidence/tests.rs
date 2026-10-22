@@ -168,21 +168,20 @@ fn an_unfinished_preparation_is_absent() {
     assert!(consume_after_cleanup(evidence).preparation().is_none());
 }
 
-/// Origin: RunEvidenceTests::laterPhaseRecordsReplaceWithoutReordering.
+/// Origin: RunEvidenceTests::laterPhaseRecordsReplaceWithoutReordering. The
+/// progress each attempt advances replaces its phase's record in place.
 #[test]
 fn a_later_record_of_a_phase_replaces_it_in_place() {
-    let mut evidence = MutableRunEvidence::new(None);
-    evidence
-        .record_phase(executed(RunPhase::Preparing))
+    let mut evidence = discovering(None);
+    let mut extraction = evidence.open_archive_extraction(3).unwrap();
+    extraction
+        .record(extraction_attempt("first.bsa", None))
         .unwrap();
-    evidence
-        .record_phase(executed(RunPhase::DiscoveringArchives))
-        .unwrap();
-    evidence
-        .record_phase(progress(RunPhase::ExtractingArchives, 3, 0, 0))
-        .unwrap();
-    evidence
-        .record_phase(progress(RunPhase::ExtractingArchives, 3, 1, 1))
+    extraction
+        .record(extraction_attempt(
+            "second.bsa",
+            Some(ArchiveExtractionFailure::ExtractionFailed),
+        ))
         .unwrap();
 
     let terminal = consume_after_cleanup(evidence);
@@ -228,24 +227,28 @@ fn phase_order_violations_are_rejected() {
         .unwrap();
     // Phases may be skipped over, never revisited.
     evidence
-        .record_phase(progress(RunPhase::ProcessingAssets, 1, 0, 0))
+        .record_phase(executed(RunPhase::BuildingEffectiveAssetTree))
         .unwrap();
-    assert!(is_invariant(
-        evidence.record_phase(executed(RunPhase::ExtractingArchives))
-    ));
-    assert!(is_invariant(
-        evidence.record_phase(executed(RunPhase::Preparing))
-    ));
+    for revisited in [RunPhase::DiscoveringArchives, RunPhase::Preparing] {
+        assert_eq!(
+            invariant(evidence.record_phase(executed(revisited))),
+            Some("Run Phases must follow canonical traversal order"),
+            "{revisited:?}"
+        );
+    }
 }
 
-/// Origin: RunEvidenceTests::progressRegressionsAreRejected.
+/// Origin: RunEvidenceTests::progressRegressionsAreRejected. The general
+/// transition validates determinate progress for any phase it accepts; the
+/// attempt-bearing phases reach it only through their handles, which always
+/// advance it by one attempt.
 #[test]
 fn phase_progress_cannot_start_late_change_total_regress_or_overflow() {
     let mut evidence = MutableRunEvidence::new(None);
     evidence
         .record_phase(executed(RunPhase::Preparing))
         .unwrap();
-    let phase = RunPhase::ExtractingArchives;
+    let phase = RunPhase::BuildingEffectiveAssetTree;
     assert!(
         is_invariant(evidence.record_phase(progress(phase, 4, 1, 0))),
         "a first record starts at zero"
@@ -552,14 +555,8 @@ fn sealed_mutation_summaries_count_completed_attempts() {
             mutation != MutationState::PartialOrUnknown,
         )
     };
-    let mut evidence = MutableRunEvidence::new(None);
-    evidence
-        .record_phase(executed(RunPhase::Preparing))
-        .unwrap();
-    evidence
-        .record_phase(executed(RunPhase::DiscoveringArchives))
-        .unwrap();
-    evidence.record_archive_extraction_plan(3).unwrap();
+    let mut evidence = discovering(None);
+    let mut extracting = evidence.open_archive_extraction(3).unwrap();
     for attempt in [
         extraction(
             "first.bsa",
@@ -583,7 +580,7 @@ fn sealed_mutation_summaries_count_completed_attempts() {
             ),
         ),
     ] {
-        evidence.record_archive_extraction_attempt(attempt).unwrap();
+        extracting.record(attempt).unwrap();
     }
     evidence
         .record_phase(executed(RunPhase::ArchiveFinalization))
@@ -911,34 +908,6 @@ fn skipped_archive_counts_alone_report_no_nested_archives() {
     assert_eq!(undiscovered.archive_discovery(), None);
 }
 
-/// Definitive routing follows only a complete Effective Asset Tree: both
-/// Archive discovery facts must be recorded first.
-#[test]
-fn definitive_routing_requires_both_archive_discovery_facts() {
-    const INCOMPLETE: &str =
-        "Routing Ledger requires completed, successful Effective Asset Tree discovery";
-
-    let mut partial = in_phase(RunPhase::BuildingEffectiveAssetTree);
-    partial
-        .record_skipped_archive_counts(BTreeMap::new())
-        .unwrap();
-    assert_eq!(
-        invariant(partial.record_routing_ledger(texture_ledger(1))),
-        Some(INCOMPLETE),
-        "only the skipped Archive counts"
-    );
-    partial.record_nested_archive_count(0).unwrap();
-    partial.record_routing_ledger(texture_ledger(1)).unwrap();
-
-    let mut uncounted = in_phase(RunPhase::BuildingEffectiveAssetTree);
-    uncounted.record_nested_archive_count(0).unwrap();
-    assert_eq!(
-        invariant(uncounted.record_routing_ledger(texture_ledger(1))),
-        Some(INCOMPLETE),
-        "only the nested Archive count"
-    );
-}
-
 /// An extraction attempt at `archive` that mutated nothing, failed with
 /// `failure` when one is given.
 fn extraction_attempt(
@@ -959,12 +928,9 @@ fn extraction_attempt(
     }
 }
 
-/// Evidence in Extracting Archives with a planned total of `total`,
+/// Evidence in Discovering Archives, ready to open Archive extraction,
 /// optionally reporting to `sink`.
-fn extracting(
-    sink: Option<&dyn crate::run::RunObservationSink>,
-    total: usize,
-) -> MutableRunEvidence<'_> {
+fn discovering(sink: Option<&dyn crate::run::RunObservationSink>) -> MutableRunEvidence<'_> {
     let mut evidence = MutableRunEvidence::new(sink);
     evidence
         .record_phase(executed(RunPhase::Preparing))
@@ -972,7 +938,6 @@ fn extracting(
     evidence
         .record_phase(executed(RunPhase::DiscoveringArchives))
         .unwrap();
-    evidence.record_archive_extraction_plan(total).unwrap();
     evidence
 }
 
@@ -989,31 +954,31 @@ fn texture_ledger(count: usize) -> RoutingLedger {
         .route_all((0..count).map(|index| PathBuf::from(format!("mod-root/textures/{index}.dds"))))
 }
 
-/// Evidence that has retained `ledger` as its definitive routing, with
-/// Building Effective Asset Tree still current, optionally reporting to
+/// Evidence that has completed a successful Effective Asset Tree discovery,
+/// with Building Effective Asset Tree still current, ready to open
+/// Processing Assets with its definitive routing, optionally reporting to
 /// `sink`.
-fn routed(
-    sink: Option<&dyn crate::run::RunObservationSink>,
-    ledger: RoutingLedger,
-) -> MutableRunEvidence<'_> {
+fn discovered(sink: Option<&dyn crate::run::RunObservationSink>) -> MutableRunEvidence<'_> {
     let mut evidence = MutableRunEvidence::new(sink);
     evidence
         .record_phase(executed(RunPhase::Preparing))
         .unwrap();
-    evidence.record_effective_asset_tree_started().unwrap();
+    evidence
+        .record_phase(executed(RunPhase::BuildingEffectiveAssetTree))
+        .unwrap();
     evidence
         .record_skipped_archive_counts(BTreeMap::new())
         .unwrap();
     evidence.record_nested_archive_count(0).unwrap();
-    evidence.record_routing_ledger(ledger).unwrap();
     evidence
 }
 
-/// The first Routed Asset of the evidence's definitive routing.
-fn first_routed_asset(evidence: &MutableRunEvidence<'_>) -> RoutedAsset {
-    evidence
-        .routing_ledger()
-        .and_then(|ledger| ledger.routed_assets().first().cloned())
+/// The first Routed Asset of `ledger`.
+fn first_routed_asset(ledger: &RoutingLedger) -> RoutedAsset {
+    ledger
+        .routed_assets()
+        .first()
+        .cloned()
         .expect("the routing holds a Routed Asset")
 }
 
@@ -1054,21 +1019,21 @@ fn published_progress(sink: &RecordingSink, phase: RunPhase) -> Vec<(usize, usiz
 #[test]
 fn an_extraction_attempt_advances_its_planned_progress() {
     let sink = RecordingSink::default();
-    let mut evidence = extracting(Some(&sink), 2);
+    let mut evidence = discovering(Some(&sink));
+    let mut extraction = evidence.open_archive_extraction(2).unwrap();
 
-    evidence
-        .record_archive_extraction_attempt(extraction_attempt("first.bsa", None))
+    extraction
+        .record(extraction_attempt("first.bsa", None))
         .unwrap();
-    evidence
-        .record_archive_extraction_attempt(extraction_attempt(
+    extraction
+        .record(extraction_attempt(
             "second.bsa",
             Some(ArchiveExtractionFailure::ExtractionFailed),
         ))
         .unwrap();
-    assert!(
-        is_invariant(
-            evidence.record_archive_extraction_attempt(extraction_attempt("third.bsa", None))
-        ),
+    assert_eq!(
+        invariant(extraction.record(extraction_attempt("third.bsa", None))),
+        Some("Archive extraction attempts cannot exceed the planned total"),
         "an attempt beyond the planned total"
     );
 
@@ -1091,18 +1056,16 @@ fn an_extraction_attempt_advances_its_planned_progress() {
 #[test]
 fn an_asset_attempt_advances_its_planned_progress() {
     let sink = RecordingSink::default();
-    let mut evidence = routed(Some(&sink), texture_ledger(2));
-    evidence.record_asset_processing_plan(2).unwrap();
-    let asset = first_routed_asset(&evidence);
+    let mut evidence = discovered(Some(&sink));
+    let ledger = texture_ledger(2);
+    let asset = first_routed_asset(&ledger);
+    let mut assets = evidence.open_processing_assets(ledger).unwrap();
 
-    evidence
-        .record_asset_attempt(asset_attempt(asset.clone(), true))
-        .unwrap();
-    evidence
-        .record_asset_attempt(asset_attempt(asset.clone(), false))
-        .unwrap();
-    assert!(
-        is_invariant(evidence.record_asset_attempt(asset_attempt(asset, false))),
+    assets.record(asset_attempt(asset.clone(), true)).unwrap();
+    assets.record(asset_attempt(asset.clone(), false)).unwrap();
+    assert_eq!(
+        invariant(assets.record(asset_attempt(asset, false))),
+        Some("Asset attempts cannot exceed the routed-work total"),
         "an attempt beyond the planned total"
     );
 
@@ -1170,84 +1133,41 @@ fn a_finalization_attempt_advances_its_planned_progress() {
     assert_eq!(archives, ["first.bsa", "second.bsa"]);
 }
 
-/// Each attempt kind is rejected when its own Run Phase is not the
-/// current, executed one: before it, after it, or when it was skipped.
+/// An Archive Finalization attempt is rejected when its Run Phase is not the
+/// current, executed one. Extraction and Asset attempts reach the evidence
+/// only through their open phase's handle, which borrows it exclusively, so
+/// they cannot be recorded outside their phase.
 #[test]
 fn attempts_outside_their_run_phase_are_rejected() {
-    let cases: [RejectionCase; 6] = [
-        ("an extraction attempt during Preparing", || {
-            let mut evidence = MutableRunEvidence::new(None);
-            evidence.record_phase(executed(RunPhase::Preparing))?;
-            evidence.record_archive_extraction_attempt(extraction_attempt("a.bsa", None))
-        }),
-        (
-            "an extraction attempt after Dry Run skipped the phase",
-            || {
-                let mut evidence = MutableRunEvidence::new(None);
-                evidence.record_phase(executed(RunPhase::Preparing))?;
-                evidence.record_dry_run_archive_extraction()?;
-                evidence.record_archive_extraction_attempt(extraction_attempt("a.bsa", None))
-            },
-        ),
-        ("an extraction attempt after its phase ended", || {
-            let mut evidence = extracting(None, 1);
-            evidence.record_effective_asset_tree_started()?;
-            evidence.record_archive_extraction_attempt(extraction_attempt("a.bsa", None))
-        }),
-        ("an Asset attempt before Processing Assets", || {
-            let mut evidence = routed(None, texture_ledger(1));
-            let asset = first_routed_asset(&evidence);
-            evidence.record_asset_attempt(asset_attempt(asset, false))
-        }),
-        ("an Asset attempt during Archive Finalization", || {
-            let mut evidence = routed(None, texture_ledger(1));
-            evidence.record_asset_processing_plan(1)?;
-            let asset = first_routed_asset(&evidence);
-            evidence.record_phase(executed(RunPhase::ArchiveFinalization))?;
-            evidence.record_asset_attempt(asset_attempt(asset, false))
-        }),
-        ("a finalization attempt during Processing Assets", || {
-            let mut evidence = routed(None, texture_ledger(1));
-            evidence.record_asset_processing_plan(1)?;
-            evidence.record_archive_finalization_attempt(finalization_attempt(
-                "a.bsa",
-                "mod-root",
-                MutationState::Committed,
-                None,
-            ))
-        }),
-    ];
+    let cases: [RejectionCase; 1] = [("a finalization attempt during Processing Assets", || {
+        let mut evidence = discovered(None);
+        evidence.open_processing_assets(texture_ledger(1))?;
+        evidence.record_archive_finalization_attempt(finalization_attempt(
+            "a.bsa",
+            "mod-root",
+            MutationState::Committed,
+            None,
+        ))
+    })];
     for (case, record) in cases {
         assert!(is_invariant(record()), "{case}");
     }
 }
 
-/// Each attempt kind is rejected while its Run Phase is current but has no
-/// planned total yet.
+/// An Archive Finalization attempt is rejected while its Run Phase is
+/// current but has no planned total yet. Opening Archive extraction or
+/// Processing Assets always plans its total, so neither phase has an
+/// unplanned state.
 #[test]
 fn attempts_before_their_plan_are_rejected() {
-    let cases: [RejectionCase; 3] = [
-        ("an extraction attempt", || {
-            let mut evidence = MutableRunEvidence::new(None);
-            evidence.record_phase(executed(RunPhase::Preparing))?;
-            evidence.record_phase(executed(RunPhase::ExtractingArchives))?;
-            evidence.record_archive_extraction_attempt(extraction_attempt("a.bsa", None))
-        }),
-        ("an Asset attempt", || {
-            let mut evidence = routed(None, texture_ledger(1));
-            let asset = first_routed_asset(&evidence);
-            evidence.record_phase(executed(RunPhase::ProcessingAssets))?;
-            evidence.record_asset_attempt(asset_attempt(asset, false))
-        }),
-        ("a finalization attempt", || {
-            finalizing(None).record_archive_finalization_attempt(finalization_attempt(
-                "a.bsa",
-                "mod-root",
-                MutationState::Committed,
-                None,
-            ))
-        }),
-    ];
+    let cases: [RejectionCase; 1] = [("a finalization attempt", || {
+        finalizing(None).record_archive_finalization_attempt(finalization_attempt(
+            "a.bsa",
+            "mod-root",
+            MutationState::Committed,
+            None,
+        ))
+    })];
     for (case, record) in cases {
         assert!(is_invariant(record()), "{case}");
     }
@@ -1281,8 +1201,8 @@ fn finalization_attempt_rejections_keep_their_messages() {
     let cases: [(RejectionCase, &str); 5] = [
         (
             ("an attempt before the phase", || {
-                let mut evidence = routed(None, texture_ledger(1));
-                evidence.record_asset_processing_plan(1)?;
+                let mut evidence = discovered(None);
+                evidence.open_processing_assets(texture_ledger(1))?;
                 evidence.record_archive_finalization_attempt(attempt())
             }),
             PLAN,
@@ -1383,25 +1303,173 @@ fn a_finalization_plan_after_its_result_is_rejected() {
     );
 }
 
-/// Processing Assets is planned only with the definitive Routing Ledger's
-/// routed total, and never without a retained ledger.
+/// Opening Processing Assets retains the definitive Routing Ledger it is
+/// given and plans the phase's determinate progress from that ledger's
+/// Routed Assets, so no caller passes a total. An empty ledger plans zero.
 #[test]
-fn the_asset_processing_plan_must_match_the_routing_ledger() {
-    let mut evidence = routed(None, texture_ledger(2));
-    for total in [1, 3] {
-        assert!(
-            is_invariant(evidence.record_asset_processing_plan(total)),
-            "a total of {total} against two routed Assets"
-        );
-    }
-    evidence.record_asset_processing_plan(2).unwrap();
+fn opening_processing_assets_derives_its_total_from_the_retained_routing_ledger() {
+    for routed_assets in [0, 3] {
+        let sink = RecordingSink::default();
+        let mut evidence = discovered(Some(&sink));
+        let ledger = texture_ledger(routed_assets);
 
-    let mut unrouted = MutableRunEvidence::new(None);
-    unrouted
-        .record_phase(executed(RunPhase::Preparing))
-        .unwrap();
-    assert!(
-        is_invariant(unrouted.record_asset_processing_plan(0)),
-        "a plan without a Routing Ledger"
-    );
+        evidence.open_processing_assets(ledger.clone()).unwrap();
+
+        assert_eq!(
+            published_progress(&sink, RunPhase::ProcessingAssets),
+            [(routed_assets, 0, 0)],
+            "{routed_assets} Routed Assets"
+        );
+        assert_eq!(evidence.routing_ledger(), Some(&ledger));
+        let terminal = consume_after_cleanup(evidence);
+        assert_eq!(terminal.routing_ledger(), Some(&ledger));
+    }
+}
+
+/// One row of an opening table: what it describes, and the evidence the
+/// opening is then attempted on.
+type OpeningCase = (&'static str, fn() -> MutableRunEvidence<'static>);
+
+/// Processing Assets opens only on a completed, successful Effective Asset
+/// Tree discovery, and only once; a refused opening retains no Routing
+/// Ledger and records no phase.
+#[test]
+fn processing_assets_opens_only_after_successful_effective_asset_tree_discovery() {
+    const UNROUTED: &str =
+        "Routing Ledger requires completed, successful Effective Asset Tree discovery";
+    let cases: [OpeningCase; 6] = [
+        ("during Preparing", || {
+            let mut evidence = MutableRunEvidence::new(None);
+            evidence
+                .record_phase(executed(RunPhase::Preparing))
+                .unwrap();
+            evidence
+        }),
+        ("without the Archive discovery facts", || {
+            let mut evidence = MutableRunEvidence::new(None);
+            evidence
+                .record_phase(executed(RunPhase::Preparing))
+                .unwrap();
+            evidence
+                .record_phase(executed(RunPhase::BuildingEffectiveAssetTree))
+                .unwrap();
+            evidence
+        }),
+        // A partial definitive pass records the skipped counts but no
+        // nested count, so it never becomes definitive routing.
+        ("with only the skipped Archive counts", || {
+            let mut evidence = in_phase(RunPhase::BuildingEffectiveAssetTree);
+            evidence
+                .record_skipped_archive_counts(BTreeMap::new())
+                .unwrap();
+            evidence
+        }),
+        ("with only the nested Archive count", || {
+            let mut evidence = in_phase(RunPhase::BuildingEffectiveAssetTree);
+            evidence.record_nested_archive_count(0).unwrap();
+            evidence
+        }),
+        ("after a Run Failure", || {
+            let mut evidence = discovered(None);
+            evidence.record_failure(RunFailure::new(
+                RunFailureCode::RunWorkEscaped,
+                RunPhase::BuildingEffectiveAssetTree,
+                "escaped",
+            ));
+            evidence
+        }),
+        ("a second time", || {
+            let mut evidence = discovered(None);
+            evidence.open_processing_assets(texture_ledger(1)).unwrap();
+            evidence
+        }),
+    ];
+    for (case, evidence) in cases {
+        let mut evidence = evidence();
+        let before = evidence.current_phase().copied();
+        let retained = evidence.routing_ledger().cloned();
+
+        assert_eq!(
+            invariant(evidence.open_processing_assets(texture_ledger(2)).map(drop)),
+            Some(UNROUTED),
+            "{case}"
+        );
+        assert_eq!(evidence.current_phase().copied(), before, "{case}");
+        assert_eq!(evidence.routing_ledger().cloned(), retained, "{case}");
+    }
+}
+
+/// The Run Evidence invariant the general phase transition reports for an
+/// executed record of an attempt-bearing Run Phase.
+const HANDLE_ONLY: &str =
+    "An attempt-bearing Run Phase can only be executed through its attempt-phase handle";
+
+/// Asserts that the general phase transition refuses every executed record
+/// of `phase`, determinate or not, and records nothing for it, yet still
+/// accepts the phase's skip.
+fn assert_only_its_handle_executes(phase: RunPhase, skip: PhaseSkipReason) {
+    for record in [executed(phase), progress(phase, 1, 0, 0)] {
+        let sink = RecordingSink::default();
+        let mut evidence = MutableRunEvidence::new(Some(&sink));
+        evidence
+            .record_phase(executed(RunPhase::Preparing))
+            .unwrap();
+
+        assert_eq!(
+            invariant(evidence.record_phase(record)),
+            Some(HANDLE_ONLY),
+            "{record:?}"
+        );
+        assert!(evidence.phase(phase).is_none(), "{record:?}");
+        assert_eq!(sink.phase_order(), [RunPhase::Preparing], "{record:?}");
+
+        evidence
+            .record_phase(RunPhaseRecord::skipped(phase, skip))
+            .unwrap();
+    }
+}
+
+/// Extracting Archives executes only through the handle opening Archive
+/// extraction, so no producer can account for its attempts or progress
+/// outside it. Dry Run still skips it through the general transition.
+#[test]
+fn the_general_transition_rejects_an_executed_extracting_archives_record() {
+    assert_only_its_handle_executes(RunPhase::ExtractingArchives, PhaseSkipReason::DryRun);
+}
+
+/// Processing Assets executes only through the handle opening it with the
+/// definitive Routing Ledger. A run with no requested work still skips it
+/// through the general transition.
+#[test]
+fn the_general_transition_rejects_an_executed_processing_assets_record() {
+    assert_only_its_handle_executes(RunPhase::ProcessingAssets, PhaseSkipReason::NoRequestedWork);
+}
+
+/// An Asset attempt's diagnostics are retained through the open Processing
+/// Assets handle, which holds the evidence exclusively, and wait for the
+/// run's next publication rather than reaching the sink at once.
+#[test]
+fn a_diagnostic_retained_through_the_asset_handle_waits_for_publication() {
+    let sink = RecordingSink::default();
+    let mut evidence = discovered(Some(&sink));
+    let mut assets = evidence.open_processing_assets(texture_ledger(1)).unwrap();
+
+    assets.retain_diagnostic(RunDiagnostic::new(
+        RunDiagnosticCode::PluginUnreadable,
+        RunPhase::ProcessingAssets,
+        "deferred",
+    ));
+    let published = |sink: &RecordingSink| {
+        sink.observed()
+            .iter()
+            .filter(|observed| observed.kind() == "diagnostic")
+            .count()
+    };
+    assert_eq!(published(&sink), 0, "retained, not yet published");
+
+    evidence.publish_diagnostics();
+    assert_eq!(published(&sink), 1);
+    let terminal = consume_after_cleanup(evidence);
+    assert_eq!(terminal.diagnostics().len(), 1);
+    assert_eq!(terminal.diagnostics()[0].detail, "deferred");
 }

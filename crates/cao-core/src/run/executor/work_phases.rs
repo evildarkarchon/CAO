@@ -28,10 +28,10 @@ use crate::routing::{
 };
 use crate::run::archives::{Preflight, RootArchives, archive_order_key, relative_game_path};
 use crate::run::{
-    ArchiveExtractionPlan, AssetInitializationCancelled, CancellationToken, MutableRunEvidence,
-    PhaseSkipReason, RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode, RunPhase,
-    RunPhaseRecord, RunPreparation, RunToolset, TemporaryArtifactRegistry, is_staging_name,
-    take_panic_message,
+    ArchiveExtractionPlan, ArchiveExtractionResult, AssetInitializationCancelled,
+    AttemptPhaseHandle, CancellationToken, MutableRunEvidence, PhaseSkipReason, RoutedAssetAttempt,
+    RunDiagnostic, RunDiagnosticCode, RunPhase, RunPhaseRecord, RunPreparation, RunToolset,
+    TemporaryArtifactRegistry, is_staging_name, take_panic_message,
 };
 
 /// Walks Mod Roots for regular files under the scope rules both discovery passes share.
@@ -212,7 +212,10 @@ pub(super) fn run_work_phases(
     let mode = policy.execution_mode();
     let router = AssetRouter::new(policy.clone());
 
-    evidence.record_archive_discovery_started()?;
+    evidence.record_phase(RunPhaseRecord::executed(
+        RunPhase::DiscoveringArchives,
+        None,
+    ))?;
 
     let mut discovery = Discovery {
         stop,
@@ -293,9 +296,16 @@ pub(super) fn run_work_phases(
     if stop.is_cancelled() {
         return Ok(());
     }
-    match mode {
-        ExecutionMode::DryRun => evidence.record_dry_run_archive_extraction()?,
-        ExecutionMode::Apply => evidence.record_archive_extraction_plan(plans.len())?,
+    // Dry Run skips Archive extraction, so only Apply opens its handle.
+    let extraction = match mode {
+        ExecutionMode::DryRun => {
+            evidence.record_phase(RunPhaseRecord::skipped(
+                RunPhase::ExtractingArchives,
+                PhaseSkipReason::DryRun,
+            ))?;
+            None
+        }
+        ExecutionMode::Apply => Some(evidence.open_archive_extraction(plans.len())?),
     };
     if stop.is_cancelled() {
         return Ok(());
@@ -303,11 +313,14 @@ pub(super) fn run_work_phases(
 
     // Cancellation stops before the definitive pass, and an unsafe attempt
     // never reaches routing or finalization.
-    if extract_archives(&plans, toolset, evidence, artifacts, stop)?.is_some() {
+    if extract_archives(&plans, toolset, extraction, artifacts, stop)?.is_some() {
         return Ok(());
     }
 
-    evidence.record_effective_asset_tree_started()?;
+    evidence.record_phase(RunPhaseRecord::executed(
+        RunPhase::BuildingEffectiveAssetTree,
+        None,
+    ))?;
     if stop.is_cancelled() {
         return Ok(());
     }
@@ -340,14 +353,10 @@ pub(super) fn run_work_phases(
     // Only a complete definitive pass establishes the nested count; a
     // partial one records none, so it reports no nested Archives.
     evidence.record_nested_archive_count(nested_archives.len())?;
-    evidence.record_routing_ledger(router.route_all(&effective_paths))?;
-
-    // A copy, so the loop can iterate it while recording attempts.
-    let ledger = evidence
-        .routing_ledger()
-        .cloned()
-        .expect("the Routing Ledger was just recorded");
-    evidence.record_asset_processing_plan(ledger.routed_assets().len())?;
+    let ledger = router.route_all(&effective_paths);
+    // The evidence retains the ledger it opens Processing Assets with; this
+    // copy lets the loop iterate it while the handle records attempts.
+    let mut assets = evidence.open_processing_assets(ledger.clone())?;
     for target in [
         OptimizerTarget::Texture,
         OptimizerTarget::Mesh,
@@ -372,8 +381,10 @@ pub(super) fn run_work_phases(
                 Some(mod_root) => {
                     // An Asset attempt's diagnostics are retained, not published,
                     // so they publish with the run's other deferred diagnostics.
+                    // The open phase's handle holds the evidence, so they are
+                    // retained through it.
                     let mut retain =
-                        |diagnostic: RunDiagnostic| evidence.retain_diagnostic(diagnostic);
+                        |diagnostic: RunDiagnostic| assets.retain_diagnostic(diagnostic);
                     match catch_unwind(AssertUnwindSafe(|| {
                         toolset.asset_attempt().attempt(
                             asset,
@@ -408,7 +419,7 @@ pub(super) fn run_work_phases(
             };
             let (mod_root, result) = attempt;
             let safe_to_continue = result.safe_to_continue();
-            evidence.record_asset_attempt(RoutedAssetAttempt {
+            assets.record(RoutedAssetAttempt {
                 mod_root,
                 asset: asset.clone(),
                 result,
@@ -480,13 +491,20 @@ enum ExtractionStop {
 /// continue, so `PartialOrUnknown` mutation stops it even when the attempt
 /// claims otherwise. Returns `None` when every plan was
 /// attempted and the run may continue.
+///
+/// Attempts are recorded through `extraction`, the open phase's handle,
+/// which this call consumes, so the phase closes when it returns. Dry Run
+/// skips the phase, opening no handle, and has no plans.
 fn extract_archives(
     plans: &[ArchiveExtractionPlan],
     toolset: &RunToolset,
-    evidence: &mut MutableRunEvidence<'_>,
+    extraction: Option<AttemptPhaseHandle<'_, '_, ArchiveExtractionResult>>,
     artifacts: &mut TemporaryArtifactRegistry,
     stop: &CancellationToken,
 ) -> Result<Option<ExtractionStop>, Error> {
+    let Some(mut extraction) = extraction else {
+        return Ok(None);
+    };
     if plans.is_empty() {
         // No attempt ran, so there is none to re-sample cancellation after:
         // the caller's own checks around this phase observe it.
@@ -502,7 +520,7 @@ fn extract_archives(
         // partial mutation stops the run regardless.
         let unsafe_attempt = !attempt.safe_to_continue();
         attempt.mod_root = plan.mod_root.clone();
-        evidence.record_archive_extraction_attempt(attempt)?;
+        extraction.record(attempt)?;
         if unsafe_attempt {
             return Ok(Some(ExtractionStop::Unsafe));
         }

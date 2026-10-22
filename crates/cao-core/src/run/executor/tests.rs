@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use super::{RunEvidenceInvariantPanic, RunExecutor, RunServices, RunWork};
 use crate::Error;
-use crate::routing::{ExecutionMode, RequestedWork};
+use crate::routing::{ExecutionMode, RequestedWork, RoutingLedger};
 use crate::run::{
     CancellationToken, ModSelection, MutableRunEvidence, OptimizationRunResult, RunDiagnostic,
     RunDiagnosticCode, RunFailureCode, RunObservationSink, RunOutcome, RunPhase, RunPhaseRecord,
@@ -95,7 +95,10 @@ fn discover_and_stage(
     evidence: &mut MutableRunEvidence<'_>,
     artifacts: &mut TemporaryArtifactRegistry,
 ) -> Result<PathBuf, Error> {
-    evidence.record_archive_discovery_started()?;
+    evidence.record_phase(RunPhaseRecord::executed(
+        RunPhase::DiscoveringArchives,
+        None,
+    ))?;
     let root = &preparation.mod_roots()[0];
     let receipt = artifacts
         .capture_and_stage_file(root, &root.join("textures").join("a.dds"))
@@ -285,8 +288,11 @@ fn an_evidence_invariant_violation_panics_only_after_safety_cleanup() {
             &mut cleanup,
             |preparation, _toolset, evidence, artifacts, _stop| {
                 staged = Some(discover_and_stage(preparation, evidence, artifacts)?);
-                // Planning Processing Assets before any routing is a producer bug.
-                evidence.record_asset_processing_plan(3)
+                // Opening Processing Assets before any Effective Asset Tree
+                // discovery is a producer bug.
+                evidence
+                    .open_processing_assets(RoutingLedger::default())
+                    .map(drop)
             },
         )
     }));
