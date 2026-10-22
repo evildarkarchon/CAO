@@ -102,8 +102,8 @@ fn several_mods(ui: &MainWindow) {
 /// another game shows the choice again.
 fn separate_textures(ui: &MainWindow) {
     let bsa = ui.global::<BsaTab>();
-    let forced =
-        archive_rules(bsa.get_game_index()).is_some_and(|rules| rules.keeps_textures_separate());
+    let forced = game_default_rules(bsa.get_game_index())
+        .is_some_and(|rules| rules.keeps_textures_separate());
     ui.global::<UiRules>().set_separate_textures_forced(forced);
 }
 
@@ -119,7 +119,7 @@ fn separate_textures(ui: &MainWindow) {
 ///   it, and another game shows it again.
 fn archive_limit(ui: &MainWindow) {
     let bsa = ui.global::<BsaTab>();
-    let rules = archive_rules(bsa.get_game_index());
+    let rules = game_default_rules(bsa.get_game_index());
     if !bsa.get_archive_limit_given()
         && let Some(rules) = &rules
     {
@@ -134,6 +134,6 @@ fn archive_limit(ui: &MainWindow) {
 /// game the Game combo shows at `game_index`; `None` for no selection. The
 /// game's facts (its Archive Size Cap, its default Archive Limit, whether it
 /// keeps Textures separate) are the same whatever size a Profile asks for.
-fn archive_rules(game_index: i32) -> Option<Settings> {
+fn game_default_rules(game_index: i32) -> Option<Settings> {
     form::game_at(game_index).map(|game| Settings::for_profile(game, None))
 }
