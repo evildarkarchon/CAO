@@ -1122,41 +1122,108 @@ fn attempts_before_their_plan_are_rejected() {
     );
 }
 
-/// Finishing consumes the finalization handle, so no attempt can follow it
-/// on that handle. Reopening the finished phase gives no way back in: a
-/// planned phase cannot be reopened at all, as its progress cannot become
-/// indeterminate again, and a phase reopened after finishing unplanned
-/// still refuses the attempt and keeps its account.
-#[test]
-fn a_finalization_attempt_after_finish_is_rejected() {
-    let attempt = || finalization_attempt("late.bsa", "mod-root", MutationState::Committed, None);
+/// The Run Evidence invariant an opener reports for an attempt-bearing Run
+/// Phase that was already opened, finished or skipped.
+const OPENED_ONCE: &str = "An attempt-bearing Run Phase can only be opened once";
 
-    let mut planned = ready_to_finalize(None);
-    let mut finalization = planned.open_archive_finalization().unwrap();
-    finalization.plan(1).unwrap();
-    finalization
-        .finish(ArchiveFinalizationAccount::default())
+/// Archive extraction opens once: a second opening, even of a phase that
+/// recorded no attempt yet, is refused, leaving the phase's record as it was
+/// and publishing nothing more.
+#[test]
+fn archive_extraction_cannot_be_reopened() {
+    let sink = RecordingSink::default();
+    let mut evidence = discovering(Some(&sink));
+    evidence.open_archive_extraction(2).unwrap();
+
+    assert_eq!(
+        invariant(evidence.open_archive_extraction(2).map(drop)),
+        Some(OPENED_ONCE)
+    );
+    assert_eq!(
+        published_progress(&sink, RunPhase::ExtractingArchives),
+        [(2, 0, 0)],
+        "the refused opening publishes no duplicate phase record"
+    );
+    assert_eq!(
+        evidence.current_phase(),
+        Some(&progress(RunPhase::ExtractingArchives, 2, 0, 0))
+    );
+}
+
+/// Archive Finalization opens once: whether the phase was finished unplanned,
+/// finished after its plan, or only opened, a second opening is refused, so
+/// the finished phase's account and output total cannot be replaced and no
+/// duplicate phase record is published.
+#[test]
+fn archive_finalization_cannot_be_reopened() {
+    let cases: [OpeningCase; 3] = [
+        ("after an unplanned finish", || {
+            let mut evidence = ready_to_finalize(None);
+            evidence
+                .open_archive_finalization()
+                .unwrap()
+                .finish(ArchiveFinalizationAccount {
+                    cancelled: true,
+                    ..ArchiveFinalizationAccount::default()
+                })
+                .unwrap();
+            evidence
+        }),
+        ("after a planned finish", || {
+            let mut evidence = ready_to_finalize(None);
+            let mut finalization = evidence.open_archive_finalization().unwrap();
+            finalization.plan(1).unwrap();
+            finalization
+                .finish(ArchiveFinalizationAccount::default())
+                .unwrap();
+            evidence
+        }),
+        ("while still open and unplanned", || {
+            let mut evidence = ready_to_finalize(None);
+            evidence.open_archive_finalization().unwrap();
+            evidence
+        }),
+    ];
+    for (case, evidence) in cases {
+        let mut evidence = evidence();
+        let before = evidence.current_phase().copied();
+
+        assert_eq!(
+            invariant(evidence.open_archive_finalization().map(drop)),
+            Some(OPENED_ONCE),
+            "{case}"
+        );
+        assert_eq!(evidence.current_phase().copied(), before, "{case}");
+    }
+}
+
+/// A skipped attempt-bearing Run Phase cannot be opened afterwards: its
+/// skip is already its record.
+#[test]
+fn a_skipped_attempt_bearing_phase_cannot_be_opened() {
+    let mut extraction = discovering(None);
+    extraction
+        .record_phase(RunPhaseRecord::skipped(
+            RunPhase::ExtractingArchives,
+            PhaseSkipReason::DryRun,
+        ))
         .unwrap();
     assert_eq!(
-        invariant(planned.open_archive_finalization().map(drop)),
-        Some("Run Phase progress cannot become indeterminate")
+        invariant(extraction.open_archive_extraction(0).map(drop)),
+        Some(OPENED_ONCE)
     );
 
-    let mut unplanned = ready_to_finalize(None);
-    unplanned
-        .open_archive_finalization()
-        .unwrap()
-        .finish(ArchiveFinalizationAccount {
-            cancelled: true,
-            ..ArchiveFinalizationAccount::default()
-        })
+    let mut finalization = ready_to_finalize(None);
+    finalization
+        .record_phase(RunPhaseRecord::skipped(
+            RunPhase::ArchiveFinalization,
+            PhaseSkipReason::DryRun,
+        ))
         .unwrap();
-    let mut reopened = unplanned.open_archive_finalization().unwrap();
-    assert!(is_invariant(reopened.record(attempt())));
-    let terminal = consume_after_cleanup(unplanned);
-    let finalization = terminal.archive_finalization().unwrap();
-    assert!(finalization.attempts.is_empty());
-    assert!(finalization.cancelled);
+    assert_eq!(
+        invariant(finalization.open_archive_finalization().map(drop)),
+        Some(OPENED_ONCE)
+    );
 }
 
 /// Archive Finalization's attempt rejections keep their own messages: every
@@ -1171,20 +1238,10 @@ fn finalization_attempt_rejections_keep_their_messages() {
     fn attempt() -> ArchiveFinalizationAttempt {
         finalization_attempt("a.bsa", "mod-root", MutationState::Committed, None)
     }
-    let cases: [(RejectionCase, &str); 3] = [
+    let cases: [(RejectionCase, &str); 2] = [
         (
             ("an attempt before the plan", || {
                 let mut evidence = ready_to_finalize(None);
-                evidence.open_archive_finalization()?.record(attempt())
-            }),
-            PLAN,
-        ),
-        (
-            ("an attempt after an unplanned finish", || {
-                let mut evidence = ready_to_finalize(None);
-                evidence
-                    .open_archive_finalization()?
-                    .finish(ArchiveFinalizationAccount::default())?;
                 evidence.open_archive_finalization()?.record(attempt())
             }),
             PLAN,
@@ -1203,63 +1260,6 @@ fn finalization_attempt_rejections_keep_their_messages() {
     for ((case, record), expected) in cases {
         assert_eq!(invariant(record()), Some(expected), "{case}");
     }
-}
-
-/// No output total may follow Archive Finalization's finish, as when
-/// cancelled planning finished it without one; the plan would otherwise
-/// reopen the closed phase and replace its account.
-#[test]
-fn a_finalization_plan_after_finish_is_rejected() {
-    let mut evidence = ready_to_finalize(None);
-    evidence
-        .open_archive_finalization()
-        .unwrap()
-        .finish(ArchiveFinalizationAccount {
-            cancelled: true,
-            ..ArchiveFinalizationAccount::default()
-        })
-        .unwrap();
-
-    assert_eq!(
-        invariant(evidence.open_archive_finalization().unwrap().plan(1)),
-        Some("Archive Finalization needs an executed phase and one immutable plan")
-    );
-    let terminal = consume_after_cleanup(evidence);
-    assert!(terminal.archive_finalization().unwrap().cancelled);
-    assert!(
-        terminal
-            .phase(RunPhase::ArchiveFinalization)
-            .unwrap()
-            .progress()
-            .is_none()
-    );
-}
-
-/// The phase finishes once: a phase reopened after finishing unplanned
-/// refuses a second account, keeping the first.
-#[test]
-fn a_finalization_finishes_once() {
-    let mut evidence = ready_to_finalize(None);
-    evidence
-        .open_archive_finalization()
-        .unwrap()
-        .finish(ArchiveFinalizationAccount {
-            detail: "first".to_owned(),
-            ..ArchiveFinalizationAccount::default()
-        })
-        .unwrap();
-
-    assert_eq!(
-        invariant(evidence.open_archive_finalization().unwrap().finish(
-            ArchiveFinalizationAccount {
-                detail: "second".to_owned(),
-                ..ArchiveFinalizationAccount::default()
-            }
-        )),
-        Some("Archive Finalization results require the executed work phase exactly once")
-    );
-    let terminal = consume_after_cleanup(evidence);
-    assert_eq!(terminal.archive_finalization().unwrap().detail, "first");
 }
 
 /// The public Archive Finalization result is put together by the evidence

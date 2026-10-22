@@ -404,6 +404,27 @@ impl<'a> MutableRunEvidence<'a> {
         self.accept_phase(record)
     }
 
+    /// Enters an attempt-bearing Run Phase with its opening `record`, once.
+    ///
+    /// Every opener goes through here rather than straight to
+    /// [`Self::accept_phase`], which would accept an opening of the current
+    /// phase as a same-phase replacement: a phase that finished unplanned, or
+    /// opened with no attempt yet, could then be reopened, publishing a
+    /// duplicate phase record and handing out a second handle.
+    ///
+    /// # Errors
+    /// A Run Evidence invariant violation, recording nothing, when the
+    /// phase already has a record, executed or skipped, or cannot be entered
+    /// next in canonical traversal order.
+    fn open_attempt_phase(&mut self, record: RunPhaseRecord) -> Result<(), Error> {
+        if self.storage.phase(record.phase()).is_some() {
+            return Err(Error::EvidenceInvariant(
+                "An attempt-bearing Run Phase can only be opened once",
+            ));
+        }
+        self.accept_phase(record)
+    }
+
     /// [`Self::record_phase`] without its attempt-phase check: the openers
     /// and the shared progress step enter and advance the attempt-bearing
     /// phases through it, with every other check and the publication intact.
@@ -504,13 +525,14 @@ impl<'a> MutableRunEvidence<'a> {
     /// phase.
     ///
     /// # Errors
-    /// A Run Evidence invariant violation when Extracting Archives cannot be
-    /// entered next in canonical traversal order.
+    /// A Run Evidence invariant violation when Extracting Archives was
+    /// already opened or skipped, or cannot be entered next in canonical
+    /// traversal order.
     pub fn open_archive_extraction(
         &mut self,
         total: usize,
     ) -> Result<AttemptPhaseHandle<'_, 'a, ArchiveExtractionResult>, Error> {
-        self.accept_phase(RunPhaseRecord::executed(
+        self.open_attempt_phase(RunPhaseRecord::executed(
             RunPhase::ExtractingArchives,
             Some(RunProgress::determinate(total, 0, 0)),
         ))?;
@@ -527,13 +549,13 @@ impl<'a> MutableRunEvidence<'a> {
     /// neither plans nor finishes reports none.
     ///
     /// # Errors
-    /// A Run Evidence invariant violation when Archive Finalization cannot
-    /// be entered next in canonical traversal order, including reopening a
-    /// planned phase.
+    /// A Run Evidence invariant violation when Archive Finalization was
+    /// already opened, finished or skipped, or cannot be entered next in
+    /// canonical traversal order.
     pub fn open_archive_finalization(
         &mut self,
     ) -> Result<ArchiveFinalizationHandle<'_, 'a>, Error> {
-        self.accept_phase(RunPhaseRecord::executed(
+        self.open_attempt_phase(RunPhaseRecord::executed(
             RunPhase::ArchiveFinalization,
             None,
         ))?;
@@ -546,7 +568,9 @@ impl<'a> MutableRunEvidence<'a> {
     /// the plan is recorded once and never changed (C++
     /// `recordArchiveFinalizationPlan`). Nor may it follow the phase's
     /// finish, as cancelled planning finishes without a total: the plan would
-    /// reopen the closed phase and replace its account.
+    /// reopen the closed phase and replace its account. Finishing consumes
+    /// the only handle and the phase cannot be opened again, so that check is
+    /// defensive and no handle can reach it.
     ///
     /// The total lives only in that progress, which the shared progress step
     /// reads back for each attempt.
@@ -580,7 +604,8 @@ impl<'a> MutableRunEvidence<'a> {
     /// # Errors
     /// A Run Evidence invariant violation when Archive Finalization is not
     /// the current, executed phase or has already finished; nothing is then
-    /// retained.
+    /// retained. Finishing consumes the only handle and the phase cannot be
+    /// opened again, so both checks are defensive.
     fn finish_archive_finalization(
         &mut self,
         account: ArchiveFinalizationAccount,
@@ -771,7 +796,10 @@ impl<'a> MutableRunEvidence<'a> {
         }
         let total = ledger.routed_assets().len();
         self.storage.routing_ledger = Some(ledger);
-        self.accept_phase(RunPhaseRecord::executed(
+        // The checks above already keep Processing Assets from opening
+        // twice; it shares the openers' once-only entry so no attempt-bearing
+        // phase depends on its own preconditions for that.
+        self.open_attempt_phase(RunPhaseRecord::executed(
             RunPhase::ProcessingAssets,
             Some(RunProgress::determinate(total, 0, 0)),
         ))?;
