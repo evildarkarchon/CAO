@@ -16,13 +16,15 @@
 //! source cleanup. Loading Plugins of existing Archives are maintained after
 //! the last output. Empty directories are pruned whether or not Archive
 //! creation is requested. The phase records its output total, each attempt
-//! before the next output starts, and one final result into Run Evidence
-//! through its [`ArchiveFinalizationRecorder`], which reaches nothing else.
+//! before the next output starts, and one final phase-level account into Run
+//! Evidence through the handle that opened its phase, which reaches nothing
+//! else. Run Evidence is the only holder of the attempts.
 
 mod attempt;
 mod planning;
 mod plugins;
-mod recorder;
+#[cfg(test)]
+mod tests;
 
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::fs::MetadataExt as _;
@@ -35,14 +37,15 @@ use crate::execution::MutationState;
 use crate::routing::RequestedWork;
 use crate::run::capacity::{CapacityCheck, Shortfall};
 use crate::run::staging::has_staging_component;
-use crate::run::{ArchiveSeams, RunPreparation, TemporaryArtifactRegistry, take_panic_message};
+use crate::run::{
+    ArchiveFinalizationHandle, ArchiveSeams, RunPreparation, TemporaryArtifactRegistry,
+    take_panic_message,
+};
 use crate::{AttemptOutcome, Error, OperationFailure};
 
 use attempt::attempt_output;
 use planning::{FinalizationPlan, PlanningStop, plan_finalization};
 use plugins::maintain_existing_loading_plugins;
-
-pub(crate) use recorder::ArchiveFinalizationRecorder;
 
 /// Why Archive Finalization, or one of its output attempts, failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -142,10 +145,72 @@ pub struct ArchiveFinalizationResult {
     pub mutations: Vec<ArchiveFinalizationMutation>,
 }
 
+impl ArchiveFinalizationResult {
+    /// The public result of a phase that streamed `attempts` and finished
+    /// with the phase-level `account`: the one place the two halves are put
+    /// together, so the account's fields map onto the result's in one spot.
+    pub(crate) fn from_parts(
+        attempts: Vec<ArchiveFinalizationAttempt>,
+        account: ArchiveFinalizationAccount,
+    ) -> Self {
+        let ArchiveFinalizationAccount {
+            failure,
+            cancelled,
+            safe_to_continue,
+            detail,
+            mutations,
+        } = account;
+        Self {
+            attempts,
+            failure,
+            cancelled,
+            safe_to_continue,
+            detail,
+            mutations,
+        }
+    }
+}
+
 impl Default for ArchiveFinalizationResult {
+    /// No attempts, with the default phase-level account: not failed, not
+    /// cancelled and safe to continue after.
+    fn default() -> Self {
+        Self::from_parts(Vec::new(), ArchiveFinalizationAccount::default())
+    }
+}
+
+/// The phase-level account Archive Finalization finishes its phase with:
+/// every field of [`ArchiveFinalizationResult`] except its attempts.
+///
+/// Run Evidence is the only holder of the output attempts, streamed through
+/// the phase's handle as each one completes, and puts the public result
+/// together from them plus this account. Crate-private, so the public result
+/// keeps its shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArchiveFinalizationAccount {
+    /// A phase-level failure. It has no output attempt and does not advance
+    /// progress.
+    pub(crate) failure: Option<ArchiveFinalizationFailure>,
+    /// Whether the phase observed cancellation; it marks the run's
+    /// cancellation observed when the phase finishes.
+    pub(crate) cancelled: bool,
+    /// The phase-level verdict on whether the run may continue after the
+    /// phase: false after an unsafe output attempt, an unsafe Loading Plugin
+    /// publication, or a phase-level Unexpected Exception, whose durable
+    /// effects have no reliable boundary.
+    pub(crate) safe_to_continue: bool,
+    /// What a phase-level failure reported, such as a capacity shortfall or
+    /// the escaped panic's message; empty when the phase did not fail.
+    pub(crate) detail: String,
+    /// Completed effects that no output attempt accounts for.
+    pub(crate) mutations: Vec<ArchiveFinalizationMutation>,
+}
+
+impl Default for ArchiveFinalizationAccount {
+    /// A phase that has not failed, been cancelled or mutated anything
+    /// outside its attempts, and so is safe to continue after.
     fn default() -> Self {
         Self {
-            attempts: Vec::new(),
             failure: None,
             cancelled: false,
             safe_to_continue: true,
@@ -187,8 +252,9 @@ impl Default for ArchiveFinalizationSettings {
 }
 
 /// Runs the Archive Finalization Run Phase over the preparation's Mod Roots,
-/// writing its facts through `recorder`. Archive Finalization's only entry
-/// point: the Run Toolset calls it once per Apply run.
+/// writing its facts through `phase`, the handle that opened it. Archive
+/// Finalization's only entry point: the Run Toolset calls it once per Apply
+/// run.
 ///
 /// It runs over the run's seams: `seams.packer` holds the game's rules and
 /// writes Archives, `seams.reader` verifies a committed Archive is readable,
@@ -203,18 +269,20 @@ impl Default for ArchiveFinalizationSettings {
 /// matched as a case-insensitive substring of the `/`-separated path within
 /// the Mod Root.
 ///
-/// The recorder's evidence must already be in the executed Archive
-/// Finalization phase. `cancelled` is polled between outputs and between
-/// Mod Roots, never inside an atomic output attempt; cancelled planning
-/// records a cancelled result without an output total. A failure or panic
-/// of the phase's own work is recorded once as a phase-level
-/// `UnexpectedException` that keeps every attempt already recorded and
-/// forbids continuation. The caller owns `artifacts` through Safety
-/// Cleanup.
+/// `phase` must have just opened the executed Archive Finalization phase,
+/// unplanned; the phase is finished through it. `cancelled` is polled
+/// between outputs and between Mod Roots, never inside an atomic output
+/// attempt; cancelled planning finishes the phase as cancelled without an
+/// output total. A failure or panic of the phase's own work finishes it
+/// once as a phase-level `UnexpectedException` that keeps every attempt
+/// already recorded and forbids continuation. The caller owns `artifacts`
+/// through Safety Cleanup.
 ///
 /// # Errors
 /// Only a Run Evidence invariant violation, returned unchanged so the Run
-/// Executor still performs Safety Cleanup.
+/// Executor still performs Safety Cleanup. The phase is then left
+/// unfinished: its streamed attempts stay in the evidence with default
+/// phase-level fields.
 ///
 /// [`SelectedProfile::packing_exclusions`]: crate::run::SelectedProfile::packing_exclusions
 pub(crate) fn finalize_archives(
@@ -222,52 +290,58 @@ pub(crate) fn finalize_archives(
     capacity: &CapacityCheck<'_>,
     settings: &ArchiveFinalizationSettings,
     preparation: &RunPreparation,
-    recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
+    mut phase: ArchiveFinalizationHandle<'_, '_>,
     artifacts: &mut TemporaryArtifactRegistry,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(), Error> {
-    let mut result = ArchiveFinalizationResult::default();
+    // The handle and the account are owned here, outside the panic
+    // containment, and only lent to the contained work: a panic after
+    // planning then still finishes the phase that holds every attempt
+    // streamed so far, with every mutation fact established.
+    let mut account = ArchiveFinalizationAccount::default();
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         run_phase(
             seams,
             capacity,
             settings,
             preparation,
-            recorder,
+            &mut phase,
             artifacts,
             cancelled,
-            &mut result,
+            &mut account,
         )
     }));
-    result.detail = match outcome {
-        Ok(Ok(())) => return Ok(()),
+    account.detail = match outcome {
+        Ok(Ok(())) => return phase.finish(account),
         Ok(Err(Escape::Evidence(error))) => return Err(error),
         Ok(Err(Escape::Work(detail))) => detail,
         Err(payload) => take_panic_message(payload),
     };
     // The escaped failure gives no reliable boundary for further durable
-    // effects. Every attempt in `result` was already recorded, so the
-    // phase-level failure keeps that prefix.
-    result.failure = Some(ArchiveFinalizationFailure::UnexpectedException);
-    result.safe_to_continue = false;
-    recorder.record_result(result)
+    // effects. Every attempt was already streamed into the evidence, so the
+    // phase-level failure keeps them all.
+    account.failure = Some(ArchiveFinalizationFailure::UnexpectedException);
+    account.safe_to_continue = false;
+    phase.finish(account)
 }
 
-/// The phase's work. `result` accumulates in the caller, so an escaping
-/// failure or panic keeps every attempt and mutation fact established.
+/// The phase's work, which plans the phase and streams each output attempt
+/// through `phase`. `account` accumulates in the caller, so an escaping
+/// failure or panic keeps every mutation fact established; the caller
+/// finishes the phase with it.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the phase's inputs, plus the result its caller keeps across a panic"
+    reason = "the phase's inputs, plus the handle and account its caller keeps across a panic"
 )]
 fn run_phase(
     seams: &ArchiveSeams,
     capacity: &CapacityCheck<'_>,
     settings: &ArchiveFinalizationSettings,
     preparation: &RunPreparation,
-    recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
+    phase: &mut ArchiveFinalizationHandle<'_, '_>,
     artifacts: &mut TemporaryArtifactRegistry,
     cancelled: &dyn Fn() -> bool,
-    result: &mut ArchiveFinalizationResult,
+    account: &mut ArchiveFinalizationAccount,
 ) -> Result<(), Escape> {
     if !preparation
         .policy()
@@ -275,8 +349,8 @@ fn run_phase(
     {
         // Empty-directory pruning is the legacy Apply finalization even
         // without packing.
-        recorder.record_output_total(0).map_err(Escape::Evidence)?;
-        prune_empty_directories(preparation.mod_roots(), cancelled, result);
+        phase.plan(0).map_err(Escape::Evidence)?;
+        prune_empty_directories(preparation.mod_roots(), cancelled, account);
     } else {
         let exclusions = packing_exclusions(preparation);
         // The list only filters packing, so its absence matters only when
@@ -299,23 +373,15 @@ fn run_phase(
             Err(PlanningStop::Cancelled) => {
                 // Planning made no mutation and has no trustworthy output
                 // total to publish.
-                result.cancelled = true;
-                return recorder
-                    .record_result(std::mem::take(result))
-                    .map_err(Escape::Evidence);
+                account.cancelled = true;
+                return Ok(());
             }
             Err(PlanningStop::Failed(detail)) => return Err(Escape::Work(detail)),
         };
-        recorder
-            .record_output_total(plan.outputs.len())
-            .map_err(Escape::Evidence)?;
-        finalize_plan(
-            seams, capacity, &plan, artifacts, cancelled, recorder, result,
-        )?;
+        phase.plan(plan.outputs.len()).map_err(Escape::Evidence)?;
+        finalize_plan(seams, capacity, &plan, artifacts, cancelled, phase, account)?;
     }
-    recorder
-        .record_result(std::mem::take(result))
-        .map_err(Escape::Evidence)
+    Ok(())
 }
 
 /// Publishes each planned output in one atomic attempt, then maintains
@@ -335,11 +401,11 @@ fn finalize_plan(
     plan: &FinalizationPlan,
     artifacts: &mut TemporaryArtifactRegistry,
     cancelled: &dyn Fn() -> bool,
-    recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
-    result: &mut ArchiveFinalizationResult,
+    phase: &mut ArchiveFinalizationHandle<'_, '_>,
+    account: &mut ArchiveFinalizationAccount,
 ) -> Result<(), Escape> {
     if cancelled() {
-        result.cancelled = true;
+        account.cancelled = true;
         return Ok(());
     }
     // Each root's volume is frozen the first time the Capacity Check asks
@@ -366,12 +432,12 @@ fn finalize_plan(
             .iter()
             .find(|output| output.mod_root == shortfall.root)
             .map(|output| output.archive_path.as_path());
-        return record_shortfall(shortfall, archive, recorder, result);
+        return record_shortfall(shortfall, archive, phase, account);
     }
 
     for (index, _) in plan.outputs.iter().enumerate() {
         if cancelled() {
-            result.cancelled = true;
+            account.cancelled = true;
             break;
         }
         let attempt = attempt_output(
@@ -381,7 +447,7 @@ fn finalize_plan(
             seams,
             capacity,
             &dummy_demand,
-            &mut result.mutations,
+            &mut account.mutations,
         );
         // Only the attempt's own capacity recheck reports this, before
         // any mutation; it ends the phase without plugin work or pruning.
@@ -390,27 +456,26 @@ fn finalize_plan(
         if !capacity_rejected {
             // The verdict, not the producer's raw claim: partial or unknown
             // mutation stops the phase even when the attempt claims safety.
-            result.safe_to_continue = attempt.safe_to_continue();
+            // It is taken before the attempt moves into the evidence, so
+            // the phase never reads an attempt back.
+            account.safe_to_continue = attempt.safe_to_continue();
         }
-        result.attempts.push(attempt);
         // Evidence owns each atomic result before the next output starts.
-        record_last_attempt(recorder, result)?;
+        phase.record(attempt).map_err(Escape::Evidence)?;
         if capacity_rejected {
             return Ok(());
         }
-        if !result.safe_to_continue {
+        if !account.safe_to_continue {
             break;
         }
     }
-    result.cancelled = result.cancelled || cancelled();
-    if result.cancelled || !result.safe_to_continue {
+    account.cancelled = account.cancelled || cancelled();
+    if account.cancelled || !account.safe_to_continue {
         return Ok(());
     }
 
     let cleanup = catch_unwind(AssertUnwindSafe(|| {
-        maintain_and_prune(
-            seams, capacity, plan, artifacts, cancelled, recorder, result,
-        )
+        maintain_and_prune(seams, capacity, plan, artifacts, cancelled, phase, account)
     }));
     let detail = match cleanup {
         Ok(Ok(())) => return Ok(()),
@@ -419,9 +484,9 @@ fn finalize_plan(
         Ok(Err(Escape::Work(detail))) => detail,
         Err(payload) => take_panic_message(payload),
     };
-    result.safe_to_continue = false;
-    result.failure = Some(ArchiveFinalizationFailure::UnexpectedException);
-    result.detail = detail;
+    account.safe_to_continue = false;
+    account.failure = Some(ArchiveFinalizationFailure::UnexpectedException);
+    account.detail = detail;
     Ok(())
 }
 
@@ -434,12 +499,12 @@ fn maintain_and_prune(
     plan: &FinalizationPlan,
     artifacts: &mut TemporaryArtifactRegistry,
     cancelled: &dyn Fn() -> bool,
-    recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
-    result: &mut ArchiveFinalizationResult,
+    phase: &mut ArchiveFinalizationHandle<'_, '_>,
+    account: &mut ArchiveFinalizationAccount,
 ) -> Result<(), Escape> {
     for (index, root) in plan.roots.iter().enumerate() {
         if cancelled() {
-            result.cancelled = true;
+            account.cancelled = true;
             break;
         }
         if plan.dummy_capacity_by_root[root] != 0 {
@@ -451,13 +516,13 @@ fn maintain_and_prune(
                 remaining.add(later, plan.dummy_capacity_by_root[later]);
             }
             if let Some(shortfall) = capacity.shortfall_at(&remaining, root) {
-                return record_shortfall(shortfall, None, recorder, result);
+                return record_shortfall(shortfall, None, phase, account);
             }
         }
         // A probe may block while cancellation arrives; do not start the
         // next root's plugin mutation after it.
         if cancelled() {
-            result.cancelled = true;
+            account.cancelled = true;
             break;
         }
         if !maintain_existing_loading_plugins(
@@ -466,7 +531,7 @@ fn maintain_and_prune(
             &*seams.packer,
             artifacts,
             cancelled,
-            result,
+            account,
         )
         .map_err(Escape::Work)?
         {
@@ -475,8 +540,8 @@ fn maintain_and_prune(
     }
     // Recoverable attempts keep their source evidence; cancellation keeps
     // every path.
-    if !result.cancelled {
-        prune_empty_directories(&plan.roots, cancelled, result);
+    if !account.cancelled {
+        prune_empty_directories(&plan.roots, cancelled, account);
     }
     Ok(())
 }
@@ -487,14 +552,14 @@ fn maintain_and_prune(
 fn record_shortfall(
     shortfall: Shortfall,
     archive: Option<&Path>,
-    recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
-    result: &mut ArchiveFinalizationResult,
+    phase: &mut ArchiveFinalizationHandle<'_, '_>,
+    account: &mut ArchiveFinalizationAccount,
 ) -> Result<(), Escape> {
     let detail = shortfall.to_string();
     match archive {
         None => {
-            result.failure = Some(ArchiveFinalizationFailure::InsufficientCapacity);
-            result.detail = detail;
+            account.failure = Some(ArchiveFinalizationFailure::InsufficientCapacity);
+            account.detail = detail;
         }
         Some(archive) => {
             // A known shortage is found before any mutation, so the producer
@@ -506,17 +571,17 @@ fn record_shortfall(
             );
             let attempt =
                 ArchiveFinalizationAttempt::new(archive.to_path_buf(), shortfall.root, outcome);
-            result.attempts.push(attempt);
-            record_last_attempt(recorder, result)?;
+            phase.record(attempt).map_err(Escape::Evidence)?;
         }
     }
     Ok(())
 }
 
-/// How the phase's work stopped short of recording its own result.
+/// How the phase's work stopped short of finishing normally.
 enum Escape {
     /// Run Evidence rejected a fact: a producer bug the executor reports
-    /// after Safety Cleanup. Never converted into a finalization result.
+    /// after Safety Cleanup. Never converted into a finalization account,
+    /// so the phase is left unfinished.
     Evidence(Error),
     /// The phase's own work failed outside any attempt.
     Work(String),
@@ -537,33 +602,21 @@ fn packing_exclusions(preparation: &RunPreparation) -> Vec<String> {
         .collect()
 }
 
-/// Retains the attempt just pushed onto `result` before the next output
-/// starts. The phase submits every fact through `recorder` with
-/// `Escape::Evidence`, keeping each Run Evidence failure distinct from work
-/// failures.
-fn record_last_attempt(
-    recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
-    result: &ArchiveFinalizationResult,
-) -> Result<(), Escape> {
-    let attempt = result.attempts.last().expect("just pushed").clone();
-    recorder.record_attempt(attempt).map_err(Escape::Evidence)
-}
-
 /// Prunes empty directories beneath each Mod Root, recording one mutation per
 /// root that lost any. Cancellation stops before the next root.
 fn prune_empty_directories(
     roots: &[PathBuf],
     cancelled: &dyn Fn() -> bool,
-    result: &mut ArchiveFinalizationResult,
+    account: &mut ArchiveFinalizationAccount,
 ) {
     for root in roots {
         if cancelled() {
-            result.cancelled = true;
+            account.cancelled = true;
             break;
         }
         let pruned = delete_empty_directories(root);
         if pruned != 0 {
-            result.mutations.push(ArchiveFinalizationMutation {
+            account.mutations.push(ArchiveFinalizationMutation {
                 mod_root: root.clone(),
                 path: root.clone(),
                 kind: ArchiveFinalizationMutationKind::EmptyDirectoryPruning,

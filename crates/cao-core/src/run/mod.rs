@@ -38,7 +38,7 @@ pub use executor::{
     RunEvidenceInvariantPanic, RunExecutor, RunServices, SafetyCleanupService,
     collect_safety_cleanup_failures,
 };
-pub(crate) use finalization::ArchiveFinalizationRecorder;
+pub(crate) use finalization::ArchiveFinalizationAccount;
 pub use finalization::{
     ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationMutation,
     ArchiveFinalizationMutationKind, ArchiveFinalizationResult, ArchiveFinalizationSettings,
@@ -67,7 +67,7 @@ pub use toolset::{
 };
 // Only an Optimization Run may write Run Evidence, so the store's writing
 // side stays inside the crate; the sealed `RunEvidence` is the public view.
-pub(crate) use evidence::MutableRunEvidence;
+pub(crate) use evidence::{ArchiveFinalizationHandle, MutableRunEvidence};
 
 /// Extracts the human-readable message from a caught panic payload.
 pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {

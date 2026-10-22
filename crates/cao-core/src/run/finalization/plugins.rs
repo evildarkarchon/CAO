@@ -15,8 +15,8 @@ use cao_winfs::{Access, FileFacts, Open, Share, delete_by_handle};
 
 use super::planning::{FinalizationOutput, FinalizationPlan, loading_plugin_names};
 use super::{
-    ArchiveFinalizationFailure, ArchiveFinalizationMutation, ArchiveFinalizationMutationKind,
-    ArchiveFinalizationResult,
+    ArchiveFinalizationAccount, ArchiveFinalizationFailure, ArchiveFinalizationMutation,
+    ArchiveFinalizationMutationKind,
 };
 use crate::execution::MutationState;
 use crate::run::source_pin::{absolute_normal, pin_directories};
@@ -255,7 +255,7 @@ pub(super) fn ensure_output_loading_plugin(
 /// never an output attempt.
 ///
 /// Returns `Ok(false)` when finalization must stop without pruning, after
-/// recording a plugin failure or cancellation in `result`.
+/// recording a plugin failure or cancellation in `account`.
 ///
 /// # Errors
 /// When creating, a failure to list the root's Archives; removal records any
@@ -266,12 +266,12 @@ pub(super) fn maintain_existing_loading_plugins(
     packer: &dyn ArchivePacker,
     artifacts: &mut TemporaryArtifactRegistry,
     cancelled: &dyn Fn() -> bool,
-    result: &mut ArchiveFinalizationResult,
+    account: &mut ArchiveFinalizationAccount,
 ) -> Result<bool, String> {
     if plan.create_dummies {
-        create_missing_dummy_plugins(plan, root, packer, artifacts, cancelled, result)
+        create_missing_dummy_plugins(plan, root, packer, artifacts, cancelled, account)
     } else {
-        Ok(remove_dummy_plugins(plan, root, packer, cancelled, result))
+        Ok(remove_dummy_plugins(plan, root, packer, cancelled, account))
     }
 }
 
@@ -284,14 +284,14 @@ fn create_missing_dummy_plugins(
     packer: &dyn ArchivePacker,
     artifacts: &mut TemporaryArtifactRegistry,
     cancelled: &dyn Fn() -> bool,
-    result: &mut ArchiveFinalizationResult,
+    account: &mut ArchiveFinalizationAccount,
 ) -> Result<bool, String> {
     let archives = packer
         .list_names(root, ArchiveNameKind::Archive)
         .map_err(|error| error.to_string())?;
     for archive in archives {
         if cancelled() {
-            result.cancelled = true;
+            account.cancelled = true;
             return Ok(false);
         }
         let names = loading_plugin_names(&archive, &plan.rules);
@@ -310,7 +310,7 @@ fn create_missing_dummy_plugins(
                 root,
                 destination,
                 &plan.rules.dummy_plugin,
-                &mut result.mutations,
+                &mut account.mutations,
             )
             .map(Some)
         })();
@@ -318,19 +318,19 @@ fn create_missing_dummy_plugins(
             Ok(None) => {}
             Ok(Some(published)) if published.completed => {}
             Ok(Some(published)) => {
-                result.failure = Some(ArchiveFinalizationFailure::PluginCreationFailed);
+                account.failure = Some(ArchiveFinalizationFailure::PluginCreationFailed);
                 // Publication's verdict stands.
-                result.safe_to_continue = published.safe_to_continue;
-                result.detail = published.detail;
-                result.cancelled = cancelled();
+                account.safe_to_continue = published.safe_to_continue;
+                account.detail = published.detail;
+                account.cancelled = cancelled();
                 return Ok(false);
             }
             Err(detail) => {
                 // Staging and the checks above fail before publication, so
                 // nothing was mutated.
-                result.failure = Some(ArchiveFinalizationFailure::PluginCreationFailed);
-                result.detail = detail;
-                result.cancelled = cancelled();
+                account.failure = Some(ArchiveFinalizationFailure::PluginCreationFailed);
+                account.detail = detail;
+                account.cancelled = cancelled();
                 return Ok(false);
             }
         }
@@ -345,28 +345,28 @@ fn remove_dummy_plugins(
     root: &Path,
     packer: &dyn ArchivePacker,
     cancelled: &dyn Fn() -> bool,
-    result: &mut ArchiveFinalizationResult,
+    account: &mut ArchiveFinalizationAccount,
 ) -> bool {
-    let failed = |result: &mut ArchiveFinalizationResult, detail: String| {
-        result.failure = Some(ArchiveFinalizationFailure::PluginRemovalFailed);
-        result.detail = detail;
-        result.cancelled = cancelled();
+    let failed = |account: &mut ArchiveFinalizationAccount, detail: String| {
+        account.failure = Some(ArchiveFinalizationFailure::PluginRemovalFailed);
+        account.detail = detail;
+        account.cancelled = cancelled();
         false
     };
     let plugins = match packer.list_names(root, ArchiveNameKind::Plugin) {
         Ok(plugins) => plugins,
-        Err(error) => return failed(result, error.to_string()),
+        Err(error) => return failed(account, error.to_string()),
     };
     for plugin in plugins {
         if cancelled() {
-            result.cancelled = true;
+            account.cancelled = true;
             return false;
         }
         let path = plugin.full_path();
         match remove_exact_dummy_plugin(&path, root, &plan.rules.dummy_plugin) {
             Ok(DummyPluginRemoval::NotDummy) => {}
             Ok(DummyPluginRemoval::Removed) => {
-                result.mutations.push(ArchiveFinalizationMutation {
+                account.mutations.push(ArchiveFinalizationMutation {
                     mod_root: root.to_path_buf(),
                     path,
                     kind: ArchiveFinalizationMutationKind::PluginRemoval,
@@ -374,7 +374,7 @@ fn remove_dummy_plugins(
                     count: 1,
                 });
             }
-            Err(detail) => return failed(result, detail),
+            Err(detail) => return failed(account, detail),
         }
     }
     true

@@ -11,6 +11,7 @@
 //! show the executor feeds its evidence here; this table pins every
 //! combination of work fact and terminal circumstance.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::classify_terminal_outcome;
@@ -18,11 +19,9 @@ use crate::CompletedMutation;
 use crate::Error;
 use crate::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use crate::routing::{AssetRouter, ExecutionMode, RequestedWork, RoutingPolicyRequest};
-use crate::run::evidence::{
-    ArchiveDiscoveryEvidence, MutableRunEvidence, RoutedAssetAttempt, RunEvidence,
-};
+use crate::run::evidence::{MutableRunEvidence, RoutedAssetAttempt, RunEvidence};
 use crate::run::{
-    ArchiveFinalizationFailure, ArchiveFinalizationResult, ArchivePrecedence, RunFailure,
+    ArchiveFinalizationAccount, ArchiveFinalizationFailure, ArchivePrecedence, RunFailure,
     RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord, RunPreparation,
 };
 use crate::test_support::sse_profile;
@@ -128,42 +127,50 @@ fn sealed_evidence(fact: WorkFact, terminal: Terminal) -> Result<RunEvidence, Er
         ArchivePrecedence::DeterministicDiscovery,
     ))?;
 
-    evidence.record_archive_discovery_started()?;
+    evidence.record_phase(RunPhaseRecord::executed(
+        RunPhase::DiscoveringArchives,
+        None,
+    ))?;
+    evidence.record_skipped_archive_counts(BTreeMap::new())?;
     evidence.record_archive_collisions(&[])?;
-    evidence.record_archive_extraction_plan(0)?;
-    evidence.record_effective_asset_tree_started()?;
-    evidence.record_archive_discovery(ArchiveDiscoveryEvidence::default())?;
+    // The empty extraction plan closes as soon as its handle's borrow ends.
+    evidence.open_archive_extraction(0)?;
+    evidence.record_phase(RunPhaseRecord::executed(
+        RunPhase::BuildingEffectiveAssetTree,
+        None,
+    ))?;
+    evidence.record_nested_archive_count(0)?;
     // Routing decides from the file name alone, so the Texture never has to exist.
-    evidence.record_routing_ledger(router.route_all([mod_root.join("textures/a.dds")]))?;
-    let asset = evidence
-        .routing_ledger()
-        .and_then(|ledger| ledger.routed_assets().first().cloned())
+    let ledger = router.route_all([mod_root.join("textures/a.dds")]);
+    let asset = ledger
+        .routed_assets()
+        .first()
+        .cloned()
         .expect("the Texture is routed for Native Texture Optimization");
-    evidence.record_asset_processing_plan(1)?;
-    evidence.record_asset_attempt(RoutedAssetAttempt {
-        mod_root,
-        asset,
-        result: asset_result(fact),
-    })?;
+    evidence
+        .open_processing_assets(ledger)?
+        .record(RoutedAssetAttempt {
+            mod_root,
+            asset,
+            result: asset_result(fact),
+        })?;
 
     // An unsafe attempt stops every later attempt and Archive Finalization.
     if fact != WorkFact::UnsafeMutation {
         evidence.publish_diagnostics();
-        evidence.record_phase(RunPhaseRecord::executed(
-            RunPhase::ArchiveFinalization,
-            None,
-        ))?;
+        let mut finalization = evidence.open_archive_finalization()?;
         if fact == WorkFact::FatalFailure {
-            // As the finalization recorder retains a panic before planning.
-            evidence.record_archive_finalization(ArchiveFinalizationResult {
+            // As Archive Finalization finishes its phase after a panic
+            // before planning.
+            finalization.finish(ArchiveFinalizationAccount {
                 failure: Some(ArchiveFinalizationFailure::UnexpectedException),
                 safe_to_continue: false,
                 detail: "fatal work failure".to_owned(),
-                ..ArchiveFinalizationResult::default()
+                ..ArchiveFinalizationAccount::default()
             })?;
         } else {
-            evidence.record_archive_finalization_plan(0)?;
-            evidence.record_archive_finalization(ArchiveFinalizationResult::default())?;
+            finalization.plan(0)?;
+            finalization.finish(ArchiveFinalizationAccount::default())?;
         }
     }
 

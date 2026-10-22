@@ -22,6 +22,7 @@
 //! tests, so they keep driving the store directly.
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::MutableRunEvidence;
@@ -29,13 +30,15 @@ use crate::Error;
 use crate::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use crate::routing::{
     AssetRouter, ExecutionMode, RequestedWork, RoutedAsset, RoutingLedger, RoutingPolicyRequest,
+    SkipReason,
 };
 use crate::run::{
     ArchiveDiscoveryEvidence, ArchiveExtractionFailure, ArchiveExtractionResult,
-    ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationMutation,
-    ArchiveFinalizationMutationKind, ArchiveFinalizationResult, ArchivePrecedence, MutationKind,
-    PhaseSkipReason, RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode, RunEvidence, RunFailure,
-    RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunProgress, SelectedProfile,
+    ArchiveFinalizationAccount, ArchiveFinalizationAttempt, ArchiveFinalizationFailure,
+    ArchiveFinalizationMutation, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
+    ArchivePrecedence, MutationKind, PhaseSkipReason, RoutedAssetAttempt, RunDiagnostic,
+    RunDiagnosticCode, RunEvidence, RunFailure, RunFailureCode, RunPhase, RunPhaseRecord,
+    RunPreparation, RunProgress, SelectedProfile,
 };
 use crate::test_support::{Observed, RecordingSink, sse_capabilities, sse_profile};
 use crate::{AttemptOutcome, CompletedMutation, OperationFailure};
@@ -113,15 +116,12 @@ fn finalization_attempt(
     ArchiveFinalizationAttempt::new(archive.into(), mod_root.into(), outcome)
 }
 
-/// Evidence in the executed Archive Finalization phase, optionally reporting
-/// to `sink`.
-fn finalizing(sink: Option<&dyn crate::run::RunObservationSink>) -> MutableRunEvidence<'_> {
+/// Evidence past Preparing, ready to open Archive Finalization, optionally
+/// reporting to `sink`.
+fn ready_to_finalize(sink: Option<&dyn crate::run::RunObservationSink>) -> MutableRunEvidence<'_> {
     let mut evidence = MutableRunEvidence::new(sink);
     evidence
         .record_phase(executed(RunPhase::Preparing))
-        .unwrap();
-    evidence
-        .record_phase(executed(RunPhase::ArchiveFinalization))
         .unwrap();
     evidence
 }
@@ -166,21 +166,20 @@ fn an_unfinished_preparation_is_absent() {
     assert!(consume_after_cleanup(evidence).preparation().is_none());
 }
 
-/// Origin: RunEvidenceTests::laterPhaseRecordsReplaceWithoutReordering.
+/// Origin: RunEvidenceTests::laterPhaseRecordsReplaceWithoutReordering. The
+/// progress each attempt advances replaces its phase's record in place.
 #[test]
 fn a_later_record_of_a_phase_replaces_it_in_place() {
-    let mut evidence = MutableRunEvidence::new(None);
-    evidence
-        .record_phase(executed(RunPhase::Preparing))
+    let mut evidence = discovering(None);
+    let mut extraction = evidence.open_archive_extraction(3).unwrap();
+    extraction
+        .record(extraction_attempt("first.bsa", None))
         .unwrap();
-    evidence
-        .record_phase(executed(RunPhase::DiscoveringArchives))
-        .unwrap();
-    evidence
-        .record_phase(progress(RunPhase::ExtractingArchives, 3, 0, 0))
-        .unwrap();
-    evidence
-        .record_phase(progress(RunPhase::ExtractingArchives, 3, 1, 1))
+    extraction
+        .record(extraction_attempt(
+            "second.bsa",
+            Some(ArchiveExtractionFailure::ExtractionFailed),
+        ))
         .unwrap();
 
     let terminal = consume_after_cleanup(evidence);
@@ -226,24 +225,28 @@ fn phase_order_violations_are_rejected() {
         .unwrap();
     // Phases may be skipped over, never revisited.
     evidence
-        .record_phase(progress(RunPhase::ProcessingAssets, 1, 0, 0))
+        .record_phase(executed(RunPhase::BuildingEffectiveAssetTree))
         .unwrap();
-    assert!(is_invariant(
-        evidence.record_phase(executed(RunPhase::ExtractingArchives))
-    ));
-    assert!(is_invariant(
-        evidence.record_phase(executed(RunPhase::Preparing))
-    ));
+    for revisited in [RunPhase::DiscoveringArchives, RunPhase::Preparing] {
+        assert_eq!(
+            invariant(evidence.record_phase(executed(revisited))),
+            Some("Run Phases must follow canonical traversal order"),
+            "{revisited:?}"
+        );
+    }
 }
 
-/// Origin: RunEvidenceTests::progressRegressionsAreRejected.
+/// Origin: RunEvidenceTests::progressRegressionsAreRejected. The general
+/// transition validates determinate progress for any phase it accepts; the
+/// attempt-bearing phases reach it only through their handles, which always
+/// advance it by one attempt.
 #[test]
 fn phase_progress_cannot_start_late_change_total_regress_or_overflow() {
     let mut evidence = MutableRunEvidence::new(None);
     evidence
         .record_phase(executed(RunPhase::Preparing))
         .unwrap();
-    let phase = RunPhase::ExtractingArchives;
+    let phase = RunPhase::BuildingEffectiveAssetTree;
     assert!(
         is_invariant(evidence.record_phase(progress(phase, 4, 1, 0))),
         "a first record starts at zero"
@@ -298,22 +301,18 @@ fn an_observed_cancellation_is_sealed_as_a_fact() {
 }
 
 /// Origin: RunEvidenceTests::finalizationAndCleanupFailuresRemainSeparate. An
-/// Archive Finalization plan needs the executed phase first; its attempts,
-/// including a contained cleanup failure, stay apart from Run Failures and
-/// from Safety Cleanup failures.
+/// Archive Finalization plan is recorded once, on the handle that opened the
+/// phase (so it cannot precede the phase); its attempts, including a
+/// contained cleanup failure, stay apart from Run Failures and from Safety
+/// Cleanup failures.
 #[test]
-fn a_finalization_plan_needs_its_phase_and_cleanup_failures_stay_separate() {
-    let mut evidence = MutableRunEvidence::new(None);
-    evidence
-        .record_phase(executed(RunPhase::Preparing))
-        .unwrap();
-    assert!(is_invariant(evidence.record_archive_finalization_plan(2)));
-    evidence
-        .record_phase(executed(RunPhase::ArchiveFinalization))
-        .unwrap();
-    evidence.record_archive_finalization_plan(2).unwrap();
-    assert!(
-        is_invariant(evidence.record_archive_finalization_plan(2)),
+fn a_finalization_plan_is_immutable_and_cleanup_failures_stay_separate() {
+    let mut evidence = ready_to_finalize(None);
+    let mut finalization = evidence.open_archive_finalization().unwrap();
+    finalization.plan(2).unwrap();
+    assert_eq!(
+        invariant(finalization.plan(2)),
+        Some("Archive Finalization needs an executed phase and one immutable plan"),
         "the plan is immutable"
     );
     let retained = ArchiveFinalizationAttempt::new(
@@ -328,14 +327,17 @@ fn a_finalization_plan_needs_its_phase_and_cleanup_failures_stay_separate() {
             true,
         ),
     );
-    evidence
-        .record_archive_finalization(ArchiveFinalizationResult {
-            attempts: vec![
-                finalization_attempt("first.bsa", "first-mod", MutationState::Committed, None),
-                retained,
-            ],
-            ..ArchiveFinalizationResult::default()
-        })
+    finalization
+        .record(finalization_attempt(
+            "first.bsa",
+            "first-mod",
+            MutationState::Committed,
+            None,
+        ))
+        .unwrap();
+    finalization.record(retained).unwrap();
+    finalization
+        .finish(ArchiveFinalizationAccount::default())
         .unwrap();
     evidence
         .record_phase(executed(RunPhase::SafetyCleanup))
@@ -383,12 +385,13 @@ fn a_finalization_plan_needs_its_phase_and_cleanup_failures_stay_separate() {
 
 /// Origin: RunEvidenceTests::finalizationProgressPublishesRetainedAttempt.
 /// Each streamed attempt is retained and published as progress, a failed
-/// one counting as failed, and the returned result keeps both.
+/// one counting as failed, and the finished phase's result keeps both.
 #[test]
 fn finalization_progress_publishes_each_retained_attempt() {
     let sink = RecordingSink::default();
-    let mut evidence = finalizing(Some(&sink));
-    evidence.record_archive_finalization_plan(2).unwrap();
+    let mut evidence = ready_to_finalize(Some(&sink));
+    let mut finalization = evidence.open_archive_finalization().unwrap();
+    finalization.plan(2).unwrap();
     let attempts = vec![
         finalization_attempt("first.bsa", "first-mod", MutationState::Committed, None),
         finalization_attempt(
@@ -399,17 +402,10 @@ fn finalization_progress_publishes_each_retained_attempt() {
         ),
     ];
     for attempt in &attempts {
-        evidence
-            .record_archive_finalization_attempt(attempt.clone())
-            .unwrap();
-        let retained = evidence.archive_finalization().unwrap();
-        assert_eq!(retained.attempts.last(), Some(attempt));
+        finalization.record(attempt.clone()).unwrap();
     }
-    evidence
-        .record_archive_finalization(ArchiveFinalizationResult {
-            attempts,
-            ..ArchiveFinalizationResult::default()
-        })
+    finalization
+        .finish(ArchiveFinalizationAccount::default())
         .unwrap();
 
     let published: Vec<_> = sink
@@ -431,27 +427,30 @@ fn finalization_progress_publishes_each_retained_attempt() {
         .collect();
     assert_eq!(published, [(0, 0, 0), (1, 1, 0), (2, 1, 1)]);
     let terminal = consume_after_cleanup(evidence);
-    assert_eq!(terminal.archive_finalization().unwrap().attempts.len(), 2);
+    assert_eq!(terminal.archive_finalization().unwrap().attempts, attempts);
 }
 
 /// Origin: RunEvidenceTests::interruptedFinalizationRetainsCompletedAttempts.
 /// A phase-level failure keeps the attempt completed before it.
 #[test]
 fn an_interrupted_finalization_keeps_its_completed_attempts() {
-    let mut evidence = finalizing(None);
-    evidence.record_archive_finalization_plan(2).unwrap();
-    let committed =
-        finalization_attempt("committed.bsa", "first-mod", MutationState::Committed, None);
-    evidence
-        .record_archive_finalization_attempt(committed.clone())
+    let mut evidence = ready_to_finalize(None);
+    let mut finalization = evidence.open_archive_finalization().unwrap();
+    finalization.plan(2).unwrap();
+    finalization
+        .record(finalization_attempt(
+            "committed.bsa",
+            "first-mod",
+            MutationState::Committed,
+            None,
+        ))
         .unwrap();
-    evidence
-        .record_archive_finalization(ArchiveFinalizationResult {
-            attempts: vec![committed],
+    finalization
+        .finish(ArchiveFinalizationAccount {
             failure: Some(ArchiveFinalizationFailure::UnexpectedException),
             safe_to_continue: false,
             detail: "packing interrupted".to_owned(),
-            ..ArchiveFinalizationResult::default()
+            ..ArchiveFinalizationAccount::default()
         })
         .unwrap();
 
@@ -475,49 +474,19 @@ fn an_interrupted_finalization_keeps_its_completed_attempts() {
     assert_eq!((progress.total(), progress.completed()), (2, 1));
 }
 
-/// Origin: RunEvidenceTests::finalizationResultCannotDropStreamedAttempts.
+/// Origin: RunEvidenceTests::finalizationAttemptsRequireRecordedTotal (the
+/// result half; the attempt half is `attempts_before_their_plan_are_rejected`).
+/// The phase may finish without an output total, as cancelled or failed
+/// planning does, and a cancelled account is sealed as observed cancellation.
 #[test]
-fn a_finalization_result_cannot_drop_a_streamed_attempt() {
-    let mut evidence = finalizing(None);
-    evidence.record_archive_finalization_plan(2).unwrap();
+fn a_finalization_may_finish_without_an_output_total() {
+    let mut evidence = ready_to_finalize(None);
     evidence
-        .record_archive_finalization_attempt(finalization_attempt(
-            "committed.bsa",
-            "first-mod",
-            MutationState::Committed,
-            None,
-        ))
-        .unwrap();
-    assert!(is_invariant(evidence.record_archive_finalization(
-        ArchiveFinalizationResult {
-            failure: Some(ArchiveFinalizationFailure::UnexpectedException),
-            safe_to_continue: false,
-            ..ArchiveFinalizationResult::default()
-        }
-    )));
-}
-
-/// Origin: RunEvidenceTests::finalizationAttemptsRequireRecordedTotal. An
-/// attempt needs an output total, but a phase-level result may come without
-/// one, and a cancelled one is sealed as observed cancellation.
-#[test]
-fn finalization_attempts_need_a_recorded_total() {
-    let mut evidence = finalizing(None);
-    assert!(is_invariant(evidence.record_archive_finalization(
-        ArchiveFinalizationResult {
-            attempts: vec![finalization_attempt(
-                "packed.bsa",
-                "first-mod",
-                MutationState::Committed,
-                None
-            )],
-            ..ArchiveFinalizationResult::default()
-        }
-    )));
-    evidence
-        .record_archive_finalization(ArchiveFinalizationResult {
+        .open_archive_finalization()
+        .unwrap()
+        .finish(ArchiveFinalizationAccount {
             cancelled: true,
-            ..ArchiveFinalizationResult::default()
+            ..ArchiveFinalizationAccount::default()
         })
         .unwrap();
 
@@ -550,14 +519,8 @@ fn sealed_mutation_summaries_count_completed_attempts() {
             mutation != MutationState::PartialOrUnknown,
         )
     };
-    let mut evidence = MutableRunEvidence::new(None);
-    evidence
-        .record_phase(executed(RunPhase::Preparing))
-        .unwrap();
-    evidence
-        .record_phase(executed(RunPhase::DiscoveringArchives))
-        .unwrap();
-    evidence.record_archive_extraction_plan(3).unwrap();
+    let mut evidence = discovering(None);
+    let mut extracting = evidence.open_archive_extraction(3).unwrap();
     for attempt in [
         extraction(
             "first.bsa",
@@ -581,25 +544,23 @@ fn sealed_mutation_summaries_count_completed_attempts() {
             ),
         ),
     ] {
-        evidence.record_archive_extraction_attempt(attempt).unwrap();
+        extracting.record(attempt).unwrap();
     }
-    evidence
-        .record_phase(executed(RunPhase::ArchiveFinalization))
-        .unwrap();
-    evidence.record_archive_finalization_plan(2).unwrap();
-    evidence
-        .record_archive_finalization(ArchiveFinalizationResult {
-            attempts: vec![
-                finalization_attempt("packed-a.bsa", "alpha", MutationState::Committed, None),
-                finalization_attempt(
-                    "packed-b.bsa",
-                    "beta",
-                    MutationState::Committed,
-                    Some(ArchiveFinalizationFailure::SourceCleanupFailed),
-                ),
-            ],
-            ..ArchiveFinalizationResult::default()
-        })
+    let mut finalization = evidence.open_archive_finalization().unwrap();
+    finalization.plan(2).unwrap();
+    for attempt in [
+        finalization_attempt("packed-a.bsa", "alpha", MutationState::Committed, None),
+        finalization_attempt(
+            "packed-b.bsa",
+            "beta",
+            MutationState::Committed,
+            Some(ArchiveFinalizationFailure::SourceCleanupFailed),
+        ),
+    ] {
+        finalization.record(attempt).unwrap();
+    }
+    finalization
+        .finish(ArchiveFinalizationAccount::default())
         .unwrap();
 
     let terminal = consume_after_cleanup(evidence);
@@ -636,10 +597,11 @@ fn plugin_only_finalization_mutations_are_sealed() {
         mutation: MutationState::Committed,
         count: 1,
     };
-    let mut evidence = finalizing(None);
-    evidence.record_archive_finalization_plan(0).unwrap();
-    evidence
-        .record_archive_finalization(ArchiveFinalizationResult {
+    let mut evidence = ready_to_finalize(None);
+    let mut finalization = evidence.open_archive_finalization().unwrap();
+    finalization.plan(0).unwrap();
+    finalization
+        .finish(ArchiveFinalizationAccount {
             mutations: vec![
                 plugin(
                     "first-mod",
@@ -652,7 +614,7 @@ fn plugin_only_finalization_mutations_are_sealed() {
                     ArchiveFinalizationMutationKind::PluginRemoval,
                 ),
             ],
-            ..ArchiveFinalizationResult::default()
+            ..ArchiveFinalizationAccount::default()
         })
         .unwrap();
 
@@ -792,6 +754,123 @@ fn a_panicking_publication_is_claimed_once_and_never_retried() {
     }
 }
 
+/// Evidence whose current Run Phase is `phase`, entered from Preparing
+/// through the general phase transition.
+fn in_phase(phase: RunPhase) -> MutableRunEvidence<'static> {
+    let mut evidence = MutableRunEvidence::new(None);
+    evidence
+        .record_phase(executed(RunPhase::Preparing))
+        .unwrap();
+    if phase != RunPhase::Preparing {
+        evidence.record_phase(executed(phase)).unwrap();
+    }
+    evidence
+}
+
+/// One skipped Archive count, as an Archive pass might establish it.
+fn skipped_archives(reason: SkipReason, count: usize) -> BTreeMap<SkipReason, usize> {
+    BTreeMap::from([(reason, count)])
+}
+
+/// Each Archive discovery fact is accepted only while Archive discovery is
+/// the current Run Phase: from Discovering Archives through Building
+/// Effective Asset Tree.
+#[test]
+fn archive_discovery_facts_are_rejected_outside_archive_discovery() {
+    const SKIPPED: &str = "Skipped Archive counts must be recorded during Archive discovery";
+    const NESTED: &str = "The nested Archive count must be recorded during Archive discovery";
+    for phase in [RunPhase::Preparing, RunPhase::SafetyCleanup] {
+        let mut evidence = in_phase(phase);
+        assert_eq!(
+            invariant(
+                evidence
+                    .record_skipped_archive_counts(skipped_archives(SkipReason::DisabledPhase, 1))
+            ),
+            Some(SKIPPED),
+            "skipped Archive counts during {phase:?}"
+        );
+        assert_eq!(
+            invariant(evidence.record_nested_archive_count(1)),
+            Some(NESTED),
+            "a nested Archive count during {phase:?}"
+        );
+    }
+    for phase in [
+        RunPhase::DiscoveringArchives,
+        RunPhase::BuildingEffectiveAssetTree,
+    ] {
+        let mut evidence = in_phase(phase);
+        evidence
+            .record_skipped_archive_counts(skipped_archives(SkipReason::DisabledPhase, 1))
+            .unwrap_or_else(|error| panic!("skipped counts during {phase:?}: {error}"));
+        evidence
+            .record_nested_archive_count(1)
+            .unwrap_or_else(|error| panic!("a nested count during {phase:?}: {error}"));
+    }
+}
+
+/// The skipped Archive counts and the nested Archive count are separate
+/// facts: recording one never stands in for the other, each is recorded at
+/// most once, and the sealed evidence keeps the first of each.
+#[test]
+fn each_archive_discovery_fact_is_recorded_once() {
+    let mut evidence = in_phase(RunPhase::DiscoveringArchives);
+    evidence
+        .record_skipped_archive_counts(skipped_archives(SkipReason::DisabledPhase, 2))
+        .unwrap();
+    assert_eq!(
+        invariant(
+            evidence
+                .record_skipped_archive_counts(skipped_archives(SkipReason::DisabledAssetKind, 1))
+        ),
+        Some("Skipped Archive counts can only be recorded once")
+    );
+    evidence
+        .record_phase(executed(RunPhase::BuildingEffectiveAssetTree))
+        .unwrap();
+    evidence.record_nested_archive_count(3).unwrap();
+    assert_eq!(
+        invariant(evidence.record_nested_archive_count(5)),
+        Some("The nested Archive count can only be recorded once")
+    );
+
+    let terminal = consume_after_cleanup(evidence);
+    assert_eq!(
+        terminal.archive_discovery(),
+        Some(&ArchiveDiscoveryEvidence {
+            skipped_archive_counts: skipped_archives(SkipReason::DisabledPhase, 2),
+            unsupported_explicit_paths: Vec::new(),
+            nested_archive_count: 3,
+        })
+    );
+}
+
+/// An Archive pass's counts are discovery evidence on their own: a run that
+/// stops before a complete definitive pass reports them with no nested
+/// Archives, and a run that never finished the Archive pass reports none.
+#[test]
+fn skipped_archive_counts_alone_report_no_nested_archives() {
+    let mut evidence = in_phase(RunPhase::DiscoveringArchives);
+    evidence
+        .record_skipped_archive_counts(skipped_archives(SkipReason::ExcludedAssetVariant, 4))
+        .unwrap();
+    let terminal = consume_after_cleanup(evidence);
+    assert_eq!(
+        terminal.archive_discovery(),
+        Some(&ArchiveDiscoveryEvidence {
+            skipped_archive_counts: skipped_archives(SkipReason::ExcludedAssetVariant, 4),
+            ..ArchiveDiscoveryEvidence::default()
+        })
+    );
+    assert_eq!(
+        terminal.skipped_asset_count(SkipReason::ExcludedAssetVariant),
+        4
+    );
+
+    let undiscovered = consume_after_cleanup(in_phase(RunPhase::DiscoveringArchives));
+    assert_eq!(undiscovered.archive_discovery(), None);
+}
+
 /// An extraction attempt at `archive` that mutated nothing, failed with
 /// `failure` when one is given.
 fn extraction_attempt(
@@ -812,12 +891,9 @@ fn extraction_attempt(
     }
 }
 
-/// Evidence in Extracting Archives with a planned total of `total`,
+/// Evidence in Discovering Archives, ready to open Archive extraction,
 /// optionally reporting to `sink`.
-fn extracting(
-    sink: Option<&dyn crate::run::RunObservationSink>,
-    total: usize,
-) -> MutableRunEvidence<'_> {
+fn discovering(sink: Option<&dyn crate::run::RunObservationSink>) -> MutableRunEvidence<'_> {
     let mut evidence = MutableRunEvidence::new(sink);
     evidence
         .record_phase(executed(RunPhase::Preparing))
@@ -825,7 +901,6 @@ fn extracting(
     evidence
         .record_phase(executed(RunPhase::DiscoveringArchives))
         .unwrap();
-    evidence.record_archive_extraction_plan(total).unwrap();
     evidence
 }
 
@@ -842,30 +917,31 @@ fn texture_ledger(count: usize) -> RoutingLedger {
         .route_all((0..count).map(|index| PathBuf::from(format!("mod-root/textures/{index}.dds"))))
 }
 
-/// Evidence that has retained `ledger` as its definitive routing, with
-/// Building Effective Asset Tree still current, optionally reporting to
+/// Evidence that has completed a successful Effective Asset Tree discovery,
+/// with Building Effective Asset Tree still current, ready to open
+/// Processing Assets with its definitive routing, optionally reporting to
 /// `sink`.
-fn routed(
-    sink: Option<&dyn crate::run::RunObservationSink>,
-    ledger: RoutingLedger,
-) -> MutableRunEvidence<'_> {
+fn discovered(sink: Option<&dyn crate::run::RunObservationSink>) -> MutableRunEvidence<'_> {
     let mut evidence = MutableRunEvidence::new(sink);
     evidence
         .record_phase(executed(RunPhase::Preparing))
         .unwrap();
-    evidence.record_effective_asset_tree_started().unwrap();
     evidence
-        .record_archive_discovery(ArchiveDiscoveryEvidence::default())
+        .record_phase(executed(RunPhase::BuildingEffectiveAssetTree))
         .unwrap();
-    evidence.record_routing_ledger(ledger).unwrap();
+    evidence
+        .record_skipped_archive_counts(BTreeMap::new())
+        .unwrap();
+    evidence.record_nested_archive_count(0).unwrap();
     evidence
 }
 
-/// The first Routed Asset of the evidence's definitive routing.
-fn first_routed_asset(evidence: &MutableRunEvidence<'_>) -> RoutedAsset {
-    evidence
-        .routing_ledger()
-        .and_then(|ledger| ledger.routed_assets().first().cloned())
+/// The first Routed Asset of `ledger`.
+fn first_routed_asset(ledger: &RoutingLedger) -> RoutedAsset {
+    ledger
+        .routed_assets()
+        .first()
+        .cloned()
         .expect("the routing holds a Routed Asset")
 }
 
@@ -906,21 +982,21 @@ fn published_progress(sink: &RecordingSink, phase: RunPhase) -> Vec<(usize, usiz
 #[test]
 fn an_extraction_attempt_advances_its_planned_progress() {
     let sink = RecordingSink::default();
-    let mut evidence = extracting(Some(&sink), 2);
+    let mut evidence = discovering(Some(&sink));
+    let mut extraction = evidence.open_archive_extraction(2).unwrap();
 
-    evidence
-        .record_archive_extraction_attempt(extraction_attempt("first.bsa", None))
+    extraction
+        .record(extraction_attempt("first.bsa", None))
         .unwrap();
-    evidence
-        .record_archive_extraction_attempt(extraction_attempt(
+    extraction
+        .record(extraction_attempt(
             "second.bsa",
             Some(ArchiveExtractionFailure::ExtractionFailed),
         ))
         .unwrap();
-    assert!(
-        is_invariant(
-            evidence.record_archive_extraction_attempt(extraction_attempt("third.bsa", None))
-        ),
+    assert_eq!(
+        invariant(extraction.record(extraction_attempt("third.bsa", None))),
+        Some("Archive extraction attempts cannot exceed the planned total"),
         "an attempt beyond the planned total"
     );
 
@@ -943,18 +1019,16 @@ fn an_extraction_attempt_advances_its_planned_progress() {
 #[test]
 fn an_asset_attempt_advances_its_planned_progress() {
     let sink = RecordingSink::default();
-    let mut evidence = routed(Some(&sink), texture_ledger(2));
-    evidence.record_asset_processing_plan(2).unwrap();
-    let asset = first_routed_asset(&evidence);
+    let mut evidence = discovered(Some(&sink));
+    let ledger = texture_ledger(2);
+    let asset = first_routed_asset(&ledger);
+    let mut assets = evidence.open_processing_assets(ledger).unwrap();
 
-    evidence
-        .record_asset_attempt(asset_attempt(asset.clone(), true))
-        .unwrap();
-    evidence
-        .record_asset_attempt(asset_attempt(asset.clone(), false))
-        .unwrap();
-    assert!(
-        is_invariant(evidence.record_asset_attempt(asset_attempt(asset, false))),
+    assets.record(asset_attempt(asset.clone(), true)).unwrap();
+    assets.record(asset_attempt(asset.clone(), false)).unwrap();
+    assert_eq!(
+        invariant(assets.record(asset_attempt(asset, false))),
+        Some("Asset attempts cannot exceed the routed-work total"),
         "an attempt beyond the planned total"
     );
 
@@ -977,34 +1051,34 @@ fn an_asset_attempt_advances_its_planned_progress() {
 #[test]
 fn a_finalization_attempt_advances_its_planned_progress() {
     let sink = RecordingSink::default();
-    let mut evidence = finalizing(Some(&sink));
-    evidence.record_archive_finalization_plan(2).unwrap();
+    let mut evidence = ready_to_finalize(Some(&sink));
+    let mut finalization = evidence.open_archive_finalization().unwrap();
+    finalization.plan(2).unwrap();
 
-    evidence
-        .record_archive_finalization_attempt(finalization_attempt(
+    finalization
+        .record(finalization_attempt(
             "first.bsa",
             "first-mod",
             MutationState::None,
             Some(ArchiveFinalizationFailure::WriteFailed),
         ))
         .unwrap();
-    evidence
-        .record_archive_finalization_attempt(finalization_attempt(
+    finalization
+        .record(finalization_attempt(
             "second.bsa",
             "second-mod",
             MutationState::Committed,
             None,
         ))
         .unwrap();
-    assert!(
-        is_invariant(
-            evidence.record_archive_finalization_attempt(finalization_attempt(
-                "third.bsa",
-                "third-mod",
-                MutationState::Committed,
-                None,
-            ))
-        ),
+    assert_eq!(
+        invariant(finalization.record(finalization_attempt(
+            "third.bsa",
+            "third-mod",
+            MutationState::Committed,
+            None,
+        ))),
+        Some("Archive Finalization attempts cannot exceed the planned total"),
         "an attempt beyond the planned total"
     );
 
@@ -1012,7 +1086,8 @@ fn a_finalization_attempt_advances_its_planned_progress() {
         published_progress(&sink, RunPhase::ArchiveFinalization),
         [(2, 0, 0), (2, 0, 1), (2, 1, 1)]
     );
-    let archives: Vec<_> = evidence
+    let terminal = consume_after_cleanup(evidence);
+    let archives: Vec<_> = terminal
         .archive_finalization()
         .unwrap()
         .attempts
@@ -1022,107 +1097,140 @@ fn a_finalization_attempt_advances_its_planned_progress() {
     assert_eq!(archives, ["first.bsa", "second.bsa"]);
 }
 
-/// Each attempt kind is rejected when its own Run Phase is not the
-/// current, executed one: before it, after it, or when it was skipped.
-#[test]
-fn attempts_outside_their_run_phase_are_rejected() {
-    let cases: [RejectionCase; 6] = [
-        ("an extraction attempt during Preparing", || {
-            let mut evidence = MutableRunEvidence::new(None);
-            evidence.record_phase(executed(RunPhase::Preparing))?;
-            evidence.record_archive_extraction_attempt(extraction_attempt("a.bsa", None))
-        }),
-        (
-            "an extraction attempt after Dry Run skipped the phase",
-            || {
-                let mut evidence = MutableRunEvidence::new(None);
-                evidence.record_phase(executed(RunPhase::Preparing))?;
-                evidence.record_dry_run_archive_extraction()?;
-                evidence.record_archive_extraction_attempt(extraction_attempt("a.bsa", None))
-            },
-        ),
-        ("an extraction attempt after its phase ended", || {
-            let mut evidence = extracting(None, 1);
-            evidence.record_effective_asset_tree_started()?;
-            evidence.record_archive_extraction_attempt(extraction_attempt("a.bsa", None))
-        }),
-        ("an Asset attempt before Processing Assets", || {
-            let mut evidence = routed(None, texture_ledger(1));
-            let asset = first_routed_asset(&evidence);
-            evidence.record_asset_attempt(asset_attempt(asset, false))
-        }),
-        ("an Asset attempt during Archive Finalization", || {
-            let mut evidence = routed(None, texture_ledger(1));
-            evidence.record_asset_processing_plan(1)?;
-            let asset = first_routed_asset(&evidence);
-            evidence.record_phase(executed(RunPhase::ArchiveFinalization))?;
-            evidence.record_asset_attempt(asset_attempt(asset, false))
-        }),
-        ("a finalization attempt during Processing Assets", || {
-            let mut evidence = routed(None, texture_ledger(1));
-            evidence.record_asset_processing_plan(1)?;
-            evidence.record_archive_finalization_attempt(finalization_attempt(
-                "a.bsa",
-                "mod-root",
-                MutationState::Committed,
-                None,
-            ))
-        }),
-    ];
-    for (case, record) in cases {
-        assert!(is_invariant(record()), "{case}");
-    }
-}
-
-/// Each attempt kind is rejected while its Run Phase is current but has no
-/// planned total yet.
+/// An Archive Finalization attempt is rejected while its Run Phase is open
+/// but has no planned total yet. Opening Archive extraction or Processing
+/// Assets always plans its total, so neither phase has an unplanned state.
+/// A rejected attempt is not retained, so the phase reports no result.
 #[test]
 fn attempts_before_their_plan_are_rejected() {
-    let cases: [RejectionCase; 3] = [
-        ("an extraction attempt", || {
-            let mut evidence = MutableRunEvidence::new(None);
-            evidence.record_phase(executed(RunPhase::Preparing))?;
-            evidence.record_phase(executed(RunPhase::ExtractingArchives))?;
-            evidence.record_archive_extraction_attempt(extraction_attempt("a.bsa", None))
+    let mut evidence = ready_to_finalize(None);
+    let mut finalization = evidence.open_archive_finalization().unwrap();
+
+    assert_eq!(
+        invariant(finalization.record(finalization_attempt(
+            "a.bsa",
+            "mod-root",
+            MutationState::Committed,
+            None,
+        ))),
+        Some("Archive Finalization attempts require the immutable executed plan")
+    );
+    assert!(
+        consume_after_cleanup(evidence)
+            .archive_finalization()
+            .is_none()
+    );
+}
+
+/// The Run Evidence invariant an opener reports for an attempt-bearing Run
+/// Phase that was already opened, finished or skipped.
+const OPENED_ONCE: &str = "An attempt-bearing Run Phase can only be opened once";
+
+/// Archive extraction opens once: a second opening, even of a phase that
+/// recorded no attempt yet, is refused, leaving the phase's record as it was
+/// and publishing nothing more.
+#[test]
+fn archive_extraction_cannot_be_reopened() {
+    let sink = RecordingSink::default();
+    let mut evidence = discovering(Some(&sink));
+    evidence.open_archive_extraction(2).unwrap();
+
+    assert_eq!(
+        invariant(evidence.open_archive_extraction(2).map(drop)),
+        Some(OPENED_ONCE)
+    );
+    assert_eq!(
+        published_progress(&sink, RunPhase::ExtractingArchives),
+        [(2, 0, 0)],
+        "the refused opening publishes no duplicate phase record"
+    );
+    assert_eq!(
+        evidence.current_phase(),
+        Some(&progress(RunPhase::ExtractingArchives, 2, 0, 0))
+    );
+}
+
+/// Archive Finalization opens once: whether the phase was finished unplanned,
+/// finished after its plan, or only opened, a second opening is refused, so
+/// the finished phase's account and output total cannot be replaced and no
+/// duplicate phase record is published.
+#[test]
+fn archive_finalization_cannot_be_reopened() {
+    let cases: [OpeningCase; 3] = [
+        ("after an unplanned finish", || {
+            let mut evidence = ready_to_finalize(None);
+            evidence
+                .open_archive_finalization()
+                .unwrap()
+                .finish(ArchiveFinalizationAccount {
+                    cancelled: true,
+                    ..ArchiveFinalizationAccount::default()
+                })
+                .unwrap();
+            evidence
         }),
-        ("an Asset attempt", || {
-            let mut evidence = routed(None, texture_ledger(1));
-            let asset = first_routed_asset(&evidence);
-            evidence.record_phase(executed(RunPhase::ProcessingAssets))?;
-            evidence.record_asset_attempt(asset_attempt(asset, false))
+        ("after a planned finish", || {
+            let mut evidence = ready_to_finalize(None);
+            let mut finalization = evidence.open_archive_finalization().unwrap();
+            finalization.plan(1).unwrap();
+            finalization
+                .finish(ArchiveFinalizationAccount::default())
+                .unwrap();
+            evidence
         }),
-        ("a finalization attempt", || {
-            finalizing(None).record_archive_finalization_attempt(finalization_attempt(
-                "a.bsa",
-                "mod-root",
-                MutationState::Committed,
-                None,
-            ))
+        ("while still open and unplanned", || {
+            let mut evidence = ready_to_finalize(None);
+            evidence.open_archive_finalization().unwrap();
+            evidence
         }),
     ];
-    for (case, record) in cases {
-        assert!(is_invariant(record()), "{case}");
+    for (case, evidence) in cases {
+        let mut evidence = evidence();
+        let before = evidence.current_phase().copied();
+
+        assert_eq!(
+            invariant(evidence.open_archive_finalization().map(drop)),
+            Some(OPENED_ONCE),
+            "{case}"
+        );
+        assert_eq!(evidence.current_phase().copied(), before, "{case}");
     }
 }
 
-/// No Archive Finalization attempt may follow the phase's recorded result,
-/// even while its planned total has room.
+/// A skipped attempt-bearing Run Phase cannot be opened afterwards: its
+/// skip is already its record.
 #[test]
-fn a_finalization_attempt_after_its_result_is_rejected() {
-    let mut evidence = finalizing(None);
-    evidence.record_archive_finalization_plan(1).unwrap();
-    evidence
-        .record_archive_finalization(ArchiveFinalizationResult::default())
+fn a_skipped_attempt_bearing_phase_cannot_be_opened() {
+    let mut extraction = discovering(None);
+    extraction
+        .record_phase(RunPhaseRecord::skipped(
+            RunPhase::ExtractingArchives,
+            PhaseSkipReason::DryRun,
+        ))
         .unwrap();
+    assert_eq!(
+        invariant(extraction.open_archive_extraction(0).map(drop)),
+        Some(OPENED_ONCE)
+    );
 
-    assert!(is_invariant(evidence.record_archive_finalization_attempt(
-        finalization_attempt("late.bsa", "mod-root", MutationState::Committed, None)
-    )));
+    let mut finalization = ready_to_finalize(None);
+    finalization
+        .record_phase(RunPhaseRecord::skipped(
+            RunPhase::ArchiveFinalization,
+            PhaseSkipReason::DryRun,
+        ))
+        .unwrap();
+    assert_eq!(
+        invariant(finalization.open_archive_finalization().map(drop)),
+        Some(OPENED_ONCE)
+    );
 }
 
 /// Archive Finalization's attempt rejections keep their own messages: every
-/// attempt outside the executed, planned and still open phase breaks its
-/// immutable executed plan, and one past the planned total exceeds it.
+/// attempt outside the planned and still open phase breaks its immutable
+/// executed plan, and one past the planned total exceeds it. Attempts before
+/// the phase or after it ended need no row: only the handle that opened the
+/// phase can record one, and it holds the evidence until it is gone.
 #[test]
 fn finalization_attempt_rejections_keep_their_messages() {
     const PLAN: &str = "Archive Finalization attempts require the immutable executed plan";
@@ -1130,45 +1238,21 @@ fn finalization_attempt_rejections_keep_their_messages() {
     fn attempt() -> ArchiveFinalizationAttempt {
         finalization_attempt("a.bsa", "mod-root", MutationState::Committed, None)
     }
-    let cases: [(RejectionCase, &str); 5] = [
-        (
-            ("an attempt before the phase", || {
-                let mut evidence = routed(None, texture_ledger(1));
-                evidence.record_asset_processing_plan(1)?;
-                evidence.record_archive_finalization_attempt(attempt())
-            }),
-            PLAN,
-        ),
-        (
-            ("an attempt after the phase ended", || {
-                let mut evidence = finalizing(None);
-                evidence.record_archive_finalization_plan(1)?;
-                evidence.record_phase(executed(RunPhase::SafetyCleanup))?;
-                evidence.record_archive_finalization_attempt(attempt())
-            }),
-            PLAN,
-        ),
+    let cases: [(RejectionCase, &str); 2] = [
         (
             ("an attempt before the plan", || {
-                finalizing(None).record_archive_finalization_attempt(attempt())
-            }),
-            PLAN,
-        ),
-        (
-            ("an attempt after the result", || {
-                let mut evidence = finalizing(None);
-                evidence.record_archive_finalization_plan(1)?;
-                evidence.record_archive_finalization(ArchiveFinalizationResult::default())?;
-                evidence.record_archive_finalization_attempt(attempt())
+                let mut evidence = ready_to_finalize(None);
+                evidence.open_archive_finalization()?.record(attempt())
             }),
             PLAN,
         ),
         (
             ("an attempt past the planned total", || {
-                let mut evidence = finalizing(None);
-                evidence.record_archive_finalization_plan(1)?;
-                evidence.record_archive_finalization_attempt(attempt())?;
-                evidence.record_archive_finalization_attempt(attempt())
+                let mut evidence = ready_to_finalize(None);
+                let mut finalization = evidence.open_archive_finalization()?;
+                finalization.plan(1)?;
+                finalization.record(attempt())?;
+                finalization.record(attempt())
             }),
             EXCEEDED,
         ),
@@ -1178,82 +1262,257 @@ fn finalization_attempt_rejections_keep_their_messages() {
     }
 }
 
-/// An Archive Finalization attempt needs the phase's own plan: determinate
-/// progress recorded around the plan opens no result to retain it in, so
-/// the attempt is refused rather than retained in a result made up for it.
+/// The public Archive Finalization result is put together by the evidence
+/// from the attempts its handle streamed plus the phase-level account it
+/// finished with. A handle dropped without finishing, as on the Run Evidence
+/// invariant escape, leaves the streamed attempts with default phase-level
+/// fields, and one dropped before its plan leaves no result at all.
 #[test]
-fn a_finalization_attempt_without_its_plan_is_rejected() {
-    let mut evidence = finalizing(None);
-    evidence
-        .record_phase(progress(RunPhase::ArchiveFinalization, 1, 0, 0))
-        .unwrap();
-
-    assert_eq!(
-        invariant(
-            evidence.record_archive_finalization_attempt(finalization_attempt(
-                "unplanned.bsa",
-                "mod-root",
-                MutationState::Committed,
-                None
-            ))
-        ),
-        Some("Archive Finalization attempts require the immutable executed plan")
+fn the_public_finalization_result_is_assembled_from_streamed_attempts_and_the_account() {
+    let committed = finalization_attempt("first.bsa", "first-mod", MutationState::Committed, None);
+    let failed = finalization_attempt(
+        "second.bsa",
+        "second-mod",
+        MutationState::None,
+        Some(ArchiveFinalizationFailure::WriteFailed),
     );
-    assert!(evidence.archive_finalization().is_none());
-    let unchanged = evidence
-        .phase(RunPhase::ArchiveFinalization)
-        .and_then(RunPhaseRecord::progress)
-        .unwrap();
-    assert_eq!((unchanged.total(), unchanged.completed()), (1, 0));
-}
+    let pruned = ArchiveFinalizationMutation {
+        mod_root: "first-mod".into(),
+        path: "first-mod".into(),
+        kind: ArchiveFinalizationMutationKind::EmptyDirectoryPruning,
+        mutation: MutationState::Committed,
+        count: 3,
+    };
 
-/// No output total may follow Archive Finalization's recorded result, as
-/// when cancelled planning recorded a result without one; the plan would
-/// otherwise reopen the closed phase and replace its result.
-#[test]
-fn a_finalization_plan_after_its_result_is_rejected() {
-    let mut evidence = finalizing(None);
-    evidence
-        .record_archive_finalization(ArchiveFinalizationResult {
+    let mut finished = ready_to_finalize(None);
+    let mut finalization = finished.open_archive_finalization().unwrap();
+    finalization.plan(2).unwrap();
+    finalization.record(committed.clone()).unwrap();
+    finalization.record(failed.clone()).unwrap();
+    finalization
+        .finish(ArchiveFinalizationAccount {
+            failure: Some(ArchiveFinalizationFailure::PluginCreationFailed),
             cancelled: true,
-            ..ArchiveFinalizationResult::default()
+            safe_to_continue: false,
+            detail: "plugin occupied".to_owned(),
+            mutations: vec![pruned.clone()],
         })
         .unwrap();
-
+    let terminal = consume_after_cleanup(finished);
     assert_eq!(
-        invariant(evidence.record_archive_finalization_plan(1)),
-        Some("Archive Finalization needs an executed phase and one immutable plan")
+        terminal.archive_finalization(),
+        Some(&ArchiveFinalizationResult {
+            attempts: vec![committed.clone(), failed],
+            failure: Some(ArchiveFinalizationFailure::PluginCreationFailed),
+            cancelled: true,
+            safe_to_continue: false,
+            detail: "plugin occupied".to_owned(),
+            mutations: vec![pruned],
+        })
     );
-    let terminal = consume_after_cleanup(evidence);
-    assert!(terminal.archive_finalization().unwrap().cancelled);
-    assert!(
-        terminal
-            .phase(RunPhase::ArchiveFinalization)
-            .unwrap()
-            .progress()
-            .is_none()
+    assert!(terminal.cancellation_observed());
+
+    let mut unfinished = ready_to_finalize(None);
+    let mut finalization = unfinished.open_archive_finalization().unwrap();
+    finalization.plan(2).unwrap();
+    finalization.record(committed.clone()).unwrap();
+    // The handle is never finished: its borrow simply ends here.
+    let terminal = consume_after_cleanup(unfinished);
+    assert_eq!(
+        terminal.archive_finalization(),
+        Some(&ArchiveFinalizationResult {
+            attempts: vec![committed],
+            ..ArchiveFinalizationResult::default()
+        })
+    );
+    assert!(!terminal.cancellation_observed());
+
+    let mut unplanned = ready_to_finalize(None);
+    unplanned.open_archive_finalization().unwrap();
+    let terminal = consume_after_cleanup(unplanned);
+    assert_eq!(terminal.archive_finalization(), None);
+    assert_eq!(
+        terminal.phase(RunPhase::ArchiveFinalization),
+        Some(&executed(RunPhase::ArchiveFinalization))
     );
 }
 
-/// Processing Assets is planned only with the definitive Routing Ledger's
-/// routed total, and never without a retained ledger.
+/// Opening Processing Assets retains the definitive Routing Ledger it is
+/// given and plans the phase's determinate progress from that ledger's
+/// Routed Assets, so no caller passes a total. An empty ledger plans zero.
 #[test]
-fn the_asset_processing_plan_must_match_the_routing_ledger() {
-    let mut evidence = routed(None, texture_ledger(2));
-    for total in [1, 3] {
-        assert!(
-            is_invariant(evidence.record_asset_processing_plan(total)),
-            "a total of {total} against two routed Assets"
-        );
-    }
-    evidence.record_asset_processing_plan(2).unwrap();
+fn opening_processing_assets_derives_its_total_from_the_retained_routing_ledger() {
+    for routed_assets in [0, 3] {
+        let sink = RecordingSink::default();
+        let mut evidence = discovered(Some(&sink));
+        let ledger = texture_ledger(routed_assets);
 
-    let mut unrouted = MutableRunEvidence::new(None);
-    unrouted
-        .record_phase(executed(RunPhase::Preparing))
-        .unwrap();
-    assert!(
-        is_invariant(unrouted.record_asset_processing_plan(0)),
-        "a plan without a Routing Ledger"
-    );
+        evidence.open_processing_assets(ledger.clone()).unwrap();
+
+        assert_eq!(
+            published_progress(&sink, RunPhase::ProcessingAssets),
+            [(routed_assets, 0, 0)],
+            "{routed_assets} Routed Assets"
+        );
+        assert_eq!(evidence.routing_ledger(), Some(&ledger));
+        let terminal = consume_after_cleanup(evidence);
+        assert_eq!(terminal.routing_ledger(), Some(&ledger));
+    }
+}
+
+/// One row of an opening table: what it describes, and the evidence the
+/// opening is then attempted on.
+type OpeningCase = (&'static str, fn() -> MutableRunEvidence<'static>);
+
+/// Processing Assets opens only on a completed, successful Effective Asset
+/// Tree discovery, and only once; a refused opening retains no Routing
+/// Ledger and records no phase.
+#[test]
+fn processing_assets_opens_only_after_successful_effective_asset_tree_discovery() {
+    const UNROUTED: &str =
+        "Routing Ledger requires completed, successful Effective Asset Tree discovery";
+    let cases: [OpeningCase; 6] = [
+        ("during Preparing", || {
+            let mut evidence = MutableRunEvidence::new(None);
+            evidence
+                .record_phase(executed(RunPhase::Preparing))
+                .unwrap();
+            evidence
+        }),
+        ("without the Archive discovery facts", || {
+            let mut evidence = MutableRunEvidence::new(None);
+            evidence
+                .record_phase(executed(RunPhase::Preparing))
+                .unwrap();
+            evidence
+                .record_phase(executed(RunPhase::BuildingEffectiveAssetTree))
+                .unwrap();
+            evidence
+        }),
+        // A partial definitive pass records the skipped counts but no
+        // nested count, so it never becomes definitive routing.
+        ("with only the skipped Archive counts", || {
+            let mut evidence = in_phase(RunPhase::BuildingEffectiveAssetTree);
+            evidence
+                .record_skipped_archive_counts(BTreeMap::new())
+                .unwrap();
+            evidence
+        }),
+        ("with only the nested Archive count", || {
+            let mut evidence = in_phase(RunPhase::BuildingEffectiveAssetTree);
+            evidence.record_nested_archive_count(0).unwrap();
+            evidence
+        }),
+        ("after a Run Failure", || {
+            let mut evidence = discovered(None);
+            evidence.record_failure(RunFailure::new(
+                RunFailureCode::RunWorkEscaped,
+                RunPhase::BuildingEffectiveAssetTree,
+                "escaped",
+            ));
+            evidence
+        }),
+        ("a second time", || {
+            let mut evidence = discovered(None);
+            evidence.open_processing_assets(texture_ledger(1)).unwrap();
+            evidence
+        }),
+    ];
+    for (case, evidence) in cases {
+        let mut evidence = evidence();
+        let before = evidence.current_phase().copied();
+        let retained = evidence.routing_ledger().cloned();
+
+        assert_eq!(
+            invariant(evidence.open_processing_assets(texture_ledger(2)).map(drop)),
+            Some(UNROUTED),
+            "{case}"
+        );
+        assert_eq!(evidence.current_phase().copied(), before, "{case}");
+        assert_eq!(evidence.routing_ledger().cloned(), retained, "{case}");
+    }
+}
+
+/// The Run Evidence invariant the general phase transition reports for an
+/// executed record of an attempt-bearing Run Phase.
+const HANDLE_ONLY: &str =
+    "An attempt-bearing Run Phase can only be executed through its attempt-phase handle";
+
+/// Asserts that the general phase transition refuses every executed record
+/// of `phase`, determinate or not, and records nothing for it, yet still
+/// accepts the phase's skip.
+fn assert_only_its_handle_executes(phase: RunPhase, skip: PhaseSkipReason) {
+    for record in [executed(phase), progress(phase, 1, 0, 0)] {
+        let sink = RecordingSink::default();
+        let mut evidence = MutableRunEvidence::new(Some(&sink));
+        evidence
+            .record_phase(executed(RunPhase::Preparing))
+            .unwrap();
+
+        assert_eq!(
+            invariant(evidence.record_phase(record)),
+            Some(HANDLE_ONLY),
+            "{record:?}"
+        );
+        assert!(evidence.phase(phase).is_none(), "{record:?}");
+        assert_eq!(sink.phase_order(), [RunPhase::Preparing], "{record:?}");
+
+        evidence
+            .record_phase(RunPhaseRecord::skipped(phase, skip))
+            .unwrap();
+    }
+}
+
+/// Extracting Archives executes only through the handle opening Archive
+/// extraction, so no producer can account for its attempts or progress
+/// outside it. Dry Run still skips it through the general transition.
+#[test]
+fn the_general_transition_rejects_an_executed_extracting_archives_record() {
+    assert_only_its_handle_executes(RunPhase::ExtractingArchives, PhaseSkipReason::DryRun);
+}
+
+/// Processing Assets executes only through the handle opening it with the
+/// definitive Routing Ledger. A run with no requested work still skips it
+/// through the general transition.
+#[test]
+fn the_general_transition_rejects_an_executed_processing_assets_record() {
+    assert_only_its_handle_executes(RunPhase::ProcessingAssets, PhaseSkipReason::NoRequestedWork);
+}
+
+/// Archive Finalization executes only through the handle opening it, which
+/// alone plans its output total, so the general transition cannot record
+/// progress around that plan. Dry Run still skips it through the general
+/// transition.
+#[test]
+fn the_general_transition_rejects_an_executed_archive_finalization_record() {
+    assert_only_its_handle_executes(RunPhase::ArchiveFinalization, PhaseSkipReason::DryRun);
+}
+
+/// An Asset attempt's diagnostics are retained through the open Processing
+/// Assets handle, which holds the evidence exclusively, and wait for the
+/// run's next publication rather than reaching the sink at once.
+#[test]
+fn a_diagnostic_retained_through_the_asset_handle_waits_for_publication() {
+    let sink = RecordingSink::default();
+    let mut evidence = discovered(Some(&sink));
+    let mut assets = evidence.open_processing_assets(texture_ledger(1)).unwrap();
+
+    assets.retain_diagnostic(RunDiagnostic::new(
+        RunDiagnosticCode::PluginUnreadable,
+        RunPhase::ProcessingAssets,
+        "deferred",
+    ));
+    let published = |sink: &RecordingSink| {
+        sink.observed()
+            .iter()
+            .filter(|observed| observed.kind() == "diagnostic")
+            .count()
+    };
+    assert_eq!(published(&sink), 0, "retained, not yet published");
+
+    evidence.publish_diagnostics();
+    assert_eq!(published(&sink), 1);
+    let terminal = consume_after_cleanup(evidence);
+    assert_eq!(terminal.diagnostics().len(), 1);
+    assert_eq!(terminal.diagnostics()[0].detail, "deferred");
 }

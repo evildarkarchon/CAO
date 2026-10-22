@@ -18,20 +18,23 @@
 //! Check; any failure stops the run with nothing extracted.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::ops::ControlFlow;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
+use super::Stop;
 use crate::Error;
 use crate::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use crate::routing::{
-    AssetKind, AssetRouter, ExecutionMode, OptimizerTarget, RoutingDecision, SkipReason,
+    AssetKind, AssetRouter, ExecutionMode, OptimizerTarget, RoutingDecision, RoutingLedger,
+    SkipReason,
 };
 use crate::run::archives::{Preflight, RootArchives, archive_order_key, relative_game_path};
 use crate::run::{
-    ArchiveDiscoveryEvidence, ArchiveExtractionPlan, AssetInitializationCancelled,
-    CancellationToken, MutableRunEvidence, PhaseSkipReason, RoutedAssetAttempt, RunDiagnostic,
-    RunDiagnosticCode, RunPhase, RunPhaseRecord, RunPreparation, RunToolset,
-    TemporaryArtifactRegistry, is_staging_name, take_panic_message,
+    ArchiveExtractionPlan, AssetInitializationCancelled, CancellationToken, MutableRunEvidence,
+    PhaseSkipReason, RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode, RunPhase,
+    RunPhaseRecord, RunPreparation, RunToolset, TemporaryArtifactRegistry, is_staging_name,
+    take_panic_message,
 };
 
 /// Walks Mod Roots for regular files under the scope rules both discovery passes share.
@@ -40,6 +43,8 @@ use crate::run::{
 /// its linked-entry exclusion diagnostics, since other work phases record
 /// between the two passes.
 struct Discovery<'r> {
+    /// The run's token, polled per entry. The discovery phases read it from
+    /// here rather than taking it again beside their walker.
     stop: &'r CancellationToken,
     /// The phase linked-entry diagnostics are attributed to.
     phase: RunPhase,
@@ -175,6 +180,30 @@ fn attributed_mod_root<'p>(path: &Path, mod_roots: &'p [PathBuf]) -> Option<&'p 
         .max_by_key(|root| root.as_os_str().len())
 }
 
+/// What a work Run Phase hands the run: whether the next phase runs, and what
+/// it needs from this one.
+///
+/// [`ControlFlow::Continue`] carries the phase's handoff to the next phase,
+/// which is why `std`'s type is used rather than a bespoke continue-or-stop
+/// enum. [`ControlFlow::Break`] stops the work with nothing left to record,
+/// carrying the [`Stop`] that says why: every stop simply returns, since the
+/// executor records cancellation observed from `stop`, or from a
+/// [`Stop::BackendCancelled`], and publishes the retained Run Diagnostics
+/// once the work has returned. A stop is an ordinary end of the work, so it
+/// is kept apart from the outer `Err`, which only ever carries a Run
+/// Evidence invariant violation for the executor to raise after Safety
+/// Cleanup.
+type PhaseFlow<T = ()> = Result<ControlFlow<Stop, T>, Error>;
+
+/// What Archive discovery hands the later work phases.
+struct DiscoveredArchives {
+    /// Every Archive the Archive pass recognized, enabled or not. The
+    /// definitive pass counts any other Archive as nested.
+    recognized: HashSet<PathBuf>,
+    /// The Archives Apply extracts, in order. Dry Run plans none.
+    plans: Vec<ArchiveExtractionPlan>,
+}
+
 /// Runs Archive-first discovery, definitive routing, Asset attempts and
 /// Archive Finalization through `toolset`'s Asset attempt port and over its
 /// Archive seams.
@@ -187,41 +216,113 @@ fn attributed_mod_root<'p>(path: &Path, mod_roots: &'p [PathBuf]) -> Option<&'p 
 /// the last attempt; an attempt in flight always finishes. An unsafe attempt
 /// stops all further work.
 ///
+/// Every exit simply returns: the executor records cancellation observed
+/// from `stop` at Safety Cleanup, and publishes the Run Diagnostics retained
+/// here once the work has returned. An Asset backend's own report of
+/// cancellation, which `stop` need not show, is returned as
+/// [`Stop::BackendCancelled`] for the executor to record at that same
+/// sample, so the work phases record no cancellation at all. The Archive
+/// discovery facts are recorded where they are established, the skipped
+/// Archive counts at the end of the Archive pass and the nested Archive
+/// count after a complete definitive pass, so no exit carries them either.
+///
 /// An Asset attempt's panic is contained here, as an unsafe Operation
 /// Failure with unknown mutation. Archive extraction and Archive
 /// Finalization contain their own panics, so they are called without a
 /// second layer. Archive Finalization runs only in Apply, once its executed
 /// phase is recorded. Errors are Run Evidence invariant violations, which
 /// the executor raises after Safety Cleanup.
+///
+/// Each work Run Phase runs in its own function returning a [`PhaseFlow`];
+/// this function only chains them, stopping at the first `Break` and
+/// returning its [`Stop`].
 pub(super) fn run_work_phases(
     preparation: &RunPreparation,
     toolset: &mut RunToolset,
     evidence: &mut MutableRunEvidence<'_>,
     artifacts: &mut TemporaryArtifactRegistry,
     stop: &CancellationToken,
-) -> Result<(), Error> {
+) -> Result<ControlFlow<Stop>, Error> {
     let policy = preparation.policy();
     let mode = policy.execution_mode();
     let router = AssetRouter::new(policy.clone());
-
-    evidence.record_archive_discovery_started()?;
-
+    // Both discovery passes share one walker, so each excluded linked entry
+    // is diagnosed once across them.
     let mut discovery = Discovery {
         stop,
         phase: RunPhase::DiscoveringArchives,
         diagnosed: HashSet::new(),
     };
+
+    // `?` cannot unwrap a `ControlFlow` on stable Rust, so each stop is
+    // returned by hand, keeping its reason for the executor.
+    let archives = match discover_archives(
+        preparation,
+        mode,
+        toolset,
+        evidence,
+        &router,
+        &mut discovery,
+    )? {
+        ControlFlow::Continue(archives) => archives,
+        ControlFlow::Break(stopped) => return Ok(ControlFlow::Break(stopped)),
+    };
+    if let stopped @ ControlFlow::Break(_) =
+        extract_archives(mode, &archives.plans, toolset, evidence, artifacts, stop)?
+    {
+        return Ok(stopped);
+    }
+    let ledger = match build_effective_asset_tree(
+        preparation,
+        evidence,
+        &router,
+        &mut discovery,
+        &archives.recognized,
+    )? {
+        ControlFlow::Continue(ledger) => ledger,
+        ControlFlow::Break(stopped) => return Ok(ControlFlow::Break(stopped)),
+    };
+    if let stopped @ ControlFlow::Break(_) =
+        process_assets(preparation, toolset, evidence, ledger, artifacts, stop)?
+    {
+        return Ok(stopped);
+    }
+    // Archive Finalization is the last work phase, so whether it stopped
+    // short changes nothing that follows; its stop is returned as it is.
+    finalize_archives(preparation, mode, toolset, evidence, artifacts, stop)
+}
+
+/// Runs the Discovering Archives phase: the Archive pass over every Mod Root
+/// and, in Apply, the preflight that plans extraction.
+///
+/// The skipped Archive counts are recorded once the pass ends, complete or
+/// not. A cancelled pass, a failed preflight, recorded as the run's failure,
+/// or a cancelled preflight stops the work with nothing extracted.
+fn discover_archives(
+    preparation: &RunPreparation,
+    mode: ExecutionMode,
+    toolset: &RunToolset,
+    evidence: &mut MutableRunEvidence<'_>,
+    router: &AssetRouter,
+    discovery: &mut Discovery<'_>,
+) -> PhaseFlow<DiscoveredArchives> {
+    evidence.record_phase(RunPhaseRecord::executed(
+        RunPhase::DiscoveringArchives,
+        None,
+    ))?;
+
     let mut skipped_archive_counts: BTreeMap<SkipReason, usize> = BTreeMap::new();
     let mut recognized_archives: HashSet<PathBuf> = HashSet::new();
     let mut root_archives: Vec<RootArchives> = Vec::new();
 
     // The Archive pass: recognize every Archive, and every Loose Asset an
     // Archived Asset must not replace, before any extraction.
+    let mut archive_pass_complete = true;
     for root in preparation.mod_roots() {
         let mut selected: Vec<PathBuf> = Vec::new();
         let mut loose = BTreeSet::new();
-        let complete = discovery.visit(evidence, root, &mut |path| {
-            if !names_an_archive(&router, path) {
+        archive_pass_complete = discovery.visit(evidence, root, &mut |path| {
+            if !names_an_archive(router, path) {
                 loose.insert(cao_winfs::OrdinalIgnoreCase(relative_game_path(root, path)));
                 return;
             }
@@ -237,8 +338,8 @@ pub(super) fn run_work_phases(
                 RoutingDecision::Unsupported => {}
             }
         });
-        if !complete {
-            return interrupted(evidence, skipped_archive_counts);
+        if !archive_pass_complete {
+            break;
         }
         // Root order belongs to the caller; only this root's batch is sorted,
         // by its relative names rather than filesystem enumeration order.
@@ -249,23 +350,30 @@ pub(super) fn run_work_phases(
             loose,
         });
     }
+    // The Archive pass establishes the skipped counts, so they are recorded
+    // here once and no later stop has to carry them. A cancelled pass keeps
+    // the exclusions it counted before cancellation.
+    evidence.record_skipped_archive_counts(skipped_archive_counts)?;
+    if !archive_pass_complete {
+        return Ok(ControlFlow::Break(Stop::Halted));
+    }
 
     // Dry Run ignores Archive Precedence and never reads a manifest,
     // calculates a collision or extracts.
     let mut plans: Vec<ArchiveExtractionPlan> = Vec::new();
     if mode == ExecutionMode::Apply {
-        match toolset.preflight_archives(root_archives, preparation.archive_precedence(), stop) {
+        match toolset.preflight_archives(
+            root_archives,
+            preparation.archive_precedence(),
+            discovery.stop,
+        ) {
             Preflight::Failed(failure) => {
                 // A failed preflight has no trustworthy tree, so the run stops
                 // before any extraction, routing or finalization.
-                evidence.record_archive_discovery(ArchiveDiscoveryEvidence {
-                    skipped_archive_counts,
-                    ..ArchiveDiscoveryEvidence::default()
-                })?;
                 evidence.record_failure(failure);
-                return finish(evidence, false);
+                return Ok(ControlFlow::Break(Stop::Halted));
             }
-            Preflight::Cancelled => return interrupted(evidence, skipped_archive_counts),
+            Preflight::Cancelled => return Ok(ControlFlow::Break(Stop::Halted)),
             Preflight::Planned {
                 plans: planned,
                 collisions,
@@ -277,36 +385,114 @@ pub(super) fn run_work_phases(
             }
         }
     }
+    Ok(ControlFlow::Continue(DiscoveredArchives {
+        recognized: recognized_archives,
+        plans,
+    }))
+}
 
+/// Runs the Extracting Archives phase. Apply opens it with its plan and
+/// extracts each planned Archive in order through
+/// [`RunToolset::extract_archive`], over `toolset`'s seams and the run's
+/// Capacity Check with its source cleanup, retaining every completed attempt
+/// before it is reported. Dry Run skips the phase, opening no handle, and
+/// has no plans.
+///
+/// Cancellation is observed before and after the phase is recorded, between
+/// attempts and after the last one. An attempt in flight always finishes, so
+/// cancellation never leaves a partial Archive. Extraction contains its own
+/// panics, classified by how far the attempt got, so it is called without a
+/// second layer. Extraction stops after any attempt whose Attempt Outcome is
+/// not safe to continue, so `PartialOrUnknown` mutation stops it even when
+/// the attempt claims otherwise. Returns `Continue` when every plan was
+/// attempted and the run may continue.
+///
+/// Attempts are recorded through the open phase's handle, which this call
+/// owns, so the phase closes when it returns.
+fn extract_archives(
+    mode: ExecutionMode,
+    plans: &[ArchiveExtractionPlan],
+    toolset: &RunToolset,
+    evidence: &mut MutableRunEvidence<'_>,
+    artifacts: &mut TemporaryArtifactRegistry,
+    stop: &CancellationToken,
+) -> PhaseFlow {
     if stop.is_cancelled() {
-        return interrupted(evidence, skipped_archive_counts);
+        return Ok(ControlFlow::Break(Stop::Halted));
     }
-    match mode {
-        ExecutionMode::DryRun => evidence.record_dry_run_archive_extraction()?,
-        ExecutionMode::Apply => evidence.record_archive_extraction_plan(plans.len())?,
+    // Dry Run skips Archive extraction, so only Apply opens its handle.
+    let extraction = match mode {
+        ExecutionMode::DryRun => {
+            evidence.record_phase(RunPhaseRecord::skipped(
+                RunPhase::ExtractingArchives,
+                PhaseSkipReason::DryRun,
+            ))?;
+            None
+        }
+        ExecutionMode::Apply => Some(evidence.open_archive_extraction(plans.len())?),
     };
     if stop.is_cancelled() {
-        return interrupted(evidence, skipped_archive_counts);
+        return Ok(ControlFlow::Break(Stop::Halted));
     }
 
-    if let Some(halt) = extract_archives(&plans, toolset, evidence, artifacts, stop)? {
-        return match halt {
-            ExtractionStop::Cancelled => interrupted(evidence, skipped_archive_counts),
-            // An unsafe attempt never reaches routing or finalization; only
-            // separately observed cancellation is retained alongside it.
-            ExtractionStop::Unsafe { cancellation } => {
-                evidence.record_archive_discovery(ArchiveDiscoveryEvidence {
-                    skipped_archive_counts,
-                    ..ArchiveDiscoveryEvidence::default()
-                })?;
-                finish(evidence, cancellation)
-            }
-        };
+    // Cancellation stops before the definitive pass, and an unsafe attempt
+    // never reaches routing or finalization.
+    let Some(mut extraction) = extraction else {
+        return Ok(ControlFlow::Continue(()));
+    };
+    if plans.is_empty() {
+        // No attempt ran, so there is none to re-sample cancellation after:
+        // the checks around this phase's record observe it.
+        return Ok(ControlFlow::Continue(()));
     }
+    for plan in plans {
+        // Cancellation observed between attempts stops extraction.
+        if stop.is_cancelled() {
+            return Ok(ControlFlow::Break(Stop::Halted));
+        }
+        let mut attempt = toolset.extract_archive(plan, artifacts);
+        // The attempt's own continuation claim is retained in its Attempt
+        // Outcome for diagnosis, but the stop follows the shared verdict, so
+        // partial mutation stops the run regardless.
+        let unsafe_attempt = !attempt.safe_to_continue();
+        attempt.mod_root = plan.mod_root.clone();
+        extraction.record(attempt)?;
+        if unsafe_attempt {
+            // The attempt left unknown mutation or claimed it was unsafe to
+            // continue.
+            return Ok(ControlFlow::Break(Stop::Halted));
+        }
+    }
+    // Re-sampled after the final attempt and its progress record, so
+    // cancellation during the last Archive still skips the definitive pass.
+    Ok(if stop.is_cancelled() {
+        ControlFlow::Break(Stop::Halted)
+    } else {
+        ControlFlow::Continue(())
+    })
+}
 
-    evidence.record_effective_asset_tree_started()?;
-    if stop.is_cancelled() {
-        return interrupted(evidence, skipped_archive_counts);
+/// Runs the Building Effective Asset Tree phase: the definitive pass over
+/// every Mod Root, after extraction, then the definitive routing of the
+/// paths it found, which it hands to Processing Assets as the Routing Ledger.
+///
+/// Cancellation is observed once the phase is recorded and per entry; a
+/// partial pass stops the work. Only a complete pass records the nested
+/// Archive count: the Archives found that are not among the `recognized`
+/// ones from the Archive pass.
+fn build_effective_asset_tree(
+    preparation: &RunPreparation,
+    evidence: &mut MutableRunEvidence<'_>,
+    router: &AssetRouter,
+    discovery: &mut Discovery<'_>,
+    recognized: &HashSet<PathBuf>,
+) -> PhaseFlow<RoutingLedger> {
+    evidence.record_phase(RunPhaseRecord::executed(
+        RunPhase::BuildingEffectiveAssetTree,
+        None,
+    ))?;
+    if discovery.stop.is_cancelled() {
+        return Ok(ControlFlow::Break(Stop::Halted));
     }
 
     // The definitive pass. No Archive enters the tree: one the Archive pass did
@@ -318,8 +504,8 @@ pub(super) fn run_work_phases(
     let mut complete = true;
     for root in preparation.mod_roots() {
         complete = discovery.visit(evidence, root, &mut |path| {
-            if names_an_archive(&router, path) {
-                if !recognized_archives.contains(path) {
+            if names_an_archive(router, path) {
+                if !recognized.contains(path) {
                     nested_archives.insert(path.to_path_buf());
                 }
             } else {
@@ -330,23 +516,38 @@ pub(super) fn run_work_phases(
             break;
         }
     }
-    evidence.record_archive_discovery(ArchiveDiscoveryEvidence {
-        skipped_archive_counts,
-        unsupported_explicit_paths: Vec::new(),
-        nested_archive_count: if complete { nested_archives.len() } else { 0 },
-    })?;
     if !complete {
         // A partial scan is not a definitive tree and never becomes work.
-        return finish(evidence, true);
+        return Ok(ControlFlow::Break(Stop::Halted));
     }
-    evidence.record_routing_ledger(router.route_all(&effective_paths))?;
+    // Only a complete definitive pass establishes the nested count; a
+    // partial one records none, so it reports no nested Archives.
+    evidence.record_nested_archive_count(nested_archives.len())?;
+    Ok(ControlFlow::Continue(router.route_all(&effective_paths)))
+}
 
-    // A copy, so the loop can iterate it while recording attempts.
-    let ledger = evidence
-        .routing_ledger()
-        .cloned()
-        .expect("the Routing Ledger was just recorded");
-    evidence.record_asset_processing_plan(ledger.routed_assets().len())?;
+/// Runs the Processing Assets phase: opens it with `ledger` and offers every
+/// Routed Asset to `toolset`'s Asset attempt port in Texture, Mesh, Animation
+/// order, recording each completed attempt through the phase's handle before
+/// reporting it.
+///
+/// Cancellation is observed before each attempt and once more after the
+/// last; an attempt in flight always finishes. An attempt's panic is
+/// contained as an unsafe Operation Failure with unknown mutation, and an
+/// attempt that is not safe to continue stops the work. An Asset backend's
+/// report of cancellation stops it too, as [`Stop::BackendCancelled`], the
+/// one stop whose reason the executor needs.
+fn process_assets(
+    preparation: &RunPreparation,
+    toolset: &mut RunToolset,
+    evidence: &mut MutableRunEvidence<'_>,
+    ledger: RoutingLedger,
+    artifacts: &mut TemporaryArtifactRegistry,
+    stop: &CancellationToken,
+) -> PhaseFlow {
+    // The evidence retains the ledger it opens Processing Assets with; this
+    // copy lets the loop iterate it while the handle records attempts.
+    let mut assets = evidence.open_processing_assets(ledger.clone())?;
     for target in [
         OptimizerTarget::Texture,
         OptimizerTarget::Mesh,
@@ -354,7 +555,7 @@ pub(super) fn run_work_phases(
     ] {
         for asset in ledger.routed_assets_for(target) {
             if stop.is_cancelled() {
-                return finish(evidence, true);
+                return Ok(ControlFlow::Break(Stop::Halted));
             }
             let path = asset.execution_path();
             let attempt = match attributed_mod_root(path, preparation.mod_roots()) {
@@ -371,8 +572,10 @@ pub(super) fn run_work_phases(
                 Some(mod_root) => {
                     // An Asset attempt's diagnostics are retained, not published,
                     // so they publish with the run's other deferred diagnostics.
+                    // The open phase's handle holds the evidence, so they are
+                    // retained through it.
                     let mut retain =
-                        |diagnostic: RunDiagnostic| evidence.retain_diagnostic(diagnostic);
+                        |diagnostic: RunDiagnostic| assets.retain_diagnostic(diagnostic);
                     match catch_unwind(AssertUnwindSafe(|| {
                         toolset.asset_attempt().attempt(
                             asset,
@@ -383,7 +586,13 @@ pub(super) fn run_work_phases(
                         )
                     })) {
                         Ok(Ok(result)) => (mod_root.clone(), result),
-                        Ok(Err(AssetInitializationCancelled)) => return finish(evidence, true),
+                        Ok(Err(AssetInitializationCancelled)) => {
+                            // The backend reported this cancellation; the token
+                            // need not show it, so the stop carries it to the
+                            // executor's one sample at Safety Cleanup rather
+                            // than the work phases recording it themselves.
+                            return Ok(ControlFlow::Break(Stop::BackendCancelled));
+                        }
                         // A panic cannot establish whether durable bytes were committed.
                         Err(payload) => (
                             mod_root.clone(),
@@ -400,7 +609,7 @@ pub(super) fn run_work_phases(
             };
             let (mod_root, result) = attempt;
             let safe_to_continue = result.safe_to_continue();
-            evidence.record_asset_attempt(RoutedAssetAttempt {
+            assets.record(RoutedAssetAttempt {
                 mod_root,
                 asset: asset.clone(),
                 result,
@@ -408,131 +617,66 @@ pub(super) fn run_work_phases(
             // A failed attempt still completes progress, but uncertain mutation
             // makes every later attempt and Archive Finalization unsafe.
             if !safe_to_continue {
-                return finish(evidence, stop.is_cancelled());
+                return Ok(ControlFlow::Break(Stop::Halted));
             }
         }
     }
     // Cancellation raised during the last attempt has no later loop head to
     // observe it, and a finalizer need not check it either.
-    if stop.is_cancelled() {
-        return finish(evidence, true);
-    }
-    evidence.publish_diagnostics();
-    // An observer of those diagnostics may cancel; the run then stops before
-    // entering Archive Finalization rather than recording a phase it skips.
-    if stop.is_cancelled() {
-        return finish(evidence, true);
-    }
-
-    // The execution mode selects the final work phase's record: Apply
-    // executes Archive Finalization over the Run Toolset's seams, and Dry
-    // Run skips it.
-    evidence.record_phase(match mode {
-        ExecutionMode::DryRun => {
-            RunPhaseRecord::skipped(RunPhase::ArchiveFinalization, PhaseSkipReason::DryRun)
-        }
-        ExecutionMode::Apply => RunPhaseRecord::executed(RunPhase::ArchiveFinalization, None),
-    })?;
-    // Archive Finalization is a separate mutation boundary: observe cancellation before it.
-    if stop.is_cancelled() {
-        return finish(evidence, true);
-    }
-    // The immutable policy decides: Dry Run never finalizes, whatever the Toolset holds.
-    if mode == ExecutionMode::Apply {
-        // Finalization reaches only its own facts, never the whole evidence.
-        // It contains its own panics as an Unexpected Exception, so it is
-        // called without a second layer.
-        toolset.finalize_archives(
-            preparation,
-            &mut evidence.finalization_recorder(),
-            artifacts,
-            &|| stop.is_cancelled(),
-        )?;
-    }
-    finish(evidence, stop.is_cancelled())
+    Ok(if stop.is_cancelled() {
+        ControlFlow::Break(Stop::Halted)
+    } else {
+        ControlFlow::Continue(())
+    })
 }
 
-/// Ends the work on any return: records cancellation in `evidence` when it
-/// was observed, then publishes every diagnostic the work retained, exactly
-/// once. Always `Ok`, so a return site can hand back its result directly.
-fn finish(evidence: &mut MutableRunEvidence<'_>, cancellation_observed: bool) -> Result<(), Error> {
-    if cancellation_observed {
-        evidence.record_cancellation_observation();
-    }
-    evidence.publish_diagnostics();
-    Ok(())
-}
-
-/// Ends the work after cancellation before the definitive pass: keeps the
-/// Archive exclusions the Archive pass already counted, but never a partial
-/// tree, then [`finish`]es with cancellation observed.
+/// Runs the Archive Finalization phase, once the Run Diagnostics retained so
+/// far are published. Apply executes it over `toolset`'s seams through the
+/// handle its executed record opens; Dry Run skips it.
 ///
-/// # Errors
-/// A Run Evidence invariant violation recording the discovery facts.
-fn interrupted(
-    evidence: &mut MutableRunEvidence<'_>,
-    skipped_archive_counts: BTreeMap<SkipReason, usize>,
-) -> Result<(), Error> {
-    evidence.record_archive_discovery(ArchiveDiscoveryEvidence {
-        skipped_archive_counts,
-        ..ArchiveDiscoveryEvidence::default()
-    })?;
-    finish(evidence, true)
-}
-
-/// Why Archive extraction stopped short of the definitive pass.
-enum ExtractionStop {
-    /// Cancellation was observed between attempts.
-    Cancelled,
-    /// An attempt left unknown mutation or claimed it was unsafe to continue;
-    /// `cancellation` records whether cancellation was also observed.
-    Unsafe { cancellation: bool },
-}
-
-/// Extracts each planned Archive in order through
-/// [`RunToolset::extract_archive`], over `toolset`'s seams and the run's
-/// Capacity Check with its source cleanup, retaining every completed attempt
-/// before it is reported.
-///
-/// An attempt in flight always finishes, so cancellation never leaves a
-/// partial Archive. Extraction contains its own panics, classified by how
-/// far the attempt got, so it is called without a second layer.
-/// Extraction stops after any attempt whose Attempt Outcome is not safe to
-/// continue, so `PartialOrUnknown` mutation stops it even when the attempt
-/// claims otherwise. Returns `None` when every plan was
-/// attempted and the run may continue.
-fn extract_archives(
-    plans: &[ArchiveExtractionPlan],
+/// Cancellation is observed after that publication, before the phase is
+/// recorded, and again before Apply finalizes. As the last work phase it
+/// returns `Break` only to report that finalization did not run.
+fn finalize_archives(
+    preparation: &RunPreparation,
+    mode: ExecutionMode,
     toolset: &RunToolset,
     evidence: &mut MutableRunEvidence<'_>,
     artifacts: &mut TemporaryArtifactRegistry,
     stop: &CancellationToken,
-) -> Result<Option<ExtractionStop>, Error> {
-    if plans.is_empty() {
-        // No attempt ran, so there is none to re-sample cancellation after:
-        // the caller's own checks around this phase observe it.
-        return Ok(None);
+) -> PhaseFlow {
+    evidence.publish_diagnostics();
+    // An observer of those diagnostics may cancel; the run then stops before
+    // entering Archive Finalization rather than recording a phase it skips.
+    if stop.is_cancelled() {
+        return Ok(ControlFlow::Break(Stop::Halted));
     }
-    for plan in plans {
-        if stop.is_cancelled() {
-            return Ok(Some(ExtractionStop::Cancelled));
-        }
-        let mut attempt = toolset.extract_archive(plan, artifacts);
-        // The attempt's own continuation claim is retained in its Attempt
-        // Outcome for diagnosis, but the stop follows the shared verdict, so
-        // partial mutation stops the run regardless.
-        let unsafe_attempt = !attempt.safe_to_continue();
-        attempt.mod_root = plan.mod_root.clone();
-        evidence.record_archive_extraction_attempt(attempt)?;
-        if unsafe_attempt {
-            return Ok(Some(ExtractionStop::Unsafe {
-                cancellation: stop.is_cancelled(),
-            }));
-        }
+
+    // The execution mode selects the final work phase's record: Apply
+    // executes Archive Finalization over the Run Toolset's seams, and Dry
+    // Run skips it. The immutable policy decides: Dry Run never finalizes,
+    // whatever the Toolset holds.
+    if mode == ExecutionMode::DryRun {
+        evidence.record_phase(RunPhaseRecord::skipped(
+            RunPhase::ArchiveFinalization,
+            PhaseSkipReason::DryRun,
+        ))?;
+        return Ok(ControlFlow::Continue(()));
     }
-    // Re-sampled after the final attempt and its progress record, so
-    // cancellation during the last Archive still skips the definitive pass.
-    Ok(stop.is_cancelled().then_some(ExtractionStop::Cancelled))
+    let finalization = evidence.open_archive_finalization()?;
+    // Archive Finalization is a separate mutation boundary: observe
+    // cancellation before it. The unplanned handle is then dropped, which
+    // records nothing, so the phase reports no result.
+    if stop.is_cancelled() {
+        return Ok(ControlFlow::Break(Stop::Halted));
+    }
+    // Finalization reaches only its own facts, never the whole evidence, and
+    // owns the phase it runs. It contains its own panics as an Unexpected
+    // Exception, so it is called without a second layer.
+    toolset.finalize_archives(preparation, finalization, artifacts, &|| {
+        stop.is_cancelled()
+    })?;
+    Ok(ControlFlow::Continue(()))
 }
 
 /// Reports whether routing recognizes the path as an Archive, enabled or not.
