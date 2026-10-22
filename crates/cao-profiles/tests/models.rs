@@ -3,25 +3,17 @@
 
 mod common;
 
-use std::num::NonZeroU64;
-
 use cao_archive::Game;
-use cao_profiles::ArchiveSize;
 use cao_profiles::{
     CommonSettings, FormatErrorKind, IniFile, MeshFileVersion, MeshStreamVersion, MeshUserVersion,
     OptimizationMode, Options, ProfileError, ProfileSettings, Profiles, TextureFormat,
     UnwantedFormat,
 };
-use common::shipped_app_dir;
+use common::{shipped_app_dir, size};
 
 /// The shipped profiles, with the repository root as their app directory.
 fn shipped() -> Profiles {
     Profiles::new(&shipped_app_dir())
-}
-
-/// The size of `bytes` bytes, which must not be `0`.
-fn size(bytes: u64) -> ArchiveSize {
-    ArchiveSize::from_bytes(NonZeroU64::new(bytes).unwrap())
 }
 
 #[test]

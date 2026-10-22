@@ -1,8 +1,16 @@
-//! Paths shared by the cao-profiles integration tests.
+//! Paths and values shared by the cao-profiles integration tests.
 
 #![allow(dead_code)]
 
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
+
+use cao_profiles::ArchiveSize;
+
+/// The maximum Archive size of `bytes` bytes, which must not be `0`.
+pub fn size(bytes: u64) -> ArchiveSize {
+    ArchiveSize::from_bytes(NonZeroU64::new(bytes).unwrap())
+}
 
 /// The repository's shipped `profiles/` directory.
 pub fn shipped_profiles() -> PathBuf {

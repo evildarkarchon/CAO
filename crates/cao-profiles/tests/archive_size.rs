@@ -5,9 +5,8 @@
 
 mod common;
 
-use std::num::NonZeroU64;
-
 use cao_profiles::{ArchiveSize, Profile, ProfileError, Profiles};
+use common::size;
 
 /// A copy of the shipped `name` Profile in a fresh app directory named `dir`.
 fn shipped_copy(dir: &str, name: &str) -> Profile {
@@ -50,11 +49,6 @@ fn a_fractional_size_loads_truncated_to_whole_bytes() {
         settings.max_bsa_uncompressed_size.requested(),
         Some(2_104_533_975)
     );
-}
-
-/// The size of `bytes` bytes, which must not be `0`.
-fn size(bytes: u64) -> ArchiveSize {
-    ArchiveSize::from_bytes(NonZeroU64::new(bytes).unwrap())
 }
 
 #[test]
