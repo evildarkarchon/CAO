@@ -194,8 +194,8 @@ impl ResizeSize {
     ///
     /// # Errors
     /// [`WorkChoiceError::OddResizeSize`] when either side is odd, checked
-    /// first as C++ did, then [`WorkChoiceError::ZeroResizeSize`] when either
-    /// side is zero.
+    /// first, then [`WorkChoiceError::ZeroResizeSize`] when either side is
+    /// zero.
     pub fn new(width: u32, height: u32) -> Result<Self, WorkChoiceError> {
         if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             return Err(WorkChoiceError::OddResizeSize);

@@ -15,7 +15,7 @@ use cao_core::run::{
     ArchiveFinalizationChoices, MeshChoices, MeshLevel, ModSelection, OptimizationRunResult,
     ResizeRatio, ResizeSize, RunConfigurationProvider, RunDiagnosticCode, RunFailureCode,
     RunOutcome, RunPhase, RunRequest, SourceCleanup, TextureChoices, TextureResizeChoice,
-    WorkChoices,
+    WorkChoiceError, WorkChoices,
 };
 use cao_optimizers::composition::{
     ProfileConfigurationProvider, RunSetupError, run_request, run_service,
@@ -34,42 +34,149 @@ use directxtex::{
 fn invalid_option_values_are_rejected_before_any_run() {
     let app = app_dir("invalid-options");
     let base = || single_mod_options(&app);
-    let mut cases: Vec<(&str, Options)> = Vec::new();
-    let mut add = |name, change: &dyn Fn(&mut Options)| {
+    // Each case's option change, the error it must give, and that error's
+    // message, which the GUI shows as it is.
+    type Case = (
+        &'static str,
+        Options,
+        fn(&RunSetupError) -> bool,
+        &'static str,
+    );
+    let mut cases: Vec<Case> = Vec::new();
+    let mut add = |name, change: &dyn Fn(&mut Options), expected, message| {
         let mut options = base();
         change(&mut options);
-        cases.push((name, options));
+        cases.push((name, options, expected, message));
     };
-    add("negative mesh level", &|o| o.meshes_optimization_level = -1);
-    add("excessive mesh level", &|o| o.meshes_optimization_level = 4);
-    add("zero width ratio", &|o| {
-        o.textures_resize_ratio = true;
-        o.textures_target_width_ratio = 0;
-    });
-    add("zero height ratio", &|o| {
-        o.textures_resize_ratio = true;
-        o.textures_target_height_ratio = 0;
-    });
-    add("zero target width", &|o| {
-        o.textures_resize_size = true;
-        o.textures_target_width = 0;
-    });
-    add("zero target height", &|o| {
-        o.textures_resize_size = true;
-        o.textures_target_height = 0;
-    });
-    add("odd target width", &|o| {
-        o.textures_resize_size = true;
-        o.textures_target_width = 513;
-    });
-    add("invalid mode", &|o| {
-        o.mode = OptimizationMode::Unsupported(2)
-    });
-    add("relative folder", &|o| o.user_path = "mods/Mod".into());
+    let mesh_level = "Mesh optimization level must be between 0 and 3.";
+    add(
+        "negative mesh level",
+        &|o| o.meshes_optimization_level = -1,
+        |e| matches!(e, RunSetupError::WorkChoice(WorkChoiceError::MeshLevel(-1))),
+        mesh_level,
+    );
+    add(
+        "excessive mesh level",
+        &|o| o.meshes_optimization_level = 4,
+        |e| matches!(e, RunSetupError::WorkChoice(WorkChoiceError::MeshLevel(4))),
+        mesh_level,
+    );
+    let zero_ratio = "Texture resizing requires non-zero width and height ratios.";
+    add(
+        "zero width ratio",
+        &|o| {
+            o.textures_resize_ratio = true;
+            o.textures_target_width_ratio = 0;
+        },
+        |e| {
+            matches!(
+                e,
+                RunSetupError::WorkChoice(WorkChoiceError::ZeroResizeRatio)
+            )
+        },
+        zero_ratio,
+    );
+    add(
+        "zero height ratio",
+        &|o| {
+            o.textures_resize_ratio = true;
+            o.textures_target_height_ratio = 0;
+        },
+        |e| {
+            matches!(
+                e,
+                RunSetupError::WorkChoice(WorkChoiceError::ZeroResizeRatio)
+            )
+        },
+        zero_ratio,
+    );
+    let zero_size = "Texture resizing requires non-zero width and height.";
+    add(
+        "zero target width",
+        &|o| {
+            o.textures_resize_size = true;
+            o.textures_target_width = 0;
+        },
+        |e| {
+            matches!(
+                e,
+                RunSetupError::WorkChoice(WorkChoiceError::ZeroResizeSize)
+            )
+        },
+        zero_size,
+    );
+    add(
+        "zero target height",
+        &|o| {
+            o.textures_resize_size = true;
+            o.textures_target_height = 0;
+        },
+        |e| {
+            matches!(
+                e,
+                RunSetupError::WorkChoice(WorkChoiceError::ZeroResizeSize)
+            )
+        },
+        zero_size,
+    );
+    add(
+        "odd target width",
+        &|o| {
+            o.textures_resize_size = true;
+            o.textures_target_width = 513;
+        },
+        |e| matches!(e, RunSetupError::WorkChoice(WorkChoiceError::OddResizeSize)),
+        "Texture target width and height must be even.",
+    );
+    add(
+        "invalid mode",
+        &|o| o.mode = OptimizationMode::Unsupported(2),
+        |e| matches!(e, RunSetupError::UnsupportedMode(2)),
+        "This mode does not exist.",
+    );
+    add(
+        "relative folder",
+        &|o| o.user_path = "mods/Mod".into(),
+        |e| matches!(e, RunSetupError::RelativeSelection(path) if path == Path::new("mods/Mod")),
+        "The selected folder `mods/Mod` is not an absolute path.",
+    );
 
-    for (name, options) in cases {
-        assert!(run_request("SSE", &options).is_err(), "{name}");
+    for (name, options, expected, message) in cases {
+        let error = run_request("SSE", &options).unwrap_err();
+        assert!(expected(&error), "{name}: {error:?}");
+        assert_eq!(error.to_string(), message, "{name}");
     }
+}
+
+/// The folder and mode are checked before any Work Choice, so a form wrong in
+/// both ways reports its folder or mode.
+#[test]
+fn an_invalid_mode_or_folder_is_reported_before_an_invalid_work_choice() {
+    let app = app_dir("structural-before-choices");
+    let invalid_choice = Options {
+        meshes_optimization_level: 4,
+        ..single_mod_options(&app)
+    };
+
+    let mode = Options {
+        mode: OptimizationMode::Unsupported(2),
+        ..invalid_choice.clone()
+    };
+    let error = run_request("SSE", &mode).unwrap_err();
+    assert!(
+        matches!(error, RunSetupError::UnsupportedMode(2)),
+        "{error:?}"
+    );
+
+    let folder = Options {
+        user_path: "mods/Mod".into(),
+        ..invalid_choice
+    };
+    let error = run_request("SSE", &folder).unwrap_err();
+    assert!(
+        matches!(error, RunSetupError::RelativeSelection(_)),
+        "{error:?}"
+    );
 }
 
 #[test]
@@ -189,23 +296,24 @@ fn the_request_carries_the_forms_work_choices_with_ratio_winning() {
 }
 
 #[test]
-fn an_odd_target_size_is_rejected_even_when_resizing_by_ratio_wins() {
-    // C++ checked the size whenever resizing by size was on, although ratio
-    // wins and the size is never used.
+fn an_odd_target_size_is_accepted_when_resizing_by_ratio_wins() {
+    // Deviation 18: C++ checked the size whenever resizing by size was on,
+    // although ratio wins and the size is never used.
     let app = app_dir("odd-size-ratio-wins");
     let options = Options {
         textures_resize_ratio: true,
+        textures_target_width_ratio: 2,
+        textures_target_height_ratio: 2,
         textures_resize_size: true,
         textures_target_width: 513,
         ..single_mod_options(&app)
     };
 
-    let error = run_request("SSE", &options).unwrap_err();
+    let request = run_request("SSE", &options).unwrap();
 
-    assert!(matches!(error, RunSetupError::OddTextureSize), "{error:?}");
     assert_eq!(
-        error.to_string(),
-        "Texture target width and height must be even."
+        request.work_choices().textures.resize,
+        TextureResizeChoice::Ratio(ResizeRatio::new(2, 2).unwrap())
     );
 }
 

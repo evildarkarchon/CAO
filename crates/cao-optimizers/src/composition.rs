@@ -41,25 +41,23 @@ use crate::textures::TextureProfile;
 
 /// Why the options cannot start a run. Nothing has run and nothing has changed.
 ///
-/// The option checks are C++ `makeApplicationRunRequest`'s; the C++ messages are
-/// kept so the GUI can show them unchanged.
+/// The form's mode and folder are checked here; every Work Choice invariant is
+/// checked only by its core constructor, whose [`WorkChoiceError`] this wraps.
+/// The messages are C++ `makeApplicationRunRequest`'s, so the GUI shows them
+/// unchanged.
 #[derive(Debug, thiserror::Error)]
 pub enum RunSetupError {
     /// A `mode` other than one mod or several mods, from a hand-edited file.
     #[error("This mode does not exist.")]
     UnsupportedMode(i32),
-    #[error("Mesh optimization level must be between 0 and 3.")]
-    MeshLevel(i32),
-    /// Deviation 18: checked only when resizing by size is enabled.
-    #[error("Texture target width and height must be even.")]
-    OddTextureSize,
-    #[error("Texture resizing requires non-zero width and height ratios.")]
-    ZeroTextureRatio,
-    #[error("Texture resizing requires non-zero width and height.")]
-    ZeroTextureSize,
     /// A relative folder would resolve against the working directory.
     #[error("The selected folder `{}` is not an absolute path.", .0.display())]
     RelativeSelection(PathBuf),
+    /// A Work Choice the form holds cannot be built: a Mesh level outside 0
+    /// to 3, or a zero ratio or a zero or odd size for the resize mode the
+    /// run uses.
+    #[error(transparent)]
+    WorkChoice(#[from] WorkChoiceError),
 }
 
 /// The production Optimization Run Service for the install at `app_dir`,
@@ -96,20 +94,22 @@ pub fn run_service(app_dir: &Path) -> OptimizationRunService {
 /// is requested; requested work alone decides routing.
 ///
 /// # Errors
-/// [`RunSetupError`] when an option is invalid or the selected folder is
-/// relative.
+/// The first [`RunSetupError`] found. The form's structure is checked first,
+/// its mode and then its selected folder, and its Work Choices only after
+/// that, in the order [`work_choices`] builds them.
 pub fn run_request(profile: &str, options: &Options) -> Result<RunRequest, RunSetupError> {
-    validate(options)?;
+    let mod_selection: fn(PathBuf) -> ModSelection = match options.mode {
+        OptimizationMode::SingleMod => ModSelection::SingleModRoot,
+        OptimizationMode::SeveralMods => ModSelection::ChildModRoots,
+        OptimizationMode::Unsupported(mode) => return Err(RunSetupError::UnsupportedMode(mode)),
+    };
     let selected = PathBuf::from(&options.user_path);
     // An empty folder is a structural Start Error the service reports itself.
     if !options.user_path.is_empty() && !selected.is_absolute() {
         return Err(RunSetupError::RelativeSelection(selected));
     }
-    let mod_selection = match options.mode {
-        OptimizationMode::SingleMod => ModSelection::SingleModRoot(selected),
-        OptimizationMode::SeveralMods => ModSelection::ChildModRoots(selected),
-        OptimizationMode::Unsupported(mode) => return Err(RunSetupError::UnsupportedMode(mode)),
-    };
+    let mod_selection = mod_selection(selected);
+    let work_choices = work_choices(options)?;
 
     let optimize_native_textures = options.textures_necessary
         || options.textures_compress
@@ -141,19 +141,20 @@ pub fn run_request(profile: &str, options: &Options) -> Result<RunRequest, RunSe
     } else {
         ExecutionMode::Apply
     };
-    Ok(RunRequest::new(profile, mode, mod_selection, work)
-        .with_work_choices(work_choices(options).map_err(setup_error)?))
+    Ok(RunRequest::new(profile, mode, mod_selection, work).with_work_choices(work_choices))
 }
 
-/// The Work Choices of `options`, which [`validate`] has already checked.
+/// The Work Choices of `options`, each built by its core constructor, the only
+/// place its invariant is checked.
 ///
 /// Ratio wins when both resize modes are on, as in
-/// `MainOptimizer::optimizeTexture`; `validate` still rejects an odd size in
-/// that case, as C++ did.
+/// `MainOptimizer::optimizeTexture`. Only the resize mode the run uses is
+/// checked, so the unused one may hold any value (deviation 18: C++ rejected
+/// an odd size even when resizing by size was off or ratio won).
 ///
 /// # Errors
-/// The core constructor's [`WorkChoiceError`], which `validate` makes
-/// unreachable; the caller still maps it rather than panicking.
+/// The first [`WorkChoiceError`] found: the resize choice's, then the Mesh
+/// level's.
 fn work_choices(options: &Options) -> Result<WorkChoices, WorkChoiceError> {
     let resize = if options.textures_resize_ratio {
         TextureResizeChoice::Ratio(ResizeRatio::new(
@@ -197,47 +198,10 @@ fn work_choices(options: &Options) -> Result<WorkChoices, WorkChoiceError> {
     })
 }
 
-/// The [`RunSetupError`] matching a core Work Choice constructor's failure.
-fn setup_error(error: WorkChoiceError) -> RunSetupError {
-    match error {
-        WorkChoiceError::MeshLevel(level) => RunSetupError::MeshLevel(level),
-        WorkChoiceError::ZeroResizeRatio => RunSetupError::ZeroTextureRatio,
-        WorkChoiceError::OddResizeSize => RunSetupError::OddTextureSize,
-        WorkChoiceError::ZeroResizeSize => RunSetupError::ZeroTextureSize,
-    }
-}
-
 /// Whether the options ask for Mesh work: a level above 0, or resaving, which
 /// is independent of the level, as in C++ `choicesFrom`.
 fn requests_mesh_work(options: &Options) -> bool {
     options.meshes_optimization_level > 0 || options.meshes_resave
-}
-
-/// C++ `makeApplicationRunRequest`'s numeric checks, in its order.
-fn validate(options: &Options) -> Result<(), RunSetupError> {
-    if let OptimizationMode::Unsupported(mode) = options.mode {
-        return Err(RunSetupError::UnsupportedMode(mode));
-    }
-    if !(0..=3).contains(&options.meshes_optimization_level) {
-        return Err(RunSetupError::MeshLevel(options.meshes_optimization_level));
-    }
-    if options.textures_resize_size
-        && (!options.textures_target_width.is_multiple_of(2)
-            || !options.textures_target_height.is_multiple_of(2))
-    {
-        return Err(RunSetupError::OddTextureSize);
-    }
-    if options.textures_resize_ratio
-        && (options.textures_target_width_ratio == 0 || options.textures_target_height_ratio == 0)
-    {
-        return Err(RunSetupError::ZeroTextureRatio);
-    }
-    if options.textures_resize_size
-        && (options.textures_target_width == 0 || options.textures_target_height == 0)
-    {
-        return Err(RunSetupError::ZeroTextureSize);
-    }
-    Ok(())
 }
 
 /// The backend's Texture settings for a run's Texture choices.
