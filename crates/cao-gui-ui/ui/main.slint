@@ -429,7 +429,7 @@ export component MainWindow inherits Window {
                                     HelpCheckBox {
                                         text: @tr("Separate textures BSA");
                                         help: @tr("There are three types of BSAs CAO can create : incompressible, textures and standard. If enabled, this option will always separate textures into their own BSAs. Otherwise, they will be merged into the standard one if possible.");
-                                        // FO4 forces it on (`UiRules`, deviation 21).
+                                        // A game that keeps Textures in their own Archive (FO4) forces it on (`UiRules`).
                                         enabled: root.ed && UiRules.separate-textures-enabled;
                                         checked <=> BsaTab.separate-textures;
                                     }
