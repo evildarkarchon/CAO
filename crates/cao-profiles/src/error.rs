@@ -28,6 +28,24 @@ pub enum ProfileError {
         "`bsaGame={value}` is not a supported game; use 3 (Skyrim LE), 4 (Skyrim SE) or 5 (Fallout 4)"
     )]
     UnsupportedBsaGame { value: String },
+    /// A key holds a value CAO does not accept, such as a Mesh Target axis
+    /// outside its closed set (see [`crate::ClosedSet`]), so the Profile is
+    /// unreadable.
+    ///
+    /// `file` is the file's name (`profile.ini`) and `key` its `Section/key`.
+    /// `value` is the text as written, `None` when the key is missing.
+    /// `accepted` describes what the key accepts, phrased to follow
+    /// "expected", such as `one of 11, 12`.
+    #[error(
+        "`{file}`: `{key}` is {}; expected {accepted}",
+        shown_value(value.as_deref())
+    )]
+    UnsupportedValue {
+        file: String,
+        key: String,
+        value: Option<String>,
+        accepted: String,
+    },
     /// `ignoredMods.txt` exists but could not be read. Unlike the other auxiliary
     /// files this is an error: ignoring it would process mods the profile excludes.
     #[error("the ignored-mod list `{}` could not be read: {source}", path.display())]
@@ -43,4 +61,10 @@ pub enum ProfileError {
         #[source]
         source: io::Error,
     },
+}
+
+/// A rejected value as [`ProfileError::UnsupportedValue`] shows it: quoted as
+/// written, or `missing` when the key is absent.
+fn shown_value(value: Option<&str>) -> String {
+    value.map_or_else(|| "missing".to_owned(), |value| format!("`{value}`"))
 }

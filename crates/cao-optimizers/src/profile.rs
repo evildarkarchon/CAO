@@ -9,7 +9,7 @@
 
 use cao_archive::{Game, Settings};
 use cao_core::routing::{ProfileCapabilities, ProfileCapability};
-use cao_profiles::{BsaGame, ProfileSettings};
+use cao_profiles::{BsaGame, ClosedSet, ProfileSettings};
 use directxtex::DXGI_FORMAT;
 use nifly_sys::NifVersion;
 
@@ -82,13 +82,16 @@ pub fn texture_profile(settings: &ProfileSettings) -> TextureProfile {
     }
 }
 
-/// The version a profile writes Meshes as (`meshesFileVersion`, `meshesUser`,
-/// `meshesStream`), which C++ handed nifly through `SetFile`, `SetUser` and
-/// `SetStream`.
+/// The version a profile writes Meshes as: its Mesh Target (`meshesFileVersion`,
+/// `meshesUser`, `meshesStream`), which nifly takes through `SetFile`, `SetUser`
+/// and `SetStream`.
+///
+/// Each axis is a closed set whose stored number is nifly's own (the file
+/// version is `NiFileVersion`'s value), so every member maps to its number.
 pub fn mesh_target(settings: &ProfileSettings) -> NifVersion {
     NifVersion {
-        file: settings.meshes_file_version,
-        user: settings.meshes_user,
-        stream: settings.meshes_stream,
+        file: settings.meshes_file_version.number(),
+        user: settings.meshes_user.number(),
+        stream: settings.meshes_stream.number(),
     }
 }

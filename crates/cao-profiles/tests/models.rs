@@ -4,8 +4,8 @@
 mod common;
 
 use cao_profiles::{
-    BsaGame, CommonSettings, FormatErrorKind, IniFile, OptimizationMode, Options, ProfileError,
-    ProfileSettings, Profiles,
+    BsaGame, CommonSettings, FormatErrorKind, IniFile, MeshFileVersion, MeshStreamVersion,
+    MeshUserVersion, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles,
 };
 use common::shipped_app_dir;
 
@@ -25,9 +25,9 @@ fn the_shipped_tes5_profile_loads_into_the_settings_model() {
             max_bsa_uncompressed_size: 2_104_533_975.04,
             bsa_game: BsaGame::Tes5,
             meshes_enabled: true,
-            meshes_file_version: 335_675_399,
-            meshes_stream: 83,
-            meshes_user: 12,
+            meshes_file_version: MeshFileVersion::V20_2_0_7,
+            meshes_stream: MeshStreamVersion::V83,
+            meshes_user: MeshUserVersion::V12,
             animations_enabled: false,
             textures_enabled: true,
             textures_format: 77,
@@ -45,7 +45,14 @@ fn deviation_11_bsa_game_reads_tes5_sse_and_fo4() {
         ("4", BsaGame::Sse),
         ("5", BsaGame::Fo4),
     ] {
-        let ini = IniFile::parse(format!("[BSA]\r\nbsaGame={text}\r\n").as_bytes());
+        // A Mesh Target too, whose missing keys would make the Profile unreadable.
+        let ini = IniFile::parse(
+            format!(
+                "[BSA]\r\nbsaGame={text}\r\n[Meshes]\r\nmeshesFileVersion=335675399\r\n\
+                 meshesStream=100\r\nmeshesUser=12\r\n"
+            )
+            .as_bytes(),
+        );
 
         assert_eq!(
             ProfileSettings::read(&ini).unwrap().bsa_game,

@@ -143,6 +143,8 @@ impl App {
         let ui = &app.window;
         ui.set_profiles(ModelRc::from(app.profile_names.clone()));
         ui.set_tabs(ModelRc::from(app.tabs.clone()));
+        // Before any Profile is shown, so each combo has an item for its value.
+        form::show_choices(ui);
         // C++ `loadUi`: the common settings first.
         ui.set_dark(common.dark_mode);
         ui.set_show_advanced(common.show_advanced_settings);
