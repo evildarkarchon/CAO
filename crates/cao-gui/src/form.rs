@@ -6,12 +6,13 @@
 //! reloads the same. #509's UI rules (Dry Run, Several Mods, FO4 textures; `rules.rs`) are
 //! not applied here; they run after [`show_options`] and [`show_settings`].
 
+use cao_archive::Game;
 use cao_core::routing::{ProfileCapabilities, ProfileCapability};
 use cao_gui_ui::{AnimationsTab, BsaTab, MainWindow, MeshesTab, TexturesTab};
 use cao_profiles::ArchiveSize;
 use cao_profiles::{
-    BsaGame, ClosedSet, MeshFileVersion, MeshStreamVersion, MeshUserVersion, OptimizationMode,
-    Options, ProfileSettings, TextureFormat, UnwantedFormat,
+    ClosedSet, MeshFileVersion, MeshStreamVersion, MeshUserVersion, OptimizationMode, Options,
+    ProfileSettings, TextureFormat, UnwantedFormat,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
@@ -116,8 +117,8 @@ pub(crate) fn mode_at(index: i32) -> Option<OptimizationMode> {
 }
 
 /// The game the Game combo shows at `index`; `None` for no selection.
-pub(crate) fn game_at(index: i32) -> Option<BsaGame> {
-    item(BsaGame::ALL, index).copied()
+pub(crate) fn game_at(index: i32) -> Option<Game> {
+    item(Game::ALL, index).copied()
 }
 
 /// Fills the Game, Version, User, Stream and Output format combos with every
@@ -142,11 +143,11 @@ fn choices<T: ClosedSet, L: Into<SharedString>>(label: fn(T) -> L) -> ModelRc<Sh
 }
 
 /// The Game combo's text for a game.
-fn game_label(game: BsaGame) -> &'static str {
+fn game_label(game: Game) -> &'static str {
     match game {
-        BsaGame::Tes5 => "Skyrim LE",
-        BsaGame::Sse => "SSE",
-        BsaGame::Fo4 => "FO4",
+        Game::Tes5 => "Skyrim LE",
+        Game::Sse => "SSE",
+        Game::Fo4 => "FO4",
     }
 }
 
@@ -371,7 +372,7 @@ pub(crate) fn read_settings(ui: &MainWindow, current: &ProfileSettings) -> Profi
     let mut settings = current.clone();
 
     let bsa = ui.global::<BsaTab>();
-    if let Some(&game) = item(BsaGame::ALL, bsa.get_game_index()) {
+    if let Some(&game) = item(Game::ALL, bsa.get_game_index()) {
         settings.bsa_game = game;
     }
     // The spin box's two decimals of a gigabyte cannot hold every size, and a

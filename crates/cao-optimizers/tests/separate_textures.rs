@@ -6,17 +6,17 @@
 
 use std::path::Path;
 
-use cao_archive::Settings;
+use cao_archive::{Game, Settings};
 use cao_core::routing::{ProfileCapabilities, ProfileCapability};
 use cao_core::run::ArchivePacker as _;
 use cao_optimizers::archives::GameArchivePacker;
 use cao_optimizers::profile::{
-    archive_game, archive_packer, archive_size_cap, keeps_textures_separate, profile_capabilities,
+    archive_packer, archive_size_cap, keeps_textures_separate, profile_capabilities,
 };
-use cao_profiles::{BsaGame, ProfileSettings, Profiles};
+use cao_profiles::{ProfileSettings, Profiles};
 
 /// Every game a profile can name.
-const EVERY_GAME: [BsaGame; 3] = [BsaGame::Tes5, BsaGame::Sse, BsaGame::Fo4];
+const EVERY_GAME: [Game; 3] = [Game::Tes5, Game::Sse, Game::Fo4];
 
 /// Every Profile Capability.
 const EVERY_CAPABILITY: [ProfileCapability; 8] = [
@@ -34,9 +34,9 @@ const EVERY_CAPABILITY: [ProfileCapability; 8] = [
 fn only_fallout_4_keeps_textures_in_their_own_archive() {
     // FO4 packs Textures into a DX10 BA2, unlike its `GNRL` Main BA2; both
     // Skyrims pack Textures in the same BSA version as everything else.
-    assert!(!keeps_textures_separate(BsaGame::Tes5));
-    assert!(!keeps_textures_separate(BsaGame::Sse));
-    assert!(keeps_textures_separate(BsaGame::Fo4));
+    assert!(!keeps_textures_separate(Game::Tes5));
+    assert!(!keeps_textures_separate(Game::Sse));
+    assert!(keeps_textures_separate(Game::Fo4));
 }
 
 #[test]
@@ -46,13 +46,13 @@ fn only_the_bsa_games_cap_the_maximum_archive_size_at_2_gib() {
     for game in EVERY_GAME {
         assert_eq!(
             archive_size_cap(game),
-            Settings::get(archive_game(game)).size_cap(),
+            Settings::get(game).size_cap(),
             "{game:?}"
         );
     }
-    assert_eq!(archive_size_cap(BsaGame::Tes5), Some(2_147_483_648));
-    assert_eq!(archive_size_cap(BsaGame::Sse), Some(2_147_483_648));
-    assert_eq!(archive_size_cap(BsaGame::Fo4), None);
+    assert_eq!(archive_size_cap(Game::Tes5), Some(2_147_483_648));
+    assert_eq!(archive_size_cap(Game::Sse), Some(2_147_483_648));
+    assert_eq!(archive_size_cap(Game::Fo4), None);
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn a_profiles_archive_facts_agree_with_the_packer_built_from_it_for_every_game()
 #[test]
 fn the_query_agrees_with_the_packers_naming_rule_for_every_game() {
     for game in EVERY_GAME {
-        let packer = GameArchivePacker::new(Settings::get(archive_game(game)));
+        let packer = GameArchivePacker::new(Settings::get(game));
         assert_eq!(
             keeps_textures_separate(game),
             packer.rules().separate_textures,

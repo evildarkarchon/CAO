@@ -7,10 +7,11 @@ mod common;
 
 use std::path::Path;
 
+use cao_archive::Game;
 use cao_gui::App;
 use cao_gui::ui::MainWindow;
 use cao_optimizers::profile::keeps_textures_separate;
-use cao_profiles::{BsaGame, Options, Profiles};
+use cao_profiles::{Options, Profiles};
 use common::*;
 
 /// The three base archive options the Dry Run rule clears and disables.
@@ -255,10 +256,10 @@ fn choosing_the_fo4_game_checks_and_disables_separate_textures() {
 }
 
 /// Each Game combo item, with the game it names.
-const GAME_CHOICES: [(&str, BsaGame); 3] = [
-    ("Skyrim LE", BsaGame::Tes5),
-    ("SSE", BsaGame::Sse),
-    ("FO4", BsaGame::Fo4),
+const GAME_CHOICES: [(&str, Game); 3] = [
+    ("Skyrim LE", Game::Tes5),
+    ("SSE", Game::Sse),
+    ("FO4", Game::Fo4),
 ];
 
 #[test]

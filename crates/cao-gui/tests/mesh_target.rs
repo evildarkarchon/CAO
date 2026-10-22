@@ -5,8 +5,9 @@
 
 mod common;
 
+use cao_archive::Game;
 use cao_profiles::{
-    BsaGame, MeshFileVersion, MeshStreamVersion, MeshUserVersion, ProfileSettings, Profiles,
+    MeshFileVersion, MeshStreamVersion, MeshUserVersion, ProfileSettings, Profiles,
 };
 use common::*;
 
@@ -110,9 +111,9 @@ fn every_mesh_target_and_game_the_combos_offer_saves_as_its_typed_value() {
     let ui = app.window();
 
     let games = [
-        ("Skyrim LE", BsaGame::Tes5),
-        ("SSE", BsaGame::Sse),
-        ("FO4", BsaGame::Fo4),
+        ("Skyrim LE", Game::Tes5),
+        ("SSE", Game::Sse),
+        ("FO4", Game::Fo4),
     ];
     for (label, game) in games {
         select_tab(ui, "BSA");

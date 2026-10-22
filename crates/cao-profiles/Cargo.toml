@@ -11,4 +11,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# `Game` only, so `bsaGame` reads into the one name the game has (#628). This
+# crate holds no Archive-table logic; the composition root builds a Profile's
+# Archive Rules from `cao-archive` itself.
+cao-archive.workspace = true
 thiserror.workspace = true

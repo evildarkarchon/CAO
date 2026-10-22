@@ -35,9 +35,7 @@ use crate::archives::{ArchiveFileReader, VolumeProbes};
 use crate::backend::{OptimizerBackend, TextureResize, TextureSettings};
 use crate::headparts::{HeadpartList, ScanCancelled, scan_headparts};
 use crate::meshes::{MeshOptimizer, MeshSettings};
-use crate::profile::{
-    archive_game, archive_packer, mesh_target, profile_capabilities, texture_profile,
-};
+use crate::profile::{archive_packer, mesh_target, profile_capabilities, texture_profile};
 
 /// Why the options cannot start a run. Nothing has run and nothing has changed.
 ///
@@ -422,7 +420,7 @@ impl OptimizerBackendFactory {
             return Ok((HeadpartList::default(), Vec::new()));
         }
         let profile = &self.profile;
-        let extensions = Settings::get(archive_game(profile.settings.bsa_game)).plugin_extensions;
+        let extensions = Settings::get(profile.settings.bsa_game).plugin_extensions;
         let scan = scan_headparts(
             &profile.custom_headparts,
             &self.work.selected_folder,

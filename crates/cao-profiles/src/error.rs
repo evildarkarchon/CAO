@@ -20,10 +20,11 @@ pub enum ProfileError {
     /// both refuse the Profile rather than lose the line.
     #[error("`{}` cannot be read: {error}", path.display())]
     Malformed { path: PathBuf, error: FormatError },
-    /// **Deviation 11:** `bsaGame` is not 3 (TES5), 4 (SSE) or 5 (FO4). C++ reached
-    /// bethutil's TES3, TES4 and FNV tables for 0–2 and fell back to SSE otherwise;
-    /// the port has neither, so the profile is unreadable. `value` is the text as
-    /// written, empty when the key is missing.
+    /// `bsaGame` is not 3 (TES5), 4 (SSE) or 5 (FO4). `cao-archive` has Archive
+    /// Rules for those games only, so packing by any other game's rules, or by a
+    /// guessed game, would write Archives that game cannot load; the profile is
+    /// unreadable instead. `value` is the text as written, empty when the key is
+    /// missing.
     #[error(
         "`bsaGame={value}` is not a supported game; use 3 (Skyrim LE), 4 (Skyrim SE) or 5 (Fallout 4)"
     )]

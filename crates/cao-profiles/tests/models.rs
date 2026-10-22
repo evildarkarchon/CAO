@@ -3,11 +3,12 @@
 
 mod common;
 
+use cao_archive::Game;
 use cao_profiles::ArchiveSize;
 use cao_profiles::{
-    BsaGame, CommonSettings, FormatErrorKind, IniFile, MeshFileVersion, MeshStreamVersion,
-    MeshUserVersion, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles,
-    TextureFormat, UnwantedFormat,
+    CommonSettings, FormatErrorKind, IniFile, MeshFileVersion, MeshStreamVersion, MeshUserVersion,
+    OptimizationMode, Options, ProfileError, ProfileSettings, Profiles, TextureFormat,
+    UnwantedFormat,
 };
 use common::shipped_app_dir;
 
@@ -25,7 +26,7 @@ fn the_shipped_tes5_profile_loads_into_the_settings_model() {
         ProfileSettings {
             bsa_enabled: true,
             max_bsa_uncompressed_size: ArchiveSize::from_bytes(2_104_533_975),
-            bsa_game: BsaGame::Tes5,
+            bsa_game: Game::Tes5,
             meshes_enabled: true,
             meshes_file_version: MeshFileVersion::V20_2_0_7,
             meshes_stream: MeshStreamVersion::V83,
@@ -41,12 +42,8 @@ fn the_shipped_tes5_profile_loads_into_the_settings_model() {
 }
 
 #[test]
-fn deviation_11_bsa_game_reads_tes5_sse_and_fo4() {
-    for (text, game) in [
-        ("3", BsaGame::Tes5),
-        ("4", BsaGame::Sse),
-        ("5", BsaGame::Fo4),
-    ] {
+fn bsa_game_3_4_and_5_read_as_cao_archives_tes5_sse_and_fo4() {
+    for (text, game) in [("3", Game::Tes5), ("4", Game::Sse), ("5", Game::Fo4)] {
         // A Mesh Target and Texture format too, whose missing keys would make the
         // Profile unreadable.
         let ini = IniFile::parse(
@@ -66,9 +63,10 @@ fn deviation_11_bsa_game_reads_tes5_sse_and_fo4() {
 }
 
 #[test]
-fn deviation_11_any_other_bsa_game_makes_the_profile_unreadable_naming_the_value() {
-    // C++ reached bethutil's TES3 (0, which text also reads as), TES4 (1) and FNV (2)
-    // tables, and fell back to SSE's rules for any other number.
+fn any_other_bsa_game_makes_the_profile_unreadable_naming_the_value() {
+    // CAO has Archive Rules only for these three games, so bethutil's other
+    // numbers (TES3 is 0, which text also reads as; TES4 1; FNV 2) and any
+    // other number are refused rather than packed by another game's rules.
     for text in ["0", "1", "2", "6", "-4", "SSE", "4.0"] {
         let ini = IniFile::parse(format!("[BSA]\r\nbsaGame={text}\r\n").as_bytes());
 
@@ -86,8 +84,8 @@ fn deviation_11_any_other_bsa_game_makes_the_profile_unreadable_naming_the_value
 }
 
 #[test]
-fn deviation_11_a_missing_bsa_game_makes_the_profile_unreadable() {
-    // C++ read a missing key as 0, TES3.
+fn a_missing_bsa_game_makes_the_profile_unreadable() {
+    // A missing key reads as 0, which names no game CAO has rules for.
     let ini = IniFile::parse(b"[BSA]\r\nbsaEnabled=true\r\n");
 
     assert!(matches!(
@@ -580,7 +578,7 @@ fn a_remembered_profile_that_does_not_exist_resolves_to_sse() {
 fn a_clean_profile_reads_without_error() {
     let settings = shipped().open("FO4").load_settings().unwrap();
 
-    assert_eq!(settings.bsa_game, BsaGame::Fo4);
+    assert_eq!(settings.bsa_game, Game::Fo4);
     assert_eq!(
         settings.textures_unwanted_formats,
         [

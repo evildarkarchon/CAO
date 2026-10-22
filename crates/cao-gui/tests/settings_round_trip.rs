@@ -4,10 +4,11 @@
 
 mod common;
 
+use cao_archive::Game;
 use cao_gui::ui::{MeshesTab, TexturesTab};
 use cao_profiles::ArchiveSize;
 use cao_profiles::{
-    BsaGame, MeshStreamVersion, OptimizationMode, Options, Profiles, TextureFormat, UnwantedFormat,
+    MeshStreamVersion, OptimizationMode, Options, Profiles, TextureFormat, UnwantedFormat,
 };
 use common::*;
 use slint::ComponentHandle;
@@ -99,7 +100,7 @@ fn settings_saved_from_the_window_reload_identically() {
     assert_eq!(options.textures_target_width, 1024);
     assert!(options.animations_optimization);
     let settings = profile.load_settings().unwrap();
-    assert_eq!(settings.bsa_game, BsaGame::Tes5);
+    assert_eq!(settings.bsa_game, Game::Tes5);
     // 1.5 GiB, in whole bytes.
     assert_eq!(
         settings.max_bsa_uncompressed_size,

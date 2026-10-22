@@ -10,8 +10,10 @@
 //!   `settings.ini`) and [`ProfileSettings`] (its `profile.ini`). The auxiliary text
 //!   files fall back to `profiles/SSE` per file.
 //!
-//! It is a leaf crate with no workspace dependencies and no notion of a Run Request;
-//! the composition root turns these models into one. Every path resolves against the
+//! Its only workspace dependency is `cao-archive`, for [`cao_archive::Game`], the one
+//! name a game has: `bsaGame` reads straight into it. It holds no Archive-table logic
+//! and no notion of a Run Request; the composition root turns these models into one,
+//! and builds a Profile's Archive Rules from `cao-archive`. Every path resolves against the
 //! app directory the caller passes to [`Profiles::new`], never against the working
 //! directory.
 
@@ -35,5 +37,5 @@ pub use ini::{FormatError, FormatErrorKind, IniError, IniFile, Value};
 pub use mesh::{MeshFileVersion, MeshStreamVersion, MeshUserVersion};
 pub use options::{OptimizationMode, Options};
 pub use profiles::{DEFAULT_PROFILE, Profile, Profiles};
-pub use settings::{BsaGame, ProfileSettings};
+pub use settings::ProfileSettings;
 pub use texture::{TextureFormat, UnwantedFormat};
