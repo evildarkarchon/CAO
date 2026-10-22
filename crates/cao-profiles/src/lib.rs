@@ -15,17 +15,25 @@
 //! app directory the caller passes to [`Profiles::new`], never against the working
 //! directory.
 
+mod archive_size;
 mod auxiliary;
+mod closed;
 mod common;
 mod error;
 pub mod ini;
+mod mesh;
 mod options;
 mod profiles;
 mod settings;
+mod texture;
 
+pub use archive_size::ArchiveSize;
+pub use closed::ClosedSet;
 pub use common::CommonSettings;
 pub use error::ProfileError;
 pub use ini::{FormatError, FormatErrorKind, IniError, IniFile, Value};
+pub use mesh::{MeshFileVersion, MeshStreamVersion, MeshUserVersion};
 pub use options::{OptimizationMode, Options};
 pub use profiles::{DEFAULT_PROFILE, Profile, Profiles};
 pub use settings::{BsaGame, ProfileSettings};
+pub use texture::{TextureFormat, UnwantedFormat};

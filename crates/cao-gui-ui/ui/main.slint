@@ -32,9 +32,15 @@ export global BsaTab {
     in-out property <bool> compress: true;
     in-out property <bool> separate-textures: true;
     in-out property <bool> separate-incompressible: true;
-    // Advanced: the maximum uncompressed size in GB, and the game (0 Skyrim LE, 1 SSE, 2 FO4).
+    // Advanced: the maximum uncompressed size in GB, and the game as an index
+    // into `games`, the Game combo's items, which Rust builds from the typed
+    // Profile model (`cao_profiles::BsaGame`).
     in-out property <float> max-size: 1.96;
+    // The most GB the game in the Game combo's Archives may hold, or 0 for no
+    // cap: the BSA games stop at 2 GB. Rust's UI rules set it from the game.
+    in property <float> max-size-cap: 0;
     in-out property <int> game-index: 1;
+    in property <[string]> games;
 }
 
 // The Meshes tab (`meshesTab`). `process` is the checkable "Process meshes" group.
@@ -47,10 +53,14 @@ export global MeshesTab {
     in-out property <bool> full;
     in-out property <bool> headparts;
     in-out property <bool> resave;
-    // Expert: indexes into the Version, User and Stream combos.
+    // Expert: indexes into the Version, User and Stream combos, whose items
+    // (`versions`, `users`, `streams`) Rust builds from the typed Mesh Target.
     in-out property <int> version-index: 1;
     in-out property <int> user-index: 1;
     in-out property <int> stream-index: 2;
+    in property <[string]> versions;
+    in property <[string]> users;
+    in property <[string]> streams;
 }
 
 // The Textures tab (`texturesTab`).
@@ -67,9 +77,12 @@ export global TexturesTab {
     in-out property <int> ratio-width: 2;
     in-out property <int> size-height: 2048;
     in-out property <int> size-width: 2048;
-    // Advanced.
+    // Advanced. `output-format-index` indexes into `output-formats`, the Output
+    // format combo's items, which Rust builds from the typed Texture Target
+    // (`cao_profiles::TextureFormat`).
     in-out property <bool> tga-conversion;
     in-out property <int> output-format-index;
+    in property <[string]> output-formats;
     in-out property <bool> compress-interface;
     in property <[string]> unwanted;
 }
@@ -422,7 +435,7 @@ export component MainWindow inherits Window {
                                     HelpCheckBox {
                                         text: @tr("Separate textures BSA");
                                         help: @tr("There are three types of BSAs CAO can create : incompressible, textures and standard. If enabled, this option will always separate textures into their own BSAs. Otherwise, they will be merged into the standard one if possible.");
-                                        // FO4 forces it on (`UiRules`, deviation 21).
+                                        // A game that keeps Textures in their own Archive (FO4) forces it on (`UiRules`).
                                         enabled: root.ed && UiRules.separate-textures-enabled;
                                         checked <=> BsaTab.separate-textures;
                                     }
@@ -453,6 +466,7 @@ export component MainWindow inherits Window {
                                         label: @tr("Maximum size");
                                         enabled: root.adv-ed;
                                         value <=> BsaTab.max-size;
+                                        maximum: BsaTab.max-size-cap > 0 ? BsaTab.max-size-cap : 99.99;
                                     }
                                 }
 
@@ -465,7 +479,7 @@ export component MainWindow inherits Window {
                                     ComboBox {
                                         accessible-label: @tr("Game");
                                         enabled: root.adv-ed;
-                                        model: [@tr("Skyrim LE"), @tr("SSE"), @tr("FO4")];
+                                        model: BsaTab.games;
                                         current-index <=> BsaTab.game-index;
                                         selected => {
                                             root.game-selected(self.current-index);
@@ -580,7 +594,7 @@ export component MainWindow inherits Window {
                                     ComboBox {
                                         accessible-label: @tr("Version");
                                         enabled: root.adv-ed;
-                                        model: [@tr("Oblivion (V20_0_0_5)"), @tr("Fallout 3 / Skyrim / Skyrim SE / Fallout 4 (V20_2_0_7)")];
+                                        model: MeshesTab.versions;
                                         current-index <=> MeshesTab.version-index;
                                     }
                                 }
@@ -594,7 +608,7 @@ export component MainWindow inherits Window {
                                     ComboBox {
                                         accessible-label: @tr("User");
                                         enabled: root.adv-ed;
-                                        model: [@tr("Oblivion (11)"), @tr("Fallout 3 / Skyrim / Skyrim SE / Fallout 4 (12)")];
+                                        model: MeshesTab.users;
                                         current-index <=> MeshesTab.user-index;
                                     }
                                 }
@@ -608,7 +622,7 @@ export component MainWindow inherits Window {
                                     ComboBox {
                                         accessible-label: @tr("Stream");
                                         enabled: root.adv-ed;
-                                        model: [@tr("Oblivion / Fallout 3 (82)"), @tr("Skyrim (83)"), @tr("Skyrim SE (100)"), @tr("Fallout 4 (130)")];
+                                        model: MeshesTab.streams;
                                         current-index <=> MeshesTab.stream-index;
                                     }
                                 }
@@ -764,7 +778,7 @@ export component MainWindow inherits Window {
                                         colspan: 2;
                                         accessible-label: @tr("Output format");
                                         enabled: root.adv-ed;
-                                        model: [@tr("BC7 (BC7_UNORM)"), "BC5 (BC5_UNORM)", @tr("BC3 (BC3_UNORM)"), @tr("BC1 (BC1_UNORM)"), @tr("Uncompressed (R8G8B8A8_UNORM)")];
+                                        model: TexturesTab.output-formats;
                                         current-index <=> TexturesTab.output-format-index;
                                     }
                                 }

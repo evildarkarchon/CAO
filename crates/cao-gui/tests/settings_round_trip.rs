@@ -5,7 +5,10 @@
 mod common;
 
 use cao_gui::ui::{MeshesTab, TexturesTab};
-use cao_profiles::{BsaGame, OptimizationMode, Options, Profiles};
+use cao_profiles::ArchiveSize;
+use cao_profiles::{
+    BsaGame, MeshStreamVersion, OptimizationMode, Options, Profiles, TextureFormat, UnwantedFormat,
+};
 use common::*;
 use slint::ComponentHandle;
 use slint::platform::WindowEvent;
@@ -51,7 +54,8 @@ fn settings_saved_from_the_window_reload_identically() {
     click(ui, "Extract BSA");
     click(ui, "Create BSA");
     click(ui, "Separate textures BSA");
-    enter(ui, "Maximum size", "3.5");
+    // Under the 2 GB cap of the Skyrim games, which would hold a larger size there.
+    enter(ui, "Maximum size", "1.5");
     // Not FO4, whose UI rule (#509) would force "Separate textures BSA" back on.
     choose(ui, "Game", "Skyrim LE");
 
@@ -96,14 +100,22 @@ fn settings_saved_from_the_window_reload_identically() {
     assert!(options.animations_optimization);
     let settings = profile.load_settings().unwrap();
     assert_eq!(settings.bsa_game, BsaGame::Tes5);
+    // 1.5 GiB, in whole bytes.
     assert_eq!(
         settings.max_bsa_uncompressed_size,
-        3.5 * 1024.0 * 1024.0 * 1024.0
+        ArchiveSize::from_bytes(1_610_612_736)
     );
-    assert_eq!(settings.meshes_stream, 130);
-    assert_eq!(settings.textures_format, 77);
+    assert_eq!(settings.meshes_stream, MeshStreamVersion::V130);
+    assert_eq!(settings.textures_format, TextureFormat::Bc3Unorm);
     assert!(!settings.textures_convert_tga);
-    assert_eq!(settings.textures_unwanted_formats, [85, 86, 115]);
+    assert_eq!(
+        settings.textures_unwanted_formats,
+        [
+            UnwantedFormat::B5G6R5Unorm,
+            UnwantedFormat::B5G5R5A1Unorm,
+            UnwantedFormat::B4G4R4A4Unorm,
+        ]
+    );
     assert!(profiles.load_common().unwrap().show_advanced_settings);
 
     // ---- A new window shows them all, and saving it changes no byte.
@@ -124,7 +136,7 @@ fn settings_saved_from_the_window_reload_identically() {
     assert!(!checked(ui, "Separate textures BSA"));
     assert_eq!(
         control(ui, "Maximum size").accessible_value().as_deref(),
-        Some("3.50")
+        Some("1.50")
     );
     assert_eq!(
         control(ui, "Game").accessible_value().as_deref(),

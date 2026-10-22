@@ -8,17 +8,21 @@ use std::cell::{OnceCell, RefCell};
 use std::path::Path;
 use std::rc::{Rc, Weak};
 
+use cao_core::routing::ProfileCapabilities;
 use cao_gui_ui::{AboutSlintDialog, ChoiceDialog, MainWindow, TabInfo, TextInputDialog};
 use cao_gui_ui::{FormatItem, FormatsDialog, TexturesTab};
 use cao_optimizers::application_log::ApplicationLog;
-use cao_profiles::{CommonSettings, Options, Profile, ProfileError, ProfileSettings, Profiles};
+use cao_optimizers::profile::profile_capabilities;
+use cao_profiles::{
+    ClosedSet, CommonSettings, Options, Profile, ProfileError, ProfileSettings, Profiles,
+    UnwantedFormat,
+};
 use slint::{
     CloseRequestResponse, ComponentHandle, FilterModel, Model, ModelRc, SharedString, VecModel,
 };
 
 use crate::desktop::{Desktop, MessageLevel};
-use crate::form::{self, EnabledTabs, Tab};
-use crate::formats;
+use crate::form::{self, Tab};
 use crate::log_tab::AttachedLog;
 use crate::modal::ModalSlot;
 use crate::rules;
@@ -141,6 +145,8 @@ impl App {
         let ui = &app.window;
         ui.set_profiles(ModelRc::from(app.profile_names.clone()));
         ui.set_tabs(ModelRc::from(app.tabs.clone()));
+        // Before any Profile is shown, so each combo has an item for its value.
+        form::show_choices(ui);
         // C++ `loadUi`: the common settings first.
         ui.set_dark(common.dark_mode);
         ui.set_show_advanced(common.show_advanced_settings);
@@ -280,6 +286,8 @@ impl App {
                 loaded.options.clone()
             }
         };
+        // Preparing's read: a Profile the run would refuse, including one with a
+        // line a save would drop, is reported now and its `profile.ini` never saved.
         let settings = match profile.load_settings() {
             Ok(settings) => Some(settings),
             Err(error) => {
@@ -302,14 +310,12 @@ impl App {
             form::show_settings(ui, settings);
         }
         form::show_options(ui, &options);
-        // The UI rules also hold for what was loaded (deviations 3 and 21).
+        // The UI rules also hold for what was loaded, so a profile saved with a
+        // combination a rule forbids (Dry Run with Extract BSA, say) shows what
+        // the run will actually do (deviation 3).
         rules::apply(ui);
         // An unreadable profile enables no asset tab.
-        self.enable_tabs(
-            settings
-                .as_ref()
-                .map_or(EnabledTabs::NONE, EnabledTabs::of_profile),
-        );
+        self.enable_tabs(settings.as_ref().map(profile_capabilities).as_ref());
         ui.set_base_profile(profile.is_base());
 
         loaded.profile = profile;
@@ -317,14 +323,15 @@ impl App {
         loaded.settings = settings;
     }
 
-    /// Enables the asset tabs the profile allows, and moves the selection off a
-    /// tab that becomes disabled, as QTabBar does.
-    fn enable_tabs(&self, enabled: EnabledTabs) {
+    /// Enables the asset tabs the profile's Profile Capabilities allow (none
+    /// when `capabilities` is `None`, for an unreadable `profile.ini`), and
+    /// moves the selection off a tab that becomes disabled, as QTabBar does.
+    fn enable_tabs(&self, capabilities: Option<&ProfileCapabilities>) {
         for row in 0..self.tabs.row_count() {
             let Some(mut tab) = self.tabs.row_data(row) else {
                 continue;
             };
-            tab.enabled = Tab::from_id(&tab.id).is_none_or(|id| enabled.allows(id));
+            tab.enabled = Tab::from_id(&tab.id).is_none_or(|id| id.enabled_by(capabilities));
             self.tabs.set_row_data(row, tab);
         }
         let current = self.window.get_current_tab();
@@ -364,8 +371,8 @@ impl App {
         // The capabilities come from the loaded `profile.ini`, not the tab bar:
         // an unreadable one disables every tab, yet says nothing of what the
         // profile supports, so its asset options are kept as loaded (#580).
-        let capabilities = loaded.settings.as_ref().map(EnabledTabs::of_profile);
-        let options = form::read_options(ui, &loaded.options, capabilities);
+        let capabilities = loaded.settings.as_ref().map(profile_capabilities);
+        let options = form::read_options(ui, &loaded.options, capabilities.as_ref());
         if let Err(error) = loaded.profile.save_options(&options) {
             self.error(
                 "Save",
@@ -652,11 +659,11 @@ impl App {
             .iter()
             .collect();
         let scratch = Rc::new(VecModel::from(
-            formats::UNWANTED_FORMAT_CHOICES
+            UnwantedFormat::ALL
                 .iter()
-                .map(|&(name, _)| FormatItem {
-                    name: name.into(),
-                    checked: listed.iter().any(|listed| listed == name),
+                .map(|format| FormatItem {
+                    name: format.name().into(),
+                    checked: listed.iter().any(|listed| listed == format.name()),
                 })
                 .collect::<Vec<_>>(),
         ));

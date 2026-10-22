@@ -49,24 +49,39 @@ pub(super) fn serialize(ini: &IniFile) -> Vec<u8> {
             };
             escape_key(key, &mut out);
             out.push(b'=');
-            match &entry.value {
-                Value::List(elements) if elements.is_empty() => {
-                    out.extend_from_slice(b"@Invalid()");
-                }
-                Value::List(elements) => {
-                    for (i, element) in elements.iter().enumerate() {
-                        if i != 0 {
-                            out.extend_from_slice(b", ");
-                        }
-                        escape_string(&variant_to_string(element), &mut out);
-                    }
-                }
-                scalar => escape_string(&variant_to_string(scalar), &mut out),
-            }
+            write_value(&entry.value, &mut out);
             out.extend_from_slice(b"\r\n");
         }
     }
     out
+}
+
+/// The text after `key=` that a file holds for `value`, as [`serialize`] writes
+/// it. Always ASCII, so a message can quote it as the user would see it in the
+/// file.
+pub(super) fn value_text(value: &Value) -> String {
+    let mut out = Vec::new();
+    write_value(value, &mut out);
+    // `escape_string` escapes everything outside ASCII, so this never fails.
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// Appends the text after `key=` for `value` to `out`.
+fn write_value(value: &Value, out: &mut Vec<u8>) {
+    match value {
+        Value::List(elements) if elements.is_empty() => {
+            out.extend_from_slice(b"@Invalid()");
+        }
+        Value::List(elements) => {
+            for (i, element) in elements.iter().enumerate() {
+                if i != 0 {
+                    out.extend_from_slice(b", ");
+                }
+                escape_string(&variant_to_string(element), out);
+            }
+        }
+        scalar => escape_string(&variant_to_string(scalar), out),
+    }
 }
 
 /// Port of `variantToString` for a scalar. A string starting with `@` gains a second

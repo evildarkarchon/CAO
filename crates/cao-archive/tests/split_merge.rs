@@ -226,6 +226,76 @@ fn partitions_take_the_games_versions() {
     );
 }
 
+/// `game`'s rules with a roomy 1000-byte limit and a `cap`-byte size cap, so
+/// only the cap, which counts the written layout, can split or block a merge.
+fn capped(game: Game, cap: u64) -> Settings {
+    Settings {
+        max_size: 1000,
+        size_cap: Some(cap),
+        ..Settings::get(game)
+    }
+}
+
+#[test]
+fn a_size_cap_counts_the_bsa_layout_as_well_as_the_source_bytes() {
+    // Each 100-byte file alone, with the header and its folder and file
+    // records and names, fits 250 bytes; both together pass it, though their
+    // 200 source bytes are far under the limit.
+    let archives = split(
+        &capped(Game::Sse, 250),
+        vec![source(r"meshes\a.nif", 100), source(r"meshes\b.nif", 100)],
+    )
+    .merge(NO_MERGE);
+    assert_eq!(
+        layout(&archives),
+        [
+            (ArchiveType::Standard, files(&[r"meshes\a.nif"])),
+            (ArchiveType::Standard, files(&[r"meshes\b.nif"])),
+        ]
+    );
+
+    let roomy = split(
+        &capped(Game::Sse, 400),
+        vec![source(r"meshes\a.nif", 100), source(r"meshes\b.nif", 100)],
+    )
+    .merge(NO_MERGE);
+    assert_eq!(
+        layout(&roomy),
+        [(
+            ArchiveType::Standard,
+            files(&[r"meshes\a.nif", r"meshes\b.nif"])
+        )]
+    );
+}
+
+#[test]
+fn partitions_merge_only_when_the_merged_layout_fits_the_size_cap() {
+    let merge = MergeSettings {
+        textures: false,
+        incompressible: true,
+    };
+    let sources = || vec![source(r"meshes\a.nif", 100), source(r"sound\a.wav", 100)];
+
+    // Merged, the two folders and files with their names pass 300 bytes.
+    let apart = split(&capped(Game::Tes5, 300), sources()).merge(merge);
+    assert_eq!(
+        layout(&apart),
+        [
+            (ArchiveType::Standard, files(&[r"meshes\a.nif"])),
+            (ArchiveType::Incompressible, files(&[r"sound\a.wav"])),
+        ]
+    );
+
+    let merged = split(&capped(Game::Tes5, 400), sources()).merge(merge);
+    assert_eq!(
+        layout(&merged),
+        [(
+            ArchiveType::Incompressible,
+            files(&[r"meshes\a.nif", r"sound\a.wav"])
+        )]
+    );
+}
+
 #[test]
 fn incompressible_merges_only_when_the_total_is_strictly_under_the_limit() {
     let merge = MergeSettings {

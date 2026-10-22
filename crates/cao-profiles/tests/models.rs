@@ -3,9 +3,11 @@
 
 mod common;
 
+use cao_profiles::ArchiveSize;
 use cao_profiles::{
-    BsaGame, CommonSettings, FormatErrorKind, IniFile, OptimizationMode, Options, ProfileError,
-    ProfileSettings, Profiles,
+    BsaGame, CommonSettings, FormatErrorKind, IniFile, MeshFileVersion, MeshStreamVersion,
+    MeshUserVersion, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles,
+    TextureFormat, UnwantedFormat,
 };
 use common::shipped_app_dir;
 
@@ -22,17 +24,17 @@ fn the_shipped_tes5_profile_loads_into_the_settings_model() {
         settings,
         ProfileSettings {
             bsa_enabled: true,
-            max_bsa_uncompressed_size: 2_104_533_975.04,
+            max_bsa_uncompressed_size: ArchiveSize::from_bytes(2_104_533_975),
             bsa_game: BsaGame::Tes5,
             meshes_enabled: true,
-            meshes_file_version: 335_675_399,
-            meshes_stream: 83,
-            meshes_user: 12,
+            meshes_file_version: MeshFileVersion::V20_2_0_7,
+            meshes_stream: MeshStreamVersion::V83,
+            meshes_user: MeshUserVersion::V12,
             animations_enabled: false,
             textures_enabled: true,
-            textures_format: 77,
+            textures_format: TextureFormat::Bc3Unorm,
             textures_convert_tga: false,
-            textures_unwanted_formats: vec![98, 99],
+            textures_unwanted_formats: vec![UnwantedFormat::Bc7Unorm, UnwantedFormat::Bc7UnormSrgb],
             textures_compress_interface: true,
         }
     );
@@ -45,7 +47,15 @@ fn deviation_11_bsa_game_reads_tes5_sse_and_fo4() {
         ("4", BsaGame::Sse),
         ("5", BsaGame::Fo4),
     ] {
-        let ini = IniFile::parse(format!("[BSA]\r\nbsaGame={text}\r\n").as_bytes());
+        // A Mesh Target and Texture format too, whose missing keys would make the
+        // Profile unreadable.
+        let ini = IniFile::parse(
+            format!(
+                "[BSA]\r\nbsaGame={text}\r\n[Meshes]\r\nmeshesFileVersion=335675399\r\n\
+                 meshesStream=100\r\nmeshesUser=12\r\n[Textures]\r\ntexturesFormat=98\r\n"
+            )
+            .as_bytes(),
+        );
 
         assert_eq!(
             ProfileSettings::read(&ini).unwrap().bsa_game,
@@ -201,20 +211,43 @@ fn a_saved_user_path_replaces_the_current_one() {
 }
 
 #[test]
-fn saving_an_unchanged_profile_ini_rewrites_the_shipped_bytes() {
+fn saving_an_unchanged_profile_ini_rewrites_the_shipped_bytes_but_the_fractional_byte() {
     // C++ writes the same keys back; `animationFormat` is dead data that neither
-    // build reads or writes, and it stays (deviation 10).
-    for name in ["FO4", "SSE", "TES5"] {
+    // build reads or writes, and it stays (deviation 10). The maximum Archive
+    // size is whole bytes, so its fraction is the one change.
+    for (name, shipped_size, saved_size) in [
+        (
+            "FO4",
+            "maxBsaUncompressedSize=4187593113.6\r\n",
+            "maxBsaUncompressedSize=4187593113\r\n",
+        ),
+        (
+            "SSE",
+            "maxBsaUncompressedSize=2104533975.04\r\n",
+            "maxBsaUncompressedSize=2104533975\r\n",
+        ),
+        (
+            "TES5",
+            "maxBsaUncompressedSize=2104533975.04\r\n",
+            "maxBsaUncompressedSize=2104533975\r\n",
+        ),
+    ] {
         let app_dir = common::copy_of_shipped(&format!("save-settings-{name}"));
         let profile = Profiles::new(&app_dir).open(name);
-        let original = common::read(&profile.profile_ini());
+        let original = String::from_utf8(common::read(&profile.profile_ini())).unwrap();
+        assert_eq!(original.matches(shipped_size).count(), 1, "{name}");
+        let expected = original.replace(shipped_size, saved_size);
+        let loaded = profile.load_settings().unwrap();
 
-        profile
-            .save_settings(&profile.load_settings().unwrap())
-            .unwrap();
+        profile.save_settings(&loaded).unwrap();
 
         let saved = common::read(&profile.profile_ini());
-        assert!(saved == original, "{name}:\n{}", common::show(&saved));
+        assert!(
+            saved == expected.as_bytes(),
+            "{name}:\n{}",
+            common::show(&saved)
+        );
+        assert_eq!(profile.load_settings().unwrap(), loaded, "{name} reloads");
     }
 }
 
@@ -280,8 +313,8 @@ fn saved_settings_load_back_including_a_one_element_unwanted_format_list() {
     let app_dir = common::copy_of_shipped("save-settings-round-trip");
     let profile = Profiles::new(&app_dir).open("FO4");
     let mut settings = profile.load_settings().unwrap();
-    settings.textures_unwanted_formats = vec![85];
-    settings.max_bsa_uncompressed_size = 2_147_483_648.0;
+    settings.textures_unwanted_formats = vec![UnwantedFormat::B5G6R5Unorm];
+    settings.max_bsa_uncompressed_size = ArchiveSize::from_bytes(2_147_483_648);
     settings.meshes_enabled = true;
 
     profile.save_settings(&settings).unwrap();
@@ -322,24 +355,24 @@ fn a_profile_without_profile_ini_is_unavailable() {
         profile.load_settings(),
         Err(ProfileError::Unavailable { path }) if path == profile.profile_ini()
     ));
-    assert!(matches!(
-        profile.load_settings_checked(),
-        Err(ProfileError::Unavailable { .. })
-    ));
+}
+
+/// Appends `line` to `profile`'s `profile.ini`, keeping every byte before it.
+fn append_line(profile: &cao_profiles::Profile, line: &[u8]) {
+    let mut bytes = common::read(&profile.profile_ini());
+    bytes.extend_from_slice(line);
+    std::fs::write(profile.profile_ini(), &bytes).unwrap();
 }
 
 #[test]
-fn a_format_error_makes_the_profile_unreadable_only_for_the_checked_load() {
-    // The C++ GUI ignored QSettings' status; run setup failed with "Selected profile
-    // could not be read".
+fn a_format_error_makes_the_profile_unreadable() {
+    // The GUI and Preparing share this read, so a line a save would drop is reported
+    // when the Profile is selected rather than silently lost.
     let app_dir = common::copy_of_shipped("settings-format-error");
     let profile = Profiles::new(&app_dir).open("SSE");
-    let mut bytes = common::read(&profile.profile_ini());
-    bytes.extend_from_slice(b"stray words\r\n");
-    std::fs::write(profile.profile_ini(), &bytes).unwrap();
+    append_line(&profile, b"stray words\r\n");
 
-    assert_eq!(profile.load_settings().unwrap().bsa_game, BsaGame::Sse);
-    let error = profile.load_settings_checked().unwrap_err();
+    let error = profile.load_settings().unwrap_err();
     assert!(
         matches!(
             &error,
@@ -352,6 +385,93 @@ fn a_format_error_makes_the_profile_unreadable_only_for_the_checked_load() {
 }
 
 #[test]
+fn a_format_error_is_reported_before_an_unsupported_bsa_game() {
+    let app_dir = common::copy_of_shipped("settings-format-error-first");
+    let profile = Profiles::new(&app_dir).open("SSE");
+    let text = String::from_utf8(common::read(&profile.profile_ini())).unwrap();
+    let text = text.replace("bsaGame=4", "bsaGame=99");
+    assert!(text.contains("bsaGame=99"));
+    std::fs::write(profile.profile_ini(), text).unwrap();
+    append_line(&profile, b"stray words\r\n");
+
+    let error = profile.load_settings().unwrap_err();
+    assert!(
+        matches!(&error, ProfileError::Malformed { .. }),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_format_error_is_reported_before_an_out_of_set_mesh_or_texture_value() {
+    for (index, (from, to)) in [
+        ("meshesUser=12", "meshesUser=13"),
+        ("texturesFormat=98", "texturesFormat=99"),
+        (
+            "texturesUnwantedFormats=85, 86, 115",
+            "texturesUnwantedFormats=85, 1",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let app_dir = common::copy_of_shipped(&format!("settings-format-error-first-{index}"));
+        let profile = Profiles::new(&app_dir).open("SSE");
+        let text = String::from_utf8(common::read(&profile.profile_ini())).unwrap();
+        assert!(text.contains(from), "{from}");
+        std::fs::write(profile.profile_ini(), text.replace(from, to)).unwrap();
+        append_line(&profile, b"stray words\r\n");
+
+        let error = profile.load_settings().unwrap_err();
+        assert!(
+            matches!(&error, ProfileError::Malformed { .. }),
+            "{to}: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn a_missing_capability_or_texture_switch_loads_as_false() {
+    // Each bool key is checked on its own: removing it from the shipped SSE
+    // Profile, where every one of them is `true`, turns only that field off.
+    type Switch = fn(&mut ProfileSettings) -> &mut bool;
+    let switches: [(&str, Switch); 6] = [
+        ("bsaEnabled", |settings| &mut settings.bsa_enabled),
+        ("meshesEnabled", |settings| &mut settings.meshes_enabled),
+        ("animationsEnabled", |settings| {
+            &mut settings.animations_enabled
+        }),
+        ("texturesEnabled", |settings| &mut settings.textures_enabled),
+        ("texturesConvertTga", |settings| {
+            &mut settings.textures_convert_tga
+        }),
+        ("texturesCompressInterface", |settings| {
+            &mut settings.textures_compress_interface
+        }),
+    ];
+    for (key, field) in switches {
+        let app_dir = common::copy_of_shipped(&format!("settings-missing-{key}"));
+        let profile = Profiles::new(&app_dir).open("SSE");
+        let mut expected = profile.load_settings().unwrap();
+        assert!(*field(&mut expected), "SSE ships {key}=true");
+        *field(&mut expected) = false;
+        let text = String::from_utf8(common::read(&profile.profile_ini())).unwrap();
+        let prefix = format!("{key}=");
+        let kept: Vec<&str> = text
+            .split("\r\n")
+            .filter(|line| !line.starts_with(&prefix))
+            .collect();
+        assert_ne!(
+            kept.len(),
+            text.split("\r\n").count(),
+            "{key} is in the file"
+        );
+        std::fs::write(profile.profile_ini(), kept.join("\r\n")).unwrap();
+
+        assert_eq!(profile.load_settings().unwrap(), expected, "{key}");
+    }
+}
+
+#[test]
 fn every_shipped_profile_loads_cleanly() {
     let profiles = shipped();
     let sse_options = profiles
@@ -361,7 +481,7 @@ fn every_shipped_profile_loads_cleanly() {
 
     for name in profiles.list() {
         let profile = profiles.open(&name);
-        profile.load_settings_checked().unwrap();
+        profile.load_settings().unwrap();
         let options = profile.load_options(&Options::default()).unwrap();
         // The shipped settings.ini files differ only in FO4's headpart choice.
         let expected = Options {
@@ -457,10 +577,20 @@ fn a_remembered_profile_that_does_not_exist_resolves_to_sse() {
 }
 
 #[test]
-fn the_checked_load_reads_a_clean_profile() {
-    let settings = shipped().open("FO4").load_settings_checked().unwrap();
+fn a_clean_profile_reads_without_error() {
+    let settings = shipped().open("FO4").load_settings().unwrap();
 
     assert_eq!(settings.bsa_game, BsaGame::Fo4);
-    assert_eq!(settings.textures_unwanted_formats, [86, 85, 115]);
-    assert_eq!(settings.max_bsa_uncompressed_size, 4_187_593_113.6);
+    assert_eq!(
+        settings.textures_unwanted_formats,
+        [
+            UnwantedFormat::B5G5R5A1Unorm,
+            UnwantedFormat::B5G6R5Unorm,
+            UnwantedFormat::B4G4R4A4Unorm,
+        ]
+    );
+    assert_eq!(
+        settings.max_bsa_uncompressed_size,
+        ArchiveSize::from_bytes(4_187_593_113)
+    );
 }

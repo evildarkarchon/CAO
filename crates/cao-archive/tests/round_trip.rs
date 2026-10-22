@@ -124,6 +124,143 @@ fn tes4_header(path: &Path) -> (ba2::tes4::Version, u32) {
     (options.version(), options.flags().bits())
 }
 
+/// `len` bytes no compressor can shrink: an xorshift stream seeded by `seed`.
+fn noise(seed: u64, len: usize) -> Vec<u8> {
+    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        })
+        .collect()
+}
+
+/// A Mod Root of many small Standard and Incompressible files under long
+/// names in several folders, mostly noise that compression only grows, plus
+/// some repetitive files compression shrinks. Returns the root and its sources.
+fn crowded_mod_root(name: &str) -> (PathBuf, Vec<PackSource>) {
+    let root = common::scratch_dir(name).join("Example");
+    let mut relatives = Vec::new();
+    for folder in 0..4 {
+        for file in 0..12 {
+            let relative = format!(
+                r"meshes\Long Folder Name Number {folder}\Long File Name Number {file}.nif"
+            );
+            common::write(&root, &relative, &noise(folder * 100 + file, 150));
+            relatives.push(relative);
+        }
+    }
+    for file in 0..6 {
+        let relative = format!(r"meshes\Repetitive\Repetitive File {file}.nif");
+        common::write(&root, &relative, &b"NiTriShape ".repeat(40));
+        relatives.push(relative);
+    }
+    for file in 0..8 {
+        let relative = format!(r"sound\Long Sound Folder\Long Sound File {file}.wav");
+        common::write(&root, &relative, &noise(1000 + file, 150));
+        relatives.push(relative);
+    }
+    let sources = relatives
+        .into_iter()
+        .map(|relative| {
+            let path = root.join(relative);
+            let size = std::fs::metadata(&path).unwrap().len();
+            PackSource { path, size }
+        })
+        .collect();
+    (root, sources)
+}
+
+#[test]
+fn a_bsa_never_exceeds_its_games_size_cap_whatever_its_names_or_data() {
+    // A 2 KiB cap stands in for the 2 GiB one: the source bytes alone fit it,
+    // but the header, folder and file records, names, and compression that
+    // grows noise would each take an Archive past it.
+    for game in [Game::Tes5, Game::Sse] {
+        for compress in [false, true] {
+            let label = format!("size_cap_{game:?}_{compress}");
+            let (root, sources) = crowded_mod_root(&label);
+            let settings = Settings {
+                max_size: 2048,
+                size_cap: Some(2048),
+                ..Settings::get(game)
+            };
+            let archives = SplitArchives::split(&root, sources, &settings)
+                .unwrap()
+                .merge(MergeSettings {
+                    textures: true,
+                    incompressible: true,
+                });
+            assert!(
+                archives.len() > 1,
+                "{label}: the files need several Archives"
+            );
+
+            for (out, archive) in write_all(&root, &archives, &settings, compress)
+                .iter()
+                .zip(&archives)
+            {
+                let len = std::fs::metadata(out).unwrap().len();
+                assert!(len <= 2048, "{label}: {} is {len} bytes", out.display());
+                assert_eq!(
+                    assert_round_trips(out, &root).len(),
+                    archive.files().len(),
+                    "{label}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_compressed_bsa_stores_a_file_compression_would_grow_as_it_is() {
+    // The per-file toggle keeps noise uncompressed in a compressed Archive, so
+    // no file takes more room than its source; repetitive files still shrink.
+    for game in [Game::Tes5, Game::Sse] {
+        let root = common::scratch_dir(&format!("compress_or_store_{game:?}")).join("Example");
+        let noisy = common::write(&root, r"meshes\Noise.nif", &noise(7, 4096));
+        let repetitive =
+            common::write(&root, r"meshes\Repetitive.nif", &b"NiTriShape ".repeat(400));
+        let sources = [noisy, repetitive]
+            .into_iter()
+            .map(|path| {
+                let size = std::fs::metadata(&path).unwrap().len();
+                PackSource { path, size }
+            })
+            .collect();
+        let settings = Settings::get(game);
+        let archives = SplitArchives::split(&root, sources, &settings)
+            .unwrap()
+            .merge(MergeSettings::default());
+        let [out] = &write_all(&root, &archives, &settings, true)[..] else {
+            panic!("{game:?}: one Archive");
+        };
+
+        let (archive, options) = ba2::tes4::Archive::read(out.as_path()).unwrap();
+        assert!(options.flags().compressed(), "{game:?}");
+        let mut stored: Vec<(String, bool)> = archive
+            .iter()
+            .flat_map(|(_, directory)| {
+                directory
+                    .iter()
+                    .map(|(key, file)| (key.name().to_string(), file.is_compressed()))
+            })
+            .collect();
+        stored.sort();
+        assert_eq!(
+            stored,
+            [
+                ("noise.nif".to_owned(), false),
+                ("repetitive.nif".to_owned(), true)
+            ],
+            "{game:?}"
+        );
+        assert_round_trips(out, &root);
+    }
+}
+
 #[test]
 fn tes5_archives_are_v104_bsas_that_round_trip() {
     let root = mod_root("round_trip_tes5");

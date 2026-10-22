@@ -22,7 +22,8 @@ use crate::settings::ArchiveVersion;
 /// Nothing is written for an Archive with no files. Otherwise:
 ///
 /// - Files are compressed when `compress` is set, except in an Incompressible
-///   Archive, and always in an FO4 DX10 Textures BA2.
+///   Archive, and always in an FO4 DX10 Textures BA2. In a BSA, a file is only
+///   compressed where that stores it in fewer bytes; see [`smaller_stored`].
 /// - Each file is keyed by its path relative to `root`, with backslashes; `ba2`
 ///   stores names lowercase.
 /// - TES5 and SSE write BSA v104 and v105 with directory and file strings, plus
@@ -46,6 +47,9 @@ use crate::settings::ArchiveVersion;
 /// - [`ArchiveError::ArchiveTooLarge`] (**deviation 8**) when a BSA would not fit
 ///   its 32-bit sizes and offsets, which `rsm-bsa` silently wrapped. BA2s have
 ///   64-bit offsets and no such limit.
+/// - [`ArchiveError::ArchiveOverSizeCap`] when a BSA would pass its game's size
+///   cap, which planning never lets happen; see [`check_size_cap`]. Nothing is
+///   written.
 pub fn write_archive(
     compress: bool,
     data: &ArchiveData,
@@ -86,8 +90,9 @@ pub fn write_archive_into<W: Write>(
 }
 
 /// An Archive read and compressed in memory, with the options it is written with.
+/// A BSA also carries its game's size cap, if any.
 enum PreparedArchive {
-    Tes4(tes4::Archive<'static>, tes4::ArchiveOptions),
+    Tes4(tes4::Archive<'static>, tes4::ArchiveOptions, Option<u64>),
     Fo4(fo4::Archive<'static>, fo4::ArchiveOptions),
 }
 
@@ -95,7 +100,12 @@ impl PreparedArchive {
     /// Writes the Archive to `out`; `out_path` names it in errors.
     fn write<W: Write>(&self, out: &mut W, out_path: &Path) -> Result<(), ArchiveError> {
         match self {
-            Self::Tes4(archive, options) => tes4_write(archive, options, out, out_path),
+            Self::Tes4(archive, options, cap) => {
+                if let Some(cap) = *cap {
+                    check_size_cap(archive, options, cap, out_path)?;
+                }
+                tes4_write(archive, options, out, out_path)
+            }
             // BA2 data offsets are 64-bit, so a BA2 past 4 GiB is valid (C++
             // wrote one too) and deviation 8 does not apply; any `ba2` error is
             // reported as it is.
@@ -139,21 +149,31 @@ fn prepare(
             } else {
                 tes4::Version::v105
             };
+            // Read as they are; `smaller_stored` then compresses each file only
+            // where that shrinks it.
             let read_options = tes4::FileReadOptions::builder()
                 .version(version)
-                .compression_result(compression_result)
+                .compression_result(CompressionResult::Decompressed)
+                .build();
+            let compression = tes4::FileCompressionOptions::builder()
+                .version(version)
                 .build();
             let files = sources
                 .into_par_iter()
                 .map(|(key, path)| {
-                    tes4::File::read(path, &read_options)
-                        .map(|file| (key, file))
-                        .map_err(|source| ArchiveError::Tes4 {
-                            path: path.to_path_buf(),
-                            source,
-                        })
+                    let tes4_error = |source| ArchiveError::Tes4 {
+                        path: path.to_path_buf(),
+                        source,
+                    };
+                    let file = tes4::File::read(path, &read_options).map_err(tes4_error)?;
+                    let file = if compressed {
+                        smaller_stored(file, &compression).map_err(tes4_error)?
+                    } else {
+                        file
+                    };
+                    Ok((key, file))
                 })
-                .collect::<Result<Vec<_>, _>>()?;
+                .collect::<Result<Vec<_>, ArchiveError>>()?;
             let mut flags =
                 tes4::ArchiveFlags::DIRECTORY_STRINGS | tes4::ArchiveFlags::FILE_STRINGS;
             if compressed {
@@ -164,7 +184,11 @@ fn prepare(
                 .flags(flags)
                 .types(tes4::ArchiveTypes::empty())
                 .build();
-            Ok(PreparedArchive::Tes4(tes4_archive(files), options))
+            Ok(PreparedArchive::Tes4(
+                tes4_archive(files),
+                options,
+                data.size_cap(),
+            ))
         }
         ArchiveVersion::Fo4 | ArchiveVersion::Fo4Dx => {
             let format = if version == ArchiveVersion::Fo4Dx {
@@ -208,6 +232,29 @@ fn prepare(
             Ok(PreparedArchive::Fo4(archive, options))
         }
     }
+}
+
+/// `file`, compressed when that stores it in fewer bytes, and otherwise as it
+/// is.
+///
+/// A compressed BSA file is its compressed bytes plus a 4-byte original size,
+/// and zlib or LZ4 can grow data that is already dense. A file stored as it is
+/// carries the per-file toggle bit, which the game reads as "not compressed" in
+/// a compressed Archive. Keeping the smaller form means no file ever takes more
+/// bytes than its source, which is what lets planning bound a BSA by its
+/// sources' sizes and keep it within its game's size cap.
+fn smaller_stored(
+    file: tes4::File<'static>,
+    options: &tes4::FileCompressionOptions,
+) -> Result<tes4::File<'static>, tes4::Error> {
+    let packed = file.compress(options)?;
+    // The original-size prefix every compressed file carries.
+    let prefix = std::mem::size_of::<u32>();
+    Ok(if packed.len() + prefix < file.len() {
+        packed
+    } else {
+        file
+    })
 }
 
 /// The name a source is stored under: its path relative to `root`, with
@@ -276,6 +323,46 @@ fn tes4_write<W: Write>(
             source,
         },
     })
+}
+
+/// Refuses a BSA that would take more than `cap` bytes, before any byte reaches
+/// its output.
+///
+/// Planning keeps every BSA within its game's size cap, so this never fires
+/// for an Archive CAO planned, unless that plan's bound is wrong. It is the
+/// guarantee that no BSA past the cap is ever written: the Archive is measured
+/// by writing it into a counter, which copies no data, so it costs a fraction
+/// of reading and compressing the files.
+fn check_size_cap(
+    archive: &tes4::Archive<'_>,
+    options: &tes4::ArchiveOptions,
+    cap: u64,
+    out_path: &Path,
+) -> Result<(), ArchiveError> {
+    let mut counter = ByteCounter(0);
+    tes4_write(archive, options, &mut counter, out_path)?;
+    if counter.0 > cap {
+        return Err(ArchiveError::ArchiveOverSizeCap {
+            path: out_path.to_path_buf(),
+            size: counter.0,
+            cap,
+        });
+    }
+    Ok(())
+}
+
+/// A [`Write`] that only counts the bytes written to it.
+struct ByteCounter(u64);
+
+impl Write for ByteCounter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len() as u64;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Writes a TES4 archive to a new file at `out_path`, as [`write_archive`]
@@ -358,6 +445,30 @@ mod tests {
             "{error:?}"
         );
         assert!(!out.exists());
+    }
+
+    /// The size-cap check measures exactly the bytes the BSA is written as, and
+    /// refuses it one byte under that.
+    #[test]
+    fn the_size_cap_check_refuses_a_bsa_one_byte_past_its_cap() {
+        let block = vec![7u8; 100];
+        let (archive, options) = borrowed_bsa(&block, 3);
+        let out = scratch_output("size-cap.bsa");
+        write_tes4(&archive, &options, &out).unwrap();
+        let written = std::fs::metadata(&out).unwrap().len();
+        // A file removed by the test's end is the expected case.
+        let _ = std::fs::remove_file(&out);
+
+        check_size_cap(&archive, &options, written, &out).unwrap();
+        let error = check_size_cap(&archive, &options, written - 1, &out).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                ArchiveError::ArchiveOverSizeCap { path, size, cap }
+                    if *path == out && *size == written && *cap == written - 1
+            ),
+            "{error:?}"
+        );
     }
 
     /// **Deviation 8:** a BSA that would pass 4 GiB fails with an error and leaves

@@ -40,6 +40,15 @@ pub enum ArchiveError {
         path.display()
     )]
     ArchiveTooLarge { path: PathBuf },
+    /// The BSA would be larger than its game's size cap
+    /// ([`crate::Settings::size_cap`], 2 GiB for TES5 and SSE), past which the
+    /// game cannot load it. Planning keeps every Archive within the cap, so
+    /// this means its bound was wrong; nothing is written.
+    #[error(
+        "`{}` would be {size} bytes, past the {cap}-byte limit its game can load",
+        path.display()
+    )]
+    ArchiveOverSizeCap { path: PathBuf, size: u64, cap: u64 },
     /// An Archived Asset's name is not UTF-8. `name` is its lossy decoding.
     #[error("`{}` holds an asset whose name is not UTF-8: `{name}`", archive.display())]
     InvalidArchivedAssetName { archive: PathBuf, name: String },

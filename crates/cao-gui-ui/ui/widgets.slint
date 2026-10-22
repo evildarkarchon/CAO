@@ -394,6 +394,11 @@ component ArrowButton inherits Rectangle {
 // QDoubleSpinBox stand-in (Slint's SpinBox is int-only). Commits on Enter or focus
 // loss, clamps to [minimum, maximum], and always shows two decimals. The defaults are
 // QDoubleSpinBox's: 0 to 99.99 in steps of 1.
+//
+// A value set from outside past the maximum is shown as the maximum but kept as
+// it is, and text equal to what is shown commits nothing: the window keeps a
+// loaded size the user has not changed, so a maximum that only narrows what is
+// shown, such as the BSA cap while a Skyrim is the game, must not overwrite it.
 export component DoubleSpinBox {
     in property <string> label;
     in property <bool> enabled: true;
@@ -403,11 +408,13 @@ export component DoubleSpinBox {
     in property <float> step: 1;
 
     property <bool> editing: le.has-focus;
+    // The value as the box shows it: within [minimum, maximum], at two decimals.
+    property <float> shown: root.within(root.value);
 
     accessible-role: spinbox;
     accessible-label: root.label;
     accessible-enabled: root.enabled;
-    accessible-value: root.value.to-fixed(2);
+    accessible-value: root.shown.to-fixed(2);
     accessible-value-minimum: root.minimum;
     accessible-value-maximum: root.maximum;
     accessible-value-step: root.step;
@@ -427,18 +434,25 @@ export component DoubleSpinBox {
         }
     }
 
+    // `v` clamped to [minimum, maximum] and rounded to the two decimals shown, as
+    // QDoubleSpinBox rounds its value.
+    pure function within(v: float) -> float {
+        return max(root.minimum, min(root.maximum, round(v * 100) / 100));
+    }
     function show-value() {
-        le.text = root.value.to-fixed(2);
+        le.text = root.shown.to-fixed(2);
     }
     function commit(t: string) {
-        if t.is-float() {
-            // Rounded to the two decimals shown, as QDoubleSpinBox rounds its value.
-            root.value = max(root.minimum, min(root.maximum, round(t.to-float() * 100) / 100));
+        // Text that says what is already shown, such as the box's own text on
+        // focus loss, is no edit: it keeps a value past the maximum as it is.
+        // Compared before clamping, so typing past the maximum is still an edit.
+        if t.is-float() && round(t.to-float() * 100) / 100 != root.shown {
+            root.value = root.within(t.to-float());
         }
         root.show-value();
     }
     function bump(d: float) {
-        root.value = max(root.minimum, min(root.maximum, root.value + d));
+        root.value = root.within(root.shown + d);
         root.show-value();
     }
 
@@ -446,6 +460,12 @@ export component DoubleSpinBox {
         root.show-value();
     }
     changed value => {
+        if !root.editing {
+            root.show-value();
+        }
+    }
+    // A maximum that moves, as the BSA cap does with the game, re-shows the value.
+    changed maximum => {
         if !root.editing {
             root.show-value();
         }

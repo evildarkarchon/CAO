@@ -6,32 +6,24 @@
 //! reloads the same. #509's UI rules (Dry Run, Several Mods, FO4 textures; `rules.rs`) are
 //! not applied here; they run after [`show_options`] and [`show_settings`].
 
+use cao_core::routing::{ProfileCapabilities, ProfileCapability};
 use cao_gui_ui::{AnimationsTab, BsaTab, MainWindow, MeshesTab, TexturesTab};
-use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileSettings};
+use cao_profiles::ArchiveSize;
+use cao_profiles::{
+    BsaGame, ClosedSet, MeshFileVersion, MeshStreamVersion, MeshUserVersion, OptimizationMode,
+    Options, ProfileSettings, TextureFormat, UnwantedFormat,
+};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-
-use crate::formats::{format_name, format_number};
 
 /// C++ `GigaByte`: the maximum archive size is stored in bytes, shown in GB.
 const GIGABYTE: f64 = 1024.0 * 1024.0 * 1024.0;
 
-/// The Game combo's games, by index (C++ `MainWindow` item data).
-const GAMES: [BsaGame; 3] = [BsaGame::Tes5, BsaGame::Sse, BsaGame::Fo4];
 /// The mode combo's modes, by index (C++ `modeChooserComboBox` item data).
 const MODES: [OptimizationMode; 2] = [OptimizationMode::SingleMod, OptimizationMode::SeveralMods];
 /// `TexturesTab.resize-mode` of the "By ratio" Downsizing radio.
 const RESIZE_BY_RATIO: i32 = 0;
 /// `TexturesTab.resize-mode` of the "By fixed size" Downsizing radio.
 const RESIZE_BY_SIZE: i32 = 1;
-/// The Version combo's NIF file versions: nifly's `V20_0_0_5` and `V20_2_0_7`.
-const MESH_VERSIONS: [u32; 2] = [0x1400_0005, 0x1402_0007];
-/// The User combo's NIF user versions.
-const MESH_USERS: [u32; 2] = [11, 12];
-/// The Stream combo's NIF stream versions.
-const MESH_STREAMS: [u32; 4] = [82, 83, 100, 130];
-/// The Output format combo's `DXGI_FORMAT`s: BC7, BC5, BC3, BC1 and R8G8B8A8,
-/// all `_UNORM`.
-const OUTPUT_FORMATS: [u32; 5] = [98, 83, 77, 71, 28];
 
 /// QSpinBox ranges of the Downsizing spin boxes, which clamp what they are set to.
 const RATIO_RANGE: (u32, u32) = (2, 10);
@@ -84,47 +76,35 @@ impl Tab {
     pub(crate) fn from_id(id: &str) -> Option<Tab> {
         Tab::ALL.into_iter().find(|tab| tab.id() == id)
     }
-}
 
-/// Which tabs the profile enables, as the tab bar shows them: the profile's
-/// Profile Capabilities, which also gate the asset options [`read_options`] reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct EnabledTabs {
-    pub bsa: bool,
-    pub meshes: bool,
-    pub textures: bool,
-    pub animations: bool,
-}
-
-impl EnabledTabs {
-    /// No asset tab enabled, as for a profile whose `profile.ini` could not be
-    /// read. Only the tab bar uses this; [`read_options`] takes `None` for an
-    /// unreadable profile, so it cannot mistake one for a profile supporting
-    /// nothing.
-    pub(crate) const NONE: Self = Self {
-        bsa: false,
-        meshes: false,
-        textures: false,
-        animations: false,
-    };
-
-    /// The asset tabs the capabilities in `settings` (`profile.ini`) enable.
-    pub(crate) fn of_profile(settings: &ProfileSettings) -> Self {
-        Self {
-            bsa: settings.bsa_enabled,
-            meshes: settings.meshes_enabled,
-            textures: settings.textures_enabled,
-            animations: settings.animations_enabled,
-        }
-    }
-
-    /// Whether `tab` is enabled. The profile never disables the Log tab.
-    pub(crate) fn allows(&self, tab: Tab) -> bool {
-        match tab {
-            Tab::Bsa => self.bsa,
-            Tab::Meshes => self.meshes,
-            Tab::Textures => self.textures,
-            Tab::Animations => self.animations,
+    /// Whether the loaded Profile's Profile Capabilities enable this tab, as
+    /// the tab bar shows it; the same answer gates the asset options
+    /// [`read_options`] reads. `None` stands for a profile whose `profile.ini`
+    /// could not be read, which enables no asset tab. The Log tab is always
+    /// enabled.
+    ///
+    /// A tab is enabled by any capability its options drive. Mesh Reference
+    /// Maintenance does not enable the Meshes tab: Texture conversion drives
+    /// it, and nothing on that tab affects it.
+    pub(crate) fn enabled_by(self, capabilities: Option<&ProfileCapabilities>) -> bool {
+        let supports_any = |wanted: &[ProfileCapability]| {
+            capabilities.is_some_and(|capabilities| {
+                wanted
+                    .iter()
+                    .any(|capability| capabilities.supports(*capability))
+            })
+        };
+        match self {
+            Tab::Bsa => supports_any(&[
+                ProfileCapability::ArchiveExtraction,
+                ProfileCapability::ArchiveCreation,
+            ]),
+            Tab::Meshes => supports_any(&[
+                ProfileCapability::StandardMeshOptimization,
+                ProfileCapability::TerrainMeshOptimization,
+            ]),
+            Tab::Textures => supports_any(&[ProfileCapability::NativeTextureOptimization]),
+            Tab::Animations => supports_any(&[ProfileCapability::AnimationOptimization]),
             Tab::Log => true,
         }
     }
@@ -137,7 +117,83 @@ pub(crate) fn mode_at(index: i32) -> Option<OptimizationMode> {
 
 /// The game the Game combo shows at `index`; `None` for no selection.
 pub(crate) fn game_at(index: i32) -> Option<BsaGame> {
-    item(&GAMES, index).copied()
+    item(BsaGame::ALL, index).copied()
+}
+
+/// Fills the Game, Version, User, Stream and Output format combos with every
+/// member of the typed Profile model's sets, in [`ClosedSet::ALL`] order, so a
+/// combo index is an index into that set and every value a Profile can hold has
+/// an item.
+pub(crate) fn show_choices(ui: &MainWindow) {
+    ui.global::<BsaTab>().set_games(choices(game_label));
+    let meshes = ui.global::<MeshesTab>();
+    meshes.set_versions(choices(version_label));
+    meshes.set_users(choices(user_label));
+    meshes.set_streams(choices(stream_label));
+    ui.global::<TexturesTab>()
+        .set_output_formats(choices(output_format_label));
+}
+
+/// A combo model holding `label` of each member of `T`, in [`ClosedSet::ALL`]
+/// order.
+fn choices<T: ClosedSet, L: Into<SharedString>>(label: fn(T) -> L) -> ModelRc<SharedString> {
+    let labels: Vec<SharedString> = T::ALL.iter().map(|&member| label(member).into()).collect();
+    ModelRc::new(VecModel::from(labels))
+}
+
+/// The Game combo's text for a game.
+fn game_label(game: BsaGame) -> &'static str {
+    match game {
+        BsaGame::Tes5 => "Skyrim LE",
+        BsaGame::Sse => "SSE",
+        BsaGame::Fo4 => "FO4",
+    }
+}
+
+/// The Version combo's text for a NIF file version: the games that use it,
+/// then the version as nifly names it (`V20_2_0_7`).
+fn version_label(version: MeshFileVersion) -> String {
+    let games = match version {
+        MeshFileVersion::V20_0_0_5 => "Oblivion",
+        MeshFileVersion::V20_2_0_7 => "Fallout 3 / Skyrim / Skyrim SE / Fallout 4",
+    };
+    format!("{games} (V{})", version.dotted().replace('.', "_"))
+}
+
+/// The User combo's text for a NIF user version: the games that use it.
+fn user_label(user: MeshUserVersion) -> &'static str {
+    match user {
+        MeshUserVersion::V11 => "Oblivion (11)",
+        MeshUserVersion::V12 => "Fallout 3 / Skyrim / Skyrim SE / Fallout 4 (12)",
+    }
+}
+
+/// The Stream combo's text for a NIF stream version: the games that use it.
+fn stream_label(stream: MeshStreamVersion) -> &'static str {
+    match stream {
+        MeshStreamVersion::V82 => "Oblivion / Fallout 3 (82)",
+        MeshStreamVersion::V83 => "Skyrim (83)",
+        MeshStreamVersion::V100 => "Skyrim SE (100)",
+        MeshStreamVersion::V130 => "Fallout 4 (130)",
+    }
+}
+
+/// The Output format combo's text for a Texture format: its kind, then its
+/// `DXGI_FORMAT` name.
+fn output_format_label(format: TextureFormat) -> String {
+    let kind = match format {
+        TextureFormat::Bc7Unorm => "BC7",
+        TextureFormat::Bc5Unorm => "BC5",
+        TextureFormat::Bc3Unorm => "BC3",
+        TextureFormat::Bc1Unorm => "BC1",
+        TextureFormat::R8G8B8A8Unorm => "Uncompressed",
+    };
+    format!("{kind} ({})", format.name())
+}
+
+/// The combo index of `member`, which [`show_choices`] gave an item.
+fn choice_index<T: ClosedSet>(member: T) -> i32 {
+    index_of(T::ALL, &member).expect("every member of a closed set is in its `ALL`")
 }
 
 /// Shows the options model (`settings.ini`) in the window.
@@ -209,7 +265,7 @@ pub(crate) fn show_options(ui: &MainWindow, options: &Options) {
 /// last loaded, which keep what the window does not show (`bBsaProcessContent`,
 /// and the mesh level when no level radio is checked).
 ///
-/// `capabilities` are the Selected Profile's Profile Capabilities, or `None`
+/// `capabilities` are the loaded Profile's Profile Capabilities, or `None`
 /// when its `profile.ini` could not be read. Known capabilities gate the asset
 /// options: those on a tab the profile does not support read as off. Unknown
 /// capabilities keep every BSA, Texture, Mesh and Animation option of `current`,
@@ -217,7 +273,7 @@ pub(crate) fn show_options(ui: &MainWindow, options: &Options) {
 pub(crate) fn read_options(
     ui: &MainWindow,
     current: &Options,
-    capabilities: Option<EnabledTabs>,
+    capabilities: Option<&ProfileCapabilities>,
 ) -> Options {
     let mut options = current.clone();
 
@@ -230,14 +286,15 @@ pub(crate) fn read_options(
     // An unreadable profile shows every asset tab disabled, which the gating
     // below would read as "every option off" and so wipe `settings.ini`. Not
     // knowing what the profile can do is no reason to forget what it had.
-    let Some(tabs) = capabilities else {
+    let Some(capabilities) = capabilities else {
         return options;
     };
+    let tab = |tab: Tab| tab.enabled_by(Some(capabilities));
 
     // The base group is disabled while Dry Run is on (`rules.rs`), and C++
     // reads every BSA option as off while the tab or that group is disabled.
     let bsa = ui.global::<BsaTab>();
-    let bsa_enabled = tabs.bsa && !ui.get_dry_run();
+    let bsa_enabled = tab(Tab::Bsa) && !ui.get_dry_run();
     options.bsa_extract = bsa_enabled && bsa.get_extract();
     options.bsa_create = bsa_enabled && bsa.get_create();
     options.bsa_delete_backup = bsa_enabled && bsa.get_delete_backups();
@@ -248,12 +305,12 @@ pub(crate) fn read_options(
     options.bsa_delete_source = bsa_enabled && bsa.get_delete_source();
 
     let textures = ui.global::<TexturesTab>();
-    let textures_enabled = textures.get_process() && tabs.textures;
+    let textures_enabled = textures.get_process() && tab(Tab::Textures);
     options.textures_necessary = textures_enabled && textures.get_necessary();
     options.textures_mipmaps = textures_enabled && textures.get_mipmaps();
     options.textures_compress = textures_enabled && textures.get_compress();
 
-    let resizing = textures.get_resize() && tabs.textures;
+    let resizing = textures.get_resize() && tab(Tab::Textures);
     options.textures_resize_size = resizing && textures.get_resize_mode() == RESIZE_BY_SIZE;
     options.textures_target_width = unsigned(textures.get_size_width());
     options.textures_target_height = unsigned(textures.get_size_height());
@@ -270,47 +327,39 @@ pub(crate) fn read_options(
     } else if meshes.get_full() {
         options.meshes_optimization_level = 3;
     }
-    if !meshes.get_process() || !tabs.meshes {
+    if !meshes.get_process() || !tab(Tab::Meshes) {
         options.meshes_optimization_level = 0;
     }
-    options.meshes_headparts = tabs.meshes && meshes.get_headparts();
-    options.meshes_resave = tabs.meshes && meshes.get_resave();
+    options.meshes_headparts = tab(Tab::Meshes) && meshes.get_headparts();
+    options.meshes_resave = tab(Tab::Meshes) && meshes.get_resave();
 
     options.animations_optimization =
-        tabs.animations && ui.global::<AnimationsTab>().get_necessary();
+        tab(Tab::Animations) && ui.global::<AnimationsTab>().get_necessary();
     options
 }
 
-/// Shows the settings model (`profile.ini`) in the advanced groups. A value no
-/// combo item holds leaves that combo as it was, as C++'s `iterateComboBox` does.
+/// Shows the settings model (`profile.ini`) in the advanced groups. The Game,
+/// Mesh Target and Output format combos hold every value the typed model can,
+/// so each always selects the loaded value, and every unwanted format has the
+/// name the window lists it by.
 pub(crate) fn show_settings(ui: &MainWindow, settings: &ProfileSettings) {
     let bsa = ui.global::<BsaTab>();
-    bsa.set_max_size((settings.max_bsa_uncompressed_size / GIGABYTE) as f32);
-    if let Some(index) = index_of(&GAMES, &settings.bsa_game) {
-        bsa.set_game_index(index);
-    }
+    bsa.set_max_size(shown_gigabytes(&settings.max_bsa_uncompressed_size));
+    bsa.set_game_index(choice_index(settings.bsa_game));
 
     let meshes = ui.global::<MeshesTab>();
-    if let Some(index) = index_of(&MESH_USERS, &settings.meshes_user) {
-        meshes.set_user_index(index);
-    }
-    if let Some(index) = index_of(&MESH_STREAMS, &settings.meshes_stream) {
-        meshes.set_stream_index(index);
-    }
-    if let Some(index) = index_of(&MESH_VERSIONS, &settings.meshes_file_version) {
-        meshes.set_version_index(index);
-    }
+    meshes.set_user_index(choice_index(settings.meshes_user));
+    meshes.set_stream_index(choice_index(settings.meshes_stream));
+    meshes.set_version_index(choice_index(settings.meshes_file_version));
 
     let textures = ui.global::<TexturesTab>();
-    if let Some(index) = index_of(&OUTPUT_FORMATS, &settings.textures_format) {
-        textures.set_output_format_index(index);
-    }
+    textures.set_output_format_index(choice_index(settings.textures_format));
     textures.set_tga_conversion(settings.textures_convert_tga);
     textures.set_compress_interface(settings.textures_compress_interface);
     let names: Vec<SharedString> = settings
         .textures_unwanted_formats
         .iter()
-        .map(|&format| format_name(format).into())
+        .map(|format| format.name().into())
         .collect();
     textures.set_unwanted(ModelRc::new(VecModel::from(names)));
 }
@@ -322,38 +371,45 @@ pub(crate) fn read_settings(ui: &MainWindow, current: &ProfileSettings) -> Profi
     let mut settings = current.clone();
 
     let bsa = ui.global::<BsaTab>();
-    if let Some(&game) = item(&GAMES, bsa.get_game_index()) {
+    if let Some(&game) = item(BsaGame::ALL, bsa.get_game_index()) {
         settings.bsa_game = game;
     }
-    settings.max_bsa_uncompressed_size = gigabytes(bsa.get_max_size()) * GIGABYTE;
+    // The spin box's two decimals of a gigabyte cannot hold every size, and a
+    // size written with a unit keeps its text only while it is unchanged, so a
+    // size the user did not change is kept as loaded rather than re-derived.
+    // Compared as the spin box displays them, so its own rounding of the
+    // loaded value does not count as a change.
+    let shown = bsa.get_max_size();
+    if gigabytes(shown) != gigabytes(shown_gigabytes(&current.max_bsa_uncompressed_size)) {
+        settings.max_bsa_uncompressed_size = archive_size(shown);
+    }
 
     let meshes = ui.global::<MeshesTab>();
-    if let Some(&user) = item(&MESH_USERS, meshes.get_user_index()) {
+    if let Some(&user) = item(MeshUserVersion::ALL, meshes.get_user_index()) {
         settings.meshes_user = user;
     }
-    if let Some(&stream) = item(&MESH_STREAMS, meshes.get_stream_index()) {
+    if let Some(&stream) = item(MeshStreamVersion::ALL, meshes.get_stream_index()) {
         settings.meshes_stream = stream;
     }
-    if let Some(&version) = item(&MESH_VERSIONS, meshes.get_version_index()) {
+    if let Some(&version) = item(MeshFileVersion::ALL, meshes.get_version_index()) {
         settings.meshes_file_version = version;
     }
 
     let textures = ui.global::<TexturesTab>();
-    if let Some(&format) = item(&OUTPUT_FORMATS, textures.get_output_format_index()) {
+    if let Some(&format) = item(TextureFormat::ALL, textures.get_output_format_index()) {
         settings.textures_format = format;
     }
     settings.textures_convert_tga = textures.get_tga_conversion();
     settings.textures_compress_interface = textures.get_compress_interface();
-    // C++ maps the listed names back, dropping repeats and names it does not know.
-    let mut unwanted = Vec::new();
-    for name in textures.get_unwanted().iter() {
-        if let Some(format) = format_number(&name)
-            && !unwanted.contains(&format)
-        {
-            unwanted.push(format);
-        }
-    }
-    settings.textures_unwanted_formats = unwanted;
+    // The list only ever holds names `show_settings` and the dialog put there,
+    // so every name maps back; a repeat is dropped by the same rule the read of
+    // `profile.ini` applies, so the saved list loads back unchanged.
+    settings.textures_unwanted_formats = UnwantedFormat::first_occurrences(
+        textures
+            .get_unwanted()
+            .iter()
+            .filter_map(|name| UnwantedFormat::from_name(&name)),
+    );
     settings
 }
 
@@ -362,6 +418,23 @@ pub(crate) fn read_settings(ui: &MainWindow, current: &ProfileSettings) -> Profi
 /// two-decimal text gives back the same `f64` C++ multiplied.
 fn gigabytes(shown: f32) -> f64 {
     format!("{shown:.2}").parse().unwrap_or_default()
+}
+
+/// The maximum Archive size as the spin box shows it, in gigabytes.
+fn shown_gigabytes(size: &ArchiveSize) -> f32 {
+    gigabytes_of(size.bytes())
+}
+
+/// `bytes` in the spin box's gigabytes (1024³ bytes each).
+pub(crate) fn gigabytes_of(bytes: u64) -> f32 {
+    (bytes as f64 / GIGABYTE) as f32
+}
+
+/// The maximum Archive size the spin box's gigabytes stand for, truncated to
+/// whole bytes as the read of `profile.ini` truncates a fraction. The spin box
+/// holds 0 to 99.99, so the bytes always fit.
+fn archive_size(shown: f32) -> ArchiveSize {
+    ArchiveSize::from_bytes((gigabytes(shown) * GIGABYTE) as u64)
 }
 
 /// The index of `value` among a combo's item data.

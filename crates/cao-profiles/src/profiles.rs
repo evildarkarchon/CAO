@@ -256,27 +256,22 @@ impl Profile {
         update(&self.profile_ini(), |ini| settings.write(ini))
     }
 
-    /// Loads `profile.ini` into the settings model. A line QSettings rejects is
-    /// ignored, as the C++ GUI ignores it; run setup uses
-    /// [`Profile::load_settings_checked`] instead.
+    /// Loads `profile.ini` into the settings model. This is the one read of
+    /// `profile.ini`: the GUI and Preparing both use it, so a Profile the run would
+    /// refuse is reported when it is selected.
+    ///
+    /// A line QSettings rejects makes the Profile unreadable. It is not skipped,
+    /// because [`Profile::save_settings`] rewrites the file from its parsed entries
+    /// and would silently delete the line.
     ///
     /// # Errors
     /// - [`ProfileError::Unavailable`] when `profile.ini` does not exist.
     /// - [`ProfileError::Ini`] when it exists but cannot be read.
+    /// - [`ProfileError::Malformed`] for the first line QSettings rejects. This is
+    ///   reported before any value error, since the values of a file that cannot be
+    ///   read as a whole are not trusted.
     /// - [`ProfileError::UnsupportedBsaGame`] when `bsaGame` is not 3, 4 or 5.
     pub fn load_settings(&self) -> Result<ProfileSettings, ProfileError> {
-        ProfileSettings::read(&self.load_profile_ini()?)
-    }
-
-    /// Loads `profile.ini` as run setup must: like [`Profile::load_settings`], but a
-    /// line QSettings rejects also makes the profile unreadable, as C++'s run setup
-    /// rejected any QSettings status other than `NoError`.
-    ///
-    /// # Errors
-    /// Those of [`Profile::load_settings`], and [`ProfileError::Malformed`] for the
-    /// first rejected line. A malformed file reports that before its `bsaGame`, since
-    /// C++ reported only the format error.
-    pub fn load_settings_checked(&self) -> Result<ProfileSettings, ProfileError> {
         let ini = self.load_profile_ini()?;
         if let Some(&error) = ini.format_error() {
             return Err(ProfileError::Malformed {

@@ -7,8 +7,13 @@
 //!   and the Base group around them (C++ `dryRunCheckBox` `clicked`).
 //! - **Several Mods** checks the "Necessary" mesh level and disables Medium and
 //!   Full (C++ `modeChooserComboBox` `activated`).
-//! - **FO4** checks and disables "Separate textures BSA". C++ has no such rule
-//!   (deviation 21).
+//! - **A game that keeps Textures in their own Archive** (FO4) checks and
+//!   disables "Separate textures BSA", since the packer never merges that
+//!   game's Textures into the Standard Archive anyway.
+//! - **A game whose Archives have a hard size cap** (TES5 and SSE BSAs, 2 GiB)
+//!   stops the Maximum size spin box there, since the packer never packs past
+//!   it anyway. Unlike the rules above it limits a value rather than forcing
+//!   a checkbox, and it keeps a larger loaded size as written.
 //!
 //! [`apply`] enforces them all from the controls' current state. It is
 //! idempotent, so the same call serves a click on the triggering control and a
@@ -19,7 +24,8 @@
 //! controls AND into their `enabled`.
 
 use cao_gui_ui::{BsaTab, MainWindow, MeshesTab, UiRules};
-use cao_profiles::{BsaGame, OptimizationMode};
+use cao_optimizers::profile::{archive_size_cap, keeps_textures_separate};
+use cao_profiles::OptimizationMode;
 use slint::ComponentHandle;
 
 use crate::form;
@@ -33,7 +39,8 @@ pub(crate) fn several_mods_chosen(ui: &MainWindow) -> bool {
 pub(crate) fn apply(ui: &MainWindow) {
     dry_run(ui);
     several_mods(ui);
-    fo4_textures(ui);
+    separate_textures(ui);
+    size_cap(ui);
 }
 
 /// Dry Run: the base archive options are cleared and disabled while it is on.
@@ -75,15 +82,31 @@ fn several_mods(ui: &MainWindow) {
         .set_heavy_mesh_levels_enabled(!several_mods);
 }
 
-/// FO4 (deviation 21, new in the port): FO4 never merges textures into the
-/// general archive, so "Separate textures BSA" (the inverse of
-/// `bBsaMergeTexture`) is checked and disabled. Another game gives it back as
+/// Separate textures: while the Game combo shows a game that keeps Textures in
+/// their own Archive ([`keeps_textures_separate`], FO4's DX10 BA2), "Separate
+/// textures BSA" (the inverse of `bBsaMergeTexture`) is checked and disabled.
+/// The packer keeps such Textures separate whatever the checkbox says, so the
+/// window shows what the run will do. Another game gives the checkbox back as
 /// it is.
-fn fo4_textures(ui: &MainWindow) {
+fn separate_textures(ui: &MainWindow) {
     let bsa = ui.global::<BsaTab>();
-    let fo4 = form::game_at(bsa.get_game_index()) == Some(BsaGame::Fo4);
-    if fo4 {
+    let forced = form::game_at(bsa.get_game_index()).is_some_and(keeps_textures_separate);
+    if forced {
         bsa.set_separate_textures(true);
     }
-    ui.global::<UiRules>().set_separate_textures_enabled(!fo4);
+    ui.global::<UiRules>()
+        .set_separate_textures_enabled(!forced);
+}
+
+/// Archive size cap: while the Game combo shows a game whose Archives have a
+/// hard size cap ([`archive_size_cap`], 2 GiB for the BSA games), the Maximum
+/// size spin box stops there. The packer never packs past the cap whatever the
+/// Profile says, so the window shows the size the run will use. The spin box
+/// keeps a larger loaded size as it is, so the Profile's line is saved as
+/// written until the user edits it, and another game shows it again.
+fn size_cap(ui: &MainWindow) {
+    let bsa = ui.global::<BsaTab>();
+    let cap = form::game_at(bsa.get_game_index()).and_then(archive_size_cap);
+    // 0 is the `.slint` side's "no cap".
+    bsa.set_max_size_cap(cap.map_or(0.0, form::gigabytes_of));
 }

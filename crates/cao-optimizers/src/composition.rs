@@ -18,9 +18,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cao_archive::{Game, Settings};
+use cao_archive::Settings;
 use cao_core::Error;
-use cao_core::routing::{ExecutionMode, ProfileCapabilities, ProfileCapability, RequestedWork};
+use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ArchiveFinalizationChoices, ArchiveSeams, AssetAttemptAdapter, AssetBackendFactory,
     BackendCreation, BackendCreationError, CancellationToken, MeshChoices, MeshLevel, ModSelection,
@@ -28,16 +28,16 @@ use cao_core::run::{
     RunDiagnosticCode, RunPhase, RunRequest, RunToolset, SelectedProfile, SourceCleanup,
     TextureChoices, TextureResizeChoice, WorkChoiceError, WorkChoices,
 };
-use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
-use directxtex::DXGI_FORMAT;
-use nifly_sys::NifVersion;
+use cao_profiles::{OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
 
 use crate::animations::Hkxcmd;
-use crate::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
+use crate::archives::{ArchiveFileReader, VolumeProbes};
 use crate::backend::{OptimizerBackend, TextureResize, TextureSettings};
 use crate::headparts::{HeadpartList, ScanCancelled, scan_headparts};
 use crate::meshes::{MeshOptimizer, MeshSettings};
-use crate::textures::TextureProfile;
+use crate::profile::{
+    archive_game, archive_packer, mesh_target, profile_capabilities, texture_profile,
+};
 
 /// Why the options cannot start a run. Nothing has run and nothing has changed.
 ///
@@ -295,8 +295,9 @@ impl ProfileConfigurationProvider {
     ) -> Result<(SelectedProfile, PreparedProfile), Error> {
         let failed = |error: ProfileError| Error::ConfigurationLoading(error.to_string());
         let profile = self.profiles.open(profile_identity);
-        // Strict, as C++ run setup rejected any QSettings status but NoError.
-        let settings = profile.load_settings_checked().map_err(failed)?;
+        // The same strict read the GUI made when the Profile was selected, so
+        // the run refuses exactly the Profiles the window reported.
+        let settings = profile.load_settings().map_err(failed)?;
         let ignored_mods = profile.ignored_mods().map_err(failed)?;
         // A missing or unreadable list is empty, as in C++; finalization logs it.
         let files_to_not_pack = profile.files_to_not_pack();
@@ -337,83 +338,6 @@ impl RunConfigurationProvider for ProfileConfigurationProvider {
         // itself, so none of them enters the Toolset.
         let toolset = work.toolset(Arc::new(profile));
         Ok((selected, toolset))
-    }
-}
-
-/// The Profile Capabilities a profile's settings declare, with its game's
-/// Archive extension. This is the one place profile settings become
-/// capabilities.
-fn profile_capabilities(settings: &ProfileSettings) -> ProfileCapabilities {
-    let textures = settings.textures_enabled;
-    let meshes = settings.meshes_enabled;
-    let archives = settings.bsa_enabled;
-    let supported = [
-        (textures, ProfileCapability::NativeTextureOptimization),
-        (textures, ProfileCapability::ConvertibleTextureConversion),
-        (meshes, ProfileCapability::StandardMeshOptimization),
-        (meshes, ProfileCapability::TerrainMeshOptimization),
-        (
-            settings.animations_enabled,
-            ProfileCapability::AnimationOptimization,
-        ),
-        (archives, ProfileCapability::ArchiveExtraction),
-        // Reference maintenance belongs to Texture conversion.
-        (textures, ProfileCapability::MeshReferenceMaintenance),
-        (archives, ProfileCapability::ArchiveCreation),
-    ];
-    let capabilities: Vec<_> = supported
-        .into_iter()
-        .filter(|(supported, _)| *supported)
-        .map(|(_, capability)| capability)
-        .collect();
-    ProfileCapabilities::define(archive_extension(settings.bsa_game), &capabilities)
-}
-
-/// The Archive extension of a game, from `cao-archive`'s per-game tables.
-fn archive_extension(game: BsaGame) -> &'static str {
-    Settings::get(archive_game(game)).extension
-}
-
-/// The `cao-archive` game whose tables a profile's `bsaGame` names.
-fn archive_game(game: BsaGame) -> Game {
-    match game {
-        BsaGame::Tes5 => Game::Tes5,
-        BsaGame::Sse => Game::Sse,
-        BsaGame::Fo4 => Game::Fo4,
-    }
-}
-
-/// The packer for a profile's game, with its maximum Archive size raised to
-/// the profile's `maxBsaUncompressedSize` when that is larger, as C++
-/// `archiveSettings` did.
-fn archive_packer(settings: &ProfileSettings) -> GameArchivePacker {
-    GameArchivePacker::new(
-        Settings::get(archive_game(settings.bsa_game))
-            .with_profile_max_size(settings.max_bsa_uncompressed_size),
-    )
-}
-
-/// The profile's Texture settings, as the texture optimizer takes them.
-fn texture_profile(settings: &ProfileSettings) -> TextureProfile {
-    TextureProfile {
-        format: DXGI_FORMAT::from(settings.textures_format),
-        unwanted_formats: settings
-            .textures_unwanted_formats
-            .iter()
-            .map(|&format| DXGI_FORMAT::from(format))
-            .collect(),
-        compress_interface: settings.textures_compress_interface,
-    }
-}
-
-/// The version a profile writes Meshes as (`meshesFileVersion`, `meshesUser`,
-/// `meshesStream`), which C++ handed nifly through `SetFile`, `SetUser` and
-/// `SetStream`.
-fn mesh_target(settings: &ProfileSettings) -> NifVersion {
-    NifVersion {
-        file: settings.meshes_file_version,
-        user: settings.meshes_user,
-        stream: settings.meshes_stream,
     }
 }
 
@@ -471,8 +395,8 @@ struct OptimizerBackendFactory {
     /// headpart scan walks whole, and this run's copy of the app directory's
     /// `hkxcmd.exe`.
     work: RunWorkSettings,
-    /// The profile Preparing read, which the backend's Texture profile, Mesh
-    /// target and custom Headpart Meshes come from.
+    /// The profile Preparing read, which the backend's `TextureProfile`, Mesh
+    /// Target and custom Headpart Meshes come from.
     profile: Arc<PreparedProfile>,
 }
 
@@ -609,7 +533,7 @@ mod tests {
                 hkxcmd: Hkxcmd::in_app_dir(&app_dir),
             },
             profile: Arc::new(PreparedProfile {
-                settings: Arc::new(profile.load_settings_checked().unwrap()),
+                settings: Arc::new(profile.load_settings().unwrap()),
                 custom_headparts: Vec::new(),
             }),
         };
