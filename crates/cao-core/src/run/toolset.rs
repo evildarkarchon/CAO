@@ -14,8 +14,9 @@
 //! preflight ([`RunToolset::preflight_archives`]), extracting one planned
 //! Archive ([`RunToolset::extract_archive`]) and Archive Finalization
 //! ([`RunToolset::finalize_archives`]). Each calls a crate-private work
-//! function over the seams and the run's Capacity Check; the executor keeps
-//! every Run Evidence write.
+//! function over the seams and the run's Capacity Check. The executor keeps
+//! every Run Evidence write except Archive Finalization's, which writes only
+//! its own phase, through the phase handle the executor opens and hands it.
 //!
 //! The Run Executor runs every work phase over it: Archive discovery and the
 //! Capacity Check through the Archive reader and the volume probe, then, in
@@ -50,7 +51,7 @@ use crate::run::archives::{self, Preflight, RootArchives, preflight};
 use crate::run::capacity::{CapacityCheck, FrozenVolumes};
 use crate::run::finalization;
 use crate::run::{
-    ArchiveExtractionPlan, ArchiveExtractionResult, ArchiveFinalizationRecorder,
+    ArchiveExtractionPlan, ArchiveExtractionResult, ArchiveFinalizationHandle,
     ArchiveFinalizationSettings, ArchivePacker, ArchivePrecedence, ArchiveReader,
     CancellationToken, RunDiagnostic, RunPreparation, SourceCleanup, TemporaryArtifactRegistry,
     VolumeProbe,
@@ -243,7 +244,8 @@ impl RunToolset {
 
     /// Runs Archive Finalization with [`finalization::finalize_archives`]
     /// over the seams and the run's Capacity Check with the run's
-    /// finalization settings, recording through `recorder`.
+    /// finalization settings, handing it `phase`, the just-opened Archive
+    /// Finalization phase, which it plans and finishes.
     ///
     /// Archive Finalization contains its own panics as an Unexpected
     /// Exception, so callers need no second layer.
@@ -254,7 +256,7 @@ impl RunToolset {
     pub(crate) fn finalize_archives(
         &self,
         preparation: &RunPreparation,
-        recorder: &mut ArchiveFinalizationRecorder<'_, '_>,
+        phase: ArchiveFinalizationHandle<'_, '_>,
         artifacts: &mut TemporaryArtifactRegistry,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(), Error> {
@@ -263,7 +265,7 @@ impl RunToolset {
             &self.capacity_check(),
             &self.settings.finalization,
             preparation,
-            recorder,
+            phase,
             artifacts,
             cancelled,
         )

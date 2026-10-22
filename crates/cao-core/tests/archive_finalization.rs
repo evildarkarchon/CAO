@@ -2291,24 +2291,31 @@ fn deviation_21_separate_texture_games_never_merge_textures() {
 ///
 /// The after-plan failure is a packer whose name listing panics once
 /// planning is done, in Loading Plugin maintenance: a panicking volume query
-/// is an unknown volume, not a failure (#592). The root holds only an
-/// existing Archive, so it plans no output and nothing is mutated before
-/// maintenance fails.
+/// is an unknown volume, not a failure (#592). The root holds a Loose Asset
+/// beside an existing Archive, so it plans one output, which commits before
+/// maintenance fails; that streamed attempt survives in the result beside
+/// the phase-level failure.
 ///
 /// The in-planning failure is the same packer panicking at planning's first
-/// listing. C++ used a missing Mod Root, which Preparing now rejects before
-/// any run reaches the phase (#597).
+/// listing, before any output total or attempt. C++ used a missing Mod Root,
+/// which Preparing now rejects before any run reaches the phase (#597).
 #[test]
 fn an_unexpected_failure_is_recorded_once() {
     for after_plan in [false, true] {
         let parent = scratch(&format!("unexpected-{after_plan}"));
         let root = parent.join("mod");
         let source = root.join("existing.bsa");
+        let loose = root.join("textures/asset.dds");
         write_file(&source, b"retained archive");
+        write_file(&loose, b"source bytes");
         let finalizer = Finalizer {
-            // Planning lists the root's Archives and then its Plugins;
-            // maintenance's first listing panics. Before the plan, planning's
-            // own first listing panics.
+            settings: ArchiveFinalizationSettings {
+                compress: false,
+                ..ArchiveFinalizationSettings::default()
+            },
+            // Planning lists the root's Archives and then its Plugins; the
+            // output attempt lists nothing, so maintenance's first listing
+            // panics. Before the plan, planning's own first listing panics.
             packer: FakeArchivePacker::panicking_list_names_beyond(if after_plan { 2 } else { 0 }),
             ..Finalizer::default()
         };
@@ -2321,16 +2328,24 @@ fn an_unexpected_failure_is_recorded_once() {
         );
         assert!(!result.safe_to_continue);
         assert!(!result.detail.is_empty());
+        assert_eq!(std::fs::read(&source).unwrap(), b"retained archive");
+        assert!(!root.join("existing.esp").exists(), "no Dummy Plugin");
         if after_plan {
             assert_eq!(result.detail, "the archive name listing panicked");
-            assert_eq!(run.progress().unwrap().total(), 0);
+            let progress = run.progress().unwrap();
+            assert_eq!((progress.total(), progress.completed()), (1, 1));
+            assert_eq!(result.attempts.len(), 1, "the streamed attempt survives");
+            let packed = &result.attempts[0];
+            assert!(packed.succeeded(), "{:?}", packed.outcome);
+            assert_eq!(packed.outcome.mutation(), MutationState::Committed);
+            assert!(reads_back(&packed.archive_path));
+            assert_eq!(archives_in(&root).len(), 2);
         } else {
             assert_eq!(run.progress(), None);
+            assert!(result.attempts.is_empty());
+            assert_eq!(std::fs::read(&loose).unwrap(), b"source bytes");
+            assert_eq!(archives_in(&root), std::slice::from_ref(&source));
         }
-        assert!(result.attempts.is_empty());
-        assert_eq!(std::fs::read(&source).unwrap(), b"retained archive");
-        assert_eq!(archives_in(&root), std::slice::from_ref(&source));
-        assert!(!root.join("existing.esp").exists(), "no Dummy Plugin");
         assert!(run.cleaned_up());
     }
 }
