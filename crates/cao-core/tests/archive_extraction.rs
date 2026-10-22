@@ -130,8 +130,8 @@ fn the_capacity_check_is_repeated_before_staging() {
         let (result, _) = run_extraction(&root, probing(probe), || {});
 
         let attempt = only_attempt(&result);
-        assert_eq!(attempt.succeeded(), unknown, "{}", attempt.detail);
-        assert!(attempt.safe_to_continue);
+        assert_eq!(attempt.succeeded(), unknown, "{:?}", attempt.outcome);
+        assert!(attempt.safe_to_continue());
         let kept = if unknown {
             backup_of(&archive)
         } else {
@@ -140,10 +140,10 @@ fn the_capacity_check_is_repeated_before_staging() {
         assert_eq!(std::fs::read(&kept).unwrap(), original);
         if !unknown {
             assert_eq!(
-                attempt.failure,
+                attempt.outcome.failure().map(|failure| failure.category()),
                 Some(ArchiveExtractionFailure::InsufficientCapacity)
             );
-            assert_eq!(attempt.mutation, MutationState::None);
+            assert_eq!(attempt.outcome.mutation(), MutationState::None);
             assert!(!root.join(".cao-staging").exists());
             assert!(!root.join("textures").exists());
         }
@@ -173,10 +173,13 @@ fn a_panicking_capacity_probe_in_the_recheck_is_unknown_capacity() {
     let (result, _) = run_extraction(&root, probing(probe), || {});
 
     let attempt = only_attempt(&result);
-    assert!(attempt.succeeded(), "{}", attempt.detail);
-    assert_eq!(attempt.failure, None);
-    assert_eq!(attempt.mutation, MutationState::Committed);
-    assert!(attempt.safe_to_continue);
+    assert!(attempt.succeeded(), "{:?}", attempt.outcome);
+    assert_eq!(
+        attempt.outcome.failure().map(|failure| failure.category()),
+        None
+    );
+    assert_eq!(attempt.outcome.mutation(), MutationState::Committed);
+    assert!(attempt.safe_to_continue());
     assert_eq!(
         std::fs::read(root.join("textures/fixture.dds")).unwrap(),
         b"fixture"
@@ -199,11 +202,11 @@ fn a_source_lost_after_preflight_commits_nothing() {
 
     let attempt = only_attempt(&result);
     assert_eq!(
-        attempt.failure,
+        attempt.outcome.failure().map(|failure| failure.category()),
         Some(ArchiveExtractionFailure::ExtractionFailed)
     );
-    assert_eq!(attempt.mutation, MutationState::None);
-    assert!(attempt.safe_to_continue);
+    assert_eq!(attempt.outcome.mutation(), MutationState::None);
+    assert!(attempt.safe_to_continue());
     assert!(!root.join("textures").exists());
     assert!(result.cleanup_failures().is_empty());
 }
@@ -221,8 +224,8 @@ fn a_staged_payload_commits_and_the_source_archive_is_kept() {
     let (result, _) = run_extraction(&root, ScriptedToolset::default(), || {});
 
     let attempt = only_attempt(&result);
-    assert!(attempt.succeeded(), "{}", attempt.detail);
-    assert_eq!(attempt.mutation, MutationState::Committed);
+    assert!(attempt.succeeded(), "{:?}", attempt.outcome);
+    assert_eq!(attempt.outcome.mutation(), MutationState::Committed);
     // The run's Safety Cleanup has already run.
     assert!(result.cleanup_failures().is_empty());
     assert_eq!(std::fs::read(root.join("textures/a.dds")).unwrap(), b"B");
@@ -240,7 +243,7 @@ fn extraction_publishes_beneath_the_existing_parent_casing() {
     let (result, _) = run_extraction(&root, ScriptedToolset::default(), || {});
 
     let attempt = only_attempt(&result);
-    assert!(attempt.succeeded(), "{}", attempt.detail);
+    assert!(attempt.succeeded(), "{:?}", attempt.outcome);
     let parents: Vec<_> = std::fs::read_dir(&root)
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
@@ -268,12 +271,19 @@ fn a_reader_panicking_before_any_commit_is_a_safe_failure() {
 
     let attempt = only_attempt(&result);
     assert_eq!(
-        attempt.failure,
+        attempt.outcome.failure().map(|failure| failure.category()),
         Some(ArchiveExtractionFailure::ExtractionFailed)
     );
-    assert_eq!(attempt.mutation, MutationState::None);
-    assert!(attempt.safe_to_continue);
-    assert!(attempt.detail.contains("the archive library panicked"));
+    assert_eq!(attempt.outcome.mutation(), MutationState::None);
+    assert!(attempt.safe_to_continue());
+    assert!(
+        attempt
+            .outcome
+            .failure()
+            .expect("an Operation Failure")
+            .detail()
+            .contains("the archive library panicked")
+    );
     assert!(!root.join("textures").exists());
     assert!(archive.exists());
     assert!(
@@ -303,12 +313,19 @@ fn a_manifest_changed_after_preflight_fails_before_any_merge() {
 
     let attempt = only_attempt(&result);
     assert_eq!(
-        attempt.failure,
+        attempt.outcome.failure().map(|failure| failure.category()),
         Some(ArchiveExtractionFailure::ExtractionFailed)
     );
-    assert_eq!(attempt.mutation, MutationState::None);
-    assert!(attempt.safe_to_continue);
-    assert!(attempt.detail.contains("changed after preflight"));
+    assert_eq!(attempt.outcome.mutation(), MutationState::None);
+    assert!(attempt.safe_to_continue());
+    assert!(
+        attempt
+            .outcome
+            .failure()
+            .expect("an Operation Failure")
+            .detail()
+            .contains("changed after preflight")
+    );
     assert!(archive.exists());
     assert!(!root.join("textures").exists());
     assert!(result.cleanup_failures().is_empty());
@@ -356,8 +373,8 @@ fn every_attempt_releases_the_reader_before_returning() {
         assert_eq!(
             attempt.succeeded(),
             row == Ending::Succeeded,
-            "{row:?}: {}",
-            attempt.detail
+            "{row:?}: {:?}",
+            attempt.outcome
         );
         assert_eq!(toolset.reader.releases.load(Ordering::SeqCst), 1, "{row:?}");
         assert!(result.cleanup_failures().is_empty(), "{row:?}");

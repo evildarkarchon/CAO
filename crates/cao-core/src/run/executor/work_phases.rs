@@ -497,8 +497,9 @@ enum ExtractionStop {
 /// An attempt in flight always finishes, so cancellation never leaves a
 /// partial Archive. Extraction contains its own panics, classified by how
 /// far the attempt got, so it is called without a second layer.
-/// `PartialOrUnknown` mutation is unsafe even when the attempt claims
-/// otherwise, and stops extraction. Returns `None` when every plan was
+/// Extraction stops after any attempt whose Attempt Outcome is not safe to
+/// continue, so `PartialOrUnknown` mutation stops it even when the attempt
+/// claims otherwise. Returns `None` when every plan was
 /// attempted and the run may continue.
 fn extract_archives(
     plans: &[ArchiveExtractionPlan],
@@ -517,9 +518,10 @@ fn extract_archives(
             return Ok(Some(ExtractionStop::Cancelled));
         }
         let mut attempt = toolset.extract_archive(plan, artifacts);
-        // The attempt's own continuation claim is retained for diagnosis, but
+        // The attempt's own continuation claim is retained in its Attempt
+        // Outcome for diagnosis, but the stop follows the shared verdict, so
         // partial mutation stops the run regardless.
-        let unsafe_attempt = attempt.is_unsafe();
+        let unsafe_attempt = !attempt.safe_to_continue();
         attempt.mod_root = plan.mod_root.clone();
         evidence.record_archive_extraction_attempt(attempt)?;
         if unsafe_attempt {

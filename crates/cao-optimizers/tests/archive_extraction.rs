@@ -181,17 +181,21 @@ fn source_cleanup_row(row: CleanupRow) {
 
     let extracted = row.valid_archive;
     let cleaned = extracted && !row.block_source_cleanup;
-    assert_eq!(result.succeeded(), cleaned, "{name}: {}", result.detail);
+    assert_eq!(result.succeeded(), cleaned, "{name}: {:?}", result.outcome);
     assert_eq!(source.exists(), !cleaned, "{name}");
     assert_eq!(root.join(FIXTURE).exists(), extracted, "{name}");
     if row.block_source_cleanup {
         assert_eq!(
-            result.failure,
+            result.outcome.failure().map(|failure| failure.category()),
             Some(ArchiveExtractionFailure::SourceCleanupFailed),
             "{name}"
         );
-        assert_eq!(result.mutation, MutationState::Committed, "{name}");
-        assert!(result.safe_to_continue, "{name}");
+        assert_eq!(
+            result.outcome.mutation(),
+            MutationState::Committed,
+            "{name}"
+        );
+        assert!(result.safe_to_continue(), "{name}");
     }
     assert_eq!(std::fs::read(&backup).unwrap(), b"existing backup bytes");
     if !row.valid_archive || !row.delete_backup || row.block_source_cleanup {
@@ -246,7 +250,7 @@ fn a_linked_source_is_not_extracted_or_cleaned() {
         });
 
         let result = only_attempt(&run);
-        assert!(result.failure.is_some());
+        assert!(!result.succeeded());
         assert!(source.symlink_metadata().unwrap().is_symlink());
         assert!(target.exists());
         assert!(!root.join(FIXTURE).exists());
@@ -413,7 +417,7 @@ fn an_sse_apply_extracts_a_bsa_then_backs_up_or_deletes_its_source() {
         );
         let attempts = result.archive_extraction_attempts();
         assert_eq!(attempts.len(), 1);
-        assert_eq!(attempts[0].mutation, MutationState::Committed);
+        assert_eq!(attempts[0].outcome.mutation(), MutationState::Committed);
         assert_eq!(
             std::fs::read(mod_root.join("textures/shared.dds")).unwrap(),
             b"loose bytes",
@@ -468,7 +472,7 @@ fn an_sse_apply_packs_what_it_extracted_into_an_archive_at_the_sources_name() {
     let [extraction] = result.archive_extraction_attempts() else {
         panic!("one extraction attempt");
     };
-    assert_eq!(extraction.mutation, MutationState::Committed);
+    assert_eq!(extraction.outcome.mutation(), MutationState::Committed);
     let finalization = result.archive_finalization().unwrap();
     assert_eq!(finalization.failure, None, "{}", finalization.detail);
     let [packing] = finalization.attempts.as_slice() else {

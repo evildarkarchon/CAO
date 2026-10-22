@@ -503,8 +503,8 @@ fn the_terminal_result_lists_its_evidence() {
             result.archive_extraction_attempts()
         );
     };
-    assert_eq!(winner.mutation, MutationState::Committed);
-    assert!(!shadowed.succeeded() && shadowed.safe_to_continue);
+    assert_eq!(winner.outcome.mutation(), MutationState::Committed);
+    assert!(!shadowed.succeeded() && shadowed.safe_to_continue());
     let finalization = result.archive_finalization().unwrap();
     let [packed] = finalization.attempts.as_slice() else {
         panic!("one output: {finalization:?}");

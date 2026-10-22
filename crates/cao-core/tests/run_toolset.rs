@@ -223,7 +223,7 @@ fn an_apply_run_extracts_archives_through_the_toolset_before_routing() {
     };
     assert_eq!(extraction.archive_path, root.join("content.bsa"));
     assert_eq!(extraction.mod_root, root);
-    assert_eq!(extraction.mutation, MutationState::Committed);
+    assert_eq!(extraction.outcome.mutation(), MutationState::Committed);
     assert!(
         root.join("content.bsa.bak").exists(),
         "the source is backed up"
@@ -275,12 +275,19 @@ fn a_reader_panicking_while_staging_is_a_safe_failed_extraction() {
         panic!("one extraction attempt");
     };
     assert_eq!(
-        attempt.failure,
+        attempt.outcome.failure().map(|failure| failure.category()),
         Some(ArchiveExtractionFailure::ExtractionFailed)
     );
-    assert_eq!(attempt.mutation, MutationState::None);
-    assert!(attempt.safe_to_continue);
-    assert!(attempt.detail.contains("the archive library panicked"));
+    assert_eq!(attempt.outcome.mutation(), MutationState::None);
+    assert!(attempt.safe_to_continue());
+    assert!(
+        attempt
+            .outcome
+            .failure()
+            .expect("an Operation Failure")
+            .detail()
+            .contains("the archive library panicked")
+    );
     assert!(source.exists(), "a failed extraction keeps its source");
     assert!(!root.join("textures/extracted.dds").exists());
     assert_eq!(
@@ -332,9 +339,12 @@ fn an_extraction_left_partial_is_unknown_mutation_that_stops_the_run() {
     let [attempt] = result.archive_extraction_attempts() else {
         panic!("one extraction attempt");
     };
-    assert_eq!(attempt.failure, Some(ArchiveExtractionFailure::MergeFailed));
-    assert_eq!(attempt.mutation, MutationState::PartialOrUnknown);
-    assert!(!attempt.safe_to_continue);
+    assert_eq!(
+        attempt.outcome.failure().map(|failure| failure.category()),
+        Some(ArchiveExtractionFailure::MergeFailed)
+    );
+    assert_eq!(attempt.outcome.mutation(), MutationState::PartialOrUnknown);
+    assert!(!attempt.safe_to_continue());
     assert!(
         result.failures().is_empty(),
         "contained by Archive extraction"
@@ -611,7 +621,7 @@ fn an_apply_run_extracts_and_finalizes_for_real() {
     let [extraction] = result.archive_extraction_attempts() else {
         panic!("one extraction attempt");
     };
-    assert_eq!(extraction.mutation, MutationState::Committed);
+    assert_eq!(extraction.outcome.mutation(), MutationState::Committed);
     assert!(
         root.join("content.bsa.bak").exists(),
         "the source is backed up, as the production default cleanup does"

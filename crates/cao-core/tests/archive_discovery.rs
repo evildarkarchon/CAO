@@ -1120,7 +1120,7 @@ fn extraction_adds_archived_assets_without_replacing_a_loose_asset() {
     // Only the unshadowed entry is merged: publishing the shadowed one over
     // the Loose Asset would have failed the attempt.
     let attempt = attempt_for(&result, "content.bsa");
-    assert!(attempt.succeeded(), "{}", attempt.detail);
+    assert!(attempt.succeeded(), "{:?}", attempt.outcome);
     assert_eq!(std::fs::read_dir(root.join("textures")).unwrap().count(), 2);
     assert_eq!(toolset.attempted().len(), 2);
     let summary = &result.mutation_summaries()[0];
@@ -1155,11 +1155,14 @@ fn a_loose_asset_created_after_preflight_blocks_the_merge() {
     // publication is what fails.
     let attempt = attempt_for(&result, "source.bsa");
     assert_eq!(
-        attempt.failure,
+        attempt.outcome.failure().map(|failure| failure.category()),
         Some(cao_core::run::ArchiveExtractionFailure::MergeFailed)
     );
-    assert_eq!(attempt.mutation, cao_core::execution::MutationState::None);
-    assert!(attempt.safe_to_continue);
+    assert_eq!(
+        attempt.outcome.mutation(),
+        cao_core::execution::MutationState::None
+    );
+    assert!(attempt.safe_to_continue());
     assert_eq!(std::fs::read(&loose).unwrap(), b"late loose");
     assert!(root.join("source.bsa").exists());
     assert!(result.cleanup_failures().is_empty());
@@ -1198,13 +1201,13 @@ fn frozen_precedence_survives_a_failed_winner_or_a_vanished_loose_asset() {
         assert!(result.failures().is_empty(), "{:?}", result.failures());
         let attempts = result.archive_extraction_attempts();
         assert_eq!(attempts.len(), 2);
-        assert_eq!(attempts[0].succeeded(), loose, "{}", attempts[0].detail);
-        assert!(attempts[0].safe_to_continue);
-        assert!(attempts[1].succeeded(), "{}", attempts[1].detail);
+        assert_eq!(attempts[0].succeeded(), loose, "{:?}", attempts[0].outcome);
+        assert!(attempts[0].safe_to_continue());
+        assert!(attempts[1].succeeded(), "{:?}", attempts[1].outcome);
         // The shadowed Archive merges nothing, but its successful extraction
         // still backs up its source, which is its Committed Mutation.
         assert_eq!(
-            attempts[1].mutation,
+            attempts[1].outcome.mutation(),
             cao_core::execution::MutationState::Committed
         );
         assert!(!root.join("textures/a.dds").exists());
@@ -1285,17 +1288,20 @@ fn every_attempt_repeats_containment_after_a_safe_rejection() {
     for name in ["a.bsa", "b.bsa"] {
         let attempt = attempt_for(&result, name);
         assert_eq!(
-            attempt.failure,
+            attempt.outcome.failure().map(|failure| failure.category()),
             Some(cao_core::run::ArchiveExtractionFailure::MergeFailed),
             "{name}"
         );
-        assert_eq!(attempt.mutation, cao_core::execution::MutationState::None);
-        assert!(attempt.safe_to_continue);
+        assert_eq!(
+            attempt.outcome.mutation(),
+            cao_core::execution::MutationState::None
+        );
+        assert!(attempt.safe_to_continue());
     }
     let merged = attempt_for(&result, "c.bsa");
-    assert!(merged.succeeded(), "{}", merged.detail);
+    assert!(merged.succeeded(), "{:?}", merged.outcome);
     assert_eq!(
-        merged.mutation,
+        merged.outcome.mutation(),
         cao_core::execution::MutationState::Committed
     );
     assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
@@ -1469,11 +1475,11 @@ fn cancellation_during_the_final_archive_skips_the_definitive_tree() {
     let attempt = attempt_for(&result, "content.bsa");
     assert!(
         attempt.succeeded(),
-        "the in-flight Archive finished: {}",
-        attempt.detail
+        "the in-flight Archive finished: {:?}",
+        attempt.outcome
     );
     assert_eq!(
-        attempt.mutation,
+        attempt.outcome.mutation(),
         cao_core::execution::MutationState::Committed
     );
     assert!(root.join("textures/fixture.dds").exists());
@@ -1548,7 +1554,7 @@ fn a_contained_linked_loose_asset_still_shadows_its_archive_entry() {
     let [attempt] = result.archive_extraction_attempts() else {
         panic!("one attempt expected");
     };
-    assert!(attempt.succeeded(), "{}", attempt.detail);
+    assert!(attempt.succeeded(), "{:?}", attempt.outcome);
     assert!(still_linked, "the linked Loose Asset wins");
     assert_eq!(std::fs::read(&target).unwrap(), b"loose asset");
     assert!(backup_of(&root.join("source.bsa")).exists());
@@ -1923,18 +1929,28 @@ fn archive_failures_control_continuation() {
         let failure = &result.archive_extraction_attempts()[failed_attempt - 1];
         assert_eq!(failure.mod_root, root);
         assert!(!failure.succeeded());
-        assert_eq!(failure.safe_to_continue, !partial);
+        assert_eq!(failure.safe_to_continue(), !partial);
         if partial {
-            assert_eq!(failure.failure, Some(ArchiveExtractionFailure::MergeFailed));
-            assert_eq!(failure.mutation, MutationState::PartialOrUnknown);
+            assert_eq!(
+                failure.outcome.failure().map(|failure| failure.category()),
+                Some(ArchiveExtractionFailure::MergeFailed)
+            );
+            assert_eq!(failure.outcome.mutation(), MutationState::PartialOrUnknown);
             assert_eq!(
                 std::fs::read(root.join("a-committed.dds")).unwrap(),
                 b"committed"
             );
         } else {
-            assert_eq!(failure.mutation, MutationState::None);
+            assert_eq!(failure.outcome.mutation(), MutationState::None);
         }
-        assert!(!failure.detail.is_empty());
+        assert!(
+            !failure
+                .outcome
+                .failure()
+                .expect("an Operation Failure")
+                .detail()
+                .is_empty()
+        );
         assert!(failing.exists(), "a failed attempt keeps its source");
         assert_eq!(failure.archive_path, failing);
         let last = attempt_progress(&sink, RunPhase::ExtractingArchives)
@@ -2266,7 +2282,7 @@ fn a_committed_extraction_survives_a_later_interruption() {
     let [extraction] = result.archive_extraction_attempts() else {
         panic!("one extraction attempt");
     };
-    assert_eq!(extraction.mutation, MutationState::Committed);
+    assert_eq!(extraction.outcome.mutation(), MutationState::Committed);
     let summary = extraction_summary(&result);
     assert_eq!((summary.committed, summary.partial_or_unknown), (1, 0));
     assert_eq!(
