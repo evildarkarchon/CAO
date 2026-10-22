@@ -865,7 +865,7 @@ fn asset_attempt(asset: RoutedAsset, failed: bool) -> RoutedAssetAttempt {
         result: if failed {
             AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed, "contained")
         } else {
-            AssetExecutionResult::success(MutationState::None)
+            AssetExecutionResult::success(crate::CompletedMutation::None)
         },
     }
 }

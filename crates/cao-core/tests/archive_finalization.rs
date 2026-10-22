@@ -51,6 +51,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
+use cao_core::CompletedMutation;
 use cao_core::execution::{AssetExecutionResult, MutationState};
 use cao_core::routing::RequestedWork;
 use cao_core::run::{
@@ -1271,7 +1272,7 @@ fn staging_files_are_never_packed() {
             std::fs::write(&path, b"temporary bytes").unwrap();
             *staged = Some(path);
         }
-        Ok(AssetExecutionResult::success(MutationState::None))
+        Ok(AssetExecutionResult::success(CompletedMutation::None))
     });
     // Once the output's attempt, source deletion included, is recorded, both
     // temporaries must still be there.

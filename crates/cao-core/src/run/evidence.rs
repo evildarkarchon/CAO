@@ -917,7 +917,7 @@ fn derive_mutation_summaries(
             (
                 &attempt.mod_root,
                 MutationKind::AssetProcessing,
-                attempt.result.mutation_state(),
+                attempt.result.outcome().mutation(),
                 1,
             )
         }))
