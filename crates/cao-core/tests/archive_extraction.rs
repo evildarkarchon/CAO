@@ -140,7 +140,7 @@ fn the_capacity_check_is_repeated_before_staging() {
         assert_eq!(std::fs::read(&kept).unwrap(), original);
         if !unknown {
             assert_eq!(
-                attempt.outcome.failure().map(|failure| failure.category()),
+                attempt.outcome.failure_category(),
                 Some(ArchiveExtractionFailure::InsufficientCapacity)
             );
             assert_eq!(attempt.outcome.mutation(), MutationState::None);
@@ -174,10 +174,7 @@ fn a_panicking_capacity_probe_in_the_recheck_is_unknown_capacity() {
 
     let attempt = only_attempt(&result);
     assert!(attempt.succeeded(), "{:?}", attempt.outcome);
-    assert_eq!(
-        attempt.outcome.failure().map(|failure| failure.category()),
-        None
-    );
+    assert_eq!(attempt.outcome.failure_category(), None);
     assert_eq!(attempt.outcome.mutation(), MutationState::Committed);
     assert!(attempt.safe_to_continue());
     assert_eq!(
@@ -202,7 +199,7 @@ fn a_source_lost_after_preflight_commits_nothing() {
 
     let attempt = only_attempt(&result);
     assert_eq!(
-        attempt.outcome.failure().map(|failure| failure.category()),
+        attempt.outcome.failure_category(),
         Some(ArchiveExtractionFailure::ExtractionFailed)
     );
     assert_eq!(attempt.outcome.mutation(), MutationState::None);
@@ -271,7 +268,7 @@ fn a_reader_panicking_before_any_commit_is_a_safe_failure() {
 
     let attempt = only_attempt(&result);
     assert_eq!(
-        attempt.outcome.failure().map(|failure| failure.category()),
+        attempt.outcome.failure_category(),
         Some(ArchiveExtractionFailure::ExtractionFailed)
     );
     assert_eq!(attempt.outcome.mutation(), MutationState::None);
@@ -313,7 +310,7 @@ fn a_manifest_changed_after_preflight_fails_before_any_merge() {
 
     let attempt = only_attempt(&result);
     assert_eq!(
-        attempt.outcome.failure().map(|failure| failure.category()),
+        attempt.outcome.failure_category(),
         Some(ArchiveExtractionFailure::ExtractionFailed)
     );
     assert_eq!(attempt.outcome.mutation(), MutationState::None);

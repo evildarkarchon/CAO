@@ -510,7 +510,7 @@ fn the_terminal_result_lists_its_evidence() {
         panic!("one output: {finalization:?}");
     };
     assert_eq!(
-        packed.outcome.failure().map(|failure| failure.category()),
+        packed.outcome.failure_category(),
         Some(ArchiveFinalizationFailure::SourceCleanupFailed)
     );
     assert_eq!(packed.outcome.mutation(), MutationState::Committed);

@@ -29,6 +29,9 @@ fn failed(mutation: MutationState, claimed_safe: bool) -> AttemptOutcome<AssetEx
     )
 }
 
+/// Spec #600: every combination of success or failure, mutation state and
+/// producer claim gives the succeeded, safe-to-continue and mutation answers
+/// of the single rule, and its category-free facts agree with them.
 #[test]
 fn attempt_outcome_answers_follow_the_safe_to_continue_rule() {
     let rows = [
@@ -129,11 +132,15 @@ fn attempt_outcome_answers_follow_the_safe_to_continue_rule() {
     }
 }
 
+/// Spec #600: only a failed outcome carries an Operation Failure, and with it
+/// a failure category and presentable detail. A success, even one with a
+/// Committed Mutation, has neither.
 #[test]
 fn only_a_failed_outcome_carries_its_operation_failure_and_detail() {
     let success: AttemptOutcome<AssetExecutionFailure> =
         AttemptOutcome::success(CompletedMutation::Committed);
     assert!(success.failure().is_none());
+    assert_eq!(success.failure_category(), None);
 
     let failure = failed(MutationState::Committed, true);
     let operation_failure = failure
@@ -144,4 +151,8 @@ fn only_a_failed_outcome_carries_its_operation_failure_and_detail() {
         AssetExecutionFailure::SaveFailed
     );
     assert_eq!(operation_failure.detail(), "save failed");
+    assert_eq!(
+        failure.failure_category(),
+        Some(AssetExecutionFailure::SaveFailed)
+    );
 }
