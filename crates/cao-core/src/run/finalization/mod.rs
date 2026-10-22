@@ -23,6 +23,8 @@
 mod attempt;
 mod planning;
 mod plugins;
+#[cfg(test)]
+mod tests;
 
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::fs::MetadataExt as _;
@@ -143,16 +145,37 @@ pub struct ArchiveFinalizationResult {
     pub mutations: Vec<ArchiveFinalizationMutation>,
 }
 
-impl Default for ArchiveFinalizationResult {
-    fn default() -> Self {
+impl ArchiveFinalizationResult {
+    /// The public result of a phase that streamed `attempts` and finished
+    /// with the phase-level `account`: the one place the two halves are put
+    /// together, so the account's fields map onto the result's in one spot.
+    pub(crate) fn from_parts(
+        attempts: Vec<ArchiveFinalizationAttempt>,
+        account: ArchiveFinalizationAccount,
+    ) -> Self {
+        let ArchiveFinalizationAccount {
+            failure,
+            cancelled,
+            safe_to_continue,
+            detail,
+            mutations,
+        } = account;
         Self {
-            attempts: Vec::new(),
-            failure: None,
-            cancelled: false,
-            safe_to_continue: true,
-            detail: String::new(),
-            mutations: Vec::new(),
+            attempts,
+            failure,
+            cancelled,
+            safe_to_continue,
+            detail,
+            mutations,
         }
+    }
+}
+
+impl Default for ArchiveFinalizationResult {
+    /// No attempts, with the default phase-level account: not failed, not
+    /// cancelled and safe to continue after.
+    fn default() -> Self {
+        Self::from_parts(Vec::new(), ArchiveFinalizationAccount::default())
     }
 }
 
@@ -171,7 +194,13 @@ pub(crate) struct ArchiveFinalizationAccount {
     /// Whether the phase observed cancellation; it marks the run's
     /// cancellation observed when the phase finishes.
     pub(crate) cancelled: bool,
+    /// The phase-level verdict on whether the run may continue after the
+    /// phase: false after an unsafe output attempt, an unsafe Loading Plugin
+    /// publication, or a phase-level Unexpected Exception, whose durable
+    /// effects have no reliable boundary.
     pub(crate) safe_to_continue: bool,
+    /// What a phase-level failure reported, such as a capacity shortfall or
+    /// the escaped panic's message; empty when the phase did not fail.
     pub(crate) detail: String,
     /// Completed effects that no output attempt accounts for.
     pub(crate) mutations: Vec<ArchiveFinalizationMutation>,

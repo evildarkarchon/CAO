@@ -54,6 +54,15 @@ pub(crate) trait PhaseAttempt: sealed::Sealed {
     fn succeeded(&self) -> bool;
 }
 
+/// The attempt-bearing Run Phases, one per [`PhaseAttempt`] implementor,
+/// read from their own [`PhaseAttempt::PHASE`]s so the list cannot drift
+/// from the sealed attempt types. They execute only through their handles.
+pub(super) const ATTEMPT_BEARING_PHASES: [RunPhase; 3] = [
+    ArchiveExtractionResult::PHASE,
+    RoutedAssetAttempt::PHASE,
+    ArchiveFinalizationAttempt::PHASE,
+];
+
 impl sealed::Sealed for ArchiveExtractionResult {
     fn retain(self, storage: &mut Storage) {
         storage.archive_extraction_attempts.push(self);
@@ -127,7 +136,7 @@ impl PhaseAttempt for ArchiveFinalizationAttempt {
 /// `Drop`: closing a phase records nothing and cannot fail, so an exit path
 /// never has a closing step to forget or an error to swallow.
 ///
-/// A phase with steps of its own adds them as inherent operations on its
+/// A phase with operations of its own adds them as inherent methods on its
 /// instantiation, alongside the generic [`Self::record`].
 pub(crate) struct AttemptPhaseHandle<'e, 'a, T: PhaseAttempt> {
     evidence: &'e mut MutableRunEvidence<'a>,
