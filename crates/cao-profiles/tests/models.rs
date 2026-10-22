@@ -3,6 +3,7 @@
 
 mod common;
 
+use cao_profiles::ArchiveSize;
 use cao_profiles::{
     BsaGame, CommonSettings, FormatErrorKind, IniFile, MeshFileVersion, MeshStreamVersion,
     MeshUserVersion, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles,
@@ -22,7 +23,7 @@ fn the_shipped_tes5_profile_loads_into_the_settings_model() {
         settings,
         ProfileSettings {
             bsa_enabled: true,
-            max_bsa_uncompressed_size: 2_104_533_975.04,
+            max_bsa_uncompressed_size: ArchiveSize::from_bytes(2_104_533_975),
             bsa_game: BsaGame::Tes5,
             meshes_enabled: true,
             meshes_file_version: MeshFileVersion::V20_2_0_7,
@@ -208,19 +209,42 @@ fn a_saved_user_path_replaces_the_current_one() {
 }
 
 #[test]
-fn saving_an_unchanged_profile_ini_rewrites_the_shipped_bytes() {
+fn saving_an_unchanged_profile_ini_rewrites_the_shipped_bytes_but_the_fractional_byte() {
     // C++ writes the same keys back; `animationFormat` is dead data that neither
-    // build reads or writes, and it stays (deviation 10).
-    for name in ["FO4", "SSE", "TES5"] {
+    // build reads or writes, and it stays (deviation 10). The maximum Archive
+    // size is whole bytes, so its fraction is the one change.
+    for (name, shipped_size, saved_size) in [
+        (
+            "FO4",
+            "maxBsaUncompressedSize=4187593113.6\r\n",
+            "maxBsaUncompressedSize=4187593113\r\n",
+        ),
+        (
+            "SSE",
+            "maxBsaUncompressedSize=2104533975.04\r\n",
+            "maxBsaUncompressedSize=2104533975\r\n",
+        ),
+        (
+            "TES5",
+            "maxBsaUncompressedSize=2104533975.04\r\n",
+            "maxBsaUncompressedSize=2104533975\r\n",
+        ),
+    ] {
         let app_dir = common::copy_of_shipped(&format!("save-settings-{name}"));
         let profile = Profiles::new(&app_dir).open(name);
-        let original = common::read(&profile.profile_ini());
+        let original = String::from_utf8(common::read(&profile.profile_ini())).unwrap();
+        assert_eq!(original.matches(shipped_size).count(), 1, "{name}");
+        let expected = original.replace(shipped_size, saved_size);
         let loaded = profile.load_settings().unwrap();
 
         profile.save_settings(&loaded).unwrap();
 
         let saved = common::read(&profile.profile_ini());
-        assert!(saved == original, "{name}:\n{}", common::show(&saved));
+        assert!(
+            saved == expected.as_bytes(),
+            "{name}:\n{}",
+            common::show(&saved)
+        );
         assert_eq!(profile.load_settings().unwrap(), loaded, "{name} reloads");
     }
 }
@@ -288,7 +312,7 @@ fn saved_settings_load_back_including_a_one_element_unwanted_format_list() {
     let profile = Profiles::new(&app_dir).open("FO4");
     let mut settings = profile.load_settings().unwrap();
     settings.textures_unwanted_formats = vec![85];
-    settings.max_bsa_uncompressed_size = 2_147_483_648.0;
+    settings.max_bsa_uncompressed_size = ArchiveSize::from_bytes(2_147_483_648);
     settings.meshes_enabled = true;
 
     profile.save_settings(&settings).unwrap();
@@ -486,5 +510,8 @@ fn a_clean_profile_reads_without_error() {
 
     assert_eq!(settings.bsa_game, BsaGame::Fo4);
     assert_eq!(settings.textures_unwanted_formats, [86, 85, 115]);
-    assert_eq!(settings.max_bsa_uncompressed_size, 4_187_593_113.6);
+    assert_eq!(
+        settings.max_bsa_uncompressed_size,
+        ArchiveSize::from_bytes(4_187_593_113)
+    );
 }

@@ -1,6 +1,7 @@
 //! The settings model of a profile's `profile.ini`: the game it targets and what
 //! each Asset Kind may do under it.
 
+use crate::archive_size::ArchiveSize;
 use crate::closed::{self, ClosedSet};
 use crate::error::ProfileError;
 use crate::ini::{IniFile, Value};
@@ -62,10 +63,11 @@ pub struct ProfileSettings {
     /// The Profile Capability for Archive extraction and creation
     /// (`[BSA] bsaEnabled`); the GUI enables its Archives tab from it.
     pub bsa_enabled: bool,
-    /// The largest uncompressed Archive to create, in bytes. C++ raised it to the
+    /// The largest uncompressed Archive to create, in whole bytes
+    /// (`[BSA] maxBsaUncompressedSize`). C++ raised it to the
     /// game's archive-table maximum when that is larger; those tables live in
     /// `cao-archive`, so the composition root applies that floor.
-    pub max_bsa_uncompressed_size: f64,
+    pub max_bsa_uncompressed_size: ArchiveSize,
     /// The game whose archive naming, versions and Loading Plugin rules apply
     /// (`[BSA] bsaGame`).
     pub bsa_game: BsaGame,
@@ -103,12 +105,15 @@ impl ProfileSettings {
     /// [`ProfileError::UnsupportedBsaGame`] when `bsaGame` is not 3, 4 or 5, and
     /// [`ProfileError::UnsupportedValue`] when a Mesh Target axis is outside its
     /// closed set or missing.
+    ///
+    /// The maximum Archive size is also [`ProfileError::UnsupportedValue`] when
+    /// it is not a whole number of bytes: see [`ArchiveSize`].
     pub fn read(ini: &IniFile) -> Result<Self, ProfileError> {
         // `texturesFormat` is `toInt()` cast to an unsigned enum.
         let enum_value = |key| ini.value(key).to_i32() as u32;
         Ok(Self {
             bsa_enabled: ini.value("BSA/bsaEnabled").to_bool(),
-            max_bsa_uncompressed_size: ini.value("BSA/maxBsaUncompressedSize").to_f64(),
+            max_bsa_uncompressed_size: ArchiveSize::read(ini, "BSA/maxBsaUncompressedSize")?,
             bsa_game: BsaGame::read(ini.value("BSA/bsaGame"))?,
             meshes_enabled: ini.value("Meshes/meshesEnabled").to_bool(),
             meshes_file_version: closed::read(ini, "Meshes/meshesFileVersion")?,
@@ -133,7 +138,10 @@ impl ProfileSettings {
     /// model does not hold are left alone.
     pub fn write(&self, ini: &mut IniFile) {
         ini.set("BSA/bsaEnabled", self.bsa_enabled);
-        ini.set("BSA/maxBsaUncompressedSize", self.max_bsa_uncompressed_size);
+        ini.set(
+            "BSA/maxBsaUncompressedSize",
+            self.max_bsa_uncompressed_size.bytes().to_string(),
+        );
         ini.set("BSA/bsaGame", self.bsa_game.number());
 
         ini.set("Meshes/meshesEnabled", self.meshes_enabled);
