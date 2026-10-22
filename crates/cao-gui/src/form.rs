@@ -77,7 +77,7 @@ impl Tab {
         Tab::ALL.into_iter().find(|tab| tab.id() == id)
     }
 
-    /// Whether the Selected Profile's Profile Capabilities enable this tab, as
+    /// Whether the loaded Profile's Profile Capabilities enable this tab, as
     /// the tab bar shows it; the same answer gates the asset options
     /// [`read_options`] reads. `None` stands for a profile whose `profile.ini`
     /// could not be read, which enables no asset tab. The Log tab is always
@@ -136,7 +136,7 @@ pub(crate) fn show_choices(ui: &MainWindow) {
 
 /// A combo model holding `label` of each member of `T`, in [`ClosedSet::ALL`]
 /// order.
-fn choices<T: ClosedSet>(label: fn(T) -> &'static str) -> ModelRc<SharedString> {
+fn choices<T: ClosedSet, L: Into<SharedString>>(label: fn(T) -> L) -> ModelRc<SharedString> {
     let labels: Vec<SharedString> = T::ALL.iter().map(|&member| label(member).into()).collect();
     ModelRc::new(VecModel::from(labels))
 }
@@ -150,12 +150,14 @@ fn game_label(game: BsaGame) -> &'static str {
     }
 }
 
-/// The Version combo's text for a NIF file version: the games that use it.
-fn version_label(version: MeshFileVersion) -> &'static str {
-    match version {
-        MeshFileVersion::V20_0_0_5 => "Oblivion (V20_0_0_5)",
-        MeshFileVersion::V20_2_0_7 => "Fallout 3 / Skyrim / Skyrim SE / Fallout 4 (V20_2_0_7)",
-    }
+/// The Version combo's text for a NIF file version: the games that use it,
+/// then the version as nifly names it (`V20_2_0_7`).
+fn version_label(version: MeshFileVersion) -> String {
+    let games = match version {
+        MeshFileVersion::V20_0_0_5 => "Oblivion",
+        MeshFileVersion::V20_2_0_7 => "Fallout 3 / Skyrim / Skyrim SE / Fallout 4",
+    };
+    format!("{games} (V{})", version.dotted().replace('.', "_"))
 }
 
 /// The User combo's text for a NIF user version: the games that use it.
@@ -178,14 +180,15 @@ fn stream_label(stream: MeshStreamVersion) -> &'static str {
 
 /// The Output format combo's text for a Texture format: its kind, then its
 /// `DXGI_FORMAT` name.
-fn output_format_label(format: TextureFormat) -> &'static str {
-    match format {
-        TextureFormat::Bc7Unorm => "BC7 (BC7_UNORM)",
-        TextureFormat::Bc5Unorm => "BC5 (BC5_UNORM)",
-        TextureFormat::Bc3Unorm => "BC3 (BC3_UNORM)",
-        TextureFormat::Bc1Unorm => "BC1 (BC1_UNORM)",
-        TextureFormat::R8G8B8A8Unorm => "Uncompressed (R8G8B8A8_UNORM)",
-    }
+fn output_format_label(format: TextureFormat) -> String {
+    let kind = match format {
+        TextureFormat::Bc7Unorm => "BC7",
+        TextureFormat::Bc5Unorm => "BC5",
+        TextureFormat::Bc3Unorm => "BC3",
+        TextureFormat::Bc1Unorm => "BC1",
+        TextureFormat::R8G8B8A8Unorm => "Uncompressed",
+    };
+    format!("{kind} ({})", format.name())
 }
 
 /// The combo index of `member`, which [`show_choices`] gave an item.
@@ -262,7 +265,7 @@ pub(crate) fn show_options(ui: &MainWindow, options: &Options) {
 /// last loaded, which keep what the window does not show (`bBsaProcessContent`,
 /// and the mesh level when no level radio is checked).
 ///
-/// `capabilities` are the Selected Profile's Profile Capabilities, or `None`
+/// `capabilities` are the loaded Profile's Profile Capabilities, or `None`
 /// when its `profile.ini` could not be read. Known capabilities gate the asset
 /// options: those on a tab the profile does not support read as off. Unknown
 /// capabilities keep every BSA, Texture, Mesh and Animation option of `current`,
@@ -283,10 +286,10 @@ pub(crate) fn read_options(
     // An unreadable profile shows every asset tab disabled, which the gating
     // below would read as "every option off" and so wipe `settings.ini`. Not
     // knowing what the profile can do is no reason to forget what it had.
-    if capabilities.is_none() {
+    let Some(capabilities) = capabilities else {
         return options;
-    }
-    let tab = |tab: Tab| tab.enabled_by(capabilities);
+    };
+    let tab = |tab: Tab| tab.enabled_by(Some(capabilities));
 
     // The base group is disabled while Dry Run is on (`rules.rs`), and C++
     // reads every BSA option as off while the tab or that group is disabled.
@@ -390,16 +393,15 @@ pub(crate) fn read_settings(ui: &MainWindow, current: &ProfileSettings) -> Profi
     }
     settings.textures_convert_tga = textures.get_tga_conversion();
     settings.textures_compress_interface = textures.get_compress_interface();
-    // C++ maps the listed names back, dropping repeats and names it does not know.
-    let mut unwanted = Vec::new();
-    for name in textures.get_unwanted().iter() {
-        if let Some(format) = UnwantedFormat::from_name(&name)
-            && !unwanted.contains(&format)
-        {
-            unwanted.push(format);
-        }
-    }
-    settings.textures_unwanted_formats = unwanted;
+    // The list only ever holds names `show_settings` and the dialog put there,
+    // so every name maps back; a repeat is dropped by the same rule the read of
+    // `profile.ini` applies, so the saved list loads back unchanged.
+    settings.textures_unwanted_formats = UnwantedFormat::first_occurrences(
+        textures
+            .get_unwanted()
+            .iter()
+            .filter_map(|name| UnwantedFormat::from_name(&name)),
+    );
     settings
 }
 

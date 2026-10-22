@@ -433,7 +433,8 @@ fn a_format_error_is_reported_before_an_out_of_set_mesh_or_texture_value() {
 fn a_missing_capability_or_texture_switch_loads_as_false() {
     // Each bool key is checked on its own: removing it from the shipped SSE
     // Profile, where every one of them is `true`, turns only that field off.
-    let switches: [(&str, fn(&mut ProfileSettings) -> &mut bool); 6] = [
+    type Switch = fn(&mut ProfileSettings) -> &mut bool;
+    let switches: [(&str, Switch); 6] = [
         ("bsaEnabled", |settings| &mut settings.bsa_enabled),
         ("meshesEnabled", |settings| &mut settings.meshes_enabled),
         ("animationsEnabled", |settings| {
