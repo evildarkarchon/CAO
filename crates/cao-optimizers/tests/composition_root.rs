@@ -33,10 +33,7 @@ use directxtex::{
 #[test]
 fn invalid_option_values_are_rejected_before_any_run() {
     let app = app_dir("invalid-options");
-    let base = || Options {
-        user_path: app.join("mods/Mod").to_string_lossy().into_owned(),
-        ..Options::default()
-    };
+    let base = || single_mod_options(&app);
     let mut cases: Vec<(&str, Options)> = Vec::new();
     let mut add = |name, change: &dyn Fn(&mut Options)| {
         let mut options = base();
@@ -80,10 +77,9 @@ fn an_odd_target_size_is_accepted_while_resizing_by_size_is_off() {
     // Deviation 18: C++ rejected an odd width even when it was never used.
     let app = app_dir("odd-size-unused");
     let options = Options {
-        user_path: app.join("mods/Mod").to_string_lossy().into_owned(),
         textures_resize_size: false,
         textures_target_width: 513,
-        ..Options::default()
+        ..single_mod_options(&app)
     };
     assert!(run_request("SSE", &options).is_ok());
 }
@@ -131,10 +127,7 @@ fn the_request_owns_the_caller_intent() {
 #[test]
 fn a_default_options_form_carries_the_default_work_choices() {
     let app = app_dir("default-work-choices");
-    let options = Options {
-        user_path: app.join("mods/Mod").to_string_lossy().into_owned(),
-        ..Options::default()
-    };
+    let options = single_mod_options(&app);
 
     let request = run_request("SSE", &options).unwrap();
 
@@ -145,7 +138,6 @@ fn a_default_options_form_carries_the_default_work_choices() {
 fn the_request_carries_the_forms_work_choices_with_ratio_winning() {
     let app = app_dir("chosen-work-choices");
     let options = Options {
-        user_path: app.join("mods/Mod").to_string_lossy().into_owned(),
         textures_necessary: false,
         textures_compress: true,
         textures_mipmaps: true,
@@ -165,7 +157,7 @@ fn the_request_carries_the_forms_work_choices_with_ratio_winning() {
         bsa_create_dummies: false,
         bsa_merge_incompressible: false,
         bsa_merge_textures: true,
-        ..Options::default()
+        ..single_mod_options(&app)
     };
 
     let request = run_request("SSE", &options).unwrap();
@@ -202,11 +194,10 @@ fn an_odd_target_size_is_rejected_even_when_resizing_by_ratio_wins() {
     // wins and the size is never used.
     let app = app_dir("odd-size-ratio-wins");
     let options = Options {
-        user_path: app.join("mods/Mod").to_string_lossy().into_owned(),
         textures_resize_ratio: true,
         textures_resize_size: true,
         textures_target_width: 513,
-        ..Options::default()
+        ..single_mod_options(&app)
     };
 
     let error = run_request("SSE", &options).unwrap_err();
@@ -222,11 +213,10 @@ fn an_odd_target_size_is_rejected_even_when_resizing_by_ratio_wins() {
 fn resizing_by_size_alone_carries_the_target_size() {
     let app = app_dir("size-work-choice");
     let options = Options {
-        user_path: app.join("mods/Mod").to_string_lossy().into_owned(),
         textures_resize_size: true,
         textures_target_width: 1024,
         textures_target_height: 512,
-        ..Options::default()
+        ..single_mod_options(&app)
     };
 
     let request = run_request("SSE", &options).unwrap();
@@ -241,9 +231,8 @@ fn resizing_by_size_alone_carries_the_target_size() {
 fn disabled_texture_work_does_not_request_profile_conversion() {
     let app = app_dir("no-texture-work");
     let options = Options {
-        user_path: app.join("mods/Mod").to_string_lossy().into_owned(),
         textures_necessary: false,
-        ..Options::default()
+        ..single_mod_options(&app)
     };
     let request = run_request("SSE", &options).unwrap();
     assert!(!request.has_requested_work());
@@ -424,10 +413,19 @@ fn several_mods_excludes_separators_and_ignored_mods_from_the_shipped_profile() 
     assert_eq!(snapshot_tree(&app), before, "Dry Run never mutates");
 }
 
-/// The Run Request `run_request` builds from the options `options_of` saves,
-/// under the profile identity `profile`.
-fn saved_request(app: &Path, options_of: &str, profile: &str) -> RunRequest {
-    run_request(profile, &profile_options(app, options_of)).unwrap()
+/// The Run Request `run_request` builds under the profile identity `profile`
+/// from the options saved in the `settings.ini` of the profile
+/// `saved_options_profile`, which need not be `profile`.
+fn saved_request(app: &Path, saved_options_profile: &str, profile: &str) -> RunRequest {
+    run_request(profile, &profile_options(app, saved_options_profile)).unwrap()
+}
+
+/// The default options form over the single mod folder `app/mods/Mod`.
+fn single_mod_options(app: &Path) -> Options {
+    Options {
+        user_path: app.join("mods/Mod").to_string_lossy().into_owned(),
+        ..Options::default()
+    }
 }
 
 /// The Selected Profile the production provider loads from the shipped FO4
