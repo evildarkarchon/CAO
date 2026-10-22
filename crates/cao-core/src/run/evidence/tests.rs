@@ -22,6 +22,7 @@
 //! tests, so they keep driving the store directly.
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::MutableRunEvidence;
@@ -29,6 +30,7 @@ use crate::Error;
 use crate::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use crate::routing::{
     AssetRouter, ExecutionMode, RequestedWork, RoutedAsset, RoutingLedger, RoutingPolicyRequest,
+    SkipReason,
 };
 use crate::run::{
     ArchiveDiscoveryEvidence, ArchiveExtractionFailure, ArchiveExtractionResult,
@@ -792,6 +794,151 @@ fn a_panicking_publication_is_claimed_once_and_never_retried() {
     }
 }
 
+/// Evidence whose current Run Phase is `phase`, entered from Preparing
+/// through the general phase transition.
+fn in_phase(phase: RunPhase) -> MutableRunEvidence<'static> {
+    let mut evidence = MutableRunEvidence::new(None);
+    evidence
+        .record_phase(executed(RunPhase::Preparing))
+        .unwrap();
+    if phase != RunPhase::Preparing {
+        evidence.record_phase(executed(phase)).unwrap();
+    }
+    evidence
+}
+
+/// One skipped Archive count, as an Archive pass might establish it.
+fn skipped_archives(reason: SkipReason, count: usize) -> BTreeMap<SkipReason, usize> {
+    BTreeMap::from([(reason, count)])
+}
+
+/// Each Archive discovery fact is accepted only while Archive discovery is
+/// the current Run Phase: from Discovering Archives through Building
+/// Effective Asset Tree.
+#[test]
+fn archive_discovery_facts_are_rejected_outside_archive_discovery() {
+    const SKIPPED: &str = "Skipped Archive counts must be recorded during Archive discovery";
+    const NESTED: &str = "The nested Archive count must be recorded during Archive discovery";
+    for phase in [RunPhase::Preparing, RunPhase::SafetyCleanup] {
+        let mut evidence = in_phase(phase);
+        assert_eq!(
+            invariant(
+                evidence
+                    .record_skipped_archive_counts(skipped_archives(SkipReason::DisabledPhase, 1))
+            ),
+            Some(SKIPPED),
+            "skipped Archive counts during {phase:?}"
+        );
+        assert_eq!(
+            invariant(evidence.record_nested_archive_count(1)),
+            Some(NESTED),
+            "a nested Archive count during {phase:?}"
+        );
+    }
+    for phase in [
+        RunPhase::DiscoveringArchives,
+        RunPhase::BuildingEffectiveAssetTree,
+    ] {
+        let mut evidence = in_phase(phase);
+        evidence
+            .record_skipped_archive_counts(skipped_archives(SkipReason::DisabledPhase, 1))
+            .unwrap_or_else(|error| panic!("skipped counts during {phase:?}: {error}"));
+        evidence
+            .record_nested_archive_count(1)
+            .unwrap_or_else(|error| panic!("a nested count during {phase:?}: {error}"));
+    }
+}
+
+/// The skipped Archive counts and the nested Archive count are separate
+/// facts: recording one never stands in for the other, each is recorded at
+/// most once, and the sealed evidence keeps the first of each.
+#[test]
+fn each_archive_discovery_fact_is_recorded_once() {
+    let mut evidence = in_phase(RunPhase::DiscoveringArchives);
+    evidence
+        .record_skipped_archive_counts(skipped_archives(SkipReason::DisabledPhase, 2))
+        .unwrap();
+    assert_eq!(
+        invariant(
+            evidence
+                .record_skipped_archive_counts(skipped_archives(SkipReason::DisabledAssetKind, 1))
+        ),
+        Some("Skipped Archive counts can only be recorded once")
+    );
+    evidence
+        .record_phase(executed(RunPhase::BuildingEffectiveAssetTree))
+        .unwrap();
+    evidence.record_nested_archive_count(3).unwrap();
+    assert_eq!(
+        invariant(evidence.record_nested_archive_count(5)),
+        Some("The nested Archive count can only be recorded once")
+    );
+
+    let terminal = consume_after_cleanup(evidence);
+    assert_eq!(
+        terminal.archive_discovery(),
+        Some(&ArchiveDiscoveryEvidence {
+            skipped_archive_counts: skipped_archives(SkipReason::DisabledPhase, 2),
+            unsupported_explicit_paths: Vec::new(),
+            nested_archive_count: 3,
+        })
+    );
+}
+
+/// An Archive pass's counts are discovery evidence on their own: a run that
+/// stops before a complete definitive pass reports them with no nested
+/// Archives, and a run that never finished the Archive pass reports none.
+#[test]
+fn skipped_archive_counts_alone_report_no_nested_archives() {
+    let mut evidence = in_phase(RunPhase::DiscoveringArchives);
+    evidence
+        .record_skipped_archive_counts(skipped_archives(SkipReason::ExcludedAssetVariant, 4))
+        .unwrap();
+    let terminal = consume_after_cleanup(evidence);
+    assert_eq!(
+        terminal.archive_discovery(),
+        Some(&ArchiveDiscoveryEvidence {
+            skipped_archive_counts: skipped_archives(SkipReason::ExcludedAssetVariant, 4),
+            ..ArchiveDiscoveryEvidence::default()
+        })
+    );
+    assert_eq!(
+        terminal.skipped_asset_count(SkipReason::ExcludedAssetVariant),
+        4
+    );
+
+    let undiscovered = consume_after_cleanup(in_phase(RunPhase::DiscoveringArchives));
+    assert_eq!(undiscovered.archive_discovery(), None);
+}
+
+/// Definitive routing follows only a complete Effective Asset Tree: both
+/// Archive discovery facts must be recorded first.
+#[test]
+fn definitive_routing_requires_both_archive_discovery_facts() {
+    const INCOMPLETE: &str =
+        "Routing Ledger requires completed, successful Effective Asset Tree discovery";
+
+    let mut partial = in_phase(RunPhase::BuildingEffectiveAssetTree);
+    partial
+        .record_skipped_archive_counts(BTreeMap::new())
+        .unwrap();
+    assert_eq!(
+        invariant(partial.record_routing_ledger(texture_ledger(1))),
+        Some(INCOMPLETE),
+        "only the skipped Archive counts"
+    );
+    partial.record_nested_archive_count(0).unwrap();
+    partial.record_routing_ledger(texture_ledger(1)).unwrap();
+
+    let mut uncounted = in_phase(RunPhase::BuildingEffectiveAssetTree);
+    uncounted.record_nested_archive_count(0).unwrap();
+    assert_eq!(
+        invariant(uncounted.record_routing_ledger(texture_ledger(1))),
+        Some(INCOMPLETE),
+        "only the nested Archive count"
+    );
+}
+
 /// An extraction attempt at `archive` that mutated nothing, failed with
 /// `failure` when one is given.
 fn extraction_attempt(
@@ -855,8 +1002,9 @@ fn routed(
         .unwrap();
     evidence.record_effective_asset_tree_started().unwrap();
     evidence
-        .record_archive_discovery(ArchiveDiscoveryEvidence::default())
+        .record_skipped_archive_counts(BTreeMap::new())
         .unwrap();
+    evidence.record_nested_archive_count(0).unwrap();
     evidence.record_routing_ledger(ledger).unwrap();
     evidence
 }

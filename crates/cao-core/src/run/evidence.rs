@@ -46,7 +46,8 @@ pub trait RunObservationSink {
     fn record_diagnostic(&self, diagnostic: &RunDiagnostic);
 }
 
-/// The non-derived Archive facts established when discovery returns.
+/// The non-derived Archive facts Archive discovery establishes: the Archive
+/// pass's skipped counts, and the nested count of a complete definitive pass.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ArchiveDiscoveryEvidence {
     /// Recognized Archives excluded by Routing Policy, by Skip Reason.
@@ -76,7 +77,11 @@ struct Storage {
     archive_collisions: Vec<ArchiveCollision>,
     archive_collisions_recorded: bool,
     archive_extraction_attempts: Vec<ArchiveExtractionResult>,
+    /// Present once either Archive discovery fact is recorded; each fact
+    /// fills its own field and keeps its own once-only flag below.
     archive_discovery: Option<ArchiveDiscoveryEvidence>,
+    skipped_archive_counts_recorded: bool,
+    nested_archive_count_recorded: bool,
     routing_ledger: Option<RoutingLedger>,
     asset_attempts: Vec<RoutedAssetAttempt>,
     /// The phase's streamed attempts once its total is recorded, then its
@@ -98,6 +103,20 @@ impl Storage {
 
     fn current_phase(&self) -> Option<RunPhase> {
         self.phases.last().map(RunPhaseRecord::phase)
+    }
+
+    /// Whether the current Run Phase is one of Archive discovery's, from
+    /// Discovering Archives through Building Effective Asset Tree.
+    fn archive_discovery_current(&self) -> bool {
+        self.current_phase().is_some_and(|phase| {
+            (RunPhase::DiscoveringArchives..=RunPhase::BuildingEffectiveAssetTree).contains(&phase)
+        })
+    }
+
+    /// Whether Archive discovery established both of its facts: the Archive
+    /// pass's skipped counts and a complete definitive pass's nested count.
+    fn archive_discovery_complete(&self) -> bool {
+        self.skipped_archive_counts_recorded && self.nested_archive_count_recorded
     }
 
     fn skipped_asset_count(&self, reason: SkipReason) -> usize {
@@ -781,34 +800,68 @@ impl<'a> MutableRunEvidence<'a> {
         })
     }
 
-    /// Retains the Archive discovery facts of one returned discovery call.
-    pub fn record_archive_discovery(
+    /// Retains the recognized Archives the Archive pass excluded by Routing
+    /// Policy, by Skip Reason.
+    ///
+    /// Recorded where the Archive pass ends, so every later stop already
+    /// carries them. A cancelled pass records the counts it reached.
+    ///
+    /// # Errors
+    /// A Run Evidence invariant violation: Archive discovery is not the
+    /// current Run Phase, or the counts were already recorded.
+    pub fn record_skipped_archive_counts(
         &mut self,
-        discovery: ArchiveDiscoveryEvidence,
+        counts: BTreeMap<SkipReason, usize>,
     ) -> Result<(), Error> {
-        match self.storage.current_phase() {
-            Some(phase)
-                if (RunPhase::DiscoveringArchives..=RunPhase::BuildingEffectiveAssetTree)
-                    .contains(&phase) => {}
-            _ => {
-                return Err(Error::EvidenceInvariant(
-                    "Archive discovery evidence must be recorded during Archive discovery",
-                ));
-            }
-        }
-        if self.storage.archive_discovery.is_some() {
+        if !self.storage.archive_discovery_current() {
             return Err(Error::EvidenceInvariant(
-                "Archive discovery evidence can only be recorded once",
+                "Skipped Archive counts must be recorded during Archive discovery",
             ));
         }
-        self.storage.archive_discovery = Some(discovery);
+        if self.storage.skipped_archive_counts_recorded {
+            return Err(Error::EvidenceInvariant(
+                "Skipped Archive counts can only be recorded once",
+            ));
+        }
+        self.storage.skipped_archive_counts_recorded = true;
+        self.storage
+            .archive_discovery
+            .get_or_insert_default()
+            .skipped_archive_counts = counts;
+        Ok(())
+    }
+
+    /// Retains the distinct Archives that appeared only after extraction.
+    ///
+    /// Recorded only after a complete definitive pass: a partial tree never
+    /// reports nested Archives, so the public count then stays zero.
+    ///
+    /// # Errors
+    /// A Run Evidence invariant violation: Archive discovery is not the
+    /// current Run Phase, or the count was already recorded.
+    pub fn record_nested_archive_count(&mut self, count: usize) -> Result<(), Error> {
+        if !self.storage.archive_discovery_current() {
+            return Err(Error::EvidenceInvariant(
+                "The nested Archive count must be recorded during Archive discovery",
+            ));
+        }
+        if self.storage.nested_archive_count_recorded {
+            return Err(Error::EvidenceInvariant(
+                "The nested Archive count can only be recorded once",
+            ));
+        }
+        self.storage.nested_archive_count_recorded = true;
+        self.storage
+            .archive_discovery
+            .get_or_insert_default()
+            .nested_archive_count = count;
         Ok(())
     }
 
     /// Retains definitive routing after a successful Effective Asset Tree discovery.
     pub fn record_routing_ledger(&mut self, ledger: RoutingLedger) -> Result<(), Error> {
         if self.storage.current_phase() != Some(RunPhase::BuildingEffectiveAssetTree)
-            || self.storage.archive_discovery.is_none()
+            || !self.storage.archive_discovery_complete()
             || !self.storage.failures.is_empty()
         {
             return Err(Error::EvidenceInvariant(
