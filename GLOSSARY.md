@@ -69,8 +69,12 @@ The scheduled unit of execution that carries one Optimization Run to its termina
 _Avoid_: Run Executor, thread, background task
 
 **Run Request**:
-The immutable Mod Selection, Archive Precedence, execution mode, profile identity, and requested work used to start one Optimization Run.
+The immutable Mod Selection, Archive Precedence, execution mode, profile identity, requested work, and Work Choices used to start one Optimization Run. It carries every choice the user makes for the run, and no profile fact.
 _Avoid_: Options, command arguments
+
+**Work Choices**:
+The user's choices for how one Optimization Run does its requested work: how Textures are optimized and resized, how Meshes are optimized, what becomes of an extracted Archive, and how Archive Finalization packs. They never request work or decide routing, and they are not profile facts. Choices for work that is not requested have no effect.
+_Avoid_: Options, settings, optimizer settings
 
 **Start Error**:
 A structural Run Request conflict or an already-active Optimization Run that prevents a new run from starting. It produces no Run Outcome.
@@ -217,7 +221,7 @@ The coarse stage of an Optimization Run in which one Routed Asset performs its w
 _Avoid_: Run Phase, step, stage
 
 **Routing Policy Request**:
-The execution mode and closed set of requested work from which one Routing Policy is compiled. It is not a Run Request: it carries no Mod Selection, Archive Precedence, or profile identity.
+The execution mode and closed set of requested work from which one Routing Policy is compiled. It is not a Run Request: it carries no Mod Selection, Archive Precedence, profile identity, or Work Choices.
 _Avoid_: Run Request, options
 
 **Routed Asset**:
