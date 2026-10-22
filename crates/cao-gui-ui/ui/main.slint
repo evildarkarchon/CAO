@@ -448,16 +448,21 @@ export component MainWindow inherits Window {
                                     // a click writes the box's own `checked`, which would drop a
                                     // one-way binding for good, and a two-way one to the choice
                                     // would let the forced value overwrite the user's choice.
-                                    HorizontalLayout {
+                                    // Both boxes read their label and help from here, so the
+                                    // two stay one checkbox to the user and to translators.
+                                    separate-textures := HorizontalLayout {
+                                        property <string> text: @tr("Separate textures BSA");
+                                        property <string> help: @tr("There are three types of BSAs CAO can create : incompressible, textures and standard. If enabled, this option will always separate textures into their own BSAs. Otherwise, they will be merged into the standard one if possible.");
+
                                         if UiRules.separate-textures-forced: HelpCheckBox {
-                                            text: @tr("Separate textures BSA");
-                                            help: @tr("There are three types of BSAs CAO can create : incompressible, textures and standard. If enabled, this option will always separate textures into their own BSAs. Otherwise, they will be merged into the standard one if possible.");
+                                            text: separate-textures.text;
+                                            help: separate-textures.help;
                                             enabled: false;
                                             checked: true;
                                         }
                                         if !UiRules.separate-textures-forced: HelpCheckBox {
-                                            text: @tr("Separate textures BSA");
-                                            help: @tr("There are three types of BSAs CAO can create : incompressible, textures and standard. If enabled, this option will always separate textures into their own BSAs. Otherwise, they will be merged into the standard one if possible.");
+                                            text: separate-textures.text;
+                                            help: separate-textures.help;
                                             enabled: root.ed;
                                             checked <=> BsaTab.separate-textures;
                                         }
