@@ -406,8 +406,8 @@ export component DoubleSpinBox {
     in property <float> minimum: 0;
     in property <float> maximum: 99.99;
     in property <float> step: 1;
-    // The user changed the value: typed a different one, or stepped it. A value
-    // set from outside never raises it.
+    // The user changed the value: typed a different one, or stepped it to
+    // another. A value set from outside never raises it.
     callback edited();
 
     property <bool> editing: le.has-focus;
@@ -455,9 +455,17 @@ export component DoubleSpinBox {
         }
         root.show-value();
     }
+    // Steps the shown value by `d`, within [minimum, maximum]. A step the
+    // bound stops (an arrow at the maximum, or at the minimum) changes
+    // nothing shown, so it is no edit and leaves `value` alone: a loaded
+    // value past the maximum stays as it is, as text that says what is
+    // shown does in `commit`.
     function bump(d: float) {
-        root.value = root.within(root.shown + d);
-        root.edited();
+        let stepped = root.within(root.shown + d);
+        if stepped != root.shown {
+            root.value = stepped;
+            root.edited();
+        }
         root.show-value();
     }
 

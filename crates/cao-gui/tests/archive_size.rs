@@ -309,3 +309,64 @@ fn the_maximum_size_stops_at_2_gb_while_the_game_combo_shows_a_bsa_game() {
     );
     assert!(desktop.message_titles().is_empty());
 }
+
+#[test]
+fn an_arrow_step_the_cap_or_the_floor_stops_changes_nothing() {
+    headless();
+    let app_dir = app_dir("archive_size_arrow_bounds");
+    // An 8 GB Skyrim Profile shows the 2 GB cap, and a 1000-byte one shows
+    // the 0.01 GB floor; each arrow click below steps against that bound.
+    let profiles = Profiles::new(&app_dir);
+    profiles.create("BigSSE", "SSE").unwrap();
+    profiles.create("TinySSE", "SSE").unwrap();
+    edit_ini(
+        &app_dir,
+        "BigSSE/profile.ini",
+        "maxBsaUncompressedSize",
+        "8GB",
+    );
+    edit_ini(
+        &app_dir,
+        "TinySSE/profile.ini",
+        "maxBsaUncompressedSize",
+        "1000",
+    );
+    edit_ini(&app_dir, "common.ini", "profile", "SSE");
+    edit_ini(&app_dir, "common.ini", "showTutorial", "false");
+    let (app, desktop) = open(&app_dir);
+    let ui = app.window();
+    let shown = || control(ui, "Maximum size").accessible_value();
+
+    choose(ui, "Profile", "BigSSE");
+    select_tab(ui, "BSA");
+    assert_eq!(shown().as_deref(), Some("2.00"));
+    control(ui, "Maximum size").invoke_accessible_increment_action();
+    assert_eq!(shown().as_deref(), Some("2.00"));
+
+    choose(ui, "Profile", "TinySSE");
+    select_tab(ui, "BSA");
+    assert_eq!(shown().as_deref(), Some("0.01"));
+    control(ui, "Maximum size").invoke_accessible_decrement_action();
+    assert_eq!(shown().as_deref(), Some("0.01"));
+    assert!(app.save());
+
+    // A step that changes nothing is no edit: both lines stay as written.
+    assert_eq!(
+        saved_size_line(&app_dir, "BigSSE"),
+        "maxBsaUncompressedSize=8GB"
+    );
+    assert_eq!(
+        saved_size_line(&app_dir, "TinySSE"),
+        "maxBsaUncompressedSize=1000"
+    );
+
+    // A step that does change the size is saved.
+    control(ui, "Maximum size").invoke_accessible_increment_action();
+    assert_eq!(shown().as_deref(), Some("1.01"));
+    assert!(app.save());
+    assert_eq!(
+        saved_size_line(&app_dir, "TinySSE"),
+        "maxBsaUncompressedSize=1084479242"
+    );
+    assert!(desktop.message_titles().is_empty());
+}
