@@ -56,10 +56,9 @@ use cao_core::execution::{AssetExecutionResult, MutationState};
 use cao_core::routing::RequestedWork;
 use cao_core::run::{
     ArchiveFinalizationFailure, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
-    ArchiveFinalizationSettings, ArchiveNameKind, ArchiveReader, ArchiveWorkSettings,
-    CancellationToken, MutationKind, MutationSummary, OptimizationRunResult, PackedArchiveKind,
-    RunDiagnostic, RunFailure, RunObservationSink, RunOutcome, RunPhase, RunPhaseRecord,
-    RunProgress,
+    ArchiveFinalizationSettings, ArchiveNameKind, ArchiveReader, CancellationToken, MutationKind,
+    MutationSummary, OptimizationRunResult, PackedArchiveKind, RunDiagnostic, RunFailure,
+    RunObservationSink, RunOutcome, RunPhase, RunPhaseRecord, RunProgress,
 };
 use cao_core::test_support::{
     ArchiveRunRequest, FakeArchivePacker, FakeArchiveReader, FakeVolumeProbe, Observed,
@@ -256,10 +255,7 @@ impl Finalizer {
         }
         run.with_work(work)
             .with_packing_exclusions(self.files_to_not_pack.clone())
-            .with_archive_work(ArchiveWorkSettings {
-                finalization: self.settings,
-                ..ArchiveWorkSettings::default()
-            })
+            .with_archive_finalization(self.settings)
     }
 
     /// The staging estimate the phase reports when `root` has no capacity at

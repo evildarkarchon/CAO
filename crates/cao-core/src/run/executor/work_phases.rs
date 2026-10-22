@@ -31,10 +31,10 @@ use crate::routing::{
 };
 use crate::run::archives::{Preflight, RootArchives, archive_order_key, relative_game_path};
 use crate::run::{
-    ArchiveExtractionPlan, AssetInitializationCancelled, CancellationToken, MutableRunEvidence,
-    PhaseSkipReason, RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode, RunPhase,
-    RunPhaseRecord, RunPreparation, RunToolset, TemporaryArtifactRegistry, is_staging_name,
-    take_panic_message,
+    ArchiveExtractionPlan, ArchiveFinalizationSettings, AssetInitializationCancelled,
+    CancellationToken, MutableRunEvidence, PhaseSkipReason, RoutedAssetAttempt, RunDiagnostic,
+    RunDiagnosticCode, RunPhase, RunPhaseRecord, RunPreparation, RunToolset, SourceCleanup,
+    TemporaryArtifactRegistry, WorkChoices, is_staging_name, take_panic_message,
 };
 
 /// Walks Mod Roots for regular files under the scope rules both discovery passes share.
@@ -206,7 +206,8 @@ struct DiscoveredArchives {
 
 /// Runs Archive-first discovery, definitive routing, Asset attempts and
 /// Archive Finalization through `toolset`'s Asset attempt port and over its
-/// Archive seams.
+/// Archive seams. Archive extraction and Archive Finalization follow
+/// `choices`, the Run Request's Work Choices.
 ///
 /// Completed facts enter `evidence`, which the executor lends for the whole
 /// call, before the run's Run Observation Sink sees them. The work phases
@@ -238,6 +239,7 @@ struct DiscoveredArchives {
 /// returning its [`Stop`].
 pub(super) fn run_work_phases(
     preparation: &RunPreparation,
+    choices: &WorkChoices,
     toolset: &mut RunToolset,
     evidence: &mut MutableRunEvidence<'_>,
     artifacts: &mut TemporaryArtifactRegistry,
@@ -267,9 +269,15 @@ pub(super) fn run_work_phases(
         ControlFlow::Continue(archives) => archives,
         ControlFlow::Break(stopped) => return Ok(ControlFlow::Break(stopped)),
     };
-    if let stopped @ ControlFlow::Break(_) =
-        extract_archives(mode, &archives.plans, toolset, evidence, artifacts, stop)?
-    {
+    if let stopped @ ControlFlow::Break(_) = extract_archives(
+        mode,
+        &archives.plans,
+        choices.archive_extraction,
+        toolset,
+        evidence,
+        artifacts,
+        stop,
+    )? {
         return Ok(stopped);
     }
     let ledger = match build_effective_asset_tree(
@@ -289,7 +297,15 @@ pub(super) fn run_work_phases(
     }
     // Archive Finalization is the last work phase, so whether it stopped
     // short changes nothing that follows; its stop is returned as it is.
-    finalize_archives(preparation, mode, toolset, evidence, artifacts, stop)
+    finalize_archives(
+        preparation,
+        mode,
+        &choices.archive_finalization,
+        toolset,
+        evidence,
+        artifacts,
+        stop,
+    )
 }
 
 /// Runs the Discovering Archives phase: the Archive pass over every Mod Root
@@ -394,7 +410,8 @@ fn discover_archives(
 /// Runs the Extracting Archives phase. Apply opens it with its plan and
 /// extracts each planned Archive in order through
 /// [`RunToolset::extract_archive`], over `toolset`'s seams and the run's
-/// Capacity Check with its source cleanup, retaining every completed attempt
+/// Capacity Check with `cleanup`, the Run Request's Archive extraction
+/// choice, retaining every completed attempt
 /// before it is reported. Dry Run skips the phase, opening no handle, and
 /// has no plans.
 ///
@@ -412,6 +429,7 @@ fn discover_archives(
 fn extract_archives(
     mode: ExecutionMode,
     plans: &[ArchiveExtractionPlan],
+    cleanup: SourceCleanup,
     toolset: &RunToolset,
     evidence: &mut MutableRunEvidence<'_>,
     artifacts: &mut TemporaryArtifactRegistry,
@@ -450,7 +468,7 @@ fn extract_archives(
         if stop.is_cancelled() {
             return Ok(ControlFlow::Break(Stop::Halted));
         }
-        let mut attempt = toolset.extract_archive(plan, artifacts);
+        let mut attempt = toolset.extract_archive(plan, cleanup, artifacts);
         // The attempt's own continuation claim is retained in its Attempt
         // Outcome for diagnosis, but the stop follows the shared verdict, so
         // partial mutation stops the run regardless.
@@ -631,7 +649,8 @@ fn process_assets(
 }
 
 /// Runs the Archive Finalization phase, once the Run Diagnostics retained so
-/// far are published. Apply executes it over `toolset`'s seams through the
+/// far are published. Apply executes it over `toolset`'s seams with
+/// `choices`, the Run Request's Archive Finalization choices, through the
 /// handle its executed record opens; Dry Run skips it.
 ///
 /// Cancellation is observed after that publication, before the phase is
@@ -640,6 +659,7 @@ fn process_assets(
 fn finalize_archives(
     preparation: &RunPreparation,
     mode: ExecutionMode,
+    choices: &ArchiveFinalizationSettings,
     toolset: &RunToolset,
     evidence: &mut MutableRunEvidence<'_>,
     artifacts: &mut TemporaryArtifactRegistry,
@@ -673,7 +693,7 @@ fn finalize_archives(
     // Finalization reaches only its own facts, never the whole evidence, and
     // owns the phase it runs. It contains its own panics as an Unexpected
     // Exception, so it is called without a second layer.
-    toolset.finalize_archives(preparation, finalization, artifacts, &|| {
+    toolset.finalize_archives(preparation, choices, finalization, artifacts, &|| {
         stop.is_cancelled()
     })?;
     Ok(ControlFlow::Continue(()))

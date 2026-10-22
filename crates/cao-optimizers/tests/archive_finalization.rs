@@ -26,8 +26,7 @@ use cao_archive::{ArchiveFormat, Fo4Container, Game, ReadArchive, Settings};
 use cao_core::execution::MutationState;
 use cao_core::run::{
     ArchiveFinalizationMutationKind, ArchiveFinalizationResult, ArchiveFinalizationSettings,
-    ArchiveNameKind, ArchivePacker, ArchiveWorkSettings, CancellationToken, MutationKind,
-    RunOutcome, VolumeProbe,
+    ArchiveNameKind, ArchivePacker, CancellationToken, MutationKind, RunOutcome, VolumeProbe,
 };
 use cao_core::test_support::ArchiveRunRequest;
 use cao_optimizers::archives::{GameArchivePacker, VolumeProbes};
@@ -82,10 +81,7 @@ fn finalize_probing(
         .clone();
     let archive_run = ArchiveRunRequest::new(root)
         .with_archive_extension(extension)
-        .with_archive_work(ArchiveWorkSettings {
-            finalization: settings,
-            ..ArchiveWorkSettings::default()
-        });
+        .with_archive_finalization(settings);
     let configuration = archive_run.seams_configuration(production_seams_for(game, capacity));
 
     let result = archive_run.execute(&configuration, None, &CancellationToken::new());

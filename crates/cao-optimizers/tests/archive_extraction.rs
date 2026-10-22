@@ -20,8 +20,8 @@ use cao_archive::{ArchiveData, ArchiveType, Game, Settings, write_archive};
 use cao_core::execution::MutationState;
 use cao_core::routing::RequestedWork;
 use cao_core::run::{
-    ArchiveExtractionFailure, ArchiveReader, ArchiveWorkSettings, CancellationToken,
-    OptimizationRunResult, RunOutcome, RunPhase, SourceCleanup, SourceFilePin,
+    ArchiveExtractionFailure, ArchiveReader, CancellationToken, OptimizationRunResult, RunOutcome,
+    RunPhase, SourceCleanup, SourceFilePin,
 };
 use cao_core::test_support::{ArchiveRunRequest, RecordingSink};
 use cao_optimizers::archives::ArchiveFileReader;
@@ -82,10 +82,7 @@ fn extract(
 ) -> OptimizationRunResult {
     let archive_run = ArchiveRunRequest::new(root)
         .with_work([RequestedWork::ArchiveExtraction])
-        .with_archive_work(ArchiveWorkSettings {
-            source_cleanup: cleanup,
-            ..ArchiveWorkSettings::default()
-        });
+        .with_archive_extraction(cleanup);
     let configuration = archive_run.seams_configuration(production_seams());
     let sink = RecordingSink::on_first_record_of(RunPhase::ExtractingArchives, after_preflight);
     archive_run.execute(&configuration, Some(&sink), &CancellationToken::new())

@@ -34,7 +34,7 @@ use cao_core::execution::MutationState;
 use cao_core::routing::RequestedWork;
 use cao_core::run::{
     ArchiveExtractionFailure, ArchiveExtractionResult, CancellationToken, OptimizationRunResult,
-    RunPhase,
+    RunPhase, SourceCleanup,
 };
 use cao_core::test_support::{
     ArchiveRunRequest, FakeArchiveReader, FakeVolumeProbe, RecordingSink, ScriptedToolset, entry,
@@ -227,6 +227,26 @@ fn a_staged_payload_commits_and_the_source_archive_is_kept() {
     assert!(result.cleanup_failures().is_empty());
     assert_eq!(std::fs::read(root.join("textures/a.dds")).unwrap(), b"B");
     assert_eq!(std::fs::read(backup_of(&archive)).unwrap(), original);
+}
+
+/// The Run Request's Archive extraction choice decides what becomes of the
+/// source: a run that chooses Remove commits the payload and removes the
+/// source Archive, leaving no backup.
+#[test]
+fn the_run_requests_remove_choice_removes_the_extracted_source() {
+    let root = canonical(&scratch_dir("extractor-removes-source"));
+    let archive = root.join("source.bsa");
+    write_archive(&archive, &[entry("textures/a.dds", b"B")]);
+    let run = extraction_run(&root).with_archive_extraction(SourceCleanup::Remove);
+    let configuration = run.configuration(ScriptedToolset::default());
+
+    let result = run.execute(&configuration, None, &CancellationToken::new());
+
+    let attempt = only_attempt(&result);
+    assert!(attempt.succeeded(), "{:?}", attempt.outcome);
+    assert_eq!(std::fs::read(root.join("textures/a.dds")).unwrap(), b"B");
+    assert!(!archive.exists());
+    assert!(!backup_of(&archive).exists());
 }
 
 /// Origin: extractionUsesExistingParentCasing.

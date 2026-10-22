@@ -22,12 +22,12 @@ use cao_archive::{Game, Settings};
 use cao_core::Error;
 use cao_core::routing::{ExecutionMode, ProfileCapabilities, ProfileCapability, RequestedWork};
 use cao_core::run::{
-    ArchiveFinalizationSettings, ArchiveSeams, ArchiveWorkSettings, AssetAttemptAdapter,
-    AssetBackendFactory, BackendCreation, BackendCreationError, CancellationToken, MeshChoices,
-    MeshLevel, ModSelection, OptimizationRunService, ResizeRatio, ResizeSize,
-    RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode, RunEventDispatcher, RunHandle,
-    RunPhase, RunRequest, RunToolset, SelectedProfile, SourceCleanup, StartError, TextureChoices,
-    TextureResizeChoice, WorkChoiceError, WorkChoices,
+    ArchiveFinalizationSettings, ArchiveSeams, AssetAttemptAdapter, AssetBackendFactory,
+    BackendCreation, BackendCreationError, CancellationToken, MeshChoices, MeshLevel, ModSelection,
+    OptimizationRunService, ResizeRatio, ResizeSize, RunConfigurationProvider, RunDiagnostic,
+    RunDiagnosticCode, RunEventDispatcher, RunHandle, RunPhase, RunRequest, RunToolset,
+    SelectedProfile, SourceCleanup, StartError, TextureChoices, TextureResizeChoice,
+    WorkChoiceError, WorkChoices,
 };
 use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
 use directxtex::DXGI_FORMAT;
@@ -403,15 +403,9 @@ impl RunConfigurationProvider for ProfileConfigurationProvider {
             selected_folder: request.mod_selection().directory().to_path_buf(),
             hkxcmd: self.hkxcmd.clone(),
         };
-        // For now core still takes its Archive choices from the Run Toolset,
-        // so the request's Archive choices are copied into it. Whether
-        // Archive Finalization packs at all is the Routing Policy's Archive
-        // creation request, not one of these choices.
-        let archive_work = ArchiveWorkSettings {
-            source_cleanup: choices.archive_extraction,
-            finalization: choices.archive_finalization,
-        };
-        let toolset = work.toolset(Arc::new(profile), archive_work);
+        // Core's Archive work reads its Archive choices from the request
+        // itself, so none of them enters the Toolset.
+        let toolset = work.toolset(Arc::new(profile));
         Ok((selected, toolset))
     }
 }
@@ -512,12 +506,8 @@ struct RunWorkSettings {
 
 impl RunWorkSettings {
     /// The production Run Toolset of one run, over the profile its Preparing
-    /// read, carrying the run's Archive choices `archive_work`.
-    fn toolset(
-        &self,
-        profile: Arc<PreparedProfile>,
-        archive_work: ArchiveWorkSettings,
-    ) -> RunToolset {
+    /// read.
+    fn toolset(&self, profile: Arc<PreparedProfile>) -> RunToolset {
         // One reader serves discovery, extraction and finalization for the
         // whole run: the Toolset holds only this one.
         // C++ always wires Archive Finalization, so Apply executes the phase:
@@ -537,7 +527,6 @@ impl RunWorkSettings {
                 profile,
             })),
             seams,
-            archive_work,
         )
     }
 }

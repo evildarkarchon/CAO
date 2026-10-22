@@ -63,9 +63,7 @@ pub use scheduler::{
 pub use service::{OptimizationRunService, RunEventDispatcher, RunHandle, StartError};
 pub use source_pin::{LoadingPluginPin, SourceDirectoryPins, SourceFilePin, SourcePinError};
 pub use staging::{StagingError, is_staging_name};
-pub use toolset::{
-    ArchiveSeams, ArchiveWorkSettings, AssetAttemptPort, AssetInitializationCancelled, RunToolset,
-};
+pub use toolset::{ArchiveSeams, AssetAttemptPort, AssetInitializationCancelled, RunToolset};
 pub use work_choices::{
     MeshChoices, MeshLevel, ResizeRatio, ResizeSize, TextureChoices, TextureResizeChoice,
     WorkChoiceError, WorkChoices,
