@@ -1,8 +1,10 @@
 //! The settings model of a profile's `profile.ini`: the game it targets and what
 //! each Asset Kind may do under it.
 
+use crate::closed::{self, ClosedSet};
 use crate::error::ProfileError;
 use crate::ini::{IniFile, Value};
+use crate::mesh::{MeshFileVersion, MeshStreamVersion, MeshUserVersion};
 
 /// The game whose archive rules a profile uses (`[BSA] bsaGame`), numbered as
 /// bethutil's `btu::Game` numbers them.
@@ -20,16 +22,22 @@ pub enum BsaGame {
     Fo4,
 }
 
-impl BsaGame {
+/// The games the GUI offers. `bsaGame` keeps its own read and error
+/// ([`ProfileError::UnsupportedBsaGame`]) rather than [`closed::read`]'s.
+impl ClosedSet for BsaGame {
+    const ALL: &'static [Self] = &[Self::Tes5, Self::Sse, Self::Fo4];
+
     /// The `bsaGame` number written to `profile.ini`.
-    pub fn number(self) -> i32 {
+    fn number(self) -> u32 {
         match self {
             Self::Tes5 => 3,
             Self::Sse => 4,
             Self::Fo4 => 5,
         }
     }
+}
 
+impl BsaGame {
     /// Reads `bsaGame` as C++ does (`toInt()`), then rejects anything but 3, 4 or 5.
     fn read(value: &Value) -> Result<Self, ProfileError> {
         match value.to_i32() {
@@ -46,7 +54,8 @@ impl BsaGame {
 /// A profile's `profile.ini`: the per-game settings C++ held in `Profiles`.
 ///
 /// Fields read with `QVariant`'s conversions, as C++ reads them: a missing key is
-/// `false` or `0`, never a default. Keys this model does not hold, such as the dead
+/// `false` or `0`, never a default; a Mesh Target axis is a closed set
+/// ([`crate::ClosedSet`]) that `0` is outside, so a missing one is unreadable. Keys this model does not hold, such as the dead
 /// `[Animations] animationFormat` (deviation 10), are never read and survive a save.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProfileSettings {
@@ -62,12 +71,15 @@ pub struct ProfileSettings {
     pub bsa_game: BsaGame,
     /// The Profile Capability for Mesh optimization (`[Meshes] meshesEnabled`).
     pub meshes_enabled: bool,
-    /// The NIF file version Meshes are written as (`nifly::NiFileVersion`).
-    pub meshes_file_version: u32,
-    /// The NIF stream version Meshes are written with (`[Meshes] meshesStream`).
-    pub meshes_stream: u32,
-    /// The NIF user version Meshes are written with (`[Meshes] meshesUser`).
-    pub meshes_user: u32,
+    /// The NIF file version Meshes are written as (`[Meshes] meshesFileVersion`),
+    /// one axis of the Mesh Target.
+    pub meshes_file_version: MeshFileVersion,
+    /// The NIF stream version Meshes are written with (`[Meshes] meshesStream`),
+    /// one axis of the Mesh Target.
+    pub meshes_stream: MeshStreamVersion,
+    /// The NIF user version Meshes are written with (`[Meshes] meshesUser`), one
+    /// axis of the Mesh Target.
+    pub meshes_user: MeshUserVersion,
     /// The Profile Capability for Animation optimization
     /// (`[Animations] animationsEnabled`).
     pub animations_enabled: bool,
@@ -88,18 +100,20 @@ impl ProfileSettings {
     /// Reads the model from `profile.ini` as C++'s `Profiles::readFromIni` does.
     ///
     /// # Errors
-    /// [`ProfileError::UnsupportedBsaGame`] when `bsaGame` is not 3, 4 or 5.
+    /// [`ProfileError::UnsupportedBsaGame`] when `bsaGame` is not 3, 4 or 5, and
+    /// [`ProfileError::UnsupportedValue`] when a Mesh Target axis is outside its
+    /// closed set or missing.
     pub fn read(ini: &IniFile) -> Result<Self, ProfileError> {
-        // `meshesFileVersion` and `texturesFormat` are `toInt()` cast to unsigned enums.
+        // `texturesFormat` is `toInt()` cast to an unsigned enum.
         let enum_value = |key| ini.value(key).to_i32() as u32;
         Ok(Self {
             bsa_enabled: ini.value("BSA/bsaEnabled").to_bool(),
             max_bsa_uncompressed_size: ini.value("BSA/maxBsaUncompressedSize").to_f64(),
             bsa_game: BsaGame::read(ini.value("BSA/bsaGame"))?,
             meshes_enabled: ini.value("Meshes/meshesEnabled").to_bool(),
-            meshes_file_version: enum_value("Meshes/meshesFileVersion"),
-            meshes_stream: ini.value("Meshes/meshesStream").to_u32(),
-            meshes_user: ini.value("Meshes/meshesUser").to_u32(),
+            meshes_file_version: closed::read(ini, "Meshes/meshesFileVersion")?,
+            meshes_stream: closed::read(ini, "Meshes/meshesStream")?,
+            meshes_user: closed::read(ini, "Meshes/meshesUser")?,
             animations_enabled: ini.value("Animations/animationsEnabled").to_bool(),
             textures_enabled: ini.value("Textures/texturesEnabled").to_bool(),
             textures_format: enum_value("Textures/texturesFormat"),
@@ -123,9 +137,12 @@ impl ProfileSettings {
         ini.set("BSA/bsaGame", self.bsa_game.number());
 
         ini.set("Meshes/meshesEnabled", self.meshes_enabled);
-        ini.set("Meshes/meshesFileVersion", self.meshes_file_version);
-        ini.set("Meshes/meshesStream", self.meshes_stream);
-        ini.set("Meshes/meshesUser", self.meshes_user);
+        ini.set(
+            "Meshes/meshesFileVersion",
+            self.meshes_file_version.number(),
+        );
+        ini.set("Meshes/meshesStream", self.meshes_stream.number());
+        ini.set("Meshes/meshesUser", self.meshes_user.number());
 
         ini.set("Animations/animationsEnabled", self.animations_enabled);
 

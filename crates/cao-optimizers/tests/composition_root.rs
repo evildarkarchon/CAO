@@ -982,3 +982,61 @@ fn an_unreadable_profile_fails_preparing_rather_than_the_start() {
         RunFailureCode::ConfigurationLoadingFailed
     );
 }
+
+#[test]
+fn each_shipped_profiles_mesh_target_is_its_games_nifly_version() {
+    use cao_optimizers::profile::mesh_target;
+    use cao_profiles::{
+        MeshFileVersion, MeshStreamVersion, MeshUserVersion, ProfileSettings, Profiles,
+    };
+    use nifly_sys::NifVersion;
+
+    let app = app_dir("profile-mesh-targets");
+    let profiles = Profiles::new(&app);
+    for (name, expected) in [
+        ("TES5", NifVersion::SK),
+        ("SSE", NifVersion::SSE),
+        ("FO4", NifVersion::FO4),
+    ] {
+        let settings = profiles.open(name).load_settings().unwrap();
+        assert_eq!(mesh_target(&settings), expected, "{name}");
+    }
+
+    // Oblivion's numbers, which no shipped Profile uses.
+    let oblivion = ProfileSettings {
+        meshes_file_version: MeshFileVersion::V20_0_0_5,
+        meshes_user: MeshUserVersion::V11,
+        meshes_stream: MeshStreamVersion::V82,
+        ..profiles.open("SSE").load_settings().unwrap()
+    };
+    assert_eq!(
+        mesh_target(&oblivion),
+        NifVersion {
+            file: 0x1400_0005,
+            user: 11,
+            stream: 82,
+        }
+    );
+}
+
+#[test]
+fn a_profile_with_an_out_of_set_mesh_target_fails_preparing_with_the_message_the_gui_shows() {
+    let _serial = serial();
+    let app = app_dir("profile-mesh-user-out-of-set");
+    let mod_root = app.join("mods").join("Mod");
+    std::fs::create_dir_all(&mod_root).unwrap();
+    let options = dry_run_textures(&app, &mod_root);
+    let service = run_service(&app);
+    edit_profile(&app, "SSE", "meshesUser", "13");
+
+    let result = start_and_wait(&service, "SSE", &options);
+
+    assert_eq!(result.outcome(), RunOutcome::Failed);
+    let failure = &result.failures()[0];
+    assert_eq!(failure.code, RunFailureCode::ConfigurationLoadingFailed);
+    // The GUI shows the same `ProfileError` after "could not be read: ".
+    assert_eq!(
+        failure.detail,
+        "`profile.ini`: `Meshes/meshesUser` is `13`; expected one of 11, 12"
+    );
+}

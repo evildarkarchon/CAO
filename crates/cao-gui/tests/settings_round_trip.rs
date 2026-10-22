@@ -5,7 +5,7 @@
 mod common;
 
 use cao_gui::ui::{MeshesTab, TexturesTab};
-use cao_profiles::{BsaGame, OptimizationMode, Options, Profiles};
+use cao_profiles::{BsaGame, MeshStreamVersion, OptimizationMode, Options, Profiles};
 use common::*;
 use slint::ComponentHandle;
 use slint::platform::WindowEvent;
@@ -100,7 +100,7 @@ fn settings_saved_from_the_window_reload_identically() {
         settings.max_bsa_uncompressed_size,
         3.5 * 1024.0 * 1024.0 * 1024.0
     );
-    assert_eq!(settings.meshes_stream, 130);
+    assert_eq!(settings.meshes_stream, MeshStreamVersion::V130);
     assert_eq!(settings.textures_format, 77);
     assert!(!settings.textures_convert_tga);
     assert_eq!(settings.textures_unwanted_formats, [85, 86, 115]);

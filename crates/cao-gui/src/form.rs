@@ -8,7 +8,10 @@
 
 use cao_core::routing::{ProfileCapabilities, ProfileCapability};
 use cao_gui_ui::{AnimationsTab, BsaTab, MainWindow, MeshesTab, TexturesTab};
-use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileSettings};
+use cao_profiles::{
+    BsaGame, ClosedSet, MeshFileVersion, MeshStreamVersion, MeshUserVersion, OptimizationMode,
+    Options, ProfileSettings,
+};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::formats::{format_name, format_number};
@@ -16,20 +19,12 @@ use crate::formats::{format_name, format_number};
 /// C++ `GigaByte`: the maximum archive size is stored in bytes, shown in GB.
 const GIGABYTE: f64 = 1024.0 * 1024.0 * 1024.0;
 
-/// The Game combo's games, by index (C++ `MainWindow` item data).
-const GAMES: [BsaGame; 3] = [BsaGame::Tes5, BsaGame::Sse, BsaGame::Fo4];
 /// The mode combo's modes, by index (C++ `modeChooserComboBox` item data).
 const MODES: [OptimizationMode; 2] = [OptimizationMode::SingleMod, OptimizationMode::SeveralMods];
 /// `TexturesTab.resize-mode` of the "By ratio" Downsizing radio.
 const RESIZE_BY_RATIO: i32 = 0;
 /// `TexturesTab.resize-mode` of the "By fixed size" Downsizing radio.
 const RESIZE_BY_SIZE: i32 = 1;
-/// The Version combo's NIF file versions: nifly's `V20_0_0_5` and `V20_2_0_7`.
-const MESH_VERSIONS: [u32; 2] = [0x1400_0005, 0x1402_0007];
-/// The User combo's NIF user versions.
-const MESH_USERS: [u32; 2] = [11, 12];
-/// The Stream combo's NIF stream versions.
-const MESH_STREAMS: [u32; 4] = [82, 83, 100, 130];
 /// The Output format combo's `DXGI_FORMAT`s: BC7, BC5, BC3, BC1 and R8G8B8A8,
 /// all `_UNORM`.
 const OUTPUT_FORMATS: [u32; 5] = [98, 83, 77, 71, 28];
@@ -126,7 +121,65 @@ pub(crate) fn mode_at(index: i32) -> Option<OptimizationMode> {
 
 /// The game the Game combo shows at `index`; `None` for no selection.
 pub(crate) fn game_at(index: i32) -> Option<BsaGame> {
-    item(&GAMES, index).copied()
+    item(BsaGame::ALL, index).copied()
+}
+
+/// Fills the Game, Version, User and Stream combos with every member of the
+/// typed Profile model's sets, in [`ClosedSet::ALL`] order, so a combo index is
+/// an index into that set and every value a Profile can hold has an item.
+pub(crate) fn show_choices(ui: &MainWindow) {
+    ui.global::<BsaTab>().set_games(choices(game_label));
+    let meshes = ui.global::<MeshesTab>();
+    meshes.set_versions(choices(version_label));
+    meshes.set_users(choices(user_label));
+    meshes.set_streams(choices(stream_label));
+}
+
+/// A combo model holding `label` of each member of `T`, in [`ClosedSet::ALL`]
+/// order.
+fn choices<T: ClosedSet>(label: fn(T) -> &'static str) -> ModelRc<SharedString> {
+    let labels: Vec<SharedString> = T::ALL.iter().map(|&member| label(member).into()).collect();
+    ModelRc::new(VecModel::from(labels))
+}
+
+/// The Game combo's text for a game.
+fn game_label(game: BsaGame) -> &'static str {
+    match game {
+        BsaGame::Tes5 => "Skyrim LE",
+        BsaGame::Sse => "SSE",
+        BsaGame::Fo4 => "FO4",
+    }
+}
+
+/// The Version combo's text for a NIF file version: the games that use it.
+fn version_label(version: MeshFileVersion) -> &'static str {
+    match version {
+        MeshFileVersion::V20_0_0_5 => "Oblivion (V20_0_0_5)",
+        MeshFileVersion::V20_2_0_7 => "Fallout 3 / Skyrim / Skyrim SE / Fallout 4 (V20_2_0_7)",
+    }
+}
+
+/// The User combo's text for a NIF user version: the games that use it.
+fn user_label(user: MeshUserVersion) -> &'static str {
+    match user {
+        MeshUserVersion::V11 => "Oblivion (11)",
+        MeshUserVersion::V12 => "Fallout 3 / Skyrim / Skyrim SE / Fallout 4 (12)",
+    }
+}
+
+/// The Stream combo's text for a NIF stream version: the games that use it.
+fn stream_label(stream: MeshStreamVersion) -> &'static str {
+    match stream {
+        MeshStreamVersion::V82 => "Oblivion / Fallout 3 (82)",
+        MeshStreamVersion::V83 => "Skyrim (83)",
+        MeshStreamVersion::V100 => "Skyrim SE (100)",
+        MeshStreamVersion::V130 => "Fallout 4 (130)",
+    }
+}
+
+/// The combo index of `member`, which [`show_choices`] gave an item.
+fn choice_index<T: ClosedSet>(member: T) -> i32 {
+    index_of(T::ALL, &member).expect("every member of a closed set is in its `ALL`")
 }
 
 /// Shows the options model (`settings.ini`) in the window.
@@ -271,25 +324,19 @@ pub(crate) fn read_options(
     options
 }
 
-/// Shows the settings model (`profile.ini`) in the advanced groups. A value no
-/// combo item holds leaves that combo as it was, as C++'s `iterateComboBox` does.
+/// Shows the settings model (`profile.ini`) in the advanced groups. The Game
+/// and Mesh Target combos hold every value the typed model can, so each always
+/// selects the loaded value. A Texture format no Output format item holds
+/// leaves that combo as it was, as C++'s `iterateComboBox` does.
 pub(crate) fn show_settings(ui: &MainWindow, settings: &ProfileSettings) {
     let bsa = ui.global::<BsaTab>();
     bsa.set_max_size((settings.max_bsa_uncompressed_size / GIGABYTE) as f32);
-    if let Some(index) = index_of(&GAMES, &settings.bsa_game) {
-        bsa.set_game_index(index);
-    }
+    bsa.set_game_index(choice_index(settings.bsa_game));
 
     let meshes = ui.global::<MeshesTab>();
-    if let Some(index) = index_of(&MESH_USERS, &settings.meshes_user) {
-        meshes.set_user_index(index);
-    }
-    if let Some(index) = index_of(&MESH_STREAMS, &settings.meshes_stream) {
-        meshes.set_stream_index(index);
-    }
-    if let Some(index) = index_of(&MESH_VERSIONS, &settings.meshes_file_version) {
-        meshes.set_version_index(index);
-    }
+    meshes.set_user_index(choice_index(settings.meshes_user));
+    meshes.set_stream_index(choice_index(settings.meshes_stream));
+    meshes.set_version_index(choice_index(settings.meshes_file_version));
 
     let textures = ui.global::<TexturesTab>();
     if let Some(index) = index_of(&OUTPUT_FORMATS, &settings.textures_format) {
@@ -312,19 +359,19 @@ pub(crate) fn read_settings(ui: &MainWindow, current: &ProfileSettings) -> Profi
     let mut settings = current.clone();
 
     let bsa = ui.global::<BsaTab>();
-    if let Some(&game) = item(&GAMES, bsa.get_game_index()) {
+    if let Some(&game) = item(BsaGame::ALL, bsa.get_game_index()) {
         settings.bsa_game = game;
     }
     settings.max_bsa_uncompressed_size = gigabytes(bsa.get_max_size()) * GIGABYTE;
 
     let meshes = ui.global::<MeshesTab>();
-    if let Some(&user) = item(&MESH_USERS, meshes.get_user_index()) {
+    if let Some(&user) = item(MeshUserVersion::ALL, meshes.get_user_index()) {
         settings.meshes_user = user;
     }
-    if let Some(&stream) = item(&MESH_STREAMS, meshes.get_stream_index()) {
+    if let Some(&stream) = item(MeshStreamVersion::ALL, meshes.get_stream_index()) {
         settings.meshes_stream = stream;
     }
-    if let Some(&version) = item(&MESH_VERSIONS, meshes.get_version_index()) {
+    if let Some(&version) = item(MeshFileVersion::ALL, meshes.get_version_index()) {
         settings.meshes_file_version = version;
     }
 
