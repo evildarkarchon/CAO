@@ -14,6 +14,7 @@
 use std::path::PathBuf;
 
 use super::classify_terminal_outcome;
+use crate::CompletedMutation;
 use crate::Error;
 use crate::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use crate::routing::{AssetRouter, ExecutionMode, RequestedWork, RoutingPolicyRequest};
@@ -88,7 +89,7 @@ fn asset_result(fact: WorkFact) -> AssetExecutionResult {
                 .with_mutation(MutationState::PartialOrUnknown)
         }
         WorkFact::Succeeded | WorkFact::FatalFailure => {
-            AssetExecutionResult::success(MutationState::None)
+            AssetExecutionResult::success(CompletedMutation::None)
         }
     }
 }

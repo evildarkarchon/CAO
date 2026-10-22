@@ -236,9 +236,9 @@ fn classify_terminal_outcome(evidence: &RunEvidence) -> RunOutcome {
         .asset_attempts()
         .iter()
         .map(|attempt| {
-            let result = &attempt.result;
+            let result = attempt.result.outcome();
             (
-                result.mutation_state(),
+                result.mutation(),
                 result.succeeded(),
                 result.safe_to_continue(),
             )

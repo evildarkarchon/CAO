@@ -14,6 +14,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use cao_core::CompletedMutation;
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
@@ -45,10 +46,10 @@ fn execute(
 fn an_apply_run_through_a_toolset_traverses_every_phase_and_succeeds() {
     let root = scratch_dir("toolset-apply-success");
     write_tree(&root, &["textures/a.dds", "textures/b.dds"]);
-    let toolset = Arc::new(
-        ScriptedToolset::default()
-            .with_assets(|_, _, _| Ok(AssetExecutionResult::success(MutationState::Committed))),
-    );
+    let toolset =
+        Arc::new(ScriptedToolset::default().with_assets(|_, _, _| {
+            Ok(AssetExecutionResult::success(CompletedMutation::Committed))
+        }));
     let configuration = ToolsetConfiguration::sse(Arc::clone(&toolset));
     let sink = RecordingSink::default();
     let mut cleanup = CountingCleanup::default();

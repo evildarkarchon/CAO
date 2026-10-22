@@ -143,7 +143,7 @@ fn classified_run(scenario: Scenario) -> Arc<OptimizationRunResult> {
                     "third attempt failed",
                 )
             } else {
-                AssetExecutionResult::success(MutationState::None)
+                AssetExecutionResult::success(cao_core::CompletedMutation::None)
             })
         })
     } else {

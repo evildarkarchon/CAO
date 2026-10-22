@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::CompletedMutation;
 use crate::Error;
-use crate::execution::{AssetExecutionResult, MutationState};
+use crate::execution::AssetExecutionResult;
 use crate::routing::RoutedAsset;
 use crate::run::{
     ArchiveSeams, ArchiveWorkSettings, AssetAttemptAdapter, AssetAttemptPort, AssetBackendFactory,
@@ -226,7 +227,7 @@ impl AssetAttemptPort for ScriptedAssetAttempt {
         }
         match &self.script.assets {
             AssetAttempts::Scripted(script) => script(asset, mod_root, artifacts),
-            _ => Ok(AssetExecutionResult::success(MutationState::None)),
+            _ => Ok(AssetExecutionResult::success(CompletedMutation::None)),
         }
     }
 }
