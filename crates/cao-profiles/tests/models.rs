@@ -7,6 +7,7 @@ use cao_profiles::ArchiveSize;
 use cao_profiles::{
     BsaGame, CommonSettings, FormatErrorKind, IniFile, MeshFileVersion, MeshStreamVersion,
     MeshUserVersion, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles,
+    TextureFormat, UnwantedFormat,
 };
 use common::shipped_app_dir;
 
@@ -31,9 +32,9 @@ fn the_shipped_tes5_profile_loads_into_the_settings_model() {
             meshes_user: MeshUserVersion::V12,
             animations_enabled: false,
             textures_enabled: true,
-            textures_format: 77,
+            textures_format: TextureFormat::Bc3Unorm,
             textures_convert_tga: false,
-            textures_unwanted_formats: vec![98, 99],
+            textures_unwanted_formats: vec![UnwantedFormat::Bc7Unorm, UnwantedFormat::Bc7UnormSrgb],
             textures_compress_interface: true,
         }
     );
@@ -46,11 +47,12 @@ fn deviation_11_bsa_game_reads_tes5_sse_and_fo4() {
         ("4", BsaGame::Sse),
         ("5", BsaGame::Fo4),
     ] {
-        // A Mesh Target too, whose missing keys would make the Profile unreadable.
+        // A Mesh Target and Texture format too, whose missing keys would make the
+        // Profile unreadable.
         let ini = IniFile::parse(
             format!(
                 "[BSA]\r\nbsaGame={text}\r\n[Meshes]\r\nmeshesFileVersion=335675399\r\n\
-                 meshesStream=100\r\nmeshesUser=12\r\n"
+                 meshesStream=100\r\nmeshesUser=12\r\n[Textures]\r\ntexturesFormat=98\r\n"
             )
             .as_bytes(),
         );
@@ -311,7 +313,7 @@ fn saved_settings_load_back_including_a_one_element_unwanted_format_list() {
     let app_dir = common::copy_of_shipped("save-settings-round-trip");
     let profile = Profiles::new(&app_dir).open("FO4");
     let mut settings = profile.load_settings().unwrap();
-    settings.textures_unwanted_formats = vec![85];
+    settings.textures_unwanted_formats = vec![UnwantedFormat::B5G6R5Unorm];
     settings.max_bsa_uncompressed_size = ArchiveSize::from_bytes(2_147_483_648);
     settings.meshes_enabled = true;
 
@@ -509,7 +511,14 @@ fn a_clean_profile_reads_without_error() {
     let settings = shipped().open("FO4").load_settings().unwrap();
 
     assert_eq!(settings.bsa_game, BsaGame::Fo4);
-    assert_eq!(settings.textures_unwanted_formats, [86, 85, 115]);
+    assert_eq!(
+        settings.textures_unwanted_formats,
+        [
+            UnwantedFormat::B5G5R5A1Unorm,
+            UnwantedFormat::B5G6R5Unorm,
+            UnwantedFormat::B4G4R4A4Unorm,
+        ]
+    );
     assert_eq!(
         settings.max_bsa_uncompressed_size,
         ArchiveSize::from_bytes(4_187_593_113)

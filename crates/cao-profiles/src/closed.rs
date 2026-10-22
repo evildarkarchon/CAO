@@ -4,8 +4,9 @@
 //! [`ClosedSet`]. [`read`] reads its key strictly, and a number outside the set
 //! (or a missing key, which reads as `0`) makes the Profile unreadable with a
 //! [`ProfileError::UnsupportedValue`] naming the key, its value and the accepted
-//! values. Writing stores [`ClosedSet::number`], the number the file has always
-//! held, so files stay readable by older builds.
+//! values; [`read_list`] does the same for each entry of a list key. Writing
+//! stores [`ClosedSet::number`], the number the file has always held, so files
+//! stay readable by older builds.
 
 use crate::error::ProfileError;
 use crate::ini::{IniFile, Value};
@@ -60,6 +61,36 @@ pub(crate) fn read<T: ClosedSet>(ini: &IniFile, key: &str) -> Result<T, ProfileE
             value: raw(value),
             accepted: T::accepted(),
         })
+}
+
+/// Reads `key` of `profile.ini` (`Section/key`) as a list of members of `T`, in
+/// the file's order, keeping only the first occurrence of a repeated member.
+///
+/// The list is read as `QVariant::toList()` with `toInt()` on each entry
+/// ([`Value::to_int_list`]), so a missing key or an empty value is an empty
+/// list, and an entry that is text reads as `0`, which no set holds.
+///
+/// # Errors
+/// [`ProfileError::UnsupportedValue`] for the first entry that is not one of
+/// `T`'s numbers, carrying that entry as its value.
+pub(crate) fn read_list<T: ClosedSet>(ini: &IniFile, key: &str) -> Result<Vec<T>, ProfileError> {
+    let mut members: Vec<T> = Vec::new();
+    for entry in ini.value(key).to_int_list() {
+        let member = u32::try_from(entry)
+            .ok()
+            .and_then(T::from_number)
+            .ok_or_else(|| ProfileError::UnsupportedValue {
+                file: PROFILE_INI.to_owned(),
+                key: key.to_owned(),
+                value: Some(entry.to_string()),
+                accepted: format!("each entry to be {}", T::accepted()),
+            })?;
+        // A harmless repeat is dropped rather than making the Profile unreadable.
+        if !members.contains(&member) {
+            members.push(member);
+        }
+    }
+    Ok(members)
 }
 
 /// The file every closed set is read from.

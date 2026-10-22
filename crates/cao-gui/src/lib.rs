@@ -11,8 +11,6 @@
 //! - [`bootstrap_log`] installs the Application Log before the window exists,
 //!   and [`fail_startup`] reports a startup failure with a critical box and
 //!   exit code 1; [`App::attach_log`] shows the log in the Log tab.
-//! - [`formats`] maps the unwanted-format names the window shows to
-//!   `DXGI_FORMAT` numbers.
 //!
 //! The `.slint` components themselves are compiled in `cao-gui-ui` and
 //! re-exported here as [`ui`].
@@ -20,7 +18,6 @@
 mod app;
 mod desktop;
 mod form;
-pub mod formats;
 mod log_tab;
 mod modal;
 mod rules;
