@@ -15,10 +15,13 @@ use super::{RunEvidenceInvariantPanic, RunExecutor, RunServices, RunWork};
 use crate::Error;
 use crate::routing::{ExecutionMode, RequestedWork};
 use crate::run::{
-    CancellationToken, ModSelection, MutableRunEvidence, OptimizationRunResult, RunFailureCode,
-    RunOutcome, RunPhase, RunPreparation, RunRequest, TemporaryArtifactRegistry, create_run_id,
+    CancellationToken, ModSelection, MutableRunEvidence, OptimizationRunResult, RunDiagnostic,
+    RunDiagnosticCode, RunFailureCode, RunObservationSink, RunOutcome, RunPhase, RunPhaseRecord,
+    RunPreparation, RunRequest, TemporaryArtifactRegistry, create_run_id,
 };
-use crate::test_support::{CountingCleanup, ScriptedToolset, ToolsetConfiguration};
+use crate::test_support::{
+    CountingCleanup, Observed, RecordingSink, ScriptedToolset, ToolsetConfiguration,
+};
 
 /// A fresh, empty directory for one scenario under the system temporary
 /// directory: `CARGO_TARGET_TMPDIR` exists only for integration tests.
@@ -60,12 +63,22 @@ fn execute(
     cleanup: &mut CountingCleanup,
     work: impl RunWork,
 ) -> OptimizationRunResult {
+    execute_observed(request, cleanup, None, work)
+}
+
+/// [`execute`], with the run's facts also published to `observations`.
+fn execute_observed(
+    request: &RunRequest,
+    cleanup: &mut CountingCleanup,
+    observations: Option<&dyn RunObservationSink>,
+    work: impl RunWork,
+) -> OptimizationRunResult {
     let provider = provider();
     RunExecutor.execute_with_work(
         request,
         RunServices {
             safety_cleanup: cleanup,
-            observations: None,
+            observations,
             configuration: Some(&provider),
         },
         &CancellationToken::new(),
@@ -196,6 +209,66 @@ fn escaped_work_fails_the_run_at_its_phase_and_safety_cleanup_still_removes_its_
         assert!(result.cleanup_failures().is_empty(), "{name}");
         assert_staging_removed(name, &staged.expect("the work staged"), &root);
     }
+}
+
+/// Spec #607 (#608): the Run Executor publishes the run's deferred Run
+/// Diagnostics once the work is contained, so a diagnostic the work retained
+/// before it panicked still reaches the Run Observation Sink, exactly once,
+/// after the escaped work's Run Failure and before Safety Cleanup.
+#[test]
+fn a_diagnostic_retained_before_contained_work_panics_is_published_before_safety_cleanup() {
+    let (request, root) = texture_request("diagnostic-before-panic");
+    let sink = RecordingSink::default();
+    let mut cleanup = CountingCleanup::default();
+    let retained = RunDiagnostic::new(
+        RunDiagnosticCode::LinkedEntryExcluded,
+        RunPhase::DiscoveringArchives,
+        "Linked entry resolves outside the Mod Root.",
+    )
+    .with_path(root.join("textures").join("linked.dds"));
+    let expected = retained.clone();
+    let result = execute_observed(
+        &request,
+        &mut cleanup,
+        Some(&sink),
+        move |_preparation, _toolset, evidence, _artifacts, _stop| {
+            evidence.record_phase(RunPhaseRecord::executed(
+                RunPhase::DiscoveringArchives,
+                None,
+            ))?;
+            evidence.retain_diagnostic(retained);
+            panic!("the work escaped after retaining a diagnostic")
+        },
+    );
+
+    assert_eq!(result.outcome(), RunOutcome::Failed);
+    assert_eq!(result.diagnostics(), [expected.clone()]);
+    let observed = sink.observed();
+    let published: Vec<usize> = observed
+        .iter()
+        .enumerate()
+        .filter(|(_, observation)| **observation == Observed::Diagnostic(expected.clone()))
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(published.len(), 1, "published exactly once: {observed:?}");
+    let escaped = observed
+        .iter()
+        .position(|observation| {
+            matches!(observation, Observed::Failure(failure)
+                if failure.code == RunFailureCode::RunWorkEscaped)
+        })
+        .expect("the escaped work's Run Failure is published");
+    let cleanup_record = observed
+        .iter()
+        .position(|observation| {
+            matches!(observation, Observed::Phase(record)
+                if record.phase() == RunPhase::SafetyCleanup)
+        })
+        .expect("Safety Cleanup is published");
+    assert!(
+        escaped < published[0] && published[0] < cleanup_record,
+        "failure, then the deferred diagnostic, then Safety Cleanup: {observed:?}"
+    );
 }
 
 /// Origin: RunExecutorTests::evidenceInvariantViolationsRemainProgrammingDefects.

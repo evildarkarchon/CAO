@@ -376,6 +376,13 @@ impl RunExecutor {
             // including whatever the interrupted step had partly written.
             Self::fail_at_current_phase(&mut evidence, run_worker_panic_detail(payload));
         }
+        // The work phases retain some Run Diagnostics without publishing them.
+        // They are published here, once, whether the work returned, stopped
+        // early or panicked, so no exit path has to remember them and a panic
+        // cannot leave them unpublished. Escaped work's Run Failure, already
+        // published above or inside the traversal, therefore precedes them,
+        // and Safety Cleanup follows them.
+        evidence.publish_diagnostics();
 
         // Safety Cleanup runs exactly once on every terminal path, before the
         // terminal result exists, so cancellation and failure cannot leave
@@ -390,6 +397,10 @@ impl RunExecutor {
         for failure in cleanup_failures {
             invariant.note(evidence.record_safety_cleanup_failure(failure));
         }
+        // The token never resets, so this one sample covers cancellation the
+        // work phases observed through it; they do not record it themselves.
+        // Only cancellation a backend reported, which the token may not show,
+        // is recorded where the work phases establish it.
         if stop.is_cancelled() {
             evidence.record_cancellation_observation();
         }
