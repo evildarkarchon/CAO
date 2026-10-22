@@ -38,6 +38,7 @@ use crate::run::{
     RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunProgress, SelectedProfile,
 };
 use crate::test_support::{Observed, RecordingSink, sse_capabilities, sse_profile};
+use crate::{AttemptOutcome, CompletedMutation, OperationFailure};
 
 /// The preparation of a Dry Run with no work, as Preparing would retain it.
 fn successful_preparation() -> RunPreparation {
@@ -95,12 +96,21 @@ fn finalization_attempt(
     mutation: MutationState,
     failure: Option<ArchiveFinalizationFailure>,
 ) -> ArchiveFinalizationAttempt {
-    ArchiveFinalizationAttempt {
-        mutation,
-        failure,
-        detail: failure.map_or_else(String::new, |failure| format!("{failure:?}")),
-        ..ArchiveFinalizationAttempt::new(archive.into(), mod_root.into())
-    }
+    // A failure claims safety, as a committed attempt whose verification
+    // passed does; a success can only carry no mutation or a Committed one.
+    let outcome = match (failure, mutation) {
+        (Some(failure), mutation) => AttemptOutcome::failed(
+            OperationFailure::new(failure, format!("{failure:?}")),
+            mutation,
+            true,
+        ),
+        (None, MutationState::None) => AttemptOutcome::success(CompletedMutation::None),
+        (None, MutationState::Committed) => AttemptOutcome::success(CompletedMutation::Committed),
+        (None, MutationState::PartialOrUnknown) => {
+            panic!("a successful attempt cannot leave partial or unknown mutation")
+        }
+    };
+    ArchiveFinalizationAttempt::new(archive.into(), mod_root.into(), outcome)
 }
 
 /// Evidence in the executed Archive Finalization phase, optionally reporting
@@ -306,13 +316,18 @@ fn a_finalization_plan_needs_its_phase_and_cleanup_failures_stay_separate() {
         is_invariant(evidence.record_archive_finalization_plan(2)),
         "the plan is immutable"
     );
-    let mut retained = finalization_attempt(
-        "second.bsa",
-        "second-mod",
-        MutationState::Committed,
-        Some(ArchiveFinalizationFailure::SourceCleanupFailed),
+    let retained = ArchiveFinalizationAttempt::new(
+        "second.bsa".into(),
+        "second-mod".into(),
+        AttemptOutcome::failed(
+            OperationFailure::new(
+                ArchiveFinalizationFailure::SourceCleanupFailed,
+                "source retained",
+            ),
+            MutationState::Committed,
+            true,
+        ),
     );
-    retained.detail = "source retained".to_owned();
     evidence
         .record_archive_finalization(ArchiveFinalizationResult {
             attempts: vec![
@@ -360,10 +375,13 @@ fn a_finalization_plan_needs_its_phase_and_cleanup_failures_stay_separate() {
     );
     assert!(finalization.attempts[0].succeeded());
     assert_eq!(
-        finalization.attempts[1].failure,
+        finalization.attempts[1]
+            .outcome
+            .failure()
+            .map(OperationFailure::category),
         Some(ArchiveFinalizationFailure::SourceCleanupFailed)
     );
-    assert!(finalization.attempts[1].safe_to_continue);
+    assert!(finalization.attempts[1].safe_to_continue());
 }
 
 /// Origin: RunEvidenceTests::finalizationProgressPublishesRetainedAttempt.
@@ -443,7 +461,10 @@ fn an_interrupted_finalization_keeps_its_completed_attempts() {
     let terminal = consume_after_cleanup(evidence);
     let finalization = terminal.archive_finalization().unwrap();
     assert_eq!(finalization.attempts.len(), 1);
-    assert_eq!(finalization.attempts[0].mutation, MutationState::Committed);
+    assert_eq!(
+        finalization.attempts[0].outcome.mutation(),
+        MutationState::Committed
+    );
     assert_eq!(
         finalization.failure,
         Some(ArchiveFinalizationFailure::UnexpectedException)

@@ -474,7 +474,7 @@ fn an_sse_apply_packs_what_it_extracted_into_an_archive_at_the_sources_name() {
     let [packing] = finalization.attempts.as_slice() else {
         panic!("one packed Archive: {finalization:?}");
     };
-    assert!(packing.succeeded(), "{}", packing.detail);
+    assert!(packing.succeeded(), "{:?}", packing.outcome);
     assert_eq!(packing.archive_path, archive, "the source's name is reused");
     let read = cao_archive::ReadArchive::open(&archive).unwrap().unwrap();
     let mut packed: Vec<_> = read

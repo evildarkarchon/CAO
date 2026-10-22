@@ -751,9 +751,9 @@ fn attempt_evidence_outlives_its_adapters() {
     let [packed] = result.archive_finalization().unwrap().attempts.as_slice() else {
         panic!("one output: {:?}", result.archive_finalization());
     };
-    assert!(packed.succeeded(), "{}", packed.detail);
+    assert!(packed.succeeded(), "{:?}", packed.outcome);
     assert_eq!(packed.mod_root, root);
-    assert_eq!(packed.mutation, MutationState::Committed);
+    assert_eq!(packed.outcome.mutation(), MutationState::Committed);
     assert!(packed.archive_path.exists());
     assert!(result.routing_ledger().is_some());
 }
@@ -799,7 +799,7 @@ fn a_cancelled_finalization_is_reported() {
     let [packed] = finalization.attempts.as_slice() else {
         panic!("only the first output is attempted: {finalization:?}");
     };
-    assert_eq!(packed.mutation, MutationState::Committed);
+    assert_eq!(packed.outcome.mutation(), MutationState::Committed);
     assert_eq!(toolset.packer.writes().len(), 1);
     assert_eq!(
         result

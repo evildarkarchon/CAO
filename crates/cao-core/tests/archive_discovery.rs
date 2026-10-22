@@ -1764,7 +1764,7 @@ fn assert_packing_failed_unexpectedly(result: &OptimizationRunResult) {
         panic!("one output attempt: {finalization:?}");
     };
     assert_eq!(
-        attempt.failure,
+        attempt.outcome.failure().map(|failure| failure.category()),
         Some(ArchiveFinalizationFailure::UnexpectedException)
     );
     assert!(!finalization.safe_to_continue);

@@ -55,7 +55,7 @@ fn an_archive_run_packs_loose_assets_with_its_profile_exclusions_and_settings() 
     let finalization = result.archive_finalization().unwrap();
     assert_eq!(finalization.attempts.len(), 1, "{}", finalization.detail);
     let attempt = &finalization.attempts[0];
-    assert!(attempt.succeeded(), "{}", attempt.detail);
+    assert!(attempt.succeeded(), "{:?}", attempt.outcome);
     assert_eq!(attempt.archive_path, root.join("mod.bsa"));
     // Only the Loose Asset the exclusion does not match is packed, and the
     // chosen settings turned compression off.

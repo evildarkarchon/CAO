@@ -44,6 +44,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cao_core::Error;
+use cao_core::OperationFailure;
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use cao_core::routing::{
     AssetOperation, ExecutionMode, PolicyValidationError, ProfileCapabilities, RequestedWork,
@@ -851,7 +852,7 @@ fn a_removed_conversion_keeps_its_attempt_after_a_later_interruption() {
                 panic!("{row}: one output attempt: {finalization:?}");
             };
             assert_eq!(
-                attempt.failure,
+                attempt.outcome.failure().map(OperationFailure::category),
                 Some(ArchiveFinalizationFailure::UnexpectedException)
             );
             assert!(!finalization.safe_to_continue, "{row}");
@@ -1144,7 +1145,7 @@ fn each_work_phase_is_published_before_its_work_starts() {
     let [packed] = result.archive_finalization().unwrap().attempts.as_slice() else {
         panic!("one output: {:?}", result.archive_finalization());
     };
-    assert!(packed.succeeded(), "{}", packed.detail);
+    assert!(packed.succeeded(), "{:?}", packed.outcome);
     assert_eq!(
         *published_at_write.lock().unwrap(),
         [Some(RunPhase::ArchiveFinalization)]
@@ -1486,20 +1487,18 @@ fn mixed_asset_evidence_outlives_every_service() {
     let finalization = result.archive_finalization().unwrap();
     assert_eq!(finalization.attempts.len(), 2, "{finalization:?}");
     let (packed, unwritten) = (&finalization.attempts[0], &finalization.attempts[1]);
-    assert!(packed.succeeded(), "{}", packed.detail);
+    assert!(packed.succeeded(), "{:?}", packed.outcome);
     assert_eq!(packed.mod_root, root);
-    assert_eq!(packed.mutation, MutationState::Committed);
-    assert_eq!(
-        unwritten.failure,
-        Some(ArchiveFinalizationFailure::WriteFailed)
-    );
+    assert_eq!(packed.outcome.mutation(), MutationState::Committed);
+    let failure = unwritten.outcome.failure().expect("an Operation Failure");
+    assert_eq!(failure.category(), ArchiveFinalizationFailure::WriteFailed);
     assert_eq!(unwritten.mod_root, root);
-    assert_eq!(unwritten.mutation, MutationState::None);
-    assert!(unwritten.safe_to_continue);
+    assert_eq!(unwritten.outcome.mutation(), MutationState::None);
+    assert!(unwritten.safe_to_continue());
     assert!(
-        unwritten.detail.contains("b.dds"),
+        failure.detail().contains("b.dds"),
         "the detail names the unreadable source: {}",
-        unwritten.detail
+        failure.detail()
     );
     assert!(!unwritten.archive_path.exists());
     // Pruning still runs after a recoverable failure: the packed Mesh's
@@ -1616,10 +1615,10 @@ fn a_cancelled_finalization_keeps_its_committed_output() {
     assert!(finalization.cancelled);
     assert_eq!(finalization.attempts.len(), 1);
     let committed = &finalization.attempts[0];
-    assert!(committed.succeeded(), "{}", committed.detail);
+    assert!(committed.succeeded(), "{:?}", committed.outcome);
     assert_eq!(committed.mod_root, root);
-    assert_eq!(committed.mutation, MutationState::Committed);
-    assert!(committed.safe_to_continue);
+    assert_eq!(committed.outcome.mutation(), MutationState::Committed);
+    assert!(committed.safe_to_continue());
     let progress = result
         .phase(RunPhase::ArchiveFinalization)
         .unwrap()
@@ -1693,13 +1692,13 @@ fn a_committed_archive_without_its_loading_plugin_fails_the_run() {
     assert_eq!(finalization.attempts.len(), 1);
     let attempt = &finalization.attempts[0];
     assert_eq!(
-        attempt.failure,
+        attempt.outcome.failure().map(OperationFailure::category),
         Some(ArchiveFinalizationFailure::PluginCreationFailed),
-        "{}",
-        attempt.detail
+        "{:?}",
+        attempt.outcome
     );
-    assert_eq!(attempt.mutation, MutationState::Committed);
-    assert!(!attempt.safe_to_continue);
+    assert_eq!(attempt.outcome.mutation(), MutationState::Committed);
+    assert!(!attempt.safe_to_continue());
     assert!(!finalization.safe_to_continue);
     assert_eq!(result.mutation_summaries().len(), 1);
     assert_eq!(result.mutation_summaries()[0].committed, 1);
@@ -1937,7 +1936,10 @@ fn recovered_and_run_owned_staging_are_cleaned_even_after_a_later_failure() {
             assert_eq!(result.outcome(), RunOutcome::Failed, "{row}");
             let finalization = result.archive_finalization().unwrap();
             assert_eq!(
-                finalization.attempts[0].failure,
+                finalization.attempts[0]
+                    .outcome
+                    .failure()
+                    .map(OperationFailure::category),
                 Some(ArchiveFinalizationFailure::UnexpectedException)
             );
             assert!(!finalization.safe_to_continue, "{row}");

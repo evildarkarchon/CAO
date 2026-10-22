@@ -266,9 +266,9 @@ fn classify_terminal_outcome(evidence: &RunEvidence) -> RunOutcome {
             .flat_map(|finalization| &finalization.attempts)
             .map(|attempt| {
                 (
-                    attempt.mutation,
+                    attempt.outcome.mutation(),
                     attempt.succeeded(),
-                    attempt.safe_to_continue,
+                    attempt.safe_to_continue(),
                 )
             }),
     );
