@@ -8,6 +8,7 @@
 
 use cao_core::routing::{ProfileCapabilities, ProfileCapability};
 use cao_gui_ui::{AnimationsTab, BsaTab, MainWindow, MeshesTab, TexturesTab};
+use cao_profiles::ArchiveSize;
 use cao_profiles::{
     BsaGame, ClosedSet, MeshFileVersion, MeshStreamVersion, MeshUserVersion, OptimizationMode,
     Options, ProfileSettings, TextureFormat, UnwantedFormat,
@@ -340,7 +341,7 @@ pub(crate) fn read_options(
 /// name the window lists it by.
 pub(crate) fn show_settings(ui: &MainWindow, settings: &ProfileSettings) {
     let bsa = ui.global::<BsaTab>();
-    bsa.set_max_size((settings.max_bsa_uncompressed_size / GIGABYTE) as f32);
+    bsa.set_max_size(shown_gigabytes(settings.max_bsa_uncompressed_size));
     bsa.set_game_index(choice_index(settings.bsa_game));
 
     let meshes = ui.global::<MeshesTab>();
@@ -370,7 +371,7 @@ pub(crate) fn read_settings(ui: &MainWindow, current: &ProfileSettings) -> Profi
     if let Some(&game) = item(BsaGame::ALL, bsa.get_game_index()) {
         settings.bsa_game = game;
     }
-    settings.max_bsa_uncompressed_size = gigabytes(bsa.get_max_size()) * GIGABYTE;
+    settings.max_bsa_uncompressed_size = archive_size(bsa.get_max_size());
 
     let meshes = ui.global::<MeshesTab>();
     if let Some(&user) = item(MeshUserVersion::ALL, meshes.get_user_index()) {
@@ -407,6 +408,18 @@ pub(crate) fn read_settings(ui: &MainWindow, current: &ProfileSettings) -> Profi
 /// two-decimal text gives back the same `f64` C++ multiplied.
 fn gigabytes(shown: f32) -> f64 {
     format!("{shown:.2}").parse().unwrap_or_default()
+}
+
+/// The maximum Archive size as the spin box shows it, in gigabytes.
+fn shown_gigabytes(size: ArchiveSize) -> f32 {
+    (size.bytes() as f64 / GIGABYTE) as f32
+}
+
+/// The maximum Archive size the spin box's gigabytes stand for, truncated to
+/// whole bytes as the read of `profile.ini` truncates a fraction. The spin box
+/// holds 0 to 99.99, so the bytes always fit.
+fn archive_size(shown: f32) -> ArchiveSize {
+    ArchiveSize::from_bytes((gigabytes(shown) * GIGABYTE) as u64)
 }
 
 /// The index of `value` among a combo's item data.

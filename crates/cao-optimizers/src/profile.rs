@@ -82,7 +82,7 @@ pub(crate) fn textures_need_own_archive(settings: &Settings) -> bool {
 pub fn archive_packer(settings: &ProfileSettings) -> GameArchivePacker {
     GameArchivePacker::new(
         Settings::get(archive_game(settings.bsa_game))
-            .with_profile_max_size(settings.max_bsa_uncompressed_size),
+            .with_profile_max_size(settings.max_bsa_uncompressed_size.bytes()),
     )
 }
 

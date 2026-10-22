@@ -5,6 +5,7 @@
 mod common;
 
 use cao_gui::ui::{MeshesTab, TexturesTab};
+use cao_profiles::ArchiveSize;
 use cao_profiles::{
     BsaGame, MeshStreamVersion, OptimizationMode, Options, Profiles, TextureFormat, UnwantedFormat,
 };
@@ -98,9 +99,10 @@ fn settings_saved_from_the_window_reload_identically() {
     assert!(options.animations_optimization);
     let settings = profile.load_settings().unwrap();
     assert_eq!(settings.bsa_game, BsaGame::Tes5);
+    // 3.5 GiB, in whole bytes.
     assert_eq!(
         settings.max_bsa_uncompressed_size,
-        3.5 * 1024.0 * 1024.0 * 1024.0
+        ArchiveSize::from_bytes(3_758_096_384)
     );
     assert_eq!(settings.meshes_stream, MeshStreamVersion::V130);
     assert_eq!(settings.textures_format, TextureFormat::Bc3Unorm);
