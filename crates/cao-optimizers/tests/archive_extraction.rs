@@ -25,11 +25,11 @@ use cao_core::run::{
 };
 use cao_core::test_support::{ArchiveRunRequest, RecordingSink};
 use cao_optimizers::archives::ArchiveFileReader;
-use cao_optimizers::composition::ApplicationRun;
+use cao_optimizers::composition::run_service;
 use cao_profiles::Options;
 use cao_winfs::{Access, Open, Share, msvc_canonical};
 use common::archive_run::{only_attempt, production_seams};
-use common::{app_dir, profile_options, scratch_dir, serial, write};
+use common::{app_dir, profile_options, scratch_dir, serial, start_and_wait, write};
 use directxtex::{
     CP_FLAGS_NONE, DDS_FLAGS_NONE, DXGI_FORMAT, DXGI_FORMAT_BC1_UNORM_SRGB, DXGI_FORMAT_BC6H_UF16,
     DXGI_FORMAT_BC7_UNORM, ScratchImage, TexMetadata,
@@ -406,8 +406,7 @@ fn an_sse_apply_extracts_a_bsa_then_backs_up_or_deletes_its_source() {
         );
 
         let options = apply_extraction(&app, "SSE", &mod_root, delete_backup);
-        let run = ApplicationRun::new(&app, "SSE", &options).unwrap();
-        let result = run.start(None).unwrap().wait();
+        let result = start_and_wait(&run_service(&app), "SSE", &options);
 
         assert_eq!(
             result.outcome(),
@@ -460,8 +459,7 @@ fn an_sse_apply_packs_what_it_extracted_into_an_archive_at_the_sources_name() {
 
     let mut options = apply_extraction(&app, "SSE", &mod_root, true);
     options.bsa_create = true;
-    let run = ApplicationRun::new(&app, "SSE", &options).unwrap();
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(&run_service(&app), "SSE", &options);
 
     assert_eq!(
         result.outcome(),
@@ -559,8 +557,7 @@ fn deviation_7_fo4_dx10_cubemaps_in_bc7_bc6h_and_srgb_extract() {
     );
 
     let options = apply_extraction(&app, "FO4", &mod_root, true);
-    let run = ApplicationRun::new(&app, "FO4", &options).unwrap();
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(&run_service(&app), "FO4", &options);
 
     assert_eq!(
         result.outcome(),

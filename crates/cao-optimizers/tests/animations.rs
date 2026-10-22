@@ -28,11 +28,11 @@ use std::time::{Duration, Instant};
 use cao_core::execution::{AssetExecutionFailure, MutationState};
 use cao_core::run::{OptimizationRunResult, RunOutcome};
 use cao_optimizers::animations::{AnimationError, Hkxcmd};
-use cao_optimizers::composition::ApplicationRun;
+use cao_optimizers::composition::run_service;
 use cao_profiles::Options;
 use common::{
     STAGING_CONTROL_FILES, app_dir, profile_options, scratch_dir, snapshot_tree, staging_leftovers,
-    write,
+    start_and_wait, write,
 };
 
 /// Each scenario, by name; the arguments after `--` filter them by substring.
@@ -223,8 +223,7 @@ fn animations_only(app: &Path, mod_root: &Path, dry_run: bool) -> Options {
 
 /// Runs `options` under SSE in the install at `app` and waits for the result.
 fn run(app: &Path, options: &Options) -> Arc<OptimizationRunResult> {
-    let run = ApplicationRun::new(app, "SSE", options).unwrap();
-    run.start(None).unwrap().wait()
+    start_and_wait(&run_service(app), "SSE", options)
 }
 
 /// Spec (#476, #502): an Apply runs `hkxcmd.exe convert <src> -o <dst> -v

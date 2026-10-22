@@ -31,9 +31,11 @@ use cao_core::run::{
 };
 use cao_core::test_support::ArchiveRunRequest;
 use cao_optimizers::archives::{GameArchivePacker, VolumeProbes};
-use cao_optimizers::composition::ApplicationRun;
+use cao_optimizers::composition::run_service;
 use common::archive_run::production_seams_for;
-use common::{app_dir, canonical, profile_options, scratch_dir, serial, write, write_dds};
+use common::{
+    app_dir, canonical, profile_options, scratch_dir, serial, start_and_wait, write, write_dds,
+};
 use directxtex::DXGI_FORMAT_R8G8B8A8_UNORM;
 
 /// A volume probe answering the same free space for every Mod Root, and each
@@ -522,8 +524,7 @@ fn an_sse_apply_packs_loose_assets_into_loadable_archives() {
     options.bsa_create = true;
     // The options model's default; the shipped `settings.ini` lacks the key.
     options.bsa_merge_incompressible = true;
-    let run = ApplicationRun::new(&app, "SSE", &options).unwrap();
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(&run_service(&app), "SSE", &options);
 
     assert_eq!(result.outcome(), RunOutcome::Succeeded, "{result:?}");
     let finalization = result.archive_finalization().unwrap();
