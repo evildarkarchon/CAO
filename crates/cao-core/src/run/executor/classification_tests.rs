@@ -11,6 +11,7 @@
 //! show the executor feeds its evidence here; this table pins every
 //! combination of work fact and terminal circumstance.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::classify_terminal_outcome;
@@ -18,9 +19,7 @@ use crate::CompletedMutation;
 use crate::Error;
 use crate::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use crate::routing::{AssetRouter, ExecutionMode, RequestedWork, RoutingPolicyRequest};
-use crate::run::evidence::{
-    ArchiveDiscoveryEvidence, MutableRunEvidence, RoutedAssetAttempt, RunEvidence,
-};
+use crate::run::evidence::{MutableRunEvidence, RoutedAssetAttempt, RunEvidence};
 use crate::run::{
     ArchiveFinalizationAccount, ArchiveFinalizationFailure, ArchivePrecedence, RunFailure,
     RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord, RunPreparation,
@@ -132,6 +131,7 @@ fn sealed_evidence(fact: WorkFact, terminal: Terminal) -> Result<RunEvidence, Er
         RunPhase::DiscoveringArchives,
         None,
     ))?;
+    evidence.record_skipped_archive_counts(BTreeMap::new())?;
     evidence.record_archive_collisions(&[])?;
     // The empty extraction plan closes as soon as its handle's borrow ends.
     evidence.open_archive_extraction(0)?;
@@ -139,7 +139,7 @@ fn sealed_evidence(fact: WorkFact, terminal: Terminal) -> Result<RunEvidence, Er
         RunPhase::BuildingEffectiveAssetTree,
         None,
     ))?;
-    evidence.record_archive_discovery(ArchiveDiscoveryEvidence::default())?;
+    evidence.record_nested_archive_count(0)?;
     // Routing decides from the file name alone, so the Texture never has to exist.
     let ledger = router.route_all([mod_root.join("textures/a.dds")]);
     let asset = ledger
