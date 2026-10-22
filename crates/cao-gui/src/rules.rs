@@ -112,7 +112,7 @@ fn separate_textures(ui: &MainWindow) {
 /// size the run packs at.
 ///
 /// - A Profile that gives no size shows the game's default, and follows the
-///   Game combo until the user edits the spin box (`BsaTab.max-size-given`).
+///   Game combo until the user edits the spin box (`BsaTab.archive-limit-given`).
 /// - While the game has an Archive Size Cap ([`Settings::size_cap`], 2 GiB for
 ///   the BSA games), the spin box stops there. It keeps a larger loaded size
 ///   as it is, so the Profile's line is saved as written until the user edits
@@ -120,14 +120,14 @@ fn separate_textures(ui: &MainWindow) {
 fn archive_limit(ui: &MainWindow) {
     let bsa = ui.global::<BsaTab>();
     let rules = archive_rules(bsa.get_game_index());
-    if !bsa.get_max_size_given()
+    if !bsa.get_archive_limit_given()
         && let Some(rules) = &rules
     {
-        bsa.set_max_size(form::gigabytes_of(rules.archive_limit()));
+        bsa.set_archive_limit(form::gigabytes_of(rules.archive_limit()));
     }
     let cap = rules.and_then(|rules| rules.size_cap());
     // 0 is the `.slint` side's "no cap".
-    bsa.set_max_size_cap(cap.map_or(0.0, form::gigabytes_of));
+    bsa.set_archive_size_cap(cap.map_or(0.0, form::gigabytes_of));
 }
 
 /// The Archive Rules of a Profile that gives no maximum Archive size, for the

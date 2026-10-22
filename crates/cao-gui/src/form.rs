@@ -348,10 +348,10 @@ pub(crate) fn read_options(
 pub(crate) fn show_settings(ui: &MainWindow, settings: &ProfileSettings) {
     let bsa = ui.global::<BsaTab>();
     let requested = settings.max_bsa_uncompressed_size.requested();
-    bsa.set_max_size_given(requested.is_some());
+    bsa.set_archive_limit_given(requested.is_some());
     // A size not given shows the game's default, which the Archive Limit rule
     // (`rules.rs`) fills in from the Game combo; 0 only holds its place.
-    bsa.set_max_size(requested.map_or(0.0, gigabytes_of));
+    bsa.set_archive_limit(requested.map_or(0.0, gigabytes_of));
     bsa.set_game_index(choice_index(settings.bsa_game));
 
     let meshes = ui.global::<MeshesTab>();
@@ -390,8 +390,8 @@ pub(crate) fn read_settings(ui: &MainWindow, current: &ProfileSettings) -> Profi
     // size the user did not change is kept as loaded rather than re-derived.
     // Compared as the spin box displays them, so its own rounding of the
     // loaded value does not count as a change.
-    if bsa.get_max_size_given() {
-        let shown = gigabytes(bsa.get_max_size());
+    if bsa.get_archive_limit_given() {
+        let shown = gigabytes(bsa.get_archive_limit());
         let loaded = current
             .max_bsa_uncompressed_size
             .requested()
