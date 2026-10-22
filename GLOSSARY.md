@@ -128,9 +128,13 @@ _Avoid_: Output ownership, blanket Mod Root cleanup
 A durable filesystem change completed by an Optimization Run. It is retained even when a later operation causes cancellation or failure.
 _Avoid_: Temporary artifact, partial write
 
+**Attempt Outcome**:
+What one completed Asset, Archive extraction, or Archive Finalization output attempt left behind: its mutation state, its Operation Failure if any, and whether the Optimization Run can safely continue. Partial or unknown mutation is never safe to continue and never a success.
+_Avoid_: Operation Failure, attempt result
+
 **Operation Failure**:
-A structured unsuccessful Archive or Asset operation that records its mutation state and whether the Optimization Run can safely continue.
-_Avoid_: Exception, error log
+Why one Asset or Archive attempt did not complete, as a stable category with its detail. Its mutation state and continuation belong to the attempt's Attempt Outcome, since a failed attempt may still have committed.
+_Avoid_: Exception, error log, Attempt Outcome
 
 **Quarantine**:
 The Apply-only renaming of a Texture or Mesh that cannot be loaded, so that later runs and Archive creation leave it alone. A completed Quarantine is a Committed Mutation, and the Asset's attempt is still an Operation Failure. An Asset that cannot be quarantined makes the run unsafe to continue.
