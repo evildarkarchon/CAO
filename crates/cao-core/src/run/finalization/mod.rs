@@ -23,6 +23,8 @@
 mod attempt;
 mod planning;
 mod plugins;
+#[cfg(test)]
+mod tests;
 
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::fs::MetadataExt as _;
