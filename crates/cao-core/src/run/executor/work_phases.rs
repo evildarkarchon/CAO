@@ -188,6 +188,11 @@ fn attributed_mod_root<'p>(path: &Path, mod_roots: &'p [PathBuf]) -> Option<&'p 
 /// the last attempt; an attempt in flight always finishes. An unsafe attempt
 /// stops all further work.
 ///
+/// Every exit simply returns: the executor records cancellation observed
+/// from `stop` at Safety Cleanup, and publishes the Run Diagnostics retained
+/// here once the work has returned. Only an Asset backend's own report of
+/// cancellation, which `stop` need not show, is recorded here.
+///
 /// An Asset attempt's panic is contained here, as an unsafe Operation
 /// Failure with unknown mutation. Archive extraction and Archive
 /// Finalization contain their own panics, so they are called without a
@@ -267,7 +272,7 @@ pub(super) fn run_work_phases(
                     ..ArchiveDiscoveryEvidence::default()
                 })?;
                 evidence.record_failure(failure);
-                return finish(evidence, false);
+                return Ok(());
             }
             Preflight::Cancelled => return interrupted(evidence, skipped_archive_counts),
             Preflight::Planned {
@@ -303,14 +308,13 @@ pub(super) fn run_work_phases(
     if let Some(halt) = extract_archives(&plans, toolset, extraction, artifacts, stop)? {
         return match halt {
             ExtractionStop::Cancelled => interrupted(evidence, skipped_archive_counts),
-            // An unsafe attempt never reaches routing or finalization; only
-            // separately observed cancellation is retained alongside it.
-            ExtractionStop::Unsafe { cancellation } => {
+            // An unsafe attempt never reaches routing or finalization.
+            ExtractionStop::Unsafe => {
                 evidence.record_archive_discovery(ArchiveDiscoveryEvidence {
                     skipped_archive_counts,
                     ..ArchiveDiscoveryEvidence::default()
                 })?;
-                finish(evidence, cancellation)
+                Ok(())
             }
         };
     }
@@ -351,7 +355,7 @@ pub(super) fn run_work_phases(
     })?;
     if !complete {
         // A partial scan is not a definitive tree and never becomes work.
-        return finish(evidence, true);
+        return Ok(());
     }
     let ledger = router.route_all(&effective_paths);
     // The evidence retains the ledger it opens Processing Assets with; this
@@ -364,7 +368,7 @@ pub(super) fn run_work_phases(
     ] {
         for asset in ledger.routed_assets_for(target) {
             if stop.is_cancelled() {
-                return finish(evidence, true);
+                return Ok(());
             }
             let path = asset.execution_path();
             let attempt = match attributed_mod_root(path, preparation.mod_roots()) {
@@ -395,7 +399,14 @@ pub(super) fn run_work_phases(
                         )
                     })) {
                         Ok(Ok(result)) => (mod_root.clone(), result),
-                        Ok(Err(AssetInitializationCancelled)) => return finish(evidence, true),
+                        Ok(Err(AssetInitializationCancelled)) => {
+                            // The backend reported this cancellation; the token
+                            // need not show it, so the executor's sample at
+                            // Safety Cleanup could miss it. It is recorded here,
+                            // where the work phases establish it.
+                            evidence.record_cancellation_observation();
+                            return Ok(());
+                        }
                         // A panic cannot establish whether durable bytes were committed.
                         Err(payload) => (
                             mod_root.clone(),
@@ -420,20 +431,20 @@ pub(super) fn run_work_phases(
             // A failed attempt still completes progress, but uncertain mutation
             // makes every later attempt and Archive Finalization unsafe.
             if !safe_to_continue {
-                return finish(evidence, stop.is_cancelled());
+                return Ok(());
             }
         }
     }
     // Cancellation raised during the last attempt has no later loop head to
     // observe it, and a finalizer need not check it either.
     if stop.is_cancelled() {
-        return finish(evidence, true);
+        return Ok(());
     }
     evidence.publish_diagnostics();
     // An observer of those diagnostics may cancel; the run then stops before
     // entering Archive Finalization rather than recording a phase it skips.
     if stop.is_cancelled() {
-        return finish(evidence, true);
+        return Ok(());
     }
 
     // The execution mode selects the final work phase's record: Apply
@@ -447,7 +458,7 @@ pub(super) fn run_work_phases(
     })?;
     // Archive Finalization is a separate mutation boundary: observe cancellation before it.
     if stop.is_cancelled() {
-        return finish(evidence, true);
+        return Ok(());
     }
     // The immutable policy decides: Dry Run never finalizes, whatever the Toolset holds.
     if mode == ExecutionMode::Apply {
@@ -461,23 +472,12 @@ pub(super) fn run_work_phases(
             &|| stop.is_cancelled(),
         )?;
     }
-    finish(evidence, stop.is_cancelled())
-}
-
-/// Ends the work on any return: records cancellation in `evidence` when it
-/// was observed, then publishes every diagnostic the work retained, exactly
-/// once. Always `Ok`, so a return site can hand back its result directly.
-fn finish(evidence: &mut MutableRunEvidence<'_>, cancellation_observed: bool) -> Result<(), Error> {
-    if cancellation_observed {
-        evidence.record_cancellation_observation();
-    }
-    evidence.publish_diagnostics();
     Ok(())
 }
 
 /// Ends the work after cancellation before the definitive pass: keeps the
 /// Archive exclusions the Archive pass already counted, but never a partial
-/// tree, then [`finish`]es with cancellation observed.
+/// tree.
 ///
 /// # Errors
 /// A Run Evidence invariant violation recording the discovery facts.
@@ -488,17 +488,15 @@ fn interrupted(
     evidence.record_archive_discovery(ArchiveDiscoveryEvidence {
         skipped_archive_counts,
         ..ArchiveDiscoveryEvidence::default()
-    })?;
-    finish(evidence, true)
+    })
 }
 
 /// Why Archive extraction stopped short of the definitive pass.
 enum ExtractionStop {
     /// Cancellation was observed between attempts.
     Cancelled,
-    /// An attempt left unknown mutation or claimed it was unsafe to continue;
-    /// `cancellation` records whether cancellation was also observed.
-    Unsafe { cancellation: bool },
+    /// An attempt left unknown mutation or claimed it was unsafe to continue.
+    Unsafe,
 }
 
 /// Extracts each planned Archive in order through
@@ -544,9 +542,7 @@ fn extract_archives(
         attempt.mod_root = plan.mod_root.clone();
         extraction.record(attempt)?;
         if unsafe_attempt {
-            return Ok(Some(ExtractionStop::Unsafe {
-                cancellation: stop.is_cancelled(),
-            }));
+            return Ok(Some(ExtractionStop::Unsafe));
         }
     }
     // Re-sampled after the final attempt and its progress record, so
