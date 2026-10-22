@@ -148,9 +148,7 @@ fn load_selected_profile(
     };
     let provider =
         provider.ok_or_else(|| failure("No run configuration provider is available".to_owned()))?;
-    match catch_unwind(AssertUnwindSafe(|| {
-        provider.load(request.profile_identity())
-    })) {
+    match catch_unwind(AssertUnwindSafe(|| provider.load(request))) {
         Ok(Ok(loaded)) => Ok(loaded),
         Ok(Err(error)) => Err(failure(error.to_string())),
         Err(payload) => Err(failure(format!(

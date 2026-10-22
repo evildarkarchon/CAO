@@ -14,7 +14,8 @@ use cao_core::routing::{
 use cao_core::run::{
     ArchiveFinalizationSettings, MeshChoices, MeshLevel, ModSelection, OptimizationRunResult,
     ResizeRatio, ResizeSize, RunConfigurationProvider, RunDiagnosticCode, RunFailureCode,
-    RunOutcome, RunPhase, SourceCleanup, TextureChoices, TextureResizeChoice, WorkChoices,
+    RunOutcome, RunPhase, RunRequest, SourceCleanup, TextureChoices, TextureResizeChoice,
+    WorkChoices,
 };
 use cao_optimizers::composition::{
     ApplicationRun, ProfileConfigurationProvider, RunSetupError, run_request,
@@ -438,13 +439,10 @@ fn several_mods_excludes_separators_and_ignored_mods_from_the_shipped_profile() 
     assert_eq!(snapshot_tree(&app), before, "Dry Run never mutates");
 }
 
-/// The production provider over `app`'s profiles, set up for runs of the
-/// options `profile` saves, wired from the Run Request those options build as
-/// `ApplicationRun::new` wires it.
-fn provider(app: &Path, profile: &str) -> ProfileConfigurationProvider {
-    let options = profile_options(app, profile);
-    let request = run_request(profile, &options).unwrap();
-    ProfileConfigurationProvider::new(app, &request, &options)
+/// The Run Request `run_request` builds from the options `options_of` saves,
+/// under the profile identity `profile`.
+fn saved_request(app: &Path, options_of: &str, profile: &str) -> RunRequest {
+    run_request(profile, &profile_options(app, options_of)).unwrap()
 }
 
 /// The Selected Profile the production provider loads from the shipped FO4
@@ -465,9 +463,13 @@ fn the_provider_loads_the_selected_profile_from_the_profile_files() {
         b"# comment\nreadme.txt\n  meshes/kept  \n",
     );
 
+    // Built from the app directory alone: the run's intent comes from the
+    // request each load is given.
+    let provider = ProfileConfigurationProvider::new(&app);
+
     // FO4 has no ignoredMods.txt of its own, so it falls back to SSE's.
     // The contract's return type guarantees the Toolset is built.
-    let (profile, _toolset) = provider(&app, "FO4").load("FO4").unwrap();
+    let (profile, _toolset) = provider.load(&saved_request(&app, "FO4", "FO4")).unwrap();
 
     // FO4 enables Textures and Archives, but neither Meshes nor Animations.
     // Mesh Reference Maintenance belongs to Texture conversion.
@@ -488,7 +490,12 @@ fn the_provider_loads_the_selected_profile_from_the_profile_files() {
     assert_eq!(profile.ignored_mods(), ["Tool Mod"]);
     assert_eq!(profile.packing_exclusions(), ["readme.txt", "meshes/kept"]);
 
-    assert!(provider(&app, "FO4").load("MissingProfile").is_err());
+    // The profile read is the one the request names.
+    assert!(
+        provider
+            .load(&saved_request(&app, "FO4", "MissingProfile"))
+            .is_err()
+    );
 }
 
 /// Each load reads the profile afresh, as each run's Preparing does, so an
@@ -496,8 +503,9 @@ fn the_provider_loads_the_selected_profile_from_the_profile_files() {
 #[test]
 fn the_provider_loads_an_updated_selected_profile() {
     let app = app_dir("provider-updated");
-    let provider = provider(&app, "FO4");
-    let (first, _) = provider.load("FO4").unwrap();
+    let provider = ProfileConfigurationProvider::new(&app);
+    let request = saved_request(&app, "FO4", "FO4");
+    let (first, _) = provider.load(&request).unwrap();
     assert!(first.prefers_conversion());
 
     // Edited between two loads, as between two runs' Preparing.
@@ -505,7 +513,7 @@ fn the_provider_loads_an_updated_selected_profile() {
     edit_profile(&app, "FO4", "bsaEnabled", "false");
     edit_profile(&app, "FO4", "texturesConvertTga", "false");
     edit_profile(&app, "FO4", "meshesEnabled", "true");
-    let (second, _) = provider.load("FO4").unwrap();
+    let (second, _) = provider.load(&request).unwrap();
 
     assert_eq!(
         second.capabilities(),
@@ -527,7 +535,8 @@ fn the_provider_loads_an_updated_selected_profile() {
 fn the_provider_rejects_an_unreadable_ignored_mod_list() {
     let app = app_dir("provider-unreadable-ignored");
     std::fs::create_dir(app.join("profiles/FO4/ignoredMods.txt")).unwrap();
-    assert!(provider(&app, "FO4").load("FO4").is_err());
+    let provider = ProfileConfigurationProvider::new(&app);
+    assert!(provider.load(&saved_request(&app, "FO4", "FO4")).is_err());
 }
 
 #[test]

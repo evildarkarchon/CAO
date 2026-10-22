@@ -335,7 +335,7 @@ pub fn execute_run(
 }
 
 impl RunConfigurationProvider for ToolsetConfiguration {
-    fn load(&self, _profile_identity: &str) -> Result<(SelectedProfile, RunToolset), Error> {
+    fn load(&self, _request: &RunRequest) -> Result<(SelectedProfile, RunToolset), Error> {
         self.loads.load(&self.toolset, self.toolset.fake_seams())
     }
 }
@@ -388,7 +388,7 @@ impl SeamsConfiguration {
 }
 
 impl RunConfigurationProvider for SeamsConfiguration {
-    fn load(&self, _profile_identity: &str) -> Result<(SelectedProfile, RunToolset), Error> {
+    fn load(&self, _request: &RunRequest) -> Result<(SelectedProfile, RunToolset), Error> {
         self.loads.load(&self.assets, (self.seams)())
     }
 }

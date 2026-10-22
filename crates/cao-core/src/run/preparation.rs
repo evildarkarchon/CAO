@@ -8,7 +8,7 @@ use crate::Error;
 use crate::routing::{
     PolicyValidationError, ProfileCapabilities, RoutingPolicy, RoutingPolicyRequest,
 };
-use crate::run::RunToolset;
+use crate::run::{RunRequest, RunToolset};
 
 /// How Archives within one Mod Root are ordered.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -125,15 +125,19 @@ impl SelectedProfile {
 /// Implementations return owned facts and never borrow application state. An
 /// error becomes a `ConfigurationLoadingFailed` Run Failure, never a Start Error.
 pub trait RunConfigurationProvider: Send + Sync {
-    /// Reads the named profile once, returning its Selected Profile together
-    /// with the Run Toolset built from that same read, so the run's work uses
-    /// exactly the profile facts its Routing Policy is compiled from. Every
-    /// Optimization Run has a Run Toolset, so a successful load always
-    /// returns one.
+    /// Reads the profile `request` names once, returning its Selected Profile
+    /// together with the Run Toolset built from that same read, so the run's
+    /// work uses exactly the profile facts its Routing Policy is compiled
+    /// from. Every Optimization Run has a Run Toolset, so a successful load
+    /// always returns one.
+    ///
+    /// `request` is the run's whole Run Request, so a provider reads the
+    /// run's intent (its Mod Selection and Work Choices, say) from it here
+    /// rather than capturing any per-run state when it is built.
     ///
     /// # Errors
     /// Any error becomes a `ConfigurationLoadingFailed` Run Failure.
-    fn load(&self, profile_identity: &str) -> Result<(SelectedProfile, RunToolset), Error>;
+    fn load(&self, request: &RunRequest) -> Result<(SelectedProfile, RunToolset), Error>;
 }
 
 /// The immutable facts a successful Preparing establishes, retained by the terminal result.
