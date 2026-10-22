@@ -462,15 +462,16 @@ fn a_packer_panic_is_an_unexpected_exception_keeping_earlier_attempts() {
     let [kept, panicked] = finalization.attempts.as_slice() else {
         panic!("two output attempts: {finalization:?}");
     };
-    assert!(kept.succeeded(), "{}", kept.detail);
-    assert_eq!(kept.mutation, MutationState::Committed);
+    assert!(kept.succeeded(), "{:?}", kept.outcome);
+    assert_eq!(kept.outcome.mutation(), MutationState::Committed);
+    let failure = panicked.outcome.failure().expect("an Operation Failure");
     assert_eq!(
-        panicked.failure,
-        Some(ArchiveFinalizationFailure::UnexpectedException)
+        failure.category(),
+        ArchiveFinalizationFailure::UnexpectedException
     );
-    assert_eq!(panicked.detail, "the archive writer panicked");
-    assert!(!panicked.safe_to_continue);
-    assert_eq!(panicked.mutation, MutationState::None);
+    assert_eq!(failure.detail(), "the archive writer panicked");
+    assert!(!panicked.safe_to_continue());
+    assert_eq!(panicked.outcome.mutation(), MutationState::None);
     assert!(!finalization.safe_to_continue);
     assert!(!panicked.archive_path.exists(), "nothing is published");
     assert!(second.join("textures/b.dds").exists());

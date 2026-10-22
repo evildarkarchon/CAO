@@ -145,7 +145,7 @@ fn the_capacity_estimate_covers_the_published_archive_and_plugin() {
         let settings = ArchiveFinalizationSettings::default();
 
         let rejected = finalize(game, &root, settings, Some(0));
-        let detail = &rejected.attempts[0].detail;
+        let detail = rejected.attempts[0].outcome.failure().unwrap().detail();
         let estimate: u64 = detail
             .split_once("estimated ")
             .unwrap()
@@ -159,7 +159,7 @@ fn the_capacity_estimate_covers_the_published_archive_and_plugin() {
         let result = finalize(game, &root, settings, None);
         assert_eq!(result.attempts.len(), 1);
         let attempt = &result.attempts[0];
-        assert!(attempt.succeeded(), "{game:?}: {}", attempt.detail);
+        assert!(attempt.succeeded(), "{game:?}: {:?}", attempt.outcome);
         assert_eq!(attempt.archive_path, root.join(archive));
         let published = size(&attempt.archive_path) + size(&root.join("mod.esp"));
         assert!(estimate >= published, "{game:?}: {estimate} < {published}");
@@ -275,7 +275,7 @@ fn output_names_come_from_full_plugins_not_exact_dummies() {
 
         assert_eq!(result.attempts.len(), 1);
         let attempt = &result.attempts[0];
-        assert!(attempt.succeeded(), "{game:?}: {}", attempt.detail);
+        assert!(attempt.succeeded(), "{game:?}: {:?}", attempt.outcome);
         assert_eq!(attempt.archive_path, root.join(archive));
         assert!(
             result
@@ -344,8 +344,8 @@ fn a_plugin_appearing_at_another_recognized_name_is_reused() {
         let original = appeared.lock().unwrap().expect("the plugin appeared");
         assert_eq!(result.attempts.len(), 1);
         let attempt = &result.attempts[0];
-        assert!(attempt.succeeded(), "{game:?}: {}", attempt.detail);
-        assert_eq!(attempt.mutation, MutationState::Committed);
+        assert!(attempt.succeeded(), "{game:?}: {:?}", attempt.outcome);
+        assert_eq!(attempt.outcome.mutation(), MutationState::Committed);
         assert!(
             result
                 .mutations
@@ -422,7 +422,7 @@ fn quarantined_files_are_never_packed() {
 
         assert_eq!(result.attempts.len(), 1, "{game:?}");
         let attempt = &result.attempts[0];
-        assert!(attempt.succeeded(), "{game:?}: {}", attempt.detail);
+        assert!(attempt.succeeded(), "{game:?}: {:?}", attempt.outcome);
         let names: Vec<_> = open(&attempt.archive_path)
             .archived_assets()
             .unwrap()

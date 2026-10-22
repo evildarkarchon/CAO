@@ -510,15 +510,15 @@ fn the_terminal_result_lists_its_evidence() {
         panic!("one output: {finalization:?}");
     };
     assert_eq!(
-        packed.failure,
+        packed.outcome.failure().map(|failure| failure.category()),
         Some(ArchiveFinalizationFailure::SourceCleanupFailed)
     );
-    assert_eq!(packed.mutation, MutationState::Committed);
+    assert_eq!(packed.outcome.mutation(), MutationState::Committed);
     assert!(!finalization.safe_to_continue);
     let source_cleanup_row = format!(
         "Archive Failure: {} | {}",
         packed.archive_path.display(),
-        packed.detail
+        packed.outcome.failure().unwrap().detail()
     );
 
     let mut view = RunView::default();

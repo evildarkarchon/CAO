@@ -18,13 +18,21 @@ use crate::run::{
     ArchiveSeams, PublicationPolicy, PublicationState, TemporaryArtifactRegistry,
     take_panic_message,
 };
+use crate::{AttemptOutcome, CompletedMutation, OperationFailure};
 
-/// How far one attempt got, for classifying its failure.
+/// How far one attempt got, for classifying its failure. The in-flight
+/// mutation and continuation claim live here, step by step, and become the
+/// attempt's Attempt Outcome once, when it ends.
 struct AttemptProgress {
     /// The failure an error now reports.
     boundary: ArchiveFinalizationFailure,
     /// How many packed sources are already deleted.
     removed_sources: usize,
+    /// The durable mutation so far, which only publication sets.
+    mutation: MutationState,
+    /// The attempt's own continuation claim, kept apart from the Attempt
+    /// Outcome's verdict; publication and verification can only lower it.
+    claimed_safe_to_continue: bool,
 }
 
 /// Runs output `index`'s atomic attempt, never failing outright: every
@@ -50,13 +58,13 @@ pub(super) fn attempt_output(
     mutations: &mut Vec<ArchiveFinalizationMutation>,
 ) -> ArchiveFinalizationAttempt {
     let output = &plan.outputs[index];
-    let mut attempt =
-        ArchiveFinalizationAttempt::new(output.archive_path.clone(), output.mod_root.clone());
     let mut progress = AttemptProgress {
         boundary: ArchiveFinalizationFailure::WriteFailed,
         removed_sources: 0,
+        mutation: MutationState::None,
+        claimed_safe_to_continue: true,
     };
-    let outcome = catch_unwind(AssertUnwindSafe(|| {
+    let attempted = catch_unwind(AssertUnwindSafe(|| {
         try_attempt(
             plan,
             index,
@@ -65,20 +73,23 @@ pub(super) fn attempt_output(
             capacity,
             dummy_demand,
             mutations,
-            &mut attempt,
             &mut progress,
         )
     }));
-    match outcome {
-        Ok(Ok(())) => {}
+    let outcome = match attempted {
+        Ok(Ok(())) => {
+            // Reaching the end means publication committed and released the
+            // Archive, so a finished attempt always holds a Committed
+            // Mutation.
+            debug_assert_eq!(progress.mutation, MutationState::Committed);
+            AttemptOutcome::success(CompletedMutation::Committed)
+        }
         Ok(Err(detail)) => {
-            attempt.failure = Some(progress.boundary);
-            attempt.detail = detail;
             // Publication or plugin errors leave sources intact. Once
             // committed, only a usable Archive and usable surviving sources
             // justify continuing, and verification can only confirm a
             // continuation the publication itself allowed.
-            if attempt.mutation == MutationState::Committed && attempt.safe_to_continue {
+            if progress.mutation == MutationState::Committed && progress.claimed_safe_to_continue {
                 let verified = catch_unwind(AssertUnwindSafe(|| {
                     progress.boundary != ArchiveFinalizationFailure::PluginCreationFailed
                         && archive_reads_back(seams, &output.archive_path)
@@ -88,24 +99,38 @@ pub(super) fn attempt_output(
                 }));
                 // A failed verification keeps the original error and stops
                 // later attempts.
-                attempt.safe_to_continue = verified.unwrap_or_else(|payload| {
+                progress.claimed_safe_to_continue = verified.unwrap_or_else(|payload| {
                     take_panic_message(payload);
                     false
                 });
             }
+            AttemptOutcome::failed(
+                OperationFailure::new(progress.boundary, detail),
+                progress.mutation,
+                progress.claimed_safe_to_continue,
+            )
         }
-        Err(payload) => {
-            attempt.failure = Some(ArchiveFinalizationFailure::UnexpectedException);
-            attempt.detail = take_panic_message(payload);
-            attempt.safe_to_continue = false;
-        }
-    }
-    attempt
+        // A panic keeps whatever mutation publication already committed.
+        Err(payload) => AttemptOutcome::failed(
+            OperationFailure::new(
+                ArchiveFinalizationFailure::UnexpectedException,
+                take_panic_message(payload),
+            ),
+            progress.mutation,
+            false,
+        ),
+    };
+    ArchiveFinalizationAttempt::new(
+        output.archive_path.clone(),
+        output.mod_root.clone(),
+        outcome,
+    )
 }
 
 /// Performs the attempt, recording in `progress` which failure an `Err`
-/// detail stands for. A capacity rejection is not an `Err`: it returns `Ok`
-/// with the failure already set, since it is never a mutation.
+/// detail stands for, the mutation publication made, and the continuation
+/// claim. A capacity rejection is an `Err` at the `InsufficientCapacity`
+/// boundary, returned before any mutation, so its claim stays safe.
 #[expect(
     clippy::too_many_arguments,
     reason = "the attempt's inputs, plus the two records its caller classifies"
@@ -118,7 +143,6 @@ fn try_attempt(
     capacity: &CapacityCheck<'_>,
     dummy_demand: &Demand,
     mutations: &mut Vec<ArchiveFinalizationMutation>,
-    attempt: &mut ArchiveFinalizationAttempt,
     progress: &mut AttemptProgress,
 ) -> Result<(), String> {
     let output = &plan.outputs[index];
@@ -139,9 +163,8 @@ fn try_attempt(
         output.estimated_capacity_bytes.max(current),
     );
     if let Some(shortfall) = capacity.shortfall_at(&demand, &output.mod_root) {
-        attempt.failure = Some(ArchiveFinalizationFailure::InsufficientCapacity);
-        attempt.detail = shortfall.to_string();
-        return Ok(());
+        progress.boundary = ArchiveFinalizationFailure::InsufficientCapacity;
+        return Err(shortfall.to_string());
     }
 
     // The sources and their parents stay pinned from before the write until
@@ -176,11 +199,11 @@ fn try_attempt(
     progress.boundary = ArchiveFinalizationFailure::CommitFailed;
     let publication = receipt.publish(&output.archive_path, PublicationPolicy::NoReplace);
     // Publication commits the Archive before its ownership is released.
-    attempt.mutation = publication.mutation();
+    progress.mutation = publication.mutation();
     if publication.state != PublicationState::PublishedAndReleased {
         // Publication's verdict stands; a later read-back cannot override a
         // release failure.
-        attempt.safe_to_continue = publication.safe_to_continue();
+        progress.claimed_safe_to_continue = publication.safe_to_continue();
         return Err(if publication.error_detail.is_empty() {
             "Archive publication did not complete.".to_owned()
         } else {
