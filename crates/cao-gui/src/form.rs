@@ -6,6 +6,7 @@
 //! reloads the same. #509's UI rules (Dry Run, Several Mods, FO4 textures; `rules.rs`) are
 //! not applied here; they run after [`show_options`] and [`show_settings`].
 
+use cao_core::routing::{ProfileCapabilities, ProfileCapability};
 use cao_gui_ui::{AnimationsTab, BsaTab, MainWindow, MeshesTab, TexturesTab};
 use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileSettings};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
@@ -84,47 +85,35 @@ impl Tab {
     pub(crate) fn from_id(id: &str) -> Option<Tab> {
         Tab::ALL.into_iter().find(|tab| tab.id() == id)
     }
-}
 
-/// Which tabs the profile enables, as the tab bar shows them: the profile's
-/// Profile Capabilities, which also gate the asset options [`read_options`] reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct EnabledTabs {
-    pub bsa: bool,
-    pub meshes: bool,
-    pub textures: bool,
-    pub animations: bool,
-}
-
-impl EnabledTabs {
-    /// No asset tab enabled, as for a profile whose `profile.ini` could not be
-    /// read. Only the tab bar uses this; [`read_options`] takes `None` for an
-    /// unreadable profile, so it cannot mistake one for a profile supporting
-    /// nothing.
-    pub(crate) const NONE: Self = Self {
-        bsa: false,
-        meshes: false,
-        textures: false,
-        animations: false,
-    };
-
-    /// The asset tabs the capabilities in `settings` (`profile.ini`) enable.
-    pub(crate) fn of_profile(settings: &ProfileSettings) -> Self {
-        Self {
-            bsa: settings.bsa_enabled,
-            meshes: settings.meshes_enabled,
-            textures: settings.textures_enabled,
-            animations: settings.animations_enabled,
-        }
-    }
-
-    /// Whether `tab` is enabled. The profile never disables the Log tab.
-    pub(crate) fn allows(&self, tab: Tab) -> bool {
-        match tab {
-            Tab::Bsa => self.bsa,
-            Tab::Meshes => self.meshes,
-            Tab::Textures => self.textures,
-            Tab::Animations => self.animations,
+    /// Whether the Selected Profile's Profile Capabilities enable this tab, as
+    /// the tab bar shows it; the same answer gates the asset options
+    /// [`read_options`] reads. `None` stands for a profile whose `profile.ini`
+    /// could not be read, which enables no asset tab. The Log tab is always
+    /// enabled.
+    ///
+    /// A tab is enabled by any capability its options drive. Mesh Reference
+    /// Maintenance does not enable the Meshes tab: Texture conversion drives
+    /// it, and nothing on that tab affects it.
+    pub(crate) fn enabled_by(self, capabilities: Option<&ProfileCapabilities>) -> bool {
+        let supports_any = |wanted: &[ProfileCapability]| {
+            capabilities.is_some_and(|capabilities| {
+                wanted
+                    .iter()
+                    .any(|capability| capabilities.supports(*capability))
+            })
+        };
+        match self {
+            Tab::Bsa => supports_any(&[
+                ProfileCapability::ArchiveExtraction,
+                ProfileCapability::ArchiveCreation,
+            ]),
+            Tab::Meshes => supports_any(&[
+                ProfileCapability::StandardMeshOptimization,
+                ProfileCapability::TerrainMeshOptimization,
+            ]),
+            Tab::Textures => supports_any(&[ProfileCapability::NativeTextureOptimization]),
+            Tab::Animations => supports_any(&[ProfileCapability::AnimationOptimization]),
             Tab::Log => true,
         }
     }
@@ -217,7 +206,7 @@ pub(crate) fn show_options(ui: &MainWindow, options: &Options) {
 pub(crate) fn read_options(
     ui: &MainWindow,
     current: &Options,
-    capabilities: Option<EnabledTabs>,
+    capabilities: Option<&ProfileCapabilities>,
 ) -> Options {
     let mut options = current.clone();
 
@@ -230,14 +219,15 @@ pub(crate) fn read_options(
     // An unreadable profile shows every asset tab disabled, which the gating
     // below would read as "every option off" and so wipe `settings.ini`. Not
     // knowing what the profile can do is no reason to forget what it had.
-    let Some(tabs) = capabilities else {
+    if capabilities.is_none() {
         return options;
-    };
+    }
+    let tab = |tab: Tab| tab.enabled_by(capabilities);
 
     // The base group is disabled while Dry Run is on (`rules.rs`), and C++
     // reads every BSA option as off while the tab or that group is disabled.
     let bsa = ui.global::<BsaTab>();
-    let bsa_enabled = tabs.bsa && !ui.get_dry_run();
+    let bsa_enabled = tab(Tab::Bsa) && !ui.get_dry_run();
     options.bsa_extract = bsa_enabled && bsa.get_extract();
     options.bsa_create = bsa_enabled && bsa.get_create();
     options.bsa_delete_backup = bsa_enabled && bsa.get_delete_backups();
@@ -248,12 +238,12 @@ pub(crate) fn read_options(
     options.bsa_delete_source = bsa_enabled && bsa.get_delete_source();
 
     let textures = ui.global::<TexturesTab>();
-    let textures_enabled = textures.get_process() && tabs.textures;
+    let textures_enabled = textures.get_process() && tab(Tab::Textures);
     options.textures_necessary = textures_enabled && textures.get_necessary();
     options.textures_mipmaps = textures_enabled && textures.get_mipmaps();
     options.textures_compress = textures_enabled && textures.get_compress();
 
-    let resizing = textures.get_resize() && tabs.textures;
+    let resizing = textures.get_resize() && tab(Tab::Textures);
     options.textures_resize_size = resizing && textures.get_resize_mode() == RESIZE_BY_SIZE;
     options.textures_target_width = unsigned(textures.get_size_width());
     options.textures_target_height = unsigned(textures.get_size_height());
@@ -270,14 +260,14 @@ pub(crate) fn read_options(
     } else if meshes.get_full() {
         options.meshes_optimization_level = 3;
     }
-    if !meshes.get_process() || !tabs.meshes {
+    if !meshes.get_process() || !tab(Tab::Meshes) {
         options.meshes_optimization_level = 0;
     }
-    options.meshes_headparts = tabs.meshes && meshes.get_headparts();
-    options.meshes_resave = tabs.meshes && meshes.get_resave();
+    options.meshes_headparts = tab(Tab::Meshes) && meshes.get_headparts();
+    options.meshes_resave = tab(Tab::Meshes) && meshes.get_resave();
 
     options.animations_optimization =
-        tabs.animations && ui.global::<AnimationsTab>().get_necessary();
+        tab(Tab::Animations) && ui.global::<AnimationsTab>().get_necessary();
     options
 }
 
