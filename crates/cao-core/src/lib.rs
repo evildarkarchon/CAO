@@ -21,6 +21,7 @@
 //! that the run scenarios of this crate, `cao-optimizers` and `cao-gui`
 //! share. Enable it only from `[dev-dependencies]`.
 
+mod attempt;
 mod error;
 pub mod execution;
 pub mod routing;
@@ -28,4 +29,5 @@ pub mod run;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
+pub use attempt::{AttemptFacts, AttemptOutcome, CompletedMutation, OperationFailure};
 pub use error::Error;
