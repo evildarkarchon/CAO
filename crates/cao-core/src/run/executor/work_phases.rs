@@ -449,30 +449,27 @@ pub(super) fn run_work_phases(
 
     // The execution mode selects the final work phase's record: Apply
     // executes Archive Finalization over the Run Toolset's seams, and Dry
-    // Run skips it.
-    evidence.record_phase(match mode {
-        ExecutionMode::DryRun => {
-            RunPhaseRecord::skipped(RunPhase::ArchiveFinalization, PhaseSkipReason::DryRun)
-        }
-        ExecutionMode::Apply => RunPhaseRecord::executed(RunPhase::ArchiveFinalization, None),
-    })?;
-    // Archive Finalization is a separate mutation boundary: observe cancellation before it.
+    // Run skips it. The immutable policy decides: Dry Run never finalizes,
+    // whatever the Toolset holds.
+    if mode == ExecutionMode::DryRun {
+        return evidence.record_phase(RunPhaseRecord::skipped(
+            RunPhase::ArchiveFinalization,
+            PhaseSkipReason::DryRun,
+        ));
+    }
+    let finalization = evidence.open_archive_finalization()?;
+    // Archive Finalization is a separate mutation boundary: observe
+    // cancellation before it. The unplanned handle is then dropped, which
+    // records nothing, so the phase reports no result.
     if stop.is_cancelled() {
         return Ok(());
     }
-    // The immutable policy decides: Dry Run never finalizes, whatever the Toolset holds.
-    if mode == ExecutionMode::Apply {
-        // Finalization reaches only its own facts, never the whole evidence.
-        // It contains its own panics as an Unexpected Exception, so it is
-        // called without a second layer.
-        toolset.finalize_archives(
-            preparation,
-            &mut evidence.finalization_recorder(),
-            artifacts,
-            &|| stop.is_cancelled(),
-        )?;
-    }
-    Ok(())
+    // Finalization reaches only its own facts, never the whole evidence, and
+    // owns the phase it runs. It contains its own panics as an Unexpected
+    // Exception, so it is called without a second layer.
+    toolset.finalize_archives(preparation, finalization, artifacts, &|| {
+        stop.is_cancelled()
+    })
 }
 
 /// Ends the work after cancellation before the definitive pass: keeps the

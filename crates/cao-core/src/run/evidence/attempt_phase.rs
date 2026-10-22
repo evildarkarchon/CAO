@@ -12,7 +12,10 @@ use std::marker::PhantomData;
 
 use super::{MutableRunEvidence, RoutedAssetAttempt, Storage};
 use crate::Error;
-use crate::run::{ArchiveExtractionResult, ArchiveFinalizationAttempt, RunDiagnostic, RunPhase};
+use crate::run::{
+    ArchiveExtractionResult, ArchiveFinalizationAccount, ArchiveFinalizationAttempt,
+    ArchiveFinalizationResult, RunDiagnostic, RunPhase,
+};
 
 mod sealed {
     use super::Storage;
@@ -89,11 +92,15 @@ impl PhaseAttempt for RoutedAssetAttempt {
 
 impl sealed::Sealed for ArchiveFinalizationAttempt {
     fn retain(self, storage: &mut Storage) {
-        // `record_archive_finalization_attempt` checks the plan's open result
-        // before the shared step runs, so the attempt always lands in it.
-        if let Some(finalization) = storage.archive_finalization.as_mut() {
-            finalization.attempts.push(self);
-        }
+        // Only the plan records the phase's progress, and it opens the
+        // result the attempts stream into, so the shared step never accepts
+        // an attempt without one. Opening one here regardless means an
+        // accepted attempt can never be lost.
+        storage
+            .archive_finalization
+            .get_or_insert_with(ArchiveFinalizationResult::default)
+            .attempts
+            .push(self);
     }
 }
 
@@ -130,7 +137,8 @@ pub(crate) struct AttemptPhaseHandle<'e, 'a, T: PhaseAttempt> {
 }
 
 impl<'e, 'a, T: PhaseAttempt> AttemptPhaseHandle<'e, 'a, T> {
-    /// Lends `evidence` to a phase its opener has just entered and planned.
+    /// Lends `evidence` to a phase its opener has just entered, and planned
+    /// unless the phase plans later through its own step.
     pub(super) fn new(evidence: &'e mut MutableRunEvidence<'a>) -> Self {
         Self {
             evidence,
@@ -155,5 +163,39 @@ impl<'e, 'a, T: PhaseAttempt> AttemptPhaseHandle<'e, 'a, T> {
     /// evidence exclusively, so the phase's work retains through it.
     pub(crate) fn retain_diagnostic(&mut self, diagnostic: RunDiagnostic) {
         self.evidence.retain_diagnostic(diagnostic);
+    }
+}
+
+/// The open Archive Finalization phase, which [`MutableRunEvidence`] opens
+/// unplanned: its output total is known only once the phase has planned.
+pub(crate) type ArchiveFinalizationHandle<'e, 'a> =
+    AttemptPhaseHandle<'e, 'a, ArchiveFinalizationAttempt>;
+
+impl ArchiveFinalizationHandle<'_, '_> {
+    /// Records the frozen output total, once, before any attempt, and starts
+    /// the phase's determinate progress at zero of `total`.
+    ///
+    /// Planning is a runtime-checked step on the one handle rather than a
+    /// change of handle type, so the finalizer keeps the same handle across
+    /// a panic that happens after planning.
+    ///
+    /// # Errors
+    /// A Run Evidence invariant violation when the total is already
+    /// recorded, or the phase already finished.
+    pub(crate) fn plan(&mut self, total: usize) -> Result<(), Error> {
+        self.evidence.plan_archive_finalization(total)
+    }
+
+    /// Finishes the phase with its phase-level `account`, consuming the
+    /// handle. Valid with or without a plan, so cancelled or failed planning
+    /// finishes without inventing an output total. The evidence puts the
+    /// public Archive Finalization result together from the attempts
+    /// already streamed plus `account`; a cancelled account marks
+    /// cancellation observed.
+    ///
+    /// # Errors
+    /// A Run Evidence invariant violation when the phase already finished.
+    pub(crate) fn finish(self, account: ArchiveFinalizationAccount) -> Result<(), Error> {
+        self.evidence.finish_archive_finalization(account)
     }
 }

@@ -22,7 +22,7 @@ use crate::run::evidence::{
     ArchiveDiscoveryEvidence, MutableRunEvidence, RoutedAssetAttempt, RunEvidence,
 };
 use crate::run::{
-    ArchiveFinalizationFailure, ArchiveFinalizationResult, ArchivePrecedence, RunFailure,
+    ArchiveFinalizationAccount, ArchiveFinalizationFailure, ArchivePrecedence, RunFailure,
     RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord, RunPreparation,
 };
 use crate::test_support::sse_profile;
@@ -158,21 +158,19 @@ fn sealed_evidence(fact: WorkFact, terminal: Terminal) -> Result<RunEvidence, Er
     // An unsafe attempt stops every later attempt and Archive Finalization.
     if fact != WorkFact::UnsafeMutation {
         evidence.publish_diagnostics();
-        evidence.record_phase(RunPhaseRecord::executed(
-            RunPhase::ArchiveFinalization,
-            None,
-        ))?;
+        let mut finalization = evidence.open_archive_finalization()?;
         if fact == WorkFact::FatalFailure {
-            // As the finalization recorder retains a panic before planning.
-            evidence.record_archive_finalization(ArchiveFinalizationResult {
+            // As Archive Finalization finishes its phase after a panic
+            // before planning.
+            finalization.finish(ArchiveFinalizationAccount {
                 failure: Some(ArchiveFinalizationFailure::UnexpectedException),
                 safe_to_continue: false,
                 detail: "fatal work failure".to_owned(),
-                ..ArchiveFinalizationResult::default()
+                ..ArchiveFinalizationAccount::default()
             })?;
         } else {
-            evidence.record_archive_finalization_plan(0)?;
-            evidence.record_archive_finalization(ArchiveFinalizationResult::default())?;
+            finalization.plan(0)?;
+            finalization.finish(ArchiveFinalizationAccount::default())?;
         }
     }
 
