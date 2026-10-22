@@ -344,7 +344,7 @@ pub(crate) fn read_options(
 /// name the window lists it by.
 pub(crate) fn show_settings(ui: &MainWindow, settings: &ProfileSettings) {
     let bsa = ui.global::<BsaTab>();
-    bsa.set_max_size(shown_gigabytes(settings.max_bsa_uncompressed_size));
+    bsa.set_max_size(shown_gigabytes(&settings.max_bsa_uncompressed_size));
     bsa.set_game_index(choice_index(settings.bsa_game));
 
     let meshes = ui.global::<MeshesTab>();
@@ -374,7 +374,15 @@ pub(crate) fn read_settings(ui: &MainWindow, current: &ProfileSettings) -> Profi
     if let Some(&game) = item(BsaGame::ALL, bsa.get_game_index()) {
         settings.bsa_game = game;
     }
-    settings.max_bsa_uncompressed_size = archive_size(bsa.get_max_size());
+    // The spin box's two decimals of a gigabyte cannot hold every size, and a
+    // size written with a unit keeps its text only while it is unchanged, so a
+    // size the user did not change is kept as loaded rather than re-derived.
+    // Compared as the spin box displays them, so its own rounding of the
+    // loaded value does not count as a change.
+    let shown = bsa.get_max_size();
+    if gigabytes(shown) != gigabytes(shown_gigabytes(&current.max_bsa_uncompressed_size)) {
+        settings.max_bsa_uncompressed_size = archive_size(shown);
+    }
 
     let meshes = ui.global::<MeshesTab>();
     if let Some(&user) = item(MeshUserVersion::ALL, meshes.get_user_index()) {
@@ -413,7 +421,7 @@ fn gigabytes(shown: f32) -> f64 {
 }
 
 /// The maximum Archive size as the spin box shows it, in gigabytes.
-fn shown_gigabytes(size: ArchiveSize) -> f32 {
+fn shown_gigabytes(size: &ArchiveSize) -> f32 {
     (size.bytes() as f64 / GIGABYTE) as f32
 }
 

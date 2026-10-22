@@ -118,7 +118,8 @@ impl ProfileSettings {
     /// outside its closed set.
     ///
     /// The maximum Archive size is also [`ProfileError::UnsupportedValue`] when
-    /// it is not a whole number of bytes: see [`ArchiveSize`].
+    /// it is neither a number of bytes nor a size with a unit, or does not fit
+    /// in whole bytes: see [`ArchiveSize`].
     pub fn read(ini: &IniFile) -> Result<Self, ProfileError> {
         Ok(Self {
             bsa_enabled: ini.value("BSA/bsaEnabled").to_bool(),
@@ -144,7 +145,7 @@ impl ProfileSettings {
         ini.set("BSA/bsaEnabled", self.bsa_enabled);
         ini.set(
             "BSA/maxBsaUncompressedSize",
-            self.max_bsa_uncompressed_size.bytes().to_string(),
+            self.max_bsa_uncompressed_size.to_written(),
         );
         ini.set("BSA/bsaGame", self.bsa_game.number());
 

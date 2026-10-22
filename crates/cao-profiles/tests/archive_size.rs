@@ -1,5 +1,6 @@
 //! A Profile's maximum Archive size (`[BSA] maxBsaUncompressedSize`): a whole
-//! number of bytes, read strictly and written as integer text.
+//! number of bytes, read strictly from bytes or a size with a unit, and written
+//! as integer text unless the user's text still holds it.
 
 mod common;
 
@@ -61,9 +62,83 @@ fn a_missing_size_reads_as_zero_so_the_games_table_maximum_applies() {
     );
 }
 
+/// What a rejected size's error says the key accepts.
+const ACCEPTED: &str = "a whole number of bytes from 0 to 18446744073709551615, or a size \
+                        such as `8GB` in B, KB, MB, GB or TB, counted in 1024s";
+
 #[test]
-fn a_size_that_is_not_a_number_is_reported_rather_than_read_as_zero() {
-    for value in ["", "2GB", "two"] {
+fn a_size_with_a_unit_loads_counted_in_1024s() {
+    // A copied Profile may raise its Archives past the game's table maximum,
+    // such as FO4 Archives past the Creation Kit's 4 GB, so a hand-edited size
+    // can say so in units. Case and the space before the unit don't matter,
+    // the IEC spellings mean the same, and a fraction of a byte is truncated.
+    for (value, bytes) in [
+        ("8GB", 8_589_934_592),
+        ("8 gb", 8_589_934_592),
+        ("4.5GB", 4_831_838_208),
+        ("500MB", 524_288_000),
+        ("500MiB", 524_288_000),
+        ("2TB", 2_199_023_255_552),
+        ("1.5KB", 1_536),
+        ("1023B", 1_023),
+        ("0.1KB", 102),
+        // The largest whole number of terabytes a size holds, 2^64 - 2^40.
+        ("16777215TB", 18_446_742_974_197_923_840),
+    ] {
+        let profile = shipped_copy(&format!("archive-size-unit-{value}"), "SSE");
+        replace_size_line(&profile, &format!("maxBsaUncompressedSize={value}"));
+
+        let settings = profile.load_settings().unwrap();
+
+        assert_eq!(settings.max_bsa_uncompressed_size.bytes(), bytes, "{value}");
+    }
+}
+
+#[test]
+fn a_size_with_a_unit_saves_as_written_until_it_changes() {
+    let profile = shipped_copy("archive-size-unit-kept", "FO4");
+    replace_size_line(&profile, "maxBsaUncompressedSize=8 GB");
+    let before = common::read(&profile.profile_ini());
+
+    let mut settings = profile.load_settings().unwrap();
+    profile.save_settings(&settings).unwrap();
+
+    // The user's text survives a save of the unchanged size, and reloads as
+    // the same size.
+    let saved = common::read(&profile.profile_ini());
+    assert_eq!(
+        String::from_utf8(saved).unwrap(),
+        String::from_utf8(before).unwrap()
+    );
+    assert_eq!(profile.load_settings().unwrap(), settings);
+
+    // A size set in bytes is written in bytes.
+    settings.max_bsa_uncompressed_size = ArchiveSize::from_bytes(6_442_450_944);
+    profile.save_settings(&settings).unwrap();
+
+    let saved = String::from_utf8(common::read(&profile.profile_ini())).unwrap();
+    assert!(
+        saved.contains("maxBsaUncompressedSize=6442450944\r\n"),
+        "{saved}"
+    );
+}
+
+#[test]
+fn a_size_that_is_not_a_number_of_bytes_or_units_is_reported_rather_than_read_as_zero() {
+    for value in [
+        "",
+        "two",
+        "GB",
+        "2XB",
+        "2 G",
+        "2GB2",
+        "-1GB",
+        "inf GB",
+        "nan GB",
+        // 2^64 bytes, one past the largest size, whole and fractional.
+        "16777216TB",
+        "16777216.5TB",
+    ] {
         let profile = shipped_copy(&format!("archive-size-text-{value}"), "SSE");
         replace_size_line(&profile, &format!("maxBsaUncompressedSize={value}"));
 
@@ -72,9 +147,9 @@ fn a_size_that_is_not_a_number_is_reported_rather_than_read_as_zero() {
         assert_eq!(
             error.to_string(),
             format!(
-                "`profile.ini`: `BSA/maxBsaUncompressedSize` is `{value}`; expected a whole \
-                 number of bytes from 0 to 18446744073709551615"
-            )
+                "`profile.ini`: `BSA/maxBsaUncompressedSize` is `{value}`; expected {ACCEPTED}"
+            ),
+            "{value}"
         );
     }
 }
@@ -130,8 +205,7 @@ fn a_negative_non_finite_or_overflowing_size_is_reported_with_its_key_value_and_
         assert_eq!(
             error.to_string(),
             format!(
-                "`profile.ini`: `BSA/maxBsaUncompressedSize` is `{value}`; expected a whole \
-                 number of bytes from 0 to 18446744073709551615"
+                "`profile.ini`: `BSA/maxBsaUncompressedSize` is `{value}`; expected {ACCEPTED}"
             )
         );
     }
