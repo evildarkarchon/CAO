@@ -29,10 +29,11 @@ pub(super) struct Runs {
     /// The production Optimization Run Service for the CAO install the window
     /// works over, built once at startup and serving every run of the session.
     ///
-    /// Owned by the window, so it outlives every Run Handle and no drop order
-    /// needs keeping: a handle dropped after it still joins its own run, and
-    /// dropping it at shutdown cancels and joins any run it retains
-    /// (ADR-0001).
+    /// Declared before `active`, so at shutdown it drops first: dropping it
+    /// cancels and joins any run it retains (ADR-0001), and the Run Handle
+    /// dropped after it finds its run already joined and neither blocks nor
+    /// panics. A handle owns its run's state and join obligation rather than
+    /// borrowing the service, so either drop order is safe.
     service: OptimizationRunService,
     /// The log file of the profile selected in this session, stamped when it
     /// was selected (C++ `Profiles::logPath`), even if it could not be opened
