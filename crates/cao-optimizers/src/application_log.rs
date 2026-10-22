@@ -1,4 +1,4 @@
-//! The Application Log: the `log` facade's sink for both binaries (#470).
+//! The Application Log: the `log` facade's sink for `cao-gui` (#470).
 //!
 //! It keeps plog's file: the per-profile `logs/<profile>/yy.MM.dd.hh.mm.html`
 //! path, a UTF-8 BOM and `<style>` header written only into an empty file, one

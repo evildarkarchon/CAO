@@ -1,12 +1,11 @@
 //! The one place a Profile becomes run facts.
 //!
-//! From a Profile's settings (`profile.ini`), this module derives its Profile
-//! Capabilities with its game's Archive extension, the packer its Archives
-//! follow, whether that game keeps Textures in their own
-//! Archive and how large its Archives may ever grow, and the backend's
-//! `TextureProfile` (its per-run texture settings)
-//! and Mesh Target. Preparing compiles a run's routing and builds its work
-//! from these, and the GUI gates its asset tabs from the same Profile
+//! From a Profile's settings (`profile.ini`), this module derives its Archive
+//! Rules (`cao-archive`'s [`Settings`], built once per read), its Profile
+//! Capabilities with the Archive extension those rules write, and the
+//! backend's `TextureProfile` (its per-run texture settings) and Mesh Target.
+//! Preparing compiles a run's routing and builds its packer and work from
+//! these, and the GUI gates its asset tabs from the same Profile
 //! Capabilities, so the two never disagree about what a Profile supports.
 
 use cao_archive::{Game, Settings};
@@ -15,13 +14,33 @@ use cao_profiles::{ClosedSet, ProfileSettings};
 use directxtex::DXGI_FORMAT;
 use nifly_sys::NifVersion;
 
-use crate::archives::GameArchivePacker;
 use crate::textures::TextureProfile;
 
-/// The Profile Capabilities a profile's settings declare, with its game's
-/// Archive extension. This is the one place profile settings become
-/// capabilities.
-pub fn profile_capabilities(settings: &ProfileSettings) -> ProfileCapabilities {
+/// A Profile's Archive Rules: its game's tables with its Archive Limit, its
+/// `maxBsaUncompressedSize` or the game's default when it gives none, never
+/// past the game's Archive Size Cap (see [`Settings::for_profile`]).
+///
+/// Build it once per Profile read and derive every Archive fact from that
+/// one value: the packer (`GameArchivePacker::new`) and the Archive
+/// extension [`profile_capabilities`] declares, so the two cannot disagree.
+pub fn archive_rules(settings: &ProfileSettings) -> Settings {
+    Settings::for_profile(
+        settings.bsa_game,
+        settings.max_bsa_uncompressed_size.requested(),
+    )
+}
+
+/// The Profile Capabilities a profile's settings declare, with the Archive
+/// extension its `archive_rules` write. This is the one place profile
+/// settings become capabilities.
+///
+/// `archive_rules` must be [`archive_rules`] of the same `settings`; taking
+/// the value rather than rebuilding it lets a caller hand the very same
+/// rules to its packer.
+pub fn profile_capabilities(
+    settings: &ProfileSettings,
+    archive_rules: &Settings,
+) -> ProfileCapabilities {
     let textures = settings.textures_enabled;
     let meshes = settings.meshes_enabled;
     let archives = settings.bsa_enabled;
@@ -44,50 +63,30 @@ pub fn profile_capabilities(settings: &ProfileSettings) -> ProfileCapabilities {
         .filter(|(supported, _)| *supported)
         .map(|(_, capability)| capability)
         .collect();
-    ProfileCapabilities::define(archive_extension(settings.bsa_game), &capabilities)
+    ProfileCapabilities::define(archive_rules.extension, &capabilities)
 }
 
-/// The Archive extension of a game, from `cao-archive`'s per-game tables.
-fn archive_extension(game: Game) -> &'static str {
-    Settings::get(game).extension
-}
-
+// TODO(#632): delete once cao-gui stops importing this
 /// Whether `game` keeps Textures in their own Archive: its Textures Archive is
 /// written as a different container than its Standard one (FO4's DX10 BA2
 /// beside its `GNRL` Main BA2), so DDS files can never be merged into the
 /// Standard Archive.
 ///
-/// The packer's `separate_textures` naming rule and the GUI's "Separate
-/// textures BSA" rule both read this, so they always agree.
+/// Only the GUI's "Separate textures BSA" rule still reads this; the packer
+/// reads [`Settings::keeps_textures_separate`] directly.
 pub fn keeps_textures_separate(game: Game) -> bool {
-    textures_need_own_archive(&Settings::get(game))
+    Settings::get(game).keeps_textures_separate()
 }
 
-/// [`keeps_textures_separate`] over a game's `cao-archive` tables, for the
-/// packer, which is built from them rather than from a [`Game`].
-pub(crate) fn textures_need_own_archive(settings: &Settings) -> bool {
-    settings.keeps_textures_separate()
-}
-
-/// The most source bytes one Archive of `game` may ever hold, whatever its
+// TODO(#632): delete once cao-gui stops importing this
+/// The most bytes one written Archive of `game` may ever take, whatever its
 /// Profile's maximum Archive size asks: 2 GiB for the BSA games, the practical
 /// limit Skyrim loads, and `None` for FO4, whose BA2s have no such limit.
 ///
-/// The packer stops there ([`archive_packer`]), and the GUI's Maximum size spin
-/// box reads this so it never shows a size the run would not use.
+/// Only the GUI's Maximum size spin box still reads this; the packer reads
+/// the cap from its [`archive_rules`].
 pub fn archive_size_cap(game: Game) -> Option<u64> {
     Settings::get(game).size_cap()
-}
-
-/// The packer for a profile's game, grouping files by the Profile's Archive
-/// Limit: its `maxBsaUncompressedSize`, or the game's default when it gives
-/// none, never past the game's [`archive_size_cap`] (see
-/// [`Settings::for_profile`]).
-pub fn archive_packer(settings: &ProfileSettings) -> GameArchivePacker {
-    GameArchivePacker::new(Settings::for_profile(
-        settings.bsa_game,
-        settings.max_bsa_uncompressed_size.requested(),
-    ))
 }
 
 /// The profile's Texture settings, as the texture optimizer takes them: its
