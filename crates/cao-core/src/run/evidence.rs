@@ -26,6 +26,7 @@ use crate::{AttemptFacts, Error};
 
 mod attempt_phase;
 
+use attempt_phase::ATTEMPT_BEARING_PHASES;
 pub(crate) use attempt_phase::{ArchiveFinalizationHandle, AttemptPhaseHandle, PhaseAttempt};
 
 /// One completed attempt: its routed identity, resolved Mod Root and durable outcome.
@@ -390,12 +391,7 @@ impl<'a> MutableRunEvidence<'a> {
     /// through this transition.
     pub fn record_phase(&mut self, record: RunPhaseRecord) -> Result<(), Error> {
         if record.status() == RunPhaseStatus::Executed
-            && matches!(
-                record.phase(),
-                RunPhase::ExtractingArchives
-                    | RunPhase::ProcessingAssets
-                    | RunPhase::ArchiveFinalization
-            )
+            && ATTEMPT_BEARING_PHASES.contains(&record.phase())
         {
             return Err(Error::EvidenceInvariant(
                 "An attempt-bearing Run Phase can only be executed through its attempt-phase handle",
