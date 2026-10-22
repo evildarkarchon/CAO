@@ -28,11 +28,10 @@ use crate::routing::{
 };
 use crate::run::archives::{Preflight, RootArchives, archive_order_key, relative_game_path};
 use crate::run::{
-    ArchiveDiscoveryEvidence, ArchiveExtractionPlan, ArchiveExtractionResult,
-    AssetInitializationCancelled, AttemptPhaseHandle, CancellationToken, MutableRunEvidence,
-    PhaseSkipReason, RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode, RunPhase,
-    RunPhaseRecord, RunPreparation, RunToolset, TemporaryArtifactRegistry, is_staging_name,
-    take_panic_message,
+    ArchiveExtractionPlan, ArchiveExtractionResult, AssetInitializationCancelled,
+    AttemptPhaseHandle, CancellationToken, MutableRunEvidence, PhaseSkipReason, RoutedAssetAttempt,
+    RunDiagnostic, RunDiagnosticCode, RunPhase, RunPhaseRecord, RunPreparation, RunToolset,
+    TemporaryArtifactRegistry, is_staging_name, take_panic_message,
 };
 
 /// Walks Mod Roots for regular files under the scope rules both discovery passes share.
@@ -191,7 +190,10 @@ fn attributed_mod_root<'p>(path: &Path, mod_roots: &'p [PathBuf]) -> Option<&'p 
 /// Every exit simply returns: the executor records cancellation observed
 /// from `stop` at Safety Cleanup, and publishes the Run Diagnostics retained
 /// here once the work has returned. Only an Asset backend's own report of
-/// cancellation, which `stop` need not show, is recorded here.
+/// cancellation, which `stop` need not show, is recorded here. The Archive
+/// discovery facts are recorded where they are established, the skipped
+/// Archive counts at the end of the Archive pass and the nested Archive
+/// count after a complete definitive pass, so no exit carries them either.
 ///
 /// An Asset attempt's panic is contained here, as an unsafe Operation
 /// Failure with unknown mutation. Archive extraction and Archive
@@ -226,10 +228,11 @@ pub(super) fn run_work_phases(
 
     // The Archive pass: recognize every Archive, and every Loose Asset an
     // Archived Asset must not replace, before any extraction.
+    let mut archive_pass_complete = true;
     for root in preparation.mod_roots() {
         let mut selected: Vec<PathBuf> = Vec::new();
         let mut loose = BTreeSet::new();
-        let complete = discovery.visit(evidence, root, &mut |path| {
+        archive_pass_complete = discovery.visit(evidence, root, &mut |path| {
             if !names_an_archive(&router, path) {
                 loose.insert(cao_winfs::OrdinalIgnoreCase(relative_game_path(root, path)));
                 return;
@@ -246,8 +249,8 @@ pub(super) fn run_work_phases(
                 RoutingDecision::Unsupported => {}
             }
         });
-        if !complete {
-            return interrupted(evidence, skipped_archive_counts);
+        if !archive_pass_complete {
+            break;
         }
         // Root order belongs to the caller; only this root's batch is sorted,
         // by its relative names rather than filesystem enumeration order.
@@ -258,6 +261,13 @@ pub(super) fn run_work_phases(
             loose,
         });
     }
+    // The Archive pass establishes the skipped counts, so they are recorded
+    // here once and no later stop has to carry them. A cancelled pass keeps
+    // the exclusions it counted before cancellation.
+    evidence.record_skipped_archive_counts(skipped_archive_counts)?;
+    if !archive_pass_complete {
+        return Ok(());
+    }
 
     // Dry Run ignores Archive Precedence and never reads a manifest,
     // calculates a collision or extracts.
@@ -267,14 +277,10 @@ pub(super) fn run_work_phases(
             Preflight::Failed(failure) => {
                 // A failed preflight has no trustworthy tree, so the run stops
                 // before any extraction, routing or finalization.
-                evidence.record_archive_discovery(ArchiveDiscoveryEvidence {
-                    skipped_archive_counts,
-                    ..ArchiveDiscoveryEvidence::default()
-                })?;
                 evidence.record_failure(failure);
                 return Ok(());
             }
-            Preflight::Cancelled => return interrupted(evidence, skipped_archive_counts),
+            Preflight::Cancelled => return Ok(()),
             Preflight::Planned {
                 plans: planned,
                 collisions,
@@ -288,7 +294,7 @@ pub(super) fn run_work_phases(
     }
 
     if stop.is_cancelled() {
-        return interrupted(evidence, skipped_archive_counts);
+        return Ok(());
     }
     // Dry Run skips Archive extraction, so only Apply opens its handle.
     let extraction = match mode {
@@ -302,21 +308,13 @@ pub(super) fn run_work_phases(
         ExecutionMode::Apply => Some(evidence.open_archive_extraction(plans.len())?),
     };
     if stop.is_cancelled() {
-        return interrupted(evidence, skipped_archive_counts);
+        return Ok(());
     }
 
-    if let Some(halt) = extract_archives(&plans, toolset, extraction, artifacts, stop)? {
-        return match halt {
-            ExtractionStop::Cancelled => interrupted(evidence, skipped_archive_counts),
-            // An unsafe attempt never reaches routing or finalization.
-            ExtractionStop::Unsafe => {
-                evidence.record_archive_discovery(ArchiveDiscoveryEvidence {
-                    skipped_archive_counts,
-                    ..ArchiveDiscoveryEvidence::default()
-                })?;
-                Ok(())
-            }
-        };
+    // Cancellation stops before the definitive pass, and an unsafe attempt
+    // never reaches routing or finalization.
+    if extract_archives(&plans, toolset, extraction, artifacts, stop)?.is_some() {
+        return Ok(());
     }
 
     evidence.record_phase(RunPhaseRecord::executed(
@@ -324,7 +322,7 @@ pub(super) fn run_work_phases(
         None,
     ))?;
     if stop.is_cancelled() {
-        return interrupted(evidence, skipped_archive_counts);
+        return Ok(());
     }
 
     // The definitive pass. No Archive enters the tree: one the Archive pass did
@@ -348,15 +346,13 @@ pub(super) fn run_work_phases(
             break;
         }
     }
-    evidence.record_archive_discovery(ArchiveDiscoveryEvidence {
-        skipped_archive_counts,
-        unsupported_explicit_paths: Vec::new(),
-        nested_archive_count: if complete { nested_archives.len() } else { 0 },
-    })?;
     if !complete {
         // A partial scan is not a definitive tree and never becomes work.
         return Ok(());
     }
+    // Only a complete definitive pass establishes the nested count; a
+    // partial one records none, so it reports no nested Archives.
+    evidence.record_nested_archive_count(nested_archives.len())?;
     let ledger = router.route_all(&effective_paths);
     // The evidence retains the ledger it opens Processing Assets with; this
     // copy lets the loop iterate it while the handle records attempts.
@@ -473,22 +469,6 @@ pub(super) fn run_work_phases(
         )?;
     }
     Ok(())
-}
-
-/// Ends the work after cancellation before the definitive pass: keeps the
-/// Archive exclusions the Archive pass already counted, but never a partial
-/// tree.
-///
-/// # Errors
-/// A Run Evidence invariant violation recording the discovery facts.
-fn interrupted(
-    evidence: &mut MutableRunEvidence<'_>,
-    skipped_archive_counts: BTreeMap<SkipReason, usize>,
-) -> Result<(), Error> {
-    evidence.record_archive_discovery(ArchiveDiscoveryEvidence {
-        skipped_archive_counts,
-        ..ArchiveDiscoveryEvidence::default()
-    })
 }
 
 /// Why Archive extraction stopped short of the definitive pass.
