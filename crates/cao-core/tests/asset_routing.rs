@@ -272,6 +272,36 @@ fn conversion_derived_from_the_preference_still_needs_mesh_reference_maintenance
     );
 }
 
+/// The GUI gates its asset tabs by asking Profile Capabilities what they
+/// support (#621): each capability defined is reported, and no other.
+#[test]
+fn profile_capabilities_report_exactly_the_capabilities_they_define() {
+    let defined = [
+        ProfileCapability::NativeTextureOptimization,
+        ProfileCapability::ArchiveCreation,
+    ];
+    let capabilities = ProfileCapabilities::define(".bsa", &defined);
+    let all = [
+        ProfileCapability::NativeTextureOptimization,
+        ProfileCapability::ConvertibleTextureConversion,
+        ProfileCapability::StandardMeshOptimization,
+        ProfileCapability::TerrainMeshOptimization,
+        ProfileCapability::AnimationOptimization,
+        ProfileCapability::ArchiveExtraction,
+        ProfileCapability::MeshReferenceMaintenance,
+        ProfileCapability::ArchiveCreation,
+    ];
+    let supported: Vec<_> = all
+        .into_iter()
+        .filter(|capability| capabilities.supports(*capability))
+        .collect();
+    assert_eq!(supported, defined);
+    // A missing Archive extension does not change what is supported.
+    let without_extension = ProfileCapabilities::without_archive_extension(&defined);
+    assert!(without_extension.supports(ProfileCapability::ArchiveCreation));
+    assert!(!without_extension.supports(ProfileCapability::ArchiveExtraction));
+}
+
 /// Origin: AssetRoutingTests::profileArchiveExtensionValidation (all six rows).
 #[test]
 fn invalid_profile_archive_extensions_are_structured_errors() {
