@@ -5,7 +5,7 @@
 mod run;
 
 use std::cell::{OnceCell, RefCell};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::{Rc, Weak};
 
 use cao_gui_ui::{AboutSlintDialog, ChoiceDialog, MainWindow, TabInfo, TextInputDialog};
@@ -68,8 +68,6 @@ pub struct App {
     /// While a run holds the controls (C++ `_bLockVariables`), the options are
     /// not saved. Set from a run's start to its end (#510).
     locked: std::cell::Cell<bool>,
-    /// The CAO install the window works over, which runs resolve against.
-    app_dir: PathBuf,
     /// Optimization Runs started from the window (#510).
     runs: run::Runs,
     profile_names: Rc<VecModel<SharedString>>,
@@ -124,8 +122,7 @@ impl App {
             profiles,
             desktop,
             locked: Default::default(),
-            app_dir: app_dir.to_owned(),
-            runs: run::Runs::default(),
+            runs: run::Runs::new(app_dir),
             profile_names: Rc::new(VecModel::from(
                 names.iter().map(SharedString::from).collect::<Vec<_>>(),
             )),

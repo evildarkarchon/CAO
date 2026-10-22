@@ -15,11 +15,11 @@ use std::sync::Arc;
 use cao_core::execution::MutationState;
 use cao_core::routing::{ExecutionMode, MeshVariant};
 use cao_core::run::{OptimizationRunResult, RunDiagnosticCode, RunOutcome, RunPhase};
-use cao_optimizers::composition::ApplicationRun;
+use cao_optimizers::composition::run_service;
 use cao_optimizers::meshes::{MeshOptimizer, MeshSettings};
 use cao_profiles::{OptimizationMode, Options};
 use common::plugin::headpart_plugin;
-use common::{app_dir, profile_options, serial, write};
+use common::{app_dir, profile_options, serial, start_and_wait, write};
 use nifly_sys::NifVersion;
 
 /// A Skyrim SE Mesh (stream 100), SSE-compatible.
@@ -63,8 +63,7 @@ fn write_meshes(mod_root: &Path, meshes: &[&str]) {
 
 /// Runs `options` under the SSE profile to completion.
 fn run(app: &Path, options: &Options) -> Arc<OptimizationRunResult> {
-    let run = ApplicationRun::new(app, "SSE", options).unwrap();
-    run.start(None).unwrap().wait()
+    start_and_wait(&run_service(app), "SSE", options)
 }
 
 /// The `/`-separated paths, under `selection`, of the Meshes the run saved,

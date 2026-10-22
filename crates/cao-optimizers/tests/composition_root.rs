@@ -18,16 +18,16 @@ use cao_core::run::{
     WorkChoices,
 };
 use cao_optimizers::composition::{
-    ApplicationRun, ProfileConfigurationProvider, RunSetupError, run_request,
+    ProfileConfigurationProvider, RunSetupError, run_request, run_service,
 };
 use cao_profiles::{OptimizationMode, Options};
 use common::{
-    app_dir, dry_run_textures, edit_profile, profile_options, serial, snapshot_tree, write,
-    write_dds,
+    app_dir, dry_run_textures, edit_profile, profile_options, serial, snapshot_tree,
+    start_and_wait, write, write_dds,
 };
 use directxtex::{
-    CP_FLAGS_NONE, DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, ScratchImage,
-    TGA_FLAGS_NONE,
+    CP_FLAGS_NONE, DDS_FLAGS_NONE, DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
+    ScratchImage, TGA_FLAGS_NONE, TexMetadata,
 };
 
 #[test]
@@ -259,27 +259,24 @@ fn every_kind_of_work_is_accepted() {
         let mut options = dry_run_textures(&app, &app.join("mods/Mod"));
         options.meshes_optimization_level = level;
         options.meshes_resave = resave;
-        assert!(ApplicationRun::new(&app, "SSE", &options).is_ok());
+        assert!(run_request("SSE", &options).is_ok());
         options.dry_run = false;
-        assert!(ApplicationRun::new(&app, "SSE", &options).is_ok());
+        assert!(run_request("SSE", &options).is_ok());
     }
 
     // Animations are ported (#502), in both modes.
     let mut options = dry_run_textures(&app, &app.join("mods/Mod"));
     options.animations_optimization = true;
-    assert!(ApplicationRun::new(&app, "SSE", &options).is_ok());
+    assert!(run_request("SSE", &options).is_ok());
     options.dry_run = false;
-    assert!(ApplicationRun::new(&app, "SSE", &options).is_ok());
+    assert!(run_request("SSE", &options).is_ok());
 
     // Archive creation is ported (#498), in both modes.
     let mut options = dry_run_textures(&app, &app.join("mods/Mod"));
     options.bsa_create = true;
-    assert!(
-        ApplicationRun::new(&app, "SSE", &options).is_ok(),
-        "Dry Run never packs"
-    );
+    assert!(run_request("SSE", &options).is_ok(), "Dry Run never packs");
     options.dry_run = false;
-    assert!(ApplicationRun::new(&app, "SSE", &options).is_ok());
+    assert!(run_request("SSE", &options).is_ok());
 }
 
 /// Origin: ApplicationRunSetupTests::archiveCreationRequiresProfileArchiveSupport
@@ -296,11 +293,7 @@ fn a_request_contradicting_the_profile_capabilities_fails_preparing() {
     // FO4 has no Mesh support: any Mesh work contradicts it.
     let mut options = dry_run_textures(&app, &mod_root);
     options.meshes_resave = true;
-    let result = ApplicationRun::new(&app, "FO4", &options)
-        .unwrap()
-        .start(None)
-        .unwrap()
-        .wait();
+    let result = start_and_wait(&run_service(&app), "FO4", &options);
     assert_eq!(result.outcome(), RunOutcome::Failed);
     let failure = &result.failures()[0];
     assert_eq!(failure.code, RunFailureCode::PolicyConflict);
@@ -325,11 +318,7 @@ fn a_request_contradicting_the_profile_capabilities_fails_preparing() {
     edit_profile(&app, "SSE", "bsaEnabled", "false");
     let mut options = dry_run_textures(&app, &mod_root);
     options.bsa_create = true;
-    let result = ApplicationRun::new(&app, "SSE", &options)
-        .unwrap()
-        .start(None)
-        .unwrap()
-        .wait();
+    let result = start_and_wait(&run_service(&app), "SSE", &options);
     assert_eq!(result.outcome(), RunOutcome::Failed);
     let failure = &result.failures()[0];
     assert_eq!(failure.code, RunFailureCode::PolicyConflict);
@@ -357,13 +346,13 @@ fn fo4_texture_conversion_needs_no_mesh_optimization_capability() {
     let mod_root = app.join("mods").join("Mod");
     write(&mod_root, "textures/armor.tga", &tga_bytes());
     let options = dry_run_textures(&app, &mod_root);
-    let run = ApplicationRun::new(&app, "FO4", &options).unwrap();
     assert!(
-        !run.request()
+        !run_request("FO4", &options)
+            .unwrap()
             .requests(RequestedWork::StandardMeshOptimization)
     );
 
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(&run_service(&app), "FO4", &options);
 
     assert_eq!(
         result.outcome(),
@@ -406,11 +395,7 @@ fn several_mods_excludes_separators_and_ignored_mods_from_the_shipped_profile() 
     options.mode = OptimizationMode::SeveralMods;
     let before = snapshot_tree(&app);
 
-    let result = ApplicationRun::new(&app, "SSE", &options)
-        .unwrap()
-        .start(None)
-        .unwrap()
-        .wait();
+    let result = start_and_wait(&run_service(&app), "SSE", &options);
 
     assert_eq!(result.outcome(), RunOutcome::Succeeded);
     let root = cao_winfs::msvc_canonical(&mods).unwrap();
@@ -561,8 +546,11 @@ fn a_dry_run_over_loose_textures_evaluates_them_and_changes_nothing() {
     write(&mod_root, "meshes/idle.hkx", b"not requested");
     let before = snapshot_tree(&app);
 
-    let run = ApplicationRun::new(&app, "SSE", &dry_run_textures(&app, &mod_root)).unwrap();
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(
+        &run_service(&app),
+        "SSE",
+        &dry_run_textures(&app, &mod_root),
+    );
 
     assert_eq!(result.outcome(), RunOutcome::CompletedWithFailures);
     assert_eq!(result.final_phase(), RunPhase::ArchiveFinalization);
@@ -601,18 +589,151 @@ fn a_change_to_profile_ini_between_two_runs_is_picked_up_at_preparing() {
         DXGI_FORMAT_R8G8B8A8_UNORM,
         16,
     );
-    let run = ApplicationRun::new(&app, "SSE", &dry_run_textures(&app, &mod_root)).unwrap();
+    let service = run_service(&app);
+    let request = run_request("SSE", &dry_run_textures(&app, &mod_root)).unwrap();
 
-    let first = run.start(None).unwrap().wait();
+    let first = service.start(request.clone(), None).unwrap().wait();
     assert_eq!(first.outcome(), RunOutcome::Succeeded);
 
-    // The request was built before the edit; only Preparing can see it.
+    // The request and the service were built before the edit; only Preparing
+    // can see it.
     edit_profile(&app, "SSE", "texturesEnabled", "false");
-    let second = run.start(None).unwrap().wait();
+    let second = service.start(request, None).unwrap().wait();
     assert_eq!(second.outcome(), RunOutcome::Failed);
     let failure = &second.failures()[0];
     assert_eq!(failure.code, RunFailureCode::PolicyConflict);
     assert_eq!(failure.phase, RunPhase::Preparing);
+}
+
+/// Spec (#618): one production service serves a session. Runs started on it
+/// in turn, each with different Work Choices, each do the work their own
+/// request chose, not the choices of the run before.
+#[test]
+fn one_service_runs_each_request_with_its_own_work_choices() {
+    let _serial = serial();
+    let app = app_dir("one-service-work-choices");
+    let service = run_service(&app);
+    let first_root = app.join("mods").join("First");
+    let second_root = app.join("mods").join("Second");
+    for mod_root in [&first_root, &second_root] {
+        write_dds(
+            &mod_root.join("textures/plain.dds"),
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            64,
+        );
+    }
+
+    // TES5's BC3 is encoded on the CPU on every host.
+    let mut options = profile_options(&app, "TES5");
+    options.dry_run = false;
+    options.textures_necessary = true;
+    options.textures_compress = true;
+    options.textures_resize_size = true;
+    options.textures_resize_ratio = false;
+    options.meshes_optimization_level = 0;
+    options.meshes_resave = false;
+    options.animations_optimization = false;
+    options.bsa_extract = false;
+    options.bsa_create = false;
+
+    options.user_path = first_root.to_string_lossy().into_owned();
+    options.textures_mipmaps = false;
+    options.textures_target_width = 32;
+    options.textures_target_height = 32;
+    let first = start_and_wait(&service, "TES5", &options);
+
+    options.user_path = second_root.to_string_lossy().into_owned();
+    options.textures_mipmaps = true;
+    options.textures_target_width = 16;
+    options.textures_target_height = 16;
+    let second = start_and_wait(&service, "TES5", &options);
+
+    for result in [&first, &second] {
+        assert_eq!(
+            result.outcome(),
+            RunOutcome::Succeeded,
+            "{:?}",
+            result.asset_attempts()
+        );
+    }
+    let first_info = dds_metadata(&first_root.join("textures/plain.dds"));
+    assert_eq!(
+        (first_info.width, first_info.height, first_info.mip_levels),
+        (32, 32, 1)
+    );
+    // 16, 8, 4, 2, 1.
+    let second_info = dds_metadata(&second_root.join("textures/plain.dds"));
+    assert_eq!(
+        (
+            second_info.width,
+            second_info.height,
+            second_info.mip_levels
+        ),
+        (16, 16, 5)
+    );
+}
+
+/// Spec (#618): runs under two profiles in turn on one production service
+/// each prepare with their own profile's Selected Profile.
+#[test]
+fn one_service_prepares_each_run_with_its_own_profile() {
+    let _serial = serial();
+    let app = app_dir("one-service-two-profiles");
+    let mod_root = app.join("mods").join("Mod");
+    std::fs::create_dir_all(&mod_root).unwrap();
+    let service = run_service(&app);
+    let options = dry_run_textures(&app, &mod_root);
+
+    let sse = start_and_wait(&service, "SSE", &options);
+    let fo4 = start_and_wait(&service, "FO4", &options);
+
+    for result in [&sse, &fo4] {
+        assert_eq!(
+            result.outcome(),
+            RunOutcome::Succeeded,
+            "{:?}",
+            result.failures()
+        );
+    }
+    // The shipped SSE profile enables every kind of work.
+    assert_eq!(
+        sse.preparation().unwrap().selected_profile().capabilities(),
+        &ProfileCapabilities::define(
+            ".bsa",
+            &[
+                ProfileCapability::NativeTextureOptimization,
+                ProfileCapability::ConvertibleTextureConversion,
+                ProfileCapability::StandardMeshOptimization,
+                ProfileCapability::TerrainMeshOptimization,
+                ProfileCapability::AnimationOptimization,
+                ProfileCapability::ArchiveExtraction,
+                ProfileCapability::MeshReferenceMaintenance,
+                ProfileCapability::ArchiveCreation,
+            ]
+        )
+    );
+    // FO4 packs `.ba2` Archives and has neither Meshes nor Animations.
+    assert_eq!(
+        fo4.preparation().unwrap().selected_profile().capabilities(),
+        &ProfileCapabilities::define(
+            ".ba2",
+            &[
+                ProfileCapability::NativeTextureOptimization,
+                ProfileCapability::ConvertibleTextureConversion,
+                ProfileCapability::MeshReferenceMaintenance,
+                ProfileCapability::ArchiveExtraction,
+                ProfileCapability::ArchiveCreation,
+            ]
+        )
+    );
+}
+
+/// The metadata of the DDS file at `path`.
+fn dds_metadata(path: &Path) -> TexMetadata {
+    let bytes = std::fs::read(path).unwrap();
+    let mut info = TexMetadata::default();
+    ScratchImage::load_dds(&bytes, DDS_FLAGS_NONE, Some(&mut info), None).unwrap();
+    info
 }
 
 /// An 8×8 TGA, small enough to convert quickly.
@@ -665,10 +786,11 @@ fn a_conversion_preference_turned_off_before_the_start_converts_nothing() {
     write(&mod_root, "textures/armor.tga", &tga);
     write(&mod_root, "meshes/armor.nif", b"not a mesh");
     // The shipped SSE profile prefers conversion when the run is set up.
-    let run = ApplicationRun::new(&app, "SSE", &apply_necessary_textures(&app, &mod_root)).unwrap();
+    let service = run_service(&app);
+    let options = apply_necessary_textures(&app, &mod_root);
 
     edit_profile(&app, "SSE", "texturesConvertTga", "false");
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(&service, "SSE", &options);
 
     assert_eq!(
         result.outcome(),
@@ -706,10 +828,11 @@ fn a_conversion_preference_turned_on_before_the_start_converts_and_maintains_mes
     // Fails to load, but its routed operations are still visible.
     write(&mod_root, "meshes/armor.nif", b"not a mesh");
     edit_profile(&app, "SSE", "texturesConvertTga", "false");
-    let run = ApplicationRun::new(&app, "SSE", &apply_necessary_textures(&app, &mod_root)).unwrap();
+    let service = run_service(&app);
+    let options = apply_necessary_textures(&app, &mod_root);
 
     edit_profile(&app, "SSE", "texturesConvertTga", "true");
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(&service, "SSE", &options);
 
     assert!(result.preparation().unwrap().policy().converts_textures());
     assert!(attempt_carries(
@@ -733,11 +856,11 @@ fn an_unreadable_profile_fails_preparing_rather_than_the_start() {
     let mod_root = app.join("mods").join("Mod");
     std::fs::create_dir_all(&mod_root).unwrap();
     let options = dry_run_textures(&app, &mod_root);
-    let run = ApplicationRun::new(&app, "SSE", &options).unwrap();
+    let service = run_service(&app);
     // Deviation 11: an unsupported game makes the profile unreadable.
     edit_profile(&app, "SSE", "bsaGame", "7");
 
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(&service, "SSE", &options);
 
     assert_eq!(result.outcome(), RunOutcome::Failed);
     assert_eq!(
@@ -747,8 +870,7 @@ fn an_unreadable_profile_fails_preparing_rather_than_the_start() {
 
     // Unreadable before setup too: setup never reads the profile, even for
     // Texture work, so Preparing reports it.
-    let run = ApplicationRun::new(&app, "MissingProfile", &options).unwrap();
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(&service, "MissingProfile", &options);
     assert_eq!(
         result.failures()[0].code,
         RunFailureCode::ConfigurationLoadingFailed

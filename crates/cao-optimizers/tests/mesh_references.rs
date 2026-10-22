@@ -16,9 +16,9 @@ use std::sync::Arc;
 
 use cao_core::execution::{AssetExecutionFailure, MutationState};
 use cao_core::run::{MutationKind, OptimizationRunResult, RunOutcome};
-use cao_optimizers::composition::ApplicationRun;
+use cao_optimizers::composition::run_service;
 use cao_profiles::{OptimizationMode, Options};
-use common::{app_dir, profile_options, scratch_dir, serial, snapshot_tree, write};
+use common::{app_dir, profile_options, scratch_dir, serial, snapshot_tree, start_and_wait, write};
 use directxtex::{CP_FLAGS_NONE, DXGI_FORMAT_R8G8B8A8_UNORM, ScratchImage, TGA_FLAGS_NONE};
 use nifly_sys::{LoadOptions, Nif};
 
@@ -108,8 +108,7 @@ fn app_with_mod(name: &str) -> (PathBuf, PathBuf) {
 
 /// Runs `options` under the SSE profile to completion.
 fn run(app: &Path, options: &Options) -> Arc<OptimizationRunResult> {
-    let run = ApplicationRun::new(app, "SSE", options).unwrap();
-    run.start(None).unwrap().wait()
+    start_and_wait(&run_service(app), "SSE", options)
 }
 
 /// Asserts the run succeeded, showing its Run Failures otherwise.

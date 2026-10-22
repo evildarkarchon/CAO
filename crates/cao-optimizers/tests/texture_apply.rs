@@ -11,11 +11,12 @@ use std::path::Path;
 
 use cao_core::execution::MutationState;
 use cao_core::run::RunOutcome;
-use cao_optimizers::composition::ApplicationRun;
+use cao_optimizers::composition::run_service;
 use cao_optimizers::device::GpuDevice;
 use cao_profiles::Options;
 use common::{
-    STAGING_CONTROL_FILES, app_dir, profile_options, serial, staging_leftovers, write, write_dds,
+    STAGING_CONTROL_FILES, app_dir, profile_options, serial, staging_leftovers, start_and_wait,
+    write, write_dds,
 };
 use directxtex::{
     CP_FLAGS_NONE, DDS_FLAGS_NONE, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC3_UNORM,
@@ -66,8 +67,11 @@ fn a_tes5_apply_publishes_bc3_textures_and_quarantines_broken_ones() {
     );
     write(&mod_root, "textures/broken.dds", b"not a texture");
 
-    let run = ApplicationRun::new(&app, "TES5", &apply_textures(&app, "TES5", &mod_root)).unwrap();
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(
+        &run_service(&app),
+        "TES5",
+        &apply_textures(&app, "TES5", &mod_root),
+    );
 
     assert_eq!(
         result.outcome(),
@@ -103,8 +107,7 @@ fn a_tes5_apply_generates_the_full_mip_chain_on_the_run_worker() {
     let mut options = apply_textures(&app, "TES5", &mod_root);
     options.textures_mipmaps = true;
 
-    let run = ApplicationRun::new(&app, "TES5", &options).unwrap();
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(&run_service(&app), "TES5", &options);
 
     assert_eq!(
         result.outcome(),
@@ -141,8 +144,7 @@ fn a_partial_mip_chain_is_regenerated_whole() {
     options.textures_mipmaps = true;
     options.textures_resize_size = false;
 
-    let run = ApplicationRun::new(&app, "TES5", &options).unwrap();
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(&run_service(&app), "TES5", &options);
 
     assert_eq!(
         result.outcome(),
@@ -169,8 +171,11 @@ fn a_resized_compressed_texture_keeps_its_format() {
         64,
     );
 
-    let run = ApplicationRun::new(&app, "TES5", &apply_textures(&app, "TES5", &mod_root)).unwrap();
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(
+        &run_service(&app),
+        "TES5",
+        &apply_textures(&app, "TES5", &mod_root),
+    );
 
     assert_eq!(
         result.outcome(),
@@ -197,8 +202,11 @@ fn a_texture_deeper_than_the_old_fixed_buffer_is_optimized() {
     let path = folder.join("deep.dds");
     write_dds(&path, DXGI_FORMAT_R8G8B8A8_UNORM, 64);
 
-    let run = ApplicationRun::new(&app, "TES5", &apply_textures(&app, "TES5", &mod_root)).unwrap();
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(
+        &run_service(&app),
+        "TES5",
+        &apply_textures(&app, "TES5", &mod_root),
+    );
 
     assert_eq!(
         result.outcome(),
@@ -230,8 +238,7 @@ fn an_sse_apply_encodes_bc7_on_the_gpu() {
     let mut options = apply_textures(&app, "SSE", &mod_root);
     options.textures_resize_size = false;
 
-    let run = ApplicationRun::new(&app, "SSE", &options).unwrap();
-    let result = run.start(None).unwrap().wait();
+    let result = start_and_wait(&run_service(&app), "SSE", &options);
 
     assert_eq!(
         result.outcome(),

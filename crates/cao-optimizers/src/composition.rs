@@ -1,15 +1,15 @@
 //! The composition root: `cao-gui`'s production wiring.
 //!
 //! Ported from C++ `ApplicationRunSetup` and `ApplicationRunWork`. Given the app
-//! directory, the selected profile and the options model, [`ApplicationRun::new`]
-//! validates the options, builds the Run Request, and wires a profile-backed
-//! Run Configuration Provider into an Optimization Run Service. During each
-//! run's Preparing, that provider builds the production Run Toolset from the
-//! same profile read as the run's Routing Policy and from the run's Run
-//! Request, and a request that
+//! directory, [`run_service`] wires a profile-backed Run Configuration Provider
+//! into the Optimization Run Service that serves a whole session. Given the
+//! selected profile and the options model, [`run_request`] validates the
+//! options and builds each run's Run Request. During each run's Preparing, the
+//! provider builds the production Run Toolset from the same profile read as
+//! the run's Routing Policy and from the run's Run Request, and a request that
 //! contradicts the profile's Profile Capabilities fails there with a Policy
 //! Conflict. The integration tests go through
-//! it too, so they exercise the wiring users run.
+//! them too, so they exercise the wiring users run.
 //!
 //! Everything resolves against the app directory the caller passes: `profiles/`
 //! and `bin/hkxcmd.exe` here, and later `logs/` (deviation 1). Only `cao-gui`'s
@@ -25,9 +25,8 @@ use cao_core::run::{
     ArchiveFinalizationSettings, ArchiveSeams, AssetAttemptAdapter, AssetBackendFactory,
     BackendCreation, BackendCreationError, CancellationToken, MeshChoices, MeshLevel, ModSelection,
     OptimizationRunService, ResizeRatio, ResizeSize, RunConfigurationProvider, RunDiagnostic,
-    RunDiagnosticCode, RunEventDispatcher, RunHandle, RunPhase, RunRequest, RunToolset,
-    SelectedProfile, SourceCleanup, StartError, TextureChoices, TextureResizeChoice,
-    WorkChoiceError, WorkChoices,
+    RunDiagnosticCode, RunPhase, RunRequest, RunToolset, SelectedProfile, SourceCleanup,
+    TextureChoices, TextureResizeChoice, WorkChoiceError, WorkChoices,
 };
 use cao_profiles::{BsaGame, OptimizationMode, Options, ProfileError, ProfileSettings, Profiles};
 use directxtex::DXGI_FORMAT;
@@ -63,56 +62,23 @@ pub enum RunSetupError {
     RelativeSelection(PathBuf),
 }
 
-/// One run, set up and ready to start: its Run Request and the service that
-/// owns its production wiring.
+/// The production Optimization Run Service for the install at `app_dir`,
+/// wired with the profile-backed Run Configuration Provider.
 ///
-/// Keep it alive while the run executes: dropping it cancels and joins any run
-/// it started, as the C++ GUI's `_runService` did.
-pub struct ApplicationRun {
-    service: OptimizationRunService,
-    request: RunRequest,
-}
-
-impl ApplicationRun {
-    /// Sets up a run of `options` under `profile`, in the install at `app_dir`.
-    ///
-    /// The Run Request takes its intent from `options` alone; nothing is read
-    /// from the profile now. Everything the run needs from the profile,
-    /// including its Conversion Preference, is read once by its Run
-    /// Configuration Provider during Preparing, so an edit made before the run
-    /// starts is honoured.
-    ///
-    /// The request is not checked against the profile's Profile Capabilities
-    /// here: a request the profile cannot honour starts, and its Preparing
-    /// fails with a Policy Conflict Run Failure.
-    ///
-    /// # Errors
-    /// [`RunSetupError`] when the options are invalid.
-    pub fn new(app_dir: &Path, profile: &str, options: &Options) -> Result<Self, RunSetupError> {
-        // `run_request` is the one validation of `options`; the provider
-        // reads the run's choices from the request it built when the run
-        // loads.
-        let request = run_request(profile, options)?;
-        let configuration = Arc::new(ProfileConfigurationProvider::new(app_dir));
-        Ok(Self {
-            // The provider's Run Toolset does the work.
-            service: OptimizationRunService::new(Some(configuration)),
-            request,
-        })
-    }
-
-    /// The Run Request this run starts with.
-    pub fn request(&self) -> &RunRequest {
-        &self.request
-    }
-
-    /// Starts the run, sending its events to `dispatcher` on the Run Worker.
-    ///
-    /// # Errors
-    /// The service's synchronous [`StartError`], such as another active run.
-    pub fn start(&self, dispatcher: Option<RunEventDispatcher>) -> Result<RunHandle, StartError> {
-        self.service.start(self.request.clone(), dispatcher)
-    }
+/// One service serves every run of a session: the provider captures nothing
+/// per run, so each run's request, built by [`run_request`], carries all its
+/// intent. Nothing is read from the profile now. Everything a run needs from
+/// the profile, including its Conversion Preference, is read once by the
+/// provider during that run's Preparing, so an edit made before the run starts
+/// is honoured. A request the profile's Profile Capabilities cannot honour
+/// still starts, and its Preparing fails with a Policy Conflict Run Failure.
+///
+/// Keep the service alive while its runs execute: dropping it cancels and
+/// joins every run it still retains (ADR-0001), as the C++ GUI's
+/// `_runService` did.
+pub fn run_service(app_dir: &Path) -> OptimizationRunService {
+    // The provider's Run Toolset does the work.
+    OptimizationRunService::new(Some(Arc::new(ProfileConfigurationProvider::new(app_dir))))
 }
 
 /// Builds the Run Request for `options` under the profile identity `profile`:

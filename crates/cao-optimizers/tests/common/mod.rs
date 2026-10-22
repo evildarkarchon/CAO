@@ -5,8 +5,10 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
+use cao_core::run::{OptimizationRunResult, OptimizationRunService};
+use cao_optimizers::composition::run_request;
 use cao_profiles::{Options, Profiles};
 use directxtex::{CP_FLAGS_NONE, DDS_FLAGS_NONE, DXGI_FORMAT, ScratchImage};
 
@@ -20,6 +22,23 @@ pub fn serial() -> MutexGuard<'static, ()> {
     SERIAL
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Runs `options` under `profile` on `service` and waits for the result: the
+/// Run Request comes from `run_request`, as the GUI builds it.
+///
+/// Takes the service by reference because dropping a service cancels and
+/// joins its runs; the caller keeps it alive, and may start further runs on it.
+///
+/// # Panics
+/// When the options are invalid or the service refuses the start.
+pub fn start_and_wait(
+    service: &OptimizationRunService,
+    profile: &str,
+    options: &Options,
+) -> Arc<OptimizationRunResult> {
+    let request = run_request(profile, options).unwrap();
+    service.start(request, None).unwrap().wait()
 }
 
 /// A fresh, empty directory under the target directory for one scenario.

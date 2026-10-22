@@ -16,10 +16,10 @@ use cao_core::execution::MutationState;
 use cao_core::routing::RequestedWork;
 use cao_core::run::{CancellationToken, RunFailureCode, RunOutcome, RunPhase};
 use cao_core::test_support::ArchiveRunRequest;
-use cao_optimizers::composition::ApplicationRun;
+use cao_optimizers::composition::run_service;
 use cao_winfs::msvc_canonical;
 use common::archive_run::{only_attempt, production_seams};
-use common::{app_dir, profile_options, scratch_dir, serial};
+use common::{app_dir, profile_options, scratch_dir, serial, start_and_wait};
 
 /// A raw Archive container, as C++ `createRawArchive` numbered them.
 #[derive(Debug, Clone, Copy)]
@@ -188,8 +188,7 @@ fn raw_manifest_paths_collide_or_fail_before_extraction() {
             options.bsa_create = false;
             // Keep the sources, so their bytes can be compared afterwards.
             options.bsa_delete_backup = false;
-            let run = ApplicationRun::new(&app, "SSE", &options).unwrap();
-            let result = run.start(None).unwrap().wait();
+            let result = start_and_wait(&run_service(&app), "SSE", &options);
 
             let case = format!("{format:?}, escaping: {escaping}");
             let canonical_root = msvc_canonical(&mod_root).unwrap();
