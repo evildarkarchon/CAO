@@ -64,6 +64,7 @@ mod common;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use cao_core::CompletedMutation;
 use cao_core::execution::{
     AssetExecutionFailure, AssetExecutionResult, ExecutionFailureCategory, MutationState,
 };
@@ -141,7 +142,7 @@ fn processing_progress(events: &EventLog) -> Vec<(usize, usize)> {
 /// A scripted Toolset whose every Asset attempt commits.
 fn committing() -> ScriptedToolset {
     ScriptedToolset::default()
-        .with_assets(|_, _, _| Ok(AssetExecutionResult::success(MutationState::Committed)))
+        .with_assets(|_, _, _| Ok(AssetExecutionResult::success(CompletedMutation::Committed)))
 }
 
 /// The file names of the completed attempts, in execution order.
@@ -557,7 +558,7 @@ fn an_unsafe_operation_failure_stops_every_later_attempt_and_fails_the_run() {
     );
     let toolset = Arc::new(ScriptedToolset::default().with_assets(|asset, _, _| {
         Ok(if asset.execution_path().ends_with("a.dds") {
-            AssetExecutionResult::success(MutationState::Committed)
+            AssetExecutionResult::success(CompletedMutation::Committed)
         } else {
             AssetExecutionResult::failed(
                 AssetExecutionFailure::CommitFailed,
@@ -725,7 +726,7 @@ fn attempt_evidence_outlives_its_adapters() {
     write_tree(&root, &["textures/a.dds", "textures/b.dds"]);
     let toolset = Arc::new(ScriptedToolset::default().with_assets(|asset, _, _| {
         Ok(if asset.execution_path().ends_with("a.dds") {
-            AssetExecutionResult::success(MutationState::Committed)
+            AssetExecutionResult::success(CompletedMutation::Committed)
         } else {
             AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed, "retained")
         })
@@ -890,7 +891,7 @@ fn a_relative_selection_records_the_canonical_mod_root() {
     write_tree(&root, &["a.dds"]);
     let toolset = Arc::new(ScriptedToolset::default().with_assets(|asset, _, _| {
         std::fs::remove_file(asset.execution_path()).unwrap();
-        Ok(AssetExecutionResult::success(MutationState::Committed))
+        Ok(AssetExecutionResult::success(CompletedMutation::Committed))
     }));
     let relative = common::relative_to_working_directory(&root);
 
@@ -924,7 +925,7 @@ fn mutation_aware_failures_control_continuation_and_finalization() {
                 let mut attempts = attempts.lock().unwrap();
                 *attempts += 1;
                 if *attempts != failed_attempt {
-                    return Ok(AssetExecutionResult::success(MutationState::None));
+                    return Ok(AssetExecutionResult::success(CompletedMutation::None));
                 }
                 let mutation = if safe {
                     MutationState::None
@@ -1008,7 +1009,7 @@ fn animation_failures_preserve_progress_and_evidence() {
                 let mut attempts = attempts.lock().unwrap();
                 *attempts += 1;
                 if *attempts != failed_attempt {
-                    return Ok(AssetExecutionResult::success(MutationState::Committed));
+                    return Ok(AssetExecutionResult::success(CompletedMutation::Committed));
                 }
                 Ok(AssetExecutionResult::failed(failure, "Animation failed")
                     .with_mutation(mutation)
@@ -1126,7 +1127,7 @@ fn apply_publishes_diagnostics_between_execution_and_finalization() {
         let order = order.clone();
         move |_, _, _| {
             order.lock().unwrap().push("execute");
-            Ok(AssetExecutionResult::success(MutationState::None))
+            Ok(AssetExecutionResult::success(CompletedMutation::None))
         }
     });
     let service = OptimizationRunService::with_scheduler(
