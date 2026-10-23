@@ -201,7 +201,9 @@ fn a_dry_run_evaluates_loose_textures_through_every_phase_without_touching_the_t
                 RunPhase::ProcessingAssets,
                 Some(RunProgress::determinate(2, 2, 0))
             ),
-            RunPhaseRecord::skipped(RunPhase::ArchiveFinalization, PhaseSkipReason::DryRun),
+            // With no Archive creation requested, a Dry Run still plans
+            // Archive Finalization, and plans no output.
+            RunPhaseRecord::planned(RunPhase::ArchiveFinalization),
             RunPhaseRecord::executed(RunPhase::SafetyCleanup, None),
         ]
     );
@@ -1220,12 +1222,10 @@ fn a_dry_run_leaves_the_complete_mod_tree_unchanged() {
     );
     assert!(result.archive_finalization().is_none());
     assert_eq!(
-        result
-            .phase(RunPhase::ArchiveFinalization)
-            .unwrap()
-            .skip_reason(),
-        Some(PhaseSkipReason::DryRun)
+        result.phase(RunPhase::ArchiveFinalization),
+        Some(&RunPhaseRecord::planned(RunPhase::ArchiveFinalization))
     );
+    assert!(result.planned_archive_work().outputs().is_empty());
     assert!(toolset.packer.writes().is_empty());
     assert_eq!(snapshot_tree(&root), before);
     assert!(root.join("empty/nested").is_dir());

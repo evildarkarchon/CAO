@@ -1,5 +1,6 @@
-//! Archive Finalization: the Apply-only Run Phase that packs Loose Assets into
-//! new Archives and maintains their Loading Plugins.
+//! Archive Finalization: the Run Phase that packs Loose Assets into new
+//! Archives and maintains their Loading Plugins under Apply, and under Dry
+//! Run plans its output Archives and stops ([`plan_archive_creation`]).
 //!
 //! Ported from `src/Run/ArchiveFinalization.cpp` and its private parts
 //! (`ArchiveFinalizationPlanning.cpp`, `ArchiveFinalizationAttempt.cpp`,
@@ -38,8 +39,8 @@ use crate::routing::RequestedWork;
 use crate::run::capacity::{CapacityCheck, Shortfall};
 use crate::run::staging::has_staging_component;
 use crate::run::{
-    ArchiveFinalizationHandle, ArchiveSeams, RunPreparation, TemporaryArtifactRegistry,
-    take_panic_message,
+    ArchiveFinalizationHandle, ArchiveSeams, PlannedOutputArchive, RunPreparation,
+    TemporaryArtifactRegistry, take_panic_message,
 };
 use crate::{AttemptOutcome, Error, OperationFailure};
 
@@ -253,8 +254,8 @@ impl Default for ArchiveFinalizationChoices {
 
 /// Runs the Archive Finalization Run Phase over the preparation's Mod Roots,
 /// writing its facts through `phase`, the handle that opened it. Archive
-/// Finalization's only entry point: the Run Toolset calls it once per Apply
-/// run.
+/// Finalization's only mutating entry point: the Run Toolset calls it once
+/// per Apply run, and a Dry Run calls [`plan_archive_creation`] instead.
 ///
 /// It runs over the run's seams: `seams.packer` holds the game's rules and
 /// writes Archives, `seams.reader` verifies a committed Archive is readable,
@@ -325,6 +326,88 @@ pub(crate) fn finalize_archives(
     phase.finish(account)
 }
 
+/// What planning a Dry Run's Archive creation produced.
+#[derive(Debug)]
+pub(crate) enum CreationPlanning {
+    /// The Routing Policy requests no Archive creation, so nothing was
+    /// planned.
+    NotRequested,
+    /// The output Archives an Apply run over the Mod Roots as they are now
+    /// would create, in plan order. Empty when nothing would be packed.
+    Planned(Vec<PlannedOutputArchive>),
+    /// Cancellation was observed while planning; nothing was planned.
+    Cancelled,
+    /// Planning failed, or panicked, with this detail: the failure an Apply
+    /// run reports as the phase's Unexpected Exception.
+    Failed(String),
+}
+
+/// Plans Archive Finalization's outputs for a Dry Run, from the same inputs
+/// as [`finalize_archives`]: the preparation's Mod Roots and Packing
+/// Exclusions, `choices`, and `seams.packer`.
+///
+/// It stops where [`finalize_archives`] would start mutating: it never
+/// writes, commits or cleans an output, maintains no existing Loading
+/// Plugin and prunes no directory, so it reaches only the packer's `rules`,
+/// `list_names` and `partition`. `cancelled` is polled as planning polls it
+/// under Apply.
+///
+/// Planning has no panic containment of its own, and a Dry Run has no
+/// attempt-phase handle to finish as an Unexpected Exception, so a panic of
+/// the packer or of planning is contained here and returned as
+/// [`CreationPlanning::Failed`] with its message.
+pub(crate) fn plan_archive_creation(
+    seams: &ArchiveSeams,
+    choices: &ArchiveFinalizationChoices,
+    preparation: &RunPreparation,
+    cancelled: &dyn Fn() -> bool,
+) -> CreationPlanning {
+    if !preparation
+        .policy()
+        .requests(RequestedWork::ArchiveCreation)
+    {
+        return CreationPlanning::NotRequested;
+    }
+    let exclusions = checked_packing_exclusions(preparation);
+    let planned = catch_unwind(AssertUnwindSafe(|| {
+        plan_finalization(
+            preparation.mod_roots(),
+            choices,
+            &*seams.packer,
+            &exclusions,
+            cancelled,
+        )
+    }));
+    match planned {
+        Ok(Ok(plan)) => CreationPlanning::Planned(planned_outputs(&plan)),
+        Ok(Err(PlanningStop::Cancelled)) => CreationPlanning::Cancelled,
+        Ok(Err(PlanningStop::Failed(detail))) => CreationPlanning::Failed(detail),
+        Err(payload) => CreationPlanning::Failed(take_panic_message(payload)),
+    }
+}
+
+/// The Planned Archive Work facts of `plan`'s outputs, in plan order: what
+/// each would pack, as planning measured it, and the Dummy Plugin it would
+/// need.
+fn planned_outputs(plan: &FinalizationPlan) -> Vec<PlannedOutputArchive> {
+    plan.outputs
+        .iter()
+        .map(|output| PlannedOutputArchive {
+            archive_path: output.archive_path.clone(),
+            mod_root: output.mod_root.clone(),
+            kind: output.archive.kind,
+            file_count: output.archive.files.len(),
+            total_bytes: output
+                .archive
+                .files
+                .iter()
+                .fold(0u64, |total, file| total.saturating_add(file.size)),
+            dummy_plugin_path: output.plugin_path.clone(),
+            deletes_packed_sources: plan.delete_sources,
+        })
+        .collect()
+}
+
 /// The phase's work, which plans the phase and streams each output attempt
 /// through `phase`. `account` accumulates in the caller, so an escaping
 /// failure or panic keeps every mutation fact established; the caller
@@ -352,16 +435,7 @@ fn run_phase(
         phase.plan(0).map_err(Escape::Evidence)?;
         prune_empty_directories(preparation.mod_roots(), cancelled, account);
     } else {
-        let exclusions = packing_exclusions(preparation);
-        // The list only filters packing, so its absence matters only when
-        // packing runs.
-        if exclusions.is_empty() {
-            log::error!(
-                "FilesToNotPack.txt not found. This can cause a number of issues. For \
-                 example, for Skyrim, animations will be packed to BSA, preventing them from \
-                 being detected by FNIS and Nemesis."
-            );
-        }
+        let exclusions = checked_packing_exclusions(preparation);
         let plan = match plan_finalization(
             preparation.mod_roots(),
             choices,
@@ -585,6 +659,23 @@ enum Escape {
     Evidence(Error),
     /// The phase's own work failed outside any attempt.
     Work(String),
+}
+
+/// [`packing_exclusions`], logging an Application Log error when the
+/// Selected Profile has none. Called only where packing is planned, under
+/// Apply or Dry Run.
+fn checked_packing_exclusions(preparation: &RunPreparation) -> Vec<String> {
+    let exclusions = packing_exclusions(preparation);
+    // The list only filters packing, so its absence matters only when
+    // packing runs or is planned.
+    if exclusions.is_empty() {
+        log::error!(
+            "FilesToNotPack.txt not found. This can cause a number of issues. For \
+             example, for Skyrim, animations will be packed to BSA, preventing them from \
+             being detected by FNIS and Nemesis."
+        );
+    }
+    exclusions
 }
 
 /// The Selected Profile's Packing Exclusion rules, read from

@@ -19,16 +19,16 @@ use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationS
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ArchiveExtractionFailure, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
-    CancellationToken, ModSelection, OptimizationRunResult, PhaseSkipReason,
+    ArchiveNameKind, CancellationToken, ModSelection, OptimizationRunResult, PhaseSkipReason,
     RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode, RunOutcome, RunPhase,
-    RunPhaseStatus, RunRequest,
+    RunPhaseRecord, RunPhaseStatus, RunRequest,
 };
 use cao_core::test_support::{
     CallbackConfiguration, CountingCleanup, FakeArchivePacker, FakeArchiveReader,
     FakeBackendFactory, FixedConfiguration, Observed, RecordingSink, ScriptedToolset,
     ToolsetConfiguration, entry, execute_run, sse_profile, write_archive,
 };
-use common::{canonical, request, scratch_dir, write_tree};
+use common::{canonical, request, scratch_dir, snapshot_tree, write_tree};
 
 /// Executes `request` through `configuration`, observing every fact through
 /// `sink`.
@@ -162,9 +162,18 @@ fn a_dry_run_through_a_toolset_never_extracts_or_finalizes() {
     std::fs::create_dir(root.join("empty")).unwrap();
     let toolset = Arc::new(ScriptedToolset::default());
     let sink = RecordingSink::default();
+    let before = snapshot_tree(&root);
 
     let result = execute(
-        &archives_and_textures(ExecutionMode::DryRun, &root),
+        &request(
+            ExecutionMode::DryRun,
+            &root,
+            &[
+                RequestedWork::NativeTextureOptimization,
+                RequestedWork::ArchiveExtraction,
+                RequestedWork::ArchiveCreation,
+            ],
+        ),
         &ToolsetConfiguration::sse(Arc::clone(&toolset)),
         &sink,
         &mut CountingCleanup::default(),
@@ -174,24 +183,46 @@ fn a_dry_run_through_a_toolset_never_extracts_or_finalizes() {
     assert_eq!(result.outcome(), RunOutcome::Succeeded);
     assert!(result.archive_extraction_attempts().is_empty());
     assert!(toolset.reader.listed.lock().unwrap().is_empty());
-    assert!(result.archive_finalization().is_none());
-    assert!(
-        toolset.packer.writes().is_empty(),
-        "the packer is untouched"
-    );
     assert!(root.join("content.bsa").exists(), "nothing is extracted");
-    assert!(root.join("empty").exists(), "nothing is pruned");
     assert_eq!(
         toolset.attempted(),
         [root.join("textures").join("loose.dds")]
     );
-    for phase in [RunPhase::ExtractingArchives, RunPhase::ArchiveFinalization] {
-        assert_eq!(
-            result.phase(phase).unwrap().skip_reason(),
-            Some(PhaseSkipReason::DryRun),
-            "{phase:?}"
-        );
-    }
+    assert_eq!(
+        result
+            .phase(RunPhase::ExtractingArchives)
+            .unwrap()
+            .skip_reason(),
+        Some(PhaseSkipReason::DryRun)
+    );
+
+    // Archive Finalization plans its outputs through the packer's planning
+    // seams and stops: it never packs, commits, maintains a Loading Plugin
+    // or prunes.
+    assert!(result.archive_finalization().is_none());
+    assert_eq!(
+        result.phase(RunPhase::ArchiveFinalization),
+        Some(&RunPhaseRecord::planned(RunPhase::ArchiveFinalization))
+    );
+    let [output] = result.planned_archive_work().outputs() else {
+        panic!("one planned output: {:?}", result.planned_archive_work());
+    };
+    assert_eq!(output.file_count, 1, "only the loose Texture: {output:?}");
+    assert_eq!(
+        toolset.packer.listed_names(),
+        [
+            (root.clone(), ArchiveNameKind::Archive),
+            (root.clone(), ArchiveNameKind::Plugin)
+        ]
+    );
+    assert_eq!(toolset.packer.partitioned(), std::slice::from_ref(&root));
+    assert!(toolset.packer.writes().is_empty(), "nothing is packed");
+    assert!(root.join("empty").exists(), "nothing is pruned");
+    assert_eq!(
+        snapshot_tree(&root),
+        before,
+        "no Loading Plugin is created and no source is removed"
+    );
 }
 
 #[test]

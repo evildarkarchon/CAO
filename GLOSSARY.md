@@ -193,7 +193,7 @@ A comparison of an Optimization Run's estimated Archive work against the free sp
 _Avoid_: Disk check, free-space validation
 
 **Archive Finalization**:
-The Apply-only Run Phase that, when the Routing Policy requests Archive creation, commits planned output Archives and any required new Loading Plugins, cleans their source sets, and maintains Loading Plugins for existing Archives. Whether or not Archive creation is requested, it prunes empty directories left within each Mod Root. It does not run after cancellation or fatal failure.
+The Run Phase that, when the Routing Policy requests Archive creation, commits planned output Archives and any required new Loading Plugins, cleans their source sets, and maintains Loading Plugins for existing Archives. Whether or not Archive creation is requested, an Apply run's Archive Finalization prunes empty directories left within each Mod Root. Under Dry Run it plans its output Archives, and the Dummy Plugins they would need, from the same inputs and stops: it packs, commits and cleans nothing, maintains no Loading Plugin and prunes nothing. A Dry Run's plan is an estimate made from the Mod Roots as they are, since an Apply run plans after Archive extraction and Loose Asset optimization. It does not run after cancellation or fatal failure.
 _Avoid_: Safety Cleanup, packing callback
 
 **Planned Archive Work**:

@@ -218,11 +218,11 @@ fn a_no_work_run_traverses_every_phase_skipping_work_for_the_one_known_reason() 
 
 /// A Dry Run's request keeps the Archive work the user chose, so a Dry Run
 /// asking only for Archive work has requested work. Its work phases run, but
-/// the two that would mutate an Archive, Archive extraction and Archive
-/// Finalization, are skipped for being a Dry Run ([`PhaseSkipReason::DryRun`]),
-/// never for having no requested work.
+/// never for having no requested work: Archive extraction is skipped for
+/// being a Dry Run ([`PhaseSkipReason::DryRun`]), and Archive Finalization is
+/// Planned, with nothing to plan over the empty Mod Root.
 #[test]
-fn a_dry_run_asking_only_for_archive_work_skips_its_archive_phases_as_dry_run() {
+fn a_dry_run_asking_only_for_archive_work_skips_or_plans_its_archive_phases() {
     let request = RunRequest::new(
         "SkyrimSE",
         ExecutionMode::DryRun,
@@ -261,6 +261,7 @@ fn a_dry_run_asking_only_for_archive_work_skips_its_archive_phases_as_dry_run() 
             Some(PhaseSkipReason::DryRun),
         )
     };
+    let planned = |phase| (phase, RunPhaseStatus::Planned, None);
     assert_eq!(
         records,
         [
@@ -269,12 +270,13 @@ fn a_dry_run_asking_only_for_archive_work_skips_its_archive_phases_as_dry_run() 
             dry_run(RunPhase::ExtractingArchives),
             executed(RunPhase::BuildingEffectiveAssetTree),
             executed(RunPhase::ProcessingAssets),
-            dry_run(RunPhase::ArchiveFinalization),
+            planned(RunPhase::ArchiveFinalization),
             executed(RunPhase::SafetyCleanup),
         ]
     );
     assert!(result.archive_extraction_attempts().is_empty());
     assert!(result.archive_finalization().is_none());
+    assert!(result.planned_archive_work().outputs().is_empty());
 }
 
 /// Origin: RunExecutorTests::safetyCleanupRunsOnEveryTerminalPath and
@@ -1040,8 +1042,8 @@ fn an_asset_retargeted_after_discovery_is_attributed_to_the_root_containing_it()
 /// Origin: RunExecutorTests::productionWorkApplicability (the empty
 /// requested work, Dry Run evaluation and empty Dry Run rows). Applicable
 /// work with nothing to do still processes Assets against a 0/0 account; Dry
-/// Run evaluates Assets but skips extraction and finalization; nothing is
-/// extracted or staged. A run always executes Archive Finalization in Apply,
+/// Run evaluates Assets but skips extraction and only plans finalization;
+/// nothing is extracted or staged. A run always executes Archive Finalization in Apply,
 /// where with nothing to pack it plans no output and prunes nothing: the C++
 /// row without a finalizer, skipped for no requested work, has no Toolset
 /// equivalent.
@@ -1109,11 +1111,13 @@ fn applicable_work_reports_its_phases_whether_or_not_there_is_anything_to_do() {
                 )),
                 "{row}"
             );
+            // No Archive creation is requested, so nothing is planned.
             assert_eq!(
-                finalization.skip_reason(),
-                Some(PhaseSkipReason::DryRun),
+                finalization,
+                &RunPhaseRecord::planned(RunPhase::ArchiveFinalization),
                 "{row}"
             );
+            assert!(result.planned_archive_work().outputs().is_empty(), "{row}");
         } else {
             assert_eq!(finalization.status(), RunPhaseStatus::Executed, "{row}");
             assert_eq!(finalization.skip_reason(), None, "{row}");

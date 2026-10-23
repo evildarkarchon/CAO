@@ -8,8 +8,9 @@
 //! Tree once, offers every Routed Asset to the Asset attempt port in Texture,
 //! Mesh, Animation order, recording each completed attempt before reporting
 //! it, and in Apply runs Archive Finalization through
-//! [`RunToolset::finalize_archives`]. The Toolset runs both over its seams,
-//! so this module never reaches into them.
+//! [`RunToolset::finalize_archives`], or in Dry Run plans it through
+//! [`RunToolset::plan_archive_creation`]. The Toolset runs each over its
+//! seams, so this module never reaches into them.
 //!
 //! Loose Assets take precedence over Archived Assets, and Archive Precedence
 //! decides between Archives in one Mod Root. Before the first extraction, a
@@ -30,11 +31,13 @@ use crate::routing::{
     SkipReason,
 };
 use crate::run::archives::{Preflight, RootArchives, archive_order_key, relative_game_path};
+use crate::run::finalization::CreationPlanning;
 use crate::run::{
     ArchiveExtractionPlan, ArchiveFinalizationChoices, AssetInitializationCancelled,
-    CancellationToken, MutableRunEvidence, PhaseSkipReason, RoutedAssetAttempt, RunDiagnostic,
-    RunDiagnosticCode, RunPhase, RunPhaseRecord, RunPreparation, RunToolset, SourceCleanup,
-    TemporaryArtifactRegistry, WorkChoices, is_staging_name, take_panic_message,
+    CancellationToken, MutableRunEvidence, OutputPlanBasis, PhaseSkipReason, RoutedAssetAttempt,
+    RunDiagnostic, RunDiagnosticCode, RunFailure, RunFailureCode, RunPhase, RunPhaseRecord,
+    RunPreparation, RunToolset, SourceCleanup, TemporaryArtifactRegistry, WorkChoices,
+    is_staging_name, take_panic_message,
 };
 
 /// Walks Mod Roots for regular files under the scope rules both discovery passes share.
@@ -230,9 +233,11 @@ struct DiscoveredArchives {
 /// An Asset attempt's panic is contained here, as an unsafe Operation
 /// Failure with unknown mutation. Archive extraction and Archive
 /// Finalization contain their own panics, so they are called without a
-/// second layer. Archive Finalization runs only in Apply, once its executed
-/// phase is recorded. Errors are Run Evidence invariant violations, which
-/// the executor raises after Safety Cleanup.
+/// second layer, as is Archive Finalization's planning-only step. Archive
+/// Finalization runs only in Apply, once its executed phase is recorded; a
+/// Dry Run records it as Planned and only plans its outputs. Errors are Run
+/// Evidence invariant violations, which the executor raises after Safety
+/// Cleanup.
 ///
 /// Each work Run Phase runs in its own function returning a [`PhaseFlow`];
 /// this function only chains them, stopping at the first `Break` and
@@ -651,11 +656,13 @@ fn process_assets(
 /// Runs the Archive Finalization phase, once the Run Diagnostics retained so
 /// far are published. Apply executes it over `toolset`'s seams with
 /// `choices`, the Run Request's Archive Finalization choices, through the
-/// handle its executed record opens; Dry Run skips it.
+/// handle its executed record opens; Dry Run plans it with the same choices
+/// ([`plan_archive_finalization`]).
 ///
 /// Cancellation is observed after that publication, before the phase is
-/// recorded, and again before Apply finalizes. As the last work phase it
-/// returns `Break` only to report that finalization did not run.
+/// recorded, and again before Apply finalizes or Dry Run plans. As the last
+/// work phase it returns `Break` only to report that finalization or its
+/// planning did not finish.
 fn finalize_archives(
     preparation: &RunPreparation,
     mode: ExecutionMode,
@@ -674,14 +681,10 @@ fn finalize_archives(
 
     // The execution mode selects the final work phase's record: Apply
     // executes Archive Finalization over the Run Toolset's seams, and Dry
-    // Run skips it. The immutable policy decides: Dry Run never finalizes,
+    // Run plans it. The immutable policy decides: Dry Run never finalizes,
     // whatever the Toolset holds.
     if mode == ExecutionMode::DryRun {
-        evidence.record_phase(RunPhaseRecord::skipped(
-            RunPhase::ArchiveFinalization,
-            PhaseSkipReason::DryRun,
-        ))?;
-        return Ok(ControlFlow::Continue(()));
+        return plan_archive_finalization(preparation, choices, toolset, evidence, stop);
     }
     let finalization = evidence.open_archive_finalization()?;
     // Archive Finalization is a separate mutation boundary: observe
@@ -696,6 +699,71 @@ fn finalize_archives(
     toolset.finalize_archives(preparation, choices, finalization, artifacts, &|| {
         stop.is_cancelled()
     })?;
+    Ok(ControlFlow::Continue(()))
+}
+
+/// Records a Dry Run's Archive Finalization as Planned, then plans its
+/// output Archives through `toolset`'s planning-only step with `choices` and
+/// records each as Planned Archive Work, marked as an estimate made from the
+/// Mod Roots as they are now: a Dry Run plans before any extraction or Loose
+/// Asset optimization an Apply run would do first. Each recorded output and
+/// each distinct Dummy Plugin it would need gets a "would create" line in
+/// the Application Log.
+///
+/// Without an Archive creation request the phase is still Planned, with no
+/// planned output. Nothing is packed, committed or cleaned, no Loading
+/// Plugin is maintained and no directory pruned.
+///
+/// Cancellation is observed before planning and by planning itself; either
+/// stops with nothing planned, as an Apply run stops with no output total. A
+/// planning failure, or a contained planning panic, is recorded as the
+/// run's Run Failure. Both return `Break`.
+fn plan_archive_finalization(
+    preparation: &RunPreparation,
+    choices: &ArchiveFinalizationChoices,
+    toolset: &RunToolset,
+    evidence: &mut MutableRunEvidence<'_>,
+    stop: &CancellationToken,
+) -> PhaseFlow {
+    evidence.record_phase(RunPhaseRecord::planned(RunPhase::ArchiveFinalization))?;
+    if stop.is_cancelled() {
+        return Ok(ControlFlow::Break(Stop::Halted));
+    }
+    let outputs = match toolset.plan_archive_creation(preparation, choices, &|| stop.is_cancelled())
+    {
+        CreationPlanning::NotRequested => return Ok(ControlFlow::Continue(())),
+        CreationPlanning::Planned(outputs) => outputs,
+        CreationPlanning::Cancelled => return Ok(ControlFlow::Break(Stop::Halted)),
+        CreationPlanning::Failed(detail) => {
+            evidence.record_failure(RunFailure::new(
+                RunFailureCode::ArchiveCreationPlanningFailed,
+                RunPhase::ArchiveFinalization,
+                detail,
+            ));
+            return Ok(ControlFlow::Break(Stop::Halted));
+        }
+    };
+    evidence.record_output_plan_basis(OutputPlanBasis::EstimateFromModRootsAsTheyAre)?;
+    // Outputs that share a fallback Loading Plugin name, such as an
+    // Archive and its Textures Archive, would need one Dummy Plugin, so each
+    // is reported once.
+    let mut dummy_plugins = HashSet::new();
+    for output in outputs {
+        // Recorded before it is reported, so the log never names an output
+        // the evidence refused.
+        evidence.record_planned_output(output.clone())?;
+        log::info!(
+            "would create {} ({} files, {} bytes)",
+            output.archive_path.display(),
+            output.file_count,
+            output.total_bytes
+        );
+        if let Some(plugin) = &output.dummy_plugin_path
+            && dummy_plugins.insert(plugin.clone())
+        {
+            log::info!("would create Dummy Plugin {}", plugin.display());
+        }
+    }
     Ok(ControlFlow::Continue(()))
 }
 

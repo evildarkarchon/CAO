@@ -29,7 +29,9 @@ mod planned_work;
 
 use attempt_phase::{ATTEMPT_BEARING_PHASES, PLANNABLE_PHASES};
 pub(crate) use attempt_phase::{ArchiveFinalizationHandle, AttemptPhaseHandle, PhaseAttempt};
-pub use planned_work::{PlannedArchiveExtraction, PlannedArchiveWork, PlannedOutputArchive};
+pub use planned_work::{
+    OutputPlanBasis, PlannedArchiveExtraction, PlannedArchiveWork, PlannedOutputArchive,
+};
 
 /// One completed attempt: its routed identity, resolved Mod Root and durable outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -853,18 +855,37 @@ impl<'a> MutableRunEvidence<'a> {
         Ok(())
     }
 
+    /// Retains what a Dry Run's output Archives are planned from, once
+    /// Archive Finalization planned Archive creation and before it records
+    /// any planned output, so every planned output is marked with it.
+    ///
+    /// # Errors
+    /// A Run Evidence invariant violation, retaining nothing, when Archive
+    /// Finalization is not the current, Planned Run Phase, or when a basis
+    /// was already recorded.
+    pub(crate) fn record_output_plan_basis(&mut self, basis: OutputPlanBasis) -> Result<(), Error> {
+        if !self.storage.planning(RunPhase::ArchiveFinalization) {
+            return Err(Error::EvidenceInvariant(
+                "An output plan basis must be recorded during a Planned Archive Finalization",
+            ));
+        }
+        if self.storage.planned_archive_work.output_basis().is_some() {
+            return Err(Error::EvidenceInvariant(
+                "An output plan basis can only be recorded once",
+            ));
+        }
+        self.storage.planned_archive_work.set_output_basis(basis);
+        Ok(())
+    }
+
     /// Retains one output Archive a Dry Run planned instead of creating,
     /// after those already recorded.
     ///
     /// # Errors
     /// A Run Evidence invariant violation, retaining nothing, when Archive
-    /// Finalization is not the current, Planned Run Phase.
-    // #643 makes Archive Finalization its producer; until then only the
-    // evidence suite records one, as for planned extractions above.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no run plans Archive creation until #643")
-    )]
+    /// Finalization is not the current, Planned Run Phase, or when no
+    /// output plan basis was recorded first
+    /// ([`Self::record_output_plan_basis`]).
     pub(crate) fn record_planned_output(
         &mut self,
         output: PlannedOutputArchive,
@@ -872,6 +893,11 @@ impl<'a> MutableRunEvidence<'a> {
         if !self.storage.planning(RunPhase::ArchiveFinalization) {
             return Err(Error::EvidenceInvariant(
                 "Planned output Archives must be recorded during a Planned Archive Finalization",
+            ));
+        }
+        if self.storage.planned_archive_work.output_basis().is_none() {
+            return Err(Error::EvidenceInvariant(
+                "Planned output Archives must follow the basis they were planned from",
             ));
         }
         self.storage.planned_archive_work.push_output(output);
