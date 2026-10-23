@@ -4,12 +4,18 @@
 //! directory, [`run_service`] wires a profile-backed Run Configuration Provider
 //! into the Optimization Run Service that serves a whole session. Given the
 //! selected profile and the options model, [`run_request`] validates the
-//! options and builds each run's Run Request. During each run's Preparing, the
-//! provider builds the production Run Toolset from the same profile read as
-//! the run's Routing Policy and from the run's Run Request, and a request that
-//! contradicts the profile's Profile Capabilities fails there with a Policy
-//! Conflict. The integration tests go through
-//! them too, so they exercise the wiring users run.
+//! options and builds each run's Run Request. It reads no profile file (#570):
+//! given the Profile Capabilities the caller already holds, as the GUI holds
+//! those of the `profile.ini` it loaded, it holds back the work they do not
+//! support, and given none it leaves the profile to Preparing.
+//!
+//! During each run's Preparing, the provider builds the production Run Toolset
+//! from the same profile read as the run's Routing Policy and from the run's
+//! Run Request, and a request that contradicts the profile's Profile
+//! Capabilities fails there with a Policy Conflict. That read always has the
+//! last word, even over capabilities a request was built with. The
+//! integration tests go through them too, so they exercise the wiring users
+//! run.
 //!
 //! Everything resolves against the app directory the caller passes: `profiles/`
 //! and `bin/hkxcmd.exe` here, and later `logs/` (deviation 1). Only `cao-gui`'s
@@ -20,7 +26,8 @@ use std::sync::Arc;
 
 use cao_archive::Settings;
 use cao_core::Error;
-use cao_core::routing::{ExecutionMode, RequestedWork};
+use cao_core::admission::Admission;
+use cao_core::routing::{ExecutionMode, ProfileCapabilities, RequestedWork};
 use cao_core::run::{
     ArchiveFinalizationChoices, ArchiveSeams, AssetAttemptAdapter, AssetBackendFactory,
     BackendCreation, BackendCreationError, CancellationToken, MeshChoices, MeshLevel, ModSelection,
@@ -78,13 +85,23 @@ pub fn run_service(app_dir: &Path) -> OptimizationRunService {
 }
 
 /// Builds the Run Request for `options` under the profile identity `profile`:
-/// a pure function of the caller's intent that reads no profile file.
+/// a pure function of the caller's intent that reads no profile file (#570).
 ///
 /// Texture work is requested when any Texture option is on. Conversion of
 /// TGAs is never requested: Routing Policy compilation derives it during
 /// Preparing from the Conversion Preference of the profile read there. Mesh
 /// work is requested when the level is above 0 or resaving is on; it covers
 /// both Standard and Terrain Meshes.
+///
+/// `capabilities` are the Profile Capabilities the caller already holds for
+/// `profile`, such as the GUI's from the `profile.ini` it loaded. Through
+/// core's [`Admission`], the request holds back the requested work they do
+/// not support, as it holds back the work its Dry Run or Several Mods rules
+/// do; a held-back choice is neither a Start Error nor a Policy Conflict.
+/// `None` holds back nothing for capabilities, so the profile Preparing reads
+/// judges the request, and work it does not support fails the run there with
+/// a Policy Conflict. So do capabilities that went stale: Preparing's read
+/// always has the last word.
 ///
 /// The request also carries the form's Work Choices: its Texture, Mesh,
 /// Archive extraction and Archive Finalization choices, with ratio winning
@@ -95,7 +112,11 @@ pub fn run_service(app_dir: &Path) -> OptimizationRunService {
 /// The first [`RunSetupError`] found. The form's structure is checked first,
 /// its mode and then its selected folder, and its Work Choices only after
 /// that, in the order [`work_choices`] builds them.
-pub fn run_request(profile: &str, options: &Options) -> Result<RunRequest, RunSetupError> {
+pub fn run_request(
+    profile: &str,
+    options: &Options,
+    capabilities: Option<&ProfileCapabilities>,
+) -> Result<RunRequest, RunSetupError> {
     let mod_selection: fn(PathBuf) -> ModSelection = match options.mode {
         OptimizationMode::SingleMod => ModSelection::SingleModRoot,
         OptimizationMode::SeveralMods => ModSelection::ChildModRoots,
@@ -129,7 +150,7 @@ pub fn run_request(profile: &str, options: &Options) -> Result<RunRequest, RunSe
         (options.bsa_extract, RequestedWork::ArchiveExtraction),
         (options.bsa_create, RequestedWork::ArchiveCreation),
     ];
-    let work = choices
+    let work: Vec<RequestedWork> = choices
         .into_iter()
         .filter(|(selected, _)| *selected)
         .map(|(_, work)| work)
@@ -139,6 +160,11 @@ pub fn run_request(profile: &str, options: &Options) -> Result<RunRequest, RunSe
     } else {
         ExecutionMode::Apply
     };
+    // Only the capability rule needs this: `RunRequest::new` and
+    // `with_work_choices` apply the Dry Run and Several Mods rules to every
+    // request themselves, so applying them here too changes nothing.
+    let several_mods = matches!(mod_selection, ModSelection::ChildModRoots(_));
+    let work = Admission::new(mode, several_mods, capabilities).admitted_work(&work);
     Ok(RunRequest::new(profile, mode, mod_selection, work).with_work_choices(work_choices))
 }
 
