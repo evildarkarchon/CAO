@@ -360,11 +360,11 @@ impl ModSelection {
 /// done.
 ///
 /// It carries the user's choices that its Admission Rules admit. Building it
-/// applies the rules that need no profile ([`Admission`] without Profile
-/// Capabilities): a Dry Run carries no Archive extraction or creation, and a
-/// Several Mods selection carries a Mesh level of Necessary at most. No
-/// request breaking either rule can exist, and its accessors return the
-/// admitted values.
+/// applies the rule that needs no profile ([`Admission`] without Profile
+/// Capabilities): a Several Mods selection carries a Mesh level of Necessary
+/// at most. No request breaking that rule can exist, and its accessors return
+/// the admitted values. A Dry Run request carries the work the user chose,
+/// Archive work included; its work phases mutate no Archive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRequest {
     profile_identity: String,
@@ -381,8 +381,8 @@ impl RunRequest {
     ///
     /// Adapters assemble work from independent choices, so the request keeps
     /// each choice once in enumeration order and repeated runs see one order.
-    /// Work its Admission Rules hold back is dropped: under Dry Run, Archive
-    /// extraction and creation. Dropping it raises no Run Diagnostic.
+    /// No profile-free Admission Rule holds back requested work, so every
+    /// chosen piece is kept, under Dry Run too.
     pub fn new(
         profile_identity: impl Into<String>,
         execution_mode: ExecutionMode,
@@ -391,29 +391,23 @@ impl RunRequest {
     ) -> Self {
         requested_work.sort();
         requested_work.dedup();
-        let mut request = Self {
+        Self {
             profile_identity: profile_identity.into(),
             execution_mode,
             mod_selection,
-            requested_work: Vec::new(),
+            requested_work,
             archive_precedence: ArchivePrecedence::DeterministicDiscovery,
             work_choices: WorkChoices::default(),
-        };
-        request.requested_work = request.admission().admitted_work(&requested_work);
-        request
+        }
     }
 
     /// The Admission Rules that need no profile, read from this request's
-    /// execution mode and Mod Selection.
+    /// Mod Selection.
     ///
     /// Profile Capabilities are left out: building a request reads no
     /// profile, so Preparing's Routing Policy compilation judges them.
     fn admission(&self) -> Admission {
-        Admission::new(
-            self.execution_mode,
-            self.mod_selection.is_several_mods(),
-            None,
-        )
+        Admission::new(self.mod_selection.is_several_mods(), None)
     }
 
     /// Replaces the Archive Precedence intent; discovery validates it later.
@@ -455,8 +449,7 @@ impl RunRequest {
         &self.archive_precedence
     }
 
-    /// The deduplicated requested work its Admission Rules admit, in
-    /// enumeration order.
+    /// The deduplicated requested work in enumeration order.
     pub fn requested_work(&self) -> &[RequestedWork] {
         &self.requested_work
     }

@@ -22,10 +22,24 @@ const HOVER_DELAY: Duration = Duration::from_millis(800);
 
 const EXTRACT_HELP: &str = "Extracts any BSAs present in the mod folder.";
 
+const SEPARATE_TEXTURES_HELP: &str = "There are three types of BSAs CAO can create : incompressible, textures and standard. If enabled, this option will always separate textures into their own BSAs. Otherwise, they will be merged into the standard one if possible.";
+
 /// Opens SSE, which enables every tab, at the design size.
 fn open_sse(name: &str) -> (std::rc::Rc<cao_gui::App>, std::rc::Rc<FakeDesktop>) {
+    open_on(name, "SSE")
+}
+
+/// Opens FO4 at the design size. FO4 keeps Textures in their own Archive, so
+/// its "Separate textures BSA" shows checked and disabled.
+fn open_fo4(name: &str) -> (std::rc::Rc<cao_gui::App>, std::rc::Rc<FakeDesktop>) {
+    open_on(name, "FO4")
+}
+
+/// Opens the shipped profile `profile`, without tutorial boxes, at the design
+/// size.
+fn open_on(name: &str, profile: &str) -> (std::rc::Rc<cao_gui::App>, std::rc::Rc<FakeDesktop>) {
     let app_dir = app_dir(name);
-    edit_ini(&app_dir, "common.ini", "profile", "SSE");
+    edit_ini(&app_dir, "common.ini", "profile", profile);
     edit_ini(&app_dir, "common.ini", "showTutorial", "false");
     let (app, desktop) = open(&app_dir);
     app.window().window().set_size(WINDOW);
@@ -74,15 +88,14 @@ fn resting_on_an_option_shows_its_help_after_a_delay() {
 #[test]
 fn a_disabled_option_still_shows_its_help() {
     headless();
-    let (app, _desktop) = open_sse("tip_disabled");
+    let (app, _desktop) = open_fo4("tip_disabled");
     let ui = app.window();
-    // Dry Run disables the BSA base group.
-    click(ui, "Dry run");
-    assert!(!enabled(ui, "Extract BSA"));
+    // FO4's Archive Rules disable "Separate textures BSA".
+    assert!(!enabled(ui, "Separate textures BSA"));
 
-    hover(ui, &control(ui, "Extract BSA"));
+    hover(ui, &control(ui, "Separate textures BSA"));
 
-    assert!(tip_shows(ui, EXTRACT_HELP));
+    assert!(tip_shows(ui, SEPARATE_TEXTURES_HELP));
 }
 
 #[test]
@@ -291,14 +304,14 @@ fn clicking_an_option_under_the_help_cursor_toggles_it() {
 #[test]
 fn clicking_a_disabled_option_under_the_help_cursor_leaves_it() {
     headless();
-    let (app, _desktop) = open_sse("overlay_click_disabled");
+    let (app, _desktop) = open_fo4("overlay_click_disabled");
     let ui = app.window();
-    click(ui, "Dry run");
-    let before = checked(ui, "Extract BSA");
+    assert!(!enabled(ui, "Separate textures BSA"));
+    let before = checked(ui, "Separate textures BSA");
 
-    mouse_click(ui, "Extract BSA");
+    mouse_click(ui, "Separate textures BSA");
 
-    assert_eq!(checked(ui, "Extract BSA"), before);
+    assert_eq!(checked(ui, "Separate textures BSA"), before);
 }
 
 #[test]

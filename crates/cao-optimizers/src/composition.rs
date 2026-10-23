@@ -96,8 +96,10 @@ pub fn run_service(app_dir: &Path) -> OptimizationRunService {
 /// `capabilities` are the Profile Capabilities the caller already holds for
 /// `profile`, such as the GUI's from the `profile.ini` it loaded. Through
 /// core's [`Admission`], the request holds back the requested work they do
-/// not support, as it holds back the work its Dry Run or Several Mods rules
-/// do; a held-back choice is neither a Start Error nor a Policy Conflict.
+/// not support, as its Several Mods rule holds back Mesh levels above
+/// Necessary; a held-back choice is neither a Start Error nor a Policy
+/// Conflict. A Dry Run holds back nothing: its request keeps the Archive work
+/// chosen, and its run mutates no Archive.
 /// `None` holds back nothing for capabilities, so the profile Preparing reads
 /// judges the request, and work it does not support fails the run there with
 /// a Policy Conflict. So do capabilities that went stale: Preparing's read
@@ -156,11 +158,10 @@ pub fn run_request(
         .map(|(_, work)| work)
         .collect();
     let mode = ExecutionMode::from_dry_run(options.dry_run);
-    // Only the capability rule needs this: `RunRequest::new` and
-    // `with_work_choices` apply the Dry Run and Several Mods rules to every
-    // request themselves, so applying them here too changes nothing.
-    let work =
-        Admission::new(mode, mod_selection.is_several_mods(), capabilities).admitted_work(&work);
+    // Only the capability rule holds back requested work. The Several Mods
+    // rule caps the Mesh level, which `with_work_choices` applies to every
+    // request itself, so applying it here too changes nothing.
+    let work = Admission::new(mod_selection.is_several_mods(), capabilities).admitted_work(&work);
     Ok(RunRequest::new(profile, mode, mod_selection, work).with_work_choices(work_choices))
 }
 

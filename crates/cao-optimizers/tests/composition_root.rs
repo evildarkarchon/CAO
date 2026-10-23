@@ -387,14 +387,13 @@ fn every_kind_of_work_is_accepted() {
 /// accepts it, and the run fails Preparing with a Policy Conflict Run
 /// Failure.
 ///
-/// A choice an Admission Rule held back never reaches that judgement (spec
-/// #634): a Dry Run's request carries no Archive creation, so a Dry Run with
-/// Create BSA under a profile without Archive support prepares and succeeds.
+/// A Dry Run is no exception (#570): its request keeps the Archive creation
+/// the user chose, so a Dry Run with Create BSA under a profile without
+/// Archive support fails Preparing too, though it would never pack.
 #[test]
 fn a_request_contradicting_the_profile_capabilities_fails_preparing() {
     let _serial = serial();
     let app = app_dir("capability-conflict");
-    let mod_root = app.join("mods").join("Mod");
 
     // FO4 has no Mesh support: any Mesh work contradicts it. Built without
     // Profile Capabilities, the request holds none of it back.
@@ -421,17 +420,46 @@ fn a_request_contradicting_the_profile_capabilities_fails_preparing() {
         }
     )));
 
-    // A Dry Run never packs, so its request holds Archive creation back and
-    // a profile with no Archive support has nothing to contradict.
-    edit_profile(&app, "SSE", "bsaEnabled", "false");
-    let mut options = dry_run_textures(&app, &mod_root);
-    options.bsa_create = true;
-    assert!(
-        !run_request("SSE", &options, None)
-            .unwrap()
-            .requests(RequestedWork::ArchiveCreation)
-    );
-    let result = start_and_wait(&run_service(&app), "SSE", &options);
+    // A profile with no Archive support cannot create Archives, even in a
+    // Dry Run that would never pack them.
+    let options = dry_run_create_without_archive_support(&app);
+    let request = run_request("SSE", &options, None).unwrap();
+    assert!(request.requests(RequestedWork::ArchiveCreation));
+    let result = run_service(&app).start(request, None).unwrap().wait();
+    assert_eq!(result.outcome(), RunOutcome::Failed);
+    let failure = &result.failures()[0];
+    assert_eq!(failure.code, RunFailureCode::PolicyConflict);
+    assert_eq!(failure.phase, RunPhase::Preparing);
+    assert!(failure.policy_conflicts.iter().any(|conflict| matches!(
+        conflict,
+        PolicyValidationError::UnsupportedRequestedAssetKind {
+            request: RequestedWork::ArchiveCreation,
+            ..
+        } | PolicyValidationError::UnsupportedRequestedAssetVariant {
+            request: RequestedWork::ArchiveCreation,
+            ..
+        }
+    )));
+}
+
+/// The counterpart of the Dry Run case of
+/// [`a_request_contradicting_the_profile_capabilities_fails_preparing`]: built
+/// with the capabilities of that profile without Archive support, as the GUI
+/// builds it from the `profile.ini` it loaded, the Dry Run's request holds
+/// Archive creation back, so the run prepares and succeeds.
+#[test]
+fn a_dry_run_built_with_capabilities_lacking_archive_support_holds_back_archive_creation() {
+    let _serial = serial();
+    let app = app_dir("capability-admission-archives");
+    let options = dry_run_create_without_archive_support(&app);
+    let settings = Profiles::new(&app).open("SSE").load_settings().unwrap();
+    let capabilities = profile_capabilities(&settings);
+
+    let request = run_request("SSE", &options, Some(&capabilities)).unwrap();
+
+    assert!(!request.requests(RequestedWork::ArchiveCreation));
+    assert!(request.requests(RequestedWork::NativeTextureOptimization));
+    let result = run_service(&app).start(request, None).unwrap().wait();
     assert_eq!(
         result.outcome(),
         RunOutcome::Succeeded,
@@ -440,6 +468,21 @@ fn a_request_contradicting_the_profile_capabilities_fails_preparing() {
     );
     let policy = result.preparation().expect("the run prepares").policy();
     assert!(!policy.requests(RequestedWork::ArchiveCreation));
+}
+
+/// A Dry Run with Create BSA over `app/mods/Mod`, under the SSE profile
+/// edited to `bsaEnabled=false` so it has no Archive support. Shared by the
+/// Dry Run case of
+/// [`a_request_contradicting_the_profile_capabilities_fails_preparing`] and
+/// [`a_dry_run_built_with_capabilities_lacking_archive_support_holds_back_archive_creation`]
+/// so the pair differ only in the capabilities `run_request` is given.
+fn dry_run_create_without_archive_support(app: &Path) -> Options {
+    let mod_root = app.join("mods").join("Mod");
+    std::fs::create_dir_all(&mod_root).unwrap();
+    edit_profile(app, "SSE", "bsaEnabled", "false");
+    let mut options = dry_run_textures(app, &mod_root);
+    options.bsa_create = true;
+    options
 }
 
 /// Spec #634: a request built with the Selected Profile's capabilities, as
