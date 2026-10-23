@@ -189,7 +189,7 @@ An Archived Asset path that is empty or absolute, escapes its root, contains cha
 _Avoid_: Invalid file name, bad entry
 
 **Capacity Check**:
-A comparison of an Optimization Run's estimated Archive work against the free space on each affected volume. A shortage found before any Archive is extracted is a Run Failure. A shortage found later fails only the Archive work it guards and leaves the run safe to continue. Unknown free space never fails a Capacity Check. A probe that cannot answer, even by panicking, gives an unknown answer; a Mod Root on an unknown volume is checked against the whole run's estimated Archive work.
+A comparison of an Optimization Run's estimated Archive work against the free space on each affected volume. A shortage found before any Archive is extracted is a Run Failure under Apply and a warning-level Run Diagnostic under Dry Run, which needs no space and still reports the rest of its plan. A shortage found later fails only the Archive work it guards and leaves the run safe to continue. Unknown free space never fails a Capacity Check. A probe that cannot answer, even by panicking, gives an unknown answer; a Mod Root on an unknown volume is checked against the whole run's estimated Archive work.
 _Avoid_: Disk check, free-space validation
 
 **Archive Finalization**:

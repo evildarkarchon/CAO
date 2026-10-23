@@ -14,7 +14,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::run::{VolumeProbe, take_panic_message};
+use crate::run::{RunDiagnostic, RunDiagnosticCode, RunPhase, VolumeProbe, take_panic_message};
 
 /// Checks estimated Archive work against the free space on each affected
 /// volume, through one [`VolumeProbe`].
@@ -84,6 +84,22 @@ impl<'p> CapacityCheck<'p> {
             .iter()
             .filter(|(_, bytes)| *bytes != 0)
             .find_map(|(root, _)| self.shortfall_at(demand, root))
+    }
+
+    /// The warning-level [`RunDiagnostic`] a Dry Run records, at `phase`,
+    /// for a `shortfall` its Apply run would fail on: a
+    /// [`RunDiagnosticCode::CapacityShortage`] whose path is the shortfall's
+    /// Mod Root and whose detail names that root's volume, the demand and the
+    /// available space.
+    ///
+    /// The volume is the root's frozen identity, looked up through the probe
+    /// only if no check of the run has yet; an unknown or panicking answer
+    /// leaves the detail naming "the volume holding this Mod Root" instead.
+    /// Only a Dry Run calls this, so an Apply run never looks a volume up
+    /// just to describe its failure.
+    pub(crate) fn shortage_warning(&self, phase: RunPhase, shortfall: &Shortfall) -> RunDiagnostic {
+        let volume = self.volume_identity(&shortfall.root);
+        shortfall.warning(phase, volume.as_deref())
     }
 
     /// The bytes `root` is checked against: the demand sharing its volume, or
@@ -223,6 +239,35 @@ pub(crate) struct Shortfall {
     pub required: u64,
     /// The free space sampled at the root.
     pub available: u64,
+}
+
+impl Shortfall {
+    /// The warning-level [`RunDiagnosticCode::CapacityShortage`] at `phase`
+    /// for this shortfall, attributed to its Mod Root, naming `volume`, the
+    /// root's volume identity, or the volume holding the root when that is
+    /// unknown. Unlike the [`Display`](fmt::Display) form, which is an Apply
+    /// run's failure detail, it reads as a preview of that failure.
+    fn warning(&self, phase: RunPhase, volume: Option<&str>) -> RunDiagnostic {
+        let Self {
+            root,
+            required,
+            available,
+        } = self;
+        let volume = match volume {
+            Some(volume) => format!("volume {volume}"),
+            None => "the volume holding this Mod Root".to_owned(),
+        };
+        RunDiagnostic::new(
+            RunDiagnosticCode::CapacityShortage,
+            phase,
+            format!(
+                "Capacity shortage: an Apply run would need an estimated {required} bytes on \
+                 {volume}, but {available} bytes are available, so it would fail its Capacity \
+                 Check. The Dry Run itself needs no space."
+            ),
+        )
+        .with_path(root)
+    }
 }
 
 impl fmt::Display for Shortfall {
@@ -432,6 +477,40 @@ mod tests {
         let demand = demand_of(&fresh, &[("a", 100), ("b", 200)]);
         assert_eq!(fresh.first_shortfall(&demand), None);
         assert_eq!(probe.lookups("a"), 2);
+    }
+
+    /// #642: a Dry Run's capacity warning is attributed to the Mod Root and
+    /// names its volume, or the volume holding it when the identity is
+    /// unknown, with the demand and the available space.
+    #[test]
+    fn a_shortage_warning_names_the_volume_the_demand_and_the_space() {
+        let probe = TableProbe::default().with_volume("known", "volume-1");
+        let check = CapacityCheck::new(&probe);
+        for (root, volume) in [
+            ("known", "volume volume-1"),
+            ("unknown", "the volume holding this Mod Root"),
+        ] {
+            let warning = check.shortage_warning(
+                RunPhase::DiscoveringArchives,
+                &Shortfall {
+                    root: PathBuf::from(root),
+                    required: 300,
+                    available: 250,
+                },
+            );
+
+            assert_eq!(warning.code, RunDiagnosticCode::CapacityShortage);
+            assert_eq!(warning.phase, RunPhase::DiscoveringArchives);
+            assert_eq!(warning.path, Path::new(root));
+            assert_eq!(
+                warning.detail,
+                format!(
+                    "Capacity shortage: an Apply run would need an estimated 300 bytes on \
+                     {volume}, but 250 bytes are available, so it would fail its Capacity \
+                     Check. The Dry Run itself needs no space."
+                )
+            );
+        }
     }
 
     /// Rust-only, for #593: the shortfall explains itself word for word as

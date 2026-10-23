@@ -108,7 +108,8 @@ pub enum RunOutcome {
     Failed,
 }
 
-/// Informational categories that never affect the Run Outcome.
+/// Informational or warning-level categories that never affect the Run
+/// Outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RunDiagnosticCode {
     ObserverFailed,
@@ -119,6 +120,13 @@ pub enum RunDiagnosticCode {
     /// A plugin whose HDPT records cannot be read names no Headpart Mesh; the
     /// run carries on without them (deviation 17). C++ had no such report.
     PluginUnreadable,
+    /// Warning-level: a Dry Run's Capacity Check found that the Apply run
+    /// would run short of free space for its Archive work on a Mod Root's
+    /// volume. The Apply run fails that check as a Run Failure; the Dry Run,
+    /// which needs no space, warns and carries on. The diagnostic's path is
+    /// the Mod Root, and its detail names the volume, the demand and the
+    /// available space.
+    CapacityShortage,
 }
 
 /// An informational observation that never determines the Run Outcome.
