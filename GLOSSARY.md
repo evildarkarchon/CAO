@@ -196,6 +196,10 @@ _Avoid_: Disk check, free-space validation
 The Apply-only Run Phase that, when the Routing Policy requests Archive creation, commits planned output Archives and any required new Loading Plugins, cleans their source sets, and maintains Loading Plugins for existing Archives. Whether or not Archive creation is requested, it prunes empty directories left within each Mod Root. It does not run after cancellation or fatal failure.
 _Avoid_: Safety Cleanup, packing callback
 
+**Planned Archive Work**:
+The Archive extraction plans and planned output Archives a Dry Run records instead of attempting them. A Dry Run reports Extracting Archives and Archive Finalization as planned rather than executed or skipped, and a planned Run Phase carries no Run Progress. Planned Archive Work is kept in Run Evidence as facts separate from attempts; mutation summaries never count it, and it never determines the Run Outcome.
+_Avoid_: Skipped Archive work, simulated extraction, zero-attempt phase
+
 **Loading Plugin**:
 A game plugin whose presence makes one or more Archives load under the selected game profile's Archive Rules. It may be a full plugin or a Dummy Plugin.
 _Avoid_: Archive, Dummy Plugin

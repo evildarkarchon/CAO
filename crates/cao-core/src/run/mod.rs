@@ -34,7 +34,10 @@ pub use artifacts::{
 pub use asset_attempt::{
     AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
 };
-pub use evidence::{ArchiveDiscoveryEvidence, RoutedAssetAttempt, RunEvidence, RunObservationSink};
+pub use evidence::{
+    ArchiveDiscoveryEvidence, PlannedArchiveExtraction, PlannedArchiveWork, PlannedOutputArchive,
+    RoutedAssetAttempt, RunEvidence, RunObservationSink,
+};
 pub use executor::{
     RunEvidenceInvariantPanic, RunExecutor, RunServices, SafetyCleanupService,
     collect_safety_cleanup_failures,

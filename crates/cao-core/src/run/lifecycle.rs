@@ -15,7 +15,7 @@ use crate::routing::{
 };
 use crate::run::{
     ArchiveCollision, ArchiveExtractionResult, ArchiveFinalizationResult, ArchivePrecedence,
-    RoutedAssetAttempt, RunEvidence, RunPreparation, WorkChoices,
+    PlannedArchiveWork, RoutedAssetAttempt, RunEvidence, RunPreparation, WorkChoices,
 };
 
 /// The unique identity of one Optimization Run, carried by its events and terminal result.
@@ -77,11 +77,16 @@ impl RunPhase {
     ];
 }
 
-/// Whether a traversed Run Phase performed its work or was reported inapplicable.
+/// Whether a traversed Run Phase performed its work, planned it without
+/// attempting it, or was reported inapplicable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RunPhaseStatus {
     Executed,
     Skipped,
+    /// A Dry Run recorded the phase's Planned Archive Work instead of
+    /// attempting it. Only Extracting Archives and Archive Finalization can
+    /// be planned, and a planned phase never carries attempt progress.
+    Planned,
 }
 
 /// Why a traversed Run Phase was inapplicable.
@@ -286,6 +291,20 @@ impl RunPhaseRecord {
         }
     }
 
+    /// A phase whose Archive work a Dry Run planned instead of attempting.
+    ///
+    /// Like a skip it never carries progress: nothing was attempted, so there
+    /// is no attempt count to report. Run Evidence accepts it only for
+    /// Extracting Archives and Archive Finalization.
+    pub fn planned(phase: RunPhase) -> Self {
+        Self {
+            phase,
+            status: RunPhaseStatus::Planned,
+            skip_reason: None,
+            progress: None,
+        }
+    }
+
     pub fn phase(&self) -> RunPhase {
         self.phase
     }
@@ -294,12 +313,12 @@ impl RunPhaseRecord {
         self.status
     }
 
-    /// Why the phase was skipped, or `None` for an executed phase.
+    /// Why the phase was skipped, or `None` for an executed or planned phase.
     pub fn skip_reason(&self) -> Option<PhaseSkipReason> {
         self.skip_reason
     }
 
-    /// Determinate progress; indeterminate and skipped phases have none.
+    /// Determinate progress; indeterminate, skipped and planned phases have none.
     pub fn progress(&self) -> Option<RunProgress> {
         self.progress
     }
@@ -314,7 +333,7 @@ pub struct RunSnapshot {
     pub run_id: RunId,
     /// The latest published phase, including Safety Cleanup.
     pub phase: RunPhase,
-    /// Phase-local progress; skipped and indeterminate phases have none.
+    /// Phase-local progress; skipped, planned and indeterminate phases have none.
     pub progress: Option<RunProgress>,
     pub cancellation_requested: bool,
     /// Recorded diagnostics, including presentation failures after terminal commit.
@@ -596,6 +615,12 @@ impl OptimizationRunResult {
     /// Archive Finalization's result, or `None` when the phase recorded none.
     pub fn archive_finalization(&self) -> Option<&ArchiveFinalizationResult> {
         self.evidence.archive_finalization()
+    }
+
+    /// The Archive work a Dry Run planned instead of attempting; empty when
+    /// the run planned none.
+    pub fn planned_archive_work(&self) -> &PlannedArchiveWork {
+        self.evidence.planned_archive_work()
     }
 
     /// Recognized-Asset exclusions, including discovery's skipped Archives.

@@ -63,6 +63,15 @@ pub(super) const ATTEMPT_BEARING_PHASES: [RunPhase; 3] = [
     ArchiveFinalizationAttempt::PHASE,
 ];
 
+/// The Run Phases a Dry Run can record as Planned: the two whose Archive
+/// work it plans instead of attempting. Read from their attempt types'
+/// [`PhaseAttempt::PHASE`]s, so a planned phase is always one whose executed
+/// account only its attempt-phase handle can record.
+pub(super) const PLANNABLE_PHASES: [RunPhase; 2] = [
+    ArchiveExtractionResult::PHASE,
+    ArchiveFinalizationAttempt::PHASE,
+];
+
 impl sealed::Sealed for ArchiveExtractionResult {
     fn retain(self, storage: &mut Storage) {
         storage.archive_extraction_attempts.push(self);

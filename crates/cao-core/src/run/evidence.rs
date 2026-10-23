@@ -25,9 +25,11 @@ use crate::run::{
 use crate::{AttemptFacts, Error};
 
 mod attempt_phase;
+mod planned_work;
 
-use attempt_phase::ATTEMPT_BEARING_PHASES;
+use attempt_phase::{ATTEMPT_BEARING_PHASES, PLANNABLE_PHASES};
 pub(crate) use attempt_phase::{ArchiveFinalizationHandle, AttemptPhaseHandle, PhaseAttempt};
+pub use planned_work::{PlannedArchiveExtraction, PlannedArchiveWork, PlannedOutputArchive};
 
 /// One completed attempt: its routed identity, resolved Mod Root and durable outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +100,10 @@ pub(crate) struct Storage {
     /// demand, as the sealed evidence lends it out by reference.
     archive_finalization: Option<ArchiveFinalizationResult>,
     archive_finalization_completed: bool,
+    /// The Archive work a Dry Run planned instead of attempting. Kept apart
+    /// from every attempt list, so neither classification nor mutation
+    /// summaries, which read only [`Storage::completed_attempts`], count it.
+    planned_archive_work: PlannedArchiveWork,
     safety_cleanup_failures: Vec<RunFailure>,
     cancellation_observed: bool,
     // Derived when the evidence is consumed, after every producer has stopped.
@@ -113,6 +119,13 @@ impl Storage {
 
     fn current_phase(&self) -> Option<RunPhase> {
         self.phases.last().map(RunPhaseRecord::phase)
+    }
+
+    /// Whether `phase` is the current Run Phase and is Planned.
+    fn planning(&self, phase: RunPhase) -> bool {
+        self.phases.last().is_some_and(|record| {
+            record.phase() == phase && record.status() == RunPhaseStatus::Planned
+        })
     }
 
     /// Whether the current Run Phase is one of Archive discovery's, from
@@ -255,6 +268,12 @@ impl RunEvidence {
         self.storage.archive_finalization.as_ref()
     }
 
+    /// The Archive work a Dry Run planned instead of attempting; empty when
+    /// the run planned none. Never part of the attempts or mutation summaries.
+    pub fn planned_archive_work(&self) -> &PlannedArchiveWork {
+        &self.storage.planned_archive_work
+    }
+
     /// Recognized exclusions from Archive discovery and routing together.
     pub fn skipped_asset_count(&self, reason: SkipReason) -> usize {
         self.storage
@@ -389,13 +408,24 @@ impl<'a> MutableRunEvidence<'a> {
     /// execute only through their [`AttemptPhaseHandle`], so an executed
     /// record of any of them is refused here; their skips still enter
     /// through this transition.
+    ///
+    /// A Planned record enters here too, and only for Extracting Archives and
+    /// Archive Finalization: they are the phases whose Archive work a Dry Run
+    /// plans instead of attempting. Once planned, a phase cannot be opened
+    /// through its handle, and its status never changes.
     pub fn record_phase(&mut self, record: RunPhaseRecord) -> Result<(), Error> {
-        if record.status() == RunPhaseStatus::Executed
-            && ATTEMPT_BEARING_PHASES.contains(&record.phase())
-        {
-            return Err(Error::EvidenceInvariant(
-                "An attempt-bearing Run Phase can only be executed through its attempt-phase handle",
-            ));
+        match record.status() {
+            RunPhaseStatus::Executed if ATTEMPT_BEARING_PHASES.contains(&record.phase()) => {
+                return Err(Error::EvidenceInvariant(
+                    "An attempt-bearing Run Phase can only be executed through its attempt-phase handle",
+                ));
+            }
+            RunPhaseStatus::Planned if !PLANNABLE_PHASES.contains(&record.phase()) => {
+                return Err(Error::EvidenceInvariant(
+                    "Only Extracting Archives and Archive Finalization can be planned",
+                ));
+            }
+            _ => {}
         }
         self.accept_phase(record)
     }
@@ -793,6 +823,59 @@ impl<'a> MutableRunEvidence<'a> {
             Some(RunProgress::determinate(total, 0, 0)),
         ))?;
         Ok(AttemptPhaseHandle::new(self))
+    }
+
+    /// Retains one Archive extraction a Dry Run planned instead of
+    /// attempting, after those already recorded.
+    ///
+    /// # Errors
+    /// A Run Evidence invariant violation, retaining nothing, when
+    /// Extracting Archives is not the current, Planned Run Phase.
+    // #641 makes Extracting Archives its producer; until then only the
+    // evidence suite records one. `expect` fails the build once it is used,
+    // so the attribute cannot outlive its reason.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no run plans Archive extraction until #641")
+    )]
+    pub(crate) fn record_planned_extraction(
+        &mut self,
+        extraction: PlannedArchiveExtraction,
+    ) -> Result<(), Error> {
+        if !self.storage.planning(RunPhase::ExtractingArchives) {
+            return Err(Error::EvidenceInvariant(
+                "Planned Archive extractions must be recorded during a Planned Extracting Archives",
+            ));
+        }
+        self.storage
+            .planned_archive_work
+            .push_extraction(extraction);
+        Ok(())
+    }
+
+    /// Retains one output Archive a Dry Run planned instead of creating,
+    /// after those already recorded.
+    ///
+    /// # Errors
+    /// A Run Evidence invariant violation, retaining nothing, when Archive
+    /// Finalization is not the current, Planned Run Phase.
+    // #643 makes Archive Finalization its producer; until then only the
+    // evidence suite records one, as for planned extractions above.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no run plans Archive creation until #643")
+    )]
+    pub(crate) fn record_planned_output(
+        &mut self,
+        output: PlannedOutputArchive,
+    ) -> Result<(), Error> {
+        if !self.storage.planning(RunPhase::ArchiveFinalization) {
+            return Err(Error::EvidenceInvariant(
+                "Planned output Archives must be recorded during a Planned Archive Finalization",
+            ));
+        }
+        self.storage.planned_archive_work.push_output(output);
+        Ok(())
     }
 
     /// Retains one final Safety Cleanup failure without publishing it as a Run Failure.

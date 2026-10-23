@@ -261,6 +261,37 @@ fn progress_shows_the_phase_and_its_attempt_counts() {
     assert!(view.state().outcome.is_none());
 }
 
+/// A Dry Run's Planned Archive phase reads as planned, not skipped, and
+/// shows no attempt counter: a Planned phase attempted nothing.
+#[test]
+fn a_planned_archive_phase_shows_as_planned_without_attempt_counts() {
+    let mut view = RunView::default();
+    view.begin("run");
+
+    for (sequence, (phase, label)) in [
+        (
+            RunPhase::ExtractingArchives,
+            "Extracting Archives - Planned (Dry Run)",
+        ),
+        (
+            RunPhase::ArchiveFinalization,
+            "Archive Finalization - Planned (Dry Run)",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(view.consume(&event(
+            "run",
+            sequence as u64 + 1,
+            RunEventPayload::Phase(RunPhaseRecord::planned(phase)),
+        )));
+        assert_eq!(view.state().label, label);
+        assert!(view.state().progress.is_none(), "{phase:?}");
+        assert_eq!(view.text(), label);
+    }
+}
+
 /// Origin: GuiRunTests::preservesUnicodePaths. A path the ANSI code page
 /// cannot encode reaches the detail rows intact.
 #[test]
