@@ -124,7 +124,7 @@ impl Storage {
     }
 
     /// Whether `phase` is the current Run Phase and is Planned.
-    fn planning(&self, phase: RunPhase) -> bool {
+    fn is_planning(&self, phase: RunPhase) -> bool {
         self.phases.last().is_some_and(|record| {
             record.phase() == phase && record.status() == RunPhaseStatus::Planned
         })
@@ -837,7 +837,7 @@ impl<'a> MutableRunEvidence<'a> {
         &mut self,
         extraction: PlannedArchiveExtraction,
     ) -> Result<(), Error> {
-        if !self.storage.planning(RunPhase::ExtractingArchives) {
+        if !self.storage.is_planning(RunPhase::ExtractingArchives) {
             return Err(Error::EvidenceInvariant(
                 "Planned Archive extractions must be recorded during a Planned Extracting Archives",
             ));
@@ -857,7 +857,7 @@ impl<'a> MutableRunEvidence<'a> {
     /// Finalization is not the current, Planned Run Phase, or when a basis
     /// was already recorded.
     pub(crate) fn record_output_plan_basis(&mut self, basis: OutputPlanBasis) -> Result<(), Error> {
-        if !self.storage.planning(RunPhase::ArchiveFinalization) {
+        if !self.storage.is_planning(RunPhase::ArchiveFinalization) {
             return Err(Error::EvidenceInvariant(
                 "An output plan basis must be recorded during a Planned Archive Finalization",
             ));
@@ -883,7 +883,7 @@ impl<'a> MutableRunEvidence<'a> {
         &mut self,
         output: PlannedOutputArchive,
     ) -> Result<(), Error> {
-        if !self.storage.planning(RunPhase::ArchiveFinalization) {
+        if !self.storage.is_planning(RunPhase::ArchiveFinalization) {
             return Err(Error::EvidenceInvariant(
                 "Planned output Archives must be recorded during a Planned Archive Finalization",
             ));

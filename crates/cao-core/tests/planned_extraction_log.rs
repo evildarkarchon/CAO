@@ -7,7 +7,7 @@
 
 mod common;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{CancellationToken, RunOutcome};
@@ -15,47 +15,16 @@ use cao_core::test_support::{
     CountingCleanup, RecordingSink, ScriptedToolset, ToolsetConfiguration, entry, execute_run,
     write_archive,
 };
+use common::capture_log;
 use common::{canonical, request, scratch_dir};
-use log::{Level, LevelFilter, Log, Metadata, Record};
-
-/// One captured `log` record: its level and message.
-#[derive(Debug, PartialEq, Eq)]
-struct Captured {
-    level: Level,
-    message: String,
-}
-
-/// A `log` sink keeping every info-or-more-severe record.
-struct Capture(Mutex<Vec<Captured>>);
-
-impl Log for Capture {
-    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        metadata.level() <= Level::Info
-    }
-
-    fn log(&self, record: &Record<'_>) {
-        if self.enabled(record.metadata()) {
-            self.0.lock().unwrap().push(Captured {
-                level: record.level(),
-                message: record.args().to_string(),
-            });
-        }
-    }
-
-    fn flush(&self) {
-        // Records are held in memory, so there is nothing to flush.
-    }
-}
-
-static CAPTURE: Capture = Capture(Mutex::new(Vec::new()));
+use log::Level;
 
 /// Each planned extraction is logged once, naming the Archive, its Mod Root
 /// and the files it would add: the entries it wins, so a shadowed entry is
 /// not counted. Nothing is logged as extracted.
 #[test]
 fn a_dry_run_logs_each_planned_extraction() {
-    log::set_logger(&CAPTURE).unwrap();
-    log::set_max_level(LevelFilter::Info);
+    capture_log::install();
     let root = canonical(&scratch_dir("planned-extraction-log"));
     let first = root.join("a.bsa");
     let second = root.join("b.bsa");
@@ -87,19 +56,21 @@ fn a_dry_run_logs_each_planned_extraction() {
         "{:?}",
         result.failures()
     );
-    let records = CAPTURE.0.lock().unwrap();
+    let records = capture_log::records();
     // Deterministic Archive Precedence puts `a.bsa` first, so `b.bsa` loses
     // its only entry and would add nothing.
     for (archive, files) in [(&first, 2), (&second, 0)] {
-        let expected = Captured {
-            level: Level::Info,
-            message: format!(
-                "would extract {} into {} ({files} files)",
-                archive.display(),
-                root.display()
-            ),
-        };
-        assert!(records.contains(&expected), "{records:?}");
+        let expected = format!(
+            "would extract {} into {} ({files} files)",
+            archive.display(),
+            root.display()
+        );
+        assert!(
+            records
+                .iter()
+                .any(|record| record.level == Level::Info && record.message == expected),
+            "{records:?}"
+        );
     }
     assert!(
         !records

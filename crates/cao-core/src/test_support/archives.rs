@@ -219,6 +219,8 @@ pub struct FakeArchivePacker {
     pub archive_limit: u64,
     /// Every Archive written, in order.
     pub writes: Mutex<Vec<FakeWrite>>,
+    /// How many times [`ArchivePacker::rules`] was called.
+    pub rules_read: AtomicUsize,
     /// Every [`ArchivePacker::list_names`] call, as the directory and the
     /// kind of name it listed, in call order.
     pub listed_names: Mutex<Vec<(PathBuf, ArchiveNameKind)>>,
@@ -254,6 +256,7 @@ impl Default for FakeArchivePacker {
             },
             archive_limit: u64::MAX,
             writes: Mutex::default(),
+            rules_read: AtomicUsize::new(0),
             listed_names: Mutex::default(),
             partitioned: Mutex::default(),
             after_write: None,
@@ -322,6 +325,11 @@ impl FakeArchivePacker {
     /// Every Archive written so far, in order.
     pub fn writes(&self) -> Vec<FakeWrite> {
         self.writes.lock().unwrap().clone()
+    }
+
+    /// How many times [`ArchivePacker::rules`] has been called so far.
+    pub fn rules_read(&self) -> usize {
+        self.rules_read.load(Ordering::SeqCst)
     }
 
     /// Every [`ArchivePacker::list_names`] call so far, as the directory and
@@ -414,6 +422,7 @@ impl FakeArchivePacker {
 
 impl ArchivePacker for FakeArchivePacker {
     fn rules(&self) -> &ArchiveNamingRules {
+        self.rules_read.fetch_add(1, Ordering::SeqCst);
         &self.rules
     }
 

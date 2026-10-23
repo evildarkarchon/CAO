@@ -7,14 +7,15 @@
 //! close-during-run state machine. It knows nothing of Slint or of threads: the
 //! window feeds it on the UI thread, in the order the events arrive.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use cao_core::routing::SkipReason;
 use cao_core::run::{
-    MutationKind, OptimizationRunResult, OutputPlanBasis, PackedArchiveKind, PhaseSkipReason,
-    PlannedArchiveWork, RunDiagnostic, RunDiagnosticCode, RunEvent, RunEventPayload, RunFailure,
-    RunId, RunOutcome, RunPhase, RunPhaseStatus, RunProgress,
+    ByteSize, MutationKind, OptimizationRunResult, OutputPlanBasis, PackedArchiveKind,
+    PhaseSkipReason, PlannedArchiveWork, PlannedOutputArchive, RunDiagnostic,
+    RunDiagnosticSeverity, RunEvent, RunEventPayload, RunFailure, RunId, RunOutcome, RunPhase,
+    RunPhaseStatus, RunProgress,
 };
 
 /// Presentation facts copied from one run's ordered events.
@@ -250,9 +251,9 @@ fn failure_row(failure: &RunFailure) -> String {
 /// as a Dry Run's capacity shortage, and `Diagnostic:` for the informational
 /// rest. Neither is a failure: no diagnostic changes the Run Outcome.
 fn diagnostic_row(diagnostic: &RunDiagnostic) -> String {
-    let prefix = match diagnostic.code {
-        RunDiagnosticCode::CapacityShortage => "Warning",
-        _ => "Diagnostic",
+    let prefix = match diagnostic.code.severity() {
+        RunDiagnosticSeverity::Warning => "Warning",
+        RunDiagnosticSeverity::Informational => "Diagnostic",
     };
     format!(
         "{prefix}: {} | {}",
@@ -355,12 +356,14 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
     }
     for planned in result.planned_archive_work().extractions() {
         details.push(format!(
-            "Planned Extraction: {} | {} | entries={} | winners={} | delete-backups={}",
+            "Planned Extraction: {} | {} | entries={} | winners={} | capacity={} | \
+             delete-backups={}",
             shown(&planned.archive_path),
             shown(&planned.mod_root),
             planned.entry_count,
             planned.winner_count,
-            yes_no(planned.deleted_by_source_cleanup)
+            ByteSize(planned.estimated_capacity_bytes),
+            yes_no(planned.deletes_source_archive)
         ));
     }
     append_planned_creation(details, result.planned_archive_work());
@@ -380,22 +383,19 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
 /// an earlier output already needed it, then the note saying what the plan
 /// was made from. Appends nothing when no creation was planned.
 fn append_planned_creation(details: &mut Vec<String>, work: &PlannedArchiveWork) {
-    let mut dummy_plugins = HashSet::new();
-    for output in work.outputs() {
+    for (output, first_plugin) in PlannedOutputArchive::with_first_dummy_plugins(work.outputs()) {
         details.push(format!(
-            "Planned Archive: {} | {} | {} | files={} | bytes={} | delete-sources={}",
+            "Planned Archive: {} | {} | {} | files={} | size={} | delete-sources={}",
             shown(&output.archive_path),
             shown(&output.mod_root),
             packed_kind_name(output.kind),
             output.file_count,
-            output.total_bytes,
+            ByteSize(output.total_bytes),
             yes_no(output.deletes_packed_sources)
         ));
         // Outputs sharing a fallback Loading Plugin name would need one
         // Dummy Plugin between them, so it is listed once.
-        if let Some(plugin) = &output.dummy_plugin_path
-            && dummy_plugins.insert(plugin)
-        {
+        if let Some(plugin) = first_plugin {
             details.push(format!("Planned Dummy Plugin: {}", shown(plugin)));
         }
     }

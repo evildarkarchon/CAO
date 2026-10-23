@@ -7,7 +7,8 @@
 //! Extracting Archives records planned extractions, and Archive Finalization
 //! records planned output Archives, each only while its phase is Planned.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use crate::run::PackedArchiveKind;
 
@@ -30,7 +31,7 @@ pub struct PlannedArchiveExtraction {
     pub estimated_capacity_bytes: u64,
     /// Whether Source Cleanup (Delete backups) would remove the Archive
     /// after a successful extraction.
-    pub deleted_by_source_cleanup: bool,
+    pub deletes_source_archive: bool,
 }
 
 /// One output Archive a Dry Run planned instead of creating.
@@ -44,6 +45,8 @@ pub struct PlannedOutputArchive {
     pub archive_path: PathBuf,
     /// The canonical Mod Root whose Loose Assets it would pack.
     pub mod_root: PathBuf,
+    /// What the Archive would hold, which decides how it would be compressed
+    /// and named.
     pub kind: PackedArchiveKind,
     /// The Loose Assets it would pack.
     pub file_count: usize,
@@ -54,6 +57,30 @@ pub struct PlannedOutputArchive {
     pub dummy_plugin_path: Option<PathBuf>,
     /// Whether its packed sources would be deleted once it is committed.
     pub deletes_packed_sources: bool,
+}
+
+impl PlannedOutputArchive {
+    /// Pairs each of `outputs`, in order, with the Dummy Plugin it is the
+    /// first to need, or `None` when it needs none or an earlier output
+    /// already needed the same one. The `Some` paths are therefore the
+    /// distinct Dummy Plugins, in first-seen order.
+    ///
+    /// Outputs that share a fallback Loading Plugin name, such as an Archive
+    /// and its Textures Archive, would need one Dummy Plugin between them, so
+    /// whoever reports the plan names each Dummy Plugin once, beside the
+    /// first output that needs it.
+    pub fn with_first_dummy_plugins(
+        outputs: &[PlannedOutputArchive],
+    ) -> impl Iterator<Item = (&PlannedOutputArchive, Option<&Path>)> {
+        let mut seen = HashSet::new();
+        outputs.iter().map(move |output| {
+            let first = output
+                .dummy_plugin_path
+                .as_deref()
+                .filter(|plugin| seen.insert(*plugin));
+            (output, first)
+        })
+    }
 }
 
 /// What a Dry Run's planned output Archives were planned from, which says
