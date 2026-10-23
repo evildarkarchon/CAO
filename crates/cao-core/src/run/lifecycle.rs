@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use crate::admission::Admission;
 use crate::routing::{
     ExecutionMode, PolicyValidationError, RequestedWork, RoutingLedger, SkipReason,
 };
@@ -350,6 +351,13 @@ impl ModSelection {
 /// Choices; Preparing loads the profile's facts from the identity. Requested
 /// work alone decides routing: Work Choices only say how requested work is
 /// done.
+///
+/// It carries the user's choices that its Admission Rules admit. Building it
+/// applies the rules that need no profile ([`Admission`] without Profile
+/// Capabilities): a Dry Run carries no Archive extraction or creation, and a
+/// Several Mods selection carries a Mesh level of Necessary at most. No
+/// request breaking either rule can exist, and its accessors return the
+/// admitted values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRequest {
     profile_identity: String,
@@ -366,6 +374,8 @@ impl RunRequest {
     ///
     /// Adapters assemble work from independent choices, so the request keeps
     /// each choice once in enumeration order and repeated runs see one order.
+    /// Work its Admission Rules hold back is dropped: under Dry Run, Archive
+    /// extraction and creation. Dropping it raises no Run Diagnostic.
     pub fn new(
         profile_identity: impl Into<String>,
         execution_mode: ExecutionMode,
@@ -374,14 +384,26 @@ impl RunRequest {
     ) -> Self {
         requested_work.sort();
         requested_work.dedup();
-        Self {
+        let mut request = Self {
             profile_identity: profile_identity.into(),
             execution_mode,
             mod_selection,
-            requested_work,
+            requested_work: Vec::new(),
             archive_precedence: ArchivePrecedence::DeterministicDiscovery,
             work_choices: WorkChoices::default(),
-        }
+        };
+        request.requested_work = request.admission().admitted_work(&requested_work);
+        request
+    }
+
+    /// The Admission Rules that need no profile, read from this request's
+    /// execution mode and Mod Selection.
+    ///
+    /// Profile Capabilities are left out: building a request reads no
+    /// profile, so Preparing's Routing Policy compilation judges them.
+    fn admission(&self) -> Admission {
+        let several_mods = matches!(self.mod_selection, ModSelection::ChildModRoots(_));
+        Admission::new(self.execution_mode, several_mods, None)
     }
 
     /// Replaces the Archive Precedence intent; discovery validates it later.
@@ -390,15 +412,18 @@ impl RunRequest {
         self
     }
 
-    /// Replaces the Work Choices. They need no later check: each choice's
+    /// Replaces the Work Choices with those of `work_choices` that the
+    /// request's Admission Rules admit: under Several Mods, the Mesh level is
+    /// capped at Necessary. They need no later check: each choice's
     /// constructor already enforced its invariants, and choices for work that
     /// is not requested have no effect.
     pub fn with_work_choices(mut self, work_choices: WorkChoices) -> Self {
-        self.work_choices = work_choices;
+        self.work_choices = self.admission().admitted_work_choices(work_choices);
         self
     }
 
-    /// The user's choices for how this run does its requested work.
+    /// The user's choices for how this run does its requested work that its
+    /// Admission Rules admit.
     pub fn work_choices(&self) -> &WorkChoices {
         &self.work_choices
     }
@@ -420,7 +445,8 @@ impl RunRequest {
         &self.archive_precedence
     }
 
-    /// The deduplicated requested work in enumeration order.
+    /// The deduplicated requested work its Admission Rules admit, in
+    /// enumeration order.
     pub fn requested_work(&self) -> &[RequestedWork] {
         &self.requested_work
     }

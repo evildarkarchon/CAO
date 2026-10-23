@@ -133,6 +133,13 @@ pub enum WorkChoiceError {
 pub struct MeshLevel(u8);
 
 impl MeshLevel {
+    /// Level 1: only what a Mesh needs to load in the game. A Several Mods
+    /// selection optimizes Meshes at this level at most.
+    pub const NECESSARY: Self = Self(1);
+
+    /// Level 3, the highest.
+    pub const FULL: Self = Self(3);
+
     /// The Mesh level `level`.
     ///
     /// # Errors

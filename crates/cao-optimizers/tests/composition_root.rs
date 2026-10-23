@@ -379,8 +379,13 @@ fn every_kind_of_work_is_accepted() {
 
 /// Origin: ApplicationRunSetupTests::archiveCreationRequiresProfileArchiveSupport
 /// and the FO4 Profile Capabilities. A request the selected profile cannot
-/// honour is not a Start Error: setup accepts it, and the run fails Preparing
-/// with a Policy Conflict Run Failure.
+/// honour is not a Start Error: building it reads no profile, so setup
+/// accepts it, and the run fails Preparing with a Policy Conflict Run
+/// Failure.
+///
+/// A choice an Admission Rule held back never reaches that judgement (spec
+/// #634): a Dry Run's request carries no Archive creation, so a Dry Run with
+/// Create BSA under a profile without Archive support prepares and succeeds.
 #[test]
 fn a_request_contradicting_the_profile_capabilities_fails_preparing() {
     let _serial = serial();
@@ -411,26 +416,25 @@ fn a_request_contradicting_the_profile_capabilities_fails_preparing() {
         }
     )));
 
-    // A profile with no Archive support cannot create Archives, even in a
-    // Dry Run that would never pack them.
+    // A Dry Run never packs, so its request holds Archive creation back and
+    // a profile with no Archive support has nothing to contradict.
     edit_profile(&app, "SSE", "bsaEnabled", "false");
     let mut options = dry_run_textures(&app, &mod_root);
     options.bsa_create = true;
+    assert!(
+        !run_request("SSE", &options)
+            .unwrap()
+            .requests(RequestedWork::ArchiveCreation)
+    );
     let result = start_and_wait(&run_service(&app), "SSE", &options);
-    assert_eq!(result.outcome(), RunOutcome::Failed);
-    let failure = &result.failures()[0];
-    assert_eq!(failure.code, RunFailureCode::PolicyConflict);
-    assert_eq!(failure.phase, RunPhase::Preparing);
-    assert!(failure.policy_conflicts.iter().any(|conflict| matches!(
-        conflict,
-        PolicyValidationError::UnsupportedRequestedAssetKind {
-            request: RequestedWork::ArchiveCreation,
-            ..
-        } | PolicyValidationError::UnsupportedRequestedAssetVariant {
-            request: RequestedWork::ArchiveCreation,
-            ..
-        }
-    )));
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.failures()
+    );
+    let policy = result.preparation().expect("the run prepares").policy();
+    assert!(!policy.requests(RequestedWork::ArchiveCreation));
 }
 
 /// Origin: ApplicationRunSetupTests::fo4ConversionCompilesWithoutMeshOptimization.
