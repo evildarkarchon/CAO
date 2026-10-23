@@ -128,6 +128,33 @@ pub enum RunDiagnosticCode {
     CapacityShortage,
 }
 
+impl RunDiagnosticCode {
+    /// How much attention a diagnostic of this code asks for. Matched
+    /// exhaustively, so a new code has to choose its own severity.
+    pub fn severity(self) -> RunDiagnosticSeverity {
+        match self {
+            Self::ObserverFailed
+            | Self::DispatcherFailed
+            | Self::IgnoredModExcluded
+            | Self::SeparatorModExcluded
+            | Self::LinkedEntryExcluded
+            | Self::PluginUnreadable => RunDiagnosticSeverity::Informational,
+            Self::CapacityShortage => RunDiagnosticSeverity::Warning,
+        }
+    }
+}
+
+/// How much attention a Run Diagnostic asks for. Neither level determines
+/// the Run Outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RunDiagnosticSeverity {
+    /// An observation about the run, such as an excluded entry.
+    Informational,
+    /// Something the user should act on before an Apply run, such as a Dry
+    /// Run's capacity shortage, which the Apply run would fail on.
+    Warning,
+}
+
 /// An informational or warning-level observation that never determines the
 /// Run Outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -50,8 +50,9 @@ use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ArchiveExtractionFailure, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
     ArchivePrecedence, CancellationToken, ModSelection, MutationKind, MutationSummary,
-    OptimizationRunResult, RunDiagnosticCode, RunFailureCode, RunObservationSink, RunOutcome,
-    RunPhase, RunPhaseStatus, RunRequest, SourceCleanup, WorkChoices,
+    OptimizationRunResult, RunDiagnosticCode, RunDiagnosticSeverity, RunFailureCode,
+    RunObservationSink, RunOutcome, RunPhase, RunPhaseStatus, RunRequest, SourceCleanup,
+    WorkChoices,
 };
 use cao_core::test_support::{
     CountingCleanup, FakeArchivePacker, FakeArchiveReader, FakeEntry, FakeVolumeProbe, Observed,
@@ -1230,6 +1231,7 @@ fn a_dry_run_with_a_capacity_shortage_warns_and_still_plans_every_extraction() {
     let [warning] = warnings.as_slice() else {
         panic!("one capacity shortage expected: {:?}", result.diagnostics());
     };
+    assert_eq!(warning.code.severity(), RunDiagnosticSeverity::Warning);
     assert_eq!(warning.phase, RunPhase::DiscoveringArchives);
     assert_eq!(warning.path, base.join("first"));
     // Both roots share the volume, so the demand is both estimates together.
@@ -2038,6 +2040,12 @@ fn a_contained_file_link_is_work_and_a_dangling_one_is_diagnosed() {
         panic!("one diagnostic expected: {:?}", result.diagnostics());
     };
     assert_eq!(diagnostic.code, RunDiagnosticCode::LinkedEntryExcluded);
+    // An excluded entry is reported, not warned of: the run lost nothing it
+    // was asked to do.
+    assert_eq!(
+        diagnostic.code.severity(),
+        RunDiagnosticSeverity::Informational
+    );
     assert_eq!(diagnostic.path, dangling);
 }
 

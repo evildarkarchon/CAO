@@ -13,7 +13,7 @@ use std::path::Path;
 use cao_core::routing::SkipReason;
 use cao_core::run::{
     MutationKind, OptimizationRunResult, OutputPlanBasis, PackedArchiveKind, PhaseSkipReason,
-    PlannedArchiveWork, PlannedOutputArchive, RunDiagnostic, RunDiagnosticCode, RunEvent,
+    PlannedArchiveWork, PlannedOutputArchive, RunDiagnostic, RunDiagnosticSeverity, RunEvent,
     RunEventPayload, RunFailure, RunId, RunOutcome, RunPhase, RunPhaseStatus, RunProgress,
 };
 
@@ -250,9 +250,9 @@ fn failure_row(failure: &RunFailure) -> String {
 /// as a Dry Run's capacity shortage, and `Diagnostic:` for the informational
 /// rest. Neither is a failure: no diagnostic changes the Run Outcome.
 fn diagnostic_row(diagnostic: &RunDiagnostic) -> String {
-    let prefix = match diagnostic.code {
-        RunDiagnosticCode::CapacityShortage => "Warning",
-        _ => "Diagnostic",
+    let prefix = match diagnostic.code.severity() {
+        RunDiagnosticSeverity::Warning => "Warning",
+        RunDiagnosticSeverity::Informational => "Diagnostic",
     };
     format!(
         "{prefix}: {} | {}",

@@ -49,9 +49,9 @@ pub use finalization::{
 };
 pub use lifecycle::{
     CancellationToken, ModSelection, MutationKind, MutationSummary, OptimizationRunResult,
-    PhaseSkipReason, RunDiagnostic, RunDiagnosticCode, RunEvent, RunEventPayload, RunFailure,
-    RunFailureCode, RunId, RunOutcome, RunPhase, RunPhaseRecord, RunPhaseStatus, RunProgress,
-    RunRequest, RunSnapshot, create_run_id,
+    PhaseSkipReason, RunDiagnostic, RunDiagnosticCode, RunDiagnosticSeverity, RunEvent,
+    RunEventPayload, RunFailure, RunFailureCode, RunId, RunOutcome, RunPhase, RunPhaseRecord,
+    RunPhaseStatus, RunProgress, RunRequest, RunSnapshot, create_run_id,
 };
 pub use preparation::{
     ArchivePrecedence, RunConfigurationProvider, RunPreparation, SelectedProfile,
