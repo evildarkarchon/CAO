@@ -31,7 +31,7 @@ export global BsaTab {
     in-out property <bool> create-dummies: true;
     in-out property <bool> compress: true;
     // The user's Work Choice (`bBsaMergeTexture`), which a game that forces the
-    // checkbox (`UiRules.separate-textures-forced`) never writes.
+    // checkbox (`RuleDisplay.separate-textures-forced`) never writes.
     in-out property <bool> separate-textures: true;
     in-out property <bool> separate-incompressible: true;
     // Advanced: the Archive Limit, the maximum uncompressed size in GB, and the
@@ -56,7 +56,7 @@ export global MeshesTab {
     in-out property <bool> process: true;
     // The level radios, the user's level. Rust always sets all three, so they stay
     // exclusive even while the page (and the RadioGroup that keeps them exclusive)
-    // does not exist. Several Mods shows Necessary without writing them (`UiRules`).
+    // does not exist. Several Mods shows Necessary without writing them (`RuleDisplay`).
     in-out property <bool> necessary: true;
     in-out property <bool> medium;
     in-out property <bool> full;
@@ -107,7 +107,7 @@ export global AnimationsTab {
 // disabled, ANDed in with the run lock and its group. Every rule forces only
 // what a control shows: the user's choice stays in its tab's global, which no
 // rule writes, and shows again once the rule lifts.
-export global UiRules {
+export global RuleDisplay {
     // Admission Rules. A Dry Run holds back Archive extraction and creation:
     // Extract BSA, Create BSA and Delete backups show unchecked.
     in property <bool> extract-forced-off;
@@ -119,6 +119,74 @@ export global UiRules {
     // The Archive Rules display (#628). A game that keeps Textures in their own
     // Archive (FO4): "Separate textures BSA" shows checked.
     in property <bool> separate-textures-forced;
+}
+
+// The Meshes tab's three level radios, one exclusive RadioGroup, holding its
+// own texts and help so every instance is the same set of radios to the user
+// and to translators. `necessary`, `medium` and `full` are the radios' checked
+// states, which the group writes itself; an instance binds them two-way to the
+// user's level, or leaves them its own so that it writes nothing outside.
+component MeshLevelRadios {
+    in property <bool> enabled: true;
+    // Whether Medium and Full may be chosen; false disables just those two.
+    in property <bool> heavier-levels-enabled: true;
+    in-out property <bool> necessary;
+    in-out property <bool> medium;
+    in-out property <bool> full;
+
+    // RadioGroup has no settable selection index; programmatic selection
+    // goes through each button's `checked`, and a plain `checked: expr`
+    // binding is dropped on the first click. Two-way bindings survive.
+    // The group resyncs them through change handlers, which run on the
+    // next turn of the event loop.
+    levels := RadioGroup {
+        orientation: horizontal;
+        enabled: root.enabled;
+        RadioButton {
+            text: @tr("Necessary optimization");
+            checked <=> root.necessary;
+            // The help overlay owns the pointer (shared tooltip layer,
+            // help cursor, tips on a disabled radio); it forwards the
+            // click by checking the radio, which the group then
+            // selects. See `HelpArea` in widgets.slint.
+            HelpArea {
+                help: @tr("Attempts to repair meshes which are guaranteed to crash the game. Headparts are included.");
+                clicked => {
+                    if parent.enabled && levels.enabled {
+                        root.necessary = true;
+                    }
+                }
+            }
+        }
+
+        RadioButton {
+            text: @tr("Medium optimization");
+            enabled: root.heavier-levels-enabled;
+            checked <=> root.medium;
+            HelpArea {
+                help: @tr("Perform necessary optimization, and also lightly optimizes other meshes. This may fix some visual issues, but may also lower quality.");
+                clicked => {
+                    if parent.enabled && levels.enabled {
+                        root.medium = true;
+                    }
+                }
+            }
+        }
+
+        RadioButton {
+            text: @tr("Full optimization");
+            enabled: root.heavier-levels-enabled;
+            checked <=> root.full;
+            HelpArea {
+                help: @tr("Fully optimize all meshes. Only apply if standard mesh optimization ignored necessary files. May lower visual quality.");
+                clicked => {
+                    if parent.enabled && levels.enabled {
+                        root.full = true;
+                    }
+                }
+            }
+        }
+    }
 }
 
 export component MainWindow inherits Window {
@@ -386,11 +454,11 @@ export component MainWindow inherits Window {
                         spacing: 6px;
                         alignment: start;
                         // A Dry Run shows the three base options unchecked and
-                        // disabled (`UiRules`), and the group's title greys with
+                        // disabled (`RuleDisplay`), and the group's title greys with
                         // them; the user's choices stay in `BsaTab`.
                         GroupBox {
                             title: @tr("Base");
-                            enabled: root.ed && !(UiRules.extract-forced-off && UiRules.create-forced-off && UiRules.delete-backups-forced-off);
+                            enabled: root.ed && !(RuleDisplay.extract-forced-off && RuleDisplay.create-forced-off && RuleDisplay.delete-backups-forced-off);
                             HorizontalLayout {
                                 spacing: 12px;
                                 ChoiceCheckBox {
@@ -398,7 +466,7 @@ export component MainWindow inherits Window {
                                     help: @tr("Extracts any BSAs present in the mod folder.");
                                     warning: @tr("Warning. If you enable this option, the process will be considerably slowed down.");
                                     enabled: root.ed;
-                                    forced: UiRules.extract-forced-off;
+                                    forced: RuleDisplay.extract-forced-off;
                                     forced-checked: false;
                                     checked <=> BsaTab.extract;
                                 }
@@ -408,7 +476,7 @@ export component MainWindow inherits Window {
                                     help: @tr("Creates a new BSA, packing the existing loose files.");
                                     warning: @tr("Warning. If you enable this option, the process will be considerably slowed down.");
                                     enabled: root.ed;
-                                    forced: UiRules.create-forced-off;
+                                    forced: RuleDisplay.create-forced-off;
                                     forced-checked: false;
                                     checked <=> BsaTab.create;
                                 }
@@ -417,7 +485,7 @@ export component MainWindow inherits Window {
                                     text: @tr("Delete backups");
                                     help: @tr("By default, a backup of existing bsa is created. Enabling this option will disable those backups.");
                                     enabled: root.ed;
-                                    forced: UiRules.delete-backups-forced-off;
+                                    forced: RuleDisplay.delete-backups-forced-off;
                                     forced-checked: false;
                                     checked <=> BsaTab.delete-backups;
                                 }
@@ -454,12 +522,12 @@ export component MainWindow inherits Window {
 
                                 Row {
                                     // The checkbox shows `forced || choice`. A game that keeps
-                                    // Textures in their own Archive (FO4) forces it on (`UiRules`).
+                                    // Textures in their own Archive (FO4) forces it on (`RuleDisplay`).
                                     ChoiceCheckBox {
                                         text: @tr("Separate textures BSA");
                                         help: @tr("There are three types of BSAs CAO can create : incompressible, textures and standard. If enabled, this option will always separate textures into their own BSAs. Otherwise, they will be merged into the standard one if possible.");
                                         enabled: root.ed;
-                                        forced: UiRules.separate-textures-forced;
+                                        forced: RuleDisplay.separate-textures-forced;
                                         forced-checked: true;
                                         checked <=> BsaTab.separate-textures;
                                     }
@@ -529,102 +597,29 @@ export component MainWindow inherits Window {
                             checked <=> MeshesTab.process;
                             // The level radios show the user's level (`MeshesTab`) or, while
                             // Several Mods caps it, Necessary with the heavier levels disabled
-                            // (`UiRules`). Two exclusive groups rather than one, as
+                            // (`RuleDisplay`). Two exclusive groups rather than one, as
                             // `ChoiceCheckBox` is two checkboxes: a RadioGroup writes its radios'
                             // `checked` itself (on a click, and to revert a disabled radio being
                             // checked, which it does while its group is unchecked), so a
                             // two-way binding to the user's level would let the forced level
-                            // overwrite it. The forced group binds nothing, so it never
-                            // writes `MeshesTab`. Both read their texts from here, so the
-                            // two stay one set of radios to the user and to translators.
-                            mesh-levels := HorizontalLayout {
-                                property <string> necessary-text: @tr("Necessary optimization");
-                                property <string> necessary-help: @tr("Attempts to repair meshes which are guaranteed to crash the game. Headparts are included.");
-                                property <string> medium-text: @tr("Medium optimization");
-                                property <string> medium-help: @tr("Perform necessary optimization, and also lightly optimizes other meshes. This may fix some visual issues, but may also lower quality.");
-                                property <string> full-text: @tr("Full optimization");
-                                property <string> full-help: @tr("Fully optimize all meshes. Only apply if standard mesh optimization ignored necessary files. May lower visual quality.");
-
-                                // RadioGroup has no settable selection index; programmatic selection
-                                // goes through each button's `checked`, and a plain `checked: expr`
-                                // binding is dropped on the first click. Two-way bindings survive.
-                                // The group resyncs them through change handlers, which run on the
-                                // next turn of the event loop.
-                                if !UiRules.necessary-meshes-forced: levels := RadioGroup {
-                                    orientation: horizontal;
+                            // overwrite it. The forced group binds its radios to its own
+                            // properties only, so it never writes `MeshesTab`. Both are one
+                            // `MeshLevelRadios`, so the two stay one set of radios to the user
+                            // and to translators.
+                            HorizontalLayout {
+                                if !RuleDisplay.necessary-meshes-forced: MeshLevelRadios {
                                     enabled: root.ed && MeshesTab.process;
-                                    RadioButton {
-                                        text: mesh-levels.necessary-text;
-                                        checked <=> MeshesTab.necessary;
-                                        // The help overlay owns the pointer (shared tooltip layer,
-                                        // help cursor, tips on a disabled radio); it forwards the
-                                        // click by checking the radio, which the group then
-                                        // selects. See `HelpArea` in widgets.slint.
-                                        HelpArea {
-                                            help: mesh-levels.necessary-help;
-                                            clicked => {
-                                                if parent.enabled && levels.enabled {
-                                                    MeshesTab.necessary = true;
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    RadioButton {
-                                        text: mesh-levels.medium-text;
-                                        checked <=> MeshesTab.medium;
-                                        HelpArea {
-                                            help: mesh-levels.medium-help;
-                                            clicked => {
-                                                if parent.enabled && levels.enabled {
-                                                    MeshesTab.medium = true;
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    RadioButton {
-                                        text: mesh-levels.full-text;
-                                        checked <=> MeshesTab.full;
-                                        HelpArea {
-                                            help: mesh-levels.full-help;
-                                            clicked => {
-                                                if parent.enabled && levels.enabled {
-                                                    MeshesTab.full = true;
-                                                }
-                                            }
-                                        }
-                                    }
+                                    necessary <=> MeshesTab.necessary;
+                                    medium <=> MeshesTab.medium;
+                                    full <=> MeshesTab.full;
                                 }
 
                                 // Several Mods: Necessary, which is already checked, so its
-                                // help overlay forwards no click; Medium and Full disabled.
-                                if UiRules.necessary-meshes-forced: RadioGroup {
-                                    orientation: horizontal;
+                                // help overlay's click changes nothing; Medium and Full disabled.
+                                if RuleDisplay.necessary-meshes-forced: MeshLevelRadios {
                                     enabled: root.ed && MeshesTab.process;
-                                    RadioButton {
-                                        text: mesh-levels.necessary-text;
-                                        checked: true;
-                                        HelpArea {
-                                            help: mesh-levels.necessary-help;
-                                        }
-                                    }
-
-                                    RadioButton {
-                                        text: mesh-levels.medium-text;
-                                        enabled: false;
-                                        HelpArea {
-                                            help: mesh-levels.medium-help;
-                                        }
-                                    }
-
-                                    RadioButton {
-                                        text: mesh-levels.full-text;
-                                        enabled: false;
-                                        HelpArea {
-                                            help: mesh-levels.full-help;
-                                        }
-                                    }
+                                    heavier-levels-enabled: false;
+                                    necessary: true;
                                 }
                             }
                         }

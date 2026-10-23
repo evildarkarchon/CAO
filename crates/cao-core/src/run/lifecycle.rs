@@ -342,6 +342,13 @@ impl ModSelection {
             Self::SingleModRoot(directory) | Self::ChildModRoots(directory) => directory,
         }
     }
+
+    /// Reports whether this selects Several Mods (the child Mod Roots of a
+    /// mods directory) rather than one Mod Root, the distinction the
+    /// Admission Rules cap the Mesh level by.
+    pub fn is_several_mods(&self) -> bool {
+        matches!(self, Self::ChildModRoots(_))
+    }
 }
 
 /// The immutable intent used to start one Optimization Run.
@@ -402,8 +409,11 @@ impl RunRequest {
     /// Profile Capabilities are left out: building a request reads no
     /// profile, so Preparing's Routing Policy compilation judges them.
     fn admission(&self) -> Admission {
-        let several_mods = matches!(self.mod_selection, ModSelection::ChildModRoots(_));
-        Admission::new(self.execution_mode, several_mods, None)
+        Admission::new(
+            self.execution_mode,
+            self.mod_selection.is_several_mods(),
+            None,
+        )
     }
 
     /// Replaces the Archive Precedence intent; discovery validates it later.

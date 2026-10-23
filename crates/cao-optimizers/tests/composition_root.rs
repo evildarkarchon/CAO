@@ -395,12 +395,10 @@ fn a_request_contradicting_the_profile_capabilities_fails_preparing() {
     let _serial = serial();
     let app = app_dir("capability-conflict");
     let mod_root = app.join("mods").join("Mod");
-    std::fs::create_dir_all(&mod_root).unwrap();
 
     // FO4 has no Mesh support: any Mesh work contradicts it. Built without
     // Profile Capabilities, the request holds none of it back.
-    let mut options = dry_run_textures(&app, &mod_root);
-    options.meshes_resave = true;
+    let options = fo4_mesh_options(&app);
     let request = run_request("FO4", &options, None).unwrap();
     assert!(request.requests(RequestedWork::StandardMeshOptimization));
     let result = run_service(&app).start(request, None).unwrap().wait();
@@ -453,15 +451,7 @@ fn a_request_contradicting_the_profile_capabilities_fails_preparing() {
 fn a_request_built_with_the_profile_capabilities_holds_back_unsupported_work() {
     let _serial = serial();
     let app = app_dir("capability-admission");
-    let mod_root = app.join("mods").join("Mod");
-    write_dds(
-        &mod_root.join("textures/plain.dds"),
-        DXGI_FORMAT_R8G8B8A8_UNORM,
-        16,
-    );
-    let mut options = dry_run_textures(&app, &mod_root);
-    options.meshes_optimization_level = 3;
-    options.meshes_resave = true;
+    let options = fo4_mesh_options(&app);
     let settings = Profiles::new(&app).open("FO4").load_settings().unwrap();
     let capabilities = profile_capabilities(&settings);
 
@@ -484,6 +474,25 @@ fn a_request_built_with_the_profile_capabilities_holds_back_unsupported_work() {
     let policy = result.preparation().expect("the run prepares").policy();
     assert!(!policy.requests(RequestedWork::StandardMeshOptimization));
     assert_eq!(result.asset_attempts().len(), 1);
+}
+
+/// The Mesh options FO4 cannot honour, shared by
+/// [`a_request_contradicting_the_profile_capabilities_fails_preparing`] and
+/// [`a_request_built_with_the_profile_capabilities_holds_back_unsupported_work`]
+/// so the pair differ only in the capabilities `run_request` is given (#636):
+/// a Dry Run over `app/mods/Mod`, which holds one plain DDS, with Full Mesh
+/// optimization and resaving on.
+fn fo4_mesh_options(app: &Path) -> Options {
+    let mod_root = app.join("mods").join("Mod");
+    write_dds(
+        &mod_root.join("textures/plain.dds"),
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        16,
+    );
+    let mut options = dry_run_textures(app, &mod_root);
+    options.meshes_optimization_level = 3;
+    options.meshes_resave = true;
+    options
 }
 
 /// Origin: ApplicationRunSetupTests::fo4ConversionCompilesWithoutMeshOptimization.

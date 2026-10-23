@@ -1,9 +1,11 @@
 //! Moves a profile's models into the window's controls and back (C++
 //! `OptionsCAO::saveToUi`/`readFromUi` and `Profiles::saveToUi`/`readFromUi`).
 //!
-//! Each direction was ported from C++ rule for rule, quirks included, so a
-//! profile the C++ build saved reloads the same, and what the window saves
-//! reloads the same.
+//! [`show_options`] and [`show_settings`] copy the models into the controls'
+//! globals; [`read_options`] and [`read_settings`] read the controls back over
+//! what was last loaded. The user's choices are saved as made, whatever a Dry
+//! Run, Several Mods or the Profile's capabilities would hold back from a
+//! run, so what the window saves reloads the same.
 //!
 //! The window's rules (`rules.rs`: the Admission Rules and the Archive Rules
 //! display) play no part in either direction. They run after

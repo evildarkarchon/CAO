@@ -47,6 +47,14 @@ pub enum ExecutionMode {
     DryRun,
 }
 
+impl ExecutionMode {
+    /// The execution mode a caller's Dry Run choice selects: Dry Run when
+    /// `dry_run` is true, Apply otherwise.
+    pub const fn from_dry_run(dry_run: bool) -> Self {
+        if dry_run { Self::DryRun } else { Self::Apply }
+    }
+}
+
 /// The coarse stage of an Optimization Run in which one Routed Asset performs its work.
 ///
 /// This categorizes a single Asset, unlike [`crate::run::RunPhase`], which is a

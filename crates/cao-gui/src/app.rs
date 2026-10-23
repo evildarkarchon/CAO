@@ -60,6 +60,15 @@ struct Loaded {
     settings: Option<ProfileSettings>,
 }
 
+impl Loaded {
+    /// The loaded Profile's Profile Capabilities: the ones that enable its
+    /// tabs, that the window's rules show, and that a run's request is built
+    /// with. `None` when its `profile.ini` could not be read.
+    fn capabilities(&self) -> Option<ProfileCapabilities> {
+        self.settings.as_ref().map(profile_capabilities)
+    }
+}
+
 /// The main window and its state. Create it with [`App::new`]; every callback
 /// holds it weakly, so dropping the last `Rc` drops the window too.
 pub struct App {
@@ -310,18 +319,20 @@ impl App {
             form::show_settings(ui, settings);
         }
         form::show_options(ui, &options);
-        // An unreadable profile enables no asset tab.
-        let capabilities = settings.as_ref().map(profile_capabilities);
-        // The rules also hold for what was loaded, so a profile saved with a
-        // combination a rule holds back (Dry Run with Extract BSA, say) shows
-        // what the run will actually do, while keeping the choice.
-        rules::apply(ui, capabilities.as_ref());
-        self.enable_tabs(capabilities.as_ref());
         ui.set_base_profile(profile.is_base());
 
         loaded.profile = profile;
         loaded.options = options;
         loaded.settings = settings;
+        // An unreadable profile enables no asset tab.
+        let capabilities = loaded.capabilities();
+        // `apply_rules` borrows `loaded` itself.
+        drop(loaded);
+        // The rules also hold for what was loaded, so a profile saved with a
+        // combination a rule holds back (Dry Run with Extract BSA, say) shows
+        // what the run will actually do, while keeping the choice.
+        self.apply_rules();
+        self.enable_tabs(capabilities.as_ref());
     }
 
     /// Enables the asset tabs the profile's Profile Capabilities allow (none
@@ -642,12 +653,7 @@ impl App {
     /// Capabilities, the ones that enable its tabs and that a run's request
     /// is built with.
     fn apply_rules(&self) {
-        let capabilities = self
-            .loaded
-            .borrow()
-            .settings
-            .as_ref()
-            .map(profile_capabilities);
+        let capabilities = self.loaded.borrow().capabilities();
         rules::apply(&self.window, capabilities.as_ref());
     }
 

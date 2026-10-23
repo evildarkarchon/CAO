@@ -34,7 +34,7 @@
 //!
 //! [`control_state`] is the pure part, from the admission and the Archive
 //! Rules to a plain [`ControlState`]. [`apply`] builds its inputs from the
-//! window's current state and writes the answer into the `UiRules` global and
+//! window's current state and writes the answer into the `RuleDisplay` global and
 //! the Maximum size spin box. It is idempotent, so the same call serves a
 //! click on a triggering control and a profile load.
 //!
@@ -44,7 +44,7 @@ use cao_archive::Settings;
 use cao_core::admission::Admission;
 use cao_core::routing::{ExecutionMode, ProfileCapabilities, RequestedWork};
 use cao_core::run::MeshLevel;
-use cao_gui_ui::{BsaTab, MainWindow, UiRules};
+use cao_gui_ui::{BsaTab, MainWindow, RuleDisplay};
 use cao_profiles::OptimizationMode;
 use slint::ComponentHandle;
 
@@ -106,17 +106,13 @@ pub(crate) fn several_mods_chosen(ui: &MainWindow) -> bool {
 /// loaded Profile's Profile Capabilities, or `None` when its `profile.ini`
 /// could not be read, which holds back nothing for capabilities.
 pub(crate) fn apply(ui: &MainWindow, capabilities: Option<&ProfileCapabilities>) {
-    let execution_mode = if ui.get_dry_run() {
-        ExecutionMode::DryRun
-    } else {
-        ExecutionMode::Apply
-    };
+    let execution_mode = ExecutionMode::from_dry_run(ui.get_dry_run());
     let admission = Admission::new(execution_mode, several_mods_chosen(ui), capabilities);
     let archive_rules = game_default_rules(ui.global::<BsaTab>().get_game_index());
-    write(ui, &control_state(&admission, archive_rules.as_ref()));
+    write_control_state(ui, &control_state(&admission, archive_rules.as_ref()));
 }
 
-/// Copies `state` into the `UiRules` global, which the `.slint` controls draw
+/// Copies `state` into the `RuleDisplay` global, which the `.slint` controls draw
 /// their forced state and AND into their `enabled` from, and into the Maximum
 /// size spin box.
 ///
@@ -130,13 +126,13 @@ pub(crate) fn apply(ui: &MainWindow, capabilities: Option<&ProfileCapabilities>)
 /// game's default and follows the Game combo until the user edits it. A loaded
 /// size above the Archive Size Cap is kept as it is, so the Profile's line is
 /// saved as written until the user edits it, and another game shows it again.
-fn write(ui: &MainWindow, state: &ControlState) {
-    let rules = ui.global::<UiRules>();
-    rules.set_extract_forced_off(state.extract_forced_off);
-    rules.set_create_forced_off(state.create_forced_off);
-    rules.set_delete_backups_forced_off(state.delete_backups_forced_off);
-    rules.set_necessary_meshes_forced(state.necessary_meshes_forced);
-    rules.set_separate_textures_forced(state.separate_textures_forced_on);
+fn write_control_state(ui: &MainWindow, state: &ControlState) {
+    let display = ui.global::<RuleDisplay>();
+    display.set_extract_forced_off(state.extract_forced_off);
+    display.set_create_forced_off(state.create_forced_off);
+    display.set_delete_backups_forced_off(state.delete_backups_forced_off);
+    display.set_necessary_meshes_forced(state.necessary_meshes_forced);
+    display.set_separate_textures_forced(state.separate_textures_forced_on);
 
     let bsa = ui.global::<BsaTab>();
     if !bsa.get_archive_limit_given()
@@ -207,11 +203,15 @@ mod tests {
         );
     }
 
+    /// A Dry Run of Several Mods forces the union of the two rules: the Dry
+    /// Run's Archive controls and the Several Mods level radios, nothing more.
+    ///
+    /// No [`ControlState`] field forces the "Process meshes" group, so Mesh
+    /// level 0 (Mesh work off) cannot be expressed here; the window test
+    /// `several_mods_loaded_without_mesh_work_keeps_it_off`
+    /// (`tests/rule_display.rs`) pins that it stays the user's choice.
     #[test]
-    fn several_mods_with_mesh_work_off_forces_only_the_level_radios() {
-        // Level 0 is "Process meshes" unchecked. No field forces that group,
-        // so turning Mesh work off stays the user's choice under Several Mods,
-        // and a Dry Run adds only its own Archive controls.
+    fn a_dry_run_of_several_mods_forces_both_rules_controls() {
         assert_eq!(
             state(ExecutionMode::DryRun, true),
             ControlState {
