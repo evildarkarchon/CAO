@@ -61,7 +61,7 @@ The Selected Profile's choice of whether requested Texture work also converts co
 _Avoid_: TGA option, convert flag
 
 **Dry Run**:
-A non-mutating optimization run that evaluates eligible Loose Assets without extracting or creating Archives.
+A non-mutating optimization run that evaluates eligible Loose Assets without extracting or creating Archives. Its Run Request never requests Archive work, whatever the user chose for an Apply run.
 _Avoid_: Preview mode, simulation
 
 **Optimization Run**:
@@ -93,8 +93,12 @@ The scheduled unit of execution that carries one Optimization Run to its termina
 _Avoid_: Run Executor, thread, background task
 
 **Run Request**:
-The immutable Mod Selection, Archive Precedence, execution mode, profile identity, requested work, and Work Choices used to start one Optimization Run. It carries every choice the user makes for the run, and no profile fact.
+The immutable Mod Selection, Archive Precedence, execution mode, profile identity, requested work, and Work Choices used to start one Optimization Run. It carries every choice the user makes for the run that its Admission Rules admit, and no profile fact.
 _Avoid_: Options, command arguments
+
+**Admission Rule**:
+A rule by which a run's execution mode, Mod Selection or Profile Capabilities hold back some of the user's choices from its Run Request: Dry Run holds back Archive work, a Several Mods selection holds back Mesh levels above Necessary, and an unsupported Profile Capability holds back the work it would need. A held-back choice is kept as the user made it, never erased, and is neither a Policy Conflict nor a Start Error.
+_Avoid_: UI rule, gate, forced option
 
 **Work Choices**:
 The user's choices for how one Optimization Run does its requested work: how Textures are optimized and resized, how Meshes are optimized, what becomes of an extracted Archive, and how Archive Finalization packs. They never request work or decide routing, and they are not profile facts. Choices for work that is not requested have no effect.
@@ -205,7 +209,7 @@ The directory tree of one selected mod, processed independently and defining one
 _Avoid_: Input directory, filesystem root
 
 **Mod Selection**:
-The request to process either one Mod Root or the child Mod Roots beneath a selected mods directory. It is resolved into an ordered set of Mod Roots, less any Mod Exclusions, during Preparing.
+The request to process either one Mod Root or the child Mod Roots beneath a selected mods directory. It is resolved into an ordered set of Mod Roots, less any Mod Exclusions, during Preparing. A Several Mods selection optimizes Meshes at the Necessary level at most.
 _Avoid_: Mode, input path
 
 **Mod Exclusion**:
