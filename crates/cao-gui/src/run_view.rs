@@ -337,8 +337,18 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
         }
         details.push(text);
     }
+    for planned in result.planned_archive_work().extractions() {
+        details.push(format!(
+            "Planned Extraction: {} | {} | entries={} | winners={} | delete-backups={}",
+            shown(&planned.archive_path),
+            shown(&planned.mod_root),
+            planned.entry_count,
+            planned.winner_count,
+            yes_no(planned.deleted_by_source_cleanup)
+        ));
+    }
+    append_planned_creation(details, result.planned_archive_work());
     for (reason, name) in [
-        (SkipReason::DisabledPhase, "Disabled Phase"),
         (SkipReason::DisabledAssetKind, "Disabled Asset Kind"),
         (SkipReason::ExcludedAssetVariant, "Excluded Asset Variant"),
     ] {
@@ -347,7 +357,6 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
             details.push(format!("Skipped Assets: {name} | {count}"));
         }
     }
-    append_planned_creation(details, result.planned_archive_work());
 }
 
 /// Appends a Dry Run's planned Archive creation to the detail rows: each

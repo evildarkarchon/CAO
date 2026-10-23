@@ -833,13 +833,6 @@ impl<'a> MutableRunEvidence<'a> {
     /// # Errors
     /// A Run Evidence invariant violation, retaining nothing, when
     /// Extracting Archives is not the current, Planned Run Phase.
-    // #641 makes Extracting Archives its producer; until then only the
-    // evidence suite records one. `expect` fails the build once it is used,
-    // so the attribute cannot outlive its reason.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no run plans Archive extraction until #641")
-    )]
     pub(crate) fn record_planned_extraction(
         &mut self,
         extraction: PlannedArchiveExtraction,

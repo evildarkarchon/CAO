@@ -689,6 +689,73 @@ fn a_dry_run_lists_its_planned_archive_creation() {
     );
 }
 
+/// A real Dry Run over one Archive: the view shows its streamed Extracting
+/// Archives record as planned, and its terminal result lists the planned
+/// extraction beside the other Archive discovery rows. A Loose Asset shadows
+/// one of the Archive's two entries, so it would add one file.
+#[test]
+fn a_dry_run_shows_its_archive_extraction_as_planned_and_lists_the_plan() {
+    let root = scratch_dir("dry-run-plans-extraction");
+    write_archive(
+        &root.join("content.bsa"),
+        &[
+            entry("textures/a.dds", b"archived"),
+            entry("textures/b.dds", b"archived"),
+        ],
+    );
+    std::fs::create_dir_all(root.join("textures")).unwrap();
+    std::fs::write(root.join("textures/a.dds"), b"loose").unwrap();
+    let sink = RecordingSink::default();
+    let request = RunRequest::new(
+        "SkyrimSE",
+        ExecutionMode::DryRun,
+        ModSelection::SingleModRoot(root.clone()),
+        vec![RequestedWork::ArchiveExtraction],
+    );
+
+    let result = execute(
+        &request,
+        &Arc::new(ScriptedToolset::default()),
+        &sink,
+        Vec::new(),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    let root = result.mod_roots()[0].clone();
+    let planned = sink
+        .observed()
+        .into_iter()
+        .find_map(|observed| match observed {
+            Observed::Phase(record) if record.phase() == RunPhase::ExtractingArchives => {
+                Some(record)
+            }
+            _ => None,
+        })
+        .expect("Extracting Archives is recorded");
+    let mut view = RunView::default();
+    view.begin("run");
+    assert!(view.consume(&event("run", 1, RunEventPayload::Phase(planned))));
+    assert_eq!(
+        view.state().label,
+        "Extracting Archives - Planned (Dry Run)"
+    );
+    assert!(view.state().progress.is_none());
+
+    assert!(view.consume(&event("run", 2, executed(RunPhase::SafetyCleanup, None))));
+    assert!(view.consume(&event("run", 3, RunEventPayload::Terminal(result))));
+    let expected = format!(
+        "Planned Extraction: {} | {} | entries=2 | winners=1 | delete-backups=no",
+        root.join("content.bsa").display(),
+        root.display()
+    );
+    let details = view.state().details.join("\n");
+    assert!(
+        view.state().details.contains(&expected),
+        "{expected} missing from\n{details}"
+    );
+}
+
 /// Origin: GuiRunTests::presentsTerminalEvidence (the streamed failure). A
 /// Run Failure the view already showed as it streamed is not repeated when
 /// the terminal result arrives. The failure is real: an unreadable Archive

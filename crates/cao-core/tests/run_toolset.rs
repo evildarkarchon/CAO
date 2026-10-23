@@ -19,7 +19,7 @@ use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationS
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ArchiveExtractionFailure, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
-    ArchiveNameKind, CancellationToken, ModSelection, OptimizationRunResult, PhaseSkipReason,
+    ArchiveNameKind, CancellationToken, ModSelection, OptimizationRunResult,
     RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode, RunOutcome, RunPhase,
     RunPhaseRecord, RunPhaseStatus, RunRequest,
 };
@@ -181,19 +181,26 @@ fn a_dry_run_through_a_toolset_never_extracts_or_finalizes() {
     );
 
     assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    // A Dry Run reads the manifest to plan the extraction, then attempts
+    // nothing: the reader's extraction seam is never reached.
+    assert_eq!(
+        *toolset.reader.listed.lock().unwrap(),
+        [root.join("content.bsa")]
+    );
     assert!(result.archive_extraction_attempts().is_empty());
-    assert!(toolset.reader.listed.lock().unwrap().is_empty());
+    let [planned] = result.planned_archive_work().extractions() else {
+        panic!("one planned extraction expected");
+    };
+    assert_eq!(planned.archive_path, root.join("content.bsa"));
+    assert_eq!(
+        result.phase(RunPhase::ExtractingArchives).unwrap().status(),
+        RunPhaseStatus::Planned
+    );
+    assert!(!root.join("textures/archived.dds").exists());
     assert!(root.join("content.bsa").exists(), "nothing is extracted");
     assert_eq!(
         toolset.attempted(),
         [root.join("textures").join("loose.dds")]
-    );
-    assert_eq!(
-        result
-            .phase(RunPhase::ExtractingArchives)
-            .unwrap()
-            .skip_reason(),
-        Some(PhaseSkipReason::DryRun)
     );
 
     // Archive Finalization plans its outputs through the packer's planning

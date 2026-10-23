@@ -4,7 +4,8 @@
 //! Ported from `src/Run/AssetRun.h` and `src/Run/ArchiveFirstAssetDiscovery.h`.
 //! The executor calls [`run_work_phases`] with its Run Toolset; the
 //! function walks each Mod Root for Archives, extracts the enabled ones in
-//! Apply through [`RunToolset::extract_archive`], routes the Effective Asset
+//! Apply through [`RunToolset::extract_archive`] or, in a Dry Run, records
+//! each extraction as Planned Archive Work, routes the Effective Asset
 //! Tree once, offers every Routed Asset to the Asset attempt port in Texture,
 //! Mesh, Animation order, recording each completed attempt before reporting
 //! it, and in Apply runs Archive Finalization through
@@ -16,7 +17,8 @@
 //! decides between Archives in one Mod Root. Before the first extraction, a
 //! preflight reads every selected manifest, rejects any Unsafe Game Path,
 //! records the Archive Collisions in Run Evidence and runs the Capacity
-//! Check; any failure stops the run with nothing extracted.
+//! Check; any failure stops the run with nothing extracted. A Dry Run runs
+//! the same preflight, so it fails where the Apply run would.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ops::ControlFlow;
@@ -34,10 +36,10 @@ use crate::run::archives::{Preflight, RootArchives, archive_order_key, relative_
 use crate::run::finalization::CreationPlanning;
 use crate::run::{
     ArchiveExtractionPlan, ArchiveFinalizationChoices, AssetInitializationCancelled,
-    CancellationToken, MutableRunEvidence, OutputPlanBasis, PhaseSkipReason, RoutedAssetAttempt,
-    RunDiagnostic, RunDiagnosticCode, RunFailure, RunFailureCode, RunPhase, RunPhaseRecord,
-    RunPreparation, RunToolset, SourceCleanup, TemporaryArtifactRegistry, WorkChoices,
-    is_staging_name, take_panic_message,
+    CancellationToken, MutableRunEvidence, OutputPlanBasis, PlannedArchiveExtraction,
+    RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode, RunFailure, RunFailureCode, RunPhase,
+    RunPhaseRecord, RunPreparation, RunToolset, SourceCleanup, TemporaryArtifactRegistry,
+    WorkChoices, is_staging_name, take_panic_message,
 };
 
 /// Walks Mod Roots for regular files under the scope rules both discovery passes share.
@@ -203,7 +205,8 @@ struct DiscoveredArchives {
     /// Every Archive the Archive pass recognized, enabled or not. The
     /// definitive pass counts any other Archive as nested.
     recognized: HashSet<PathBuf>,
-    /// The Archives Apply extracts, in order. Dry Run plans none.
+    /// The Archives Apply extracts, in order; a Dry Run records the same
+    /// plans as Planned Archive Work instead.
     plans: Vec<ArchiveExtractionPlan>,
 }
 
@@ -263,14 +266,8 @@ pub(super) fn run_work_phases(
 
     // `?` cannot unwrap a `ControlFlow` on stable Rust, so each stop is
     // returned by hand, keeping its reason for the executor.
-    let archives = match discover_archives(
-        preparation,
-        mode,
-        toolset,
-        evidence,
-        &router,
-        &mut discovery,
-    )? {
+    let archives = match discover_archives(preparation, toolset, evidence, &router, &mut discovery)?
+    {
         ControlFlow::Continue(archives) => archives,
         ControlFlow::Break(stopped) => return Ok(ControlFlow::Break(stopped)),
     };
@@ -314,14 +311,13 @@ pub(super) fn run_work_phases(
 }
 
 /// Runs the Discovering Archives phase: the Archive pass over every Mod Root
-/// and, in Apply, the preflight that plans extraction.
+/// and the preflight that plans extraction, in Apply and Dry Run alike.
 ///
 /// The skipped Archive counts are recorded once the pass ends, complete or
 /// not. A cancelled pass, a failed preflight, recorded as the run's failure,
 /// or a cancelled preflight stops the work with nothing extracted.
 fn discover_archives(
     preparation: &RunPreparation,
-    mode: ExecutionMode,
     toolset: &RunToolset,
     evidence: &mut MutableRunEvidence<'_>,
     router: &AssetRouter,
@@ -379,33 +375,30 @@ fn discover_archives(
         return Ok(ControlFlow::Break(Stop::Halted));
     }
 
-    // Dry Run ignores Archive Precedence and never reads a manifest,
-    // calculates a collision or extracts.
-    let mut plans: Vec<ArchiveExtractionPlan> = Vec::new();
-    if mode == ExecutionMode::Apply {
-        match toolset.preflight_archives(
-            root_archives,
-            preparation.archive_precedence(),
-            discovery.stop,
-        ) {
-            Preflight::Failed(failure) => {
-                // A failed preflight has no trustworthy tree, so the run stops
-                // before any extraction, routing or finalization.
-                evidence.record_failure(failure);
-                return Ok(ControlFlow::Break(Stop::Halted));
-            }
-            Preflight::Cancelled => return Ok(ControlFlow::Break(Stop::Halted)),
-            Preflight::Planned {
-                plans: planned,
-                collisions,
-            } => {
-                // Retained before the extraction phase is observed, so a
-                // failing observer or a later unwind cannot lose the plan.
-                evidence.record_archive_collisions(&collisions)?;
-                plans = planned;
-            }
+    // Both modes run the same preflight: a Dry Run reads the manifests and
+    // fails Archive Precedence, an Unsafe Game Path or the Capacity Check as
+    // the Apply run would, so a Dry Run that succeeds means the Apply run
+    // gets past its checks. The preflight only reads, so a Dry Run still
+    // mutates nothing.
+    let plans = match toolset.preflight_archives(
+        root_archives,
+        preparation.archive_precedence(),
+        discovery.stop,
+    ) {
+        Preflight::Failed(failure) => {
+            // A failed preflight has no trustworthy tree, so the run stops
+            // before any extraction, routing or finalization.
+            evidence.record_failure(failure);
+            return Ok(ControlFlow::Break(Stop::Halted));
         }
-    }
+        Preflight::Cancelled => return Ok(ControlFlow::Break(Stop::Halted)),
+        Preflight::Planned { plans, collisions } => {
+            // Retained before the extraction phase is observed, so a
+            // failing observer or a later unwind cannot lose the plan.
+            evidence.record_archive_collisions(&collisions)?;
+            plans
+        }
+    };
     Ok(ControlFlow::Continue(DiscoveredArchives {
         recognized: recognized_archives,
         plans,
@@ -417,8 +410,8 @@ fn discover_archives(
 /// [`RunToolset::extract_archive`], over `toolset`'s seams and the run's
 /// Capacity Check with `cleanup`, the Run Request's Archive extraction
 /// choice, retaining every completed attempt
-/// before it is reported. Dry Run skips the phase, opening no handle, and
-/// has no plans.
+/// before it is reported. A Dry Run records the phase as Planned instead,
+/// opening no handle, through [`plan_archive_extractions`].
 ///
 /// Cancellation is observed before and after the phase is recorded, between
 /// attempts and after the last one. An attempt in flight always finishes, so
@@ -443,26 +436,17 @@ fn extract_archives(
     if stop.is_cancelled() {
         return Ok(ControlFlow::Break(Stop::Halted));
     }
-    // Dry Run skips Archive extraction, so only Apply opens its handle.
-    let extraction = match mode {
-        ExecutionMode::DryRun => {
-            evidence.record_phase(RunPhaseRecord::skipped(
-                RunPhase::ExtractingArchives,
-                PhaseSkipReason::DryRun,
-            ))?;
-            None
-        }
-        ExecutionMode::Apply => Some(evidence.open_archive_extraction(plans.len())?),
-    };
+    // A Dry Run plans Archive extraction, so only Apply opens its handle.
+    if mode == ExecutionMode::DryRun {
+        return plan_archive_extractions(plans, cleanup, evidence, stop);
+    }
+    let mut extraction = evidence.open_archive_extraction(plans.len())?;
     if stop.is_cancelled() {
         return Ok(ControlFlow::Break(Stop::Halted));
     }
 
     // Cancellation stops before the definitive pass, and an unsafe attempt
     // never reaches routing or finalization.
-    let Some(mut extraction) = extraction else {
-        return Ok(ControlFlow::Continue(()));
-    };
     if plans.is_empty() {
         // No attempt ran, so there is none to re-sample cancellation after:
         // the checks around this phase's record observe it.
@@ -488,6 +472,54 @@ fn extract_archives(
     }
     // Re-sampled after the final attempt and its progress record, so
     // cancellation during the last Archive still skips the definitive pass.
+    Ok(if stop.is_cancelled() {
+        ControlFlow::Break(Stop::Halted)
+    } else {
+        ControlFlow::Continue(())
+    })
+}
+
+/// Runs a Dry Run's Extracting Archives phase: records it as Planned, then
+/// retains one Planned Archive Work fact for each of `plans`, in order, and
+/// logs what the Apply run would extract. It attempts nothing and never
+/// reaches the extraction seams, so no Archive, staging or Mod Root changes.
+///
+/// `cleanup` decides whether each Archive would be deleted afterwards. With
+/// no plans, as when the run requests other work but no Archive extraction,
+/// the phase is still Planned and holds no fact, as an Apply run executes it
+/// with no attempt.
+///
+/// Cancellation observed once the Planned record is published stops before
+/// any fact is retained, as an Apply run stops before its first attempt;
+/// otherwise it is re-sampled after the last fact.
+fn plan_archive_extractions(
+    plans: &[ArchiveExtractionPlan],
+    cleanup: SourceCleanup,
+    evidence: &mut MutableRunEvidence<'_>,
+    stop: &CancellationToken,
+) -> PhaseFlow {
+    evidence.record_phase(RunPhaseRecord::planned(RunPhase::ExtractingArchives))?;
+    if stop.is_cancelled() {
+        return Ok(ControlFlow::Break(Stop::Halted));
+    }
+    for plan in plans {
+        // The files the extraction would add are the entries the Archive
+        // wins, not its whole manifest.
+        log::info!(
+            "would extract {} into {} ({} files)",
+            plan.archive_path.display(),
+            plan.mod_root.display(),
+            plan.merge_entries.len()
+        );
+        evidence.record_planned_extraction(PlannedArchiveExtraction {
+            archive_path: plan.archive_path.clone(),
+            mod_root: plan.mod_root.clone(),
+            entry_count: plan.entries.len(),
+            winner_count: plan.merge_entries.len(),
+            estimated_capacity_bytes: plan.estimated_capacity_bytes,
+            deleted_by_source_cleanup: cleanup == SourceCleanup::Remove,
+        })?;
+    }
     Ok(if stop.is_cancelled() {
         ControlFlow::Break(Stop::Halted)
     } else {
