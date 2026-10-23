@@ -152,6 +152,17 @@ const REQUESTED_WORK_DEFINITIONS: [(RequestedWork, ProfileCapability, Option<Ass
     ),
 ];
 
+/// Each explicit work choice with the Profile Capability it needs, in
+/// enumeration order.
+///
+/// The Admission Rules read this so a profile admits exactly the work that
+/// Routing Policy compilation would accept from it: both read one mapping.
+pub(crate) fn work_capabilities() -> impl Iterator<Item = (RequestedWork, ProfileCapability)> {
+    REQUESTED_WORK_DEFINITIONS
+        .into_iter()
+        .map(|(work, capability, _)| (work, capability))
+}
+
 /// The Asset Kind each Profile Capability belongs to.
 const fn capability_kind(capability: ProfileCapability) -> AssetKind {
     match capability {
