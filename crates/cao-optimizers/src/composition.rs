@@ -155,16 +155,12 @@ pub fn run_request(
         .filter(|(selected, _)| *selected)
         .map(|(_, work)| work)
         .collect();
-    let mode = if options.dry_run {
-        ExecutionMode::DryRun
-    } else {
-        ExecutionMode::Apply
-    };
+    let mode = ExecutionMode::from_dry_run(options.dry_run);
     // Only the capability rule needs this: `RunRequest::new` and
     // `with_work_choices` apply the Dry Run and Several Mods rules to every
     // request themselves, so applying them here too changes nothing.
-    let several_mods = matches!(mod_selection, ModSelection::ChildModRoots(_));
-    let work = Admission::new(mode, several_mods, capabilities).admitted_work(&work);
+    let work =
+        Admission::new(mode, mod_selection.is_several_mods(), capabilities).admitted_work(&work);
     Ok(RunRequest::new(profile, mode, mod_selection, work).with_work_choices(work_choices))
 }
 
