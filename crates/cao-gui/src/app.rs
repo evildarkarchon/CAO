@@ -644,7 +644,6 @@ impl App {
     /// call `load_profile` makes too after loading settings.
     fn wire_rules(&self) {
         let ui = &self.window;
-        ui.on_dry_run_clicked(self.with_arg(|app, _| app.apply_rules()));
         ui.on_game_selected(self.with_arg(|app, _| app.apply_rules()));
         ui.on_mode_activated(self.with_arg(|app, _| app.mode_activated()));
     }

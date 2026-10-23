@@ -241,7 +241,6 @@ export component MainWindow inherits Window {
     callback open-directory();
     callback run-clicked();
     callback mode-activated(int);
-    callback dry-run-clicked(bool);
     callback advanced-clicked(bool);
     callback move-tab(int, int);
     callback edit-unwanted();
@@ -251,7 +250,7 @@ export component MainWindow inherits Window {
     callback open-discord();
     callback about();
     callback about-slint();
-    // A rule trigger (`rules.rs`), besides `mode-activated` and `dry-run-clicked`.
+    // A rule trigger (`rules.rs`), besides `mode-activated`.
     callback game-selected(int);
 
     // Qt's QTabWidget::setEnabled(false) disables every descendant. Slint has no enabled
@@ -411,9 +410,6 @@ export component MainWindow inherits Window {
                         text: @tr("Dry run");
                         help: @tr("Will list all files that would be modified, without actually processing them. Will ignore files in BSAs.");
                         checked <=> root.dry-run;
-                        toggled => {
-                            root.dry-run-clicked(root.dry-run);
-                        }
                     }
 
                     Rectangle { }
