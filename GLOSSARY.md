@@ -61,7 +61,7 @@ The Selected Profile's choice of whether requested Texture work also converts co
 _Avoid_: TGA option, convert flag
 
 **Dry Run**:
-A non-mutating optimization run that evaluates eligible Loose Assets without extracting or creating Archives. Its Run Request never requests Archive work, whatever the user chose for an Apply run.
+A non-mutating optimization run that evaluates eligible Loose Assets without extracting or creating Archives. Its Run Request requests the work the user chose, Archive work included, and the run mutates no Archive.
 _Avoid_: Preview mode, simulation
 
 **Optimization Run**:
@@ -97,7 +97,7 @@ The immutable Mod Selection, Archive Precedence, execution mode, profile identit
 _Avoid_: Options, command arguments
 
 **Admission Rule**:
-A rule by which a run's execution mode, Mod Selection or Profile Capabilities hold back some of the user's choices from its Run Request: Dry Run holds back Archive work, a Several Mods selection holds back Mesh levels above Necessary, and an unsupported Profile Capability holds back the work it would need. A held-back choice is kept as the user made it, never erased, and is neither a Policy Conflict nor a Start Error.
+A rule by which a run's Mod Selection or Profile Capabilities hold back some of the user's choices from its Run Request: a Several Mods selection holds back Mesh levels above Necessary, and an unsupported Profile Capability holds back the work it would need. A held-back choice is kept as the user made it, never erased, and is neither a Policy Conflict nor a Start Error.
 _Avoid_: UI rule, gate, forced option
 
 **Work Choices**:

@@ -276,8 +276,9 @@ pub(crate) fn show_options(ui: &MainWindow, options: &Options) {
 ///
 /// The user's choices are read as the controls hold them. Neither a Dry Run,
 /// Several Mods nor a Profile Capability the profile lacks changes what is
-/// saved: the run's Admission Rules hold such choices back from its Run
-/// Request, and the window only shows them forced (`rules.rs`).
+/// saved. A Dry Run's request keeps every choice; the run's Admission Rules
+/// hold the others' choices back from its Run Request, and the window only
+/// shows them forced (`rules.rs`).
 ///
 /// `settings_read` is false when the profile's `profile.ini` could not be
 /// read. Every BSA, Texture, Mesh and Animation option of `current` is then

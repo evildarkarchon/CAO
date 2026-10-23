@@ -108,8 +108,9 @@ export global AnimationsTab {
 // what a control shows: the user's choice stays in its tab's global, which no
 // rule writes, and shows again once the rule lifts.
 export global RuleDisplay {
-    // Admission Rules. A Dry Run holds back Archive extraction and creation:
-    // Extract BSA, Create BSA and Delete backups show unchecked.
+    // Admission Rules. A Profile Capability the Profile lacks holds back
+    // Archive extraction or creation: Extract BSA, Create BSA and Delete
+    // backups show unchecked.
     in property <bool> extract-forced-off;
     in property <bool> create-forced-off;
     in property <bool> delete-backups-forced-off;
@@ -240,7 +241,6 @@ export component MainWindow inherits Window {
     callback open-directory();
     callback run-clicked();
     callback mode-activated(int);
-    callback dry-run-clicked(bool);
     callback advanced-clicked(bool);
     callback move-tab(int, int);
     callback edit-unwanted();
@@ -250,7 +250,7 @@ export component MainWindow inherits Window {
     callback open-discord();
     callback about();
     callback about-slint();
-    // A rule trigger (`rules.rs`), besides `mode-activated` and `dry-run-clicked`.
+    // A rule trigger (`rules.rs`), besides `mode-activated`.
     callback game-selected(int);
 
     // Qt's QTabWidget::setEnabled(false) disables every descendant. Slint has no enabled
@@ -410,9 +410,6 @@ export component MainWindow inherits Window {
                         text: @tr("Dry run");
                         help: @tr("Will list all files that would be modified, without actually processing them. Will ignore files in BSAs.");
                         checked <=> root.dry-run;
-                        toggled => {
-                            root.dry-run-clicked(root.dry-run);
-                        }
                     }
 
                     Rectangle { }
@@ -453,9 +450,10 @@ export component MainWindow inherits Window {
                         padding: 8px;
                         spacing: 6px;
                         alignment: start;
-                        // A Dry Run shows the three base options unchecked and
-                        // disabled (`RuleDisplay`), and the group's title greys with
-                        // them; the user's choices stay in `BsaTab`.
+                        // A Profile without Archive support shows the three base
+                        // options unchecked and disabled (`RuleDisplay`), and the
+                        // group's title greys with them; the user's choices stay in
+                        // `BsaTab`.
                         GroupBox {
                             title: @tr("Base");
                             enabled: root.ed && !(RuleDisplay.extract-forced-off && RuleDisplay.create-forced-off && RuleDisplay.delete-backups-forced-off);

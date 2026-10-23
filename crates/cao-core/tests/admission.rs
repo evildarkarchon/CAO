@@ -1,6 +1,7 @@
 //! Admission Rules: which of the user's choices a run's Run Request may
-//! carry, given its execution mode, its Mod Selection and, optionally, its
-//! Profile Capabilities.
+//! carry, given its Mod Selection and, optionally, its Profile Capabilities.
+//! The execution mode holds back nothing, so a Dry Run's request keeps its
+//! Archive work.
 
 use cao_core::admission::Admission;
 use cao_core::routing::{ExecutionMode, ProfileCapabilities, ProfileCapability, RequestedWork};
@@ -28,40 +29,29 @@ fn held_back(admission: &Admission) -> Vec<RequestedWork> {
         .collect()
 }
 
+/// With no Profile Capabilities known, no rule holds back requested work,
+/// whichever the Mod Selection.
 #[test]
-fn a_dry_run_holds_back_archive_extraction_and_creation_and_nothing_else() {
-    let admission = Admission::new(ExecutionMode::DryRun, false, None);
+fn without_profile_capabilities_every_piece_of_work_is_admitted() {
+    for several_mods in [false, true] {
+        let admission = Admission::new(several_mods, None);
 
-    assert_eq!(
-        held_back(&admission),
-        [
-            RequestedWork::ArchiveExtraction,
-            RequestedWork::ArchiveCreation
-        ]
-    );
-}
-
-#[test]
-fn an_apply_run_admits_every_piece_of_work() {
-    let admission = Admission::new(ExecutionMode::Apply, false, None);
-
-    assert_eq!(held_back(&admission), []);
+        assert_eq!(held_back(&admission), [], "several mods: {several_mods}");
+    }
 }
 
 #[test]
 fn several_mods_admits_mesh_levels_up_to_necessary() {
-    for mode in [ExecutionMode::Apply, ExecutionMode::DryRun] {
-        let admission = Admission::new(mode, true, None);
+    let admission = Admission::new(true, None);
 
-        assert_eq!(admission.highest_mesh_level().get(), 1, "{mode:?}");
-    }
+    assert_eq!(admission.highest_mesh_level().get(), 1);
 }
 
 #[test]
 fn one_mod_admits_every_mesh_level() {
     let capabilities = partial_capabilities();
     for capabilities in [None, Some(&capabilities)] {
-        let admission = Admission::new(ExecutionMode::Apply, false, capabilities);
+        let admission = Admission::new(false, capabilities);
 
         assert_eq!(admission.highest_mesh_level().get(), 3);
     }
@@ -94,7 +84,7 @@ fn choices_at(level: i32) -> WorkChoices {
 
 #[test]
 fn several_mods_caps_the_chosen_mesh_level_at_necessary_and_keeps_the_rest() {
-    let admission = Admission::new(ExecutionMode::Apply, true, None);
+    let admission = Admission::new(true, None);
 
     for (chosen, admitted) in [(0, 0), (1, 1), (2, 1), (3, 1)] {
         let mut expected = choices_at(chosen);
@@ -110,19 +100,7 @@ fn several_mods_caps_the_chosen_mesh_level_at_necessary_and_keeps_the_rest() {
 
 #[test]
 fn one_mod_keeps_the_chosen_mesh_level() {
-    let admission = Admission::new(ExecutionMode::Apply, false, None);
-
-    assert_eq!(
-        admission.admitted_work_choices(choices_at(3)),
-        choices_at(3)
-    );
-}
-
-#[test]
-fn a_dry_run_keeps_the_archive_choices_as_chosen() {
-    // Choices for work that is not requested have no effect, so Delete
-    // backups and the Archive Finalization choices are not held back.
-    let admission = Admission::new(ExecutionMode::DryRun, false, None);
+    let admission = Admission::new(false, None);
 
     assert_eq!(
         admission.admitted_work_choices(choices_at(3)),
@@ -133,13 +111,14 @@ fn a_dry_run_keeps_the_archive_choices_as_chosen() {
 #[test]
 fn the_admitted_work_is_the_chosen_work_less_what_is_held_back() {
     let capabilities = partial_capabilities();
-    let admission = Admission::new(ExecutionMode::DryRun, false, Some(&capabilities));
+    let admission = Admission::new(false, Some(&capabilities));
 
     assert_eq!(
         admission.admitted_work(&ALL_WORK),
         [
             RequestedWork::NativeTextureOptimization,
             RequestedWork::TerrainMeshOptimization,
+            RequestedWork::ArchiveCreation,
         ]
     );
     assert_eq!(
@@ -168,7 +147,7 @@ fn partial_capabilities() -> ProfileCapabilities {
 fn profile_capabilities_hold_back_exactly_the_work_they_do_not_support() {
     let capabilities = partial_capabilities();
 
-    let admission = Admission::new(ExecutionMode::Apply, false, Some(&capabilities));
+    let admission = Admission::new(false, Some(&capabilities));
 
     assert_eq!(
         held_back(&admission),
@@ -184,26 +163,9 @@ fn profile_capabilities_hold_back_exactly_the_work_they_do_not_support() {
 fn a_profile_supporting_every_capability_holds_back_nothing() {
     let capabilities = sse_capabilities(".bsa");
 
-    let admission = Admission::new(ExecutionMode::Apply, true, Some(&capabilities));
+    let admission = Admission::new(true, Some(&capabilities));
 
     assert_eq!(held_back(&admission), []);
-}
-
-#[test]
-fn a_dry_run_and_the_profile_capabilities_each_hold_back_their_own_work() {
-    let capabilities = partial_capabilities();
-
-    let admission = Admission::new(ExecutionMode::DryRun, false, Some(&capabilities));
-
-    assert_eq!(
-        held_back(&admission),
-        [
-            RequestedWork::StandardMeshOptimization,
-            RequestedWork::AnimationOptimization,
-            RequestedWork::ArchiveExtraction,
-            RequestedWork::ArchiveCreation,
-        ]
-    );
 }
 
 /// A request asking for every piece of work over `selection`.
@@ -219,21 +181,25 @@ fn several_mods() -> ModSelection {
     ModSelection::ChildModRoots("C:\\mods".into())
 }
 
+/// A Dry Run requests the Archive work the user chose. No Admission Rule
+/// holds it back: the run's work phases skip it as Dry Run, so no Archive is
+/// mutated, but the request keeps it.
 #[test]
-fn a_dry_run_request_built_with_archive_work_requests_none() {
+fn a_dry_run_request_built_with_archive_work_keeps_it() {
     let request = request(ExecutionMode::DryRun, one_mod());
 
-    assert!(!request.requests(RequestedWork::ArchiveExtraction));
-    assert!(!request.requests(RequestedWork::ArchiveCreation));
-    assert_eq!(
-        request.requested_work(),
-        [
-            RequestedWork::NativeTextureOptimization,
-            RequestedWork::StandardMeshOptimization,
-            RequestedWork::TerrainMeshOptimization,
-            RequestedWork::AnimationOptimization,
-        ]
-    );
+    assert!(request.requests(RequestedWork::ArchiveExtraction));
+    assert!(request.requests(RequestedWork::ArchiveCreation));
+    assert_eq!(request.requested_work(), ALL_WORK);
+}
+
+/// A Dry Run keeps Delete backups and the Archive Finalization choices as
+/// chosen, along with every other Work Choice.
+#[test]
+fn a_dry_run_request_keeps_its_work_choices_as_chosen() {
+    let request = request(ExecutionMode::DryRun, one_mod()).with_work_choices(choices_at(3));
+
+    assert_eq!(request.work_choices(), &choices_at(3));
 }
 
 #[test]

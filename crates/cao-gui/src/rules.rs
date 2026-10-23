@@ -2,18 +2,19 @@
 //! they force them, and which they disable.
 //!
 //! **The Admission Rules.** The window asks core's [`Admission`] the question
-//! a run's Run Request asks, built from the Dry Run box, the mode combo and
-//! the loaded Profile's Profile Capabilities, and shows its answer:
+//! a run's Run Request asks, built from the mode combo and the loaded
+//! Profile's Profile Capabilities, and shows its answer:
 //!
-//! - **A Dry Run** holds back Archive extraction and creation, so Extract BSA,
-//!   Create BSA and Delete backups (a choice of Archive extraction) show
-//!   unchecked and disabled. The Extra group stays enabled.
 //! - **Several Mods** caps the Mesh level at Necessary, so the level radios
 //!   show Necessary, with Medium and Full disabled. "Process meshes" stays the
 //!   user's, so level 0 (no Mesh work) stays allowed.
 //! - **A Profile Capability the Profile lacks** holds back the work that
-//!   needs it. Its tab is disabled ([`Tab::enabled_by`]), and an Archive
-//!   control whose work it holds back shows off as under a Dry Run.
+//!   needs it. Its tab is disabled ([`Tab::enabled_by`]), and Extract BSA,
+//!   Create BSA and Delete backups (a choice of Archive extraction) show
+//!   unchecked and disabled when it holds back their Archive work.
+//!
+//! The Dry Run box is no Admission Rule: a Dry Run requests the Archive work
+//! the user chose and mutates no Archive, so it forces no control.
 //!
 //! **The Archive Rules display (#628).** The Archive Rules the run will use
 //! for the game in the Game combo, read from `cao_archive::Settings`:
@@ -42,7 +43,7 @@
 
 use cao_archive::Settings;
 use cao_core::admission::Admission;
-use cao_core::routing::{ExecutionMode, ProfileCapabilities, RequestedWork};
+use cao_core::routing::{ProfileCapabilities, RequestedWork};
 use cao_core::run::MeshLevel;
 use cao_gui_ui::{BsaTab, MainWindow, RuleDisplay};
 use cao_profiles::OptimizationMode;
@@ -55,12 +56,14 @@ use crate::form;
 /// user's choice. [`ControlState::default`] forces nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct ControlState {
-    /// Extract BSA shows unchecked: the run holds back Archive extraction.
+    /// Extract BSA shows unchecked: the loaded Profile's Profile Capabilities
+    /// hold back Archive extraction.
     pub(crate) extract_forced_off: bool,
-    /// Create BSA shows unchecked: the run holds back Archive creation.
+    /// Create BSA shows unchecked: the loaded Profile's Profile Capabilities
+    /// hold back Archive creation.
     pub(crate) create_forced_off: bool,
     /// Delete backups shows unchecked: it is a choice of the Archive
-    /// extraction the run holds back.
+    /// extraction the loaded Profile's Profile Capabilities hold back.
     pub(crate) delete_backups_forced_off: bool,
     /// The Mesh level radios show Necessary, with Medium and Full disabled:
     /// the run's Mesh level is capped at Necessary. The "Process meshes" group
@@ -106,8 +109,7 @@ pub(crate) fn several_mods_chosen(ui: &MainWindow) -> bool {
 /// loaded Profile's Profile Capabilities, or `None` when its `profile.ini`
 /// could not be read, which holds back nothing for capabilities.
 pub(crate) fn apply(ui: &MainWindow, capabilities: Option<&ProfileCapabilities>) {
-    let execution_mode = ExecutionMode::from_dry_run(ui.get_dry_run());
-    let admission = Admission::new(execution_mode, several_mods_chosen(ui), capabilities);
+    let admission = Admission::new(several_mods_chosen(ui), capabilities);
     let archive_rules = game_default_rules(ui.global::<BsaTab>().get_game_index());
     write_control_state(ui, &control_state(&admission, archive_rules.as_ref()));
 }
@@ -157,7 +159,7 @@ fn game_default_rules(game_index: i32) -> Option<Settings> {
 mod tests {
     use cao_archive::{Game, Settings};
     use cao_core::admission::Admission;
-    use cao_core::routing::{ExecutionMode, ProfileCapabilities, ProfileCapability};
+    use cao_core::routing::{ProfileCapabilities, ProfileCapability};
 
     use super::{ControlState, control_state};
 
@@ -168,34 +170,35 @@ mod tests {
     /// 4000 MiB, FO4's default Archive Limit.
     const BA2_DEFAULT_LIMIT: u64 = 4000 * 1024 * 1024;
 
-    /// The control state for a run in `mode`, Several Mods when
-    /// `several_mods`, with no capabilities known and no game selected.
-    fn state(mode: ExecutionMode, several_mods: bool) -> ControlState {
-        control_state(&Admission::new(mode, several_mods, None), None)
+    /// The control state for a run of Several Mods when `several_mods`, with
+    /// no capabilities known and no game selected.
+    fn state(several_mods: bool) -> ControlState {
+        control_state(&Admission::new(several_mods, None), None)
     }
 
-    #[test]
-    fn an_apply_run_of_one_mod_forces_nothing() {
-        assert_eq!(state(ExecutionMode::Apply, false), ControlState::default());
+    /// A profile supporting Textures and Meshes but no Archive work.
+    fn without_archives() -> ProfileCapabilities {
+        ProfileCapabilities::define(
+            ".bsa",
+            &[
+                ProfileCapability::NativeTextureOptimization,
+                ProfileCapability::StandardMeshOptimization,
+                ProfileCapability::TerrainMeshOptimization,
+            ],
+        )
     }
 
+    /// The execution mode is not an input: a Dry Run forces nothing either,
+    /// which the window tests in `tests/rule_display.rs` pin.
     #[test]
-    fn a_dry_run_shows_extract_create_and_delete_backups_off() {
-        assert_eq!(
-            state(ExecutionMode::DryRun, false),
-            ControlState {
-                extract_forced_off: true,
-                create_forced_off: true,
-                delete_backups_forced_off: true,
-                ..ControlState::default()
-            }
-        );
+    fn one_mod_without_capabilities_known_forces_nothing() {
+        assert_eq!(state(false), ControlState::default());
     }
 
     #[test]
     fn several_mods_shows_necessary_meshes() {
         assert_eq!(
-            state(ExecutionMode::Apply, true),
+            state(true),
             ControlState {
                 necessary_meshes_forced: true,
                 ..ControlState::default()
@@ -203,17 +206,20 @@ mod tests {
         );
     }
 
-    /// A Dry Run of Several Mods forces the union of the two rules: the Dry
-    /// Run's Archive controls and the Several Mods level radios, nothing more.
+    /// Several Mods under a profile without Archive support forces the union
+    /// of the two rules: the held-back Archive controls and the Several Mods
+    /// level radios, nothing more.
     ///
     /// No [`ControlState`] field forces the "Process meshes" group, so Mesh
     /// level 0 (Mesh work off) cannot be expressed here; the window test
     /// `several_mods_loaded_without_mesh_work_keeps_it_off`
     /// (`tests/rule_display.rs`) pins that it stays the user's choice.
     #[test]
-    fn a_dry_run_of_several_mods_forces_both_rules_controls() {
+    fn several_mods_without_archive_support_forces_both_rules_controls() {
+        let capabilities = without_archives();
+        let admission = Admission::new(true, Some(&capabilities));
         assert_eq!(
-            state(ExecutionMode::DryRun, true),
+            control_state(&admission, None),
             ControlState {
                 extract_forced_off: true,
                 create_forced_off: true,
@@ -226,15 +232,8 @@ mod tests {
 
     #[test]
     fn unsupported_archive_work_shows_its_controls_off() {
-        let without_archives = ProfileCapabilities::define(
-            ".bsa",
-            &[
-                ProfileCapability::NativeTextureOptimization,
-                ProfileCapability::StandardMeshOptimization,
-                ProfileCapability::TerrainMeshOptimization,
-            ],
-        );
-        let admission = Admission::new(ExecutionMode::Apply, false, Some(&without_archives));
+        let capabilities = without_archives();
+        let admission = Admission::new(false, Some(&capabilities));
         assert_eq!(
             control_state(&admission, None),
             ControlState {
@@ -248,7 +247,7 @@ mod tests {
 
     #[test]
     fn a_bsa_game_shows_its_default_limit_and_its_size_cap() {
-        let admission = Admission::new(ExecutionMode::Apply, false, None);
+        let admission = Admission::new(false, None);
         for game in [Game::Tes5, Game::Sse] {
             let rules = Settings::for_profile(game, None);
             assert_eq!(
@@ -265,7 +264,7 @@ mod tests {
 
     #[test]
     fn fo4_shows_separate_textures_on_and_no_size_cap() {
-        let admission = Admission::new(ExecutionMode::Apply, false, None);
+        let admission = Admission::new(false, None);
         let rules = Settings::for_profile(Game::Fo4, None);
         assert_eq!(
             control_state(&admission, Some(&rules)),

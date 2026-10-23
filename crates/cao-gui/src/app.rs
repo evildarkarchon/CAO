@@ -329,7 +329,7 @@ impl App {
         // `apply_rules` borrows `loaded` itself.
         drop(loaded);
         // The rules also hold for what was loaded, so a profile saved with a
-        // combination a rule holds back (Dry Run with Extract BSA, say) shows
+        // combination a rule holds back (Several Mods with Full Meshes, say) shows
         // what the run will actually do, while keeping the choice.
         self.apply_rules();
         self.enable_tabs(capabilities.as_ref());
@@ -644,7 +644,6 @@ impl App {
     /// call `load_profile` makes too after loading settings.
     fn wire_rules(&self) {
         let ui = &self.window;
-        ui.on_dry_run_clicked(self.with_arg(|app, _| app.apply_rules()));
         ui.on_game_selected(self.with_arg(|app, _| app.apply_rules()));
         ui.on_mode_activated(self.with_arg(|app, _| app.mode_activated()));
     }

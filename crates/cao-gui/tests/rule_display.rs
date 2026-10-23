@@ -21,7 +21,8 @@ fn keeps_textures_separate(game: Game) -> bool {
     Settings::get(game).keeps_textures_separate()
 }
 
-/// The three base archive options a Dry Run shows unchecked and disabled.
+/// The three base archive options, which a Dry Run leaves enabled and showing
+/// the user's choice: its Run Request keeps the Archive work chosen.
 const BASE_ARCHIVE_OPTIONS: [&str; 3] = ["Extract BSA", "Create BSA", "Delete backups"];
 
 /// An app directory whose `common.ini` starts on `profile`, without tutorial boxes.
@@ -63,8 +64,10 @@ fn keeps_base_archive_options(options: &Options) -> bool {
     options.bsa_extract && options.bsa_create && options.bsa_delete_backup
 }
 
+/// A Dry Run forces none of the base archive options: they stay enabled and
+/// show the user's choice, which is saved as made.
 #[test]
-fn clicking_dry_run_shows_the_base_archive_options_off_then_gives_them_back() {
+fn clicking_dry_run_leaves_the_base_archive_options_enabled_and_as_chosen() {
     headless();
     let app_dir = app_on("dry_run_click", "SSE");
     base_archive_options_on(&app_dir, "SSE");
@@ -74,22 +77,30 @@ fn clicking_dry_run_shows_the_base_archive_options_off_then_gives_them_back() {
     assert_controls(ui, &BASE_ARCHIVE_OPTIONS, true, true);
 
     click(ui, "Dry run");
-    assert_controls(ui, &BASE_ARCHIVE_OPTIONS, false, false);
-    // The rule only shows what a Dry Run does; the choices are saved as made.
+    assert_controls(ui, &BASE_ARCHIVE_OPTIONS, true, true);
     let options = saved_options(&app, &app_dir, "SSE");
     assert!(options.dry_run);
     assert!(keeps_base_archive_options(&options), "{options:?}");
 
-    // Turning it off gives the choices back.
-    click(ui, "Dry run");
-    assert_controls(ui, &BASE_ARCHIVE_OPTIONS, true, true);
+    // They stay the user's to change under a Dry Run.
+    click(ui, "Extract BSA");
+    assert_controls(ui, &["Extract BSA"], false, true);
     let options = saved_options(&app, &app_dir, "SSE");
-    assert!(!options.dry_run);
-    assert!(keeps_base_archive_options(&options), "{options:?}");
+    assert!(!options.bsa_extract, "{options:?}");
+    assert!(
+        options.bsa_create && options.bsa_delete_backup,
+        "{options:?}"
+    );
+
+    // Turning Dry Run off changes none of them either.
+    click(ui, "Dry run");
+    assert_controls(ui, &["Extract BSA"], false, true);
+    assert_controls(ui, &["Create BSA", "Delete backups"], true, true);
+    assert!(!saved_options(&app, &app_dir, "SSE").dry_run);
 }
 
 #[test]
-fn a_dry_run_loaded_from_the_ini_shows_the_base_archive_options_off_and_keeps_them() {
+fn a_dry_run_loaded_from_the_ini_shows_the_base_archive_options_as_chosen_and_keeps_them() {
     headless();
     let app_dir = app_on("dry_run_load", "SSE");
     base_archive_options_on(&app_dir, "SSE");
@@ -99,24 +110,23 @@ fn a_dry_run_loaded_from_the_ini_shows_the_base_archive_options_off_and_keeps_th
     select_tab(ui, "BSA");
 
     assert!(checked(ui, "Dry run"));
-    assert_controls(ui, &BASE_ARCHIVE_OPTIONS, false, false);
+    assert_controls(ui, &BASE_ARCHIVE_OPTIONS, true, true);
     let options = saved_options(&app, &app_dir, "SSE");
     assert!(options.dry_run);
     assert!(keeps_base_archive_options(&options), "{options:?}");
-
-    // Turning it off shows the choices that were loaded.
-    click(ui, "Dry run");
-    assert_controls(ui, &BASE_ARCHIVE_OPTIONS, true, true);
 }
 
 #[test]
-fn a_save_under_dry_run_keeps_the_extra_archive_options() {
+fn a_save_under_dry_run_keeps_the_base_and_extra_archive_options() {
     headless();
     let app_dir = app_on("dry_run_extra", "SSE");
-    // Every Extra choice on, and both Separate boxes cleared (merging), so a
-    // save reading any of them as off shows on disk.
+    // Every base and Extra choice on, and both Separate boxes cleared
+    // (merging), so a save reading any of them as off shows on disk.
     let sse = Profiles::new(&app_dir).open("SSE");
     let mut options = sse.load_options(&Options::default()).unwrap();
+    options.bsa_extract = true;
+    options.bsa_create = true;
+    options.bsa_delete_backup = true;
     options.bsa_compress = true;
     options.bsa_create_dummies = true;
     options.bsa_delete_source = true;
@@ -128,7 +138,8 @@ fn a_save_under_dry_run_keeps_the_extra_archive_options() {
     select_tab(ui, "BSA");
 
     click(ui, "Dry run");
-    // The Extra group stays the user's under a Dry Run.
+    // The base options and the Extra group stay the user's under a Dry Run.
+    assert_controls(ui, &BASE_ARCHIVE_OPTIONS, true, true);
     assert_controls(
         ui,
         &[
