@@ -24,7 +24,7 @@ pub struct RunViewState {
     /// The phase or terminal label, such as `Processing Assets`, `Cancelling -
     /// Safety Cleanup` or `Completed With Failures`.
     pub label: String,
-    /// The current phase's attempt counts; `None` for skipped and
+    /// The current phase's attempt counts; `None` for skipped, planned and
     /// indeterminate phases.
     pub progress: Option<RunProgress>,
     /// The run-detail rows, in arrival order: streamed failures and
@@ -75,11 +75,16 @@ impl RunView {
             RunEventPayload::Phase(record) => {
                 state.label = phase_name(record.phase()).to_owned();
                 state.progress = record.progress();
-                if record.status() == RunPhaseStatus::Skipped {
-                    state.label.push_str(match record.skip_reason() {
-                        Some(PhaseSkipReason::DryRun) => " - Skipped (Dry Run)",
-                        _ => " - Skipped (No Requested Work)",
-                    });
+                match record.status() {
+                    RunPhaseStatus::Executed => {}
+                    RunPhaseStatus::Skipped => {
+                        state.label.push_str(match record.skip_reason() {
+                            Some(PhaseSkipReason::DryRun) => " - Skipped (Dry Run)",
+                            _ => " - Skipped (No Requested Work)",
+                        });
+                    }
+                    // Only a Dry Run plans Archive work instead of attempting it.
+                    RunPhaseStatus::Planned => state.label.push_str(" - Planned (Dry Run)"),
                 }
                 if state.cancellation_requested {
                     mark_cancelling(&mut state.label);
