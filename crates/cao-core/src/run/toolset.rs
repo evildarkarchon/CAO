@@ -12,19 +12,25 @@
 //! the run's Run Request.
 //!
 //! The Toolset is the only way to the Archive work. The Run Executor reaches
-//! it through three crate-private steps, in phase order: Archive discovery's
+//! it through crate-private steps, in phase order: Archive discovery's
 //! preflight ([`RunToolset::preflight_archives`]), extracting one planned
 //! Archive ([`RunToolset::extract_archive`]) and Archive Finalization
-//! ([`RunToolset::finalize_archives`]). Each calls a crate-private work
-//! function over the seams and the run's Capacity Check. The executor keeps
-//! every Run Evidence write except Archive Finalization's, which writes only
-//! its own phase, through the phase handle the executor opens and hands it.
+//! ([`RunToolset::finalize_archives`]), or, in a Dry Run, its planning-only
+//! step ([`RunToolset::plan_archive_creation`]). Each calls a crate-private
+//! work function over the seams and the run's Capacity Check. The executor
+//! keeps every Run Evidence write except Archive Finalization's, which writes
+//! only its own phase, through the phase handle the executor opens and hands
+//! it; the planning-only step writes none.
 //!
 //! The Run Executor runs every work phase over it: Archive discovery and the
 //! Capacity Check through the Archive reader and the volume probe, then, in
 //! Apply, Archive extraction over the reader and the Capacity Check for each
 //! planned Archive, one [`AssetAttemptPort`] call per Routed Asset, and, in
-//! Apply, Archive Finalization over the packer, reader and the Capacity Check.
+//! Apply, Archive Finalization over the packer, reader and the Capacity Check,
+//! or, in Dry Run, the planning of its outputs over the packer's planning
+//! seams. A Dry Run calls only the read and planning seams
+//! (`ArchiveReader::list_entries`, the volume probe for its Capacity Check,
+//! and `ArchivePacker::rules`, `list_names` and `partition`).
 //! Observation goes only through the Run Observation Sink and cancellation
 //! only through the run's token.
 //!
@@ -50,12 +56,12 @@ use crate::Error;
 use crate::execution::AssetExecutionResult;
 use crate::routing::RoutedAsset;
 use crate::run::archives::{self, Preflight, RootArchives, preflight};
-use crate::run::capacity::{CapacityCheck, FrozenVolumes};
-use crate::run::finalization;
+use crate::run::capacity::{CapacityCheck, FrozenVolumes, Shortfall};
+use crate::run::finalization::{self, CreationPlanning};
 use crate::run::{
     ArchiveExtractionPlan, ArchiveExtractionResult, ArchiveFinalizationChoices,
     ArchiveFinalizationHandle, ArchivePacker, ArchivePrecedence, ArchiveReader, CancellationToken,
-    RunDiagnostic, RunPreparation, SourceCleanup, TemporaryArtifactRegistry, VolumeProbe,
+    RunDiagnostic, RunPhase, RunPreparation, SourceCleanup, TemporaryArtifactRegistry, VolumeProbe,
 };
 
 /// Cancellation observed while an Asset backend initialized, before any attempt existed.
@@ -113,8 +119,10 @@ pub struct ArchiveSeams {
 /// Policy.
 ///
 /// It is owned by the run for its whole traversal and used only on the Run
-/// Worker, so its ports need not be `Send`. Dry Run never touches the packer,
-/// extraction or Archive Finalization.
+/// Worker, so its ports need not be `Send`. A Dry Run calls only the read and
+/// planning seams (`ArchiveReader::list_entries`, the volume probe for its
+/// Capacity Check, and `ArchivePacker::rules`, `list_names` and `partition`),
+/// never extraction, `write` or a commit.
 ///
 /// Its fields are private: every Toolset is built by [`RunToolset::new`],
 /// so its single reader serves Archive discovery, extraction and Archive
@@ -186,6 +194,21 @@ impl RunToolset {
         )
     }
 
+    /// The warning-level capacity shortage Run Diagnostic a Dry Run records
+    /// at `phase` for `shortfall`, a shortage its Apply run would fail on,
+    /// naming the Mod Root's volume through the run's frozen volume
+    /// identities (see [`CapacityCheck::shortage_warning`]).
+    ///
+    /// Only reads the volume probe, and contains its panics, so it never
+    /// fails or escapes the run's work.
+    pub(crate) fn capacity_shortage_warning(
+        &self,
+        phase: RunPhase,
+        shortfall: &Shortfall,
+    ) -> RunDiagnostic {
+        self.capacity_check().shortage_warning(phase, shortfall)
+    }
+
     /// Extracts one planned Archive with [`archives::extract_archive`] over
     /// the seams and the run's Capacity Check, cleaning up its source with
     /// `cleanup`, the Run Request's Archive extraction choice, and logs a
@@ -244,6 +267,36 @@ impl RunToolset {
             preparation,
             phase,
             artifacts,
+            cancelled,
+        )
+    }
+
+    /// Plans a Dry Run's Archive creation with
+    /// [`finalization::plan_archive_creation`] over the seams' packer with
+    /// `choices`, the Run Request's Archive Finalization choices: the
+    /// planning-only step a Dry Run takes in place of
+    /// [`Self::finalize_archives`].
+    ///
+    /// It reaches only the packer's `rules`, `list_names` and `partition`,
+    /// never `write` or a commit, and needs no phase handle: the caller
+    /// records the Planned phase and the plan. Planning panics are contained
+    /// and returned as a failed plan.
+    ///
+    /// The plan carries the shortage, if any, that the Apply run's Capacity
+    /// Check would fail its Archive creation on, found through the run's
+    /// Capacity Check and so over the run's frozen volume identities. The
+    /// caller reports it with [`Self::capacity_shortage_warning`].
+    pub(crate) fn plan_archive_creation(
+        &self,
+        preparation: &RunPreparation,
+        choices: &ArchiveFinalizationChoices,
+        cancelled: &dyn Fn() -> bool,
+    ) -> CreationPlanning {
+        finalization::plan_archive_creation(
+            &self.seams,
+            &self.capacity_check(),
+            choices,
+            preparation,
             cancelled,
         )
     }

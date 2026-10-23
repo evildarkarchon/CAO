@@ -50,8 +50,9 @@ use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ArchiveExtractionFailure, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
     ArchivePrecedence, CancellationToken, ModSelection, MutationKind, MutationSummary,
-    OptimizationRunResult, RunDiagnosticCode, RunFailureCode, RunObservationSink, RunOutcome,
-    RunPhase, RunRequest,
+    OptimizationRunResult, RunDiagnosticCode, RunDiagnosticSeverity, RunFailureCode,
+    RunObservationSink, RunOutcome, RunPhase, RunPhaseStatus, RunRequest, SourceCleanup,
+    WorkChoices,
 };
 use cao_core::test_support::{
     CountingCleanup, FakeArchivePacker, FakeArchiveReader, FakeEntry, FakeVolumeProbe, Observed,
@@ -61,8 +62,13 @@ use common::{canonical, junction, request, scratch_dir, snapshot_tree, write_tre
 
 /// The Apply request over native Textures and Archive extraction.
 fn archives_and_textures(root: &Path) -> RunRequest {
+    archives_and_textures_in(ExecutionMode::Apply, root)
+}
+
+/// The request over native Textures and Archive extraction in `mode`.
+fn archives_and_textures_in(mode: ExecutionMode, root: &Path) -> RunRequest {
     request(
-        ExecutionMode::Apply,
+        mode,
         root,
         &[
             RequestedWork::NativeTextureOptimization,
@@ -209,9 +215,15 @@ fn an_enabled_archive_is_extracted_before_the_definitive_tree_is_built() {
 /// The Apply request over native Textures and Archive extraction for every
 /// child Mod Root of `base`, which Preparing orders by name.
 fn several_archives_and_textures(base: &Path) -> RunRequest {
+    several_archives_and_textures_in(ExecutionMode::Apply, base)
+}
+
+/// The request over native Textures and Archive extraction in `mode` for
+/// every child Mod Root of `base`, which Preparing orders by name.
+fn several_archives_and_textures_in(mode: ExecutionMode, base: &Path) -> RunRequest {
     RunRequest::new(
         "SkyrimSE",
-        ExecutionMode::Apply,
+        mode,
         ModSelection::ChildModRoots(base.to_path_buf()),
         vec![
             RequestedWork::NativeTextureOptimization,
@@ -928,22 +940,264 @@ fn archives_are_ordered_by_folded_name_within_each_mod_root() {
     assert!(result.failures().is_empty(), "{:?}", result.failures());
 }
 
-/// Origin: ArchiveFirstAssetDiscoveryTests::dryRunIgnoresPrecedenceAndManifests.
+/// Writes the planning fixture into `root`: two Archives that collide on one
+/// Texture, under an explicit Archive Precedence placing `b.bsa` above
+/// `a.bsa`, and a Loose Asset that shadows one of `b.bsa`'s entries.
+///
+/// `b.bsa` wins `shared.dds` and `b_only.dds` but loses `loose.dds` to the
+/// Loose Asset, so two of its three entries win. `a.bsa` loses `shared.dds`
+/// to `b.bsa`, so one of its two entries wins. Its one large entry declares
+/// a decompressed size far above its stored payload.
+fn write_planning_fixture(root: &Path) {
+    write_archive(
+        &root.join("a.bsa"),
+        &[
+            entry("textures/shared.dds", b"a"),
+            FakeEntry {
+                name: "textures/a_only.dds",
+                payload: b"a",
+                declared_size: 4_000_000,
+            },
+        ],
+    );
+    write_archive(
+        &root.join("b.bsa"),
+        &[
+            entry("textures/shared.dds", b"b"),
+            entry("textures/b_only.dds", b"b"),
+            entry("textures/loose.dds", b"b"),
+        ],
+    );
+    write_tree(root, &["textures/loose.dds"]);
+}
+
+/// The Archive extraction request [`write_planning_fixture`] is run with:
+/// `b.bsa` above `a.bsa`, and Delete backups as the Source Cleanup.
+fn planning_request(mode: ExecutionMode, root: &Path) -> RunRequest {
+    archives_and_textures_in(mode, root)
+        .with_archive_precedence(ArchivePrecedence::ExplicitOrder(vec![
+            "b.bsa".into(),
+            "a.bsa".into(),
+        ]))
+        .with_work_choices(WorkChoices {
+            archive_extraction: SourceCleanup::Remove,
+            ..WorkChoices::default()
+        })
+}
+
+/// A Dry Run plans one extraction for each Archive an Apply run over the
+/// same tree extracts, in the same Archive Precedence order, and records
+/// what each would do; the Mod Root stays byte-for-byte unchanged and no
+/// staging is created. The Apply run over an identical copy of the tree is
+/// the source of truth for which Archives are extracted and in what order.
 #[test]
-fn a_dry_run_ignores_precedence_and_never_reads_a_manifest() {
-    let root = canonical(&scratch_dir("archive-dry-run"));
-    std::fs::write(root.join("broken.bsa"), "invalid manifest").unwrap();
+fn a_dry_run_plans_each_extraction_an_apply_run_makes_and_mutates_nothing() {
+    let root = canonical(&scratch_dir("archive-dry-run-plans"));
+    write_planning_fixture(&root);
+    let before = snapshot_tree(&root);
     let toolset = Arc::new(ScriptedToolset::default());
-    let precedence =
-        ArchivePrecedence::ExplicitOrder(vec!["../missing.bsa".into(), "../missing.bsa".into()]);
+
+    let result = execute(&planning_request(ExecutionMode::DryRun, &root), &toolset);
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.failures()
+    );
+    assert_eq!(snapshot_tree(&root), before, "a Dry Run mutates nothing");
+    assert!(!root.join(".cao-staging").exists());
+    assert!(result.archive_extraction_attempts().is_empty());
+    assert!(result.mutation_summaries().is_empty());
+    let extraction = result.phase(RunPhase::ExtractingArchives).unwrap();
+    assert_eq!(extraction.status(), RunPhaseStatus::Planned);
+    let mut listed = toolset.reader.listed.lock().unwrap().clone();
+    listed.sort();
+    assert_eq!(listed, [root.join("a.bsa"), root.join("b.bsa")]);
+
+    let planned = result.planned_archive_work().extractions();
+    let [b, a] = planned else {
+        panic!("two planned extractions expected: {planned:?}");
+    };
+    assert_eq!(b.archive_path, root.join("b.bsa"));
+    assert_eq!(b.mod_root, root);
+    assert_eq!((b.entry_count, b.winner_count), (3, 2));
+    assert!(b.deletes_source_archive);
+    assert_eq!(a.archive_path, root.join("a.bsa"));
+    assert_eq!(a.mod_root, root);
+    assert_eq!((a.entry_count, a.winner_count), (2, 1));
+    assert!(a.deletes_source_archive);
+    // The estimate is conservative and follows the manifest's declared
+    // sizes, not the stored payloads.
+    assert!(a.estimated_capacity_bytes > 4_000_000);
+    assert!(b.estimated_capacity_bytes < a.estimated_capacity_bytes);
+
+    let applied = canonical(&scratch_dir("archive-dry-run-plans-apply"));
+    write_planning_fixture(&applied);
+    let apply = execute(
+        &planning_request(ExecutionMode::Apply, &applied),
+        &Arc::new(ScriptedToolset::default()),
+    );
+    assert!(apply.failures().is_empty(), "{:?}", apply.failures());
+    let names = |paths: Vec<PathBuf>| -> Vec<_> {
+        paths
+            .iter()
+            .map(|path| path.file_name().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(
+        names(
+            planned
+                .iter()
+                .map(|plan| plan.archive_path.clone())
+                .collect()
+        ),
+        names(extracted_archives(&apply))
+    );
+}
+
+/// Under the default Source Cleanup, Backup, a planned extraction
+/// says the Archive would be kept.
+#[test]
+fn a_dry_run_backing_up_its_archives_plans_to_keep_them() {
+    let root = canonical(&scratch_dir("archive-dry-run-backup"));
+    fixture_archive(&root.join("content.bsa"));
+    let toolset = Arc::new(ScriptedToolset::default());
 
     let result = execute(
-        &request(
-            ExecutionMode::DryRun,
-            &root,
-            &[RequestedWork::ArchiveExtraction],
-        )
-        .with_archive_precedence(precedence),
+        &archives_and_textures_in(ExecutionMode::DryRun, &root),
+        &toolset,
+    );
+
+    let [plan] = result.planned_archive_work().extractions() else {
+        panic!("one planned extraction expected");
+    };
+    assert!(!plan.deletes_source_archive);
+    assert!(root.join("content.bsa").exists());
+}
+
+/// A Dry Run records the Archive Collisions an Apply run records, so the
+/// preview reports which Archive wins each shared game path.
+#[test]
+fn a_dry_run_records_archive_collisions_as_an_apply_run_does() {
+    let root = canonical(&scratch_dir("archive-dry-run-collisions"));
+    write_planning_fixture(&root);
+
+    let dry_run = execute(
+        &planning_request(ExecutionMode::DryRun, &root),
+        &Arc::new(ScriptedToolset::default()),
+    );
+    let apply = execute(
+        &planning_request(ExecutionMode::Apply, &root),
+        &Arc::new(ScriptedToolset::default()),
+    );
+
+    assert!(apply.failures().is_empty(), "{:?}", apply.failures());
+    assert!(!dry_run.archive_collisions().is_empty());
+    assert_eq!(dry_run.archive_collisions(), apply.archive_collisions());
+}
+
+/// Origin: ArchiveFirstAssetDiscoveryTests::dryRunIgnoresPrecedenceAndManifests,
+/// inverted. A Dry Run fails Archive discovery's checks exactly as an Apply
+/// run over the same tree does: a bad Archive Precedence, an unreadable
+/// manifest and an Unsafe Game Path are each the same Run Failure, and the
+/// tree stays unchanged under both modes.
+#[test]
+fn a_dry_run_fails_archive_discovery_checks_as_an_apply_run_does() {
+    // (name, fixture, Archive Precedence, expected code, failed path)
+    type Case = (
+        &'static str,
+        fn(&Path),
+        Option<ArchivePrecedence>,
+        RunFailureCode,
+        &'static str,
+    );
+    let outside = || ArchivePrecedence::ExplicitOrder(vec!["../content.bsa".into()]);
+    let cases: [Case; 3] = [
+        (
+            "precedence",
+            |root| fixture_archive(&root.join("content.bsa")),
+            Some(outside()),
+            RunFailureCode::ArchiveOrderOutsideRoot,
+            "../content.bsa",
+        ),
+        (
+            "unreadable",
+            |root| std::fs::write(root.join("broken.bsa"), "invalid manifest").unwrap(),
+            None,
+            RunFailureCode::ArchiveUnreadable,
+            "broken.bsa",
+        ),
+        (
+            "unsafe",
+            |root| write_archive(&root.join("source.bsa"), &[entry("..\\escaped.dds", b"B")]),
+            None,
+            RunFailureCode::ArchiveEntryInvalid,
+            "source.bsa",
+        ),
+    ];
+    for (name, fixture, precedence, code, failed) in cases {
+        let root = canonical(&scratch_dir(&format!("archive-dry-run-fails-{name}")));
+        fixture(&root);
+        let request = |mode| {
+            let request = archives_and_textures_in(mode, &root);
+            match &precedence {
+                Some(precedence) => request.with_archive_precedence(precedence.clone()),
+                None => request,
+            }
+        };
+        let before = snapshot_tree(&root);
+        let dry_toolset = Arc::new(ScriptedToolset::default());
+
+        let dry_run = execute(&request(ExecutionMode::DryRun), &dry_toolset);
+
+        // The precedence failure names the requested path as written; the
+        // others name the Archive in the Mod Root.
+        let expected = if code == RunFailureCode::ArchiveOrderOutsideRoot {
+            PathBuf::from(failed)
+        } else {
+            root.join(failed)
+        };
+        assert_blocked_before_extraction(&dry_run, &dry_toolset, code, &expected);
+        assert!(dry_run.planned_archive_work().is_empty(), "{name}");
+        assert!(dry_run.phase(RunPhase::ExtractingArchives).is_none());
+        assert_eq!(snapshot_tree(&root), before, "{name}");
+        assert!(!root.join(".cao-staging").exists(), "{name}");
+
+        let apply = execute(
+            &request(ExecutionMode::Apply),
+            &Arc::new(ScriptedToolset::default()),
+        );
+        assert_eq!(dry_run.failures(), apply.failures(), "{name}");
+        assert_eq!(snapshot_tree(&root), before, "{name}");
+    }
+}
+
+/// Two Mod Roots on one volume, each with an Archive of 1,000,000 declared
+/// bytes, and 1,500,000 bytes free: either root alone fits, both together
+/// do not, so the Capacity Check finds a shortage at the first root.
+fn shared_volume_shortage(base: &Path) -> Arc<ScriptedToolset> {
+    sized_archive(&base.join("first/source.bsa"), 1_000_000);
+    sized_archive(&base.join("last/source.bsa"), 1_000_000);
+    Arc::new(with_volume_probe(
+        FakeVolumeProbe::default()
+            .with_capacity(|_| Some(1_500_000))
+            .with_volumes(|_| Some("shared-volume".to_owned())),
+    ))
+}
+
+/// A Dry Run whose Apply run would run out of space extracting Archives
+/// warns with a capacity shortage Run Diagnostic naming the Mod Root's
+/// volume, the demand and the available space. It still records every
+/// planned extraction, mutates nothing, and succeeds, since the Dry Run
+/// itself needs no space.
+#[test]
+fn a_dry_run_with_a_capacity_shortage_warns_and_still_plans_every_extraction() {
+    let base = canonical(&scratch_dir("archive-dry-run-capacity-shortage"));
+    let toolset = shared_volume_shortage(&base);
+    let before = snapshot_tree(&base);
+    let result = execute(
+        &several_archives_and_textures_in(ExecutionMode::DryRun, &base),
         &toolset,
     );
 
@@ -953,24 +1207,78 @@ fn a_dry_run_ignores_precedence_and_never_reads_a_manifest() {
         "{:?}",
         result.failures()
     );
-    assert!(
-        result.archive_collisions().is_empty(),
-        "Dry Run retains no collisions"
-    );
-    assert!(result.archive_extraction_attempts().is_empty());
-    assert!(
-        no_manifest_listed(&toolset),
-        "Dry Run never reads a manifest"
-    );
+    assert!(result.failures().is_empty(), "{:?}", result.failures());
+    assert_eq!(snapshot_tree(&base), before, "a Dry Run mutates nothing");
     assert_eq!(
-        result.skipped_asset_count(cao_core::routing::SkipReason::DisabledPhase),
-        1
+        result.phase(RunPhase::ExtractingArchives).unwrap().status(),
+        RunPhaseStatus::Planned
     );
+    let planned = result.planned_archive_work().extractions();
+    let planned_archives: Vec<_> = planned.iter().map(|plan| &plan.archive_path).collect();
     assert_eq!(
-        std::fs::read(root.join("broken.bsa")).unwrap(),
-        b"invalid manifest"
+        planned_archives,
+        [
+            &base.join("first/source.bsa"),
+            &base.join("last/source.bsa")
+        ]
     );
-    assert!(!root.join(".cao-staging").exists());
+
+    let warnings: Vec<_> = result
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.code == RunDiagnosticCode::CapacityShortage)
+        .collect();
+    let [warning] = warnings.as_slice() else {
+        panic!("one capacity shortage expected: {:?}", result.diagnostics());
+    };
+    assert_eq!(warning.code.severity(), RunDiagnosticSeverity::Warning);
+    assert_eq!(warning.phase, RunPhase::DiscoveringArchives);
+    assert_eq!(warning.path, base.join("first"));
+    // Both roots share the volume, so the demand is both estimates together.
+    let demand: u64 = planned
+        .iter()
+        .map(|plan| plan.estimated_capacity_bytes)
+        .sum();
+    for named in ["shared-volume", &format!("{demand} bytes"), "1500000 bytes"] {
+        assert!(
+            warning.detail.contains(named),
+            "{named:?} missing from {:?}",
+            warning.detail
+        );
+    }
+}
+
+/// An Apply run with the shortage a Dry Run only warns of still fails before
+/// extraction with the same Run Failure, and emits no capacity warning.
+#[test]
+fn an_apply_run_with_a_capacity_shortage_still_fails_before_extraction() {
+    let base = canonical(&scratch_dir("archive-apply-capacity-shortage"));
+    let toolset = shared_volume_shortage(&base);
+    let before = snapshot_tree(&base);
+
+    let result = execute(&several_archives_and_textures(&base), &toolset);
+
+    assert_blocked_before_extraction(
+        &result,
+        &toolset,
+        RunFailureCode::ArchiveInsufficientCapacity,
+        &base.join("first"),
+    );
+    assert!(
+        result.failures()[0]
+            .detail
+            .starts_with("Insufficient Archive staging capacity: estimated "),
+        "{}",
+        result.failures()[0].detail
+    );
+    assert!(result.planned_archive_work().is_empty());
+    assert!(
+        result
+            .diagnostics()
+            .iter()
+            .all(|diagnostic| diagnostic.code != RunDiagnosticCode::CapacityShortage)
+    );
+    assert_eq!(snapshot_tree(&base), before);
 }
 
 /// Origin: ArchiveFirstAssetDiscoveryTests::collisionObserverCanCancelBeforeExtraction.
@@ -1645,11 +1953,11 @@ fn staging_and_links_into_it_never_enter_discovery() {
         result.failures()
     );
     assert_eq!(toolset.attempted(), [root.join("loose.dds")]);
-    assert_eq!(
-        result.skipped_asset_count(cao_core::routing::SkipReason::DisabledPhase),
-        0,
+    assert!(
+        no_manifest_listed(&toolset),
         "no staged Archive is recognized"
     );
+    assert!(result.planned_archive_work().extractions().is_empty());
     assert_eq!(
         result.diagnostics().len(),
         if linked { 2 } else { 0 },
@@ -1732,6 +2040,12 @@ fn a_contained_file_link_is_work_and_a_dangling_one_is_diagnosed() {
         panic!("one diagnostic expected: {:?}", result.diagnostics());
     };
     assert_eq!(diagnostic.code, RunDiagnosticCode::LinkedEntryExcluded);
+    // An excluded entry is reported, not warned of: the run lost nothing it
+    // was asked to do.
+    assert_eq!(
+        diagnostic.code.severity(),
+        RunDiagnosticSeverity::Informational
+    );
     assert_eq!(diagnostic.path, dangling);
 }
 

@@ -26,7 +26,7 @@ use cao_winfs::{
 
 use crate::execution::MutationState;
 use crate::run::artifacts::reserved_device_name;
-use crate::run::capacity::CapacityCheck;
+use crate::run::capacity::{CapacityCheck, Shortfall};
 use crate::run::source_pin::SourceFilePin;
 use crate::run::staging::{has_staging_component, pin_directory};
 use crate::run::{
@@ -665,13 +665,21 @@ pub(crate) struct RootArchives {
 
 /// What the preflight decided.
 pub(crate) enum Preflight {
-    /// Every check passed: the frozen plans in extraction order, and the
-    /// collisions in Mod Root and game-path order.
+    /// Every check but the Capacity Check passed: the frozen plans in
+    /// extraction order, and the collisions in Mod Root and game-path order.
+    ///
+    /// `shortfall` is the Capacity Check's first shortage, if it found one.
+    /// The plans are kept beside it because what a shortage means depends on
+    /// the run: an Apply run turns it into a Run Failure through
+    /// [`capacity_failure`] and extracts nothing, while a Dry Run, which
+    /// needs no space, only warns of it and still reports every plan.
     Planned {
         plans: Vec<ArchiveExtractionPlan>,
         collisions: Vec<ArchiveCollision>,
+        shortfall: Option<Shortfall>,
     },
-    /// A check failed; no Archive may be extracted.
+    /// A check other than the Capacity Check failed; no Archive may be
+    /// extracted, in either mode.
     Failed(RunFailure),
     /// Cancellation was observed between Archives or entries.
     Cancelled,
@@ -682,6 +690,18 @@ fn discovery_failure(code: RunFailureCode, path: &Path, detail: impl Into<String
     RunFailure::new(code, RunPhase::DiscoveringArchives, detail).with_path(path)
 }
 
+/// The Run Failure an Apply run records when the preflight's Capacity Check
+/// finds `shortfall`: Archive Insufficient Capacity at Discovering Archives,
+/// attributed to the Mod Root that ran short, with the shortfall's own
+/// explanation as its detail.
+pub(crate) fn capacity_failure(shortfall: &Shortfall) -> RunFailure {
+    discovery_failure(
+        RunFailureCode::ArchiveInsufficientCapacity,
+        &shortfall.root,
+        shortfall.to_string(),
+    )
+}
+
 /// Plans the extraction of every selected Archive, or fails the whole batch.
 ///
 /// Explicit Archive Precedence is validated per Mod Root first. Then every
@@ -690,6 +710,10 @@ fn discovery_failure(code: RunFailureCode, path: &Path, detail: impl Into<String
 /// Manifests are read through `reader` and capacity checked with `capacity`,
 /// the run's Capacity Check; extraction is the caller's. A probe that panics
 /// gives an unknown answer, so it never fails or escapes the preflight.
+///
+/// A Capacity Check shortage does not fail the batch here: it is returned in
+/// [`Preflight::Planned`] beside the plans, for the caller to fail an Apply
+/// run on or to warn of in a Dry Run.
 pub(crate) fn preflight(
     roots: Vec<RootArchives>,
     precedence: &ArchivePrecedence,
@@ -841,6 +865,7 @@ pub(crate) fn preflight(
         return Preflight::Planned {
             plans: Vec::new(),
             collisions,
+            shortfall: None,
         };
     }
     // A volume must fit all of its roots before extraction begins. No credit
@@ -850,18 +875,15 @@ pub(crate) fn preflight(
         demand.add(&plan.mod_root, plan.estimated_capacity_bytes);
     }
     // A probe that panics is unknown capacity, which never fails the check;
-    // it must not escape the run as Run Work Escaped.
-    if let Some(shortfall) = capacity.first_shortfall(&demand) {
-        return Preflight::Failed(discovery_failure(
-            RunFailureCode::ArchiveInsufficientCapacity,
-            &shortfall.root,
-            shortfall.to_string(),
-        ));
-    }
+    // it must not escape the run as Run Work Escaped. A shortage is reported
+    // beside the plans rather than in place of them; the caller decides
+    // whether it fails the run.
+    let shortfall = capacity.first_shortfall(&demand);
 
     Preflight::Planned {
         plans: plans.into_iter().map(|(_, plan, _)| plan).collect(),
         collisions,
+        shortfall,
     }
 }
 

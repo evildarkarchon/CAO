@@ -23,14 +23,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
-    ArchiveFinalizationFailure, ArchivePrecedence, CancellationToken, ModSelection,
+    ArchiveFinalizationFailure, ArchivePrecedence, ByteSize, CancellationToken, ModSelection,
     OptimizationRunResult, PhaseSkipReason, RunDiagnostic, RunDiagnosticCode, RunEvent,
     RunEventPayload, RunFailure, RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord, RunProgress,
     RunRequest,
 };
 use cao_core::test_support::{
-    CountingCleanup, FakeArchivePacker, FakeArchiveReader, Observed, RecordingSink,
-    ScriptedToolset, ToolsetConfiguration, entry, execute_run, write_archive,
+    CountingCleanup, FakeArchivePacker, FakeArchiveReader, FakeVolumeProbe, Observed,
+    RecordingSink, ScriptedToolset, ToolsetConfiguration, entry, execute_run, write_archive,
 };
 use cao_gui::RunView;
 
@@ -114,7 +114,7 @@ enum Scenario {
 ///   Texture each, packs the first, then the packer panics writing the
 ///   second: an unsafe Unexpected Exception that stops the third.
 ///
-/// Each is an Apply run because a completed Dry Run ends at a skipped Archive
+/// Each is an Apply run because a completed Dry Run ends at a planned Archive
 /// Finalization, which has no counts for the terminal view to show.
 fn classified_run(scenario: Scenario) -> Arc<OptimizationRunResult> {
     let root = scratch_dir(&format!("{scenario:?}"));
@@ -233,13 +233,13 @@ fn progress_shows_the_phase_and_its_attempt_counts() {
         2,
         RunEventPayload::Phase(RunPhaseRecord::skipped(
             RunPhase::ArchiveFinalization,
-            PhaseSkipReason::DryRun
+            PhaseSkipReason::NoRequestedWork
         )),
     )));
     assert!(view.state().progress.is_none());
     assert_eq!(
         view.state().label,
-        "Archive Finalization - Skipped (Dry Run)"
+        "Archive Finalization - Skipped (No Requested Work)"
     );
     assert!(view.consume(&event(
         "run",
@@ -259,6 +259,37 @@ fn progress_shows_the_phase_and_its_attempt_counts() {
     assert_eq!(view.text(), "Safety Cleanup");
     assert!(view.state().active);
     assert!(view.state().outcome.is_none());
+}
+
+/// A Dry Run's Planned Archive phase reads as planned, not skipped, and
+/// shows no attempt counter: a Planned phase attempted nothing.
+#[test]
+fn a_planned_archive_phase_shows_as_planned_without_attempt_counts() {
+    let mut view = RunView::default();
+    view.begin("run");
+
+    for (sequence, (phase, label)) in [
+        (
+            RunPhase::ExtractingArchives,
+            "Extracting Archives - Planned (Dry Run)",
+        ),
+        (
+            RunPhase::ArchiveFinalization,
+            "Archive Finalization - Planned (Dry Run)",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(view.consume(&event(
+            "run",
+            sequence as u64 + 1,
+            RunEventPayload::Phase(RunPhaseRecord::planned(phase)),
+        )));
+        assert_eq!(view.state().label, label);
+        assert!(view.state().progress.is_none(), "{phase:?}");
+        assert_eq!(view.text(), label);
+    }
 }
 
 /// Origin: GuiRunTests::preservesUnicodePaths. A path the ANSI code page
@@ -580,6 +611,297 @@ fn the_terminal_result_lists_its_evidence() {
             .last()
             .unwrap()
             .contains("late diagnostic")
+    );
+}
+
+/// Spec (#643): a Dry Run with Archive creation shows Archive Finalization
+/// as planned, and its terminal rows list each planned output Archive and
+/// each Dummy Plugin it would need, with the note that the plan is an
+/// estimate from the Mod Roots as they are now. The plan is a real Dry
+/// Run's: two Textures split into two Archives, each with its own plugin.
+#[test]
+fn a_dry_run_lists_its_planned_archive_creation() {
+    let root = scratch_dir("dry-run-plan");
+    write_textures(&root, 2);
+    let packer = FakeArchivePacker {
+        // Room for one seven-byte Texture per Archive.
+        archive_limit: 10,
+        ..FakeArchivePacker::default()
+    };
+    let toolset = Arc::new(real_archive_work(FakeArchiveReader::default(), packer));
+    let request = RunRequest::new(
+        "SkyrimSE",
+        ExecutionMode::DryRun,
+        ModSelection::SingleModRoot(root),
+        vec![
+            RequestedWork::NativeTextureOptimization,
+            RequestedWork::ArchiveCreation,
+        ],
+    );
+    let result = execute(
+        &request,
+        &toolset,
+        &RecordingSink::default(),
+        Vec::new(),
+        &CancellationToken::new(),
+    );
+    assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    let root = result.mod_roots()[0].clone();
+    let planned_phase = *result.phase(RunPhase::ArchiveFinalization).unwrap();
+
+    let mut view = RunView::default();
+    view.begin("run");
+    assert!(view.consume(&event("run", 1, RunEventPayload::Phase(planned_phase))));
+    assert_eq!(
+        view.state().label,
+        "Archive Finalization - Planned (Dry Run)"
+    );
+    assert!(view.consume(&event("run", 2, executed(RunPhase::SafetyCleanup, None))));
+    assert!(view.consume(&event("run", 3, RunEventPayload::Terminal(result))));
+
+    let details = view.state().details.join("\n");
+    let shown = |name: &str| root.join(name).display().to_string();
+    let output = |archive: &str| {
+        format!(
+            "Planned Archive: {} | {} | Textures | files=1 | size=7 B | delete-sources=yes",
+            shown(archive),
+            root.display()
+        )
+    };
+    for expected in [
+        output("dry-run-plan - Textures.bsa"),
+        format!("Planned Dummy Plugin: {}", shown("dry-run-plan.esp")),
+        output("dry-run-plan0 - Textures.bsa"),
+        format!("Planned Dummy Plugin: {}", shown("dry-run-plan0.esp")),
+        "Planned Archive Creation: an estimate from the Mod Roots as they are now; an Apply \
+         run plans after Archive extraction and Loose Asset optimization, so its Archives \
+         can differ"
+            .to_owned(),
+    ] {
+        assert!(
+            view.state().details.contains(&expected),
+            "{expected} missing from\n{details}"
+        );
+    }
+    assert!(
+        !root.join("dry-run-plan.esp").exists(),
+        "nothing is created"
+    );
+}
+
+/// A real Dry Run over one Archive: the view shows its streamed Extracting
+/// Archives record as planned, and its terminal result lists the planned
+/// extraction beside the other Archive discovery rows. A Loose Asset shadows
+/// one of the Archive's two entries, so it would add one file.
+#[test]
+fn a_dry_run_shows_its_archive_extraction_as_planned_and_lists_the_plan() {
+    let root = scratch_dir("dry-run-plans-extraction");
+    write_archive(
+        &root.join("content.bsa"),
+        &[
+            entry("textures/a.dds", b"archived"),
+            entry("textures/b.dds", b"archived"),
+        ],
+    );
+    std::fs::create_dir_all(root.join("textures")).unwrap();
+    std::fs::write(root.join("textures/a.dds"), b"loose").unwrap();
+    let sink = RecordingSink::default();
+    let request = RunRequest::new(
+        "SkyrimSE",
+        ExecutionMode::DryRun,
+        ModSelection::SingleModRoot(root.clone()),
+        vec![RequestedWork::ArchiveExtraction],
+    );
+
+    let result = execute(
+        &request,
+        &Arc::new(ScriptedToolset::default()),
+        &sink,
+        Vec::new(),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    let root = result.mod_roots()[0].clone();
+    let planned = sink
+        .observed()
+        .into_iter()
+        .find_map(|observed| match observed {
+            Observed::Phase(record) if record.phase() == RunPhase::ExtractingArchives => {
+                Some(record)
+            }
+            _ => None,
+        })
+        .expect("Extracting Archives is recorded");
+    let mut view = RunView::default();
+    view.begin("run");
+    assert!(view.consume(&event("run", 1, RunEventPayload::Phase(planned))));
+    assert_eq!(
+        view.state().label,
+        "Extracting Archives - Planned (Dry Run)"
+    );
+    assert!(view.state().progress.is_none());
+
+    // The estimate's formula is core's own, so the row is checked against
+    // the estimate the run recorded, shown as the Planned Archive sizes are.
+    let [extraction] = result.planned_archive_work().extractions() else {
+        panic!("one planned extraction expected");
+    };
+    let capacity = ByteSize(extraction.estimated_capacity_bytes);
+    assert!(view.consume(&event("run", 2, executed(RunPhase::SafetyCleanup, None))));
+    assert!(view.consume(&event("run", 3, RunEventPayload::Terminal(result))));
+    let expected = format!(
+        "Planned Extraction: {} | {} | entries=2 | winners=1 | capacity={capacity} | \
+         delete-backups=no",
+        root.join("content.bsa").display(),
+        root.display()
+    );
+    let details = view.state().details.join("\n");
+    assert!(
+        view.state().details.contains(&expected),
+        "{expected} missing from\n{details}"
+    );
+}
+
+/// A real Dry Run whose Apply run would run out of space extracting its
+/// Archive: the view shows the streamed capacity shortage as a warning row,
+/// not as a plain diagnostic or a failure, and the run still ends as done
+/// with its planned extraction listed.
+#[test]
+fn a_dry_run_shows_a_capacity_shortage_as_a_warning() {
+    let root = scratch_dir("dry-run-capacity-warning");
+    write_archive(
+        &root.join("content.bsa"),
+        &[entry("textures/a.dds", b"archived")],
+    );
+    let sink = RecordingSink::default();
+    let request = RunRequest::new(
+        "SkyrimSE",
+        ExecutionMode::DryRun,
+        ModSelection::SingleModRoot(root.clone()),
+        vec![RequestedWork::ArchiveExtraction],
+    );
+    let toolset = ScriptedToolset {
+        volume_probe: Arc::new(FakeVolumeProbe::default().with_capacity(|_| Some(0))),
+        ..ScriptedToolset::default()
+    };
+
+    let result = execute(
+        &request,
+        &Arc::new(toolset),
+        &sink,
+        Vec::new(),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    let warning = sink
+        .observed()
+        .into_iter()
+        .find_map(|observed| match observed {
+            Observed::Diagnostic(diagnostic)
+                if diagnostic.code == RunDiagnosticCode::CapacityShortage =>
+            {
+                Some(diagnostic)
+            }
+            _ => None,
+        })
+        .expect("the shortage is streamed as a diagnostic");
+    let mut view = RunView::default();
+    view.begin("run");
+    assert!(view.consume(&event(
+        "run",
+        1,
+        RunEventPayload::Diagnostic(warning.clone())
+    )));
+    assert_eq!(
+        view.state().details,
+        [format!(
+            "Warning: {} | {}",
+            warning.detail,
+            result.mod_roots()[0].display()
+        )]
+    );
+
+    assert!(view.consume(&event("run", 2, RunEventPayload::Terminal(result))));
+    assert_eq!(view.state().label, "Done");
+    assert!(
+        view.state()
+            .details
+            .iter()
+            .any(|detail| detail.starts_with("Planned Extraction: ")),
+        "{:?}",
+        view.state().details
+    );
+}
+
+/// Spec (#645): a real Dry Run whose Apply run would run out of space
+/// creating its Archive: the view shows the streamed Archive Finalization
+/// capacity shortage as a warning row, and the run still ends as done with
+/// its planned output Archive listed.
+#[test]
+fn a_dry_run_shows_a_creation_capacity_shortage_as_a_warning() {
+    let root = scratch_dir("dry-run-creation-capacity-warning");
+    write_textures(&root, 1);
+    let sink = RecordingSink::default();
+    let request = RunRequest::new(
+        "SkyrimSE",
+        ExecutionMode::DryRun,
+        ModSelection::SingleModRoot(root.clone()),
+        vec![RequestedWork::ArchiveCreation],
+    );
+    let toolset = ScriptedToolset {
+        volume_probe: Arc::new(FakeVolumeProbe::default().with_capacity(|_| Some(0))),
+        ..ScriptedToolset::default()
+    };
+
+    let result = execute(
+        &request,
+        &Arc::new(toolset),
+        &sink,
+        Vec::new(),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    let warning = sink
+        .observed()
+        .into_iter()
+        .find_map(|observed| match observed {
+            Observed::Diagnostic(diagnostic)
+                if diagnostic.code == RunDiagnosticCode::CapacityShortage =>
+            {
+                Some(diagnostic)
+            }
+            _ => None,
+        })
+        .expect("the shortage is streamed as a diagnostic");
+    assert_eq!(warning.phase, RunPhase::ArchiveFinalization);
+    let mut view = RunView::default();
+    view.begin("run");
+    assert!(view.consume(&event(
+        "run",
+        1,
+        RunEventPayload::Diagnostic(warning.clone())
+    )));
+    assert_eq!(
+        view.state().details,
+        [format!(
+            "Warning: {} | {}",
+            warning.detail,
+            result.mod_roots()[0].display()
+        )]
+    );
+
+    assert!(view.consume(&event("run", 2, RunEventPayload::Terminal(result))));
+    assert_eq!(view.state().label, "Done");
+    assert!(
+        view.state()
+            .details
+            .iter()
+            .any(|detail| detail.starts_with("Planned Archive: ")),
+        "{:?}",
+        view.state().details
     );
 }
 

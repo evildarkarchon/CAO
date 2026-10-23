@@ -15,7 +15,7 @@ use crate::routing::{
 };
 use crate::run::{
     ArchiveCollision, ArchiveExtractionResult, ArchiveFinalizationResult, ArchivePrecedence,
-    RoutedAssetAttempt, RunEvidence, RunPreparation, WorkChoices,
+    PlannedArchiveWork, RoutedAssetAttempt, RunEvidence, RunPreparation, WorkChoices,
 };
 
 /// The unique identity of one Optimization Run, carried by its events and terminal result.
@@ -77,11 +77,16 @@ impl RunPhase {
     ];
 }
 
-/// Whether a traversed Run Phase performed its work or was reported inapplicable.
+/// Whether a traversed Run Phase performed its work, planned it without
+/// attempting it, or was reported inapplicable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RunPhaseStatus {
     Executed,
     Skipped,
+    /// A Dry Run recorded the phase's Planned Archive Work instead of
+    /// attempting it. Only Extracting Archives and Archive Finalization can
+    /// be planned, and a planned phase never carries attempt progress.
+    Planned,
 }
 
 /// Why a traversed Run Phase was inapplicable.
@@ -91,7 +96,6 @@ pub enum RunPhaseStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PhaseSkipReason {
     NoRequestedWork,
-    DryRun,
 }
 
 /// The terminal classification of one Optimization Run.
@@ -103,7 +107,8 @@ pub enum RunOutcome {
     Failed,
 }
 
-/// Informational categories that never affect the Run Outcome.
+/// Informational or warning-level categories that never affect the Run
+/// Outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RunDiagnosticCode {
     ObserverFailed,
@@ -114,9 +119,44 @@ pub enum RunDiagnosticCode {
     /// A plugin whose HDPT records cannot be read names no Headpart Mesh; the
     /// run carries on without them (deviation 17). C++ had no such report.
     PluginUnreadable,
+    /// Warning-level: a Dry Run's Capacity Check found that the Apply run
+    /// would run short of free space for its Archive work on a Mod Root's
+    /// volume. The Apply run fails that check as a Run Failure; the Dry Run,
+    /// which needs no space, warns and carries on. The diagnostic's path is
+    /// the Mod Root, and its detail names the volume, the demand and the
+    /// available space.
+    CapacityShortage,
 }
 
-/// An informational observation that never determines the Run Outcome.
+impl RunDiagnosticCode {
+    /// How much attention a diagnostic of this code asks for. Matched
+    /// exhaustively, so a new code has to choose its own severity.
+    pub fn severity(self) -> RunDiagnosticSeverity {
+        match self {
+            Self::ObserverFailed
+            | Self::DispatcherFailed
+            | Self::IgnoredModExcluded
+            | Self::SeparatorModExcluded
+            | Self::LinkedEntryExcluded
+            | Self::PluginUnreadable => RunDiagnosticSeverity::Informational,
+            Self::CapacityShortage => RunDiagnosticSeverity::Warning,
+        }
+    }
+}
+
+/// How much attention a Run Diagnostic asks for. Neither level determines
+/// the Run Outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RunDiagnosticSeverity {
+    /// An observation about the run, such as an excluded entry.
+    Informational,
+    /// Something the user should act on before an Apply run, such as a Dry
+    /// Run's capacity shortage, which the Apply run would fail on.
+    Warning,
+}
+
+/// An informational or warning-level observation that never determines the
+/// Run Outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunDiagnostic {
     pub code: RunDiagnosticCode,
@@ -165,6 +205,11 @@ pub enum RunFailureCode {
     ArchiveUnreadable,
     ArchiveEntryInvalid,
     ArchiveInsufficientCapacity,
+    /// A Dry Run could not plan Archive Finalization's outputs: an input
+    /// could not be read or planned, or planning panicked. An Apply run hits
+    /// the same failure as Archive Finalization's phase-level Unexpected
+    /// Exception, which a Planned phase has no result to hold.
+    ArchiveCreationPlanningFailed,
     /// The run's work escaped: an error or panic left the executor's own
     /// work code, or the Run Worker panicked, outside any port that contains
     /// it. The run fails at its current phase, keeping every earlier fact.
@@ -286,6 +331,20 @@ impl RunPhaseRecord {
         }
     }
 
+    /// A phase whose Archive work a Dry Run planned instead of attempting.
+    ///
+    /// Like a skip it never carries progress: nothing was attempted, so there
+    /// is no attempt count to report. Run Evidence accepts it only for
+    /// Extracting Archives and Archive Finalization.
+    pub fn planned(phase: RunPhase) -> Self {
+        Self {
+            phase,
+            status: RunPhaseStatus::Planned,
+            skip_reason: None,
+            progress: None,
+        }
+    }
+
     pub fn phase(&self) -> RunPhase {
         self.phase
     }
@@ -294,12 +353,12 @@ impl RunPhaseRecord {
         self.status
     }
 
-    /// Why the phase was skipped, or `None` for an executed phase.
+    /// Why the phase was skipped, or `None` for an executed or planned phase.
     pub fn skip_reason(&self) -> Option<PhaseSkipReason> {
         self.skip_reason
     }
 
-    /// Determinate progress; indeterminate and skipped phases have none.
+    /// Determinate progress; indeterminate, skipped and planned phases have none.
     pub fn progress(&self) -> Option<RunProgress> {
         self.progress
     }
@@ -314,7 +373,7 @@ pub struct RunSnapshot {
     pub run_id: RunId,
     /// The latest published phase, including Safety Cleanup.
     pub phase: RunPhase,
-    /// Phase-local progress; skipped and indeterminate phases have none.
+    /// Phase-local progress; skipped, planned and indeterminate phases have none.
     pub progress: Option<RunProgress>,
     pub cancellation_requested: bool,
     /// Recorded diagnostics, including presentation failures after terminal commit.
@@ -596,6 +655,12 @@ impl OptimizationRunResult {
     /// Archive Finalization's result, or `None` when the phase recorded none.
     pub fn archive_finalization(&self) -> Option<&ArchiveFinalizationResult> {
         self.evidence.archive_finalization()
+    }
+
+    /// The Archive work a Dry Run planned instead of attempting; empty when
+    /// the run planned none.
+    pub fn planned_archive_work(&self) -> &PlannedArchiveWork {
+        self.evidence.planned_archive_work()
     }
 
     /// Recognized-Asset exclusions, including discovery's skipped Archives.

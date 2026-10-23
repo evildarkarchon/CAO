@@ -223,3 +223,70 @@ fn classification_orders_every_work_fact_against_every_terminal_circumstance() {
         }
     }
 }
+
+/// Records, then seals, the evidence of a Dry Run over one Mod Root holding
+/// one Texture, whose Archive phases are both Planned and whose one Asset
+/// attempt succeeds without mutating anything.
+///
+/// # Errors
+///
+/// A Run Evidence invariant violation, should a step stop matching what the
+/// evidence store accepts.
+fn planned_dry_run_evidence() -> Result<RunEvidence, Error> {
+    let mod_root = PathBuf::from("mod-root");
+    let profile = sse_profile();
+    let policy = profile
+        .compile_policy(RoutingPolicyRequest::for_work(
+            ExecutionMode::DryRun,
+            &[RequestedWork::NativeTextureOptimization],
+        ))
+        .expect("the SSE profile supports Native Texture Optimization");
+    let router = AssetRouter::new(policy.clone());
+    let mut evidence = MutableRunEvidence::new(None);
+
+    evidence.record_phase(RunPhaseRecord::executed(RunPhase::Preparing, None))?;
+    evidence.record_preparation(RunPreparation::new(
+        vec![mod_root.clone()],
+        profile,
+        policy,
+        ArchivePrecedence::DeterministicDiscovery,
+    ))?;
+    evidence.record_phase(RunPhaseRecord::executed(
+        RunPhase::DiscoveringArchives,
+        None,
+    ))?;
+    evidence.record_skipped_archive_counts(BTreeMap::new())?;
+    evidence.record_archive_collisions(&[])?;
+    evidence.record_phase(RunPhaseRecord::planned(RunPhase::ExtractingArchives))?;
+    evidence.record_phase(RunPhaseRecord::executed(
+        RunPhase::BuildingEffectiveAssetTree,
+        None,
+    ))?;
+    evidence.record_nested_archive_count(0)?;
+    let ledger = router.route_all([mod_root.join("textures/a.dds")]);
+    let asset = ledger
+        .routed_assets()
+        .first()
+        .cloned()
+        .expect("the Texture is routed for Native Texture Optimization");
+    evidence
+        .open_processing_assets(ledger)?
+        .record(RoutedAssetAttempt {
+            mod_root,
+            asset,
+            result: AssetExecutionResult::success(CompletedMutation::None),
+        })?;
+    evidence.record_phase(RunPhaseRecord::planned(RunPhase::ArchiveFinalization))?;
+    evidence.record_phase(RunPhaseRecord::executed(RunPhase::SafetyCleanup, None))?;
+    evidence.consume()
+}
+
+/// Planned Archive phases are neither attempts nor failures, so a Dry Run
+/// that planned its Archive work and whose Asset work succeeded is Succeeded.
+#[test]
+fn planned_archive_phases_leave_a_successful_dry_run_succeeded() {
+    let evidence = planned_dry_run_evidence()
+        .unwrap_or_else(|error| panic!("a real Dry Run's steps are accepted: {error}"));
+
+    assert_eq!(classify_terminal_outcome(&evidence), RunOutcome::Succeeded);
+}

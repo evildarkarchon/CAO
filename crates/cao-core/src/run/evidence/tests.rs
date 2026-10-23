@@ -36,9 +36,10 @@ use crate::run::{
     ArchiveDiscoveryEvidence, ArchiveExtractionFailure, ArchiveExtractionResult,
     ArchiveFinalizationAccount, ArchiveFinalizationAttempt, ArchiveFinalizationFailure,
     ArchiveFinalizationMutation, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
-    ArchivePrecedence, MutationKind, PhaseSkipReason, RoutedAssetAttempt, RunDiagnostic,
-    RunDiagnosticCode, RunEvidence, RunFailure, RunFailureCode, RunPhase, RunPhaseRecord,
-    RunPreparation, RunProgress, SelectedProfile,
+    ArchivePrecedence, MutationKind, OptimizationRunResult, OutputPlanBasis, PackedArchiveKind,
+    PhaseSkipReason, PlannedArchiveExtraction, PlannedOutputArchive, RoutedAssetAttempt,
+    RunDiagnostic, RunDiagnosticCode, RunEvidence, RunFailure, RunFailureCode, RunOutcome,
+    RunPhase, RunPhaseRecord, RunPhaseStatus, RunPreparation, RunProgress, SelectedProfile,
 };
 use crate::test_support::{Observed, RecordingSink, sse_capabilities, sse_profile};
 use crate::{AttemptOutcome, CompletedMutation, OperationFailure};
@@ -260,7 +261,7 @@ fn phase_progress_cannot_start_late_change_total_regress_or_overflow() {
         ("progress becoming indeterminate", executed(phase)),
         (
             "a changed status",
-            RunPhaseRecord::skipped(phase, PhaseSkipReason::DryRun),
+            RunPhaseRecord::skipped(phase, PhaseSkipReason::NoRequestedWork),
         ),
     ] {
         assert!(is_invariant(evidence.record_phase(record)), "{case}");
@@ -783,8 +784,10 @@ fn archive_discovery_facts_are_rejected_outside_archive_discovery() {
         let mut evidence = in_phase(phase);
         assert_eq!(
             invariant(
-                evidence
-                    .record_skipped_archive_counts(skipped_archives(SkipReason::DisabledPhase, 1))
+                evidence.record_skipped_archive_counts(skipped_archives(
+                    SkipReason::DisabledAssetKind,
+                    1
+                ))
             ),
             Some(SKIPPED),
             "skipped Archive counts during {phase:?}"
@@ -801,7 +804,7 @@ fn archive_discovery_facts_are_rejected_outside_archive_discovery() {
     ] {
         let mut evidence = in_phase(phase);
         evidence
-            .record_skipped_archive_counts(skipped_archives(SkipReason::DisabledPhase, 1))
+            .record_skipped_archive_counts(skipped_archives(SkipReason::DisabledAssetKind, 1))
             .unwrap_or_else(|error| panic!("skipped counts during {phase:?}: {error}"));
         evidence
             .record_nested_archive_count(1)
@@ -816,7 +819,7 @@ fn archive_discovery_facts_are_rejected_outside_archive_discovery() {
 fn each_archive_discovery_fact_is_recorded_once() {
     let mut evidence = in_phase(RunPhase::DiscoveringArchives);
     evidence
-        .record_skipped_archive_counts(skipped_archives(SkipReason::DisabledPhase, 2))
+        .record_skipped_archive_counts(skipped_archives(SkipReason::ExcludedAssetVariant, 2))
         .unwrap();
     assert_eq!(
         invariant(
@@ -838,7 +841,7 @@ fn each_archive_discovery_fact_is_recorded_once() {
     assert_eq!(
         terminal.archive_discovery(),
         Some(&ArchiveDiscoveryEvidence {
-            skipped_archive_counts: skipped_archives(SkipReason::DisabledPhase, 2),
+            skipped_archive_counts: skipped_archives(SkipReason::ExcludedAssetVariant, 2),
             unsupported_explicit_paths: Vec::new(),
             nested_archive_count: 3,
         })
@@ -1205,7 +1208,7 @@ fn a_skipped_attempt_bearing_phase_cannot_be_opened() {
     extraction
         .record_phase(RunPhaseRecord::skipped(
             RunPhase::ExtractingArchives,
-            PhaseSkipReason::DryRun,
+            PhaseSkipReason::NoRequestedWork,
         ))
         .unwrap();
     assert_eq!(
@@ -1217,7 +1220,7 @@ fn a_skipped_attempt_bearing_phase_cannot_be_opened() {
     finalization
         .record_phase(RunPhaseRecord::skipped(
             RunPhase::ArchiveFinalization,
-            PhaseSkipReason::DryRun,
+            PhaseSkipReason::NoRequestedWork,
         ))
         .unwrap();
     assert_eq!(
@@ -1465,10 +1468,14 @@ fn assert_only_its_handle_executes(phase: RunPhase, skip: PhaseSkipReason) {
 
 /// Extracting Archives executes only through the handle opening Archive
 /// extraction, so no producer can account for its attempts or progress
-/// outside it. Dry Run still skips it through the general transition.
+/// outside it. A run with no requested work still skips it through the
+/// general transition.
 #[test]
 fn the_general_transition_rejects_an_executed_extracting_archives_record() {
-    assert_only_its_handle_executes(RunPhase::ExtractingArchives, PhaseSkipReason::DryRun);
+    assert_only_its_handle_executes(
+        RunPhase::ExtractingArchives,
+        PhaseSkipReason::NoRequestedWork,
+    );
 }
 
 /// Processing Assets executes only through the handle opening it with the
@@ -1481,11 +1488,14 @@ fn the_general_transition_rejects_an_executed_processing_assets_record() {
 
 /// Archive Finalization executes only through the handle opening it, which
 /// alone plans its output total, so the general transition cannot record
-/// progress around that plan. Dry Run still skips it through the general
-/// transition.
+/// progress around that plan. A run with no requested work still skips it
+/// through the general transition.
 #[test]
 fn the_general_transition_rejects_an_executed_archive_finalization_record() {
-    assert_only_its_handle_executes(RunPhase::ArchiveFinalization, PhaseSkipReason::DryRun);
+    assert_only_its_handle_executes(
+        RunPhase::ArchiveFinalization,
+        PhaseSkipReason::NoRequestedWork,
+    );
 }
 
 /// An Asset attempt's diagnostics are retained through the open Processing
@@ -1515,4 +1525,403 @@ fn a_diagnostic_retained_through_the_asset_handle_waits_for_publication() {
     let terminal = consume_after_cleanup(evidence);
     assert_eq!(terminal.diagnostics().len(), 1);
     assert_eq!(terminal.diagnostics()[0].detail, "deferred");
+}
+
+/// The Run Evidence invariant the general phase transition reports for a
+/// Planned record of a Run Phase that has no Archive work to plan.
+const PLANNED_ARCHIVE_PHASES_ONLY: &str =
+    "Only Extracting Archives and Archive Finalization can be planned";
+
+/// A Dry Run plans its Archive work instead of attempting it, so only the
+/// two Archive phases accept a Planned record. Every other Run Phase refuses
+/// one and records nothing for it.
+#[test]
+fn a_planned_record_is_accepted_only_for_the_archive_phases() {
+    for phase in RunPhase::SEQUENCE {
+        let sink = RecordingSink::default();
+        let mut evidence = MutableRunEvidence::new(Some(&sink));
+        if phase != RunPhase::Preparing {
+            evidence
+                .record_phase(executed(RunPhase::Preparing))
+                .unwrap();
+        }
+        let before = sink.phase_order();
+
+        let result = evidence.record_phase(RunPhaseRecord::planned(phase));
+
+        if matches!(
+            phase,
+            RunPhase::ExtractingArchives | RunPhase::ArchiveFinalization
+        ) {
+            result.unwrap_or_else(|error| panic!("{phase:?}: {error}"));
+            let record = evidence.phase(phase).copied().unwrap();
+            assert_eq!(record.status(), RunPhaseStatus::Planned, "{phase:?}");
+            assert_eq!(record.skip_reason(), None, "{phase:?}");
+            assert_eq!(record.progress(), None, "{phase:?}");
+        } else {
+            assert_eq!(
+                invariant(result),
+                Some(PLANNED_ARCHIVE_PHASES_ONLY),
+                "{phase:?}"
+            );
+            assert_eq!(sink.phase_order(), before, "{phase:?}");
+            if phase != RunPhase::Preparing {
+                assert!(evidence.phase(phase).is_none(), "{phase:?}");
+            }
+        }
+    }
+}
+
+/// The Run Evidence invariant a same-phase record reports when it would
+/// change the phase's status or skip reason.
+const STATUS_IMMUTABLE: &str = "Run Phase status and skip reason are immutable after traversal";
+
+/// Evidence whose current Run Phase is the one just before `phase`, so
+/// `phase` can be entered next, optionally reporting to `sink`.
+fn before_archive_phase(
+    phase: RunPhase,
+    sink: Option<&dyn crate::run::RunObservationSink>,
+) -> MutableRunEvidence<'_> {
+    match phase {
+        RunPhase::ExtractingArchives => discovering(sink),
+        RunPhase::ArchiveFinalization => ready_to_finalize(sink),
+        other => panic!("{other:?} is not an Archive phase"),
+    }
+}
+
+/// Executes the Archive `phase` through its own handle, as an Apply run
+/// does, planning it with no attempts.
+fn execute_archive_phase(evidence: &mut MutableRunEvidence<'_>, phase: RunPhase) {
+    match phase {
+        RunPhase::ExtractingArchives => {
+            // The empty extraction plan closes as soon as its handle's borrow ends.
+            evidence.open_archive_extraction(0).unwrap();
+        }
+        RunPhase::ArchiveFinalization => {
+            let mut finalization = evidence.open_archive_finalization().unwrap();
+            finalization.plan(0).unwrap();
+            finalization
+                .finish(ArchiveFinalizationAccount::default())
+                .unwrap();
+        }
+        other => panic!("{other:?} is not an Archive phase"),
+    }
+}
+
+/// A Planned Archive phase keeps its status: it cannot be skipped or
+/// executed afterwards, through the general transition or its handle, and an
+/// executed or skipped Archive phase cannot become Planned. Each refusal
+/// leaves the phase's record as it was.
+#[test]
+fn a_planned_phase_status_never_changes() {
+    for phase in [RunPhase::ExtractingArchives, RunPhase::ArchiveFinalization] {
+        let planned = RunPhaseRecord::planned(phase);
+
+        // Planned, then skipped or executed.
+        let mut evidence = before_archive_phase(phase, None);
+        evidence.record_phase(planned).unwrap();
+        assert_eq!(
+            invariant(evidence.record_phase(RunPhaseRecord::skipped(
+                phase,
+                PhaseSkipReason::NoRequestedWork
+            ))),
+            Some(STATUS_IMMUTABLE),
+            "{phase:?}"
+        );
+        assert_eq!(
+            invariant(evidence.record_phase(executed(phase))),
+            Some(HANDLE_ONLY),
+            "{phase:?}"
+        );
+        let opened = match phase {
+            RunPhase::ExtractingArchives => evidence.open_archive_extraction(0).map(drop),
+            _ => evidence.open_archive_finalization().map(drop),
+        };
+        assert_eq!(invariant(opened), Some(OPENED_ONCE), "{phase:?}");
+        assert_eq!(evidence.phase(phase), Some(&planned), "{phase:?}");
+
+        // Skipped, then planned.
+        let mut evidence = before_archive_phase(phase, None);
+        let skipped = RunPhaseRecord::skipped(phase, PhaseSkipReason::NoRequestedWork);
+        evidence.record_phase(skipped).unwrap();
+        assert_eq!(
+            invariant(evidence.record_phase(planned)),
+            Some(STATUS_IMMUTABLE),
+            "{phase:?}"
+        );
+        assert_eq!(evidence.phase(phase), Some(&skipped), "{phase:?}");
+
+        // Executed, then planned.
+        let mut evidence = before_archive_phase(phase, None);
+        execute_archive_phase(&mut evidence, phase);
+        let executed_record = evidence.phase(phase).copied().unwrap();
+        assert_eq!(
+            invariant(evidence.record_phase(planned)),
+            Some(STATUS_IMMUTABLE),
+            "{phase:?}"
+        );
+        assert_eq!(evidence.phase(phase), Some(&executed_record), "{phase:?}");
+    }
+}
+
+/// A Planned Archive phase is no attempt-bearing account: sealed evidence
+/// keeps it in the phase sequence without progress, and derives no Archive
+/// attempt, Archive Finalization result or mutation summary from it.
+#[test]
+fn planned_archive_phases_derive_no_attempts_or_mutation_summaries() {
+    let mut evidence = discovering(None);
+    evidence
+        .record_phase(RunPhaseRecord::planned(RunPhase::ExtractingArchives))
+        .unwrap();
+    evidence
+        .record_phase(RunPhaseRecord::skipped(
+            RunPhase::ProcessingAssets,
+            PhaseSkipReason::NoRequestedWork,
+        ))
+        .unwrap();
+    evidence
+        .record_phase(RunPhaseRecord::planned(RunPhase::ArchiveFinalization))
+        .unwrap();
+
+    let terminal = consume_after_cleanup(evidence);
+
+    for phase in [RunPhase::ExtractingArchives, RunPhase::ArchiveFinalization] {
+        let record = terminal.phase(phase).unwrap();
+        assert_eq!(record.status(), RunPhaseStatus::Planned, "{phase:?}");
+        assert_eq!(record.progress(), None, "{phase:?}");
+    }
+    assert!(terminal.archive_extraction_attempts().is_empty());
+    assert!(terminal.archive_finalization().is_none());
+    assert_eq!(terminal.completed_attempts().count(), 0);
+    assert!(terminal.mutation_summaries().is_empty());
+    assert!(terminal.planned_archive_work().is_empty());
+}
+
+/// A planned extraction of `archive` in `mod_root`, with distinct sample counts.
+fn planned_extraction(archive: &str, mod_root: &str) -> PlannedArchiveExtraction {
+    PlannedArchiveExtraction {
+        archive_path: archive.into(),
+        mod_root: mod_root.into(),
+        entry_count: 3,
+        winner_count: 2,
+        estimated_capacity_bytes: 4096,
+        deletes_source_archive: true,
+    }
+}
+
+/// A planned output Archive at `archive` in `mod_root`, needing `plugin`.
+fn planned_output(archive: &str, mod_root: &str, plugin: Option<&str>) -> PlannedOutputArchive {
+    PlannedOutputArchive {
+        archive_path: archive.into(),
+        mod_root: mod_root.into(),
+        kind: PackedArchiveKind::Textures,
+        file_count: 5,
+        total_bytes: 1024,
+        dummy_plugin_path: plugin.map(PathBuf::from),
+        deletes_packed_sources: false,
+    }
+}
+
+/// Planned Archive Work is retained in Run Evidence as two independent
+/// lists of facts, each in the order it was recorded during its own Planned
+/// Archive phase, and reaches the terminal result unchanged. It is never an
+/// attempt and never counts toward a mutation summary.
+#[test]
+fn planned_archive_work_is_retained_in_record_order_apart_from_attempts() {
+    let mut evidence = discovering(None);
+    evidence
+        .record_phase(RunPhaseRecord::planned(RunPhase::ExtractingArchives))
+        .unwrap();
+    let extractions = [
+        planned_extraction("mod-a/first.bsa", "mod-a"),
+        planned_extraction("mod-b/second.bsa", "mod-b"),
+    ];
+    for extraction in extractions.clone() {
+        evidence.record_planned_extraction(extraction).unwrap();
+    }
+    evidence
+        .record_phase(RunPhaseRecord::skipped(
+            RunPhase::ProcessingAssets,
+            PhaseSkipReason::NoRequestedWork,
+        ))
+        .unwrap();
+    evidence
+        .record_phase(RunPhaseRecord::planned(RunPhase::ArchiveFinalization))
+        .unwrap();
+    let outputs = [
+        planned_output(
+            "mod-a/mod-a - Textures.bsa",
+            "mod-a",
+            Some("mod-a/mod-a.esp"),
+        ),
+        planned_output("mod-a/mod-a - Textures1.bsa", "mod-a", None),
+    ];
+    evidence
+        .record_output_plan_basis(OutputPlanBasis::EstimateFromModRootsAsTheyAre)
+        .unwrap();
+    for output in outputs.clone() {
+        evidence.record_planned_output(output).unwrap();
+    }
+
+    let terminal = consume_after_cleanup(evidence);
+
+    let work = terminal.planned_archive_work();
+    assert!(!work.is_empty());
+    assert_eq!(work.extractions(), extractions);
+    assert_eq!(work.outputs(), outputs);
+    assert!(terminal.archive_extraction_attempts().is_empty());
+    assert!(terminal.archive_finalization().is_none());
+    assert_eq!(terminal.completed_attempts().count(), 0);
+    assert!(terminal.mutation_summaries().is_empty());
+
+    let result = OptimizationRunResult::terminal(
+        RunOutcome::Succeeded,
+        RunPhase::ArchiveFinalization,
+        terminal.clone(),
+        "run".to_owned(),
+    );
+    assert_eq!(
+        result.planned_archive_work(),
+        terminal.planned_archive_work()
+    );
+}
+
+/// The Run Evidence invariant a planned extraction breaks outside a Planned
+/// Extracting Archives phase.
+const EXTRACTION_OUTSIDE_PLAN: &str =
+    "Planned Archive extractions must be recorded during a Planned Extracting Archives";
+
+/// The Run Evidence invariant a planned output Archive breaks outside a
+/// Planned Archive Finalization phase.
+const OUTPUT_OUTSIDE_PLAN: &str =
+    "Planned output Archives must be recorded during a Planned Archive Finalization";
+
+/// Each kind of Planned Archive Work is recorded only while its own Archive
+/// phase is current and Planned: never before it, never during an executed
+/// or skipped Archive phase, and never during the other Archive phase. A
+/// refused fact is not retained.
+#[test]
+fn planned_archive_work_is_refused_outside_its_planned_phase() {
+    let extraction = || planned_extraction("mod/a.bsa", "mod");
+    let output = || planned_output("mod/mod.bsa", "mod", None);
+
+    // Before either Archive phase.
+    let mut evidence = discovering(None);
+    assert_eq!(
+        invariant(evidence.record_planned_extraction(extraction())),
+        Some(EXTRACTION_OUTSIDE_PLAN)
+    );
+    assert_eq!(
+        invariant(evidence.record_planned_output(output())),
+        Some(OUTPUT_OUTSIDE_PLAN)
+    );
+
+    // During an executed Extracting Archives, as an Apply run has it.
+    let mut evidence = discovering(None);
+    execute_archive_phase(&mut evidence, RunPhase::ExtractingArchives);
+    assert_eq!(
+        invariant(evidence.record_planned_extraction(extraction())),
+        Some(EXTRACTION_OUTSIDE_PLAN)
+    );
+
+    // During a skipped Extracting Archives.
+    let mut evidence = discovering(None);
+    evidence
+        .record_phase(RunPhaseRecord::skipped(
+            RunPhase::ExtractingArchives,
+            PhaseSkipReason::NoRequestedWork,
+        ))
+        .unwrap();
+    assert_eq!(
+        invariant(evidence.record_planned_extraction(extraction())),
+        Some(EXTRACTION_OUTSIDE_PLAN)
+    );
+
+    // During the other Planned Archive phase, and after its own has passed.
+    let mut evidence = discovering(None);
+    evidence
+        .record_phase(RunPhaseRecord::planned(RunPhase::ExtractingArchives))
+        .unwrap();
+    assert_eq!(
+        invariant(evidence.record_planned_output(output())),
+        Some(OUTPUT_OUTSIDE_PLAN)
+    );
+    evidence
+        .record_phase(RunPhaseRecord::planned(RunPhase::ArchiveFinalization))
+        .unwrap();
+    assert_eq!(
+        invariant(evidence.record_planned_extraction(extraction())),
+        Some(EXTRACTION_OUTSIDE_PLAN)
+    );
+
+    // During an executed Archive Finalization, as an Apply run has it.
+    let mut evidence = ready_to_finalize(None);
+    execute_archive_phase(&mut evidence, RunPhase::ArchiveFinalization);
+    assert_eq!(
+        invariant(evidence.record_planned_output(output())),
+        Some(OUTPUT_OUTSIDE_PLAN)
+    );
+
+    let terminal = consume_after_cleanup(evidence);
+    assert!(terminal.planned_archive_work().is_empty());
+}
+
+/// The one basis a Dry Run plans its output Archives from.
+const BASIS: OutputPlanBasis = OutputPlanBasis::EstimateFromModRootsAsTheyAre;
+
+/// The Run Evidence invariant an output plan basis breaks outside a Planned
+/// Archive Finalization phase.
+const BASIS_OUTSIDE_PLAN: &str =
+    "An output plan basis must be recorded during a Planned Archive Finalization";
+
+/// The Run Evidence invariant a second output plan basis breaks.
+const BASIS_ONCE: &str = "An output plan basis can only be recorded once";
+
+/// The Run Evidence invariant a planned output Archive breaks before its
+/// basis.
+const OUTPUT_BEFORE_BASIS: &str =
+    "Planned output Archives must follow the basis they were planned from";
+
+/// Every planned output Archive is marked with what it was planned from: the
+/// basis is recorded once, during a Planned Archive Finalization, before any
+/// output, and reaches the terminal result beside the outputs. A refused
+/// basis or output is not retained.
+#[test]
+fn planned_outputs_follow_the_basis_recorded_once_for_them() {
+    let output = || planned_output("mod/mod.bsa", "mod", Some("mod/mod.esp"));
+
+    let mut evidence = ready_to_finalize(None);
+    assert_eq!(
+        invariant(evidence.record_output_plan_basis(BASIS)),
+        Some(BASIS_OUTSIDE_PLAN)
+    );
+    evidence
+        .record_phase(RunPhaseRecord::planned(RunPhase::ArchiveFinalization))
+        .unwrap();
+    assert_eq!(
+        invariant(evidence.record_planned_output(output())),
+        Some(OUTPUT_BEFORE_BASIS)
+    );
+    evidence.record_output_plan_basis(BASIS).unwrap();
+    assert_eq!(
+        invariant(evidence.record_output_plan_basis(BASIS)),
+        Some(BASIS_ONCE)
+    );
+    evidence.record_planned_output(output()).unwrap();
+
+    let terminal = consume_after_cleanup(evidence);
+    let work = terminal.planned_archive_work();
+    assert_eq!(work.output_basis(), Some(BASIS));
+    assert_eq!(work.outputs(), [output()]);
+
+    // An executed Archive Finalization, as an Apply run has it, plans
+    // nothing from any basis.
+    let mut evidence = ready_to_finalize(None);
+    execute_archive_phase(&mut evidence, RunPhase::ArchiveFinalization);
+    assert_eq!(
+        invariant(evidence.record_output_plan_basis(BASIS)),
+        Some(BASIS_OUTSIDE_PLAN)
+    );
+    let terminal = consume_after_cleanup(evidence);
+    assert_eq!(terminal.planned_archive_work().output_basis(), None);
 }

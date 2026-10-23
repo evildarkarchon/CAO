@@ -7,6 +7,7 @@
 mod archives;
 mod artifacts;
 mod asset_attempt;
+mod byte_size;
 mod capacity;
 mod evidence;
 mod executor;
@@ -34,7 +35,11 @@ pub use artifacts::{
 pub use asset_attempt::{
     AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
 };
-pub use evidence::{ArchiveDiscoveryEvidence, RoutedAssetAttempt, RunEvidence, RunObservationSink};
+pub use byte_size::ByteSize;
+pub use evidence::{
+    ArchiveDiscoveryEvidence, OutputPlanBasis, PlannedArchiveExtraction, PlannedArchiveWork,
+    PlannedOutputArchive, RoutedAssetAttempt, RunEvidence, RunObservationSink,
+};
 pub use executor::{
     RunEvidenceInvariantPanic, RunExecutor, RunServices, SafetyCleanupService,
     collect_safety_cleanup_failures,
@@ -46,9 +51,9 @@ pub use finalization::{
 };
 pub use lifecycle::{
     CancellationToken, ModSelection, MutationKind, MutationSummary, OptimizationRunResult,
-    PhaseSkipReason, RunDiagnostic, RunDiagnosticCode, RunEvent, RunEventPayload, RunFailure,
-    RunFailureCode, RunId, RunOutcome, RunPhase, RunPhaseRecord, RunPhaseStatus, RunProgress,
-    RunRequest, RunSnapshot, create_run_id,
+    PhaseSkipReason, RunDiagnostic, RunDiagnosticCode, RunDiagnosticSeverity, RunEvent,
+    RunEventPayload, RunFailure, RunFailureCode, RunId, RunOutcome, RunPhase, RunPhaseRecord,
+    RunPhaseStatus, RunProgress, RunRequest, RunSnapshot, create_run_id,
 };
 pub use preparation::{
     ArchivePrecedence, RunConfigurationProvider, RunPreparation, SelectedProfile,

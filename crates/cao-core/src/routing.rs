@@ -76,20 +76,17 @@ pub enum OptimizerTarget {
 
 /// Why Routing Policy excluded one recognized Asset.
 ///
-/// A disabled run phase takes precedence, followed by a disabled Asset Kind when
-/// none of its Variants has work, then an excluded Asset Variant when its Kind
-/// has other work.
+/// A disabled Asset Kind, when none of its Variants has work, takes
+/// precedence over an excluded Asset Variant, when its Kind has other work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SkipReason {
-    DisabledPhase,
     DisabledAssetKind,
     ExcludedAssetVariant,
 }
 
 impl SkipReason {
     /// Every Skip Reason, in precedence order.
-    pub const ALL: [SkipReason; 3] = [
-        SkipReason::DisabledPhase,
+    pub const ALL: [SkipReason; 2] = [
         SkipReason::DisabledAssetKind,
         SkipReason::ExcludedAssetVariant,
     ];
@@ -858,17 +855,9 @@ impl AssetRouter {
         };
 
         let execution_path = execution_path.to_path_buf();
-        // Dry Run disables Archive extraction before Kind and Variant
-        // eligibility is considered.
-        if phase == RoutedAssetPhase::ArchiveExtraction
-            && self.policy.execution_mode() == ExecutionMode::DryRun
-        {
-            return RoutingDecision::Skipped(SkippedAsset {
-                execution_path,
-                identity,
-                reason: SkipReason::DisabledPhase,
-            });
-        }
+        // A Dry Run routes Archives as Apply does: the Routed Asset carries
+        // its execution mode, and the run plans the extraction instead of
+        // attempting it.
         if !operations.is_empty() {
             return RoutingDecision::Routed(RoutedAsset {
                 execution_path,

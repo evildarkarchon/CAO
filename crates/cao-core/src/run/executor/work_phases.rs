@@ -4,18 +4,23 @@
 //! Ported from `src/Run/AssetRun.h` and `src/Run/ArchiveFirstAssetDiscovery.h`.
 //! The executor calls [`run_work_phases`] with its Run Toolset; the
 //! function walks each Mod Root for Archives, extracts the enabled ones in
-//! Apply through [`RunToolset::extract_archive`], routes the Effective Asset
+//! Apply through [`RunToolset::extract_archive`] or, in a Dry Run, records
+//! each extraction as Planned Archive Work, routes the Effective Asset
 //! Tree once, offers every Routed Asset to the Asset attempt port in Texture,
 //! Mesh, Animation order, recording each completed attempt before reporting
 //! it, and in Apply runs Archive Finalization through
-//! [`RunToolset::finalize_archives`]. The Toolset runs both over its seams,
-//! so this module never reaches into them.
+//! [`RunToolset::finalize_archives`], or in Dry Run plans it through
+//! [`RunToolset::plan_archive_creation`]. The Toolset runs each over its
+//! seams, so this module never reaches into them.
 //!
 //! Loose Assets take precedence over Archived Assets, and Archive Precedence
 //! decides between Archives in one Mod Root. Before the first extraction, a
 //! preflight reads every selected manifest, rejects any Unsafe Game Path,
 //! records the Archive Collisions in Run Evidence and runs the Capacity
-//! Check; any failure stops the run with nothing extracted.
+//! Check; any failure stops the run with nothing extracted. A Dry Run runs
+//! the same preflight, so it fails where the Apply run would, except that a
+//! Capacity Check shortage, which the Dry Run itself cannot hit, is a
+//! warning-level Run Diagnostic and the Dry Run goes on to plan.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ops::ControlFlow;
@@ -29,11 +34,16 @@ use crate::routing::{
     AssetKind, AssetRouter, ExecutionMode, OptimizerTarget, RoutingDecision, RoutingLedger,
     SkipReason,
 };
-use crate::run::archives::{Preflight, RootArchives, archive_order_key, relative_game_path};
+use crate::run::archives::{
+    Preflight, RootArchives, archive_order_key, capacity_failure, relative_game_path,
+};
+use crate::run::capacity::Shortfall;
+use crate::run::finalization::CreationPlanning;
 use crate::run::{
-    ArchiveExtractionPlan, ArchiveFinalizationChoices, AssetInitializationCancelled,
-    CancellationToken, MutableRunEvidence, PhaseSkipReason, RoutedAssetAttempt, RunDiagnostic,
-    RunDiagnosticCode, RunPhase, RunPhaseRecord, RunPreparation, RunToolset, SourceCleanup,
+    ArchiveExtractionPlan, ArchiveFinalizationChoices, AssetInitializationCancelled, ByteSize,
+    CancellationToken, MutableRunEvidence, OutputPlanBasis, PlannedArchiveExtraction,
+    PlannedOutputArchive, RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode, RunFailure,
+    RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunToolset, SourceCleanup,
     TemporaryArtifactRegistry, WorkChoices, is_staging_name, take_panic_message,
 };
 
@@ -200,7 +210,8 @@ struct DiscoveredArchives {
     /// Every Archive the Archive pass recognized, enabled or not. The
     /// definitive pass counts any other Archive as nested.
     recognized: HashSet<PathBuf>,
-    /// The Archives Apply extracts, in order. Dry Run plans none.
+    /// The Archives Apply extracts, in order; a Dry Run records the same
+    /// plans as Planned Archive Work instead.
     plans: Vec<ArchiveExtractionPlan>,
 }
 
@@ -230,9 +241,11 @@ struct DiscoveredArchives {
 /// An Asset attempt's panic is contained here, as an unsafe Operation
 /// Failure with unknown mutation. Archive extraction and Archive
 /// Finalization contain their own panics, so they are called without a
-/// second layer. Archive Finalization runs only in Apply, once its executed
-/// phase is recorded. Errors are Run Evidence invariant violations, which
-/// the executor raises after Safety Cleanup.
+/// second layer, as is Archive Finalization's planning-only step. Archive
+/// Finalization runs only in Apply, once its executed phase is recorded; a
+/// Dry Run records it as Planned and only plans its outputs. Errors are Run
+/// Evidence invariant violations, which the executor raises after Safety
+/// Cleanup.
 ///
 /// Each work Run Phase runs in its own function returning a [`PhaseFlow`];
 /// this function only chains them, stopping at the first `Break` and
@@ -309,11 +322,15 @@ pub(super) fn run_work_phases(
 }
 
 /// Runs the Discovering Archives phase: the Archive pass over every Mod Root
-/// and, in Apply, the preflight that plans extraction.
+/// and the preflight that plans extraction, in Apply and Dry Run alike.
 ///
 /// The skipped Archive counts are recorded once the pass ends, complete or
 /// not. A cancelled pass, a failed preflight, recorded as the run's failure,
-/// or a cancelled preflight stops the work with nothing extracted.
+/// or a cancelled preflight stops the work with nothing extracted. A
+/// Capacity Check shortage stops an Apply run the same way, as Archive
+/// Insufficient Capacity; a Dry Run records it as a
+/// [`RunDiagnosticCode::CapacityShortage`] warning and continues. `mode` is
+/// the run's execution mode, which decides between the two.
 fn discover_archives(
     preparation: &RunPreparation,
     mode: ExecutionMode,
@@ -374,33 +391,48 @@ fn discover_archives(
         return Ok(ControlFlow::Break(Stop::Halted));
     }
 
-    // Dry Run ignores Archive Precedence and never reads a manifest,
-    // calculates a collision or extracts.
-    let mut plans: Vec<ArchiveExtractionPlan> = Vec::new();
-    if mode == ExecutionMode::Apply {
-        match toolset.preflight_archives(
-            root_archives,
-            preparation.archive_precedence(),
-            discovery.stop,
-        ) {
-            Preflight::Failed(failure) => {
-                // A failed preflight has no trustworthy tree, so the run stops
-                // before any extraction, routing or finalization.
-                evidence.record_failure(failure);
+    // Both modes run the same preflight: a Dry Run reads the manifests and
+    // fails Archive Precedence or an Unsafe Game Path as the Apply run would,
+    // so a Dry Run that succeeds means the Apply run gets past those checks.
+    // The preflight only reads, so a Dry Run still mutates nothing.
+    let plans = match toolset.preflight_archives(
+        root_archives,
+        preparation.archive_precedence(),
+        discovery.stop,
+    ) {
+        Preflight::Failed(failure) => {
+            // A failed preflight has no trustworthy tree, so the run stops
+            // before any extraction, routing or finalization.
+            evidence.record_failure(failure);
+            return Ok(ControlFlow::Break(Stop::Halted));
+        }
+        Preflight::Cancelled => return Ok(ControlFlow::Break(Stop::Halted)),
+        Preflight::Planned {
+            plans,
+            collisions,
+            shortfall,
+        } => {
+            if let Some(shortfall) = &shortfall
+                && mode == ExecutionMode::Apply
+            {
+                // An Apply run must not start extracting what it cannot fit,
+                // so the shortage fails it before any collision is retained,
+                // as every other failed check does.
+                evidence.record_failure(capacity_failure(shortfall));
                 return Ok(ControlFlow::Break(Stop::Halted));
             }
-            Preflight::Cancelled => return Ok(ControlFlow::Break(Stop::Halted)),
-            Preflight::Planned {
-                plans: planned,
-                collisions,
-            } => {
-                // Retained before the extraction phase is observed, so a
-                // failing observer or a later unwind cannot lose the plan.
-                evidence.record_archive_collisions(&collisions)?;
-                plans = planned;
+            // Retained before the extraction phase is observed, so a
+            // failing observer or a later unwind cannot lose the plan.
+            evidence.record_archive_collisions(&collisions)?;
+            if let Some(shortfall) = &shortfall {
+                // A Dry Run needs no space, so the shortage its Apply run
+                // would fail on is only a warning, and the preview carries on
+                // to report every plan.
+                warn_capacity_shortage(toolset, evidence, RunPhase::DiscoveringArchives, shortfall);
             }
+            plans
         }
-    }
+    };
     Ok(ControlFlow::Continue(DiscoveredArchives {
         recognized: recognized_archives,
         plans,
@@ -412,8 +444,8 @@ fn discover_archives(
 /// [`RunToolset::extract_archive`], over `toolset`'s seams and the run's
 /// Capacity Check with `cleanup`, the Run Request's Archive extraction
 /// choice, retaining every completed attempt
-/// before it is reported. Dry Run skips the phase, opening no handle, and
-/// has no plans.
+/// before it is reported. A Dry Run records the phase as Planned instead,
+/// opening no handle, through [`plan_archive_extractions`].
 ///
 /// Cancellation is observed before and after the phase is recorded, between
 /// attempts and after the last one. An attempt in flight always finishes, so
@@ -438,26 +470,17 @@ fn extract_archives(
     if stop.is_cancelled() {
         return Ok(ControlFlow::Break(Stop::Halted));
     }
-    // Dry Run skips Archive extraction, so only Apply opens its handle.
-    let extraction = match mode {
-        ExecutionMode::DryRun => {
-            evidence.record_phase(RunPhaseRecord::skipped(
-                RunPhase::ExtractingArchives,
-                PhaseSkipReason::DryRun,
-            ))?;
-            None
-        }
-        ExecutionMode::Apply => Some(evidence.open_archive_extraction(plans.len())?),
-    };
+    // A Dry Run plans Archive extraction, so only Apply opens its handle.
+    if mode == ExecutionMode::DryRun {
+        return plan_archive_extractions(plans, cleanup, evidence, stop);
+    }
+    let mut extraction = evidence.open_archive_extraction(plans.len())?;
     if stop.is_cancelled() {
         return Ok(ControlFlow::Break(Stop::Halted));
     }
 
     // Cancellation stops before the definitive pass, and an unsafe attempt
     // never reaches routing or finalization.
-    let Some(mut extraction) = extraction else {
-        return Ok(ControlFlow::Continue(()));
-    };
     if plans.is_empty() {
         // No attempt ran, so there is none to re-sample cancellation after:
         // the checks around this phase's record observe it.
@@ -483,6 +506,54 @@ fn extract_archives(
     }
     // Re-sampled after the final attempt and its progress record, so
     // cancellation during the last Archive still skips the definitive pass.
+    Ok(if stop.is_cancelled() {
+        ControlFlow::Break(Stop::Halted)
+    } else {
+        ControlFlow::Continue(())
+    })
+}
+
+/// Runs a Dry Run's Extracting Archives phase: records it as Planned, then
+/// retains one Planned Archive Work fact for each of `plans`, in order, and
+/// logs what the Apply run would extract. It attempts nothing and never
+/// reaches the extraction seams, so no Archive, staging or Mod Root changes.
+///
+/// `cleanup` decides whether each Archive would be deleted afterwards. With
+/// no plans, as when the run requests other work but no Archive extraction,
+/// the phase is still Planned and holds no fact, as an Apply run executes it
+/// with no attempt.
+///
+/// Cancellation observed once the Planned record is published stops before
+/// any fact is retained, as an Apply run stops before its first attempt;
+/// otherwise it is re-sampled after the last fact.
+fn plan_archive_extractions(
+    plans: &[ArchiveExtractionPlan],
+    cleanup: SourceCleanup,
+    evidence: &mut MutableRunEvidence<'_>,
+    stop: &CancellationToken,
+) -> PhaseFlow {
+    evidence.record_phase(RunPhaseRecord::planned(RunPhase::ExtractingArchives))?;
+    if stop.is_cancelled() {
+        return Ok(ControlFlow::Break(Stop::Halted));
+    }
+    for plan in plans {
+        // The files the extraction would add are the entries the Archive
+        // wins, not its whole manifest.
+        log::info!(
+            "would extract {} into {} ({} files)",
+            plan.archive_path.display(),
+            plan.mod_root.display(),
+            plan.merge_entries.len()
+        );
+        evidence.record_planned_extraction(PlannedArchiveExtraction {
+            archive_path: plan.archive_path.clone(),
+            mod_root: plan.mod_root.clone(),
+            entry_count: plan.entries.len(),
+            winner_count: plan.merge_entries.len(),
+            estimated_capacity_bytes: plan.estimated_capacity_bytes,
+            deletes_source_archive: cleanup == SourceCleanup::Remove,
+        })?;
+    }
     Ok(if stop.is_cancelled() {
         ControlFlow::Break(Stop::Halted)
     } else {
@@ -651,11 +722,13 @@ fn process_assets(
 /// Runs the Archive Finalization phase, once the Run Diagnostics retained so
 /// far are published. Apply executes it over `toolset`'s seams with
 /// `choices`, the Run Request's Archive Finalization choices, through the
-/// handle its executed record opens; Dry Run skips it.
+/// handle its executed record opens; Dry Run plans it with the same choices
+/// ([`plan_archive_finalization`]).
 ///
 /// Cancellation is observed after that publication, before the phase is
-/// recorded, and again before Apply finalizes. As the last work phase it
-/// returns `Break` only to report that finalization did not run.
+/// recorded, and again before Apply finalizes or Dry Run plans. As the last
+/// work phase it returns `Break` only to report that finalization or its
+/// planning did not finish.
 fn finalize_archives(
     preparation: &RunPreparation,
     mode: ExecutionMode,
@@ -674,14 +747,10 @@ fn finalize_archives(
 
     // The execution mode selects the final work phase's record: Apply
     // executes Archive Finalization over the Run Toolset's seams, and Dry
-    // Run skips it. The immutable policy decides: Dry Run never finalizes,
+    // Run plans it. The immutable policy decides: Dry Run never finalizes,
     // whatever the Toolset holds.
     if mode == ExecutionMode::DryRun {
-        evidence.record_phase(RunPhaseRecord::skipped(
-            RunPhase::ArchiveFinalization,
-            PhaseSkipReason::DryRun,
-        ))?;
-        return Ok(ControlFlow::Continue(()));
+        return plan_archive_finalization(preparation, choices, toolset, evidence, stop);
     }
     let finalization = evidence.open_archive_finalization()?;
     // Archive Finalization is a separate mutation boundary: observe
@@ -697,6 +766,97 @@ fn finalize_archives(
         stop.is_cancelled()
     })?;
     Ok(ControlFlow::Continue(()))
+}
+
+/// Records a Dry Run's Archive Finalization as Planned, then plans its
+/// output Archives through `toolset`'s planning-only step with `choices` and
+/// records each as Planned Archive Work, marked as an estimate made from the
+/// Mod Roots as they are now: a Dry Run plans before any extraction or Loose
+/// Asset optimization an Apply run would do first. Each recorded output and
+/// each distinct Dummy Plugin it would need gets a "would create" line in
+/// the Application Log.
+///
+/// Without an Archive creation request the phase is still Planned, with no
+/// planned output. Nothing is packed, committed or cleaned, no Loading
+/// Plugin is maintained and no directory pruned.
+///
+/// A shortage the Apply run's Capacity Check would fail Archive creation on
+/// is recorded as a [`RunDiagnosticCode::CapacityShortage`] warning, and
+/// logged, before the outputs; it neither fails the Dry Run nor drops any
+/// planned output.
+///
+/// Cancellation is observed before planning and by planning itself; either
+/// stops with nothing planned, as an Apply run stops with no output total. A
+/// planning failure, or a contained planning panic, is recorded as the
+/// run's Run Failure. Both return `Break`.
+fn plan_archive_finalization(
+    preparation: &RunPreparation,
+    choices: &ArchiveFinalizationChoices,
+    toolset: &RunToolset,
+    evidence: &mut MutableRunEvidence<'_>,
+    stop: &CancellationToken,
+) -> PhaseFlow {
+    evidence.record_phase(RunPhaseRecord::planned(RunPhase::ArchiveFinalization))?;
+    if stop.is_cancelled() {
+        return Ok(ControlFlow::Break(Stop::Halted));
+    }
+    let outputs = match toolset.plan_archive_creation(preparation, choices, &|| stop.is_cancelled())
+    {
+        CreationPlanning::NotRequested => return Ok(ControlFlow::Continue(())),
+        CreationPlanning::Planned { outputs, shortfall } => {
+            if let Some(shortfall) = &shortfall {
+                // As at Discovering Archives, a Dry Run needs no space, so
+                // the shortage its Apply run would fail Archive creation on
+                // is only a warning, and every planned output is still
+                // recorded below.
+                warn_capacity_shortage(toolset, evidence, RunPhase::ArchiveFinalization, shortfall);
+            }
+            outputs
+        }
+        CreationPlanning::Cancelled => return Ok(ControlFlow::Break(Stop::Halted)),
+        CreationPlanning::Failed(detail) => {
+            evidence.record_failure(RunFailure::new(
+                RunFailureCode::ArchiveCreationPlanningFailed,
+                RunPhase::ArchiveFinalization,
+                detail,
+            ));
+            return Ok(ControlFlow::Break(Stop::Halted));
+        }
+    };
+    evidence.record_output_plan_basis(OutputPlanBasis::EstimateFromModRootsAsTheyAre)?;
+    // Outputs that share a fallback Loading Plugin name, such as an
+    // Archive and its Textures Archive, would need one Dummy Plugin, so each
+    // is reported once.
+    for (output, first_plugin) in PlannedOutputArchive::with_first_dummy_plugins(&outputs) {
+        // Recorded before it is reported, so the log never names an output
+        // the evidence refused.
+        evidence.record_planned_output(output.clone())?;
+        log::info!(
+            "would create {} ({} files, {})",
+            output.archive_path.display(),
+            output.file_count,
+            ByteSize(output.total_bytes)
+        );
+        if let Some(plugin) = first_plugin {
+            log::info!("would create Dummy Plugin {}", plugin.display());
+        }
+    }
+    Ok(ControlFlow::Continue(()))
+}
+
+/// Warns of a Dry Run's capacity `shortfall` at `phase`: a shortage the
+/// Apply run's Capacity Check would fail on. The warning-level
+/// [`RunDiagnosticCode::CapacityShortage`] Run Diagnostic `toolset` builds is
+/// logged as a warning and recorded in `evidence`; neither fails the run.
+fn warn_capacity_shortage(
+    toolset: &RunToolset,
+    evidence: &mut MutableRunEvidence<'_>,
+    phase: RunPhase,
+    shortfall: &Shortfall,
+) {
+    let warning = toolset.capacity_shortage_warning(phase, shortfall);
+    log::warn!("{}: {}", warning.path.display(), warning.detail);
+    evidence.record_diagnostic(warning);
 }
 
 /// Reports whether routing recognizes the path as an Archive, enabled or not.

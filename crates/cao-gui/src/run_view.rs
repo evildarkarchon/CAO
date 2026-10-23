@@ -12,8 +12,10 @@ use std::path::Path;
 
 use cao_core::routing::SkipReason;
 use cao_core::run::{
-    MutationKind, OptimizationRunResult, PhaseSkipReason, RunEvent, RunEventPayload, RunFailure,
-    RunId, RunOutcome, RunPhase, RunPhaseStatus, RunProgress,
+    ByteSize, MutationKind, OptimizationRunResult, OutputPlanBasis, PackedArchiveKind,
+    PhaseSkipReason, PlannedArchiveWork, PlannedOutputArchive, RunDiagnostic,
+    RunDiagnosticSeverity, RunEvent, RunEventPayload, RunFailure, RunId, RunOutcome, RunPhase,
+    RunPhaseStatus, RunProgress,
 };
 
 /// Presentation facts copied from one run's ordered events.
@@ -24,7 +26,7 @@ pub struct RunViewState {
     /// The phase or terminal label, such as `Processing Assets`, `Cancelling -
     /// Safety Cleanup` or `Completed With Failures`.
     pub label: String,
-    /// The current phase's attempt counts; `None` for skipped and
+    /// The current phase's attempt counts; `None` for skipped, planned and
     /// indeterminate phases.
     pub progress: Option<RunProgress>,
     /// The run-detail rows, in arrival order: streamed failures and
@@ -75,21 +77,27 @@ impl RunView {
             RunEventPayload::Phase(record) => {
                 state.label = phase_name(record.phase()).to_owned();
                 state.progress = record.progress();
-                if record.status() == RunPhaseStatus::Skipped {
-                    state.label.push_str(match record.skip_reason() {
-                        Some(PhaseSkipReason::DryRun) => " - Skipped (Dry Run)",
-                        _ => " - Skipped (No Requested Work)",
-                    });
+                match record.status() {
+                    RunPhaseStatus::Executed => {}
+                    RunPhaseStatus::Skipped => {
+                        // Matched exhaustively so a new Phase Skip Reason has to
+                        // choose its own label.
+                        state.label.push_str(match record.skip_reason() {
+                            Some(PhaseSkipReason::NoRequestedWork) | None => {
+                                " - Skipped (No Requested Work)"
+                            }
+                        });
+                    }
+                    // Only a Dry Run plans Archive work instead of attempting it.
+                    RunPhaseStatus::Planned => state.label.push_str(" - Planned (Dry Run)"),
                 }
                 if state.cancellation_requested {
                     mark_cancelling(&mut state.label);
                 }
             }
-            RunEventPayload::Diagnostic(diagnostic) => state.details.push(format!(
-                "Diagnostic: {} | {}",
-                diagnostic.detail,
-                diagnostic.path.display()
-            )),
+            RunEventPayload::Diagnostic(diagnostic) => {
+                state.details.push(diagnostic_row(diagnostic))
+            }
             RunEventPayload::Failure(failure) => state.details.push(failure_row(failure)),
             RunEventPayload::Terminal(result) => {
                 state.active = false;
@@ -239,6 +247,21 @@ fn failure_row(failure: &RunFailure) -> String {
     )
 }
 
+/// A Run Diagnostic's detail row: `Warning:` for a warning-level code, such
+/// as a Dry Run's capacity shortage, and `Diagnostic:` for the informational
+/// rest. Neither is a failure: no diagnostic changes the Run Outcome.
+fn diagnostic_row(diagnostic: &RunDiagnostic) -> String {
+    let prefix = match diagnostic.code.severity() {
+        RunDiagnosticSeverity::Warning => "Warning",
+        RunDiagnosticSeverity::Informational => "Diagnostic",
+    };
+    format!(
+        "{prefix}: {} | {}",
+        diagnostic.detail,
+        shown(&diagnostic.path)
+    )
+}
+
 /// The detail row of an Archive that failed to extract or to finalize.
 fn archive_failure_row(archive_path: &Path, detail: &str) -> String {
     format!("Archive Failure: {} | {detail}", shown(archive_path))
@@ -331,8 +354,20 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
         }
         details.push(text);
     }
+    for planned in result.planned_archive_work().extractions() {
+        details.push(format!(
+            "Planned Extraction: {} | {} | entries={} | winners={} | capacity={} | \
+             delete-backups={}",
+            shown(&planned.archive_path),
+            shown(&planned.mod_root),
+            planned.entry_count,
+            planned.winner_count,
+            ByteSize(planned.estimated_capacity_bytes),
+            yes_no(planned.deletes_source_archive)
+        ));
+    }
+    append_planned_creation(details, result.planned_archive_work());
     for (reason, name) in [
-        (SkipReason::DisabledPhase, "Disabled Phase"),
         (SkipReason::DisabledAssetKind, "Disabled Asset Kind"),
         (SkipReason::ExcludedAssetVariant, "Excluded Asset Variant"),
     ] {
@@ -340,5 +375,47 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
         if count != 0 {
             details.push(format!("Skipped Assets: {name} | {count}"));
         }
+    }
+}
+
+/// Appends a Dry Run's planned Archive creation to the detail rows: each
+/// planned output Archive, followed by the Dummy Plugin it would need unless
+/// an earlier output already needed it, then the note saying what the plan
+/// was made from. Appends nothing when no creation was planned.
+fn append_planned_creation(details: &mut Vec<String>, work: &PlannedArchiveWork) {
+    for (output, first_plugin) in PlannedOutputArchive::with_first_dummy_plugins(work.outputs()) {
+        details.push(format!(
+            "Planned Archive: {} | {} | {} | files={} | size={} | delete-sources={}",
+            shown(&output.archive_path),
+            shown(&output.mod_root),
+            packed_kind_name(output.kind),
+            output.file_count,
+            ByteSize(output.total_bytes),
+            yes_no(output.deletes_packed_sources)
+        ));
+        // Outputs sharing a fallback Loading Plugin name would need one
+        // Dummy Plugin between them, so it is listed once.
+        if let Some(plugin) = first_plugin {
+            details.push(format!("Planned Dummy Plugin: {}", shown(plugin)));
+        }
+    }
+    match work.output_basis() {
+        Some(OutputPlanBasis::EstimateFromModRootsAsTheyAre) => details.push(
+            "Planned Archive Creation: an estimate from the Mod Roots as they are now; an \
+             Apply run plans after Archive extraction and Loose Asset optimization, so its \
+             Archives can differ"
+                .to_owned(),
+        ),
+        None => {}
+    }
+}
+
+/// Names what a planned output Archive would hold, as the detail rows
+/// spell it.
+fn packed_kind_name(kind: PackedArchiveKind) -> &'static str {
+    match kind {
+        PackedArchiveKind::Standard => "Standard",
+        PackedArchiveKind::Incompressible => "Incompressible",
+        PackedArchiveKind::Textures => "Textures",
     }
 }

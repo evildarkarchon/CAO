@@ -61,7 +61,7 @@ The Selected Profile's choice of whether requested Texture work also converts co
 _Avoid_: TGA option, convert flag
 
 **Dry Run**:
-A non-mutating optimization run that evaluates eligible Loose Assets without extracting or creating Archives. Its Run Request requests the work the user chose, Archive work included, and the run mutates no Archive.
+A non-mutating optimization run that evaluates eligible Loose Assets and plans the Archive work an Apply run would do, without extracting, creating or deleting Archives. Its Run Request requests the work the user chose, Archive work included.
 _Avoid_: Preview mode, simulation
 
 **Optimization Run**:
@@ -73,7 +73,7 @@ The internal synchronous component that traverses the Run Phase sequence for one
 _Avoid_: Runner, engine, worker
 
 **Run Toolset**:
-The Asset attempt port and Archive seams (Archive reader, packer and volume probe) one Optimization Run's work goes through, built by Preparing from the same profile read as its Routing Policy. An Optimization Run reaches Archive discovery's checks, Archive extraction and Archive Finalization only through it, so one reader and one Capacity Check serve all three.
+The Asset attempt port and Archive seams (Archive reader, packer and volume probe) one Optimization Run's work goes through, built by Preparing from the same profile read as its Routing Policy. An Optimization Run reaches Archive discovery's checks, Archive extraction and Archive Finalization only through it, so one reader and one Capacity Check serve all three. A Dry Run calls only the read and planning seams (`ArchiveReader::list_entries`, the volume probe for its Capacity Check, and `ArchivePacker::rules`/`list_names`/`partition`).
 _Avoid_: Run Work Service, adapters
 
 **Optimization Run Service**:
@@ -133,7 +133,7 @@ A stable lifecycle stage of an Optimization Run, from preparation through Safety
 _Avoid_: Step, task
 
 **Phase Skip Reason**:
-A stable category explaining why an Optimization Run reported a Run Phase as inapplicable. It must state something the run knows when it skips, never the outcome of a phase that did not run. It is distinct from Skip Reason, which excludes one recognized Asset rather than a whole Run Phase.
+A stable category explaining why an Optimization Run reported a Run Phase as inapplicable. It must state something the run knows when it skips, never the outcome of a phase that did not run. The only one is No Requested Work. A Dry Run is not a Phase Skip Reason: it reports its Archive phases as planned, not skipped (see Planned Archive Work). It is distinct from Skip Reason, which excludes one recognized Asset rather than a whole Run Phase.
 _Avoid_: Skip Reason, phase status, disabled phase
 
 **Run Progress**:
@@ -189,12 +189,16 @@ An Archived Asset path that is empty or absolute, escapes its root, contains cha
 _Avoid_: Invalid file name, bad entry
 
 **Capacity Check**:
-A comparison of an Optimization Run's estimated Archive work against the free space on each affected volume. A shortage found before any Archive is extracted is a Run Failure. A shortage found later fails only the Archive work it guards and leaves the run safe to continue. Unknown free space never fails a Capacity Check. A probe that cannot answer, even by panicking, gives an unknown answer; a Mod Root on an unknown volume is checked against the whole run's estimated Archive work.
+A comparison of an Optimization Run's estimated Archive work against the free space on each affected volume. A shortage found before any Archive is extracted is a Run Failure under Apply. A shortage found later fails only the Archive work it guards and leaves the run safe to continue. A Dry Run, which needs no space and still reports the rest of its plan, runs the check an Apply run makes before extracting Archives and the one it makes before creating Archives, over the same estimates, and a shortage at either is a warning-level Run Diagnostic. Unknown free space never fails a Capacity Check. A probe that cannot answer, even by panicking, gives an unknown answer; a Mod Root on an unknown volume is checked against the whole run's estimated Archive work.
 _Avoid_: Disk check, free-space validation
 
 **Archive Finalization**:
-The Apply-only Run Phase that, when the Routing Policy requests Archive creation, commits planned output Archives and any required new Loading Plugins, cleans their source sets, and maintains Loading Plugins for existing Archives. Whether or not Archive creation is requested, it prunes empty directories left within each Mod Root. It does not run after cancellation or fatal failure.
+The Run Phase that, when the Routing Policy requests Archive creation, commits planned output Archives and any required new Loading Plugins, cleans their source sets, and maintains Loading Plugins for existing Archives. Whether or not Archive creation is requested, an Apply run's Archive Finalization prunes empty directories left within each Mod Root. Under Dry Run it plans its output Archives, and the Dummy Plugins they would need, from the same inputs and stops: it packs, commits and cleans nothing, maintains no Loading Plugin and prunes nothing. A Dry Run's plan is an estimate made from the Mod Roots as they are, since an Apply run plans after Archive extraction and Loose Asset optimization. It does not run after cancellation or fatal failure.
 _Avoid_: Safety Cleanup, packing callback
+
+**Planned Archive Work**:
+The Archive extraction plans and planned output Archives a Dry Run records instead of attempting them. A Dry Run runs Archive discovery's checks as an Apply run does before it plans, so an unreadable Archive, an Unsafe Game Path or a bad Archive Precedence fails the Dry Run as it would fail the Apply run. A Dry Run reports Extracting Archives and Archive Finalization as planned rather than executed or skipped, and a planned Run Phase carries no Run Progress. Planned Archive Work is kept in Run Evidence as facts separate from attempts; mutation summaries never count it, and it never determines the Run Outcome.
+_Avoid_: Skipped Archive work, simulated extraction, zero-attempt phase
 
 **Loading Plugin**:
 A game plugin whose presence makes one or more Archives load under the selected game profile's Archive Rules. It may be a full plugin or a Dummy Plugin.
@@ -265,5 +269,5 @@ A closed description of work carried by a Routed Asset, such as extraction, opti
 _Avoid_: Option flag, optimizer setting
 
 **Skip Reason**:
-A stable category explaining why Routing Policy excludes a recognized Asset. A disabled run phase takes precedence, followed by a disabled Asset Kind when none of its Variants has work, then an excluded Asset Variant when its Kind has other work.
+A stable category explaining why Routing Policy excludes a recognized Asset. A disabled Asset Kind, when none of its Variants has work, takes precedence over an excluded Asset Variant, when its Kind has other work.
 _Avoid_: Log message, error text
