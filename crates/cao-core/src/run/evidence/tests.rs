@@ -36,10 +36,10 @@ use crate::run::{
     ArchiveDiscoveryEvidence, ArchiveExtractionFailure, ArchiveExtractionResult,
     ArchiveFinalizationAccount, ArchiveFinalizationAttempt, ArchiveFinalizationFailure,
     ArchiveFinalizationMutation, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
-    ArchivePrecedence, MutationKind, OptimizationRunResult, PackedArchiveKind, PhaseSkipReason,
-    PlannedArchiveExtraction, PlannedOutputArchive, RoutedAssetAttempt, RunDiagnostic,
-    RunDiagnosticCode, RunEvidence, RunFailure, RunFailureCode, RunOutcome, RunPhase,
-    RunPhaseRecord, RunPhaseStatus, RunPreparation, RunProgress, SelectedProfile,
+    ArchivePrecedence, MutationKind, OptimizationRunResult, OutputPlanBasis, PackedArchiveKind,
+    PhaseSkipReason, PlannedArchiveExtraction, PlannedOutputArchive, RoutedAssetAttempt,
+    RunDiagnostic, RunDiagnosticCode, RunEvidence, RunFailure, RunFailureCode, RunOutcome,
+    RunPhase, RunPhaseRecord, RunPhaseStatus, RunPreparation, RunProgress, SelectedProfile,
 };
 use crate::test_support::{Observed, RecordingSink, sse_capabilities, sse_profile};
 use crate::{AttemptOutcome, CompletedMutation, OperationFailure};
@@ -1749,6 +1749,9 @@ fn planned_archive_work_is_retained_in_record_order_apart_from_attempts() {
         ),
         planned_output("mod-a/mod-a - Textures1.bsa", "mod-a", None),
     ];
+    evidence
+        .record_output_plan_basis(OutputPlanBasis::EstimateFromModRootsAsTheyAre)
+        .unwrap();
     for output in outputs.clone() {
         evidence.record_planned_output(output).unwrap();
     }
@@ -1854,4 +1857,64 @@ fn planned_archive_work_is_refused_outside_its_planned_phase() {
 
     let terminal = consume_after_cleanup(evidence);
     assert!(terminal.planned_archive_work().is_empty());
+}
+
+/// The one basis a Dry Run plans its output Archives from.
+const BASIS: OutputPlanBasis = OutputPlanBasis::EstimateFromModRootsAsTheyAre;
+
+/// The Run Evidence invariant an output plan basis breaks outside a Planned
+/// Archive Finalization phase.
+const BASIS_OUTSIDE_PLAN: &str =
+    "An output plan basis must be recorded during a Planned Archive Finalization";
+
+/// The Run Evidence invariant a second output plan basis breaks.
+const BASIS_ONCE: &str = "An output plan basis can only be recorded once";
+
+/// The Run Evidence invariant a planned output Archive breaks before its
+/// basis.
+const OUTPUT_BEFORE_BASIS: &str =
+    "Planned output Archives must follow the basis they were planned from";
+
+/// Every planned output Archive is marked with what it was planned from: the
+/// basis is recorded once, during a Planned Archive Finalization, before any
+/// output, and reaches the terminal result beside the outputs. A refused
+/// basis or output is not retained.
+#[test]
+fn planned_outputs_follow_the_basis_recorded_once_for_them() {
+    let output = || planned_output("mod/mod.bsa", "mod", Some("mod/mod.esp"));
+
+    let mut evidence = ready_to_finalize(None);
+    assert_eq!(
+        invariant(evidence.record_output_plan_basis(BASIS)),
+        Some(BASIS_OUTSIDE_PLAN)
+    );
+    evidence
+        .record_phase(RunPhaseRecord::planned(RunPhase::ArchiveFinalization))
+        .unwrap();
+    assert_eq!(
+        invariant(evidence.record_planned_output(output())),
+        Some(OUTPUT_BEFORE_BASIS)
+    );
+    evidence.record_output_plan_basis(BASIS).unwrap();
+    assert_eq!(
+        invariant(evidence.record_output_plan_basis(BASIS)),
+        Some(BASIS_ONCE)
+    );
+    evidence.record_planned_output(output()).unwrap();
+
+    let terminal = consume_after_cleanup(evidence);
+    let work = terminal.planned_archive_work();
+    assert_eq!(work.output_basis(), Some(BASIS));
+    assert_eq!(work.outputs(), [output()]);
+
+    // An executed Archive Finalization, as an Apply run has it, plans
+    // nothing from any basis.
+    let mut evidence = ready_to_finalize(None);
+    execute_archive_phase(&mut evidence, RunPhase::ArchiveFinalization);
+    assert_eq!(
+        invariant(evidence.record_output_plan_basis(BASIS)),
+        Some(BASIS_OUTSIDE_PLAN)
+    );
+    let terminal = consume_after_cleanup(evidence);
+    assert_eq!(terminal.planned_archive_work().output_basis(), None);
 }

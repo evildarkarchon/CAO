@@ -7,14 +7,14 @@
 //! close-during-run state machine. It knows nothing of Slint or of threads: the
 //! window feeds it on the UI thread, in the order the events arrive.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use cao_core::routing::SkipReason;
 use cao_core::run::{
-    MutationKind, OptimizationRunResult, PhaseSkipReason, RunDiagnostic, RunDiagnosticCode,
-    RunEvent, RunEventPayload, RunFailure, RunId, RunOutcome, RunPhase, RunPhaseStatus,
-    RunProgress,
+    MutationKind, OptimizationRunResult, OutputPlanBasis, PackedArchiveKind, PhaseSkipReason,
+    PlannedArchiveWork, RunDiagnostic, RunDiagnosticCode, RunEvent, RunEventPayload, RunFailure,
+    RunId, RunOutcome, RunPhase, RunPhaseStatus, RunProgress,
 };
 
 /// Presentation facts copied from one run's ordered events.
@@ -360,6 +360,7 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
             yes_no(planned.deleted_by_source_cleanup)
         ));
     }
+    append_planned_creation(details, result.planned_archive_work());
     for (reason, name) in [
         (SkipReason::DisabledAssetKind, "Disabled Asset Kind"),
         (SkipReason::ExcludedAssetVariant, "Excluded Asset Variant"),
@@ -368,5 +369,50 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
         if count != 0 {
             details.push(format!("Skipped Assets: {name} | {count}"));
         }
+    }
+}
+
+/// Appends a Dry Run's planned Archive creation to the detail rows: each
+/// planned output Archive, followed by the Dummy Plugin it would need unless
+/// an earlier output already needed it, then the note saying what the plan
+/// was made from. Appends nothing when no creation was planned.
+fn append_planned_creation(details: &mut Vec<String>, work: &PlannedArchiveWork) {
+    let mut dummy_plugins = HashSet::new();
+    for output in work.outputs() {
+        details.push(format!(
+            "Planned Archive: {} | {} | {} | files={} | bytes={} | delete-sources={}",
+            shown(&output.archive_path),
+            shown(&output.mod_root),
+            packed_kind_name(output.kind),
+            output.file_count,
+            output.total_bytes,
+            yes_no(output.deletes_packed_sources)
+        ));
+        // Outputs sharing a fallback Loading Plugin name would need one
+        // Dummy Plugin between them, so it is listed once.
+        if let Some(plugin) = &output.dummy_plugin_path
+            && dummy_plugins.insert(plugin)
+        {
+            details.push(format!("Planned Dummy Plugin: {}", shown(plugin)));
+        }
+    }
+    match work.output_basis() {
+        Some(OutputPlanBasis::EstimateFromModRootsAsTheyAre) => details.push(
+            "Planned Archive Creation: an estimate from the Mod Roots as they are now; an \
+             Apply run plans after Archive extraction and Loose Asset optimization, so its \
+             Archives can differ"
+                .to_owned(),
+        ),
+        None => {}
+    }
+}
+
+/// Names what a planned output Archive would hold, as the detail rows
+/// spell it.
+fn packed_kind_name(kind: PackedArchiveKind) -> &'static str {
+    match kind {
+        PackedArchiveKind::Standard => "Standard",
+        PackedArchiveKind::Incompressible => "Incompressible",
+        PackedArchiveKind::Textures => "Textures",
     }
 }

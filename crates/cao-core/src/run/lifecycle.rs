@@ -178,6 +178,11 @@ pub enum RunFailureCode {
     ArchiveUnreadable,
     ArchiveEntryInvalid,
     ArchiveInsufficientCapacity,
+    /// A Dry Run could not plan Archive Finalization's outputs: an input
+    /// could not be read or planned, or planning panicked. An Apply run hits
+    /// the same failure as Archive Finalization's phase-level Unexpected
+    /// Exception, which a Planned phase has no result to hold.
+    ArchiveCreationPlanningFailed,
     /// The run's work escaped: an error or panic left the executor's own
     /// work code, or the Run Worker panicked, outside any port that contains
     /// it. The run fails at its current phase, keeping every earlier fact.
