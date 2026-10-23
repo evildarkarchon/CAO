@@ -17,7 +17,6 @@ use cao_core::run::{
     OptimizationRunService, RunEvent, RunEventDispatcher, RunHandle, RunId, RunOutcome, StartError,
 };
 use cao_optimizers::composition::{run_request, run_service};
-use cao_optimizers::profile::profile_capabilities;
 use slint::{ComponentHandle, SharedString};
 
 use super::App;
@@ -108,7 +107,7 @@ impl App {
             (
                 loaded.profile.name().to_owned(),
                 loaded.options.clone(),
-                loaded.settings.as_ref().map(profile_capabilities),
+                loaded.capabilities(),
             )
         };
 
