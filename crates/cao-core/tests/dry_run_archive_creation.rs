@@ -11,14 +11,15 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use cao_core::execution::MutationState;
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
-    ArchiveFinalizationChoices, ArchiveNameKind, CancellationToken, OptimizationRunResult,
-    OutputPlanBasis, PackedArchiveKind, PlannedOutputArchive, RunFailure, RunFailureCode,
-    RunOutcome, RunPhase, RunPhaseRecord,
+    ArchiveFinalizationChoices, ArchiveFinalizationFailure, ArchiveNameKind, CancellationToken,
+    OptimizationRunResult, OutputPlanBasis, PackedArchiveKind, PlannedOutputArchive, RunDiagnostic,
+    RunDiagnosticCode, RunFailure, RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord,
 };
 use cao_core::test_support::{
-    ArchiveRunRequest, FakeArchivePacker, ScriptedToolset, fake_dummy_plugin,
+    ArchiveRunRequest, FakeArchivePacker, FakeVolumeProbe, ScriptedToolset, fake_dummy_plugin,
 };
 use common::{canonical, scratch_dir, snapshot_tree};
 
@@ -43,13 +44,87 @@ fn dry_run(
     packer: FakeArchivePacker,
     stop: &CancellationToken,
 ) -> (OptimizationRunResult, Arc<ScriptedToolset>) {
-    let run = run.with_execution_mode(ExecutionMode::DryRun);
+    run_over(
+        run.with_execution_mode(ExecutionMode::DryRun),
+        packer,
+        FakeVolumeProbe::default(),
+        stop,
+    )
+}
+
+/// Runs `run`, in whichever execution mode it carries, over `packer` and
+/// `probe`, returning the result and the fakes it ran over.
+fn run_over(
+    run: ArchiveRunRequest,
+    packer: FakeArchivePacker,
+    probe: FakeVolumeProbe,
+    stop: &CancellationToken,
+) -> (OptimizationRunResult, Arc<ScriptedToolset>) {
     let configuration = run.configuration(ScriptedToolset {
         packer: Arc::new(packer),
+        volume_probe: Arc::new(probe),
         ..ScriptedToolset::default()
     });
     let result = run.execute(&configuration, None, stop);
     (result, configuration.toolset)
+}
+
+/// A volume probe answering `available` free bytes for every Mod Root, all
+/// of which sit on one volume named `shared-volume`.
+fn shared_volume_with(available: u64) -> FakeVolumeProbe {
+    FakeVolumeProbe::default()
+        .with_capacity(move |_| Some(available))
+        .with_volumes(|_| Some("shared-volume".to_owned()))
+}
+
+/// The run's capacity shortage warnings.
+fn capacity_warnings(result: &OptimizationRunResult) -> Vec<&RunDiagnostic> {
+    result
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.code == RunDiagnosticCode::CapacityShortage)
+        .collect()
+}
+
+/// The estimated bytes a capacity detail names, an Apply run's failure or a
+/// Dry Run's warning alike: the number after "estimated ".
+fn estimate_in(detail: &str) -> u64 {
+    let digits: String = detail
+        .split_once("estimated ")
+        .unwrap_or_else(|| panic!("no estimate in {detail:?}"))
+        .1
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().unwrap()
+}
+
+/// The Capacity Check failure an Apply run's Archive Finalization reported,
+/// as its rejected output attempt's detail, or `None` when no output was
+/// rejected for capacity.
+fn creation_capacity_failure(result: &OptimizationRunResult) -> Option<String> {
+    let finalization = result
+        .archive_finalization()
+        .unwrap_or_else(|| panic!("no Archive Finalization: {:?}", result.failures()));
+    assert_eq!(finalization.failure, None, "{}", finalization.detail);
+    finalization.attempts.iter().find_map(|attempt| {
+        (attempt.outcome.failure_category()
+            == Some(ArchiveFinalizationFailure::InsufficientCapacity))
+        .then(|| attempt.outcome.failure().unwrap().detail().to_owned())
+    })
+}
+
+/// Two Mod Roots under one canonical scratch directory, each with a Loose
+/// Asset to pack and an existing Archive whose Dummy Plugin allowance the
+/// creation demand counts.
+fn two_roots_to_pack(name: &str) -> (PathBuf, [PathBuf; 2]) {
+    let parent = canonical(&scratch_dir(&format!("dry-run-creation-{name}")));
+    let roots = [parent.join("mod-a"), parent.join("mod-b")];
+    for root in &roots {
+        write_file(&root.join("meshes/a.nif"), b"twelve bytes");
+        write_file(&root.join("old.bsa"), b"an existing archive");
+    }
+    (parent, roots)
 }
 
 /// Spec (#643): a Dry Run with Archive creation plans the outputs an Apply
@@ -262,4 +337,198 @@ fn cancelled_planning_plans_nothing() {
     assert!(work.outputs().is_empty());
     assert_eq!(work.output_basis(), None);
     assert!(toolset.packer.partitioned().is_empty());
+}
+
+/// Spec (#645): a Dry Run whose planned output Archives would not fit the
+/// free space warns with a warning-level capacity Run Diagnostic at Archive
+/// Finalization, naming the Mod Root, its volume, the demand and the
+/// available space. It still records every planned output, a split
+/// included, and succeeds, mutating nothing.
+#[test]
+fn a_dry_run_warns_of_a_creation_capacity_shortage_and_still_plans_every_output() {
+    let root = mod_root("capacity-shortage");
+    for name in ["c", "a", "b"] {
+        write_file(&root.join(format!("meshes/{name}.nif")), b"twelve bytes");
+    }
+    let before = snapshot_tree(&root);
+    // Room for one source per Archive, so the plan splits into three.
+    let packer = FakeArchivePacker {
+        archive_limit: 20,
+        ..FakeArchivePacker::default()
+    };
+
+    let (result, toolset) = run_over(
+        ArchiveRunRequest::new(&root).with_execution_mode(ExecutionMode::DryRun),
+        packer,
+        shared_volume_with(0),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.failures()
+    );
+    assert!(result.failures().is_empty(), "{:?}", result.failures());
+    assert_eq!(
+        result.phase(RunPhase::ArchiveFinalization),
+        Some(&RunPhaseRecord::planned(RunPhase::ArchiveFinalization))
+    );
+    let outputs: Vec<_> = result
+        .planned_archive_work()
+        .outputs()
+        .iter()
+        .map(|output| output.archive_path.clone())
+        .collect();
+    assert_eq!(
+        outputs,
+        ["mod.bsa", "mod0.bsa", "mod1.bsa"].map(|name| root.join(name))
+    );
+    let [warning] = capacity_warnings(&result)[..] else {
+        panic!("one capacity warning: {:?}", result.diagnostics());
+    };
+    assert_eq!(warning.phase, RunPhase::ArchiveFinalization);
+    assert_eq!(warning.path, root);
+    // Three outputs of twelve bytes each, plus their staging allowances.
+    assert!(estimate_in(&warning.detail) > 36, "{}", warning.detail);
+    for named in ["volume shared-volume", "but 0 bytes are available"] {
+        assert!(
+            warning.detail.contains(named),
+            "{named:?} missing from {:?}",
+            warning.detail
+        );
+    }
+    assert!(toolset.packer.writes().is_empty(), "nothing is packed");
+    assert_eq!(snapshot_tree(&root), before, "the Mod Root is unchanged");
+}
+
+/// Spec (#645): a Dry Run with room for its planned outputs warns of
+/// nothing.
+#[test]
+fn a_dry_run_with_room_for_its_outputs_warns_of_no_shortage() {
+    let root = mod_root("capacity-room");
+    write_file(&root.join("meshes/a.nif"), b"twelve bytes");
+
+    let (result, _) = run_over(
+        ArchiveRunRequest::new(&root).with_execution_mode(ExecutionMode::DryRun),
+        FakeArchivePacker::default(),
+        shared_volume_with(u64::MAX),
+        &CancellationToken::new(),
+    );
+
+    assert!(result.failures().is_empty(), "{:?}", result.failures());
+    assert_eq!(result.planned_archive_work().outputs().len(), 1);
+    assert!(
+        capacity_warnings(&result).is_empty(),
+        "{:?}",
+        result.diagnostics()
+    );
+}
+
+/// Spec (#645): an Apply run and a Dry Run compute the creation capacity
+/// demand the same way, Dummy Plugin allowances and the volume grouping of
+/// Several Mods included. At every free space an Apply run fails its
+/// Capacity Check exactly when the Dry Run warns, and both name the same
+/// Mod Root and the same estimated demand.
+#[test]
+fn apply_and_dry_run_agree_on_the_creation_capacity_demand() {
+    let run_in = |mode: ExecutionMode, available: u64| {
+        let (parent, roots) = two_roots_to_pack(&format!("agree-{mode:?}-{available}"));
+        let (result, _) = run_over(
+            ArchiveRunRequest::over_mods(&parent).with_execution_mode(mode),
+            FakeArchivePacker::default(),
+            shared_volume_with(available),
+            &CancellationToken::new(),
+        );
+        (result, roots)
+    };
+
+    // The demand an Apply run fails on with no free space at all.
+    let (applied, roots) = run_in(ExecutionMode::Apply, 0);
+    let failure = creation_capacity_failure(&applied).expect("no space is a shortage");
+    let demand = estimate_in(&failure);
+    // Both roots' outputs and Dummy Plugin allowances share the volume.
+    assert!(demand > 2 * 65_536, "{failure}");
+    assert_eq!(
+        applied.archive_finalization().unwrap().attempts[0].mod_root,
+        roots[0]
+    );
+
+    for available in [0, demand - 1, demand] {
+        let short = available < demand;
+        let (applied, _) = run_in(ExecutionMode::Apply, available);
+        let failure = creation_capacity_failure(&applied);
+        assert_eq!(
+            failure.is_some(),
+            short,
+            "Apply at {available}: {failure:?}"
+        );
+        if let Some(failure) = failure {
+            assert_eq!(estimate_in(&failure), demand, "{failure}");
+        }
+
+        let (planned, roots) = run_in(ExecutionMode::DryRun, available);
+        assert!(planned.failures().is_empty(), "{:?}", planned.failures());
+        assert_eq!(planned.planned_archive_work().outputs().len(), 2);
+        let warnings = capacity_warnings(&planned);
+        assert_eq!(warnings.len(), usize::from(short), "Dry Run at {available}");
+        if let [warning] = warnings[..] {
+            assert_eq!(warning.path, roots[0]);
+            assert_eq!(estimate_in(&warning.detail), demand, "{}", warning.detail);
+            assert!(
+                warning
+                    .detail
+                    .contains(&format!("but {available} bytes are available")),
+                "{}",
+                warning.detail
+            );
+        }
+    }
+}
+
+/// Spec (#645): an Apply run with the creation shortage a Dry Run only warns
+/// of behaves as before: Archive Finalization rejects the root's first
+/// output for Insufficient Capacity before any mutation, nothing is
+/// created or cleaned, and no capacity warning is recorded.
+#[test]
+fn an_apply_run_with_a_creation_capacity_shortage_still_fails_its_output() {
+    let root = mod_root("apply-capacity-shortage");
+    write_file(&root.join("meshes/a.nif"), b"twelve bytes");
+    let before = snapshot_tree(&root);
+
+    let (result, toolset) = run_over(
+        ArchiveRunRequest::new(&root),
+        FakeArchivePacker::default(),
+        shared_volume_with(0),
+        &CancellationToken::new(),
+    );
+
+    let finalization = result.archive_finalization().expect("Archive Finalization");
+    assert_eq!(finalization.failure, None);
+    assert!(finalization.safe_to_continue);
+    let [rejected] = &finalization.attempts[..] else {
+        panic!("one rejected output: {:?}", finalization.attempts);
+    };
+    assert_eq!(rejected.archive_path, root.join("mod.bsa"));
+    assert_eq!(rejected.mod_root, root);
+    assert_eq!(
+        rejected.outcome.failure_category(),
+        Some(ArchiveFinalizationFailure::InsufficientCapacity)
+    );
+    assert_eq!(rejected.outcome.mutation(), MutationState::None);
+    let detail = rejected.outcome.failure().unwrap().detail();
+    assert!(
+        detail.starts_with("Insufficient Archive staging capacity: estimated "),
+        "{detail}"
+    );
+    assert!(detail.contains("available 0 bytes"), "{detail}");
+    assert!(
+        capacity_warnings(&result).is_empty(),
+        "{:?}",
+        result.diagnostics()
+    );
+    assert!(result.planned_archive_work().is_empty());
+    assert!(toolset.packer.writes().is_empty());
+    assert_eq!(snapshot_tree(&root), before, "the Mod Root is unchanged");
 }

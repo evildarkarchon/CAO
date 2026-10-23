@@ -278,12 +278,23 @@ impl RunToolset {
     /// never `write` or a commit, and needs no phase handle: the caller
     /// records the Planned phase and the plan. Planning panics are contained
     /// and returned as a failed plan.
+    ///
+    /// The plan carries the shortage, if any, that the Apply run's Capacity
+    /// Check would fail its Archive creation on, found through the run's
+    /// Capacity Check and so over the run's frozen volume identities. The
+    /// caller reports it with [`Self::capacity_shortage_warning`].
     pub(crate) fn plan_archive_creation(
         &self,
         preparation: &RunPreparation,
         choices: &ArchiveFinalizationChoices,
         cancelled: &dyn Fn() -> bool,
     ) -> CreationPlanning {
-        finalization::plan_archive_creation(&self.seams, choices, preparation, cancelled)
+        finalization::plan_archive_creation(
+            &self.seams,
+            &self.capacity_check(),
+            choices,
+            preparation,
+            cancelled,
+        )
     }
 }

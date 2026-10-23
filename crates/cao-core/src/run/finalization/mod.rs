@@ -1,6 +1,7 @@
 //! Archive Finalization: the Run Phase that packs Loose Assets into new
 //! Archives and maintains their Loading Plugins under Apply, and under Dry
-//! Run plans its output Archives and stops ([`plan_archive_creation`]).
+//! Run plans its output Archives, runs the Apply run's Capacity Check over
+//! them without failing, and stops ([`plan_archive_creation`]).
 //!
 //! Ported from `src/Run/ArchiveFinalization.cpp` and its private parts
 //! (`ArchiveFinalizationPlanning.cpp`, `ArchiveFinalizationAttempt.cpp`,
@@ -36,7 +37,7 @@ use cao_winfs::is_reparse_point;
 
 use crate::execution::MutationState;
 use crate::routing::RequestedWork;
-use crate::run::capacity::{CapacityCheck, Shortfall};
+use crate::run::capacity::{CapacityCheck, Demand, Shortfall};
 use crate::run::staging::has_staging_component;
 use crate::run::{
     ArchiveFinalizationHandle, ArchiveSeams, PlannedOutputArchive, RunPreparation,
@@ -334,7 +335,15 @@ pub(crate) enum CreationPlanning {
     NotRequested,
     /// The output Archives an Apply run over the Mod Roots as they are now
     /// would create, in plan order. Empty when nothing would be packed.
-    Planned(Vec<PlannedOutputArchive>),
+    Planned {
+        /// The planned output Archives, in plan order.
+        outputs: Vec<PlannedOutputArchive>,
+        /// The shortage the Apply run's Capacity Check would fail its
+        /// Archive creation on, before any root mutates: the same check over
+        /// the same [`creation_demand`], so `None` exactly when that Apply
+        /// run would pass it.
+        shortfall: Option<Shortfall>,
+    },
     /// Cancellation was observed while planning; nothing was planned.
     Cancelled,
     /// Planning failed, or panicked, with this detail: the failure an Apply
@@ -352,12 +361,19 @@ pub(crate) enum CreationPlanning {
 /// `list_names` and `partition`. `cancelled` is polled as planning polls it
 /// under Apply.
 ///
+/// It then runs the Capacity Check the Apply run would run before mutating,
+/// through `capacity`, the run's Capacity Check, over the same
+/// [`creation_demand`], and returns any shortage beside the outputs rather
+/// than failing: the Dry Run itself needs no space. The check only reads the
+/// volume probe, whose panics it contains.
+///
 /// Planning has no panic containment of its own, and a Dry Run has no
 /// attempt-phase handle to finish as an Unexpected Exception, so a panic of
 /// the packer or of planning is contained here and returned as
 /// [`CreationPlanning::Failed`] with its message.
 pub(crate) fn plan_archive_creation(
     seams: &ArchiveSeams,
+    capacity: &CapacityCheck<'_>,
     choices: &ArchiveFinalizationChoices,
     preparation: &RunPreparation,
     cancelled: &dyn Fn() -> bool,
@@ -370,20 +386,57 @@ pub(crate) fn plan_archive_creation(
     }
     let exclusions = checked_packing_exclusions(preparation);
     let planned = catch_unwind(AssertUnwindSafe(|| {
-        plan_finalization(
+        let plan = plan_finalization(
             preparation.mod_roots(),
             choices,
             &*seams.packer,
             &exclusions,
             cancelled,
-        )
+        )?;
+        // The plan is held, not finalized, so the demand comes from the
+        // frozen plan exactly as an Apply run's does before it mutates.
+        let shortfall = capacity.first_shortfall(&creation_demand(capacity, &plan).phase);
+        Ok((planned_outputs(&plan), shortfall))
     }));
     match planned {
-        Ok(Ok(plan)) => CreationPlanning::Planned(planned_outputs(&plan)),
+        Ok(Ok((outputs, shortfall))) => CreationPlanning::Planned { outputs, shortfall },
         Ok(Err(PlanningStop::Cancelled)) => CreationPlanning::Cancelled,
         Ok(Err(PlanningStop::Failed(detail))) => CreationPlanning::Failed(detail),
         Err(payload) => CreationPlanning::Failed(take_panic_message(payload)),
     }
+}
+
+/// Archive creation's capacity demand over one frozen plan, as
+/// [`creation_demand`] computes it for both Apply and Dry Run.
+struct CreationDemand {
+    /// Everything the phase may write: each Mod Root's Dummy Plugin
+    /// allowance plus each planned output's estimate. A volume must fit all
+    /// of it before any root mutates.
+    phase: Demand,
+    /// Only the Dummy Plugin allowances, to which each output attempt's
+    /// recheck adds its own output.
+    dummies: Demand,
+}
+
+/// The capacity demand of Archive creation over `plan`, computed without
+/// finalizing it, so an Apply run's Capacity Check and a Dry Run's warning
+/// test the same bytes at the same Mod Roots.
+///
+/// Roots enter the demand in plan order, each with its Dummy Plugin
+/// allowance, and each output's `estimated_capacity_bytes` is added to its
+/// own root. Planned source deletion is never counted as space.
+fn creation_demand(capacity: &CapacityCheck<'_>, plan: &FinalizationPlan) -> CreationDemand {
+    let mut phase = capacity.demand();
+    let mut dummies = capacity.demand();
+    for root in &plan.roots {
+        let required = plan.dummy_capacity_by_root[root];
+        phase.add(root, required);
+        dummies.add(root, required);
+    }
+    for output in &plan.outputs {
+        phase.add(&output.mod_root, output.estimated_capacity_bytes);
+    }
+    CreationDemand { phase, dummies }
 }
 
 /// The Planned Archive Work facts of `plan`'s outputs, in plan order: what
@@ -487,16 +540,10 @@ fn finalize_plan(
     // never repeats native volume queries. A panicking query is an
     // unknown volume, not the phase's Unexpected Exception: the
     // unknown-volume rule keeps the check conservative.
-    let mut phase_demand = capacity.demand();
-    let mut dummy_demand = capacity.demand();
-    for root in &plan.roots {
-        let required = plan.dummy_capacity_by_root[root];
-        phase_demand.add(root, required);
-        dummy_demand.add(root, required);
-    }
-    for output in &plan.outputs {
-        phase_demand.add(&output.mod_root, output.estimated_capacity_bytes);
-    }
+    let CreationDemand {
+        phase: phase_demand,
+        dummies: dummy_demand,
+    } = creation_demand(capacity, plan);
     // A Mod Root with no planned writes cannot run out of staging space
     // during this phase, so only roots with demand are checked, in root
     // order.
