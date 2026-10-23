@@ -96,7 +96,6 @@ pub enum RunPhaseStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PhaseSkipReason {
     NoRequestedWork,
-    DryRun,
 }
 
 /// The terminal classification of one Optimization Run.
