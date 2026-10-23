@@ -7,6 +7,7 @@
 mod archives;
 mod artifacts;
 mod asset_attempt;
+mod byte_size;
 mod capacity;
 mod evidence;
 mod executor;
@@ -34,6 +35,7 @@ pub use artifacts::{
 pub use asset_attempt::{
     AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
 };
+pub use byte_size::ByteSize;
 pub use evidence::{
     ArchiveDiscoveryEvidence, OutputPlanBasis, PlannedArchiveExtraction, PlannedArchiveWork,
     PlannedOutputArchive, RoutedAssetAttempt, RunEvidence, RunObservationSink,

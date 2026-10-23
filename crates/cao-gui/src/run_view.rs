@@ -12,9 +12,10 @@ use std::path::Path;
 
 use cao_core::routing::SkipReason;
 use cao_core::run::{
-    MutationKind, OptimizationRunResult, OutputPlanBasis, PackedArchiveKind, PhaseSkipReason,
-    PlannedArchiveWork, PlannedOutputArchive, RunDiagnostic, RunDiagnosticSeverity, RunEvent,
-    RunEventPayload, RunFailure, RunId, RunOutcome, RunPhase, RunPhaseStatus, RunProgress,
+    ByteSize, MutationKind, OptimizationRunResult, OutputPlanBasis, PackedArchiveKind,
+    PhaseSkipReason, PlannedArchiveWork, PlannedOutputArchive, RunDiagnostic,
+    RunDiagnosticSeverity, RunEvent, RunEventPayload, RunFailure, RunId, RunOutcome, RunPhase,
+    RunPhaseStatus, RunProgress,
 };
 
 /// Presentation facts copied from one run's ordered events.
@@ -382,12 +383,12 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
 fn append_planned_creation(details: &mut Vec<String>, work: &PlannedArchiveWork) {
     for (output, first_plugin) in PlannedOutputArchive::with_first_dummy_plugins(work.outputs()) {
         details.push(format!(
-            "Planned Archive: {} | {} | {} | files={} | bytes={} | delete-sources={}",
+            "Planned Archive: {} | {} | {} | files={} | size={} | delete-sources={}",
             shown(&output.archive_path),
             shown(&output.mod_root),
             packed_kind_name(output.kind),
             output.file_count,
-            output.total_bytes,
+            ByteSize(output.total_bytes),
             yes_no(output.deletes_packed_sources)
         ));
         // Outputs sharing a fallback Loading Plugin name would need one

@@ -55,12 +55,12 @@ fn a_dry_run_logs_each_archive_and_dummy_plugin_it_would_create() {
     );
     let shown = |name: &str| root.join(name).display().to_string();
     let expected = [
-        format!("would create {} (1 files, 12 bytes)", shown("mod.bsa")),
+        format!("would create {} (1 files, 12 B)", shown("mod.bsa")),
         format!("would create Dummy Plugin {}", shown("mod.esp")),
-        format!("would create {} (1 files, 12 bytes)", shown("mod0.bsa")),
+        format!("would create {} (1 files, 12 B)", shown("mod0.bsa")),
         format!("would create Dummy Plugin {}", shown("mod0.esp")),
         format!(
-            "would create {} (1 files, 7 bytes)",
+            "would create {} (1 files, 7 B)",
             shown("mod - Textures.bsa")
         ),
     ];

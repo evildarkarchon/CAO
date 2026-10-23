@@ -40,7 +40,7 @@ use crate::run::archives::{
 use crate::run::capacity::Shortfall;
 use crate::run::finalization::CreationPlanning;
 use crate::run::{
-    ArchiveExtractionPlan, ArchiveFinalizationChoices, AssetInitializationCancelled,
+    ArchiveExtractionPlan, ArchiveFinalizationChoices, AssetInitializationCancelled, ByteSize,
     CancellationToken, MutableRunEvidence, OutputPlanBasis, PlannedArchiveExtraction,
     PlannedOutputArchive, RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode, RunFailure,
     RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunToolset, SourceCleanup,
@@ -832,10 +832,10 @@ fn plan_archive_finalization(
         // the evidence refused.
         evidence.record_planned_output(output.clone())?;
         log::info!(
-            "would create {} ({} files, {} bytes)",
+            "would create {} ({} files, {})",
             output.archive_path.display(),
             output.file_count,
-            output.total_bytes
+            ByteSize(output.total_bytes)
         );
         if let Some(plugin) = first_plugin {
             log::info!("would create Dummy Plugin {}", plugin.display());

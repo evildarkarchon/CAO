@@ -663,7 +663,7 @@ fn a_dry_run_lists_its_planned_archive_creation() {
     let shown = |name: &str| root.join(name).display().to_string();
     let output = |archive: &str| {
         format!(
-            "Planned Archive: {} | {} | Textures | files=1 | bytes=7 | delete-sources=yes",
+            "Planned Archive: {} | {} | Textures | files=1 | size=7 B | delete-sources=yes",
             shown(archive),
             root.display()
         )
