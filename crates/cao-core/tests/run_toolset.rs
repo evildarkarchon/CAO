@@ -215,6 +215,10 @@ fn a_dry_run_through_a_toolset_never_extracts_or_finalizes() {
         panic!("one planned output: {:?}", result.planned_archive_work());
     };
     assert_eq!(output.file_count, 1, "only the loose Texture: {output:?}");
+    assert!(
+        toolset.packer.rules_read() > 0,
+        "planning names its outputs by the packer's rules"
+    );
     assert_eq!(
         toolset.packer.listed_names(),
         [
