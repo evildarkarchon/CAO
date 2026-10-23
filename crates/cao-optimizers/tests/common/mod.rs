@@ -25,7 +25,9 @@ pub fn serial() -> MutexGuard<'static, ()> {
 }
 
 /// Runs `options` under `profile` on `service` and waits for the result: the
-/// Run Request comes from `run_request`, as the GUI builds it.
+/// Run Request comes from `run_request`, as the GUI builds it, but without
+/// Profile Capabilities, so the profile Preparing reads judges all of its
+/// work.
 ///
 /// Takes the service by reference because dropping a service cancels and
 /// joins its runs; the caller keeps it alive, and may start further runs on it.
@@ -37,7 +39,7 @@ pub fn start_and_wait(
     profile: &str,
     options: &Options,
 ) -> Arc<OptimizationRunResult> {
-    let request = run_request(profile, options).unwrap();
+    let request = run_request(profile, options, None).unwrap();
     service.start(request, None).unwrap().wait()
 }
 
