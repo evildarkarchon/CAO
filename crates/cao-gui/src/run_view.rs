@@ -12,8 +12,9 @@ use std::path::Path;
 
 use cao_core::routing::SkipReason;
 use cao_core::run::{
-    MutationKind, OptimizationRunResult, PhaseSkipReason, RunEvent, RunEventPayload, RunFailure,
-    RunId, RunOutcome, RunPhase, RunPhaseStatus, RunProgress,
+    MutationKind, OptimizationRunResult, PhaseSkipReason, RunDiagnostic, RunDiagnosticCode,
+    RunEvent, RunEventPayload, RunFailure, RunId, RunOutcome, RunPhase, RunPhaseStatus,
+    RunProgress,
 };
 
 /// Presentation facts copied from one run's ordered events.
@@ -90,11 +91,9 @@ impl RunView {
                     mark_cancelling(&mut state.label);
                 }
             }
-            RunEventPayload::Diagnostic(diagnostic) => state.details.push(format!(
-                "Diagnostic: {} | {}",
-                diagnostic.detail,
-                diagnostic.path.display()
-            )),
+            RunEventPayload::Diagnostic(diagnostic) => {
+                state.details.push(diagnostic_row(diagnostic))
+            }
             RunEventPayload::Failure(failure) => state.details.push(failure_row(failure)),
             RunEventPayload::Terminal(result) => {
                 state.active = false;
@@ -241,6 +240,21 @@ fn failure_row(failure: &RunFailure) -> String {
         "{FAILURE_PREFIX}{} | {}",
         failure.detail,
         shown(&failure.path)
+    )
+}
+
+/// A Run Diagnostic's detail row: `Warning:` for a warning-level code, such
+/// as a Dry Run's capacity shortage, and `Diagnostic:` for the informational
+/// rest. Neither is a failure: no diagnostic changes the Run Outcome.
+fn diagnostic_row(diagnostic: &RunDiagnostic) -> String {
+    let prefix = match diagnostic.code {
+        RunDiagnosticCode::CapacityShortage => "Warning",
+        _ => "Diagnostic",
+    };
+    format!(
+        "{prefix}: {} | {}",
+        diagnostic.detail,
+        shown(&diagnostic.path)
     )
 }
 

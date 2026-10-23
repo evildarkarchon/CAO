@@ -50,12 +50,12 @@ use crate::Error;
 use crate::execution::AssetExecutionResult;
 use crate::routing::RoutedAsset;
 use crate::run::archives::{self, Preflight, RootArchives, preflight};
-use crate::run::capacity::{CapacityCheck, FrozenVolumes};
+use crate::run::capacity::{CapacityCheck, FrozenVolumes, Shortfall};
 use crate::run::finalization;
 use crate::run::{
     ArchiveExtractionPlan, ArchiveExtractionResult, ArchiveFinalizationChoices,
     ArchiveFinalizationHandle, ArchivePacker, ArchivePrecedence, ArchiveReader, CancellationToken,
-    RunDiagnostic, RunPreparation, SourceCleanup, TemporaryArtifactRegistry, VolumeProbe,
+    RunDiagnostic, RunPhase, RunPreparation, SourceCleanup, TemporaryArtifactRegistry, VolumeProbe,
 };
 
 /// Cancellation observed while an Asset backend initialized, before any attempt existed.
@@ -184,6 +184,21 @@ impl RunToolset {
             &self.capacity_check(),
             stop,
         )
+    }
+
+    /// The warning-level capacity shortage Run Diagnostic a Dry Run records
+    /// at `phase` for `shortfall`, a shortage its Apply run would fail on,
+    /// naming the Mod Root's volume through the run's frozen volume
+    /// identities (see [`CapacityCheck::shortage_warning`]).
+    ///
+    /// Only reads the volume probe, and contains its panics, so it never
+    /// fails or escapes the run's work.
+    pub(crate) fn capacity_shortage_warning(
+        &self,
+        phase: RunPhase,
+        shortfall: &Shortfall,
+    ) -> RunDiagnostic {
+        self.capacity_check().shortage_warning(phase, shortfall)
     }
 
     /// Extracts one planned Archive with [`archives::extract_archive`] over

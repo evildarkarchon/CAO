@@ -17,7 +17,9 @@
 //! preflight reads every selected manifest, rejects any Unsafe Game Path,
 //! records the Archive Collisions in Run Evidence and runs the Capacity
 //! Check; any failure stops the run with nothing extracted. A Dry Run runs
-//! the same preflight, so it fails where the Apply run would.
+//! the same preflight, so it fails where the Apply run would, except that a
+//! Capacity Check shortage, which the Dry Run itself cannot hit, is a
+//! warning-level Run Diagnostic and the Dry Run goes on to plan.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ops::ControlFlow;
@@ -31,7 +33,9 @@ use crate::routing::{
     AssetKind, AssetRouter, ExecutionMode, OptimizerTarget, RoutingDecision, RoutingLedger,
     SkipReason,
 };
-use crate::run::archives::{Preflight, RootArchives, archive_order_key, relative_game_path};
+use crate::run::archives::{
+    Preflight, RootArchives, archive_order_key, capacity_failure, relative_game_path,
+};
 use crate::run::{
     ArchiveExtractionPlan, ArchiveFinalizationChoices, AssetInitializationCancelled,
     CancellationToken, MutableRunEvidence, PhaseSkipReason, PlannedArchiveExtraction,
@@ -311,7 +315,10 @@ pub(super) fn run_work_phases(
 ///
 /// The skipped Archive counts are recorded once the pass ends, complete or
 /// not. A cancelled pass, a failed preflight, recorded as the run's failure,
-/// or a cancelled preflight stops the work with nothing extracted.
+/// or a cancelled preflight stops the work with nothing extracted. A
+/// Capacity Check shortage stops an Apply run the same way, as Archive
+/// Insufficient Capacity; a Dry Run records it as a
+/// [`RunDiagnosticCode::CapacityShortage`] warning and continues.
 fn discover_archives(
     preparation: &RunPreparation,
     toolset: &RunToolset,
@@ -372,10 +379,9 @@ fn discover_archives(
     }
 
     // Both modes run the same preflight: a Dry Run reads the manifests and
-    // fails Archive Precedence, an Unsafe Game Path or the Capacity Check as
-    // the Apply run would, so a Dry Run that succeeds means the Apply run
-    // gets past its checks. The preflight only reads, so a Dry Run still
-    // mutates nothing.
+    // fails Archive Precedence or an Unsafe Game Path as the Apply run would,
+    // so a Dry Run that succeeds means the Apply run gets past those checks.
+    // The preflight only reads, so a Dry Run still mutates nothing.
     let plans = match toolset.preflight_archives(
         root_archives,
         preparation.archive_precedence(),
@@ -388,10 +394,33 @@ fn discover_archives(
             return Ok(ControlFlow::Break(Stop::Halted));
         }
         Preflight::Cancelled => return Ok(ControlFlow::Break(Stop::Halted)),
-        Preflight::Planned { plans, collisions } => {
+        Preflight::Planned {
+            plans,
+            collisions,
+            shortfall,
+        } => {
+            let dry_run = preparation.policy().execution_mode() == ExecutionMode::DryRun;
+            if let Some(shortfall) = &shortfall
+                && !dry_run
+            {
+                // An Apply run must not start extracting what it cannot fit,
+                // so the shortage fails it before any collision is retained,
+                // as every other failed check does.
+                evidence.record_failure(capacity_failure(shortfall));
+                return Ok(ControlFlow::Break(Stop::Halted));
+            }
             // Retained before the extraction phase is observed, so a
             // failing observer or a later unwind cannot lose the plan.
             evidence.record_archive_collisions(&collisions)?;
+            if let Some(shortfall) = &shortfall {
+                // A Dry Run needs no space, so the shortage its Apply run
+                // would fail on is only a warning, and the preview carries on
+                // to report every plan.
+                let warning =
+                    toolset.capacity_shortage_warning(RunPhase::DiscoveringArchives, shortfall);
+                log::warn!("{}: {}", warning.path.display(), warning.detail);
+                evidence.record_diagnostic(warning);
+            }
             plans
         }
     };

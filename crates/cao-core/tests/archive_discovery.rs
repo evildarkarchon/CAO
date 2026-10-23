@@ -214,9 +214,15 @@ fn an_enabled_archive_is_extracted_before_the_definitive_tree_is_built() {
 /// The Apply request over native Textures and Archive extraction for every
 /// child Mod Root of `base`, which Preparing orders by name.
 fn several_archives_and_textures(base: &Path) -> RunRequest {
+    several_archives_and_textures_in(ExecutionMode::Apply, base)
+}
+
+/// The request over native Textures and Archive extraction in `mode` for
+/// every child Mod Root of `base`, which Preparing orders by name.
+fn several_archives_and_textures_in(mode: ExecutionMode, base: &Path) -> RunRequest {
     RunRequest::new(
         "SkyrimSE",
-        ExecutionMode::Apply,
+        mode,
         ModSelection::ChildModRoots(base.to_path_buf()),
         vec![
             RequestedWork::NativeTextureOptimization,
@@ -1164,6 +1170,113 @@ fn a_dry_run_fails_archive_discovery_checks_as_an_apply_run_does() {
         assert_eq!(dry_run.failures(), apply.failures(), "{name}");
         assert_eq!(snapshot_tree(&root), before, "{name}");
     }
+}
+
+/// Two Mod Roots on one volume, each with an Archive of 1,000,000 declared
+/// bytes, and 1,500,000 bytes free: either root alone fits, both together
+/// do not, so the Capacity Check finds a shortage at the first root.
+fn shared_volume_shortage(base: &Path) -> Arc<ScriptedToolset> {
+    sized_archive(&base.join("first/source.bsa"), 1_000_000);
+    sized_archive(&base.join("last/source.bsa"), 1_000_000);
+    Arc::new(with_volume_probe(
+        FakeVolumeProbe::default()
+            .with_capacity(|_| Some(1_500_000))
+            .with_volumes(|_| Some("shared-volume".to_owned())),
+    ))
+}
+
+/// A Dry Run whose Apply run would run out of space extracting Archives
+/// warns with a capacity shortage Run Diagnostic naming the Mod Root's
+/// volume, the demand and the available space. It still records every
+/// planned extraction, mutates nothing, and succeeds, since the Dry Run
+/// itself needs no space.
+#[test]
+fn a_dry_run_with_a_capacity_shortage_warns_and_still_plans_every_extraction() {
+    let base = canonical(&scratch_dir("archive-dry-run-capacity-shortage"));
+    let toolset = shared_volume_shortage(&base);
+    let before = snapshot_tree(&base);
+    let result = execute(
+        &several_archives_and_textures_in(ExecutionMode::DryRun, &base),
+        &toolset,
+    );
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.failures()
+    );
+    assert!(result.failures().is_empty(), "{:?}", result.failures());
+    assert_eq!(snapshot_tree(&base), before, "a Dry Run mutates nothing");
+    assert_eq!(
+        result.phase(RunPhase::ExtractingArchives).unwrap().status(),
+        RunPhaseStatus::Planned
+    );
+    let planned = result.planned_archive_work().extractions();
+    let planned_archives: Vec<_> = planned.iter().map(|plan| &plan.archive_path).collect();
+    assert_eq!(
+        planned_archives,
+        [
+            &base.join("first/source.bsa"),
+            &base.join("last/source.bsa")
+        ]
+    );
+
+    let warnings: Vec<_> = result
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.code == RunDiagnosticCode::CapacityShortage)
+        .collect();
+    let [warning] = warnings.as_slice() else {
+        panic!("one capacity shortage expected: {:?}", result.diagnostics());
+    };
+    assert_eq!(warning.phase, RunPhase::DiscoveringArchives);
+    assert_eq!(warning.path, base.join("first"));
+    // Both roots share the volume, so the demand is both estimates together.
+    let demand: u64 = planned
+        .iter()
+        .map(|plan| plan.estimated_capacity_bytes)
+        .sum();
+    for named in ["shared-volume", &format!("{demand} bytes"), "1500000 bytes"] {
+        assert!(
+            warning.detail.contains(named),
+            "{named:?} missing from {:?}",
+            warning.detail
+        );
+    }
+}
+
+/// An Apply run with the shortage a Dry Run only warns of still fails before
+/// extraction with the same Run Failure, and emits no capacity warning.
+#[test]
+fn an_apply_run_with_a_capacity_shortage_still_fails_before_extraction() {
+    let base = canonical(&scratch_dir("archive-apply-capacity-shortage"));
+    let toolset = shared_volume_shortage(&base);
+    let before = snapshot_tree(&base);
+
+    let result = execute(&several_archives_and_textures(&base), &toolset);
+
+    assert_blocked_before_extraction(
+        &result,
+        &toolset,
+        RunFailureCode::ArchiveInsufficientCapacity,
+        &base.join("first"),
+    );
+    assert!(
+        result.failures()[0]
+            .detail
+            .starts_with("Insufficient Archive staging capacity: estimated "),
+        "{}",
+        result.failures()[0].detail
+    );
+    assert!(result.planned_archive_work().is_empty());
+    assert!(
+        result
+            .diagnostics()
+            .iter()
+            .all(|diagnostic| diagnostic.code != RunDiagnosticCode::CapacityShortage)
+    );
+    assert_eq!(snapshot_tree(&base), before);
 }
 
 /// Origin: ArchiveFirstAssetDiscoveryTests::collisionObserverCanCancelBeforeExtraction.
