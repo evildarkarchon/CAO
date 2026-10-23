@@ -15,8 +15,8 @@ use crate::test_support::{
     execute_run, sse_capabilities,
 };
 
-/// An Apply run that requests Archive creation, by default over one Mod Root,
-/// and the configuration its Preparing loads.
+/// A run, Apply by default, that requests Archive creation, by default over
+/// one Mod Root, and the configuration its Preparing loads.
 ///
 /// The Archive creation request and the Packing Exclusions reach Archive
 /// Finalization as they do in production: the request asks for the work, the
@@ -33,7 +33,8 @@ use crate::test_support::{
 /// such as FO4's `.ba2` (#597). It may also set the Run Request's Archive
 /// extraction ([`Self::with_archive_extraction`]) and Archive Finalization
 /// ([`Self::with_archive_finalization`]) choices, which the run's Archive
-/// work reads from the request, as production's does.
+/// work reads from the request, as production's does, and make the run a
+/// Dry Run ([`Self::with_execution_mode`]).
 pub struct ArchiveRunRequest {
     /// The Mod Selection the run resolves: one Mod Root by default.
     selection: ModSelection,
@@ -50,6 +51,8 @@ pub struct ArchiveRunRequest {
     /// The Run Request is their one source, as in production: no provider
     /// this builder makes carries any choice.
     work_choices: WorkChoices,
+    /// Whether the run applies its work or is a Dry Run: Apply by default.
+    execution_mode: ExecutionMode,
 }
 
 impl ArchiveRunRequest {
@@ -74,6 +77,16 @@ impl ArchiveRunRequest {
             archive_extension: ".bsa".to_owned(),
             packing_exclusions: Vec::new(),
             work_choices: WorkChoices::default(),
+            execution_mode: ExecutionMode::Apply,
+        }
+    }
+
+    /// Replaces the run's execution mode, for a Dry Run that plans the
+    /// Archive work an Apply run over the same request would do.
+    pub fn with_execution_mode(self, execution_mode: ExecutionMode) -> Self {
+        Self {
+            execution_mode,
+            ..self
         }
     }
 
@@ -122,12 +135,12 @@ impl ArchiveRunRequest {
         self
     }
 
-    /// The Apply request over the Mod Selection, carrying the chosen Work
-    /// Choices.
+    /// The request over the Mod Selection, in the chosen execution mode
+    /// (Apply by default) and carrying the chosen Work Choices.
     pub fn request(&self) -> RunRequest {
         RunRequest::new(
             "SkyrimSE",
-            ExecutionMode::Apply,
+            self.execution_mode,
             self.selection.clone(),
             self.work.clone(),
         )

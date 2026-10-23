@@ -114,7 +114,7 @@ enum Scenario {
 ///   Texture each, packs the first, then the packer panics writing the
 ///   second: an unsafe Unexpected Exception that stops the third.
 ///
-/// Each is an Apply run because a completed Dry Run ends at a skipped Archive
+/// Each is an Apply run because a completed Dry Run ends at a planned Archive
 /// Finalization, which has no counts for the terminal view to show.
 fn classified_run(scenario: Scenario) -> Arc<OptimizationRunResult> {
     let root = scratch_dir(&format!("{scenario:?}"));
@@ -611,6 +611,81 @@ fn the_terminal_result_lists_its_evidence() {
             .last()
             .unwrap()
             .contains("late diagnostic")
+    );
+}
+
+/// Spec (#643): a Dry Run with Archive creation shows Archive Finalization
+/// as planned, and its terminal rows list each planned output Archive and
+/// each Dummy Plugin it would need, with the note that the plan is an
+/// estimate from the Mod Roots as they are now. The plan is a real Dry
+/// Run's: two Textures split into two Archives, each with its own plugin.
+#[test]
+fn a_dry_run_lists_its_planned_archive_creation() {
+    let root = scratch_dir("dry-run-plan");
+    write_textures(&root, 2);
+    let packer = FakeArchivePacker {
+        // Room for one seven-byte Texture per Archive.
+        archive_limit: 10,
+        ..FakeArchivePacker::default()
+    };
+    let toolset = Arc::new(real_archive_work(FakeArchiveReader::default(), packer));
+    let request = RunRequest::new(
+        "SkyrimSE",
+        ExecutionMode::DryRun,
+        ModSelection::SingleModRoot(root),
+        vec![
+            RequestedWork::NativeTextureOptimization,
+            RequestedWork::ArchiveCreation,
+        ],
+    );
+    let result = execute(
+        &request,
+        &toolset,
+        &RecordingSink::default(),
+        Vec::new(),
+        &CancellationToken::new(),
+    );
+    assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    let root = result.mod_roots()[0].clone();
+    let planned_phase = *result.phase(RunPhase::ArchiveFinalization).unwrap();
+
+    let mut view = RunView::default();
+    view.begin("run");
+    assert!(view.consume(&event("run", 1, RunEventPayload::Phase(planned_phase))));
+    assert_eq!(
+        view.state().label,
+        "Archive Finalization - Planned (Dry Run)"
+    );
+    assert!(view.consume(&event("run", 2, executed(RunPhase::SafetyCleanup, None))));
+    assert!(view.consume(&event("run", 3, RunEventPayload::Terminal(result))));
+
+    let details = view.state().details.join("\n");
+    let shown = |name: &str| root.join(name).display().to_string();
+    let output = |archive: &str| {
+        format!(
+            "Planned Archive: {} | {} | Textures | files=1 | bytes=7 | delete-sources=yes",
+            shown(archive),
+            root.display()
+        )
+    };
+    for expected in [
+        output("dry-run-plan - Textures.bsa"),
+        format!("Planned Dummy Plugin: {}", shown("dry-run-plan.esp")),
+        output("dry-run-plan0 - Textures.bsa"),
+        format!("Planned Dummy Plugin: {}", shown("dry-run-plan0.esp")),
+        "Planned Archive Creation: an estimate from the Mod Roots as they are now; an Apply \
+         run plans after Archive extraction and Loose Asset optimization, so its Archives \
+         can differ"
+            .to_owned(),
+    ] {
+        assert!(
+            view.state().details.contains(&expected),
+            "{expected} missing from\n{details}"
+        );
+    }
+    assert!(
+        !root.join("dry-run-plan.esp").exists(),
+        "nothing is created"
     );
 }
 

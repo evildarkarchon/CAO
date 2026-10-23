@@ -56,6 +56,19 @@ pub struct PlannedOutputArchive {
     pub deletes_packed_sources: bool,
 }
 
+/// What a Dry Run's planned output Archives were planned from, which says
+/// how far an Apply run's outputs can differ from them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OutputPlanBasis {
+    /// An estimate made from the Mod Roots as they were when the Dry Run
+    /// planned. An Apply run plans after Archive extraction and Loose Asset
+    /// optimization, which a Dry Run never performs, so the Apply run's
+    /// contents and sizes can differ, and so can its names: the source
+    /// Archives it would back up or remove are still on disk when the Dry
+    /// Run picks names.
+    EstimateFromModRootsAsTheyAre,
+}
+
 /// The Planned Archive Work one Dry Run recorded, as two independent lists in
 /// record order. Empty for an Apply run, and for a Dry Run that planned no
 /// Archive work.
@@ -63,6 +76,9 @@ pub struct PlannedOutputArchive {
 pub struct PlannedArchiveWork {
     extractions: Vec<PlannedArchiveExtraction>,
     outputs: Vec<PlannedOutputArchive>,
+    /// Set once Archive Finalization planned Archive creation, before any
+    /// output is recorded; `None` when no creation was planned.
+    output_basis: Option<OutputPlanBasis>,
 }
 
 impl PlannedArchiveWork {
@@ -80,9 +96,23 @@ impl PlannedArchiveWork {
         &self.outputs
     }
 
+    /// What the planned output Archives were planned from, or `None` when
+    /// the Dry Run planned no Archive creation. Set whenever creation was
+    /// planned, even when it planned no output: an Apply run could still
+    /// create Archives from the files it extracts first.
+    pub fn output_basis(&self) -> Option<OutputPlanBasis> {
+        self.output_basis
+    }
+
     /// Whether neither list holds a fact.
     pub fn is_empty(&self) -> bool {
         self.extractions.is_empty() && self.outputs.is_empty()
+    }
+
+    /// Records what the planned outputs are planned from; Run Evidence
+    /// checks the phase and that it is set only once.
+    pub(super) fn set_output_basis(&mut self, basis: OutputPlanBasis) {
+        self.output_basis = Some(basis);
     }
 
     /// Appends one planned extraction; Run Evidence checks the phase first.

@@ -219,6 +219,12 @@ pub struct FakeArchivePacker {
     pub archive_limit: u64,
     /// Every Archive written, in order.
     pub writes: Mutex<Vec<FakeWrite>>,
+    /// Every [`ArchivePacker::list_names`] call, as the directory and the
+    /// kind of name it listed, in call order.
+    pub listed_names: Mutex<Vec<(PathBuf, ArchiveNameKind)>>,
+    /// The Mod Root of every [`ArchivePacker::partition`] call, in call
+    /// order.
+    pub partitioned: Mutex<Vec<PathBuf>>,
     /// Runs after each Archive is written, once its sources were read.
     pub after_write: Option<AfterWrite>,
     /// Runs before each [`ArchivePacker::list_names`] call reads its
@@ -248,6 +254,8 @@ impl Default for FakeArchivePacker {
             },
             archive_limit: u64::MAX,
             writes: Mutex::default(),
+            listed_names: Mutex::default(),
+            partitioned: Mutex::default(),
             after_write: None,
             before_list: None,
         }
@@ -314,6 +322,18 @@ impl FakeArchivePacker {
     /// Every Archive written so far, in order.
     pub fn writes(&self) -> Vec<FakeWrite> {
         self.writes.lock().unwrap().clone()
+    }
+
+    /// Every [`ArchivePacker::list_names`] call so far, as the directory and
+    /// the kind of name it listed, in call order.
+    pub fn listed_names(&self) -> Vec<(PathBuf, ArchiveNameKind)> {
+        self.listed_names.lock().unwrap().clone()
+    }
+
+    /// The Mod Root of every [`ArchivePacker::partition`] call so far, in
+    /// call order.
+    pub fn partitioned(&self) -> Vec<PathBuf> {
+        self.partitioned.lock().unwrap().clone()
     }
 
     /// The fake classification of a file beneath `root`; `None` stays loose.
@@ -398,6 +418,10 @@ impl ArchivePacker for FakeArchivePacker {
     }
 
     fn list_names(&self, dir: &Path, kind: ArchiveNameKind) -> Result<Vec<ArchiveName>, Error> {
+        self.listed_names
+            .lock()
+            .unwrap()
+            .push((dir.to_path_buf(), kind));
         if let Some(before_list) = &self.before_list {
             before_list(dir, kind);
         }
@@ -418,6 +442,7 @@ impl ArchivePacker for FakeArchivePacker {
         mut sources: Vec<PackedFile>,
         merge: ArchiveMerge,
     ) -> Result<Vec<PlannedArchive>, Error> {
+        self.partitioned.lock().unwrap().push(root.to_path_buf());
         sources.sort_by(|left, right| left.path.cmp(&right.path));
         let open = |kind| PlannedArchive {
             kind,

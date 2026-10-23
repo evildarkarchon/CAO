@@ -182,7 +182,7 @@ fn several_mods() -> ModSelection {
 }
 
 /// A Dry Run requests the Archive work the user chose. No Admission Rule
-/// holds it back: the run's work phases plan or skip it as Dry Run, so no
+/// holds it back: the run's work phases only plan it under Dry Run, so no
 /// Archive is mutated, but the request keeps it.
 #[test]
 fn a_dry_run_request_built_with_archive_work_keeps_it() {
