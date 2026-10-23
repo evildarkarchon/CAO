@@ -85,9 +85,10 @@ impl App {
         }
     }
 
-    /// Saves the window, redirects the log, builds the run's Run Request and
-    /// starts it on the window's service, and locks the controls. Each refusal
-    /// is shown and leaves the window as it was.
+    /// Saves the window, redirects the log, builds the run's Run Request with
+    /// the loaded Profile's capabilities and starts it on the window's
+    /// service, and locks the controls. Each refusal is shown and leaves the
+    /// window as it was.
     fn start_run(&self) {
         // Settles the options, the profile and the debug-log choice the run
         // and its log use. The run reads its settings from `profile.ini`, so
@@ -96,9 +97,18 @@ impl App {
         if !self.save() {
             return;
         }
-        let (profile, options) = {
+        // The capabilities of the `profile.ini` just saved, the same ones that
+        // enable the tabs, so the request holds back the work the Profile
+        // does not support. `None` for an unreadable one, which Preparing's
+        // own read then reports. Should the file change on disk before the
+        // run prepares, that read still decides, with a Policy Conflict.
+        let (profile, options, capabilities) = {
             let loaded = self.loaded.borrow();
-            (loaded.profile.name().to_owned(), loaded.options.clone())
+            (
+                loaded.profile.name().to_owned(),
+                loaded.options.clone(),
+                loaded.capabilities(),
+            )
         };
 
         // The profile session's file, at the run's debug choice (C++
@@ -117,7 +127,7 @@ impl App {
             }
         }
 
-        let request = match run_request(&profile, &options) {
+        let request = match run_request(&profile, &options, capabilities.as_ref()) {
             Ok(request) => request,
             Err(error) => {
                 self.error("Start Error", &error.to_string());

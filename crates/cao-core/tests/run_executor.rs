@@ -216,6 +216,67 @@ fn a_no_work_run_traverses_every_phase_skipping_work_for_the_one_known_reason() 
     }
 }
 
+/// A Dry Run's request keeps the Archive work the user chose, so a Dry Run
+/// asking only for Archive work has requested work. Its work phases run, but
+/// the two that would mutate an Archive, Archive extraction and Archive
+/// Finalization, are skipped for being a Dry Run ([`PhaseSkipReason::DryRun`]),
+/// never for having no requested work.
+#[test]
+fn a_dry_run_asking_only_for_archive_work_skips_its_archive_phases_as_dry_run() {
+    let request = RunRequest::new(
+        "SkyrimSE",
+        ExecutionMode::DryRun,
+        no_work_request().mod_selection().clone(),
+        vec![
+            RequestedWork::ArchiveExtraction,
+            RequestedWork::ArchiveCreation,
+        ],
+    );
+    assert_eq!(
+        request.requested_work(),
+        [
+            RequestedWork::ArchiveExtraction,
+            RequestedWork::ArchiveCreation
+        ]
+    );
+
+    let result = execute(
+        &request,
+        &mut CountingCleanup::default(),
+        Some(&*test_configuration()),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    let records: Vec<_> = result
+        .phases()
+        .iter()
+        .map(|record| (record.phase(), record.status(), record.skip_reason()))
+        .collect();
+    let executed = |phase| (phase, RunPhaseStatus::Executed, None);
+    let dry_run = |phase| {
+        (
+            phase,
+            RunPhaseStatus::Skipped,
+            Some(PhaseSkipReason::DryRun),
+        )
+    };
+    assert_eq!(
+        records,
+        [
+            executed(RunPhase::Preparing),
+            executed(RunPhase::DiscoveringArchives),
+            dry_run(RunPhase::ExtractingArchives),
+            executed(RunPhase::BuildingEffectiveAssetTree),
+            executed(RunPhase::ProcessingAssets),
+            dry_run(RunPhase::ArchiveFinalization),
+            executed(RunPhase::SafetyCleanup),
+        ]
+    );
+    assert!(result.archive_extraction_attempts().is_empty());
+    assert!(result.archive_finalization().is_none());
+}
+
 /// Origin: RunExecutorTests::safetyCleanupRunsOnEveryTerminalPath and
 /// safetyCleanupRunsExactlyOnceBeforeTheTerminalResult.
 #[test]

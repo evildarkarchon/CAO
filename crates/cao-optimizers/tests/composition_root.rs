@@ -21,7 +21,8 @@ use cao_core::run::{
 use cao_optimizers::composition::{
     ProfileConfigurationProvider, RunSetupError, run_request, run_service,
 };
-use cao_profiles::{OptimizationMode, Options};
+use cao_optimizers::profile::profile_capabilities;
+use cao_profiles::{OptimizationMode, Options, Profiles};
 use common::{
     app_dir, canonical, dry_run_textures, edit_profile, profile_options, serial, snapshot_tree,
     start_and_wait, write, write_dds,
@@ -143,7 +144,7 @@ fn invalid_option_values_are_rejected_before_any_run() {
     );
 
     for (name, options, expected, message) in cases {
-        let error = run_request("SSE", &options).unwrap_err();
+        let error = run_request("SSE", &options, None).unwrap_err();
         assert!(expected(&error), "{name}: {error:?}");
         assert_eq!(error.to_string(), message, "{name}");
     }
@@ -163,7 +164,7 @@ fn an_invalid_mode_or_folder_is_reported_before_an_invalid_work_choice() {
         mode: OptimizationMode::Unsupported(2),
         ..invalid_choice.clone()
     };
-    let error = run_request("SSE", &mode).unwrap_err();
+    let error = run_request("SSE", &mode, None).unwrap_err();
     assert!(
         matches!(error, RunSetupError::UnsupportedMode(2)),
         "{error:?}"
@@ -173,7 +174,7 @@ fn an_invalid_mode_or_folder_is_reported_before_an_invalid_work_choice() {
         user_path: "mods/Mod".into(),
         ..invalid_choice
     };
-    let error = run_request("SSE", &folder).unwrap_err();
+    let error = run_request("SSE", &folder, None).unwrap_err();
     assert!(
         matches!(error, RunSetupError::RelativeSelection(_)),
         "{error:?}"
@@ -189,7 +190,7 @@ fn an_odd_target_size_is_accepted_while_resizing_by_size_is_off() {
         textures_target_width: 513,
         ..single_mod_options(&app)
     };
-    assert!(run_request("SSE", &options).is_ok());
+    assert!(run_request("SSE", &options, None).is_ok());
 }
 
 #[test]
@@ -204,7 +205,7 @@ fn the_request_owns_the_caller_intent() {
         ..Options::default()
     };
 
-    let request = run_request("FO4", &options).unwrap();
+    let request = run_request("FO4", &options, None).unwrap();
 
     assert_eq!(request.profile_identity(), "FO4");
     assert_eq!(request.execution_mode(), ExecutionMode::DryRun);
@@ -237,7 +238,7 @@ fn a_default_options_form_carries_the_default_work_choices() {
     let app = app_dir("default-work-choices");
     let options = single_mod_options(&app);
 
-    let request = run_request("SSE", &options).unwrap();
+    let request = run_request("SSE", &options, None).unwrap();
 
     assert_eq!(request.work_choices(), &WorkChoices::default());
 }
@@ -268,7 +269,7 @@ fn the_request_carries_the_forms_work_choices_with_ratio_winning() {
         ..single_mod_options(&app)
     };
 
-    let request = run_request("SSE", &options).unwrap();
+    let request = run_request("SSE", &options, None).unwrap();
 
     assert_eq!(
         request.work_choices(),
@@ -310,7 +311,7 @@ fn an_odd_target_size_is_accepted_when_resizing_by_ratio_wins() {
         ..single_mod_options(&app)
     };
 
-    let request = run_request("SSE", &options).unwrap();
+    let request = run_request("SSE", &options, None).unwrap();
 
     assert_eq!(
         request.work_choices().textures.resize,
@@ -328,7 +329,7 @@ fn resizing_by_size_alone_carries_the_target_size() {
         ..single_mod_options(&app)
     };
 
-    let request = run_request("SSE", &options).unwrap();
+    let request = run_request("SSE", &options, None).unwrap();
 
     assert_eq!(
         request.work_choices().textures.resize,
@@ -343,7 +344,7 @@ fn disabled_texture_work_does_not_request_profile_conversion() {
         textures_necessary: false,
         ..single_mod_options(&app)
     };
-    let request = run_request("SSE", &options).unwrap();
+    let request = run_request("SSE", &options, None).unwrap();
     assert!(!request.has_requested_work());
 }
 
@@ -357,41 +358,49 @@ fn every_kind_of_work_is_accepted() {
         let mut options = dry_run_textures(&app, &app.join("mods/Mod"));
         options.meshes_optimization_level = level;
         options.meshes_resave = resave;
-        assert!(run_request("SSE", &options).is_ok());
+        assert!(run_request("SSE", &options, None).is_ok());
         options.dry_run = false;
-        assert!(run_request("SSE", &options).is_ok());
+        assert!(run_request("SSE", &options, None).is_ok());
     }
 
     // Animations are ported (#502), in both modes.
     let mut options = dry_run_textures(&app, &app.join("mods/Mod"));
     options.animations_optimization = true;
-    assert!(run_request("SSE", &options).is_ok());
+    assert!(run_request("SSE", &options, None).is_ok());
     options.dry_run = false;
-    assert!(run_request("SSE", &options).is_ok());
+    assert!(run_request("SSE", &options, None).is_ok());
 
     // Archive creation is ported (#498), in both modes.
     let mut options = dry_run_textures(&app, &app.join("mods/Mod"));
     options.bsa_create = true;
-    assert!(run_request("SSE", &options).is_ok(), "Dry Run never packs");
+    assert!(
+        run_request("SSE", &options, None).is_ok(),
+        "Dry Run never packs"
+    );
     options.dry_run = false;
-    assert!(run_request("SSE", &options).is_ok());
+    assert!(run_request("SSE", &options, None).is_ok());
 }
 
 /// Origin: ApplicationRunSetupTests::archiveCreationRequiresProfileArchiveSupport
 /// and the FO4 Profile Capabilities. A request the selected profile cannot
-/// honour is not a Start Error: setup accepts it, and the run fails Preparing
-/// with a Policy Conflict Run Failure.
+/// honour is not a Start Error: building it reads no profile, so setup
+/// accepts it, and the run fails Preparing with a Policy Conflict Run
+/// Failure.
+///
+/// A Dry Run is no exception (#570): its request keeps the Archive creation
+/// the user chose, so a Dry Run with Create BSA under a profile without
+/// Archive support fails Preparing too, though it would never pack.
 #[test]
 fn a_request_contradicting_the_profile_capabilities_fails_preparing() {
     let _serial = serial();
     let app = app_dir("capability-conflict");
-    let mod_root = app.join("mods").join("Mod");
-    std::fs::create_dir_all(&mod_root).unwrap();
 
-    // FO4 has no Mesh support: any Mesh work contradicts it.
-    let mut options = dry_run_textures(&app, &mod_root);
-    options.meshes_resave = true;
-    let result = start_and_wait(&run_service(&app), "FO4", &options);
+    // FO4 has no Mesh support: any Mesh work contradicts it. Built without
+    // Profile Capabilities, the request holds none of it back.
+    let options = fo4_mesh_options(&app);
+    let request = run_request("FO4", &options, None).unwrap();
+    assert!(request.requests(RequestedWork::StandardMeshOptimization));
+    let result = run_service(&app).start(request, None).unwrap().wait();
     assert_eq!(result.outcome(), RunOutcome::Failed);
     let failure = &result.failures()[0];
     assert_eq!(failure.code, RunFailureCode::PolicyConflict);
@@ -413,10 +422,10 @@ fn a_request_contradicting_the_profile_capabilities_fails_preparing() {
 
     // A profile with no Archive support cannot create Archives, even in a
     // Dry Run that would never pack them.
-    edit_profile(&app, "SSE", "bsaEnabled", "false");
-    let mut options = dry_run_textures(&app, &mod_root);
-    options.bsa_create = true;
-    let result = start_and_wait(&run_service(&app), "SSE", &options);
+    let options = dry_run_create_without_archive_support(&app);
+    let request = run_request("SSE", &options, None).unwrap();
+    assert!(request.requests(RequestedWork::ArchiveCreation));
+    let result = run_service(&app).start(request, None).unwrap().wait();
     assert_eq!(result.outcome(), RunOutcome::Failed);
     let failure = &result.failures()[0];
     assert_eq!(failure.code, RunFailureCode::PolicyConflict);
@@ -433,6 +442,102 @@ fn a_request_contradicting_the_profile_capabilities_fails_preparing() {
     )));
 }
 
+/// The counterpart of the Dry Run case of
+/// [`a_request_contradicting_the_profile_capabilities_fails_preparing`]: built
+/// with the capabilities of that profile without Archive support, as the GUI
+/// builds it from the `profile.ini` it loaded, the Dry Run's request holds
+/// Archive creation back, so the run prepares and succeeds.
+#[test]
+fn a_dry_run_built_with_capabilities_lacking_archive_support_holds_back_archive_creation() {
+    let _serial = serial();
+    let app = app_dir("capability-admission-archives");
+    let options = dry_run_create_without_archive_support(&app);
+    let settings = Profiles::new(&app).open("SSE").load_settings().unwrap();
+    let capabilities = profile_capabilities(&settings);
+
+    let request = run_request("SSE", &options, Some(&capabilities)).unwrap();
+
+    assert!(!request.requests(RequestedWork::ArchiveCreation));
+    assert!(request.requests(RequestedWork::NativeTextureOptimization));
+    let result = run_service(&app).start(request, None).unwrap().wait();
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.failures()
+    );
+    let policy = result.preparation().expect("the run prepares").policy();
+    assert!(!policy.requests(RequestedWork::ArchiveCreation));
+}
+
+/// A Dry Run with Create BSA over `app/mods/Mod`, under the SSE profile
+/// edited to `bsaEnabled=false` so it has no Archive support. Shared by the
+/// Dry Run case of
+/// [`a_request_contradicting_the_profile_capabilities_fails_preparing`] and
+/// [`a_dry_run_built_with_capabilities_lacking_archive_support_holds_back_archive_creation`]
+/// so the pair differ only in the capabilities `run_request` is given.
+fn dry_run_create_without_archive_support(app: &Path) -> Options {
+    let mod_root = app.join("mods").join("Mod");
+    std::fs::create_dir_all(&mod_root).unwrap();
+    edit_profile(app, "SSE", "bsaEnabled", "false");
+    let mut options = dry_run_textures(app, &mod_root);
+    options.bsa_create = true;
+    options
+}
+
+/// Spec #634: a request built with the Selected Profile's capabilities, as
+/// the GUI builds it from the `profile.ini` it loaded, holds back the work
+/// they do not support. FO4 has no Mesh support, so the same Mesh options
+/// that fail Preparing without capabilities request no Mesh work, and the
+/// run succeeds.
+#[test]
+fn a_request_built_with_the_profile_capabilities_holds_back_unsupported_work() {
+    let _serial = serial();
+    let app = app_dir("capability-admission");
+    let options = fo4_mesh_options(&app);
+    let settings = Profiles::new(&app).open("FO4").load_settings().unwrap();
+    let capabilities = profile_capabilities(&settings);
+
+    let request = run_request("FO4", &options, Some(&capabilities)).unwrap();
+
+    for mesh_work in [
+        RequestedWork::StandardMeshOptimization,
+        RequestedWork::TerrainMeshOptimization,
+    ] {
+        assert!(!request.requests(mesh_work), "{mesh_work:?}");
+    }
+    assert!(request.requests(RequestedWork::NativeTextureOptimization));
+    let result = run_service(&app).start(request, None).unwrap().wait();
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.failures()
+    );
+    let policy = result.preparation().expect("the run prepares").policy();
+    assert!(!policy.requests(RequestedWork::StandardMeshOptimization));
+    assert_eq!(result.asset_attempts().len(), 1);
+}
+
+/// The Mesh options FO4 cannot honour, shared by
+/// [`a_request_contradicting_the_profile_capabilities_fails_preparing`] and
+/// [`a_request_built_with_the_profile_capabilities_holds_back_unsupported_work`]
+/// so the pair differ only in the capabilities `run_request` is given (#636):
+/// a Dry Run over `app/mods/Mod`, which holds one plain DDS, with Full Mesh
+/// optimization and resaving on.
+fn fo4_mesh_options(app: &Path) -> Options {
+    let mod_root = app.join("mods").join("Mod");
+    write_dds(
+        &mod_root.join("textures/plain.dds"),
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        16,
+    );
+    let mut options = dry_run_textures(app, &mod_root);
+    options.meshes_optimization_level = 3;
+    options.meshes_resave = true;
+    options
+}
+
 /// Origin: ApplicationRunSetupTests::fo4ConversionCompilesWithoutMeshOptimization.
 /// TGA conversion derives Mesh Reference Maintenance, which FO4 supports
 /// through its Texture capability even though it has no Mesh optimization, so
@@ -445,7 +550,7 @@ fn fo4_texture_conversion_needs_no_mesh_optimization_capability() {
     write(&mod_root, "textures/armor.tga", &tga_bytes());
     let options = dry_run_textures(&app, &mod_root);
     assert!(
-        !run_request("FO4", &options)
+        !run_request("FO4", &options, None)
             .unwrap()
             .requests(RequestedWork::StandardMeshOptimization)
     );
@@ -526,7 +631,7 @@ fn several_mods_excludes_separators_and_ignored_mods_from_the_shipped_profile() 
 /// from the options saved in the `settings.ini` of the profile
 /// `saved_options_profile`, which need not be `profile`.
 fn saved_request(app: &Path, saved_options_profile: &str, profile: &str) -> RunRequest {
-    run_request(profile, &profile_options(app, saved_options_profile)).unwrap()
+    run_request(profile, &profile_options(app, saved_options_profile), None).unwrap()
 }
 
 /// The default options form over the single mod folder `app/mods/Mod`.
@@ -697,7 +802,7 @@ fn a_change_to_profile_ini_between_two_runs_is_picked_up_at_preparing() {
         16,
     );
     let service = run_service(&app);
-    let request = run_request("SSE", &dry_run_textures(&app, &mod_root)).unwrap();
+    let request = run_request("SSE", &dry_run_textures(&app, &mod_root), None).unwrap();
 
     let first = service.start(request.clone(), None).unwrap().wait();
     assert_eq!(first.outcome(), RunOutcome::Succeeded);

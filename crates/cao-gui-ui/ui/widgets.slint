@@ -286,6 +286,42 @@ export component HelpCheckBox {
     }
 }
 
+// A HelpCheckBox for a user's choice that a rule may force (`RuleDisplay`). While
+// `forced`, it shows `forced-checked` and is disabled; `checked`, the user's
+// choice, is left as it is and shows again once the rule lifts.
+//
+// Two exclusive boxes rather than one bound to `forced ? forced-checked : checked`:
+// a click writes the box's own `checked`, which would drop a one-way binding for
+// good, and a two-way one to the choice would let the forced value overwrite the
+// user's choice. Both boxes take the same text and help, so the two stay one
+// checkbox to the user and to translators.
+export component ChoiceCheckBox {
+    in property <string> text;
+    in property <string> help;
+    in property <string> warning;
+    in property <bool> enabled: true;
+    in property <bool> forced;
+    in property <bool> forced-checked;
+    in-out property <bool> checked;
+
+    HorizontalLayout {
+        if root.forced: HelpCheckBox {
+            text: root.text;
+            help: root.help;
+            warning: root.warning;
+            enabled: false;
+            checked: root.forced-checked;
+        }
+        if !root.forced: HelpCheckBox {
+            text: root.text;
+            help: root.help;
+            warning: root.warning;
+            enabled: root.enabled;
+            checked <=> root.checked;
+        }
+    }
+}
+
 // QLabel with a tooltip and the help cursor. Slint Text doesn't grey out when disabled.
 export component HelpLabel {
     in property <string> text;

@@ -47,6 +47,14 @@ pub enum ExecutionMode {
     DryRun,
 }
 
+impl ExecutionMode {
+    /// The execution mode a caller's Dry Run choice selects: Dry Run when
+    /// `dry_run` is true, Apply otherwise.
+    pub const fn from_dry_run(dry_run: bool) -> Self {
+        if dry_run { Self::DryRun } else { Self::Apply }
+    }
+}
+
 /// The coarse stage of an Optimization Run in which one Routed Asset performs its work.
 ///
 /// This categorizes a single Asset, unlike [`crate::run::RunPhase`], which is a
@@ -151,6 +159,17 @@ const REQUESTED_WORK_DEFINITIONS: [(RequestedWork, ProfileCapability, Option<Ass
         None,
     ),
 ];
+
+/// Each explicit work choice with the Profile Capability it needs, in
+/// enumeration order.
+///
+/// The Admission Rules read this so a profile admits exactly the work that
+/// Routing Policy compilation would accept from it: both read one mapping.
+pub(crate) fn work_capabilities() -> impl Iterator<Item = (RequestedWork, ProfileCapability)> {
+    REQUESTED_WORK_DEFINITIONS
+        .into_iter()
+        .map(|(work, capability, _)| (work, capability))
+}
 
 /// The Asset Kind each Profile Capability belongs to.
 const fn capability_kind(capability: ProfileCapability) -> AssetKind {

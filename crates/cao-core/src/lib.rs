@@ -22,6 +22,7 @@
 //! that the run scenarios of this crate, `cao-optimizers` and `cao-gui`
 //! share. Enable it only from `[dev-dependencies]`.
 
+pub mod admission;
 mod attempt;
 mod error;
 pub mod execution;

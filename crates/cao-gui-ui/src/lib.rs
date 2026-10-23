@@ -7,7 +7,7 @@
 //! What it exports: `MainWindow` with the top rows, menu and run state; the
 //! per-tab globals `BsaTab`, `MeshesTab`, `TexturesTab` and `AnimationsTab`;
 //! `TabInfo`; the Log tab's `LogTab` global with its `LogRow` and
-//! `LogSeverity` (#511); `UiRules`, what the UI rules leave enabled (#509);
+//! `LogSeverity` (#511); `RuleDisplay`, what the window's rules force the controls to show;
 //! `HelpTip`, the shown help tip, for headless tests to place (#512); and the
 //! modal dialogs `TextInputDialog`, `ChoiceDialog`, `AboutSlintDialog` and
 //! `FormatsDialog` with its `FormatItem` rows (#509).
