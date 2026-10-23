@@ -937,15 +937,19 @@ fn a_dry_run_ignores_precedence_and_never_reads_a_manifest() {
     let precedence =
         ArchivePrecedence::ExplicitOrder(vec!["../missing.bsa".into(), "../missing.bsa".into()]);
 
-    let result = execute(
-        &request(
-            ExecutionMode::DryRun,
-            &root,
-            &[RequestedWork::ArchiveExtraction],
-        )
-        .with_archive_precedence(precedence),
-        &toolset,
+    // A Dry Run's request holds back Archive extraction (spec #634), so
+    // Texture work keeps the run's work phases, and its discovery, running.
+    let request = request(
+        ExecutionMode::DryRun,
+        &root,
+        &[
+            RequestedWork::NativeTextureOptimization,
+            RequestedWork::ArchiveExtraction,
+        ],
     );
+    assert!(!request.requests(RequestedWork::ArchiveExtraction));
+
+    let result = execute(&request.with_archive_precedence(precedence), &toolset);
 
     assert_eq!(
         result.outcome(),

@@ -5,8 +5,8 @@
 use cao_core::admission::Admission;
 use cao_core::routing::{ExecutionMode, ProfileCapabilities, ProfileCapability, RequestedWork};
 use cao_core::run::{
-    ArchiveFinalizationChoices, MeshChoices, MeshLevel, SourceCleanup, TextureChoices,
-    TextureResizeChoice, WorkChoices,
+    ArchiveFinalizationChoices, MeshChoices, MeshLevel, ModSelection, RunRequest, SourceCleanup,
+    TextureChoices, TextureResizeChoice, WorkChoices,
 };
 use cao_core::test_support::sse_capabilities;
 
@@ -204,4 +204,57 @@ fn a_dry_run_and_the_profile_capabilities_each_hold_back_their_own_work() {
             RequestedWork::ArchiveCreation,
         ]
     );
+}
+
+/// A request asking for every piece of work over `selection`.
+fn request(mode: ExecutionMode, selection: ModSelection) -> RunRequest {
+    RunRequest::new("SSE", mode, selection, ALL_WORK.to_vec())
+}
+
+fn one_mod() -> ModSelection {
+    ModSelection::SingleModRoot("C:\\mods\\Mod".into())
+}
+
+fn several_mods() -> ModSelection {
+    ModSelection::ChildModRoots("C:\\mods".into())
+}
+
+#[test]
+fn a_dry_run_request_built_with_archive_work_requests_none() {
+    let request = request(ExecutionMode::DryRun, one_mod());
+
+    assert!(!request.requests(RequestedWork::ArchiveExtraction));
+    assert!(!request.requests(RequestedWork::ArchiveCreation));
+    assert_eq!(
+        request.requested_work(),
+        [
+            RequestedWork::NativeTextureOptimization,
+            RequestedWork::StandardMeshOptimization,
+            RequestedWork::TerrainMeshOptimization,
+            RequestedWork::AnimationOptimization,
+        ]
+    );
+}
+
+#[test]
+fn an_apply_request_keeps_its_archive_work() {
+    let request = request(ExecutionMode::Apply, several_mods());
+
+    assert_eq!(request.requested_work(), ALL_WORK);
+}
+
+#[test]
+fn a_several_mods_request_built_with_level_3_carries_level_1() {
+    let request = request(ExecutionMode::Apply, several_mods()).with_work_choices(choices_at(3));
+
+    let mut expected = choices_at(3);
+    expected.meshes.level = MeshLevel::new(1).unwrap();
+    assert_eq!(request.work_choices(), &expected);
+}
+
+#[test]
+fn a_one_mod_request_built_with_level_3_keeps_level_3() {
+    let request = request(ExecutionMode::Apply, one_mod()).with_work_choices(choices_at(3));
+
+    assert_eq!(request.work_choices().meshes.level.get(), 3);
 }

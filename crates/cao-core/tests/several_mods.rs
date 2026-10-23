@@ -12,13 +12,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
-    InlineRunScheduler, ModSelection, OptimizationRunResult, OptimizationRunService,
-    RunDiagnosticCode, RunEventPayload, RunFailureCode, RunHandle, RunOutcome, RunPhase,
-    RunRequest, RunSnapshot, SelectedProfile,
+    InlineRunScheduler, MeshChoices, MeshLevel, ModSelection, OptimizationRunResult,
+    OptimizationRunService, RunDiagnosticCode, RunEventPayload, RunFailureCode, RunHandle,
+    RunOutcome, RunPhase, RunRequest, RunSnapshot, SelectedProfile, WorkChoices,
 };
 use cao_core::test_support::{
-    EventLog, FakeBackendFactory, GatedScheduler, ScriptedToolset, ToolsetConfiguration,
-    sse_profile,
+    CallbackConfiguration, EventLog, FakeBackendFactory, GatedScheduler, ScriptedToolset,
+    ToolsetConfiguration, sse_profile,
 };
 use common::{
     HandleSlot, backend_toolset, canonical, junction, reclaim, scratch_dir, serial, write_tree,
@@ -570,4 +570,66 @@ fn linked_mod_roots_retain_their_canonical_identities() {
         several_result.mod_roots(),
         [canonical(&sibling), canonical(&target)]
     );
+}
+
+/// Spec #634: a Several Mods selection optimizes Meshes at the Necessary
+/// level at most, however the run was started. The provider builds the
+/// run's work from the Run Request it is handed at load, so the Mesh choices
+/// it reads there are the ones the work gets. A One Mod run keeps Full.
+#[test]
+fn a_several_mods_run_started_at_full_hands_its_work_necessary_mesh_choices() {
+    let _serial = serial();
+    let mods = scratch_dir("several-mesh-level");
+    children(&mods, &["Mod"]);
+    let full = WorkChoices {
+        meshes: MeshChoices {
+            level: MeshLevel::new(3).unwrap(),
+            headparts: false,
+            resave: true,
+        },
+        ..WorkChoices::default()
+    };
+
+    for (selection, handed) in [
+        (ModSelection::ChildModRoots(mods.clone()), 1),
+        (ModSelection::SingleModRoot(mods.join("Mod")), 3),
+    ] {
+        let loaded = Arc::new(Mutex::new(Vec::<MeshChoices>::new()));
+        let recorder = Arc::clone(&loaded);
+        let configuration = CallbackConfiguration(Box::new(move |request: &RunRequest| {
+            recorder.lock().unwrap().push(request.work_choices().meshes);
+            Ok(sse_profile())
+        }));
+        let service = OptimizationRunService::with_scheduler(
+            Arc::new(InlineRunScheduler),
+            Some(Arc::new(configuration)),
+        );
+        let request = RunRequest::new(
+            "SkyrimSE",
+            ExecutionMode::Apply,
+            selection,
+            vec![
+                RequestedWork::StandardMeshOptimization,
+                RequestedWork::TerrainMeshOptimization,
+            ],
+        )
+        .with_work_choices(full);
+
+        let result = service.start(request, None).expect("the run starts").wait();
+
+        assert_eq!(
+            result.outcome(),
+            RunOutcome::Succeeded,
+            "{:?}",
+            result.failures()
+        );
+        assert_eq!(
+            loaded.lock().unwrap().as_slice(),
+            [MeshChoices {
+                level: MeshLevel::new(handed).unwrap(),
+                headparts: false,
+                resave: true,
+            }]
+        );
+    }
 }
