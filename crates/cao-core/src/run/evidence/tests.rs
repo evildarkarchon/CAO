@@ -261,7 +261,7 @@ fn phase_progress_cannot_start_late_change_total_regress_or_overflow() {
         ("progress becoming indeterminate", executed(phase)),
         (
             "a changed status",
-            RunPhaseRecord::skipped(phase, PhaseSkipReason::DryRun),
+            RunPhaseRecord::skipped(phase, PhaseSkipReason::NoRequestedWork),
         ),
     ] {
         assert!(is_invariant(evidence.record_phase(record)), "{case}");
@@ -1208,7 +1208,7 @@ fn a_skipped_attempt_bearing_phase_cannot_be_opened() {
     extraction
         .record_phase(RunPhaseRecord::skipped(
             RunPhase::ExtractingArchives,
-            PhaseSkipReason::DryRun,
+            PhaseSkipReason::NoRequestedWork,
         ))
         .unwrap();
     assert_eq!(
@@ -1220,7 +1220,7 @@ fn a_skipped_attempt_bearing_phase_cannot_be_opened() {
     finalization
         .record_phase(RunPhaseRecord::skipped(
             RunPhase::ArchiveFinalization,
-            PhaseSkipReason::DryRun,
+            PhaseSkipReason::NoRequestedWork,
         ))
         .unwrap();
     assert_eq!(
@@ -1468,10 +1468,14 @@ fn assert_only_its_handle_executes(phase: RunPhase, skip: PhaseSkipReason) {
 
 /// Extracting Archives executes only through the handle opening Archive
 /// extraction, so no producer can account for its attempts or progress
-/// outside it. Dry Run still skips it through the general transition.
+/// outside it. A run with no requested work still skips it through the
+/// general transition.
 #[test]
 fn the_general_transition_rejects_an_executed_extracting_archives_record() {
-    assert_only_its_handle_executes(RunPhase::ExtractingArchives, PhaseSkipReason::DryRun);
+    assert_only_its_handle_executes(
+        RunPhase::ExtractingArchives,
+        PhaseSkipReason::NoRequestedWork,
+    );
 }
 
 /// Processing Assets executes only through the handle opening it with the
@@ -1484,11 +1488,14 @@ fn the_general_transition_rejects_an_executed_processing_assets_record() {
 
 /// Archive Finalization executes only through the handle opening it, which
 /// alone plans its output total, so the general transition cannot record
-/// progress around that plan. Dry Run still skips it through the general
-/// transition.
+/// progress around that plan. A run with no requested work still skips it
+/// through the general transition.
 #[test]
 fn the_general_transition_rejects_an_executed_archive_finalization_record() {
-    assert_only_its_handle_executes(RunPhase::ArchiveFinalization, PhaseSkipReason::DryRun);
+    assert_only_its_handle_executes(
+        RunPhase::ArchiveFinalization,
+        PhaseSkipReason::NoRequestedWork,
+    );
 }
 
 /// An Asset attempt's diagnostics are retained through the open Processing

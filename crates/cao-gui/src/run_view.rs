@@ -79,9 +79,12 @@ impl RunView {
                 match record.status() {
                     RunPhaseStatus::Executed => {}
                     RunPhaseStatus::Skipped => {
+                        // Matched exhaustively so a new Phase Skip Reason has to
+                        // choose its own label.
                         state.label.push_str(match record.skip_reason() {
-                            Some(PhaseSkipReason::DryRun) => " - Skipped (Dry Run)",
-                            _ => " - Skipped (No Requested Work)",
+                            Some(PhaseSkipReason::NoRequestedWork) | None => {
+                                " - Skipped (No Requested Work)"
+                            }
                         });
                     }
                     // Only a Dry Run plans Archive work instead of attempting it.

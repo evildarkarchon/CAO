@@ -233,13 +233,13 @@ fn progress_shows_the_phase_and_its_attempt_counts() {
         2,
         RunEventPayload::Phase(RunPhaseRecord::skipped(
             RunPhase::ArchiveFinalization,
-            PhaseSkipReason::DryRun
+            PhaseSkipReason::NoRequestedWork
         )),
     )));
     assert!(view.state().progress.is_none());
     assert_eq!(
         view.state().label,
-        "Archive Finalization - Skipped (Dry Run)"
+        "Archive Finalization - Skipped (No Requested Work)"
     );
     assert!(view.consume(&event(
         "run",

@@ -61,7 +61,7 @@ The Selected Profile's choice of whether requested Texture work also converts co
 _Avoid_: TGA option, convert flag
 
 **Dry Run**:
-A non-mutating optimization run that evaluates eligible Loose Assets and plans the Archive work an Apply run would do, its Archive extractions and output Archives, without extracting, creating or deleting Archives. It runs Archive discovery's checks as an Apply run does, so an unreadable Archive, an Unsafe Game Path or a bad Archive Precedence fails the Dry Run as it would fail the Apply run. Its Run Request requests the work the user chose, Archive work included, and the run mutates no Archive.
+A non-mutating optimization run that evaluates eligible Loose Assets and plans the Archive work an Apply run would do, without extracting, creating or deleting Archives. Its Run Request requests the work the user chose, Archive work included.
 _Avoid_: Preview mode, simulation
 
 **Optimization Run**:
@@ -73,7 +73,7 @@ The internal synchronous component that traverses the Run Phase sequence for one
 _Avoid_: Runner, engine, worker
 
 **Run Toolset**:
-The Asset attempt port and Archive seams (Archive reader, packer and volume probe) one Optimization Run's work goes through, built by Preparing from the same profile read as its Routing Policy. An Optimization Run reaches Archive discovery's checks, Archive extraction and Archive Finalization only through it, so one reader and one Capacity Check serve all three.
+The Asset attempt port and Archive seams (Archive reader, packer and volume probe) one Optimization Run's work goes through, built by Preparing from the same profile read as its Routing Policy. An Optimization Run reaches Archive discovery's checks, Archive extraction and Archive Finalization only through it, so one reader and one Capacity Check serve all three. A Dry Run calls only the read and planning seams (`ArchiveReader::list_entries` and `ArchivePacker::rules`/`list_names`/`partition`).
 _Avoid_: Run Work Service, adapters
 
 **Optimization Run Service**:
@@ -133,7 +133,7 @@ A stable lifecycle stage of an Optimization Run, from preparation through Safety
 _Avoid_: Step, task
 
 **Phase Skip Reason**:
-A stable category explaining why an Optimization Run reported a Run Phase as inapplicable. It must state something the run knows when it skips, never the outcome of a phase that did not run. It is distinct from Skip Reason, which excludes one recognized Asset rather than a whole Run Phase.
+A stable category explaining why an Optimization Run reported a Run Phase as inapplicable. It must state something the run knows when it skips, never the outcome of a phase that did not run. The only one is No Requested Work. A Dry Run is not a Phase Skip Reason: it reports its Archive phases as planned, not skipped (see Planned Archive Work). It is distinct from Skip Reason, which excludes one recognized Asset rather than a whole Run Phase.
 _Avoid_: Skip Reason, phase status, disabled phase
 
 **Run Progress**:
@@ -197,7 +197,7 @@ The Run Phase that, when the Routing Policy requests Archive creation, commits p
 _Avoid_: Safety Cleanup, packing callback
 
 **Planned Archive Work**:
-The Archive extraction plans and planned output Archives a Dry Run records instead of attempting them. A Dry Run reports Extracting Archives and Archive Finalization as planned rather than executed or skipped, and a planned Run Phase carries no Run Progress. Planned Archive Work is kept in Run Evidence as facts separate from attempts; mutation summaries never count it, and it never determines the Run Outcome.
+The Archive extraction plans and planned output Archives a Dry Run records instead of attempting them. A Dry Run runs Archive discovery's checks as an Apply run does before it plans, so an unreadable Archive, an Unsafe Game Path or a bad Archive Precedence fails the Dry Run as it would fail the Apply run. A Dry Run reports Extracting Archives and Archive Finalization as planned rather than executed or skipped, and a planned Run Phase carries no Run Progress. Planned Archive Work is kept in Run Evidence as facts separate from attempts; mutation summaries never count it, and it never determines the Run Outcome.
 _Avoid_: Skipped Archive work, simulated extraction, zero-attempt phase
 
 **Loading Plugin**:
