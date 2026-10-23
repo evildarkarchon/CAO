@@ -356,11 +356,13 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
     }
     for planned in result.planned_archive_work().extractions() {
         details.push(format!(
-            "Planned Extraction: {} | {} | entries={} | winners={} | delete-backups={}",
+            "Planned Extraction: {} | {} | entries={} | winners={} | capacity={} | \
+             delete-backups={}",
             shown(&planned.archive_path),
             shown(&planned.mod_root),
             planned.entry_count,
             planned.winner_count,
+            ByteSize(planned.estimated_capacity_bytes),
             yes_no(planned.deletes_source_archive)
         ));
     }

@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
-    ArchiveFinalizationFailure, ArchivePrecedence, CancellationToken, ModSelection,
+    ArchiveFinalizationFailure, ArchivePrecedence, ByteSize, CancellationToken, ModSelection,
     OptimizationRunResult, PhaseSkipReason, RunDiagnostic, RunDiagnosticCode, RunEvent,
     RunEventPayload, RunFailure, RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord, RunProgress,
     RunRequest,
@@ -742,10 +742,17 @@ fn a_dry_run_shows_its_archive_extraction_as_planned_and_lists_the_plan() {
     );
     assert!(view.state().progress.is_none());
 
+    // The estimate's formula is core's own, so the row is checked against
+    // the estimate the run recorded, shown as the Planned Archive sizes are.
+    let [extraction] = result.planned_archive_work().extractions() else {
+        panic!("one planned extraction expected");
+    };
+    let capacity = ByteSize(extraction.estimated_capacity_bytes);
     assert!(view.consume(&event("run", 2, executed(RunPhase::SafetyCleanup, None))));
     assert!(view.consume(&event("run", 3, RunEventPayload::Terminal(result))));
     let expected = format!(
-        "Planned Extraction: {} | {} | entries=2 | winners=1 | delete-backups=no",
+        "Planned Extraction: {} | {} | entries=2 | winners=1 | capacity={capacity} | \
+         delete-backups=no",
         root.join("content.bsa").display(),
         root.display()
     );
