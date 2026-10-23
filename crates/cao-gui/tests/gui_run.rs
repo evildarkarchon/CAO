@@ -29,8 +29,8 @@ use cao_core::run::{
     RunRequest,
 };
 use cao_core::test_support::{
-    CountingCleanup, FakeArchivePacker, FakeArchiveReader, Observed, RecordingSink,
-    ScriptedToolset, ToolsetConfiguration, entry, execute_run, write_archive,
+    CountingCleanup, FakeArchivePacker, FakeArchiveReader, FakeVolumeProbe, Observed,
+    RecordingSink, ScriptedToolset, ToolsetConfiguration, entry, execute_run, write_archive,
 };
 use cao_gui::RunView;
 
@@ -753,6 +753,78 @@ fn a_dry_run_shows_its_archive_extraction_as_planned_and_lists_the_plan() {
     assert!(
         view.state().details.contains(&expected),
         "{expected} missing from\n{details}"
+    );
+}
+
+/// A real Dry Run whose Apply run would run out of space extracting its
+/// Archive: the view shows the streamed capacity shortage as a warning row,
+/// not as a plain diagnostic or a failure, and the run still ends as done
+/// with its planned extraction listed.
+#[test]
+fn a_dry_run_shows_a_capacity_shortage_as_a_warning() {
+    let root = scratch_dir("dry-run-capacity-warning");
+    write_archive(
+        &root.join("content.bsa"),
+        &[entry("textures/a.dds", b"archived")],
+    );
+    let sink = RecordingSink::default();
+    let request = RunRequest::new(
+        "SkyrimSE",
+        ExecutionMode::DryRun,
+        ModSelection::SingleModRoot(root.clone()),
+        vec![RequestedWork::ArchiveExtraction],
+    );
+    let toolset = ScriptedToolset {
+        volume_probe: Arc::new(FakeVolumeProbe::default().with_capacity(|_| Some(0))),
+        ..ScriptedToolset::default()
+    };
+
+    let result = execute(
+        &request,
+        &Arc::new(toolset),
+        &sink,
+        Vec::new(),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    let warning = sink
+        .observed()
+        .into_iter()
+        .find_map(|observed| match observed {
+            Observed::Diagnostic(diagnostic)
+                if diagnostic.code == RunDiagnosticCode::CapacityShortage =>
+            {
+                Some(diagnostic)
+            }
+            _ => None,
+        })
+        .expect("the shortage is streamed as a diagnostic");
+    let mut view = RunView::default();
+    view.begin("run");
+    assert!(view.consume(&event(
+        "run",
+        1,
+        RunEventPayload::Diagnostic(warning.clone())
+    )));
+    assert_eq!(
+        view.state().details,
+        [format!(
+            "Warning: {} | {}",
+            warning.detail,
+            result.mod_roots()[0].display()
+        )]
+    );
+
+    assert!(view.consume(&event("run", 2, RunEventPayload::Terminal(result))));
+    assert_eq!(view.state().label, "Done");
+    assert!(
+        view.state()
+            .details
+            .iter()
+            .any(|detail| detail.starts_with("Planned Extraction: ")),
+        "{:?}",
+        view.state().details
     );
 }
 
