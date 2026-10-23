@@ -1,7 +1,8 @@
-//! The window's UI rules (#509), driven headlessly through the real `.slint`
-//! components (spec seam 4). Each rule is pinned twice: when the user changes
-//! the control that triggers it, and when the settings that trigger it load
-//! from the INI files (deviation 3).
+//! The window's rules (`rules.rs`), driven headlessly through the real
+//! `.slint` components (spec seam 4). Each rule is pinned twice: when the user
+//! changes the control that triggers it, and when the settings that trigger it
+//! load from the INI files. A rule forces only what a control shows, so each
+//! test also saves and checks that the user's choice is kept.
 
 mod common;
 
@@ -20,7 +21,7 @@ fn keeps_textures_separate(game: Game) -> bool {
     Settings::get(game).keeps_textures_separate()
 }
 
-/// The three base archive options the Dry Run rule clears and disables.
+/// The three base archive options a Dry Run shows unchecked and disabled.
 const BASE_ARCHIVE_OPTIONS: [&str; 3] = ["Extract BSA", "Create BSA", "Delete backups"];
 
 /// An app directory whose `common.ini` starts on `profile`, without tutorial boxes.
@@ -50,13 +51,23 @@ fn assert_controls(ui: &MainWindow, labels: &[&str], is_checked: bool, is_enable
 
 // ---- Dry Run
 
+/// Turns on the three base archive options of `profile` in `settings.ini`.
+fn base_archive_options_on(app_dir: &Path, profile: &str) {
+    for key in ["bBsaExtract", "bBsaCreate", "bBsaDeleteBackup"] {
+        edit_ini(app_dir, &format!("{profile}/settings.ini"), key, "true");
+    }
+}
+
+/// Whether `options` keep all three base archive options on.
+fn keeps_base_archive_options(options: &Options) -> bool {
+    options.bsa_extract && options.bsa_create && options.bsa_delete_backup
+}
+
 #[test]
-fn clicking_dry_run_clears_and_disables_the_base_archive_options() {
+fn clicking_dry_run_shows_the_base_archive_options_off_then_gives_them_back() {
     headless();
     let app_dir = app_on("dry_run_click", "SSE");
-    for key in ["bBsaExtract", "bBsaCreate", "bBsaDeleteBackup"] {
-        edit_ini(&app_dir, "SSE/settings.ini", key, "true");
-    }
+    base_archive_options_on(&app_dir, "SSE");
     let (app, _desktop) = open(&app_dir);
     let ui = app.window();
     select_tab(ui, "BSA");
@@ -64,24 +75,25 @@ fn clicking_dry_run_clears_and_disables_the_base_archive_options() {
 
     click(ui, "Dry run");
     assert_controls(ui, &BASE_ARCHIVE_OPTIONS, false, false);
+    // The rule only shows what a Dry Run does; the choices are saved as made.
+    let options = saved_options(&app, &app_dir, "SSE");
+    assert!(options.dry_run);
+    assert!(keeps_base_archive_options(&options), "{options:?}");
 
-    // Turning it off gives the options back, still cleared.
+    // Turning it off gives the choices back.
     click(ui, "Dry run");
-    assert_controls(ui, &BASE_ARCHIVE_OPTIONS, false, true);
+    assert_controls(ui, &BASE_ARCHIVE_OPTIONS, true, true);
     let options = saved_options(&app, &app_dir, "SSE");
     assert!(!options.dry_run);
-    assert!(!options.bsa_extract && !options.bsa_create && !options.bsa_delete_backup);
+    assert!(keeps_base_archive_options(&options), "{options:?}");
 }
 
 #[test]
-fn a_dry_run_loaded_from_the_ini_clears_and_disables_the_base_archive_options() {
+fn a_dry_run_loaded_from_the_ini_shows_the_base_archive_options_off_and_keeps_them() {
     headless();
-    // A profile C++ could save: Dry Run on, with the base options it would
-    // have cleared on a click.
     let app_dir = app_on("dry_run_load", "SSE");
-    for key in ["bDryRun", "bBsaExtract", "bBsaCreate", "bBsaDeleteBackup"] {
-        edit_ini(&app_dir, "SSE/settings.ini", key, "true");
-    }
+    base_archive_options_on(&app_dir, "SSE");
+    edit_ini(&app_dir, "SSE/settings.ini", "bDryRun", "true");
     let (app, _desktop) = open(&app_dir);
     let ui = app.window();
     select_tab(ui, "BSA");
@@ -90,11 +102,58 @@ fn a_dry_run_loaded_from_the_ini_clears_and_disables_the_base_archive_options() 
     assert_controls(ui, &BASE_ARCHIVE_OPTIONS, false, false);
     let options = saved_options(&app, &app_dir, "SSE");
     assert!(options.dry_run);
-    assert!(!options.bsa_extract && !options.bsa_create && !options.bsa_delete_backup);
+    assert!(keeps_base_archive_options(&options), "{options:?}");
 
-    // Turning it off gives the options back, cleared.
+    // Turning it off shows the choices that were loaded.
     click(ui, "Dry run");
-    assert_controls(ui, &BASE_ARCHIVE_OPTIONS, false, true);
+    assert_controls(ui, &BASE_ARCHIVE_OPTIONS, true, true);
+}
+
+#[test]
+fn a_save_under_dry_run_keeps_the_extra_archive_options() {
+    headless();
+    let app_dir = app_on("dry_run_extra", "SSE");
+    // Every Extra choice on, and both Separate boxes cleared (merging), so a
+    // save reading any of them as off shows on disk.
+    let sse = Profiles::new(&app_dir).open("SSE");
+    let mut options = sse.load_options(&Options::default()).unwrap();
+    options.bsa_compress = true;
+    options.bsa_create_dummies = true;
+    options.bsa_delete_source = true;
+    options.bsa_merge_textures = true;
+    options.bsa_merge_incompressible = true;
+    sse.save_options(&options).unwrap();
+    let (app, _desktop) = open(&app_dir);
+    let ui = app.window();
+    select_tab(ui, "BSA");
+
+    click(ui, "Dry run");
+    // The Extra group stays the user's under a Dry Run.
+    assert_controls(
+        ui,
+        &[
+            "Delete source files",
+            "Create dummy plugins",
+            "Allow compression",
+        ],
+        true,
+        true,
+    );
+    assert_controls(
+        ui,
+        &["Separate textures BSA", "Separate incompressible BSA"],
+        false,
+        true,
+    );
+
+    let saved = saved_options(&app, &app_dir, "SSE");
+    assert_eq!(
+        saved,
+        Options {
+            dry_run: true,
+            ..options
+        }
+    );
 }
 
 // ---- Several Mods
@@ -102,8 +161,15 @@ fn a_dry_run_loaded_from_the_ini_clears_and_disables_the_base_archive_options() 
 /// The mesh levels above "Necessary", which Several Mods disables.
 const HEAVY_MESH_LEVELS: [&str; 2] = ["Medium optimization", "Full optimization"];
 
+/// Asserts the level radios show Necessary, with Medium and Full unchecked
+/// and disabled, as Several Mods shows them.
+fn assert_necessary_meshes_forced(ui: &MainWindow) {
+    assert!(checked(ui, "Necessary optimization"));
+    assert_controls(ui, &HEAVY_MESH_LEVELS, false, false);
+}
+
 #[test]
-fn choosing_several_mods_forces_necessary_meshes_and_disables_the_heavier_levels() {
+fn choosing_several_mods_shows_necessary_meshes_then_one_mod_shows_full_again() {
     headless();
     let app_dir = app_on("several_mods_click", "SSE");
     edit_ini(
@@ -119,25 +185,37 @@ fn choosing_several_mods_forces_necessary_meshes_and_disables_the_heavier_levels
     assert!(enabled(ui, "Full optimization") && enabled(ui, "Medium optimization"));
 
     choose(ui, "Optimization mode", "Several mods");
-    assert!(checked(ui, "Necessary optimization"));
-    assert_controls(ui, &HEAVY_MESH_LEVELS, false, false);
+    assert_necessary_meshes_forced(ui);
     assert!(checked(ui, "Process meshes"));
+    // The rule only shows the level a Several Mods run uses; the user's
+    // level is saved as chosen.
     let options = saved_options(&app, &app_dir, "SSE");
     assert_eq!(options.mode, cao_profiles::OptimizationMode::SeveralMods);
-    assert_eq!(options.meshes_optimization_level, 1);
+    assert_eq!(options.meshes_optimization_level, 3);
 
-    // Back to one mod: the heavier levels come back, and the level stays.
+    // Back to one mod: Full shows again, and every level is enabled.
     choose(ui, "Optimization mode", "One mod");
-    assert!(checked(ui, "Necessary optimization"));
-    assert_controls(ui, &HEAVY_MESH_LEVELS, false, true);
-    click(ui, "Full optimization");
     assert!(checked(ui, "Full optimization") && !checked(ui, "Necessary optimization"));
+    assert!(!checked(ui, "Medium optimization"));
+    assert!(enabled(ui, "Full optimization") && enabled(ui, "Medium optimization"));
+    assert_eq!(
+        saved_options(&app, &app_dir, "SSE").meshes_optimization_level,
+        3
+    );
+
+    // The level is still the user's to change.
+    click(ui, "Medium optimization");
+    assert!(checked(ui, "Medium optimization") && !checked(ui, "Full optimization"));
+    assert_eq!(
+        saved_options(&app, &app_dir, "SSE").meshes_optimization_level,
+        2
+    );
 }
 
 #[test]
-fn several_mods_loaded_from_the_ini_forces_necessary_meshes_and_disables_the_heavier_levels() {
+fn several_mods_loaded_from_the_ini_shows_necessary_meshes_and_keeps_the_level() {
     headless();
-    // A profile C++ could save: Several Mods with Full mesh optimization.
+    // A profile saved under Several Mods with Full mesh optimization.
     let app_dir = app_on("several_mods_load", "SSE");
     edit_ini(&app_dir, "SSE/settings.ini", "mode", "1");
     edit_ini(
@@ -151,12 +229,15 @@ fn several_mods_loaded_from_the_ini_forces_necessary_meshes_and_disables_the_hea
     select_tab(ui, "Meshes");
 
     assert!(checked(ui, "Process meshes"));
-    assert!(checked(ui, "Necessary optimization"));
-    assert_controls(ui, &HEAVY_MESH_LEVELS, false, false);
+    assert_necessary_meshes_forced(ui);
     assert_eq!(
         saved_options(&app, &app_dir, "SSE").meshes_optimization_level,
-        1
+        3
     );
+
+    // A later One Mod run uses the level the profile keeps.
+    choose(ui, "Optimization mode", "One mod");
+    assert!(checked(ui, "Full optimization"));
 }
 
 #[test]
@@ -176,14 +257,16 @@ fn several_mods_loaded_without_mesh_work_keeps_it_off() {
     select_tab(ui, "Meshes");
 
     assert!(!checked(ui, "Process meshes"));
+    assert!(enabled(ui, "Process meshes"));
     assert_eq!(
         saved_options(&app, &app_dir, "SSE").meshes_optimization_level,
         0
     );
 
+    // The radios hold the window's first level, Necessary, since a level 0
+    // profile leaves them as they were.
     click(ui, "Process meshes");
-    assert!(checked(ui, "Necessary optimization"));
-    assert_controls(ui, &HEAVY_MESH_LEVELS, false, false);
+    assert_necessary_meshes_forced(ui);
     assert_eq!(
         saved_options(&app, &app_dir, "SSE").meshes_optimization_level,
         1
@@ -204,18 +287,17 @@ fn several_mods_chosen_while_mesh_work_is_off_holds_once_it_is_back_on() {
     let ui = app.window();
     select_tab(ui, "Meshes");
 
-    // The radios are disabled with their group while it is unchecked, so the
-    // rule cannot move the selection then.
     click(ui, "Process meshes");
     choose(ui, "Optimization mode", "Several mods");
     click(ui, "Process meshes");
 
-    assert!(checked(ui, "Necessary optimization"));
-    assert_controls(ui, &HEAVY_MESH_LEVELS, false, false);
+    assert_necessary_meshes_forced(ui);
     assert_eq!(
         saved_options(&app, &app_dir, "SSE").meshes_optimization_level,
-        1
+        3
     );
+    choose(ui, "Optimization mode", "One mod");
+    assert!(checked(ui, "Full optimization"));
 }
 
 // ---- Games that keep Textures in their own Archive (FO4)

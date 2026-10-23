@@ -3,8 +3,12 @@
 //!
 //! Each direction was ported from C++ rule for rule, quirks included, so a
 //! profile the C++ build saved reloads the same, and what the window saves
-//! reloads the same. #509's UI rules (Dry Run, Several Mods, FO4 textures; `rules.rs`) are
-//! not applied here; they run after [`show_options`] and [`show_settings`].
+//! reloads the same.
+//!
+//! The window's rules (`rules.rs`: the Admission Rules and the Archive Rules
+//! display) play no part in either direction. They run after
+//! [`show_options`] and [`show_settings`] and force only what controls show,
+//! so [`read_options`] reads back the user's choices, never a forced state.
 
 use std::num::NonZeroU64;
 
@@ -294,10 +298,10 @@ pub(crate) fn read_options(
     };
     let tab = |tab: Tab| tab.enabled_by(Some(capabilities));
 
-    // The base group is disabled while Dry Run is on (`rules.rs`), and C++
-    // reads every BSA option as off while the tab or that group is disabled.
+    // A Dry Run only shows the base options forced off (`rules.rs`), so they
+    // are read as the user left them.
     let bsa = ui.global::<BsaTab>();
-    let bsa_enabled = tab(Tab::Bsa) && !ui.get_dry_run();
+    let bsa_enabled = tab(Tab::Bsa);
     options.bsa_extract = bsa_enabled && bsa.get_extract();
     options.bsa_create = bsa_enabled && bsa.get_create();
     options.bsa_delete_backup = bsa_enabled && bsa.get_delete_backups();
