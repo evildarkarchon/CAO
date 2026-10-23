@@ -1,7 +1,8 @@
-//! A profile's capabilities gate which asset options the window saves (#580):
-//! an unreadable `profile.ini` leaves the asset options in `settings.ini` as
-//! they were loaded, while a readable profile lacking a capability saves that
-//! tab's options as off. Driven headlessly through the real main window.
+//! A profile's capabilities never wipe the asset options the window saves
+//! (#580): an unreadable `profile.ini` leaves the asset options in
+//! `settings.ini` as they were loaded, and a readable profile lacking a
+//! capability keeps that tab's options too. Driven headlessly through the real
+//! main window.
 
 mod common;
 
@@ -159,7 +160,7 @@ fn a_malformed_profile_ini_is_reported_on_selection_and_never_rewritten() {
 }
 
 #[test]
-fn a_readable_profile_lacking_a_capability_saves_that_tabs_options_as_off() {
+fn a_readable_profile_lacking_a_capability_keeps_that_tabs_options() {
     headless();
     let app_dir = app_with_sse_asset_options_on("profile_lacking_capability");
     edit_ini(&app_dir, "SSE/profile.ini", "texturesEnabled", "false");
@@ -176,16 +177,8 @@ fn a_readable_profile_lacking_a_capability_saves_that_tabs_options_as_off() {
     assert!(!enabled(ui, "Textures") && !enabled(ui, "Animations"));
     choose(ui, "Profile", "TES5");
 
-    // The unsupported tabs' options are off...
-    let expected = Options {
-        textures_necessary: false,
-        textures_compress: false,
-        textures_mipmaps: false,
-        textures_resize_size: false,
-        textures_resize_ratio: false,
-        animations_optimization: false,
-        // ...and the supported tabs' options are as they were loaded.
-        ..loaded
-    };
-    assert_eq!(sse_options(&app_dir), expected);
+    // A run under the profile holds back the unsupported work, so its
+    // options are kept as loaded, to apply again should the profile support
+    // them once more.
+    assert_eq!(sse_options(&app_dir), loaded);
 }

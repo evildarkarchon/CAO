@@ -369,11 +369,10 @@ impl App {
             return true;
         }
 
-        // The capabilities come from the loaded `profile.ini`, not the tab bar:
-        // an unreadable one disables every tab, yet says nothing of what the
-        // profile supports, so its asset options are kept as loaded (#580).
-        let capabilities = loaded.settings.as_ref().map(profile_capabilities);
-        let options = form::read_options(ui, &loaded.options, capabilities.as_ref());
+        // An unreadable `profile.ini` disables every tab, yet says nothing of
+        // what the profile supports, so its asset options are kept as loaded
+        // (#580).
+        let options = form::read_options(ui, &loaded.options, loaded.settings.is_some());
         if let Err(error) = loaded.profile.save_options(&options) {
             self.error(
                 "Save",
