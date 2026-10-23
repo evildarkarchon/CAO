@@ -775,6 +775,11 @@ fn finalize_archives(
 /// planned output. Nothing is packed, committed or cleaned, no Loading
 /// Plugin is maintained and no directory pruned.
 ///
+/// A shortage the Apply run's Capacity Check would fail Archive creation on
+/// is recorded as a [`RunDiagnosticCode::CapacityShortage`] warning, and
+/// logged, before the outputs; it neither fails the Dry Run nor drops any
+/// planned output.
+///
 /// Cancellation is observed before planning and by planning itself; either
 /// stops with nothing planned, as an Apply run stops with no output total. A
 /// planning failure, or a contained planning panic, is recorded as the
@@ -793,7 +798,19 @@ fn plan_archive_finalization(
     let outputs = match toolset.plan_archive_creation(preparation, choices, &|| stop.is_cancelled())
     {
         CreationPlanning::NotRequested => return Ok(ControlFlow::Continue(())),
-        CreationPlanning::Planned(outputs) => outputs,
+        CreationPlanning::Planned { outputs, shortfall } => {
+            if let Some(shortfall) = &shortfall {
+                // As at Discovering Archives, a Dry Run needs no space, so
+                // the shortage its Apply run would fail Archive creation on
+                // is only a warning, and every planned output is still
+                // recorded below.
+                let warning =
+                    toolset.capacity_shortage_warning(RunPhase::ArchiveFinalization, shortfall);
+                log::warn!("{}: {}", warning.path.display(), warning.detail);
+                evidence.record_diagnostic(warning);
+            }
+            outputs
+        }
         CreationPlanning::Cancelled => return Ok(ControlFlow::Break(Stop::Halted)),
         CreationPlanning::Failed(detail) => {
             evidence.record_failure(RunFailure::new(

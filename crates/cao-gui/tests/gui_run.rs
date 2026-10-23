@@ -828,6 +828,76 @@ fn a_dry_run_shows_a_capacity_shortage_as_a_warning() {
     );
 }
 
+/// Spec (#645): a real Dry Run whose Apply run would run out of space
+/// creating its Archive: the view shows the streamed Archive Finalization
+/// capacity shortage as a warning row, and the run still ends as done with
+/// its planned output Archive listed.
+#[test]
+fn a_dry_run_shows_a_creation_capacity_shortage_as_a_warning() {
+    let root = scratch_dir("dry-run-creation-capacity-warning");
+    write_textures(&root, 1);
+    let sink = RecordingSink::default();
+    let request = RunRequest::new(
+        "SkyrimSE",
+        ExecutionMode::DryRun,
+        ModSelection::SingleModRoot(root.clone()),
+        vec![RequestedWork::ArchiveCreation],
+    );
+    let toolset = ScriptedToolset {
+        volume_probe: Arc::new(FakeVolumeProbe::default().with_capacity(|_| Some(0))),
+        ..ScriptedToolset::default()
+    };
+
+    let result = execute(
+        &request,
+        &Arc::new(toolset),
+        &sink,
+        Vec::new(),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    let warning = sink
+        .observed()
+        .into_iter()
+        .find_map(|observed| match observed {
+            Observed::Diagnostic(diagnostic)
+                if diagnostic.code == RunDiagnosticCode::CapacityShortage =>
+            {
+                Some(diagnostic)
+            }
+            _ => None,
+        })
+        .expect("the shortage is streamed as a diagnostic");
+    assert_eq!(warning.phase, RunPhase::ArchiveFinalization);
+    let mut view = RunView::default();
+    view.begin("run");
+    assert!(view.consume(&event(
+        "run",
+        1,
+        RunEventPayload::Diagnostic(warning.clone())
+    )));
+    assert_eq!(
+        view.state().details,
+        [format!(
+            "Warning: {} | {}",
+            warning.detail,
+            result.mod_roots()[0].display()
+        )]
+    );
+
+    assert!(view.consume(&event("run", 2, RunEventPayload::Terminal(result))));
+    assert_eq!(view.state().label, "Done");
+    assert!(
+        view.state()
+            .details
+            .iter()
+            .any(|detail| detail.starts_with("Planned Archive: ")),
+        "{:?}",
+        view.state().details
+    );
+}
+
 /// Origin: GuiRunTests::presentsTerminalEvidence (the streamed failure). A
 /// Run Failure the view already showed as it streamed is not repeated when
 /// the terminal result arrives. The failure is real: an unreadable Archive
