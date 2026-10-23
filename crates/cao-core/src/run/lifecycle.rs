@@ -128,7 +128,8 @@ pub enum RunDiagnosticCode {
     CapacityShortage,
 }
 
-/// An informational observation that never determines the Run Outcome.
+/// An informational or warning-level observation that never determines the
+/// Run Outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunDiagnostic {
     pub code: RunDiagnosticCode,

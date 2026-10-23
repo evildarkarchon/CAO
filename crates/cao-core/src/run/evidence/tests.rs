@@ -1705,7 +1705,7 @@ fn planned_extraction(archive: &str, mod_root: &str) -> PlannedArchiveExtraction
         entry_count: 3,
         winner_count: 2,
         estimated_capacity_bytes: 4096,
-        deleted_by_source_cleanup: true,
+        deletes_source_archive: true,
     }
 }
 

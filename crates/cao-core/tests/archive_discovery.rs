@@ -1021,11 +1021,11 @@ fn a_dry_run_plans_each_extraction_an_apply_run_makes_and_mutates_nothing() {
     assert_eq!(b.archive_path, root.join("b.bsa"));
     assert_eq!(b.mod_root, root);
     assert_eq!((b.entry_count, b.winner_count), (3, 2));
-    assert!(b.deleted_by_source_cleanup);
+    assert!(b.deletes_source_archive);
     assert_eq!(a.archive_path, root.join("a.bsa"));
     assert_eq!(a.mod_root, root);
     assert_eq!((a.entry_count, a.winner_count), (2, 1));
-    assert!(a.deleted_by_source_cleanup);
+    assert!(a.deletes_source_archive);
     // The estimate is conservative and follows the manifest's declared
     // sizes, not the stored payloads.
     assert!(a.estimated_capacity_bytes > 4_000_000);
@@ -1071,7 +1071,7 @@ fn a_dry_run_backing_up_its_archives_plans_to_keep_them() {
     let [plan] = result.planned_archive_work().extractions() else {
         panic!("one planned extraction expected");
     };
-    assert!(!plan.deleted_by_source_cleanup);
+    assert!(!plan.deletes_source_archive);
     assert!(root.join("content.bsa").exists());
 }
 

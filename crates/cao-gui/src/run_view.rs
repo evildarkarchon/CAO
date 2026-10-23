@@ -7,14 +7,14 @@
 //! close-during-run state machine. It knows nothing of Slint or of threads: the
 //! window feeds it on the UI thread, in the order the events arrive.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use cao_core::routing::SkipReason;
 use cao_core::run::{
     MutationKind, OptimizationRunResult, OutputPlanBasis, PackedArchiveKind, PhaseSkipReason,
-    PlannedArchiveWork, RunDiagnostic, RunDiagnosticCode, RunEvent, RunEventPayload, RunFailure,
-    RunId, RunOutcome, RunPhase, RunPhaseStatus, RunProgress,
+    PlannedArchiveWork, PlannedOutputArchive, RunDiagnostic, RunDiagnosticCode, RunEvent,
+    RunEventPayload, RunFailure, RunId, RunOutcome, RunPhase, RunPhaseStatus, RunProgress,
 };
 
 /// Presentation facts copied from one run's ordered events.
@@ -360,7 +360,7 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
             shown(&planned.mod_root),
             planned.entry_count,
             planned.winner_count,
-            yes_no(planned.deleted_by_source_cleanup)
+            yes_no(planned.deletes_source_archive)
         ));
     }
     append_planned_creation(details, result.planned_archive_work());
@@ -380,8 +380,7 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
 /// an earlier output already needed it, then the note saying what the plan
 /// was made from. Appends nothing when no creation was planned.
 fn append_planned_creation(details: &mut Vec<String>, work: &PlannedArchiveWork) {
-    let mut dummy_plugins = HashSet::new();
-    for output in work.outputs() {
+    for (output, first_plugin) in PlannedOutputArchive::with_first_dummy_plugins(work.outputs()) {
         details.push(format!(
             "Planned Archive: {} | {} | {} | files={} | bytes={} | delete-sources={}",
             shown(&output.archive_path),
@@ -393,9 +392,7 @@ fn append_planned_creation(details: &mut Vec<String>, work: &PlannedArchiveWork)
         ));
         // Outputs sharing a fallback Loading Plugin name would need one
         // Dummy Plugin between them, so it is listed once.
-        if let Some(plugin) = &output.dummy_plugin_path
-            && dummy_plugins.insert(plugin)
-        {
+        if let Some(plugin) = first_plugin {
             details.push(format!("Planned Dummy Plugin: {}", shown(plugin)));
         }
     }

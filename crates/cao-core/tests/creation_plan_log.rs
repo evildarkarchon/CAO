@@ -39,6 +39,9 @@ impl Log for Capture {
 
 static CAPTURE: Capture = Capture(Mutex::new(Vec::new()));
 
+/// A Dry Run that would split its meshes into two Archives and pack its
+/// Textures into a third logs a "would create" line for each Archive, in
+/// plan order, each followed by the Dummy Plugin it is the first to need.
 #[test]
 fn a_dry_run_logs_each_archive_and_dummy_plugin_it_would_create() {
     log::set_logger(&CAPTURE).unwrap();
