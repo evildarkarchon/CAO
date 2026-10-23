@@ -29,8 +29,8 @@
 //! Apply, Archive Finalization over the packer, reader and the Capacity Check,
 //! or, in Dry Run, the planning of its outputs over the packer's planning
 //! seams. A Dry Run calls only the read and planning seams
-//! (`ArchiveReader::list_entries` and `ArchivePacker::rules`, `list_names`
-//! and `partition`).
+//! (`ArchiveReader::list_entries`, the volume probe for its Capacity Check,
+//! and `ArchivePacker::rules`, `list_names` and `partition`).
 //! Observation goes only through the Run Observation Sink and cancellation
 //! only through the run's token.
 //!
@@ -120,8 +120,9 @@ pub struct ArchiveSeams {
 ///
 /// It is owned by the run for its whole traversal and used only on the Run
 /// Worker, so its ports need not be `Send`. A Dry Run calls only the read and
-/// planning seams (`ArchiveReader::list_entries` and `ArchivePacker::rules`,
-/// `list_names` and `partition`), never extraction, `write` or a commit.
+/// planning seams (`ArchiveReader::list_entries`, the volume probe for its
+/// Capacity Check, and `ArchivePacker::rules`, `list_names` and `partition`),
+/// never extraction, `write` or a commit.
 ///
 /// Its fields are private: every Toolset is built by [`RunToolset::new`],
 /// so its single reader serves Archive discovery, extraction and Archive

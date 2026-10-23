@@ -73,7 +73,7 @@ The internal synchronous component that traverses the Run Phase sequence for one
 _Avoid_: Runner, engine, worker
 
 **Run Toolset**:
-The Asset attempt port and Archive seams (Archive reader, packer and volume probe) one Optimization Run's work goes through, built by Preparing from the same profile read as its Routing Policy. An Optimization Run reaches Archive discovery's checks, Archive extraction and Archive Finalization only through it, so one reader and one Capacity Check serve all three. A Dry Run calls only the read and planning seams (`ArchiveReader::list_entries` and `ArchivePacker::rules`/`list_names`/`partition`).
+The Asset attempt port and Archive seams (Archive reader, packer and volume probe) one Optimization Run's work goes through, built by Preparing from the same profile read as its Routing Policy. An Optimization Run reaches Archive discovery's checks, Archive extraction and Archive Finalization only through it, so one reader and one Capacity Check serve all three. A Dry Run calls only the read and planning seams (`ArchiveReader::list_entries`, the volume probe for its Capacity Check, and `ArchivePacker::rules`/`list_names`/`partition`).
 _Avoid_: Run Work Service, adapters
 
 **Optimization Run Service**:
