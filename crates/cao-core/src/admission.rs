@@ -22,9 +22,9 @@ use crate::run::{MeshLevel, WorkChoices};
 /// It says what is admitted, never which rule held a choice back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Admission {
-    /// Whether each [`RequestedWork`], indexed by its discriminant, is
-    /// admitted.
-    work: [bool; 6],
+    /// The admitted [`RequestedWork`], one bit each ([`work_bit`]). Every
+    /// bit starts set, so work no rule holds back is admitted.
+    work: u8,
     /// The highest Mesh level the request may carry.
     highest_mesh_level: MeshLevel,
 }
@@ -41,15 +41,15 @@ impl Admission {
         several_mods: bool,
         capabilities: Option<&ProfileCapabilities>,
     ) -> Self {
-        let mut work = [true; 6];
+        let mut work = u8::MAX;
         if execution_mode == ExecutionMode::DryRun {
-            work[RequestedWork::ArchiveExtraction as usize] = false;
-            work[RequestedWork::ArchiveCreation as usize] = false;
+            work &= !work_bit(RequestedWork::ArchiveExtraction);
+            work &= !work_bit(RequestedWork::ArchiveCreation);
         }
         if let Some(capabilities) = capabilities {
             for (requested, capability) in work_capabilities() {
                 if !capabilities.supports(capability) {
-                    work[requested as usize] = false;
+                    work &= !work_bit(requested);
                 }
             }
         }
@@ -66,7 +66,7 @@ impl Admission {
 
     /// Reports whether the run's Run Request may carry `work`.
     pub fn admits(&self, work: RequestedWork) -> bool {
-        self.work[work as usize]
+        self.work & work_bit(work) != 0
     }
 
     /// The highest Mesh level the run's Run Request may carry: Necessary
@@ -94,5 +94,22 @@ impl Admission {
     pub fn admitted_work_choices(&self, mut choices: WorkChoices) -> WorkChoices {
         choices.meshes.level = choices.meshes.level.min(self.highest_mesh_level);
         choices
+    }
+}
+
+/// The bit of [`Admission`]'s set that stands for `work`.
+///
+/// The match has no wildcard arm, so a new [`RequestedWork`] does not compile
+/// until it is given a bit here; a ninth bit overflows `u8`, which the
+/// `arithmetic_overflow` lint also rejects at compile time. Indexing by
+/// discriminant would instead compile and panic at run time.
+const fn work_bit(work: RequestedWork) -> u8 {
+    match work {
+        RequestedWork::NativeTextureOptimization => 1 << 0,
+        RequestedWork::StandardMeshOptimization => 1 << 1,
+        RequestedWork::TerrainMeshOptimization => 1 << 2,
+        RequestedWork::AnimationOptimization => 1 << 3,
+        RequestedWork::ArchiveExtraction => 1 << 4,
+        RequestedWork::ArchiveCreation => 1 << 5,
     }
 }
