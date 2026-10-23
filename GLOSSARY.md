@@ -29,7 +29,7 @@ A named set of one game's rules and the user's preferences for optimizing it: it
 _Avoid_: Game mode, profile settings, preset
 
 **Profile Capability**:
-An Asset Kind or optimization behavior supported by the selected game profile. A run request that contradicts a Profile Capability is invalid.
+An Asset Kind or optimization behavior supported by the selected game profile. A Run Request that contradicts a Profile Capability ends its run in a Policy Conflict.
 _Avoid_: Feature flag, UI availability
 
 **Texture Target**:
@@ -111,6 +111,10 @@ _Avoid_: Failed run, exception
 **Run Failure**:
 A retained failure of Optimization Run preparation or orchestration, distinct from an Operation Failure attached to a completed Asset or Archive attempt and from a Safety Cleanup failure. A Run Failure is Run Evidence that the Run Executor considers when classifying the Run Outcome.
 _Avoid_: Start Error, Operation Failure, Safety Cleanup failure, Run Outcome
+
+**Policy Conflict**:
+The Run Failure, found during Preparing, of a Run Request whose Routing Policy cannot be compiled against its Selected Profile: it requests work, or work that requested work derives, that contradicts a Profile Capability, or the Profile's Archive extension is missing, malformed, or the same as a built-in Asset extension. It lists every conflict at once and ends the run Failed. A choice an Admission Rule held back never reaches it, and a Conversion Preference the Profile cannot honour is not one.
+_Avoid_: Start Error, capability error, validation error
 
 **Run Outcome**:
 The terminal classification of an Optimization Run: Succeeded, Completed With Failures, Cancelled, or Failed. Partial mutation is outcome detail, not a separate outcome.
