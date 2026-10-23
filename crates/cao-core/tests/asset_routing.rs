@@ -473,9 +473,10 @@ fn routed_assets_carry_phase_target_mode_and_closed_operations() {
     }
 }
 
-/// Origin: AssetRoutingTests::skipReasonPrecedence (six of its seven rows:
+/// Origin: AssetRoutingTests::skipReasonPrecedence (five of its seven rows:
 /// conversion-only work, which excluded native Textures, can no longer be
-/// requested).
+/// requested, and a Dry Run no longer disables Archive extraction). The Dry
+/// Run row shows an Archive is skipped for its Kind alone, as under Apply.
 #[test]
 fn recognized_assets_are_skipped_with_the_highest_precedence_reason() {
     let cases: [(ExecutionMode, &[RequestedWork], &str, SkipReason); 6] = [
@@ -483,7 +484,7 @@ fn recognized_assets_are_skipped_with_the_highest_precedence_reason() {
             ExecutionMode::DryRun,
             &[],
             "Archives/Assets.ba2",
-            SkipReason::DisabledPhase,
+            SkipReason::DisabledAssetKind,
         ),
         (
             ExecutionMode::Apply,
@@ -528,9 +529,10 @@ fn recognized_assets_are_skipped_with_the_highest_precedence_reason() {
     }
 }
 
-/// Origin: AssetRoutingTests::dryRunPreservesLooseAssetOperations.
+/// Origin: AssetRoutingTests::dryRunPreservesLooseAssetOperations. A Dry Run
+/// routes Archives for extraction as Apply does, so it can plan them.
 #[test]
-fn dry_run_keeps_loose_asset_operations_but_disables_archive_extraction() {
+fn dry_run_keeps_loose_asset_operations_and_archive_extraction() {
     let router = AssetRouter::new(converting_policy(
         ExecutionMode::DryRun,
         &[
@@ -559,12 +561,10 @@ fn dry_run_keeps_loose_asset_operations_but_disables_archive_extraction() {
             .contains(AssetOperation::MeshReferenceMaintenance)
     );
 
-    match router.route(Path::new("Archives/Assets.ba2")) {
-        RoutingDecision::Skipped(archive) => {
-            assert_eq!(archive.reason(), SkipReason::DisabledPhase)
-        }
-        other => panic!("a Dry Run never extracts Archives, got {other:?}"),
-    }
+    let archive = routed(router.route(Path::new("Archives/Assets.ba2")));
+    assert_eq!(archive.execution_mode(), ExecutionMode::DryRun);
+    assert_eq!(archive.phase(), RoutedAssetPhase::ArchiveExtraction);
+    assert!(archive.operations().contains(AssetOperation::Extraction));
 }
 
 /// Origin: AssetRoutingTests::routingIgnoresFilesystemState.
@@ -645,7 +645,7 @@ fn batch_routing_omits_unsupported_paths_and_counts_each_skip_reason() {
         "Docs/Unsupported.txt",
         "Textures/Excluded.tga",
         "Animations/Disabled.hkx",
-        "Archives/Disabled.ba2",
+        "Archives/Routed.ba2",
         "Textures/Routed.dds",
     ];
 
@@ -656,8 +656,15 @@ fn batch_routing_omits_unsupported_paths_and_counts_each_skip_reason() {
         .iter()
         .map(RoutedAsset::execution_path)
         .collect();
-    assert_eq!(routed, [Path::new(paths[0]), Path::new(paths[5])]);
-    assert_eq!(ledger.skipped_asset_count(SkipReason::DisabledPhase), 1);
+    // A Dry Run routes the Archive for extraction, as Apply would.
+    assert_eq!(
+        routed,
+        [
+            Path::new(paths[0]),
+            Path::new(paths[4]),
+            Path::new(paths[5])
+        ]
+    );
     assert_eq!(ledger.skipped_asset_count(SkipReason::DisabledAssetKind), 1);
     assert_eq!(
         ledger.skipped_asset_count(SkipReason::ExcludedAssetVariant),

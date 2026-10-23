@@ -76,7 +76,7 @@ use cao_core::run::{
 };
 use cao_core::test_support::{
     CountingCleanup, EventLog, FakeArchivePacker, FakeBackendFactory, GatedScheduler, Observed,
-    RecordingSink, ScriptedToolset,
+    RecordingSink, ScriptedToolset, entry, write_archive,
 };
 use cao_core::{AttemptOutcome, CompletedMutation};
 use common::{
@@ -195,7 +195,9 @@ fn a_dry_run_evaluates_loose_textures_through_every_phase_without_touching_the_t
         [
             RunPhaseRecord::executed(RunPhase::Preparing, None),
             RunPhaseRecord::executed(RunPhase::DiscoveringArchives, None),
-            RunPhaseRecord::skipped(RunPhase::ExtractingArchives, PhaseSkipReason::DryRun),
+            // No Archive extraction is requested, but other work is: the
+            // phase is planned with nothing to plan.
+            RunPhaseRecord::planned(RunPhase::ExtractingArchives),
             RunPhaseRecord::executed(RunPhase::BuildingEffectiveAssetTree, None),
             RunPhaseRecord::executed(
                 RunPhase::ProcessingAssets,
@@ -205,6 +207,7 @@ fn a_dry_run_evaluates_loose_textures_through_every_phase_without_touching_the_t
             RunPhaseRecord::executed(RunPhase::SafetyCleanup, None),
         ]
     );
+    assert!(result.planned_archive_work().is_empty());
     assert_eq!(attempted_names(&result), ["cuirass.dds", "cuirass_n.dds"]);
     assert!(
         result
@@ -272,9 +275,9 @@ fn only_routed_assets_count_as_work_while_recognized_exclusions_are_counted_by_r
         result.skipped_asset_count(SkipReason::ExcludedAssetVariant),
         1
     );
-    assert_eq!(result.skipped_asset_count(SkipReason::DisabledAssetKind), 1);
-    // A Dry Run never extracts, so the Archive is excluded by its phase.
-    assert_eq!(result.skipped_asset_count(SkipReason::DisabledPhase), 1);
+    // The Mesh and the Archive: no Archive extraction is requested, so a
+    // Dry Run excludes the Archive by its Kind, as an Apply run would.
+    assert_eq!(result.skipped_asset_count(SkipReason::DisabledAssetKind), 2);
     let ledger = result.routing_ledger().expect("routing completed");
     assert_eq!(
         ledger.routed_assets().len(),
@@ -1174,9 +1177,10 @@ fn apply_publishes_diagnostics_between_execution_and_finalization() {
 }
 
 /// Origin: AssetRunTests::dryRunLeavesCompleteModTreeUnchangedWhileEvaluatingLooseAssets
-/// (the whole tree). A Dry Run never finalizes and leaves every byte and
-/// directory as it found them, invalid Archives and staging included, while
-/// still evaluating each Routed Asset in Dry Run with its routed operations.
+/// (the whole tree). A Dry Run plans its Archive extractions, never
+/// finalizes and leaves every byte and directory as it found them, Archives
+/// and staging included, while still evaluating each Routed Asset in Dry
+/// Run with its routed operations.
 #[test]
 fn a_dry_run_leaves_the_complete_mod_tree_unchanged() {
     let _serial = serial();
@@ -1184,14 +1188,23 @@ fn a_dry_run_leaves_the_complete_mod_tree_unchanged() {
     write_tree(
         &root,
         &[
-            "content.bsa",
-            "nested/second.bsa",
             ".CAO-Staging-unknown/hidden.bsa",
             "textures/convertible.tga",
             "meshes/actor.nif",
             "animations/walk.hkx",
             "docs/readme.txt",
         ],
+    );
+    // Real Archives, since a Dry Run reads every selected manifest and an
+    // unreadable one fails the run as it would fail Apply. The staging
+    // Archive is never discovered, so it stays plain text.
+    write_archive(
+        &root.join("content.bsa"),
+        &[entry("textures/archived.dds", b"archived")],
+    );
+    write_archive(
+        &root.join("nested/second.bsa"),
+        &[entry("meshes/archived.nif", b"archived")],
     );
     // Archive Finalization, had it run, would visibly change the tree: it
     // prunes empty directories even when nothing is packed.
@@ -1251,7 +1264,21 @@ fn a_dry_run_leaves_the_complete_mod_tree_unchanged() {
     );
     assert!(!mesh.operations().contains(AssetOperation::Conversion));
     assert_eq!(result.routing_ledger().unwrap().routed_assets().len(), 2);
-    assert_eq!(result.skipped_asset_count(SkipReason::DisabledPhase), 2);
+    let planned: Vec<_> = result
+        .planned_archive_work()
+        .extractions()
+        .iter()
+        .map(|plan| plan.archive_path.clone())
+        .collect();
+    let canonical_root = canonical(&root);
+    assert_eq!(
+        planned,
+        [
+            canonical_root.join("content.bsa"),
+            canonical_root.join("nested").join("second.bsa")
+        ]
+    );
+    assert!(result.archive_extraction_attempts().is_empty());
     assert_eq!(result.skipped_asset_count(SkipReason::DisabledAssetKind), 1);
     assert_eq!(processing_progress(&events), [(0, 2), (1, 2), (2, 2)]);
 }

@@ -172,8 +172,22 @@ fn a_dry_run_through_a_toolset_never_extracts_or_finalizes() {
     );
 
     assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    // A Dry Run reads the manifest to plan the extraction, then attempts
+    // nothing: the reader's extraction seam is never reached.
+    assert_eq!(
+        *toolset.reader.listed.lock().unwrap(),
+        [root.join("content.bsa")]
+    );
     assert!(result.archive_extraction_attempts().is_empty());
-    assert!(toolset.reader.listed.lock().unwrap().is_empty());
+    let [planned] = result.planned_archive_work().extractions() else {
+        panic!("one planned extraction expected");
+    };
+    assert_eq!(planned.archive_path, root.join("content.bsa"));
+    assert_eq!(
+        result.phase(RunPhase::ExtractingArchives).unwrap().status(),
+        RunPhaseStatus::Planned
+    );
+    assert!(!root.join("textures/archived.dds").exists());
     assert!(result.archive_finalization().is_none());
     assert!(
         toolset.packer.writes().is_empty(),
@@ -185,13 +199,13 @@ fn a_dry_run_through_a_toolset_never_extracts_or_finalizes() {
         toolset.attempted(),
         [root.join("textures").join("loose.dds")]
     );
-    for phase in [RunPhase::ExtractingArchives, RunPhase::ArchiveFinalization] {
-        assert_eq!(
-            result.phase(phase).unwrap().skip_reason(),
-            Some(PhaseSkipReason::DryRun),
-            "{phase:?}"
-        );
-    }
+    assert_eq!(
+        result
+            .phase(RunPhase::ArchiveFinalization)
+            .unwrap()
+            .skip_reason(),
+        Some(PhaseSkipReason::DryRun)
+    );
 }
 
 #[test]

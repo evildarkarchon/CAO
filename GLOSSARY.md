@@ -61,7 +61,7 @@ The Selected Profile's choice of whether requested Texture work also converts co
 _Avoid_: TGA option, convert flag
 
 **Dry Run**:
-A non-mutating optimization run that evaluates eligible Loose Assets without extracting or creating Archives. Its Run Request requests the work the user chose, Archive work included, and the run mutates no Archive.
+A non-mutating optimization run that evaluates eligible Loose Assets and plans the Archive extractions an Apply run would make, without extracting, creating or deleting Archives. It runs Archive discovery's checks as an Apply run does, so an unreadable Archive, an Unsafe Game Path or a bad Archive Precedence fails the Dry Run as it would fail the Apply run. Its Run Request requests the work the user chose, Archive work included, and the run mutates no Archive.
 _Avoid_: Preview mode, simulation
 
 **Optimization Run**:
@@ -269,5 +269,5 @@ A closed description of work carried by a Routed Asset, such as extraction, opti
 _Avoid_: Option flag, optimizer setting
 
 **Skip Reason**:
-A stable category explaining why Routing Policy excludes a recognized Asset. A disabled run phase takes precedence, followed by a disabled Asset Kind when none of its Variants has work, then an excluded Asset Variant when its Kind has other work.
+A stable category explaining why Routing Policy excludes a recognized Asset. A disabled Asset Kind, when none of its Variants has work, takes precedence over an excluded Asset Variant, when its Kind has other work.
 _Avoid_: Log message, error text
