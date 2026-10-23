@@ -216,6 +216,54 @@ fn a_no_work_run_traverses_every_phase_skipping_work_for_the_one_known_reason() 
     }
 }
 
+/// Spec #634: a Dry Run's Admission Rules hold back Archive extraction and
+/// creation, so a Dry Run whose request asked only for Archive work carries
+/// no requested work. It skips every work phase for that reason, the one the
+/// run knows, not for being a Dry Run ([`PhaseSkipReason::DryRun`]).
+#[test]
+fn a_dry_run_asking_only_for_archive_work_skips_its_work_phases_as_no_requested_work() {
+    let request = RunRequest::new(
+        "SkyrimSE",
+        ExecutionMode::DryRun,
+        no_work_request().mod_selection().clone(),
+        vec![
+            RequestedWork::ArchiveExtraction,
+            RequestedWork::ArchiveCreation,
+        ],
+    );
+    assert_eq!(request.requested_work(), &[]);
+
+    let result = execute(
+        &request,
+        &mut CountingCleanup::default(),
+        Some(&*test_configuration()),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    let phases: Vec<_> = result
+        .phases()
+        .iter()
+        .map(|record| record.phase())
+        .collect();
+    assert_eq!(phases, RunPhase::SEQUENCE);
+    // Every phase between Preparing and Safety Cleanup.
+    for record in &result.phases()[1..6] {
+        assert_eq!(
+            record.status(),
+            RunPhaseStatus::Skipped,
+            "{:?}",
+            record.phase()
+        );
+        assert_eq!(
+            record.skip_reason(),
+            Some(PhaseSkipReason::NoRequestedWork),
+            "{:?}",
+            record.phase()
+        );
+    }
+}
+
 /// Origin: RunExecutorTests::safetyCleanupRunsOnEveryTerminalPath and
 /// safetyCleanupRunsExactlyOnceBeforeTheTerminalResult.
 #[test]
