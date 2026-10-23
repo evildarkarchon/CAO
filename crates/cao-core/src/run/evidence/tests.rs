@@ -784,8 +784,10 @@ fn archive_discovery_facts_are_rejected_outside_archive_discovery() {
         let mut evidence = in_phase(phase);
         assert_eq!(
             invariant(
-                evidence
-                    .record_skipped_archive_counts(skipped_archives(SkipReason::DisabledPhase, 1))
+                evidence.record_skipped_archive_counts(skipped_archives(
+                    SkipReason::DisabledAssetKind,
+                    1
+                ))
             ),
             Some(SKIPPED),
             "skipped Archive counts during {phase:?}"
@@ -802,7 +804,7 @@ fn archive_discovery_facts_are_rejected_outside_archive_discovery() {
     ] {
         let mut evidence = in_phase(phase);
         evidence
-            .record_skipped_archive_counts(skipped_archives(SkipReason::DisabledPhase, 1))
+            .record_skipped_archive_counts(skipped_archives(SkipReason::DisabledAssetKind, 1))
             .unwrap_or_else(|error| panic!("skipped counts during {phase:?}: {error}"));
         evidence
             .record_nested_archive_count(1)
@@ -817,7 +819,7 @@ fn archive_discovery_facts_are_rejected_outside_archive_discovery() {
 fn each_archive_discovery_fact_is_recorded_once() {
     let mut evidence = in_phase(RunPhase::DiscoveringArchives);
     evidence
-        .record_skipped_archive_counts(skipped_archives(SkipReason::DisabledPhase, 2))
+        .record_skipped_archive_counts(skipped_archives(SkipReason::ExcludedAssetVariant, 2))
         .unwrap();
     assert_eq!(
         invariant(
@@ -839,7 +841,7 @@ fn each_archive_discovery_fact_is_recorded_once() {
     assert_eq!(
         terminal.archive_discovery(),
         Some(&ArchiveDiscoveryEvidence {
-            skipped_archive_counts: skipped_archives(SkipReason::DisabledPhase, 2),
+            skipped_archive_counts: skipped_archives(SkipReason::ExcludedAssetVariant, 2),
             unsupported_explicit_paths: Vec::new(),
             nested_archive_count: 3,
         })
