@@ -7,45 +7,21 @@
 
 mod common;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use cao_core::routing::ExecutionMode;
 use cao_core::run::{CancellationToken, RunOutcome};
 use cao_core::test_support::{ArchiveRunRequest, FakeArchivePacker, ScriptedToolset};
+use common::capture_log;
 use common::{canonical, scratch_dir};
-use log::{Level, LevelFilter, Log, Metadata, Record};
-
-/// A `log` sink keeping the message of every info-or-more-severe record.
-struct Capture(Mutex<Vec<(Level, String)>>);
-
-impl Log for Capture {
-    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        metadata.level() <= Level::Info
-    }
-
-    fn log(&self, record: &Record<'_>) {
-        if self.enabled(record.metadata()) {
-            self.0
-                .lock()
-                .unwrap()
-                .push((record.level(), record.args().to_string()));
-        }
-    }
-
-    fn flush(&self) {
-        // Records are held in memory, so there is nothing to flush.
-    }
-}
-
-static CAPTURE: Capture = Capture(Mutex::new(Vec::new()));
+use log::Level;
 
 /// A Dry Run that would split its meshes into two Archives and pack its
 /// Textures into a third logs a "would create" line for each Archive, in
 /// plan order, each followed by the Dummy Plugin it is the first to need.
 #[test]
 fn a_dry_run_logs_each_archive_and_dummy_plugin_it_would_create() {
-    log::set_logger(&CAPTURE).unwrap();
-    log::set_max_level(LevelFilter::Info);
+    capture_log::install();
     let root = canonical(&scratch_dir("creation-plan-log")).join("mod");
     for (name, contents) in [
         ("meshes/a.nif", &b"twelve bytes"[..]),
@@ -88,11 +64,11 @@ fn a_dry_run_logs_each_archive_and_dummy_plugin_it_would_create() {
             shown("mod - Textures.bsa")
         ),
     ];
-    let records = CAPTURE.0.lock().unwrap();
+    let records = capture_log::records();
     let would_create: Vec<_> = records
         .iter()
-        .filter(|(_, message)| message.starts_with("would create"))
-        .cloned()
+        .filter(|record| record.message.starts_with("would create"))
+        .map(|record| (record.level, record.message.clone()))
         .collect();
     assert_eq!(
         would_create,

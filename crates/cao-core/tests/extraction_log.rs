@@ -7,7 +7,7 @@
 
 mod common;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{CancellationToken, RunOutcome};
@@ -15,48 +15,13 @@ use cao_core::test_support::{
     CountingCleanup, RecordingSink, ScriptedToolset, ToolsetConfiguration, entry, execute_run,
     write_archive,
 };
+use common::capture_log::{self, Captured};
 use common::{canonical, request, scratch_dir};
-use log::{Level, LevelFilter, Log, Metadata, Record};
-
-/// One captured `log` record: what the Application Log layout prints.
-#[derive(Debug, PartialEq, Eq)]
-struct Captured {
-    level: Level,
-    target: String,
-    module_path: Option<String>,
-    message: String,
-}
-
-/// A `log` sink keeping every info-or-more-severe record.
-struct Capture(Mutex<Vec<Captured>>);
-
-impl Log for Capture {
-    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        metadata.level() <= Level::Info
-    }
-
-    fn log(&self, record: &Record<'_>) {
-        if self.enabled(record.metadata()) {
-            self.0.lock().unwrap().push(Captured {
-                level: record.level(),
-                target: record.target().to_owned(),
-                module_path: record.module_path().map(str::to_owned),
-                message: record.args().to_string(),
-            });
-        }
-    }
-
-    fn flush(&self) {
-        // Records are held in memory, so there is nothing to flush.
-    }
-}
-
-static CAPTURE: Capture = Capture(Mutex::new(Vec::new()));
+use log::Level;
 
 #[test]
 fn a_run_logs_each_successful_extraction() {
-    log::set_logger(&CAPTURE).unwrap();
-    log::set_max_level(LevelFilter::Info);
+    capture_log::install();
     let root = canonical(&scratch_dir("extraction-log"));
     let archive = root.join("content.bsa");
     write_archive(&archive, &[entry("meshes/extracted.nif", b"extracted")]);
@@ -89,6 +54,6 @@ fn a_run_logs_each_successful_extraction() {
         module_path: Some("cao_core::run::toolset".to_owned()),
         message: format!("BSA successfully extracted: {}", archive.display()),
     };
-    let records = CAPTURE.0.lock().unwrap();
+    let records = capture_log::records();
     assert!(records.contains(&expected), "{records:?}");
 }
