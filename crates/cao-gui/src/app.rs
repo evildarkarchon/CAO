@@ -310,12 +310,12 @@ impl App {
             form::show_settings(ui, settings);
         }
         form::show_options(ui, &options);
-        // The UI rules also hold for what was loaded, so a profile saved with a
-        // combination a rule forbids (Dry Run with Extract BSA, say) shows what
-        // the run will actually do (deviation 3).
-        rules::apply(ui);
         // An unreadable profile enables no asset tab.
         let capabilities = settings.as_ref().map(profile_capabilities);
+        // The rules also hold for what was loaded, so a profile saved with a
+        // combination a rule holds back (Dry Run with Extract BSA, say) shows
+        // what the run will actually do, while keeping the choice.
+        rules::apply(ui, capabilities.as_ref());
         self.enable_tabs(capabilities.as_ref());
         ui.set_base_profile(profile.is_base());
 
@@ -369,11 +369,10 @@ impl App {
             return true;
         }
 
-        // The capabilities come from the loaded `profile.ini`, not the tab bar:
-        // an unreadable one disables every tab, yet says nothing of what the
-        // profile supports, so its asset options are kept as loaded (#580).
-        let capabilities = loaded.settings.as_ref().map(profile_capabilities);
-        let options = form::read_options(ui, &loaded.options, capabilities.as_ref());
+        // An unreadable `profile.ini` disables every tab, yet says nothing of
+        // what the profile supports, so its asset options are kept as loaded
+        // (#580).
+        let options = form::read_options(ui, &loaded.options, loaded.settings.is_some());
         if let Err(error) = loaded.profile.save_options(&options) {
             self.error(
                 "Save",
@@ -627,20 +626,29 @@ impl App {
     }
 }
 
-// ---- UI rules (#509)
+// ---- The window's rules (`rules.rs`)
 
 impl App {
-    /// Connects the controls that trigger a UI rule to [`rules::apply`], the
-    /// same call `load_profile` makes after loading settings.
+    /// Connects the controls that trigger a rule to [`App::apply_rules`], the
+    /// call `load_profile` makes too after loading settings.
     fn wire_rules(&self) {
         let ui = &self.window;
-        let apply_rules = |app: &Self| rules::apply(&app.window);
-        ui.on_dry_run_clicked(self.with_arg(move |app, _| apply_rules(app)));
-        // A RadioGroup disabled with its unchecked group reverts what a rule
-        // writes to its radios, so the rules re-apply once the group is back.
-        ui.on_meshes_process_toggled(self.with(apply_rules));
-        ui.on_game_selected(self.with_arg(move |app, _| apply_rules(app)));
+        ui.on_dry_run_clicked(self.with_arg(|app, _| app.apply_rules()));
+        ui.on_game_selected(self.with_arg(|app, _| app.apply_rules()));
         ui.on_mode_activated(self.with_arg(|app, _| app.mode_activated()));
+    }
+
+    /// Applies the window's rules under the loaded Profile's Profile
+    /// Capabilities, the ones that enable its tabs and that a run's request
+    /// is built with.
+    fn apply_rules(&self) {
+        let capabilities = self
+            .loaded
+            .borrow()
+            .settings
+            .as_ref()
+            .map(profile_capabilities);
+        rules::apply(&self.window, capabilities.as_ref());
     }
 
     /// The Textures tab's Edit button (C++ `TexturesFormatSelectDialog`): opens
@@ -710,7 +718,7 @@ impl App {
     /// The mode combo's `activated`: applies the Several Mods rule and, for
     /// Several Mods, shows C++'s tutorial box.
     fn mode_activated(&self) {
-        rules::apply(&self.window);
+        self.apply_rules();
         if rules::several_mods_chosen(&self.window) {
             self.tutorial(
                 "Several mods option",

@@ -46,7 +46,9 @@ fn settings_saved_from_the_window_reload_identically() {
     let (app, _desktop) = open(&app_dir);
     let ui = app.window();
     enter(ui, "Mod folder", r"C:\Mods\Some Mod\");
-    // Several Mods brings its UI rule (#509): "Necessary" meshes below.
+    // Several Mods shows "Necessary" meshes below. It writes no level: the
+    // radios hold Necessary because SSE's level 0 leaves them at the
+    // window's first level, so Necessary is what is saved.
     choose(ui, "Optimization mode", "Several mods");
     // The shipped `common.ini` shows them; turn them off and back on.
     click(ui, "Show advanced settings");
@@ -59,7 +61,7 @@ fn settings_saved_from_the_window_reload_identically() {
     click(ui, "Separate textures BSA");
     // Under the 2 GB cap of the Skyrim games, which would hold a larger size there.
     enter(ui, "Maximum size", "1.5");
-    // Not FO4, whose UI rule (#509) would show "Separate textures BSA" forced on.
+    // Not FO4, whose Archive Rules would show "Separate textures BSA" forced on.
     choose(ui, "Game", "Skyrim LE");
 
     select_tab(ui, "Meshes");
