@@ -10,9 +10,12 @@
 //!
 //! The module sits at the crate root beside Asset execution, not under the run
 //! module, because Asset execution sits at the root and the run module depends
-//! on it. The three-state [`MutationState`] stays in Asset execution.
+//! on it. The three-state [`MutationState`] stays in Asset execution. Only
+//! the [`CapacityShortage`] an Operation Failure may carry is borrowed back
+//! from the run module, as plain data.
 
 use crate::execution::MutationState;
+use crate::run::CapacityShortage;
 
 /// The mutation a succeeded attempt can leave behind: none, or a Committed
 /// Mutation. Partial or unknown mutation has no variant here, so a partial or
@@ -44,6 +47,8 @@ impl From<CompletedMutation> for MutationState {
 pub struct OperationFailure<F> {
     category: F,
     detail: String,
+    /// The shortage behind a capacity failure, as data beside its detail.
+    capacity_shortage: Option<CapacityShortage>,
 }
 
 impl<F> OperationFailure<F> {
@@ -53,12 +58,34 @@ impl<F> OperationFailure<F> {
         Self {
             category,
             detail: detail.into(),
+            capacity_shortage: None,
         }
+    }
+
+    /// The Operation Failure of `category` that `shortage` explains: its
+    /// detail is the shortage's own explanation, and it carries the shortage
+    /// as data. Every capacity Operation Failure is built here, so the detail
+    /// and the bytes it states cannot drift apart.
+    pub fn from_capacity_shortage(category: F, shortage: CapacityShortage) -> Self {
+        Self::new(category, shortage.to_string()).with_capacity_shortage(shortage)
+    }
+
+    /// Attaches the Capacity Shortage behind this failure. The detail is left
+    /// as given; [`Self::from_capacity_shortage`] sets both together.
+    pub fn with_capacity_shortage(mut self, shortage: CapacityShortage) -> Self {
+        self.capacity_shortage = Some(shortage);
+        self
     }
 
     /// The presentable detail of this Operation Failure.
     pub fn detail(&self) -> &str {
         &self.detail
+    }
+
+    /// The Capacity Shortage behind this failure, or `None` when it is not a
+    /// capacity failure.
+    pub fn capacity_shortage(&self) -> Option<&CapacityShortage> {
+        self.capacity_shortage.as_ref()
     }
 }
 

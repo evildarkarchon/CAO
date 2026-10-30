@@ -51,7 +51,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use cao_core::CompletedMutation;
 use cao_core::execution::{AssetExecutionResult, MutationState};
 use cao_core::routing::RequestedWork;
 use cao_core::run::{
@@ -64,6 +63,7 @@ use cao_core::test_support::{
     ArchiveRunRequest, FakeArchivePacker, FakeArchiveReader, FakeVolumeProbe, Observed,
     RecordingSink, ScriptedToolset, fake_dummy_plugin,
 };
+use cao_core::{CompletedMutation, OperationFailure};
 use common::{archives_in, canonical, junction, scratch_dir};
 
 /// More bytes than any scenario needs.
@@ -280,26 +280,14 @@ impl Finalizer {
         let run = estimating.run(&[root.to_path_buf()]);
         assert!(run.cleaned_up());
         let result = run.finalization();
-        let detail = result.attempts.first().map_or(
-            result
-                .failure
-                .as_ref()
-                .map_or("", |failure| failure.detail()),
-            |attempt| {
-                attempt
-                    .outcome
-                    .failure()
-                    .map_or("", |failure| failure.detail())
-            },
-        );
-        let digits: String = detail
-            .split_once("estimated ")
-            .expect("the detail reports an estimate")
-            .1
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect();
-        digits.parse().unwrap()
+        let failure = result
+            .attempts
+            .first()
+            .map_or(result.failure.as_ref(), |attempt| attempt.outcome.failure());
+        failure
+            .and_then(OperationFailure::capacity_shortage)
+            .expect("the phase reports a capacity shortage")
+            .required
     }
 }
 
@@ -406,12 +394,23 @@ fn capacity_shortages_stop_before_mutation() {
             assert_eq!(rejected.outcome.mutation(), MutationState::None);
             // Every rejection is at the later root: its preflight or attempt.
             assert_eq!(rejected.mod_root, roots[1]);
-            assert!(
-                rejected
-                    .outcome
-                    .failure()
-                    .is_some_and(|failure| !failure.detail().is_empty())
-            );
+            let failure = rejected.outcome.failure().unwrap();
+            let shortage = failure.capacity_shortage().expect(name);
+            assert_eq!(shortage.root, roots[1], "{name}");
+            assert_eq!(failure.detail(), shortage.to_string(), "{name}");
+            match scenario {
+                // The phase checks both identical outputs on the shared volume.
+                0 => assert_eq!(
+                    (shortage.required, shortage.available),
+                    (2 * estimate, estimate),
+                    "{name}"
+                ),
+                // The volume emptied after the first output committed.
+                2 => assert_eq!(shortage.available, 0, "{name}"),
+                // The grown source outruns the room its planned estimate had.
+                _ => assert_eq!(shortage.available, estimate, "{name}"),
+            }
+            assert!(shortage.required > shortage.available, "{name}");
         }
         assert!(run.cleaned_up());
     }
@@ -644,7 +643,14 @@ fn a_plugin_only_shortage_fails_the_phase_without_progress() {
     );
     assert!(result.attempts.is_empty());
     assert!(result.safe_to_continue);
-    assert!(!result.failure.as_ref().unwrap().detail().is_empty());
+    // The phase-level failure carries its shortage like an attempt's does:
+    // the root's plugin allowance against no room at all.
+    let failure = result.failure.as_ref().unwrap();
+    let shortage = failure.capacity_shortage().expect("a capacity shortage");
+    assert_eq!(shortage.root, root);
+    assert_eq!(shortage.available, 0);
+    assert!(shortage.required > 0);
+    assert_eq!(failure.detail(), shortage.to_string());
     let progress = run.progress().unwrap();
     assert_eq!((progress.completed(), progress.total()), (0, 0));
     assert!(root.join("empty").exists());
@@ -696,6 +702,14 @@ fn a_disappearing_loading_plugin_keeps_its_fallback_reserved() {
             result.attempts[0].outcome.failure_category(),
             Some(ArchiveFinalizationFailure::InsufficientCapacity)
         );
+        // The fallback's reserve is what lifts the demand past the Archive's.
+        let shortage = result.attempts[0]
+            .outcome
+            .failure()
+            .and_then(OperationFailure::capacity_shortage)
+            .expect("a capacity shortage");
+        assert_eq!(shortage.available, archive_only);
+        assert!(shortage.required > archive_only);
         assert_eq!(result.attempts[0].outcome.mutation(), MutationState::None);
         assert!(result.mutations.is_empty());
         assert!(archives_in(&root).is_empty());

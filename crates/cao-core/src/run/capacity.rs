@@ -6,7 +6,7 @@
 //! accounting, sampling the [`VolumeProbe`] with its panic rule, the per-run
 //! freeze of volume identities, and the shortfall message. A caller builds a
 //! [`Demand`] of each Mod Root's estimated bytes and asks the
-//! [`CapacityCheck`] for a [`Shortfall`] or nothing.
+//! [`CapacityCheck`] for a [`CapacityShortage`] or nothing.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -63,10 +63,10 @@ impl<'p> CapacityCheck<'p> {
     /// Tests `root` against the whole of `demand` on its volume: the
     /// shortfall when that is known not to fit, `None` when it fits or free
     /// space is unknown.
-    pub(crate) fn shortfall_at(&self, demand: &Demand, root: &Path) -> Option<Shortfall> {
+    pub(crate) fn shortfall_at(&self, demand: &Demand, root: &Path) -> Option<CapacityShortage> {
         let required = self.required_at(demand, root);
         let available = self.available_bytes(root)?;
-        (available < required).then(|| Shortfall {
+        (available < required).then(|| CapacityShortage {
             root: root.to_path_buf(),
             required,
             available,
@@ -78,7 +78,7 @@ impl<'p> CapacityCheck<'p> {
     ///
     /// A root needing no bytes cannot run out of space, so it is never
     /// checked, and its free space is never sampled.
-    pub(crate) fn first_shortfall(&self, demand: &Demand) -> Option<Shortfall> {
+    pub(crate) fn first_shortfall(&self, demand: &Demand) -> Option<CapacityShortage> {
         demand
             .roots
             .iter()
@@ -97,7 +97,11 @@ impl<'p> CapacityCheck<'p> {
     /// leaves the detail naming "the volume holding this Mod Root" instead.
     /// Only a Dry Run calls this, so an Apply run never looks a volume up
     /// just to describe its failure.
-    pub(crate) fn shortage_warning(&self, phase: RunPhase, shortfall: &Shortfall) -> RunDiagnostic {
+    pub(crate) fn shortage_warning(
+        &self,
+        phase: RunPhase,
+        shortfall: &CapacityShortage,
+    ) -> RunDiagnostic {
         let volume = self.volume_identity(&shortfall.root);
         shortfall.warning(phase, volume.as_deref())
     }
@@ -231,8 +235,13 @@ impl Demand {
 
 /// A Capacity Check that found too little space at a Mod Root. Its
 /// [`Display`](fmt::Display) form is the failure detail each caller reports.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Shortfall {
+///
+/// Run Evidence carries it beside that detail on every capacity Run Failure,
+/// Run Diagnostic and Operation Failure, so the bytes are read as data rather
+/// than parsed out of text. It derives `Hash` because the
+/// [`OperationFailure`](crate::OperationFailure) carrying it does.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CapacityShortage {
     /// The Mod Root that ran short.
     pub root: PathBuf,
     /// The estimated bytes the root was checked against.
@@ -241,7 +250,7 @@ pub(crate) struct Shortfall {
     pub available: u64,
 }
 
-impl Shortfall {
+impl CapacityShortage {
     /// The warning-level [`RunDiagnosticCode::CapacityShortage`] at `phase`
     /// for this shortfall, attributed to its Mod Root, naming `volume`, the
     /// root's volume identity, or the volume holding the root when that is
@@ -267,10 +276,11 @@ impl Shortfall {
             ),
         )
         .with_path(root)
+        .with_capacity_shortage(self.clone())
     }
 }
 
-impl fmt::Display for Shortfall {
+impl fmt::Display for CapacityShortage {
     /// Explains a failed Capacity Check without promising a reservation.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self {
@@ -361,8 +371,8 @@ mod tests {
         demand
     }
 
-    fn shortfall(root: &str, required: u64, available: u64) -> Option<Shortfall> {
-        Some(Shortfall {
+    fn shortfall(root: &str, required: u64, available: u64) -> Option<CapacityShortage> {
+        Some(CapacityShortage {
             root: PathBuf::from(root),
             required,
             available,
@@ -492,7 +502,7 @@ mod tests {
         ] {
             let warning = check.shortage_warning(
                 RunPhase::DiscoveringArchives,
-                &Shortfall {
+                &CapacityShortage {
                     root: PathBuf::from(root),
                     required: 300,
                     available: 250,
@@ -517,7 +527,7 @@ mod tests {
     /// the C++ capacity detail did.
     #[test]
     fn a_shortfall_reports_its_estimate_without_promising_a_reservation() {
-        let shortfall = Shortfall {
+        let shortfall = CapacityShortage {
             root: PathBuf::from("a"),
             required: 300,
             available: 250,

@@ -31,10 +31,10 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use cao_core::execution::MutationState;
-use cao_core::routing::RequestedWork;
+use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
-    ArchiveExtractionFailure, ArchiveExtractionResult, CancellationToken, OptimizationRunResult,
-    RunPhase, SourceCleanup,
+    ArchiveExtractionFailure, ArchiveExtractionResult, CancellationToken, CapacityShortage,
+    OptimizationRunResult, RunPhase, SourceCleanup,
 };
 use cao_core::test_support::{
     ArchiveRunRequest, FakeArchiveReader, FakeVolumeProbe, RecordingSink, ScriptedToolset, entry,
@@ -143,6 +143,25 @@ fn the_capacity_check_is_repeated_before_staging() {
                 attempt.outcome.failure_category(),
                 Some(ArchiveExtractionFailure::InsufficientCapacity)
             );
+            // The recheck charges the Archive's planned estimate, which a Dry
+            // Run of the same request reports, against the emptied volume.
+            let dry_run = extraction_run(&root).with_execution_mode(ExecutionMode::DryRun);
+            let preview = dry_run.execute(
+                &dry_run.configuration(ScriptedToolset::default()),
+                None,
+                &CancellationToken::new(),
+            );
+            let [planned] = preview.planned_archive_work().extractions() else {
+                panic!("one planned extraction: {:?}", preview.failures());
+            };
+            let shortage = CapacityShortage {
+                root: root.clone(),
+                required: planned.estimated_capacity_bytes,
+                available: 0,
+            };
+            let failure = attempt.outcome.failure().unwrap();
+            assert_eq!(failure.capacity_shortage(), Some(&shortage));
+            assert_eq!(failure.detail(), shortage.to_string());
             assert_eq!(attempt.outcome.mutation(), MutationState::None);
             assert!(!root.join(".cao-staging").exists());
             assert!(!root.join("textures").exists());

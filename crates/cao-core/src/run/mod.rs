@@ -36,6 +36,7 @@ pub use asset_attempt::{
     AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
 };
 pub use byte_size::ByteSize;
+pub use capacity::CapacityShortage;
 pub use evidence::{
     ArchiveDiscoveryEvidence, OutputPlanBasis, PlannedArchiveExtraction, PlannedArchiveWork,
     PlannedOutputArchive, RoutedAssetAttempt, RunEvidence, RunObservationSink,

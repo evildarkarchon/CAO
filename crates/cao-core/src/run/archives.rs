@@ -26,7 +26,7 @@ use cao_winfs::{
 
 use crate::execution::MutationState;
 use crate::run::artifacts::reserved_device_name;
-use crate::run::capacity::{CapacityCheck, Shortfall};
+use crate::run::capacity::{CapacityCheck, CapacityShortage};
 use crate::run::source_pin::SourceFilePin;
 use crate::run::staging::{has_staging_component, pin_directory};
 use crate::run::{
@@ -246,9 +246,9 @@ fn try_extract(
     let mut demand = capacity.demand();
     demand.add(&root, required);
     if let Some(shortfall) = capacity.shortfall_at(&demand, &root) {
-        return Ok(Some(OperationFailure::new(
+        return Ok(Some(OperationFailure::from_capacity_shortage(
             ArchiveExtractionFailure::InsufficientCapacity,
-            shortfall.to_string(),
+            shortfall,
         )));
     }
 
@@ -676,7 +676,7 @@ pub(crate) enum Preflight {
     Planned {
         plans: Vec<ArchiveExtractionPlan>,
         collisions: Vec<ArchiveCollision>,
-        shortfall: Option<Shortfall>,
+        shortfall: Option<CapacityShortage>,
     },
     /// A check other than the Capacity Check failed; no Archive may be
     /// extracted, in either mode.
@@ -693,13 +693,14 @@ fn discovery_failure(code: RunFailureCode, path: &Path, detail: impl Into<String
 /// The Run Failure an Apply run records when the preflight's Capacity Check
 /// finds `shortfall`: Archive Insufficient Capacity at Discovering Archives,
 /// attributed to the Mod Root that ran short, with the shortfall's own
-/// explanation as its detail.
-pub(crate) fn capacity_failure(shortfall: &Shortfall) -> RunFailure {
+/// explanation as its detail and the shortfall itself as its data.
+pub(crate) fn capacity_failure(shortfall: &CapacityShortage) -> RunFailure {
     discovery_failure(
         RunFailureCode::ArchiveInsufficientCapacity,
         &shortfall.root,
         shortfall.to_string(),
     )
+    .with_capacity_shortage(shortfall.clone())
 }
 
 /// Plans the extraction of every selected Archive, or fails the whole batch.
