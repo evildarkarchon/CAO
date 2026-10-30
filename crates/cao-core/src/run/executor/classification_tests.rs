@@ -15,7 +15,6 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::classify_terminal_outcome;
-use crate::CompletedMutation;
 use crate::Error;
 use crate::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use crate::routing::{AssetRouter, ExecutionMode, RequestedWork, RoutingPolicyRequest};
@@ -25,6 +24,7 @@ use crate::run::{
     RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord, RunPreparation,
 };
 use crate::test_support::sse_profile;
+use crate::{CompletedMutation, OperationFailure};
 
 /// The work fact one row of the classification table establishes.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -163,9 +163,11 @@ fn sealed_evidence(fact: WorkFact, terminal: Terminal) -> Result<RunEvidence, Er
             // As Archive Finalization finishes its phase after a panic
             // before planning.
             finalization.finish(ArchiveFinalizationAccount {
-                failure: Some(ArchiveFinalizationFailure::UnexpectedException),
+                failure: Some(OperationFailure::new(
+                    ArchiveFinalizationFailure::UnexpectedException,
+                    "fatal work failure",
+                )),
                 safe_to_continue: false,
-                detail: "fatal work failure".to_owned(),
                 ..ArchiveFinalizationAccount::default()
             })?;
         } else {

@@ -393,7 +393,7 @@ fn each_mod_root_volume_is_looked_up_once_per_run() {
     assert!(result.failures().is_empty(), "{:?}", result.failures());
     assert_eq!(result.archive_extraction_attempts().len(), 2);
     let finalization = result.archive_finalization().unwrap();
-    assert_eq!(finalization.failure, None, "{}", finalization.detail);
+    assert_eq!(finalization.failure, None);
     // Both roots plan an output, so Archive Finalization groups them too.
     assert_eq!(finalization.attempts.len(), 2);
     let mut looked_up = lookups.lock().unwrap().clone();

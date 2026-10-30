@@ -138,12 +138,11 @@ pub struct ArchiveFinalizationMutation {
 pub struct ArchiveFinalizationResult {
     /// Completed output attempts, in plan order.
     pub attempts: Vec<ArchiveFinalizationAttempt>,
-    /// A phase-level failure. It has no output attempt and does not advance
-    /// progress.
-    pub failure: Option<ArchiveFinalizationFailure>,
+    /// A phase-level failure, with the detail it reported. It has no output
+    /// attempt and does not advance progress.
+    pub failure: Option<OperationFailure<ArchiveFinalizationFailure>>,
     pub cancelled: bool,
     pub safe_to_continue: bool,
-    pub detail: String,
     pub mutations: Vec<ArchiveFinalizationMutation>,
 }
 
@@ -159,7 +158,6 @@ impl ArchiveFinalizationResult {
             failure,
             cancelled,
             safe_to_continue,
-            detail,
             mutations,
         } = account;
         Self {
@@ -167,9 +165,15 @@ impl ArchiveFinalizationResult {
             failure,
             cancelled,
             safe_to_continue,
-            detail,
             mutations,
         }
+    }
+
+    /// The stable category of the phase-level failure, or `None` when the
+    /// phase did not fail outside its attempts; mirrors
+    /// [`AttemptOutcome::failure_category`].
+    pub fn failure_category(&self) -> Option<ArchiveFinalizationFailure> {
+        self.failure.as_ref().map(OperationFailure::category)
     }
 }
 
@@ -190,9 +194,12 @@ impl Default for ArchiveFinalizationResult {
 /// keeps its shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ArchiveFinalizationAccount {
-    /// A phase-level failure. It has no output attempt and does not advance
-    /// progress.
-    pub(crate) failure: Option<ArchiveFinalizationFailure>,
+    /// A phase-level failure, with the detail it reported, such as a
+    /// capacity shortfall or the escaped panic's message. It has no output
+    /// attempt and does not advance progress. Archive Finalization records
+    /// it only through [`fail`](Self::fail), and the Operation Failure keeps
+    /// a category from ever travelling without its detail.
+    pub(crate) failure: Option<OperationFailure<ArchiveFinalizationFailure>>,
     /// Whether the phase observed cancellation; it marks the run's
     /// cancellation observed when the phase finishes.
     pub(crate) cancelled: bool,
@@ -201,9 +208,6 @@ pub(crate) struct ArchiveFinalizationAccount {
     /// publication, or a phase-level Unexpected Exception, whose durable
     /// effects have no reliable boundary.
     pub(crate) safe_to_continue: bool,
-    /// What a phase-level failure reported, such as a capacity shortfall or
-    /// the escaped panic's message; empty when the phase did not fail.
-    pub(crate) detail: String,
     /// Completed effects that no output attempt accounts for.
     pub(crate) mutations: Vec<ArchiveFinalizationMutation>,
 }
@@ -216,9 +220,17 @@ impl Default for ArchiveFinalizationAccount {
             failure: None,
             cancelled: false,
             safe_to_continue: true,
-            detail: String::new(),
             mutations: Vec::new(),
         }
+    }
+}
+
+impl ArchiveFinalizationAccount {
+    /// Records `failure` as the phase-level failure. Every site that fails
+    /// the phase outside an output attempt goes through here; cancellation
+    /// and the continuation verdict stay the caller's to set beside it.
+    pub(crate) fn fail(&mut self, failure: OperationFailure<ArchiveFinalizationFailure>) {
+        self.failure = Some(failure);
     }
 }
 
@@ -313,7 +325,7 @@ pub(crate) fn finalize_archives(
             &mut account,
         )
     }));
-    account.detail = match outcome {
+    let detail = match outcome {
         Ok(Ok(())) => return phase.finish(account),
         Ok(Err(Escape::Evidence(error))) => return Err(error),
         Ok(Err(Escape::Work(detail))) => detail,
@@ -322,7 +334,10 @@ pub(crate) fn finalize_archives(
     // The escaped failure gives no reliable boundary for further durable
     // effects. Every attempt was already streamed into the evidence, so the
     // phase-level failure keeps them all.
-    account.failure = Some(ArchiveFinalizationFailure::UnexpectedException);
+    account.fail(OperationFailure::new(
+        ArchiveFinalizationFailure::UnexpectedException,
+        detail,
+    ));
     account.safe_to_continue = false;
     phase.finish(account)
 }
@@ -606,8 +621,10 @@ fn finalize_plan(
         Err(payload) => take_panic_message(payload),
     };
     account.safe_to_continue = false;
-    account.failure = Some(ArchiveFinalizationFailure::UnexpectedException);
-    account.detail = detail;
+    account.fail(OperationFailure::new(
+        ArchiveFinalizationFailure::UnexpectedException,
+        detail,
+    ));
     Ok(())
 }
 
@@ -678,10 +695,10 @@ fn record_shortfall(
 ) -> Result<(), Escape> {
     let detail = shortfall.to_string();
     match archive {
-        None => {
-            account.failure = Some(ArchiveFinalizationFailure::InsufficientCapacity);
-            account.detail = detail;
-        }
+        None => account.fail(OperationFailure::new(
+            ArchiveFinalizationFailure::InsufficientCapacity,
+            detail,
+        )),
         Some(archive) => {
             // A known shortage is found before any mutation, so the producer
             // still claims it safe; the phase stops after it regardless.

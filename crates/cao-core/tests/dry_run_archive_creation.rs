@@ -106,7 +106,7 @@ fn creation_capacity_failure(result: &OptimizationRunResult) -> Option<String> {
     let finalization = result
         .archive_finalization()
         .unwrap_or_else(|| panic!("no Archive Finalization: {:?}", result.failures()));
-    assert_eq!(finalization.failure, None, "{}", finalization.detail);
+    assert_eq!(finalization.failure, None);
     finalization.attempts.iter().find_map(|attempt| {
         (attempt.outcome.failure_category()
             == Some(ArchiveFinalizationFailure::InsufficientCapacity))

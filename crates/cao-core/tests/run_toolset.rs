@@ -14,7 +14,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use cao_core::CompletedMutation;
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
@@ -28,6 +27,7 @@ use cao_core::test_support::{
     FakeBackendFactory, FixedConfiguration, Observed, RecordingSink, ScriptedToolset,
     ToolsetConfiguration, entry, execute_run, sse_profile, write_archive,
 };
+use cao_core::{CompletedMutation, OperationFailure};
 use common::{canonical, request, scratch_dir, snapshot_tree, write_tree};
 
 /// Executes `request` through `configuration`, observing every fact through
@@ -572,11 +572,14 @@ fn an_archive_finalization_failure_outside_any_attempt_is_an_unexpected_exceptio
     assert_eq!(result.asset_attempts().len(), 1, "earlier facts are kept");
     let finalization = result.archive_finalization().unwrap();
     assert_eq!(
-        finalization.failure,
+        finalization.failure_category(),
         Some(ArchiveFinalizationFailure::UnexpectedException)
     );
     assert!(!finalization.safe_to_continue);
-    assert_eq!(finalization.detail, "the archive name listing panicked");
+    assert_eq!(
+        finalization.failure.as_ref().map(OperationFailure::detail),
+        Some("the archive name listing panicked")
+    );
     assert!(finalization.attempts.is_empty());
     assert_eq!(
         result
@@ -669,7 +672,7 @@ fn an_apply_run_extracts_and_finalizes_for_real() {
         "the source is backed up, as the production default cleanup does"
     );
     let finalization = result.archive_finalization().unwrap();
-    assert_eq!(finalization.failure, None, "{}", finalization.detail);
+    assert_eq!(finalization.failure, None);
     assert!(!finalization.attempts.is_empty(), "{finalization:?}");
     assert!(
         finalization

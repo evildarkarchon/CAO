@@ -57,7 +57,7 @@ fn a_run_over_the_production_adapters_packs_a_loose_asset_into_a_loadable_archiv
         Some(RunPhaseStatus::Executed)
     );
     let finalization = result.archive_finalization().unwrap();
-    assert_eq!(finalization.attempts.len(), 1, "{}", finalization.detail);
+    assert_eq!(finalization.attempts.len(), 1, "{:?}", finalization.failure);
     let attempt = &finalization.attempts[0];
     assert!(attempt.succeeded(), "{:?}", attempt.outcome);
     assert_eq!(attempt.archive_path, root.join("mod.bsa"));

@@ -17,6 +17,7 @@
 use std::ops::ControlFlow;
 use std::path::PathBuf;
 
+use crate::OperationFailure;
 use crate::execution::MutationState;
 use crate::run::{
     ArchiveFinalizationChoices, ArchiveFinalizationFailure, CancellationToken, RunExecutor,
@@ -111,10 +112,13 @@ fn a_panic_after_the_plan_reaching_the_outer_containment_keeps_the_streamed_atte
     assert_eq!(attempt.outcome.mutation(), MutationState::Committed);
     assert_eq!(attempt.mod_root, roots[0]);
     assert_eq!(
-        finalization.failure,
+        finalization.failure_category(),
         Some(ArchiveFinalizationFailure::UnexpectedException)
     );
-    assert_eq!(finalization.detail, "the cancellation poll panicked");
+    assert_eq!(
+        finalization.failure.as_ref().map(OperationFailure::detail),
+        Some("the cancellation poll panicked")
+    );
     assert!(!finalization.safe_to_continue);
     assert!(!finalization.cancelled);
     // The phase-level verdict forbids continuation, so the run fails, but

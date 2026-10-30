@@ -181,7 +181,7 @@ fn existing_archive_plugin_names_follow_the_profile() {
         let result = finalize(game, &root, ArchiveFinalizationChoices::default(), None);
 
         assert!(result.attempts.is_empty());
-        assert_eq!(result.failure, None, "{archive}: {}", result.detail);
+        assert_eq!(result.failure, None, "{archive}");
         assert_eq!(result.mutations.len(), 1, "{archive}");
         let plugin = root.join("bundle.esp");
         let mutation = &result.mutations[0];
@@ -228,7 +228,7 @@ fn existing_fo4_archives_share_one_loading_plugin() {
         );
 
         assert!(result.attempts.is_empty());
-        assert_eq!(result.failure, None, "{preexisting}: {}", result.detail);
+        assert_eq!(result.failure, None, "{preexisting}");
         assert!(result.safe_to_continue);
         if preexisting == "none" {
             assert_eq!(result.mutations.len(), 1);
