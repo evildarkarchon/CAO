@@ -56,7 +56,7 @@ use crate::Error;
 use crate::execution::AssetExecutionResult;
 use crate::routing::RoutedAsset;
 use crate::run::archives::{self, Preflight, RootArchives, preflight};
-use crate::run::capacity::{CapacityCheck, FrozenVolumes, Shortfall};
+use crate::run::capacity::{CapacityCheck, CapacityShortage, FrozenVolumes};
 use crate::run::finalization::{self, CreationPlanning};
 use crate::run::{
     ArchiveExtractionPlan, ArchiveExtractionResult, ArchiveFinalizationChoices,
@@ -204,7 +204,7 @@ impl RunToolset {
     pub(crate) fn capacity_shortage_warning(
         &self,
         phase: RunPhase,
-        shortfall: &Shortfall,
+        shortfall: &CapacityShortage,
     ) -> RunDiagnostic {
         self.capacity_check().shortage_warning(phase, shortfall)
     }

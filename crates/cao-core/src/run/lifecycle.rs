@@ -15,7 +15,8 @@ use crate::routing::{
 };
 use crate::run::{
     ArchiveCollision, ArchiveExtractionResult, ArchiveFinalizationResult, ArchivePrecedence,
-    PlannedArchiveWork, RoutedAssetAttempt, RunEvidence, RunPreparation, WorkChoices,
+    CapacityShortage, PlannedArchiveWork, RoutedAssetAttempt, RunEvidence, RunPreparation,
+    WorkChoices,
 };
 
 /// The unique identity of one Optimization Run, carried by its events and terminal result.
@@ -165,6 +166,9 @@ pub struct RunDiagnostic {
     pub detail: String,
     /// The affected entry, or empty for observations unrelated to a path.
     pub path: PathBuf,
+    /// The shortage a capacity warning previews, as data beside its detail;
+    /// `None` for every other diagnostic.
+    pub capacity_shortage: Option<CapacityShortage>,
 }
 
 impl RunDiagnostic {
@@ -175,12 +179,20 @@ impl RunDiagnostic {
             phase,
             detail: detail.into(),
             path: PathBuf::new(),
+            capacity_shortage: None,
         }
     }
 
     /// Attaches the affected entry.
     pub fn with_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.path = path.into();
+        self
+    }
+
+    /// Attaches the Capacity Shortage this diagnostic warns of. The detail is
+    /// left as given: the caller owns its wording.
+    pub fn with_capacity_shortage(mut self, shortage: CapacityShortage) -> Self {
+        self.capacity_shortage = Some(shortage);
         self
     }
 }
@@ -230,10 +242,17 @@ pub struct RunFailure {
     pub policy_conflicts: Vec<PolicyValidationError>,
     /// The affected path, or empty for failures unrelated to one artifact.
     pub path: PathBuf,
+    /// The shortage behind an `ArchiveInsufficientCapacity` failure, as data
+    /// beside its detail; `None` for other codes.
+    ///
+    /// Boxed because many fallible steps return a Run Failure as their `Err`:
+    /// inline, the shortage would make every such `Result` carry its bytes,
+    /// though only one code ever sets it.
+    pub capacity_shortage: Option<Box<CapacityShortage>>,
 }
 
 impl RunFailure {
-    /// A failure unrelated to any path or policy conflict.
+    /// A failure unrelated to any path, policy conflict or capacity shortage.
     pub fn new(code: RunFailureCode, phase: RunPhase, detail: impl Into<String>) -> Self {
         Self {
             code,
@@ -241,12 +260,20 @@ impl RunFailure {
             detail: detail.into(),
             policy_conflicts: Vec::new(),
             path: PathBuf::new(),
+            capacity_shortage: None,
         }
     }
 
     /// Attaches the affected path.
     pub fn with_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.path = path.into();
+        self
+    }
+
+    /// Attaches the Capacity Shortage behind this failure. The detail is left
+    /// as given: the caller owns its wording.
+    pub fn with_capacity_shortage(mut self, shortage: CapacityShortage) -> Self {
+        self.capacity_shortage = Some(Box::new(shortage));
         self
     }
 

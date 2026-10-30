@@ -37,7 +37,7 @@ use crate::routing::{
 use crate::run::archives::{
     Preflight, RootArchives, archive_order_key, capacity_failure, relative_game_path,
 };
-use crate::run::capacity::Shortfall;
+use crate::run::capacity::CapacityShortage;
 use crate::run::finalization::CreationPlanning;
 use crate::run::{
     ArchiveExtractionPlan, ArchiveFinalizationChoices, AssetInitializationCancelled, ByteSize,
@@ -852,7 +852,7 @@ fn warn_capacity_shortage(
     toolset: &RunToolset,
     evidence: &mut MutableRunEvidence<'_>,
     phase: RunPhase,
-    shortfall: &Shortfall,
+    shortfall: &CapacityShortage,
 ) {
     let warning = toolset.capacity_shortage_warning(phase, shortfall);
     log::warn!("{}: {}", warning.path.display(), warning.detail);

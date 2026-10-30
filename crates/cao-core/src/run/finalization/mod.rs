@@ -37,7 +37,7 @@ use cao_winfs::is_reparse_point;
 
 use crate::execution::MutationState;
 use crate::routing::RequestedWork;
-use crate::run::capacity::{CapacityCheck, Demand, Shortfall};
+use crate::run::capacity::{CapacityCheck, CapacityShortage, Demand};
 use crate::run::staging::has_staging_component;
 use crate::run::{
     ArchiveFinalizationHandle, ArchiveSeams, PlannedOutputArchive, RunPreparation,
@@ -357,7 +357,7 @@ pub(crate) enum CreationPlanning {
         /// Archive creation on, before any root mutates: the same check over
         /// the same [`creation_demand`], so `None` exactly when that Apply
         /// run would pass it.
-        shortfall: Option<Shortfall>,
+        shortfall: Option<CapacityShortage>,
     },
     /// Cancellation was observed while planning; nothing was planned.
     Cancelled,
@@ -688,27 +688,23 @@ fn maintain_and_prune(
 /// or as a phase-level failure when the root has no planned output. The
 /// phase stops after it, before any further mutation.
 fn record_shortfall(
-    shortfall: Shortfall,
+    shortfall: CapacityShortage,
     archive: Option<&Path>,
     phase: &mut ArchiveFinalizationHandle<'_, '_>,
     account: &mut ArchiveFinalizationAccount,
 ) -> Result<(), Escape> {
-    let detail = shortfall.to_string();
+    let root = shortfall.root.clone();
+    let failure = OperationFailure::from_capacity_shortage(
+        ArchiveFinalizationFailure::InsufficientCapacity,
+        shortfall,
+    );
     match archive {
-        None => account.fail(OperationFailure::new(
-            ArchiveFinalizationFailure::InsufficientCapacity,
-            detail,
-        )),
+        None => account.fail(failure),
         Some(archive) => {
             // A known shortage is found before any mutation, so the producer
             // still claims it safe; the phase stops after it regardless.
-            let outcome = AttemptOutcome::failed(
-                OperationFailure::new(ArchiveFinalizationFailure::InsufficientCapacity, detail),
-                MutationState::None,
-                true,
-            );
-            let attempt =
-                ArchiveFinalizationAttempt::new(archive.to_path_buf(), shortfall.root, outcome);
+            let outcome = AttemptOutcome::failed(failure, MutationState::None, true);
+            let attempt = ArchiveFinalizationAttempt::new(archive.to_path_buf(), root, outcome);
             phase.record(attempt).map_err(Escape::Evidence)?;
         }
     }
