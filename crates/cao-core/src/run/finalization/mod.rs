@@ -37,10 +37,12 @@ use cao_winfs::is_reparse_point;
 
 use crate::execution::MutationState;
 use crate::routing::RequestedWork;
-use crate::run::capacity::{CapacityCheck, CapacityShortage, Demand};
+use crate::run::capacity::{
+    CapacityCheck, CapacityShortage, CapacityStage, CapacityVerdict, Demand,
+};
 use crate::run::staging::has_staging_component;
 use crate::run::{
-    ArchiveFinalizationHandle, ArchiveSeams, PlannedOutputArchive, RunPreparation,
+    ArchiveFinalizationHandle, ArchiveSeams, PlannedOutputArchive, RunDiagnostic, RunPreparation,
     TemporaryArtifactRegistry, take_panic_message,
 };
 use crate::{AttemptOutcome, Error, OperationFailure};
@@ -353,11 +355,12 @@ pub(crate) enum CreationPlanning {
     Planned {
         /// The planned output Archives, in plan order.
         outputs: Vec<PlannedOutputArchive>,
-        /// The shortage the Apply run's Capacity Check would fail its
-        /// Archive creation on, before any root mutates: the same check over
-        /// the same [`creation_demand`], so `None` exactly when that Apply
-        /// run would pass it.
-        shortfall: Option<CapacityShortage>,
+        /// The Dry Run's warning, ready to record, of the shortage the Apply
+        /// run's Capacity Check would fail its Archive creation on before
+        /// any root mutates: the same check over the same
+        /// [`creation_demand`], so `None` exactly when that Apply run would
+        /// pass it.
+        capacity_warning: Option<RunDiagnostic>,
     },
     /// Cancellation was observed while planning; nothing was planned.
     Cancelled,
@@ -378,9 +381,9 @@ pub(crate) enum CreationPlanning {
 ///
 /// It then runs the Capacity Check the Apply run would run before mutating,
 /// through `capacity`, the run's Capacity Check, over the same
-/// [`creation_demand`], and returns any shortage beside the outputs rather
-/// than failing: the Dry Run itself needs no space. The check only reads the
-/// volume probe, whose panics it contains.
+/// [`creation_demand`], and returns the warning it gives beside the outputs
+/// rather than failing: the Dry Run itself needs no space. The check only
+/// reads the volume probe, whose panics it contains.
 ///
 /// Planning has no panic containment of its own, and a Dry Run has no
 /// attempt-phase handle to finish as an Unexpected Exception, so a panic of
@@ -410,11 +413,32 @@ pub(crate) fn plan_archive_creation(
         )?;
         // The plan is held, not finalized, so the demand comes from the
         // frozen plan exactly as an Apply run's does before it mutates.
-        let shortfall = capacity.first_shortfall(&creation_demand(capacity, &plan).phase);
-        Ok((planned_outputs(&plan), shortfall))
+        let verdict = capacity.check(
+            CapacityStage::BeforeCreation,
+            &creation_demand(capacity, &plan).phase,
+        );
+        Ok((planned_outputs(&plan), verdict))
     }));
     match planned {
-        Ok(Ok((outputs, shortfall))) => CreationPlanning::Planned { outputs, shortfall },
+        Ok(Ok((outputs, verdict))) => {
+            // Matched outside the containment above, so an impossible arm
+            // panics rather than passing as a planning failure.
+            let capacity_warning = match verdict {
+                CapacityVerdict::Fits => None,
+                CapacityVerdict::Warn(warning) => Some(warning),
+                // The Run Toolset's mode-aware Archive steps are expected to
+                // remove these arms by sharing one entry point with
+                // `finalize_archives`.
+                CapacityVerdict::FailRun(_) | CapacityVerdict::FailWork(_) => unreachable!(
+                    "Archive creation is planned only in a Dry Run, whose Capacity Check warns \
+                     before creation"
+                ),
+            };
+            CreationPlanning::Planned {
+                outputs,
+                capacity_warning,
+            }
+        }
         Ok(Err(PlanningStop::Cancelled)) => CreationPlanning::Cancelled,
         Ok(Err(PlanningStop::Failed(detail))) => CreationPlanning::Failed(detail),
         Err(payload) => CreationPlanning::Failed(take_panic_message(payload)),
@@ -562,13 +586,20 @@ fn finalize_plan(
     // A Mod Root with no planned writes cannot run out of staging space
     // during this phase, so only roots with demand are checked, in root
     // order.
-    if let Some(shortfall) = capacity.first_shortfall(&phase_demand) {
-        let archive = plan
-            .outputs
-            .iter()
-            .find(|output| output.mod_root == shortfall.root)
-            .map(|output| output.archive_path.as_path());
-        return record_shortfall(shortfall, archive, phase, account);
+    match capacity.check(CapacityStage::BeforeCreation, &phase_demand) {
+        CapacityVerdict::Fits => {}
+        CapacityVerdict::FailWork(shortage) => {
+            let archive = plan
+                .outputs
+                .iter()
+                .find(|output| output.mod_root == shortage.root)
+                .map(|output| output.archive_path.as_path());
+            return record_shortage(shortage, archive, phase, account);
+        }
+        verdict @ (CapacityVerdict::FailRun(_) | CapacityVerdict::Warn(_)) => unreachable!(
+            "Archive Finalization runs only in an Apply run, whose shortage before creation \
+             fails only the phase's work, never {verdict:?}"
+        ),
     }
 
     for (index, _) in plan.outputs.iter().enumerate() {
@@ -653,8 +684,14 @@ fn maintain_and_prune(
             for later in &plan.roots[index..] {
                 remaining.add(later, plan.dummy_capacity_by_root[later]);
             }
-            if let Some(shortfall) = capacity.shortfall_at(&remaining, root) {
-                return record_shortfall(shortfall, None, phase, account);
+            match capacity.check_at(CapacityStage::Recheck, &remaining, root) {
+                CapacityVerdict::Fits => {}
+                CapacityVerdict::FailWork(shortage) => {
+                    return record_shortage(shortage, None, phase, account);
+                }
+                verdict @ (CapacityVerdict::FailRun(_) | CapacityVerdict::Warn(_)) => {
+                    unreachable!("a recheck fails only the work it guards, never {verdict:?}")
+                }
             }
         }
         // A probe may block while cancellation arrives; do not start the
@@ -684,19 +721,19 @@ fn maintain_and_prune(
     Ok(())
 }
 
-/// Records a known `shortfall` at its Mod Root as the attempt of `archive`,
+/// Records a known `shortage` at its Mod Root as the attempt of `archive`,
 /// or as a phase-level failure when the root has no planned output. The
 /// phase stops after it, before any further mutation.
-fn record_shortfall(
-    shortfall: CapacityShortage,
+fn record_shortage(
+    shortage: CapacityShortage,
     archive: Option<&Path>,
     phase: &mut ArchiveFinalizationHandle<'_, '_>,
     account: &mut ArchiveFinalizationAccount,
 ) -> Result<(), Escape> {
-    let root = shortfall.root.clone();
+    let root = shortage.root.clone();
     let failure = OperationFailure::from_capacity_shortage(
         ArchiveFinalizationFailure::InsufficientCapacity,
-        shortfall,
+        shortage,
     );
     match archive {
         None => account.fail(failure),
