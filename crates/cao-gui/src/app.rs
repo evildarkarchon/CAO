@@ -341,7 +341,8 @@ impl App {
     /// Enables the asset tabs whose work groups the window's `admission` does
     /// not hold back (none when `settings_read` is false, for an unreadable
     /// `profile.ini`; see [`form::tab_enabled`]), and moves the selection off
-    /// a tab that becomes disabled, as QTabBar does.
+    /// a tab that becomes disabled to the first enabled one, so the window
+    /// never shows the controls of a tab the user cannot use.
     fn enable_tabs(&self, admission: &Admission, settings_read: bool) {
         for row in 0..self.tabs.row_count() {
             let Some(mut tab) = self.tabs.row_data(row) else {
@@ -729,7 +730,7 @@ impl App {
     /// Several Mods, shows C++'s tutorial box.
     fn mode_activated(&self) {
         self.apply_rules();
-        if rules::chosen_mode(&self.window) == OptimizationMode::SeveralMods {
+        if form::chosen_mode(&self.window) == OptimizationMode::SeveralMods {
             self.tutorial(
                 "Several mods option",
                 "You have selected the several mods option. This process may take a very long time, especially if you process BSA. \nThis process has only been tested on the Mod Organizer mods folder.",

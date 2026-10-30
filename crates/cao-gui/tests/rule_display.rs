@@ -223,6 +223,37 @@ fn choosing_several_mods_shows_necessary_meshes_then_one_mod_shows_full_again() 
     );
 }
 
+/// An unsupported `mode` shows no selection in the mode combo. The window's
+/// rules and the saved options read that empty combo the same way, as Single
+/// Mod: no Mesh level is capped, and Single Mod is what is saved.
+#[test]
+fn an_empty_mode_combo_is_single_mod_for_the_rules_and_the_save() {
+    headless();
+    let app_dir = app_on("empty_mode_combo", "SSE");
+    edit_ini(&app_dir, "SSE/settings.ini", "mode", "7");
+    edit_ini(
+        &app_dir,
+        "SSE/settings.ini",
+        "iMeshesOptimizationLevel",
+        "3",
+    );
+    let (app, _desktop) = open(&app_dir);
+    let ui = app.window();
+    assert_eq!(
+        ui.get_mode_index(),
+        -1,
+        "an unsupported mode selects nothing"
+    );
+
+    select_tab(ui, "Meshes");
+    assert!(checked(ui, "Full optimization"));
+    assert!(enabled(ui, "Full optimization") && enabled(ui, "Medium optimization"));
+
+    let options = saved_options(&app, &app_dir, "SSE");
+    assert_eq!(options.mode, cao_profiles::OptimizationMode::SingleMod);
+    assert_eq!(options.meshes_optimization_level, 3);
+}
+
 #[test]
 fn several_mods_loaded_from_the_ini_shows_necessary_meshes_and_keeps_the_level() {
     headless();

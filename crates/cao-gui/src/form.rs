@@ -119,8 +119,19 @@ impl Tab {
 }
 
 /// The mode the mode combo shows at `index`; `None` for no selection.
-pub(crate) fn mode_at(index: i32) -> Option<OptimizationMode> {
+fn mode_at(index: i32) -> Option<OptimizationMode> {
     item(&MODES, index).copied()
+}
+
+/// The mode the mode combo shows, read once here for both the window's rules
+/// (`rules.rs`) and [`read_options`], so what the rules show and what is
+/// saved cannot disagree.
+///
+/// No selection, which [`show_options`] makes for an unsupported mode, reads
+/// as Single Mod: the rules then cap no Mesh level, and Single Mod is the
+/// mode saved for it.
+pub(crate) fn chosen_mode(ui: &MainWindow) -> OptimizationMode {
+    mode_at(ui.get_mode_index()).unwrap_or(OptimizationMode::SingleMod)
 }
 
 /// The game the Game combo shows at `index`; `None` for no selection.
@@ -301,8 +312,8 @@ pub(crate) fn read_options(ui: &MainWindow, current: &Options, settings_read: bo
 
     options.dry_run = ui.get_dry_run();
     options.user_path = clean_path(&ui.get_user_path());
-    // No selection reads as Single Mod, as an invalid `QVariant` converts to 0.
-    options.mode = mode_at(ui.get_mode_index()).unwrap_or(OptimizationMode::SingleMod);
+    // No selection reads as Single Mod (see `chosen_mode`).
+    options.mode = chosen_mode(ui);
     options.debug_log = ui.get_debug_log();
 
     // An unreadable profile shows every asset tab disabled, so the user cannot

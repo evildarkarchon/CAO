@@ -1,7 +1,8 @@
 //! The composition root: runs started from Run Requests built from the
 //! options form, the profile-backed Run Configuration Provider, and a Dry Run
-//! over loose Textures through the production wiring. Ports the intent of C++
-//! `ApplicationRunSetupTests`.
+//! over loose Textures through the production wiring. The pure
+//! options-to-request mapping is tested in `run_request.rs`; these tests need
+//! an installed app directory.
 
 mod common;
 

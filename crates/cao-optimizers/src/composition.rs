@@ -41,7 +41,8 @@ use crate::profile::{mesh_target, rules_and_capabilities, texture_profile};
 /// wired with the profile-backed Run Configuration Provider.
 ///
 /// One service serves every run of a session: the provider captures nothing
-/// per run, so each run's request, built by [`run_request`](crate::run_request::run_request), carries all its
+/// per run, so each run's request, built by
+/// [`run_request`](crate::run_request::run_request), carries all its
 /// intent. Nothing is read from the profile now. Everything a run needs from
 /// the profile, including its Conversion Preference, is read once by the
 /// provider during that run's Preparing, so an edit made before the run starts
@@ -59,7 +60,8 @@ pub fn run_service(app_dir: &Path) -> OptimizationRunService {
 /// The backend's Texture settings for a run's Texture choices.
 ///
 /// The choice already holds one resize mode at most, since
-/// [`run_request`](crate::run_request::run_request) let ratio win, and its constructors kept ratios and sizes non-zero.
+/// [`run_request`](crate::run_request::run_request) let ratio win, and its
+/// constructors kept ratios and sizes non-zero.
 fn texture_settings(choices: &TextureChoices) -> TextureSettings {
     let resize = match choices.resize {
         TextureResizeChoice::None => TextureResize::None,

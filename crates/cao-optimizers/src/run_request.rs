@@ -75,7 +75,10 @@ pub enum WorkGroup {
 }
 
 impl WorkGroup {
-    /// Every work group, in the order the form's tabs show them.
+    /// Every work group, in the order of the [`RequestedWork`] each asks for,
+    /// the order the options-to-request mapping listed that work in before
+    /// the work groups. The order changes no Run Request, since
+    /// [`RunRequest::new`] sorts the work it is given.
     pub const ALL: [Self; 5] = [
         Self::Textures,
         Self::Meshes,
@@ -128,12 +131,19 @@ impl WorkGroup {
 }
 
 /// The Admission Rules of a run in `mode`, under the Profile Capabilities the
-/// caller holds: the one place a mode becomes "Several Mods" for Admission.
+/// caller holds. The window and [`run_request`] both build theirs here, so
+/// they derive "Several Mods" from the options form's mode in one place.
+///
+/// Core's [`RunRequest`] also builds an Admission of its own, from its Mod
+/// Selection, to cap the Work Choices it carries. The two agree because
+/// [`run_request`] gives Several Mods, and only Several Mods, a Mod Selection
+/// that is Several Mods.
 ///
 /// An [`OptimizationMode::Unsupported`] mode counts as not Several Mods, so it
 /// caps no Mesh level; [`run_request`] rejects that mode with
-/// [`RunSetupError::UnsupportedMode`] before it admits anything. `capabilities` of `None` hold back no work, and
-/// Preparing judges the Profile.
+/// [`RunSetupError::UnsupportedMode`] before it admits anything.
+/// `capabilities` of `None` hold back no work, and Preparing judges the
+/// Profile.
 pub fn admission(mode: OptimizationMode, capabilities: Option<&ProfileCapabilities>) -> Admission {
     Admission::new(mode == OptimizationMode::SeveralMods, capabilities)
 }

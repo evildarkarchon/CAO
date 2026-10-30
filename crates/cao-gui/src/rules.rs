@@ -5,8 +5,8 @@
 //! questions a run asks. [`admission`] builds the window's [`Admission`]
 //! through [`run_request::admission`], from the mode the mode combo shows and
 //! the loaded Profile's Profile Capabilities, the same build a run's Run
-//! Request uses, so the window and the run derive Several Mods in one place.
-//! The window shows its answer:
+//! Request uses, so the window and the Run Request build derive Several Mods
+//! from the options form's mode in one place. The window shows its answer:
 //!
 //! - **Several Mods** caps the Mesh level at Necessary, so the level radios
 //!   show Necessary, with Medium and Full disabled. This is a Work Choice cap,
@@ -62,7 +62,6 @@ use cao_core::routing::ProfileCapabilities;
 use cao_core::run::MeshLevel;
 use cao_gui_ui::{BsaTab, MainWindow, RuleDisplay};
 use cao_optimizers::run_request::{self, WorkGroup};
-use cao_profiles::OptimizationMode;
 use slint::ComponentHandle;
 
 use crate::form;
@@ -116,21 +115,14 @@ pub(crate) fn control_state(
     }
 }
 
-/// The mode the mode combo shows. No selection, which `form::show_options`
-/// makes for an unsupported mode, reads as Single Mod, the mode
-/// `form::read_options` saves for it.
-pub(crate) fn chosen_mode(ui: &MainWindow) -> OptimizationMode {
-    form::mode_at(ui.get_mode_index()).unwrap_or(OptimizationMode::SingleMod)
-}
-
 /// The window's Admission: the one a run's Run Request is built with, from
 /// the mode the mode combo shows and `capabilities`, through
-/// [`run_request::admission`], so the window and the run derive Several Mods
-/// in one place. `capabilities` are the loaded Profile's Profile
-/// Capabilities, or `None` when its `profile.ini` could not be read, which
-/// holds back nothing.
+/// [`run_request::admission`], so the window and the Run Request build derive
+/// Several Mods from the options form's mode in one place. `capabilities` are
+/// the loaded Profile's Profile Capabilities, or `None` when its
+/// `profile.ini` could not be read, which holds back nothing.
 pub(crate) fn admission(ui: &MainWindow, capabilities: Option<&ProfileCapabilities>) -> Admission {
-    run_request::admission(chosen_mode(ui), capabilities)
+    run_request::admission(form::chosen_mode(ui), capabilities)
 }
 
 /// Applies every rule to the window's current state under the loaded
