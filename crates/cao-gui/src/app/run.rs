@@ -16,7 +16,8 @@ use std::rc::Weak;
 use cao_core::run::{
     OptimizationRunService, RunEvent, RunEventDispatcher, RunHandle, RunId, RunOutcome, StartError,
 };
-use cao_optimizers::composition::{run_request, run_service};
+use cao_optimizers::composition::run_service;
+use cao_optimizers::run_request::run_request;
 use slint::{ComponentHandle, SharedString};
 
 use super::App;

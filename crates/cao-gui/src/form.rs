@@ -15,8 +15,9 @@
 use std::num::NonZeroU64;
 
 use cao_archive::Game;
-use cao_core::routing::{ProfileCapabilities, ProfileCapability};
+use cao_core::admission::Admission;
 use cao_gui_ui::{AnimationsTab, BsaTab, MainWindow, MeshesTab, TexturesTab};
+use cao_optimizers::run_request::WorkGroup;
 use cao_profiles::ArchiveSize;
 use cao_profiles::{
     ClosedSet, MeshFileVersion, MeshStreamVersion, MeshUserVersion, OptimizationMode, Options,
@@ -86,42 +87,51 @@ impl Tab {
         Tab::ALL.into_iter().find(|tab| tab.id() == id)
     }
 
-    /// Whether the loaded Profile's Profile Capabilities enable this tab, as
-    /// the tab bar shows it. A disabled tab's options are still saved as the
-    /// user left them ([`read_options`]); the run holds back their work.
-    /// `None` stands for a profile whose `profile.ini` could not be read,
-    /// which enables no asset tab. The Log tab is always enabled.
-    ///
-    /// A tab is enabled by any capability its options drive. Mesh Reference
-    /// Maintenance does not enable the Meshes tab: Texture conversion drives
-    /// it, and nothing on that tab affects it.
-    pub(crate) fn enabled_by(self, capabilities: Option<&ProfileCapabilities>) -> bool {
-        let supports_any = |wanted: &[ProfileCapability]| {
-            capabilities.is_some_and(|capabilities| {
-                wanted
-                    .iter()
-                    .any(|capability| capabilities.supports(*capability))
-            })
-        };
+    /// The work groups whose options this tab shows: the window's layout, and
+    /// all it knows of which work a tab stands for. The Log tab shows none.
+    pub(crate) fn work_groups(self) -> &'static [WorkGroup] {
         match self {
-            Tab::Bsa => supports_any(&[
-                ProfileCapability::ArchiveExtraction,
-                ProfileCapability::ArchiveCreation,
-            ]),
-            Tab::Meshes => supports_any(&[
-                ProfileCapability::StandardMeshOptimization,
-                ProfileCapability::TerrainMeshOptimization,
-            ]),
-            Tab::Textures => supports_any(&[ProfileCapability::NativeTextureOptimization]),
-            Tab::Animations => supports_any(&[ProfileCapability::AnimationOptimization]),
-            Tab::Log => true,
+            Tab::Bsa => &[WorkGroup::ArchiveExtraction, WorkGroup::ArchiveCreation],
+            Tab::Meshes => &[WorkGroup::Meshes],
+            Tab::Textures => &[WorkGroup::Textures],
+            Tab::Animations => &[WorkGroup::Animations],
+            Tab::Log => &[],
         }
+    }
+
+    /// Whether this tab is enabled under the window's `admission`: when any
+    /// work group it shows is not held back, so a partly supported group (a
+    /// Profile with Standard but not Terrain Meshes) keeps its tab. The Log
+    /// tab is always enabled.
+    ///
+    /// A disabled tab's options are still saved as the user left them
+    /// ([`read_options`]); the run holds back their work. An `admission`
+    /// built without Profile Capabilities holds back nothing, so a profile
+    /// whose `profile.ini` could not be read is the window's own rule,
+    /// [`tab_enabled`].
+    pub(crate) fn enabled_under(self, admission: &Admission) -> bool {
+        self == Tab::Log
+            || self
+                .work_groups()
+                .iter()
+                .any(|group| !group.held_back(admission))
     }
 }
 
 /// The mode the mode combo shows at `index`; `None` for no selection.
-pub(crate) fn mode_at(index: i32) -> Option<OptimizationMode> {
+fn mode_at(index: i32) -> Option<OptimizationMode> {
     item(&MODES, index).copied()
+}
+
+/// The mode the mode combo shows, read once here for both the window's rules
+/// (`rules.rs`) and [`read_options`], so what the rules show and what is
+/// saved cannot disagree.
+///
+/// No selection, which [`show_options`] makes for an unsupported mode, reads
+/// as Single Mod: the rules then cap no Mesh level, and Single Mod is the
+/// mode saved for it.
+pub(crate) fn chosen_mode(ui: &MainWindow) -> OptimizationMode {
+    mode_at(ui.get_mode_index()).unwrap_or(OptimizationMode::SingleMod)
 }
 
 /// The game the Game combo shows at `index`; `None` for no selection.
@@ -270,6 +280,19 @@ pub(crate) fn show_options(ui: &MainWindow, options: &Options) {
     ui.set_user_path(options.user_path.as_str().into());
 }
 
+/// Whether the tab bar enables `tab` for the loaded profile, under the
+/// window's `admission` ([`Tab::enabled_under`]).
+///
+/// `settings_read` is false when the profile's `profile.ini` could not be
+/// read, as for [`read_options`]. Every asset tab is then disabled, so the
+/// user cannot edit options for a profile CAO does not understand, and
+/// [`read_options`] keeps them as loaded. Admission alone would enable them:
+/// without Profile Capabilities it holds back nothing and leaves the profile
+/// to Preparing.
+pub(crate) fn tab_enabled(tab: Tab, admission: &Admission, settings_read: bool) -> bool {
+    tab == Tab::Log || (settings_read && tab.enabled_under(admission))
+}
+
 /// Reads the options model back from the window, over `current`: the options
 /// last loaded, which keep what the window does not show (`bBsaProcessContent`,
 /// and the mesh level when no level radio is checked).
@@ -289,8 +312,8 @@ pub(crate) fn read_options(ui: &MainWindow, current: &Options, settings_read: bo
 
     options.dry_run = ui.get_dry_run();
     options.user_path = clean_path(&ui.get_user_path());
-    // No selection reads as Single Mod, as an invalid `QVariant` converts to 0.
-    options.mode = mode_at(ui.get_mode_index()).unwrap_or(OptimizationMode::SingleMod);
+    // No selection reads as Single Mod (see `chosen_mode`).
+    options.mode = chosen_mode(ui);
     options.debug_log = ui.get_debug_log();
 
     // An unreadable profile shows every asset tab disabled, so the user cannot
@@ -538,4 +561,102 @@ pub(crate) fn clean_path(path: &str) -> String {
 fn is_drive(segment: &str) -> bool {
     let bytes = segment.as_bytes();
     bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+/// The tab bar's layout of work groups, without a window: which work a
+/// tab's enabling answers to.
+#[cfg(test)]
+mod tests {
+    use cao_core::admission::Admission;
+    use cao_core::routing::{ProfileCapabilities, ProfileCapability};
+
+    use super::{Tab, tab_enabled};
+
+    /// The tabs enabled under `admission`, in the bar's order.
+    fn enabled_tabs(admission: &Admission) -> Vec<Tab> {
+        Tab::ALL
+            .into_iter()
+            .filter(|tab| tab.enabled_under(admission))
+            .collect()
+    }
+
+    /// The tabs enabled for a profile supporting only `capabilities`.
+    fn enabled_for(capabilities: &[ProfileCapability]) -> Vec<Tab> {
+        let capabilities = ProfileCapabilities::define(".bsa", capabilities);
+        enabled_tabs(&Admission::new(false, Some(&capabilities)))
+    }
+
+    #[test]
+    fn a_profile_supporting_nothing_enables_only_the_log() {
+        assert_eq!(enabled_for(&[]), [Tab::Log]);
+    }
+
+    /// Admission built without Profile Capabilities holds back no work. The
+    /// window's own rule for an unreadable `profile.ini` is not this one.
+    #[test]
+    fn no_capabilities_known_enables_every_tab() {
+        assert_eq!(enabled_tabs(&Admission::new(false, None)), Tab::ALL);
+    }
+
+    /// Either Archive group keeps the BSA tab enabled.
+    #[test]
+    fn the_bsa_tab_shows_both_archive_groups() {
+        for capability in [
+            ProfileCapability::ArchiveExtraction,
+            ProfileCapability::ArchiveCreation,
+        ] {
+            assert_eq!(
+                enabled_for(&[capability]),
+                [Tab::Bsa, Tab::Log],
+                "{capability:?}"
+            );
+        }
+    }
+
+    /// A partly supported Meshes group is not held back, so its tab stays
+    /// enabled.
+    #[test]
+    fn standard_meshes_without_terrain_keep_the_meshes_tab() {
+        assert_eq!(
+            enabled_for(&[ProfileCapability::StandardMeshOptimization]),
+            [Tab::Meshes, Tab::Log]
+        );
+    }
+
+    #[test]
+    fn each_other_asset_tab_shows_its_own_group() {
+        let expected = [
+            (ProfileCapability::TerrainMeshOptimization, Tab::Meshes),
+            (ProfileCapability::NativeTextureOptimization, Tab::Textures),
+            (ProfileCapability::AnimationOptimization, Tab::Animations),
+        ];
+        for (capability, tab) in expected {
+            assert_eq!(
+                enabled_for(&[capability]),
+                [tab, Tab::Log],
+                "{capability:?}"
+            );
+        }
+    }
+
+    /// An unreadable `profile.ini` disables every asset tab, though Admission
+    /// without Profile Capabilities holds nothing back.
+    #[test]
+    fn an_unreadable_profile_enables_only_the_log() {
+        let admission = Admission::new(false, None);
+        let enabled: Vec<Tab> = Tab::ALL
+            .into_iter()
+            .filter(|tab| tab_enabled(*tab, &admission, false))
+            .collect();
+        assert_eq!(enabled, [Tab::Log]);
+    }
+
+    /// Mesh Reference Maintenance is in no work group, so it enables no tab.
+    #[test]
+    fn mesh_reference_maintenance_enables_no_tab() {
+        assert_eq!(
+            enabled_for(&[ProfileCapability::MeshReferenceMaintenance]),
+            [Tab::Log]
+        );
+    }
 }

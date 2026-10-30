@@ -1,17 +1,32 @@
 //! What the window's rules show, in one place: which controls they force, how
 //! they force them, and which they disable.
 //!
-//! **The Admission Rules.** The window asks core's [`Admission`] the question
-//! a run's Run Request asks, built from the mode combo and the loaded
-//! Profile's Profile Capabilities, and shows its answer:
+//! **The Admission Rules.** The window asks the `run_request` module the
+//! questions a run asks. [`admission`] builds the window's [`Admission`]
+//! through [`run_request::admission`], from the mode the mode combo shows and
+//! the loaded Profile's Profile Capabilities, the same build a run's Run
+//! Request uses, so the window and the Run Request build derive Several Mods
+//! from the options form's mode in one place. The window shows its answer:
 //!
 //! - **Several Mods** caps the Mesh level at Necessary, so the level radios
-//!   show Necessary, with Medium and Full disabled. "Process meshes" stays the
-//!   user's, so level 0 (no Mesh work) stays allowed.
+//!   show Necessary, with Medium and Full disabled. This is a Work Choice cap,
+//!   not a work group: "Process meshes" stays the user's, so level 0 (no Mesh
+//!   work) stays allowed.
 //! - **A Profile Capability the Profile lacks** holds back the work that
-//!   needs it. Its tab is disabled ([`Tab::enabled_by`]), and Extract BSA,
-//!   Create BSA and Delete backups (a choice of Archive extraction) show
-//!   unchecked and disabled when it holds back their Archive work.
+//!   needs it. The window asks which [`WorkGroup`]s are held back (none of
+//!   their work admitted) and maps only its own layout onto the answer:
+//!   - A tab is disabled when every work group it shows is held back
+//!     ([`Tab::enabled_under`]). The BSA tab shows both Archive groups, so
+//!     either keeps it enabled.
+//!   - Extract BSA, Create BSA and Delete backups (a choice of Archive
+//!     extraction) show unchecked and disabled while their Archive
+//!     extraction or Archive creation group is held back.
+//!
+//! **A Profile CAO cannot read.** An Admission built without Profile
+//! Capabilities holds back nothing and leaves the Profile to Preparing. The
+//! window keeps its own rule beside that: a Profile whose `profile.ini` could
+//! not be read enables no asset tab ([`form::tab_enabled`]), and its asset
+//! options are saved as loaded ([`form::read_options`]).
 //!
 //! The Dry Run box is no Admission Rule: a Dry Run requests the Archive work
 //! the user chose and mutates no Archive, so it forces no control.
@@ -39,14 +54,14 @@
 //! the Maximum size spin box. It is idempotent, so the same call serves a
 //! click on a triggering control and a profile load.
 //!
-//! [`Tab::enabled_by`]: crate::form::Tab::enabled_by
+//! [`Tab::enabled_under`]: crate::form::Tab::enabled_under
 
 use cao_archive::Settings;
 use cao_core::admission::Admission;
-use cao_core::routing::{ProfileCapabilities, RequestedWork};
+use cao_core::routing::ProfileCapabilities;
 use cao_core::run::MeshLevel;
 use cao_gui_ui::{BsaTab, MainWindow, RuleDisplay};
-use cao_profiles::OptimizationMode;
+use cao_optimizers::run_request::{self, WorkGroup};
 use slint::ComponentHandle;
 
 use crate::form;
@@ -88,10 +103,10 @@ pub(crate) fn control_state(
     admission: &Admission,
     archive_rules: Option<&Settings>,
 ) -> ControlState {
-    let extraction_held_back = !admission.admits(RequestedWork::ArchiveExtraction);
+    let extraction_held_back = WorkGroup::ArchiveExtraction.held_back(admission);
     ControlState {
         extract_forced_off: extraction_held_back,
-        create_forced_off: !admission.admits(RequestedWork::ArchiveCreation),
+        create_forced_off: WorkGroup::ArchiveCreation.held_back(admission),
         delete_backups_forced_off: extraction_held_back,
         necessary_meshes_forced: admission.highest_mesh_level() == MeshLevel::NECESSARY,
         separate_textures_forced_on: archive_rules.is_some_and(Settings::keeps_textures_separate),
@@ -100,16 +115,20 @@ pub(crate) fn control_state(
     }
 }
 
-/// Whether the mode combo shows "Several mods".
-pub(crate) fn several_mods_chosen(ui: &MainWindow) -> bool {
-    form::mode_at(ui.get_mode_index()) == Some(OptimizationMode::SeveralMods)
+/// The window's Admission: the one a run's Run Request is built with, from
+/// the mode the mode combo shows and `capabilities`, through
+/// [`run_request::admission`], so the window and the Run Request build derive
+/// Several Mods from the options form's mode in one place. `capabilities` are
+/// the loaded Profile's Profile Capabilities, or `None` when its
+/// `profile.ini` could not be read, which holds back nothing.
+pub(crate) fn admission(ui: &MainWindow, capabilities: Option<&ProfileCapabilities>) -> Admission {
+    run_request::admission(form::chosen_mode(ui), capabilities)
 }
 
-/// Applies every rule to the window's current state. `capabilities` are the
-/// loaded Profile's Profile Capabilities, or `None` when its `profile.ini`
-/// could not be read, which holds back nothing for capabilities.
+/// Applies every rule to the window's current state under the loaded
+/// Profile's `capabilities` (see [`admission`]).
 pub(crate) fn apply(ui: &MainWindow, capabilities: Option<&ProfileCapabilities>) {
-    let admission = Admission::new(several_mods_chosen(ui), capabilities);
+    let admission = admission(ui, capabilities);
     let archive_rules = game_default_rules(ui.global::<BsaTab>().get_game_index());
     write_control_state(ui, &control_state(&admission, archive_rules.as_ref()));
 }
