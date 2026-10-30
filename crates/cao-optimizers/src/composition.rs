@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use cao_archive::Settings;
 use cao_core::Error;
+use cao_core::routing::ExecutionMode;
 use cao_core::run::{
     ArchiveSeams, AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
     CancellationToken, MeshChoices, OptimizationRunService, RunConfigurationProvider,
@@ -198,8 +199,9 @@ impl RunConfigurationProvider for ProfileConfigurationProvider {
             hkxcmd: self.hkxcmd.clone(),
         };
         // Core's Archive work reads its Archive choices from the request
-        // itself, so none of them enters the Toolset.
-        let toolset = work.toolset(Arc::new(profile));
+        // itself, so none of them enters the Toolset. Its Execution Mode
+        // does: every Capacity Check of the run is built with it.
+        let toolset = work.toolset(Arc::new(profile), request.execution_mode());
         Ok((selected, toolset))
     }
 }
@@ -222,9 +224,9 @@ struct RunWorkSettings {
 }
 
 impl RunWorkSettings {
-    /// The production Run Toolset of one run, over the profile its Preparing
-    /// read.
-    fn toolset(&self, profile: Arc<PreparedProfile>) -> RunToolset {
+    /// The production Run Toolset of one run in `mode`, the Run Request's
+    /// Execution Mode, over the profile its Preparing read.
+    fn toolset(&self, profile: Arc<PreparedProfile>, mode: ExecutionMode) -> RunToolset {
         // One reader serves discovery, extraction and finalization for the
         // whole run: the Toolset holds only this one.
         // C++ always wires Archive Finalization, so Apply executes the phase:
@@ -244,6 +246,7 @@ impl RunWorkSettings {
                 profile,
             })),
             seams,
+            mode,
         )
     }
 }

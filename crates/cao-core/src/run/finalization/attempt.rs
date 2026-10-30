@@ -12,7 +12,9 @@ use super::planning::{FinalizationPlan, PlanningStop, estimate_packed_capacity};
 use super::plugins::ensure_output_loading_plugin;
 use super::{ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationMutation};
 use crate::execution::MutationState;
-use crate::run::capacity::{CapacityCheck, CapacityShortage, Demand};
+use crate::run::capacity::{
+    CapacityCheck, CapacityShortage, CapacityStage, CapacityVerdict, Demand,
+};
 use crate::run::source_pin::{LoadingPluginPin, SourceDirectoryPins, SourceFilePin};
 use crate::run::{
     ArchiveSeams, PublicationPolicy, PublicationState, TemporaryArtifactRegistry,
@@ -189,8 +191,12 @@ fn try_attempt(
         &output.mod_root,
         output.estimated_capacity_bytes.max(current),
     );
-    if let Some(shortfall) = capacity.shortfall_at(&demand, &output.mod_root) {
-        return Err(AttemptStop::Short(shortfall));
+    match capacity.check_at(CapacityStage::Recheck, &demand, &output.mod_root) {
+        CapacityVerdict::Fits => {}
+        CapacityVerdict::FailWork(shortage) => return Err(AttemptStop::Short(shortage)),
+        verdict @ (CapacityVerdict::FailRun(_) | CapacityVerdict::Warn(_)) => {
+            unreachable!("a recheck fails only the work it guards, never {verdict:?}")
+        }
     }
 
     // The sources and their parents stay pinned from before the write until

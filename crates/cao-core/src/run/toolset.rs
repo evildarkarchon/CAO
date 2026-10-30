@@ -37,7 +37,10 @@
 //! The Toolset holds the run's one Capacity Check state: each Mod Root's
 //! volume identity is looked up the first time any of those checks asks for
 //! it and frozen for the rest of the run, so preflight, extraction and
-//! Archive Finalization agree on volume grouping.
+//! Archive Finalization agree on volume grouping. It is built with the run's
+//! Execution Mode and builds every Capacity Check with it, so each check
+//! decides what a shortage means and no Archive module needs the mode for
+//! capacity purposes.
 //!
 //! Each panic is contained once, by the module that owns its rule: the
 //! executor turns an Asset attempt's into an unsafe Operation Failure with
@@ -54,14 +57,14 @@ use std::sync::Arc;
 
 use crate::Error;
 use crate::execution::AssetExecutionResult;
-use crate::routing::RoutedAsset;
+use crate::routing::{ExecutionMode, RoutedAsset};
 use crate::run::archives::{self, Preflight, RootArchives, preflight};
-use crate::run::capacity::{CapacityCheck, CapacityShortage, FrozenVolumes};
+use crate::run::capacity::{CapacityCheck, FrozenVolumes};
 use crate::run::finalization::{self, CreationPlanning};
 use crate::run::{
     ArchiveExtractionPlan, ArchiveExtractionResult, ArchiveFinalizationChoices,
     ArchiveFinalizationHandle, ArchivePacker, ArchivePrecedence, ArchiveReader, CancellationToken,
-    RunDiagnostic, RunPhase, RunPreparation, SourceCleanup, TemporaryArtifactRegistry, VolumeProbe,
+    RunDiagnostic, RunPreparation, SourceCleanup, TemporaryArtifactRegistry, VolumeProbe,
 };
 
 /// Cancellation observed while an Asset backend initialized, before any attempt existed.
@@ -136,11 +139,20 @@ pub struct RunToolset {
     /// The volume identities every Capacity Check of the run shares, so each
     /// Mod Root's volume is looked up at most once per run.
     volumes: FrozenVolumes,
+    /// The run's Execution Mode, with which every Capacity Check of the run
+    /// is built.
+    mode: ExecutionMode,
 }
 
 impl RunToolset {
-    /// A Run Toolset whose Asset attempts go through `asset_attempt` and
-    /// whose Archive work core assembles over `seams`.
+    /// A Run Toolset of a run in `mode`, the Run Request's Execution Mode,
+    /// whose Asset attempts go through `asset_attempt` and whose Archive work
+    /// core assembles over `seams`.
+    ///
+    /// `mode` must be the Execution Mode of the Run Request the Toolset is
+    /// loaded for: every Capacity Check of the run is built with it, and so
+    /// decides from it whether a shortage fails the run, fails only its work
+    /// or is a Dry Run's warning.
     ///
     /// The Run Executor extracts each planned Archive over the seams' reader
     /// and the run's Capacity Check with the Run Request's Archive extraction
@@ -149,11 +161,16 @@ impl RunToolset {
     /// the Run Request's Archive Finalization choices. The seams' single
     /// reader therefore serves Archive discovery, extraction and finalization
     /// alike.
-    pub fn new(asset_attempt: Box<dyn AssetAttemptPort>, seams: ArchiveSeams) -> Self {
+    pub fn new(
+        asset_attempt: Box<dyn AssetAttemptPort>,
+        seams: ArchiveSeams,
+        mode: ExecutionMode,
+    ) -> Self {
         Self {
             asset_attempt,
             seams,
             volumes: FrozenVolumes::default(),
+            mode,
         }
     }
 
@@ -163,14 +180,15 @@ impl RunToolset {
     }
 
     /// The run's Capacity Check: the seams' volume probe over the volume
-    /// identities the whole run shares.
+    /// identities the whole run shares, built with the run's Execution Mode.
     ///
     /// A check borrows its probe, and the Toolset owns the probe through the
     /// seams' `Arc`, so it cannot also hold a check borrowing from itself.
-    /// It holds the frozen volumes instead and hands each phase a check over
-    /// them; every such check therefore behaves as the run's one check.
+    /// It holds the frozen volumes and the mode instead and hands each phase
+    /// a check over them; every such check therefore behaves as the run's
+    /// one check.
     fn capacity_check(&self) -> CapacityCheck<'_> {
-        CapacityCheck::sharing(&*self.seams.volume_probe, &self.volumes)
+        CapacityCheck::sharing(&*self.seams.volume_probe, &self.volumes, self.mode)
     }
 
     /// Runs Archive discovery's all-or-nothing preflight over `roots` through
@@ -192,21 +210,6 @@ impl RunToolset {
             &self.capacity_check(),
             stop,
         )
-    }
-
-    /// The warning-level capacity shortage Run Diagnostic a Dry Run records
-    /// at `phase` for `shortfall`, a shortage its Apply run would fail on,
-    /// naming the Mod Root's volume through the run's frozen volume
-    /// identities (see [`CapacityCheck::shortage_warning`]).
-    ///
-    /// Only reads the volume probe, and contains its panics, so it never
-    /// fails or escapes the run's work.
-    pub(crate) fn capacity_shortage_warning(
-        &self,
-        phase: RunPhase,
-        shortfall: &CapacityShortage,
-    ) -> RunDiagnostic {
-        self.capacity_check().shortage_warning(phase, shortfall)
     }
 
     /// Extracts one planned Archive with [`archives::extract_archive`] over
@@ -282,10 +285,10 @@ impl RunToolset {
     /// records the Planned phase and the plan. Planning panics are contained
     /// and returned as a failed plan.
     ///
-    /// The plan carries the shortage, if any, that the Apply run's Capacity
-    /// Check would fail its Archive creation on, found through the run's
-    /// Capacity Check and so over the run's frozen volume identities. The
-    /// caller reports it with [`Self::capacity_shortage_warning`].
+    /// The plan carries the warning, if any, of a shortage the Apply run's
+    /// Capacity Check would fail its Archive creation on, found through the
+    /// run's Capacity Check and so over the run's frozen volume identities,
+    /// ready for the caller to record.
     pub(crate) fn plan_archive_creation(
         &self,
         preparation: &RunPreparation,

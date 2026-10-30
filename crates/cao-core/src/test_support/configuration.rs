@@ -33,13 +33,14 @@ pub fn sse_profile() -> SelectedProfile {
     SelectedProfile::new(sse_capabilities(".bsa"))
 }
 
-/// A fresh Run Toolset over a default [`ScriptedToolset`], for providers a
-/// scenario gives no script: every Asset attempt succeeds with no mutation.
+/// A fresh Run Toolset over a default [`ScriptedToolset`], built with
+/// `request`'s Execution Mode, for providers a scenario gives no script:
+/// every Asset attempt succeeds with no mutation.
 /// Every Optimization Run has a Run Toolset, as in production, and its
 /// Archive extraction and Archive Finalization are core's own over the
 /// default fakes.
-pub(crate) fn default_toolset() -> RunToolset {
-    Arc::new(ScriptedToolset::default()).toolset()
+pub(crate) fn default_toolset(request: &RunRequest) -> RunToolset {
+    Arc::new(ScriptedToolset::default()).toolset(request.execution_mode())
 }
 
 /// A provider returning one fixed Selected Profile and counting its loads.
@@ -51,9 +52,9 @@ pub struct FixedConfiguration {
 }
 
 impl RunConfigurationProvider for FixedConfiguration {
-    fn load(&self, _request: &RunRequest) -> Result<(SelectedProfile, RunToolset), Error> {
+    fn load(&self, request: &RunRequest) -> Result<(SelectedProfile, RunToolset), Error> {
         self.loads.fetch_add(1, Ordering::SeqCst);
-        Ok((self.profile.clone(), default_toolset()))
+        Ok((self.profile.clone(), default_toolset(request)))
     }
 }
 
@@ -68,6 +69,6 @@ pub struct CallbackConfiguration(pub Loader);
 
 impl RunConfigurationProvider for CallbackConfiguration {
     fn load(&self, request: &RunRequest) -> Result<(SelectedProfile, RunToolset), Error> {
-        (self.0)(request).map(|profile| (profile, default_toolset()))
+        (self.0)(request).map(|profile| (profile, default_toolset(request)))
     }
 }
