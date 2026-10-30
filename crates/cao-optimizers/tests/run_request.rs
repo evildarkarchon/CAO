@@ -2,15 +2,17 @@
 //! the work it requests and the Work Choices it carries. Building a request
 //! reads no file and only checks that the selected folder is absolute, so
 //! these tests use a fixed absolute folder and need no app directory.
+//! They also pin the form's work groups, which options choose each and when
+//! a group is held back, and the Admission the module builds from a mode.
 
 use std::path::{Path, PathBuf};
 
-use cao_core::routing::{ExecutionMode, RequestedWork};
+use cao_core::routing::{ExecutionMode, ProfileCapabilities, ProfileCapability, RequestedWork};
 use cao_core::run::{
     ArchiveFinalizationChoices, MeshChoices, MeshLevel, ModSelection, ResizeRatio, ResizeSize,
     SourceCleanup, TextureChoices, TextureResizeChoice, WorkChoiceError, WorkChoices,
 };
-use cao_optimizers::run_request::{RunSetupError, run_request};
+use cao_optimizers::run_request::{RunSetupError, WorkGroup, admission, run_request};
 use cao_profiles::{OptimizationMode, Options};
 
 /// The fixed absolute mod folder the single-mod requests select.
@@ -34,6 +36,277 @@ fn dry_run_textures() -> Options {
         textures_mipmaps: true,
         ..single_mod_options()
     }
+}
+
+/// Every Requested Work, in [`work_position`] order.
+const ALL_WORK: [RequestedWork; 6] = [
+    RequestedWork::NativeTextureOptimization,
+    RequestedWork::StandardMeshOptimization,
+    RequestedWork::TerrainMeshOptimization,
+    RequestedWork::AnimationOptimization,
+    RequestedWork::ArchiveExtraction,
+    RequestedWork::ArchiveCreation,
+];
+
+/// The index of `work` in [`ALL_WORK`]. The match has no wildcard arm, so a
+/// new Requested Work does not compile here until it is listed in
+/// [`ALL_WORK`] too, and the work-group tests then cover it.
+fn work_position(work: RequestedWork) -> usize {
+    match work {
+        RequestedWork::NativeTextureOptimization => 0,
+        RequestedWork::StandardMeshOptimization => 1,
+        RequestedWork::TerrainMeshOptimization => 2,
+        RequestedWork::AnimationOptimization => 3,
+        RequestedWork::ArchiveExtraction => 4,
+        RequestedWork::ArchiveCreation => 5,
+    }
+}
+
+#[test]
+fn every_requested_work_belongs_to_exactly_one_work_group() {
+    for (position, work) in ALL_WORK.into_iter().enumerate() {
+        assert_eq!(
+            work_position(work),
+            position,
+            "{work:?} is listed out of place"
+        );
+        let groups: Vec<WorkGroup> = WorkGroup::ALL
+            .into_iter()
+            .filter(|group| group.work().contains(&work))
+            .collect();
+        assert_eq!(groups.len(), 1, "{work:?} belongs to {groups:?}");
+    }
+    // Mesh Reference Maintenance and Texture conversion are no Requested
+    // Work, so no group can ask for them.
+    let grouped: usize = WorkGroup::ALL.iter().map(|group| group.work().len()).sum();
+    assert_eq!(grouped, ALL_WORK.len());
+}
+
+#[test]
+fn each_work_group_asks_for_its_own_requested_work() {
+    use RequestedWork::*;
+    let expected: [(WorkGroup, &[RequestedWork]); 5] = [
+        (WorkGroup::Textures, &[NativeTextureOptimization]),
+        (
+            WorkGroup::Meshes,
+            &[StandardMeshOptimization, TerrainMeshOptimization],
+        ),
+        (WorkGroup::Animations, &[AnimationOptimization]),
+        (WorkGroup::ArchiveExtraction, &[ArchiveExtraction]),
+        (WorkGroup::ArchiveCreation, &[ArchiveCreation]),
+    ];
+    assert_eq!(WorkGroup::ALL, expected.map(|(group, _)| group));
+    for (group, work) in expected {
+        assert_eq!(group.work(), work, "{group:?}");
+    }
+}
+
+/// One change to an options form.
+type Change = fn(&mut Options);
+
+/// The groups `options` choose, in [`WorkGroup::ALL`] order.
+fn chosen(options: &Options) -> Vec<WorkGroup> {
+    WorkGroup::ALL
+        .into_iter()
+        .filter(|group| group.chosen_by(options))
+        .collect()
+}
+
+#[test]
+fn every_texture_option_chooses_textures_alone() {
+    let none = Options {
+        textures_necessary: false,
+        ..single_mod_options()
+    };
+    assert_eq!(chosen(&none), []);
+    let changes: [Change; 5] = [
+        |o| o.textures_necessary = true,
+        |o| o.textures_compress = true,
+        |o| o.textures_mipmaps = true,
+        |o| o.textures_resize_size = true,
+        |o| o.textures_resize_ratio = true,
+    ];
+    for change in changes {
+        let mut options = none.clone();
+        change(&mut options);
+        assert_eq!(chosen(&options), [WorkGroup::Textures]);
+    }
+}
+
+#[test]
+fn a_mesh_level_above_none_or_resaving_chooses_meshes() {
+    let base = Options {
+        textures_necessary: false,
+        ..single_mod_options()
+    };
+    for (level, resave, expected) in [
+        // Head parts are on by default and ask for no Mesh work by themselves.
+        (0, false, &[][..]),
+        (1, false, &[WorkGroup::Meshes][..]),
+        (2, false, &[WorkGroup::Meshes]),
+        (3, false, &[WorkGroup::Meshes]),
+        (0, true, &[WorkGroup::Meshes]),
+    ] {
+        let options = Options {
+            meshes_optimization_level: level,
+            meshes_resave: resave,
+            ..base.clone()
+        };
+        assert_eq!(chosen(&options), expected, "level {level}, resave {resave}");
+    }
+}
+
+#[test]
+fn the_animation_and_archive_options_each_choose_their_group() {
+    let base = Options {
+        textures_necessary: false,
+        ..single_mod_options()
+    };
+    let cases: [(Change, WorkGroup); 3] = [
+        (|o| o.animations_optimization = true, WorkGroup::Animations),
+        (|o| o.bsa_extract = true, WorkGroup::ArchiveExtraction),
+        (|o| o.bsa_create = true, WorkGroup::ArchiveCreation),
+    ];
+    for (change, group) in cases {
+        let mut options = base.clone();
+        change(&mut options);
+        assert_eq!(chosen(&options), [group]);
+    }
+    // Delete backups is a choice of Archive extraction, not a group of its own.
+    let delete_backup = Options {
+        bsa_delete_backup: true,
+        ..base
+    };
+    assert_eq!(chosen(&delete_backup), []);
+}
+
+#[test]
+fn the_admission_of_several_mods_caps_the_mesh_level_at_necessary() {
+    assert_eq!(
+        admission(OptimizationMode::SeveralMods, None).highest_mesh_level(),
+        MeshLevel::NECESSARY
+    );
+    assert_eq!(
+        admission(OptimizationMode::SingleMod, None).highest_mesh_level(),
+        MeshLevel::FULL
+    );
+}
+
+#[test]
+fn an_unsupported_mode_is_admitted_as_not_several_mods() {
+    assert_eq!(
+        admission(OptimizationMode::Unsupported(7), None),
+        admission(OptimizationMode::SingleMod, None)
+    );
+    assert_eq!(
+        admission(OptimizationMode::Unsupported(7), None).highest_mesh_level(),
+        MeshLevel::FULL
+    );
+}
+
+#[test]
+fn the_admission_holds_back_the_work_the_capabilities_do_not_support() {
+    let capabilities =
+        ProfileCapabilities::define(".ba2", &[ProfileCapability::NativeTextureOptimization]);
+    let known = admission(OptimizationMode::SingleMod, Some(&capabilities));
+    let admitted: Vec<RequestedWork> = ALL_WORK
+        .into_iter()
+        .filter(|work| known.admits(*work))
+        .collect();
+    assert_eq!(admitted, [RequestedWork::NativeTextureOptimization]);
+    // Unknown capabilities hold back nothing: Preparing judges the Profile.
+    let unknown = admission(OptimizationMode::SingleMod, None);
+    assert!(ALL_WORK.into_iter().all(|work| unknown.admits(work)));
+}
+
+/// Profile Capabilities supporting Standard but not Terrain Meshes, and no
+/// other work.
+fn standard_meshes_only() -> ProfileCapabilities {
+    ProfileCapabilities::define(".bsa", &[ProfileCapability::StandardMeshOptimization])
+}
+
+/// The groups held back under `capabilities`, in [`WorkGroup::ALL`] order.
+fn held_back(capabilities: Option<&ProfileCapabilities>) -> Vec<WorkGroup> {
+    let rules = admission(OptimizationMode::SingleMod, capabilities);
+    WorkGroup::ALL
+        .into_iter()
+        .filter(|group| group.held_back(&rules))
+        .collect()
+}
+
+#[test]
+fn a_partly_supported_group_is_not_held_back() {
+    assert_eq!(
+        held_back(Some(&standard_meshes_only())),
+        [
+            WorkGroup::Textures,
+            WorkGroup::Animations,
+            WorkGroup::ArchiveExtraction,
+            WorkGroup::ArchiveCreation,
+        ]
+    );
+    let terrain_only =
+        ProfileCapabilities::define(".bsa", &[ProfileCapability::TerrainMeshOptimization]);
+    assert!(!held_back(Some(&terrain_only)).contains(&WorkGroup::Meshes));
+}
+
+#[test]
+fn a_group_is_held_back_when_none_of_its_work_is_supported() {
+    let nothing = ProfileCapabilities::define(".bsa", &[]);
+    assert_eq!(held_back(Some(&nothing)), WorkGroup::ALL);
+    // Capabilities outside every group's work hold back the same.
+    let outside = ProfileCapabilities::define(
+        ".bsa",
+        &[
+            ProfileCapability::ConvertibleTextureConversion,
+            ProfileCapability::MeshReferenceMaintenance,
+        ],
+    );
+    assert_eq!(held_back(Some(&outside)), WorkGroup::ALL);
+}
+
+#[test]
+fn no_group_is_held_back_when_every_work_is_supported_or_none_is_known() {
+    let every = ProfileCapabilities::define(
+        ".bsa",
+        &[
+            ProfileCapability::NativeTextureOptimization,
+            ProfileCapability::StandardMeshOptimization,
+            ProfileCapability::TerrainMeshOptimization,
+            ProfileCapability::AnimationOptimization,
+            ProfileCapability::ArchiveExtraction,
+            ProfileCapability::ArchiveCreation,
+        ],
+    );
+    assert_eq!(held_back(Some(&every)), []);
+    assert_eq!(held_back(None), []);
+}
+
+#[test]
+fn a_request_on_a_partly_supported_group_carries_only_its_supported_work() {
+    let options = Options {
+        textures_necessary: false,
+        meshes_optimization_level: 1,
+        ..single_mod_options()
+    };
+    let request = run_request("TES5", &options, Some(&standard_meshes_only())).unwrap();
+    assert_eq!(
+        request.requested_work(),
+        [RequestedWork::StandardMeshOptimization]
+    );
+}
+
+#[test]
+fn a_form_choosing_every_group_requests_every_work() {
+    let options = Options {
+        meshes_resave: true,
+        animations_optimization: true,
+        bsa_extract: true,
+        bsa_create: true,
+        ..single_mod_options()
+    };
+    let request = run_request("SSE", &options, None).unwrap();
+    assert_eq!(request.requested_work(), ALL_WORK);
 }
 
 #[test]

@@ -7,6 +7,12 @@
 //! not support, and given none it leaves the profile to Preparing. Preparing's
 //! read of the profile always has the last word, even over capabilities a
 //! request was built with.
+//!
+//! Which options ask for which Requested Work is stated once, as the form's
+//! [`WorkGroup`]s. A caller asks the module the same questions a run does:
+//! [`admission`] builds a run's Admission Rules from its mode and the Profile
+//! Capabilities the caller holds, and [`WorkGroup::held_back`] answers
+//! whether those rules hold a whole group back.
 
 use std::path::PathBuf;
 
@@ -39,9 +45,103 @@ pub enum RunSetupError {
     WorkChoice(#[from] WorkChoiceError),
 }
 
+/// A part of the options form that asks for Requested Work: the one table of
+/// which options request which work.
+///
+/// Every [`RequestedWork`] belongs to exactly one group. Mesh Reference
+/// Maintenance and Texture conversion belong to none: they are no Requested
+/// Work, since the form never asks for them and Preparing derives them from
+/// the Conversion Preference.
+///
+/// It is a code name for parts of the form, not a domain term.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WorkGroup {
+    /// Native Texture optimization, chosen by any Texture option.
+    Textures,
+    /// Standard and Terrain Mesh optimization, chosen by a Mesh level above 0
+    /// or by resaving.
+    ///
+    /// Mesh Reference Maintenance is not in this group and does not enable
+    /// the Meshes tab: Texture conversion drives it, and nothing on that tab
+    /// affects it.
+    Meshes,
+    /// Animation optimization, chosen by the Animations option.
+    Animations,
+    /// Archive extraction, chosen by Extract BSA. Delete backups is one of its
+    /// Work Choices.
+    ArchiveExtraction,
+    /// Archive creation, chosen by Create BSA.
+    ArchiveCreation,
+}
+
+impl WorkGroup {
+    /// Every work group, in the order the form's tabs show them.
+    pub const ALL: [Self; 5] = [
+        Self::Textures,
+        Self::Meshes,
+        Self::Animations,
+        Self::ArchiveExtraction,
+        Self::ArchiveCreation,
+    ];
+
+    /// Whether `options` choose this group, so that a Run Request built from
+    /// them asks for its [`Self::work`].
+    pub fn chosen_by(self, options: &Options) -> bool {
+        match self {
+            Self::Textures => {
+                options.textures_necessary
+                    || options.textures_compress
+                    || options.textures_mipmaps
+                    || options.textures_resize_size
+                    || options.textures_resize_ratio
+            }
+            Self::Meshes => requests_mesh_work(options),
+            Self::Animations => options.animations_optimization,
+            Self::ArchiveExtraction => options.bsa_extract,
+            Self::ArchiveCreation => options.bsa_create,
+        }
+    }
+
+    /// The Requested Work this group asks for when the options choose it.
+    pub fn work(self) -> &'static [RequestedWork] {
+        match self {
+            Self::Textures => &[RequestedWork::NativeTextureOptimization],
+            Self::Meshes => &[
+                RequestedWork::StandardMeshOptimization,
+                RequestedWork::TerrainMeshOptimization,
+            ],
+            Self::Animations => &[RequestedWork::AnimationOptimization],
+            Self::ArchiveExtraction => &[RequestedWork::ArchiveExtraction],
+            Self::ArchiveCreation => &[RequestedWork::ArchiveCreation],
+        }
+    }
+
+    /// Whether `admission` holds this group back: true only when it admits
+    /// none of the group's [`Self::work`].
+    ///
+    /// A partly supported group is not held back, since a Run Request asking
+    /// for it carries its admitted part. An `admission` built without Profile
+    /// Capabilities holds back no group.
+    pub fn held_back(self, admission: &Admission) -> bool {
+        !self.work().iter().any(|work| admission.admits(*work))
+    }
+}
+
+/// The Admission Rules of a run in `mode`, under the Profile Capabilities the
+/// caller holds: the one place a mode becomes "Several Mods" for Admission.
+///
+/// An [`OptimizationMode::Unsupported`] mode counts as not Several Mods, so it
+/// caps no Mesh level; [`run_request`] rejects that mode with
+/// [`RunSetupError::UnsupportedMode`] before it admits anything. `capabilities` of `None` hold back no work, and
+/// Preparing judges the Profile.
+pub fn admission(mode: OptimizationMode, capabilities: Option<&ProfileCapabilities>) -> Admission {
+    Admission::new(mode == OptimizationMode::SeveralMods, capabilities)
+}
+
 /// Builds the Run Request for `options` under the profile identity `profile`:
 /// a pure function of the caller's intent that reads no profile file (#570).
 ///
+/// The request asks for the work of each [`WorkGroup`] the options choose.
 /// Texture work is requested when any Texture option is on. Conversion of
 /// TGAs is never requested: Routing Policy compilation derives it during
 /// Preparing from the Conversion Preference of the profile read there. Mesh
@@ -87,36 +187,16 @@ pub fn run_request(
     let mod_selection = mod_selection(selected);
     let work_choices = work_choices(options)?;
 
-    let optimize_native_textures = options.textures_necessary
-        || options.textures_compress
-        || options.textures_mipmaps
-        || options.textures_resize_size
-        || options.textures_resize_ratio;
-    let optimize_meshes = requests_mesh_work(options);
-    let choices = [
-        (
-            optimize_native_textures,
-            RequestedWork::NativeTextureOptimization,
-        ),
-        (optimize_meshes, RequestedWork::StandardMeshOptimization),
-        (optimize_meshes, RequestedWork::TerrainMeshOptimization),
-        (
-            options.animations_optimization,
-            RequestedWork::AnimationOptimization,
-        ),
-        (options.bsa_extract, RequestedWork::ArchiveExtraction),
-        (options.bsa_create, RequestedWork::ArchiveCreation),
-    ];
-    let work: Vec<RequestedWork> = choices
+    let work: Vec<RequestedWork> = WorkGroup::ALL
         .into_iter()
-        .filter(|(selected, _)| *selected)
-        .map(|(_, work)| work)
+        .filter(|group| group.chosen_by(options))
+        .flat_map(|group| group.work().iter().copied())
         .collect();
     let mode = ExecutionMode::from_dry_run(options.dry_run);
     // Only the capability rule holds back requested work. The Several Mods
     // rule caps the Mesh level, which `with_work_choices` applies to every
     // request itself, so applying it here too changes nothing.
-    let work = Admission::new(mod_selection.is_several_mods(), capabilities).admitted_work(&work);
+    let work = admission(options.mode, capabilities).admitted_work(&work);
     Ok(RunRequest::new(profile, mode, mod_selection, work).with_work_choices(work_choices))
 }
 
