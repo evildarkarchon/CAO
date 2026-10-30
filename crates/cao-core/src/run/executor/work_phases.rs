@@ -257,6 +257,14 @@ pub(super) fn run_work_phases(
 ) -> Result<ControlFlow<Stop>, Error> {
     let policy = preparation.policy();
     let mode = policy.execution_mode();
+    // The provider builds the Toolset, and only it knows which mode it gave
+    // it; every Capacity Check of the run decides from that mode, so a
+    // provider wired with the wrong one would apply the other mode's rule.
+    debug_assert_eq!(
+        toolset.mode(),
+        mode,
+        "the Run Toolset's Execution Mode must be the Run Request's"
+    );
     let router = AssetRouter::new(policy.clone());
     // Both discovery passes share one walker, so each excluded linked entry
     // is diagnosed once across them.

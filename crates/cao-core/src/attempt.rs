@@ -70,7 +70,7 @@ impl<F> OperationFailure<F> {
         Self::new(category, shortage.to_string()).with_capacity_shortage(shortage)
     }
 
-    /// Attaches the Capacity Shortage behind this failure. The detail is left
+    /// Attaches the [`CapacityShortage`] behind this failure. The detail is left
     /// as given; [`Self::from_capacity_shortage`] sets both together.
     pub fn with_capacity_shortage(mut self, shortage: CapacityShortage) -> Self {
         self.capacity_shortage = Some(shortage);
@@ -82,7 +82,7 @@ impl<F> OperationFailure<F> {
         &self.detail
     }
 
-    /// The Capacity Shortage behind this failure, or `None` when it is not a
+    /// The [`CapacityShortage`] behind this failure, or `None` when it is not a
     /// capacity failure.
     pub fn capacity_shortage(&self) -> Option<&CapacityShortage> {
         self.capacity_shortage.as_ref()

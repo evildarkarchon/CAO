@@ -19,15 +19,15 @@ use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ArchiveExtractionFailure, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
     ArchiveNameKind, CancellationToken, ModSelection, OptimizationRunResult,
-    RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode, RunOutcome, RunPhase,
-    RunPhaseRecord, RunPhaseStatus, RunRequest,
+    RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode, RunFailureCode, RunOutcome,
+    RunPhase, RunPhaseRecord, RunPhaseStatus, RunRequest, RunToolset, SelectedProfile,
 };
 use cao_core::test_support::{
     CallbackConfiguration, CountingCleanup, FakeArchivePacker, FakeArchiveReader,
     FakeBackendFactory, FixedConfiguration, Observed, RecordingSink, ScriptedToolset,
     ToolsetConfiguration, entry, execute_run, sse_profile, write_archive,
 };
-use cao_core::{CompletedMutation, OperationFailure};
+use cao_core::{CompletedMutation, Error, OperationFailure};
 use common::{canonical, request, scratch_dir, snapshot_tree, write_tree};
 
 /// Executes `request` through `configuration`, observing every fact through
@@ -695,6 +695,59 @@ fn an_apply_run_extracts_and_finalizes_for_real() {
         packed.contains(&"textures/loose.dds".to_owned()),
         "{packed:?}"
     );
+}
+
+/// A provider that builds each run's Toolset for the other Execution Mode
+/// than its Run Request's, as a provider wired with the wrong mode would.
+struct MismatchedModeConfiguration;
+
+impl RunConfigurationProvider for MismatchedModeConfiguration {
+    fn load(&self, request: &RunRequest) -> Result<(SelectedProfile, RunToolset), Error> {
+        let other = match request.execution_mode() {
+            ExecutionMode::Apply => ExecutionMode::DryRun,
+            ExecutionMode::DryRun => ExecutionMode::Apply,
+        };
+        Ok((
+            sse_profile(),
+            Arc::new(ScriptedToolset::default()).toolset(other),
+        ))
+    }
+}
+
+/// Every Capacity Check of a run decides from its Toolset's Execution Mode,
+/// so a Toolset built for the other mode would fail or warn by the wrong
+/// rule. A debug build catches the mismatch as the work phases start, before
+/// any of them is entered, and the run contains it as escaped work at
+/// Preparing.
+#[cfg(debug_assertions)]
+#[test]
+fn a_toolset_built_for_another_execution_mode_is_caught_before_any_work() {
+    for mode in [ExecutionMode::Apply, ExecutionMode::DryRun] {
+        let root = scratch_dir(&format!("toolset-mode-mismatch-{mode:?}"));
+        write_tree(&root, &["textures/a.dds"]);
+        let mut cleanup = CountingCleanup::default();
+
+        let result = execute_run(
+            &request(mode, &root, &[RequestedWork::NativeTextureOptimization]),
+            &mut cleanup,
+            None,
+            Some(&MismatchedModeConfiguration),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(result.outcome(), RunOutcome::Failed, "{mode:?}");
+        let [failure] = result.failures() else {
+            panic!("one Run Failure expected: {:?}", result.failures());
+        };
+        assert_eq!(failure.code, RunFailureCode::RunWorkEscaped, "{mode:?}");
+        assert_eq!(failure.phase, RunPhase::Preparing, "{mode:?}");
+        assert!(
+            failure.detail.contains("Execution Mode"),
+            "{mode:?}: {}",
+            failure.detail
+        );
+        assert!(result.asset_attempts().is_empty(), "{mode:?}");
+    }
 }
 
 /// The Apply or Dry Run request over native Textures and Archive extraction

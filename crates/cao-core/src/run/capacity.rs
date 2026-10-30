@@ -130,7 +130,7 @@ impl<'p> CapacityCheck<'p> {
     /// otherwise the verdict for the first such root, in the order roots were
     /// added to `demand`.
     pub(crate) fn check(&self, stage: CapacityStage, demand: &Demand) -> CapacityVerdict {
-        self.verdict(stage, self.first_shortfall(demand))
+        self.verdict(stage, self.first_shortage(demand))
     }
 
     /// The verdict at `stage` for `root` alone, tested against the whole of
@@ -142,7 +142,26 @@ impl<'p> CapacityCheck<'p> {
         demand: &Demand,
         root: &Path,
     ) -> CapacityVerdict {
-        self.verdict(stage, self.shortfall_at(demand, root))
+        self.verdict(stage, self.shortage_at(demand, root))
+    }
+
+    /// [`Self::check_at`] at [`CapacityStage::Recheck`]: the shortage that
+    /// fails the one piece of Archive work guarded, or `None` when it fits or
+    /// free space is unknown.
+    ///
+    /// The verdict still comes from the stage table, so a recheck that ever
+    /// meant more than failing its work would panic here rather than be
+    /// silently recorded as a work failure by every caller.
+    pub(crate) fn recheck_at(&self, demand: &Demand, root: &Path) -> Option<CapacityShortage> {
+        match self.check_at(CapacityStage::Recheck, demand, root) {
+            CapacityVerdict::Fits => None,
+            CapacityVerdict::FailWork(shortage) => Some(shortage),
+            // A recheck runs only once Archive work may have mutated a Mod
+            // Root, where the table never fails the run or merely warns.
+            verdict @ (CapacityVerdict::FailRun(_) | CapacityVerdict::Warn(_)) => {
+                unreachable!("a recheck fails only the work it guards, never {verdict:?}")
+            }
+        }
     }
 
     /// What `shortage`, found at `stage`, means in this check's run: the
@@ -180,9 +199,9 @@ impl<'p> CapacityCheck<'p> {
     }
 
     /// Tests `root` against the whole of `demand` on its volume: the
-    /// shortfall when that is known not to fit, `None` when it fits or free
+    /// shortage when that is known not to fit, `None` when it fits or free
     /// space is unknown.
-    fn shortfall_at(&self, demand: &Demand, root: &Path) -> Option<CapacityShortage> {
+    fn shortage_at(&self, demand: &Demand, root: &Path) -> Option<CapacityShortage> {
         let required = self.required_at(demand, root);
         let available = self.available_bytes(root)?;
         (available < required).then(|| CapacityShortage {
@@ -192,17 +211,17 @@ impl<'p> CapacityCheck<'p> {
         })
     }
 
-    /// The first shortfall, in the order roots were added to `demand`, among
+    /// The first shortage, in the order roots were added to `demand`, among
     /// the roots whose own demand is non-zero.
     ///
     /// A root needing no bytes cannot run out of space, so it is never
     /// checked, and its free space is never sampled.
-    fn first_shortfall(&self, demand: &Demand) -> Option<CapacityShortage> {
+    fn first_shortage(&self, demand: &Demand) -> Option<CapacityShortage> {
         demand
             .roots
             .iter()
             .filter(|(_, bytes)| *bytes != 0)
-            .find_map(|(root, _)| self.shortfall_at(demand, root))
+            .find_map(|(root, _)| self.shortage_at(demand, root))
     }
 
     /// The warning-level [`RunDiagnostic`] a Dry Run records, at `phase`,
@@ -368,7 +387,7 @@ pub struct CapacityShortage {
 
 impl CapacityShortage {
     /// The warning-level [`RunDiagnosticCode::CapacityShortage`] at `phase`
-    /// for this shortfall, attributed to its Mod Root, naming `volume`, the
+    /// for this shortage, attributed to its Mod Root, naming `volume`, the
     /// root's volume identity, or the volume holding the root when that is
     /// unknown. Unlike the [`Display`](fmt::Display) form, which is an Apply
     /// run's failure detail, it reads as a preview of that failure.
@@ -487,7 +506,7 @@ mod tests {
         demand
     }
 
-    fn shortfall(root: &str, required: u64, available: u64) -> Option<CapacityShortage> {
+    fn shortage(root: &str, required: u64, available: u64) -> Option<CapacityShortage> {
         Some(CapacityShortage {
             root: PathBuf::from(root),
             required,
@@ -510,11 +529,11 @@ mod tests {
         let demand = demand_of(&check, &[("a", 100), ("b", 200), ("d", 150)]);
 
         assert_eq!(
-            check.shortfall_at(&demand, Path::new("a")),
-            shortfall("a", 300, 250)
+            check.shortage_at(&demand, Path::new("a")),
+            shortage("a", 300, 250)
         );
-        assert_eq!(check.shortfall_at(&demand, Path::new("d")), None);
-        assert_eq!(check.first_shortfall(&demand), shortfall("a", 300, 250));
+        assert_eq!(check.shortage_at(&demand, Path::new("d")), None);
+        assert_eq!(check.first_shortage(&demand), shortage("a", 300, 250));
     }
 
     /// Rust-only, for #593: a root with work on an unknown volume could share
@@ -529,12 +548,12 @@ mod tests {
         let demand = demand_of(&check, &[("a", 100), ("b", 200)]);
 
         assert_eq!(
-            check.shortfall_at(&demand, Path::new("a")),
-            shortfall("a", 300, 250)
+            check.shortage_at(&demand, Path::new("a")),
+            shortage("a", 300, 250)
         );
         assert_eq!(
-            check.shortfall_at(&demand, Path::new("b")),
-            shortfall("b", 300, 250)
+            check.shortage_at(&demand, Path::new("b")),
+            shortage("b", 300, 250)
         );
     }
 
@@ -551,8 +570,8 @@ mod tests {
         let check = CapacityCheck::new(&probe);
         let demand = demand_of(&check, &[("idle", 0), ("a", 100), ("b", 100), ("idle", 0)]);
 
-        assert_eq!(check.first_shortfall(&demand), None);
-        assert_eq!(check.shortfall_at(&demand, Path::new("a")), None);
+        assert_eq!(check.first_shortage(&demand), None);
+        assert_eq!(check.shortage_at(&demand, Path::new("a")), None);
         assert_eq!(probe.lookups("idle"), 0);
     }
 
@@ -568,12 +587,12 @@ mod tests {
         let check = CapacityCheck::new(&probe);
         let demand = demand_of(&check, &[("a", 100), ("b", 200)]);
 
-        assert_eq!(check.shortfall_at(&demand, Path::new("a")), None);
-        assert_eq!(check.first_shortfall(&demand), shortfall("b", 300, 250));
+        assert_eq!(check.shortage_at(&demand, Path::new("a")), None);
+        assert_eq!(check.first_shortage(&demand), shortage("b", 300, 250));
         // The panic poisoned nothing: the frozen volumes still answer.
         assert_eq!(
-            check.shortfall_at(&demand, Path::new("b")),
-            shortfall("b", 300, 250)
+            check.shortage_at(&demand, Path::new("b")),
+            shortage("b", 300, 250)
         );
         assert_eq!(probe.lookups("a"), 1);
     }
@@ -592,8 +611,8 @@ mod tests {
         for _ in 0..3 {
             let check = CapacityCheck::sharing(&probe, &volumes, ExecutionMode::Apply);
             let demand = demand_of(&check, &[("a", 100), ("b", 200), ("a", 100)]);
-            assert_eq!(check.first_shortfall(&demand), None);
-            assert_eq!(check.shortfall_at(&demand, Path::new("b")), None);
+            assert_eq!(check.first_shortage(&demand), None);
+            assert_eq!(check.shortage_at(&demand, Path::new("b")), None);
         }
 
         assert_eq!(probe.lookups("a"), 1);
@@ -601,7 +620,7 @@ mod tests {
         // A check with volumes of its own looks each root up again.
         let fresh = CapacityCheck::new(&probe);
         let demand = demand_of(&fresh, &[("a", 100), ("b", 200)]);
-        assert_eq!(fresh.first_shortfall(&demand), None);
+        assert_eq!(fresh.first_shortage(&demand), None);
         assert_eq!(probe.lookups("a"), 2);
     }
 
@@ -691,6 +710,33 @@ mod tests {
         }
     }
 
+    /// A recheck hands its caller the shortage that fails the guarded work,
+    /// in either mode, and nothing when the work fits or its space is
+    /// unknown.
+    #[test]
+    fn a_recheck_yields_only_the_shortage_that_fails_its_work() {
+        let probe = TableProbe::default()
+            .with_volume("short", "c")
+            .with_available("short", 250)
+            .with_volume("roomy", "d")
+            .with_available("roomy", 300);
+        for mode in [ExecutionMode::Apply, ExecutionMode::DryRun] {
+            let check = CapacityCheck::sharing(&probe, &FrozenVolumes::default(), mode);
+            for (root, expected) in [
+                ("short", shortage("short", 300, 250)),
+                ("roomy", None),
+                ("unknown", None),
+            ] {
+                let demand = demand_of(&check, &[(root, 300)]);
+                assert_eq!(
+                    check.recheck_at(&demand, Path::new(root)),
+                    expected,
+                    "{root} in {mode:?}"
+                );
+            }
+        }
+    }
+
     /// #655: work that fits, or whose free space is unknown, fits at every
     /// stage in either mode.
     #[test]
@@ -751,21 +797,21 @@ mod tests {
         }
     }
 
-    /// Rust-only, for #593: the shortage explains itself without promising a
+    /// For #593: the shortage explains itself without promising a
     /// reservation, so a user who frees exactly the estimate is not misled
     /// into expecting the run to fit. This is the one word-for-word check of
     /// the Apply failure detail, which every capacity Run Failure and
     /// Operation Failure carries.
     #[test]
-    fn a_shortfall_reports_its_estimate_without_promising_a_reservation() {
-        let shortfall = CapacityShortage {
+    fn a_shortage_reports_its_estimate_without_promising_a_reservation() {
+        let shortage = CapacityShortage {
             root: PathBuf::from("a"),
             required: 300,
             available: 250,
         };
 
         assert_eq!(
-            shortfall.to_string(),
+            shortage.to_string(),
             "Insufficient Archive staging capacity: estimated 300 bytes, available 250 bytes. \
              Estimates include staging overhead allowances but do not reserve space or \
              guarantee filesystem metadata, quotas, or concurrent writes."

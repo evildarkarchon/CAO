@@ -87,7 +87,7 @@ fn capacity_warnings(result: &OptimizationRunResult) -> Vec<&RunDiagnostic> {
         .collect()
 }
 
-/// The Capacity Shortage an Apply run's Archive Finalization reported on its
+/// The [`CapacityShortage`] an Apply run's Archive Finalization reported on its
 /// rejected output attempt, or `None` when no output was rejected for
 /// capacity.
 fn creation_capacity_failure(result: &OptimizationRunResult) -> Option<CapacityShortage> {
