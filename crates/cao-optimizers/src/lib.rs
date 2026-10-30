@@ -22,10 +22,13 @@
 //!   Rules, its Profile Capabilities with the Archive extension those rules
 //!   write, and the backend's `TextureProfile` and Mesh Target, for Preparing
 //!   and the GUI alike (#621, #628).
+//! - [`run_request`] turns the options form into a Run Request: it validates
+//!   the options, builds their Work Choices and requests the work they choose,
+//!   holding back what the caller's Profile Capabilities do not support (#648).
 //! - [`composition`] is `cao-gui`'s composition root: given the app
-//!   directory, a profile and the options model, it builds the Run Request, the
-//!   profile-backed Run Configuration Provider and the per-run optimizer settings,
-//!   and wires them into an Optimization Run Service (spec #476).
+//!   directory, it builds the profile-backed Run Configuration Provider and the
+//!   per-run optimizer settings, and wires them into an Optimization Run
+//!   Service (spec #476).
 //! - [`application_log`] is the `log` facade's sink `cao-gui` installs: the
 //!   Application Log's HTML file, and the rows the Log tab shows (#470).
 
@@ -40,4 +43,5 @@ pub mod mesh_references;
 pub mod meshes;
 pub mod plugins;
 pub mod profile;
+pub mod run_request;
 pub mod textures;

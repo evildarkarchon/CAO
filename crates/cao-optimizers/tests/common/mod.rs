@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use cao_core::run::{OptimizationRunResult, OptimizationRunService};
-use cao_optimizers::composition::run_request;
+use cao_optimizers::run_request::run_request;
 use cao_profiles::{Options, Profiles};
 use directxtex::{CP_FLAGS_NONE, DDS_FLAGS_NONE, DXGI_FORMAT, ScratchImage};
 

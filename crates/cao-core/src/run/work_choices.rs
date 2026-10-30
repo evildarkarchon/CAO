@@ -36,8 +36,8 @@ impl Default for WorkChoices {
     /// level 0 with headparts on, extracted Archives backed up, and Archive
     /// Finalization's default packing choices.
     ///
-    /// Core cannot see the options model, so the composition root's tests pin
-    /// this default to it.
+    /// Core cannot see the options model, so `cao-optimizers`' Run Request
+    /// tests pin this default to it.
     fn default() -> Self {
         Self {
             textures: TextureChoices::default(),
