@@ -323,8 +323,8 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
         }
     }
     if let Some(finalization) = result.archive_finalization() {
-        if finalization.failure.is_some() {
-            details.push(format!("Finalization Failure: {}", finalization.detail));
+        if let Some(failure) = &finalization.failure {
+            details.push(format!("Finalization Failure: {}", failure.detail()));
         }
         for attempt in &finalization.attempts {
             if let Some(failure) = attempt.outcome.failure() {

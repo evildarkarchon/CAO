@@ -49,7 +49,7 @@ fn an_archive_run_packs_loose_assets_with_its_profile_exclusions_and_settings() 
         Some(RunPhaseStatus::Executed)
     );
     let finalization = result.archive_finalization().unwrap();
-    assert_eq!(finalization.attempts.len(), 1, "{}", finalization.detail);
+    assert_eq!(finalization.attempts.len(), 1, "{:?}", finalization.failure);
     let attempt = &finalization.attempts[0];
     assert!(attempt.succeeded(), "{:?}", attempt.outcome);
     assert_eq!(attempt.archive_path, root.join("mod.bsa"));
