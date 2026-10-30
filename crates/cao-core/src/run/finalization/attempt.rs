@@ -12,7 +12,7 @@ use super::planning::{FinalizationPlan, PlanningStop, estimate_packed_capacity};
 use super::plugins::ensure_output_loading_plugin;
 use super::{ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationMutation};
 use crate::execution::MutationState;
-use crate::run::capacity::{CapacityCheck, Demand};
+use crate::run::capacity::{CapacityCheck, CapacityShortage, Demand};
 use crate::run::source_pin::{LoadingPluginPin, SourceDirectoryPins, SourceFilePin};
 use crate::run::{
     ArchiveSeams, PublicationPolicy, PublicationState, TemporaryArtifactRegistry,
@@ -33,6 +33,21 @@ struct AttemptProgress {
     /// The attempt's own continuation claim, kept apart from the Attempt
     /// Outcome's verdict; publication and verification can only lower it.
     claimed_safe_to_continue: bool,
+}
+
+/// Why an attempt stopped before finishing.
+enum AttemptStop {
+    /// A failure at the progress's current boundary, with its detail.
+    Failed(String),
+    /// The capacity recheck's shortage, found before any mutation. It is kept
+    /// whole, so the Operation Failure carries its bytes as well as its text.
+    Short(CapacityShortage),
+}
+
+impl From<String> for AttemptStop {
+    fn from(detail: String) -> Self {
+        Self::Failed(detail)
+    }
 }
 
 /// Runs output `index`'s atomic attempt, never failing outright: every
@@ -85,7 +100,17 @@ pub(super) fn attempt_output(
             debug_assert_eq!(progress.mutation, MutationState::Committed);
             AttemptOutcome::success(CompletedMutation::Committed)
         }
-        Ok(Err(detail)) => {
+        // The recheck runs before any mutation, so the progress still holds
+        // no mutation and the attempt's initial safe claim.
+        Ok(Err(AttemptStop::Short(shortage))) => AttemptOutcome::failed(
+            OperationFailure::from_capacity_shortage(
+                ArchiveFinalizationFailure::InsufficientCapacity,
+                shortage,
+            ),
+            progress.mutation,
+            progress.claimed_safe_to_continue,
+        ),
+        Ok(Err(AttemptStop::Failed(detail))) => {
             // Publication or plugin errors leave sources intact. Once
             // committed, only a usable Archive and usable surviving sources
             // justify continuing, and verification can only confirm a
@@ -128,10 +153,11 @@ pub(super) fn attempt_output(
     )
 }
 
-/// Performs the attempt, recording in `progress` which failure an `Err`
-/// detail stands for, the mutation publication made, and the continuation
-/// claim. A capacity rejection is an `Err` at the `InsufficientCapacity`
-/// boundary, returned before any mutation, so its claim stays safe.
+/// Performs the attempt, recording in `progress` which failure an
+/// [`AttemptStop::Failed`] detail stands for, the mutation publication made,
+/// and the continuation claim. A capacity rejection is an
+/// [`AttemptStop::Short`] carrying the recheck's shortage, returned before any
+/// mutation, so its claim stays safe.
 #[expect(
     clippy::too_many_arguments,
     reason = "the attempt's inputs, plus the mutation log and progress record its caller reads after it returns"
@@ -145,7 +171,7 @@ fn try_attempt(
     dummy_demand: &Demand,
     mutations: &mut Vec<ArchiveFinalizationMutation>,
     progress: &mut AttemptProgress,
-) -> Result<(), String> {
+) -> Result<(), AttemptStop> {
     let output = &plan.outputs[index];
     // Sources can grow after planning: re-stat them before any mutation,
     // keeping the frozen allowance if they shrank. Capacity is still only a
@@ -163,9 +189,8 @@ fn try_attempt(
         &output.mod_root,
         output.estimated_capacity_bytes.max(current),
     );
-    if let Some(shortfall) = capacity.shortfall_at(&demand, &output.mod_root) {
-        progress.boundary = ArchiveFinalizationFailure::InsufficientCapacity;
-        return Err(shortfall.to_string());
+    if let Some(shortage) = capacity.recheck_at(&demand, &output.mod_root) {
+        return Err(AttemptStop::Short(shortage));
     }
 
     // The sources and their parents stay pinned from before the write until
@@ -205,11 +230,13 @@ fn try_attempt(
         // Publication's verdict stands; a later read-back cannot override a
         // release failure.
         progress.claimed_safe_to_continue = publication.safe_to_continue();
-        return Err(if publication.error_detail.is_empty() {
-            "Archive publication did not complete.".to_owned()
-        } else {
-            publication.error_detail
-        });
+        return Err(AttemptStop::Failed(
+            if publication.error_detail.is_empty() {
+                "Archive publication did not complete.".to_owned()
+            } else {
+                publication.error_detail
+            },
+        ));
     }
 
     progress.boundary = ArchiveFinalizationFailure::PluginCreationFailed;

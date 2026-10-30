@@ -15,8 +15,9 @@ use cao_core::execution::MutationState;
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ArchiveFinalizationChoices, ArchiveFinalizationFailure, ArchiveNameKind, CancellationToken,
-    OptimizationRunResult, OutputPlanBasis, PackedArchiveKind, PlannedOutputArchive, RunDiagnostic,
-    RunDiagnosticCode, RunFailure, RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord,
+    CapacityShortage, OptimizationRunResult, OutputPlanBasis, PackedArchiveKind,
+    PlannedOutputArchive, RunDiagnostic, RunDiagnosticCode, RunFailure, RunFailureCode, RunOutcome,
+    RunPhase, RunPhaseRecord,
 };
 use cao_core::test_support::{
     ArchiveRunRequest, FakeArchivePacker, FakeVolumeProbe, ScriptedToolset, fake_dummy_plugin,
@@ -86,31 +87,23 @@ fn capacity_warnings(result: &OptimizationRunResult) -> Vec<&RunDiagnostic> {
         .collect()
 }
 
-/// The estimated bytes a capacity detail names, an Apply run's failure or a
-/// Dry Run's warning alike: the number after "estimated ".
-fn estimate_in(detail: &str) -> u64 {
-    let digits: String = detail
-        .split_once("estimated ")
-        .unwrap_or_else(|| panic!("no estimate in {detail:?}"))
-        .1
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    digits.parse().unwrap()
-}
-
-/// The Capacity Check failure an Apply run's Archive Finalization reported,
-/// as its rejected output attempt's detail, or `None` when no output was
-/// rejected for capacity.
-fn creation_capacity_failure(result: &OptimizationRunResult) -> Option<String> {
+/// The [`CapacityShortage`] an Apply run's Archive Finalization reported on its
+/// rejected output attempt, or `None` when no output was rejected for
+/// capacity.
+fn creation_capacity_failure(result: &OptimizationRunResult) -> Option<CapacityShortage> {
     let finalization = result
         .archive_finalization()
         .unwrap_or_else(|| panic!("no Archive Finalization: {:?}", result.failures()));
-    assert_eq!(finalization.failure, None, "{}", finalization.detail);
+    assert_eq!(finalization.failure, None);
     finalization.attempts.iter().find_map(|attempt| {
         (attempt.outcome.failure_category()
             == Some(ArchiveFinalizationFailure::InsufficientCapacity))
-        .then(|| attempt.outcome.failure().unwrap().detail().to_owned())
+        .then(|| {
+            let failure = attempt.outcome.failure().unwrap();
+            let shortage = failure.capacity_shortage().expect("a capacity shortage");
+            assert_eq!(failure.detail(), shortage.to_string());
+            shortage.clone()
+        })
     })
 }
 
@@ -390,15 +383,20 @@ fn a_dry_run_warns_of_a_creation_capacity_shortage_and_still_plans_every_output(
     };
     assert_eq!(warning.phase, RunPhase::ArchiveFinalization);
     assert_eq!(warning.path, root);
+    let shortage = warning
+        .capacity_shortage
+        .as_ref()
+        .expect("the warning carries its shortage");
+    assert_eq!(shortage.root, root);
+    assert_eq!(shortage.available, 0);
     // Three outputs of twelve bytes each, plus their staging allowances.
-    assert!(estimate_in(&warning.detail) > 36, "{}", warning.detail);
-    for named in ["volume shared-volume", "but 0 bytes are available"] {
-        assert!(
-            warning.detail.contains(named),
-            "{named:?} missing from {:?}",
-            warning.detail
-        );
-    }
+    assert!(shortage.required > 36, "{shortage:?}");
+    // The volume exists only in the warning's text, so the text names it.
+    assert!(
+        warning.detail.contains("volume shared-volume"),
+        "{:?}",
+        warning.detail
+    );
     assert!(toolset.packer.writes().is_empty(), "nothing is packed");
     assert_eq!(snapshot_tree(&root), before, "the Mod Root is unchanged");
 }
@@ -447,9 +445,10 @@ fn apply_and_dry_run_agree_on_the_creation_capacity_demand() {
     // The demand an Apply run fails on with no free space at all.
     let (applied, roots) = run_in(ExecutionMode::Apply, 0);
     let failure = creation_capacity_failure(&applied).expect("no space is a shortage");
-    let demand = estimate_in(&failure);
+    let demand = failure.required;
     // Both roots' outputs and Dummy Plugin allowances share the volume.
-    assert!(demand > 2 * 65_536, "{failure}");
+    assert!(demand > 2 * 65_536, "{failure:?}");
+    assert_eq!(failure.root, roots[0]);
     assert_eq!(
         applied.archive_finalization().unwrap().attempts[0].mod_root,
         roots[0]
@@ -457,7 +456,7 @@ fn apply_and_dry_run_agree_on_the_creation_capacity_demand() {
 
     for available in [0, demand - 1, demand] {
         let short = available < demand;
-        let (applied, _) = run_in(ExecutionMode::Apply, available);
+        let (applied, roots) = run_in(ExecutionMode::Apply, available);
         let failure = creation_capacity_failure(&applied);
         assert_eq!(
             failure.is_some(),
@@ -465,7 +464,10 @@ fn apply_and_dry_run_agree_on_the_creation_capacity_demand() {
             "Apply at {available}: {failure:?}"
         );
         if let Some(failure) = failure {
-            assert_eq!(estimate_in(&failure), demand, "{failure}");
+            assert_eq!(
+                (&failure.root, failure.required, failure.available),
+                (&roots[0], demand, available)
+            );
         }
 
         let (planned, roots) = run_in(ExecutionMode::DryRun, available);
@@ -475,13 +477,13 @@ fn apply_and_dry_run_agree_on_the_creation_capacity_demand() {
         assert_eq!(warnings.len(), usize::from(short), "Dry Run at {available}");
         if let [warning] = warnings[..] {
             assert_eq!(warning.path, roots[0]);
-            assert_eq!(estimate_in(&warning.detail), demand, "{}", warning.detail);
-            assert!(
-                warning
-                    .detail
-                    .contains(&format!("but {available} bytes are available")),
-                "{}",
-                warning.detail
+            let shortage = warning
+                .capacity_shortage
+                .as_ref()
+                .expect("the warning carries its shortage");
+            assert_eq!(
+                (&shortage.root, shortage.required, shortage.available),
+                (&roots[0], demand, available)
             );
         }
     }
@@ -517,12 +519,12 @@ fn an_apply_run_with_a_creation_capacity_shortage_still_fails_its_output() {
         Some(ArchiveFinalizationFailure::InsufficientCapacity)
     );
     assert_eq!(rejected.outcome.mutation(), MutationState::None);
-    let detail = rejected.outcome.failure().unwrap().detail();
-    assert!(
-        detail.starts_with("Insufficient Archive staging capacity: estimated "),
-        "{detail}"
-    );
-    assert!(detail.contains("available 0 bytes"), "{detail}");
+    let failure = rejected.outcome.failure().unwrap();
+    let shortage = failure.capacity_shortage().expect("a capacity shortage");
+    assert_eq!(shortage.root, root);
+    assert_eq!(shortage.available, 0);
+    assert!(shortage.required > 0, "{shortage:?}");
+    assert_eq!(failure.detail(), shortage.to_string());
     assert!(
         capacity_warnings(&result).is_empty(),
         "{:?}",

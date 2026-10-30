@@ -143,16 +143,12 @@ fn the_capacity_estimate_covers_the_published_archive_and_plugin() {
         let settings = ArchiveFinalizationChoices::default();
 
         let rejected = finalize(game, &root, settings, Some(0));
-        let detail = rejected.attempts[0].outcome.failure().unwrap().detail();
-        let estimate: u64 = detail
-            .split_once("estimated ")
-            .unwrap()
-            .1
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect::<String>()
-            .parse()
-            .unwrap();
+        let estimate = rejected.attempts[0]
+            .outcome
+            .failure()
+            .and_then(|failure| failure.capacity_shortage())
+            .expect("no space is a capacity shortage")
+            .required;
 
         let result = finalize(game, &root, settings, None);
         assert_eq!(result.attempts.len(), 1);
@@ -181,7 +177,7 @@ fn existing_archive_plugin_names_follow_the_profile() {
         let result = finalize(game, &root, ArchiveFinalizationChoices::default(), None);
 
         assert!(result.attempts.is_empty());
-        assert_eq!(result.failure, None, "{archive}: {}", result.detail);
+        assert_eq!(result.failure, None, "{archive}");
         assert_eq!(result.mutations.len(), 1, "{archive}");
         let plugin = root.join("bundle.esp");
         let mutation = &result.mutations[0];
@@ -228,7 +224,7 @@ fn existing_fo4_archives_share_one_loading_plugin() {
         );
 
         assert!(result.attempts.is_empty());
-        assert_eq!(result.failure, None, "{preexisting}: {}", result.detail);
+        assert_eq!(result.failure, None, "{preexisting}");
         assert!(result.safe_to_continue);
         if preexisting == "none" {
             assert_eq!(result.mutations.len(), 1);

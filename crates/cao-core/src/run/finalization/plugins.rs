@@ -18,6 +18,7 @@ use super::{
     ArchiveFinalizationAccount, ArchiveFinalizationFailure, ArchiveFinalizationMutation,
     ArchiveFinalizationMutationKind,
 };
+use crate::OperationFailure;
 use crate::execution::MutationState;
 use crate::run::source_pin::{absolute_normal, pin_directories};
 use crate::run::{
@@ -318,18 +319,22 @@ fn create_missing_dummy_plugins(
             Ok(None) => {}
             Ok(Some(published)) if published.completed => {}
             Ok(Some(published)) => {
-                account.failure = Some(ArchiveFinalizationFailure::PluginCreationFailed);
+                account.fail(OperationFailure::new(
+                    ArchiveFinalizationFailure::PluginCreationFailed,
+                    published.detail,
+                ));
                 // Publication's verdict stands.
                 account.safe_to_continue = published.safe_to_continue;
-                account.detail = published.detail;
                 account.cancelled = cancelled();
                 return Ok(false);
             }
             Err(detail) => {
                 // Staging and the checks above fail before publication, so
                 // nothing was mutated.
-                account.failure = Some(ArchiveFinalizationFailure::PluginCreationFailed);
-                account.detail = detail;
+                account.fail(OperationFailure::new(
+                    ArchiveFinalizationFailure::PluginCreationFailed,
+                    detail,
+                ));
                 account.cancelled = cancelled();
                 return Ok(false);
             }
@@ -348,8 +353,10 @@ fn remove_dummy_plugins(
     account: &mut ArchiveFinalizationAccount,
 ) -> bool {
     let failed = |account: &mut ArchiveFinalizationAccount, detail: String| {
-        account.failure = Some(ArchiveFinalizationFailure::PluginRemovalFailed);
-        account.detail = detail;
+        account.fail(OperationFailure::new(
+            ArchiveFinalizationFailure::PluginRemovalFailed,
+            detail,
+        ));
         account.cancelled = cancelled();
         false
     };

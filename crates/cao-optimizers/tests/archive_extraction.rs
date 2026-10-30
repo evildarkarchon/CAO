@@ -469,7 +469,7 @@ fn an_sse_apply_packs_what_it_extracted_into_an_archive_at_the_sources_name() {
     };
     assert_eq!(extraction.outcome.mutation(), MutationState::Committed);
     let finalization = result.archive_finalization().unwrap();
-    assert_eq!(finalization.failure, None, "{}", finalization.detail);
+    assert_eq!(finalization.failure, None);
     let [packing] = finalization.attempts.as_slice() else {
         panic!("one packed Archive: {finalization:?}");
     };

@@ -448,9 +448,11 @@ fn an_interrupted_finalization_keeps_its_completed_attempts() {
         .unwrap();
     finalization
         .finish(ArchiveFinalizationAccount {
-            failure: Some(ArchiveFinalizationFailure::UnexpectedException),
+            failure: Some(OperationFailure::new(
+                ArchiveFinalizationFailure::UnexpectedException,
+                "packing interrupted",
+            )),
             safe_to_continue: false,
-            detail: "packing interrupted".to_owned(),
             ..ArchiveFinalizationAccount::default()
         })
         .unwrap();
@@ -463,7 +465,7 @@ fn an_interrupted_finalization_keeps_its_completed_attempts() {
         MutationState::Committed
     );
     assert_eq!(
-        finalization.failure,
+        finalization.failure_category(),
         Some(ArchiveFinalizationFailure::UnexpectedException)
     );
     assert!(!finalization.safe_to_continue);
@@ -1294,10 +1296,12 @@ fn the_public_finalization_result_is_assembled_from_streamed_attempts_and_the_ac
     finalization.record(failed.clone()).unwrap();
     finalization
         .finish(ArchiveFinalizationAccount {
-            failure: Some(ArchiveFinalizationFailure::PluginCreationFailed),
+            failure: Some(OperationFailure::new(
+                ArchiveFinalizationFailure::PluginCreationFailed,
+                "plugin occupied",
+            )),
             cancelled: true,
             safe_to_continue: false,
-            detail: "plugin occupied".to_owned(),
             mutations: vec![pruned.clone()],
         })
         .unwrap();
@@ -1306,10 +1310,12 @@ fn the_public_finalization_result_is_assembled_from_streamed_attempts_and_the_ac
         terminal.archive_finalization(),
         Some(&ArchiveFinalizationResult {
             attempts: vec![committed.clone(), failed],
-            failure: Some(ArchiveFinalizationFailure::PluginCreationFailed),
+            failure: Some(OperationFailure::new(
+                ArchiveFinalizationFailure::PluginCreationFailed,
+                "plugin occupied",
+            )),
             cancelled: true,
             safe_to_continue: false,
-            detail: "plugin occupied".to_owned(),
             mutations: vec![pruned],
         })
     );

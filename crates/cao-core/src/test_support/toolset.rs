@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use crate::CompletedMutation;
 use crate::Error;
 use crate::execution::AssetExecutionResult;
-use crate::routing::RoutedAsset;
+use crate::routing::{ExecutionMode, RoutedAsset};
 use crate::run::{
     ArchiveSeams, AssetAttemptAdapter, AssetAttemptPort, AssetBackendFactory,
     AssetInitializationCancelled, CancellationToken, OptimizationRunResult,
@@ -137,11 +137,11 @@ impl ScriptedToolset {
     }
 
     /// A fresh Run Toolset over this script, as a provider returns for one
-    /// run, built through the production [`RunToolset::new`] over the fake
-    /// Archive seams. A scripted fake backend, or a scripted adapter, is
-    /// created afresh for each Toolset.
-    pub fn toolset(self: &Arc<Self>) -> RunToolset {
-        self.toolset_over(self.fake_seams())
+    /// run in `mode`, built through the production [`RunToolset::new`] over
+    /// the fake Archive seams. A scripted fake backend, or a scripted
+    /// adapter, is created afresh for each Toolset.
+    pub fn toolset(self: &Arc<Self>, mode: ExecutionMode) -> RunToolset {
+        self.toolset_over(self.fake_seams(), mode)
     }
 
     /// The Archive seams over this script's shared fakes: `reader`,
@@ -157,10 +157,10 @@ impl ScriptedToolset {
 
     /// A fresh Run Toolset whose Asset attempts follow this script and whose
     /// Archive work goes over `seams`, which may be this script's
-    /// [`Self::fake_seams`] or any other reader, packer and volume probe. It
-    /// is built through the production [`RunToolset::new`], as
-    /// [`Self::toolset`] is.
-    pub fn toolset_over(self: &Arc<Self>, seams: ArchiveSeams) -> RunToolset {
+    /// [`Self::fake_seams`] or any other reader, packer and volume probe, for
+    /// a run in `mode`. It is built through the production
+    /// [`RunToolset::new`], as [`Self::toolset`] is.
+    pub fn toolset_over(self: &Arc<Self>, seams: ArchiveSeams, mode: ExecutionMode) -> RunToolset {
         let backend: Option<Box<dyn AssetAttemptPort>> = match &self.assets {
             AssetAttempts::FakeBackend(factory) => {
                 Some(Box::new(AssetAttemptAdapter::new(factory.clone())))
@@ -174,6 +174,7 @@ impl ScriptedToolset {
                 backend,
             }),
             seams,
+            mode,
         )
     }
 
@@ -250,14 +251,19 @@ impl ProviderLoads {
 
     /// Counts one load and returns the profile with a fresh Run Toolset whose
     /// Asset attempts follow `assets` and whose Archive work goes over
-    /// `seams`.
+    /// `seams`, built with `request`'s Execution Mode as the production
+    /// provider builds it.
     fn load(
         &self,
         assets: &Arc<ScriptedToolset>,
         seams: ArchiveSeams,
+        request: &RunRequest,
     ) -> Result<(SelectedProfile, RunToolset), Error> {
         self.count.fetch_add(1, Ordering::SeqCst);
-        Ok((self.profile.clone(), assets.toolset_over(seams)))
+        Ok((
+            self.profile.clone(),
+            assets.toolset_over(seams, request.execution_mode()),
+        ))
     }
 }
 
@@ -311,8 +317,9 @@ pub fn execute_run(
 }
 
 impl RunConfigurationProvider for ToolsetConfiguration {
-    fn load(&self, _request: &RunRequest) -> Result<(SelectedProfile, RunToolset), Error> {
-        self.loads.load(&self.toolset, self.toolset.fake_seams())
+    fn load(&self, request: &RunRequest) -> Result<(SelectedProfile, RunToolset), Error> {
+        self.loads
+            .load(&self.toolset, self.toolset.fake_seams(), request)
     }
 }
 
@@ -360,7 +367,7 @@ impl SeamsConfiguration {
 }
 
 impl RunConfigurationProvider for SeamsConfiguration {
-    fn load(&self, _request: &RunRequest) -> Result<(SelectedProfile, RunToolset), Error> {
-        self.loads.load(&self.assets, (self.seams)())
+    fn load(&self, request: &RunRequest) -> Result<(SelectedProfile, RunToolset), Error> {
+        self.loads.load(&self.assets, (self.seams)(), request)
     }
 }

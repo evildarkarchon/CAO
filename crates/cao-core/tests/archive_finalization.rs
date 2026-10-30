@@ -51,7 +51,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use cao_core::CompletedMutation;
 use cao_core::execution::{AssetExecutionResult, MutationState};
 use cao_core::routing::RequestedWork;
 use cao_core::run::{
@@ -64,6 +63,7 @@ use cao_core::test_support::{
     ArchiveRunRequest, FakeArchivePacker, FakeArchiveReader, FakeVolumeProbe, Observed,
     RecordingSink, ScriptedToolset, fake_dummy_plugin,
 };
+use cao_core::{CompletedMutation, OperationFailure};
 use common::{archives_in, canonical, junction, scratch_dir};
 
 /// More bytes than any scenario needs.
@@ -280,23 +280,14 @@ impl Finalizer {
         let run = estimating.run(&[root.to_path_buf()]);
         assert!(run.cleaned_up());
         let result = run.finalization();
-        let detail = result
+        let failure = result
             .attempts
             .first()
-            .map_or(result.detail.as_str(), |attempt| {
-                attempt
-                    .outcome
-                    .failure()
-                    .map_or("", |failure| failure.detail())
-            });
-        let digits: String = detail
-            .split_once("estimated ")
-            .expect("the detail reports an estimate")
-            .1
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect();
-        digits.parse().unwrap()
+            .map_or(result.failure.as_ref(), |attempt| attempt.outcome.failure());
+        failure
+            .and_then(OperationFailure::capacity_shortage)
+            .expect("the phase reports a capacity shortage")
+            .required
     }
 }
 
@@ -403,12 +394,23 @@ fn capacity_shortages_stop_before_mutation() {
             assert_eq!(rejected.outcome.mutation(), MutationState::None);
             // Every rejection is at the later root: its preflight or attempt.
             assert_eq!(rejected.mod_root, roots[1]);
-            assert!(
-                rejected
-                    .outcome
-                    .failure()
-                    .is_some_and(|failure| !failure.detail().is_empty())
-            );
+            let failure = rejected.outcome.failure().unwrap();
+            let shortage = failure.capacity_shortage().expect(name);
+            assert_eq!(shortage.root, roots[1], "{name}");
+            assert_eq!(failure.detail(), shortage.to_string(), "{name}");
+            match scenario {
+                // The phase checks both identical outputs on the shared volume.
+                0 => assert_eq!(
+                    (shortage.required, shortage.available),
+                    (2 * estimate, estimate),
+                    "{name}"
+                ),
+                // The volume emptied after the first output committed.
+                2 => assert_eq!(shortage.available, 0, "{name}"),
+                // The grown source outruns the room its planned estimate had.
+                _ => assert_eq!(shortage.available, estimate, "{name}"),
+            }
+            assert!(shortage.required > shortage.available, "{name}");
         }
         assert!(run.cleaned_up());
     }
@@ -534,7 +536,7 @@ fn a_panicking_volume_probe_is_an_unknown_volume() {
         let run = finalizer.run(&roots);
 
         let result = run.finalization();
-        assert_eq!(result.failure, None, "{shortage}: {}", result.detail);
+        assert_eq!(result.failure, None, "{shortage}");
         assert!(result.safe_to_continue, "{shortage}");
         if shortage {
             assert_eq!(result.attempts.len(), 1, "{shortage}");
@@ -571,7 +573,7 @@ fn a_panicking_capacity_probe_is_unknown_capacity() {
     let run = finalizer.run(std::slice::from_ref(&root));
 
     let result = run.finalization();
-    assert_eq!(result.failure, None, "{}", result.detail);
+    assert_eq!(result.failure, None);
     assert!(result.safe_to_continue);
     assert_eq!(result.attempts.len(), 1);
     assert!(
@@ -611,7 +613,7 @@ fn the_plugin_allowance_shrinks_after_each_root() {
     let run = finalizer.run(&roots);
 
     let result = run.finalization();
-    assert_eq!(result.failure, None, "{}", result.detail);
+    assert_eq!(result.failure, None);
     assert!(result.attempts.is_empty());
     assert_eq!(run.progress().unwrap().total(), 0);
     assert_eq!(queries.load(Ordering::SeqCst), roots.len());
@@ -636,12 +638,19 @@ fn a_plugin_only_shortage_fails_the_phase_without_progress() {
 
     let result = run.finalization();
     assert_eq!(
-        result.failure,
+        result.failure_category(),
         Some(ArchiveFinalizationFailure::InsufficientCapacity)
     );
     assert!(result.attempts.is_empty());
     assert!(result.safe_to_continue);
-    assert!(!result.detail.is_empty());
+    // The phase-level failure carries its shortage like an attempt's does:
+    // the root's plugin allowance against no room at all.
+    let failure = result.failure.as_ref().unwrap();
+    let shortage = failure.capacity_shortage().expect("a capacity shortage");
+    assert_eq!(shortage.root, root);
+    assert_eq!(shortage.available, 0);
+    assert!(shortage.required > 0);
+    assert_eq!(failure.detail(), shortage.to_string());
     let progress = run.progress().unwrap();
     assert_eq!((progress.completed(), progress.total()), (0, 0));
     assert!(root.join("empty").exists());
@@ -693,6 +702,14 @@ fn a_disappearing_loading_plugin_keeps_its_fallback_reserved() {
             result.attempts[0].outcome.failure_category(),
             Some(ArchiveFinalizationFailure::InsufficientCapacity)
         );
+        // The fallback's reserve is what lifts the demand past the Archive's.
+        let shortage = result.attempts[0]
+            .outcome
+            .failure()
+            .and_then(OperationFailure::capacity_shortage)
+            .expect("a capacity shortage");
+        assert_eq!(shortage.available, archive_only);
+        assert!(shortage.required > archive_only);
         assert_eq!(result.attempts[0].outcome.mutation(), MutationState::None);
         assert!(result.mutations.is_empty());
         assert!(archives_in(&root).is_empty());
@@ -959,11 +976,16 @@ fn a_blocked_dummy_plugin_removal_is_a_contained_failure() {
     );
     assert!(result.safe_to_continue);
     assert_eq!(
-        result.failure,
+        result.failure_category(),
         Some(ArchiveFinalizationFailure::PluginRemovalFailed)
     );
     assert!(result.mutations.is_empty());
-    assert!(!result.detail.is_empty());
+    assert!(
+        result
+            .failure
+            .as_ref()
+            .is_some_and(|failure| !failure.detail().is_empty())
+    );
     assert!(result.attempts[0].archive_path.exists());
     assert!(plugin.exists());
     assert!(run.cleaned_up());
@@ -991,7 +1013,7 @@ fn plugin_actions_for_existing_archives_are_mutation_facts() {
 
         let result = run.finalization();
         assert!(result.attempts.is_empty());
-        assert_eq!(result.failure, None, "{}", result.detail);
+        assert_eq!(result.failure, None);
         assert!(result.safe_to_continue);
         assert_eq!(result.mutations.len(), 1);
         let mutation = &result.mutations[0];
@@ -1049,7 +1071,7 @@ fn only_exact_dummy_plugins_are_removed() {
 
     let result = run.finalization();
     assert!(result.attempts.is_empty());
-    assert_eq!(result.failure, None, "{}", result.detail);
+    assert_eq!(result.failure, None);
     assert!(result.safe_to_continue);
     let progress = run.progress().unwrap();
     assert_eq!((progress.completed(), progress.total()), (0, 0));
@@ -1100,7 +1122,7 @@ fn linked_dummy_plugins_are_never_removed() {
         let result = run.finalization();
         assert!(result.attempts.is_empty());
         assert_eq!(
-            result.failure,
+            result.failure_category(),
             Some(ArchiveFinalizationFailure::PluginRemovalFailed)
         );
         assert!(result.safe_to_continue);
@@ -1161,7 +1183,7 @@ fn a_dummy_plugin_replaced_after_planning_is_kept() {
         "{:?}",
         result.attempts[0].outcome
     );
-    assert_eq!(result.failure, None, "{}", result.detail);
+    assert_eq!(result.failure, None);
     assert!(result.mutations.is_empty());
     assert_eq!(std::fs::read(&plugin).unwrap(), replacement);
     assert_eq!(std::fs::read(&displaced).unwrap(), bytes);
@@ -1195,7 +1217,7 @@ fn earlier_removals_survive_a_later_guard_failure() {
     let result = run.finalization();
     assert!(result.attempts.is_empty());
     assert_eq!(
-        result.failure,
+        result.failure_category(),
         Some(ArchiveFinalizationFailure::PluginRemovalFailed)
     );
     assert!(result.safe_to_continue);
@@ -1235,7 +1257,7 @@ fn an_occupied_plugin_name_for_an_existing_archive_fails_safely() {
     let result = run.finalization();
     assert!(result.attempts.is_empty());
     assert_eq!(
-        result.failure,
+        result.failure_category(),
         Some(ArchiveFinalizationFailure::PluginCreationFailed)
     );
     assert!(result.safe_to_continue);
@@ -2374,15 +2396,16 @@ fn an_unexpected_failure_is_recorded_once() {
 
         let result = run.finalization();
         assert_eq!(
-            result.failure,
+            result.failure_category(),
             Some(ArchiveFinalizationFailure::UnexpectedException)
         );
         assert!(!result.safe_to_continue);
-        assert!(!result.detail.is_empty());
+        let detail = result.failure.as_ref().unwrap().detail();
+        assert!(!detail.is_empty());
         assert_eq!(std::fs::read(&source).unwrap(), b"retained archive");
         assert!(!root.join("existing.esp").exists(), "no Dummy Plugin");
         if after_plan {
-            assert_eq!(result.detail, "the archive name listing panicked");
+            assert_eq!(detail, "the archive name listing panicked");
             let progress = run.progress().unwrap();
             assert_eq!((progress.total(), progress.completed()), (1, 1));
             assert_eq!(result.attempts.len(), 1, "the streamed attempt survives");
@@ -2498,7 +2521,7 @@ fn a_plugin_maintenance_failure_keeps_recorded_attempts() {
     assert!(failed.load(Ordering::SeqCst));
     let result = run.finalization();
     assert_eq!(
-        result.failure,
+        result.failure_category(),
         Some(ArchiveFinalizationFailure::UnexpectedException)
     );
     assert!(!result.safe_to_continue);

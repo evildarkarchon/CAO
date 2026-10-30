@@ -34,10 +34,7 @@ use crate::routing::{
     AssetKind, AssetRouter, ExecutionMode, OptimizerTarget, RoutingDecision, RoutingLedger,
     SkipReason,
 };
-use crate::run::archives::{
-    Preflight, RootArchives, archive_order_key, capacity_failure, relative_game_path,
-};
-use crate::run::capacity::Shortfall;
+use crate::run::archives::{Preflight, RootArchives, archive_order_key, relative_game_path};
 use crate::run::finalization::CreationPlanning;
 use crate::run::{
     ArchiveExtractionPlan, ArchiveFinalizationChoices, AssetInitializationCancelled, ByteSize,
@@ -260,6 +257,14 @@ pub(super) fn run_work_phases(
 ) -> Result<ControlFlow<Stop>, Error> {
     let policy = preparation.policy();
     let mode = policy.execution_mode();
+    // The provider builds the Toolset, and only it knows which mode it gave
+    // it; every Capacity Check of the run decides from that mode, so a
+    // provider wired with the wrong one would apply the other mode's rule.
+    debug_assert_eq!(
+        toolset.mode(),
+        mode,
+        "the Run Toolset's Execution Mode must be the Run Request's"
+    );
     let router = AssetRouter::new(policy.clone());
     // Both discovery passes share one walker, so each excluded linked entry
     // is diagnosed once across them.
@@ -271,14 +276,8 @@ pub(super) fn run_work_phases(
 
     // `?` cannot unwrap a `ControlFlow` on stable Rust, so each stop is
     // returned by hand, keeping its reason for the executor.
-    let archives = match discover_archives(
-        preparation,
-        mode,
-        toolset,
-        evidence,
-        &router,
-        &mut discovery,
-    )? {
+    let archives = match discover_archives(preparation, toolset, evidence, &router, &mut discovery)?
+    {
         ControlFlow::Continue(archives) => archives,
         ControlFlow::Break(stopped) => return Ok(ControlFlow::Break(stopped)),
     };
@@ -326,14 +325,11 @@ pub(super) fn run_work_phases(
 ///
 /// The skipped Archive counts are recorded once the pass ends, complete or
 /// not. A cancelled pass, a failed preflight, recorded as the run's failure,
-/// or a cancelled preflight stops the work with nothing extracted. A
-/// Capacity Check shortage stops an Apply run the same way, as Archive
-/// Insufficient Capacity; a Dry Run records it as a
-/// [`RunDiagnosticCode::CapacityShortage`] warning and continues. `mode` is
-/// the run's execution mode, which decides between the two.
+/// or a cancelled preflight stops the work with nothing extracted; an Apply
+/// run's Capacity Check shortage is such a failed preflight. A Dry Run's
+/// capacity warning is recorded after the collisions, and the run continues.
 fn discover_archives(
     preparation: &RunPreparation,
-    mode: ExecutionMode,
     toolset: &RunToolset,
     evidence: &mut MutableRunEvidence<'_>,
     router: &AssetRouter,
@@ -410,25 +406,13 @@ fn discover_archives(
         Preflight::Planned {
             plans,
             collisions,
-            shortfall,
+            capacity_warning,
         } => {
-            if let Some(shortfall) = &shortfall
-                && mode == ExecutionMode::Apply
-            {
-                // An Apply run must not start extracting what it cannot fit,
-                // so the shortage fails it before any collision is retained,
-                // as every other failed check does.
-                evidence.record_failure(capacity_failure(shortfall));
-                return Ok(ControlFlow::Break(Stop::Halted));
-            }
             // Retained before the extraction phase is observed, so a
             // failing observer or a later unwind cannot lose the plan.
             evidence.record_archive_collisions(&collisions)?;
-            if let Some(shortfall) = &shortfall {
-                // A Dry Run needs no space, so the shortage its Apply run
-                // would fail on is only a warning, and the preview carries on
-                // to report every plan.
-                warn_capacity_shortage(toolset, evidence, RunPhase::DiscoveringArchives, shortfall);
+            if let Some(warning) = capacity_warning {
+                record_capacity_warning(evidence, warning);
             }
             plans
         }
@@ -803,13 +787,14 @@ fn plan_archive_finalization(
     let outputs = match toolset.plan_archive_creation(preparation, choices, &|| stop.is_cancelled())
     {
         CreationPlanning::NotRequested => return Ok(ControlFlow::Continue(())),
-        CreationPlanning::Planned { outputs, shortfall } => {
-            if let Some(shortfall) = &shortfall {
-                // As at Discovering Archives, a Dry Run needs no space, so
-                // the shortage its Apply run would fail Archive creation on
-                // is only a warning, and every planned output is still
-                // recorded below.
-                warn_capacity_shortage(toolset, evidence, RunPhase::ArchiveFinalization, shortfall);
+        CreationPlanning::Planned {
+            outputs,
+            capacity_warning,
+        } => {
+            // As at Discovering Archives, the warning neither fails the Dry
+            // Run nor drops a planned output: every one is recorded below.
+            if let Some(warning) = capacity_warning {
+                record_capacity_warning(evidence, warning);
             }
             outputs
         }
@@ -844,17 +829,11 @@ fn plan_archive_finalization(
     Ok(ControlFlow::Continue(()))
 }
 
-/// Warns of a Dry Run's capacity `shortfall` at `phase`: a shortage the
-/// Apply run's Capacity Check would fail on. The warning-level
-/// [`RunDiagnosticCode::CapacityShortage`] Run Diagnostic `toolset` builds is
-/// logged as a warning and recorded in `evidence`; neither fails the run.
-fn warn_capacity_shortage(
-    toolset: &RunToolset,
-    evidence: &mut MutableRunEvidence<'_>,
-    phase: RunPhase,
-    shortfall: &Shortfall,
-) {
-    let warning = toolset.capacity_shortage_warning(phase, shortfall);
+/// Records a Dry Run's capacity `warning`, the
+/// [`RunDiagnosticCode::CapacityShortage`] its Capacity Check returned, in
+/// `evidence`, and logs it to the Application Log as a warning; neither fails
+/// the run.
+fn record_capacity_warning(evidence: &mut MutableRunEvidence<'_>, warning: RunDiagnostic) {
     log::warn!("{}: {}", warning.path.display(), warning.detail);
     evidence.record_diagnostic(warning);
 }

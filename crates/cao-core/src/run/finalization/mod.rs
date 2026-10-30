@@ -37,10 +37,12 @@ use cao_winfs::is_reparse_point;
 
 use crate::execution::MutationState;
 use crate::routing::RequestedWork;
-use crate::run::capacity::{CapacityCheck, Demand, Shortfall};
+use crate::run::capacity::{
+    CapacityCheck, CapacityShortage, CapacityStage, CapacityVerdict, Demand,
+};
 use crate::run::staging::has_staging_component;
 use crate::run::{
-    ArchiveFinalizationHandle, ArchiveSeams, PlannedOutputArchive, RunPreparation,
+    ArchiveFinalizationHandle, ArchiveSeams, PlannedOutputArchive, RunDiagnostic, RunPreparation,
     TemporaryArtifactRegistry, take_panic_message,
 };
 use crate::{AttemptOutcome, Error, OperationFailure};
@@ -138,12 +140,11 @@ pub struct ArchiveFinalizationMutation {
 pub struct ArchiveFinalizationResult {
     /// Completed output attempts, in plan order.
     pub attempts: Vec<ArchiveFinalizationAttempt>,
-    /// A phase-level failure. It has no output attempt and does not advance
-    /// progress.
-    pub failure: Option<ArchiveFinalizationFailure>,
+    /// A phase-level failure, with the detail it reported. It has no output
+    /// attempt and does not advance progress.
+    pub failure: Option<OperationFailure<ArchiveFinalizationFailure>>,
     pub cancelled: bool,
     pub safe_to_continue: bool,
-    pub detail: String,
     pub mutations: Vec<ArchiveFinalizationMutation>,
 }
 
@@ -159,7 +160,6 @@ impl ArchiveFinalizationResult {
             failure,
             cancelled,
             safe_to_continue,
-            detail,
             mutations,
         } = account;
         Self {
@@ -167,9 +167,15 @@ impl ArchiveFinalizationResult {
             failure,
             cancelled,
             safe_to_continue,
-            detail,
             mutations,
         }
+    }
+
+    /// The stable category of the phase-level failure, or `None` when the
+    /// phase did not fail outside its attempts; mirrors
+    /// [`AttemptOutcome::failure_category`].
+    pub fn failure_category(&self) -> Option<ArchiveFinalizationFailure> {
+        self.failure.as_ref().map(OperationFailure::category)
     }
 }
 
@@ -190,9 +196,12 @@ impl Default for ArchiveFinalizationResult {
 /// keeps its shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ArchiveFinalizationAccount {
-    /// A phase-level failure. It has no output attempt and does not advance
-    /// progress.
-    pub(crate) failure: Option<ArchiveFinalizationFailure>,
+    /// A phase-level failure, with the detail it reported, such as a
+    /// capacity shortage or the escaped panic's message. It has no output
+    /// attempt and does not advance progress. Archive Finalization records
+    /// it only through [`fail`](Self::fail), and the Operation Failure keeps
+    /// a category from ever travelling without its detail.
+    pub(crate) failure: Option<OperationFailure<ArchiveFinalizationFailure>>,
     /// Whether the phase observed cancellation; it marks the run's
     /// cancellation observed when the phase finishes.
     pub(crate) cancelled: bool,
@@ -201,9 +210,6 @@ pub(crate) struct ArchiveFinalizationAccount {
     /// publication, or a phase-level Unexpected Exception, whose durable
     /// effects have no reliable boundary.
     pub(crate) safe_to_continue: bool,
-    /// What a phase-level failure reported, such as a capacity shortfall or
-    /// the escaped panic's message; empty when the phase did not fail.
-    pub(crate) detail: String,
     /// Completed effects that no output attempt accounts for.
     pub(crate) mutations: Vec<ArchiveFinalizationMutation>,
 }
@@ -216,9 +222,17 @@ impl Default for ArchiveFinalizationAccount {
             failure: None,
             cancelled: false,
             safe_to_continue: true,
-            detail: String::new(),
             mutations: Vec::new(),
         }
+    }
+}
+
+impl ArchiveFinalizationAccount {
+    /// Records `failure` as the phase-level failure. Every site that fails
+    /// the phase outside an output attempt goes through here; cancellation
+    /// and the continuation verdict stay the caller's to set beside it.
+    pub(crate) fn fail(&mut self, failure: OperationFailure<ArchiveFinalizationFailure>) {
+        self.failure = Some(failure);
     }
 }
 
@@ -313,7 +327,7 @@ pub(crate) fn finalize_archives(
             &mut account,
         )
     }));
-    account.detail = match outcome {
+    let detail = match outcome {
         Ok(Ok(())) => return phase.finish(account),
         Ok(Err(Escape::Evidence(error))) => return Err(error),
         Ok(Err(Escape::Work(detail))) => detail,
@@ -322,7 +336,10 @@ pub(crate) fn finalize_archives(
     // The escaped failure gives no reliable boundary for further durable
     // effects. Every attempt was already streamed into the evidence, so the
     // phase-level failure keeps them all.
-    account.failure = Some(ArchiveFinalizationFailure::UnexpectedException);
+    account.fail(OperationFailure::new(
+        ArchiveFinalizationFailure::UnexpectedException,
+        detail,
+    ));
     account.safe_to_continue = false;
     phase.finish(account)
 }
@@ -338,11 +355,12 @@ pub(crate) enum CreationPlanning {
     Planned {
         /// The planned output Archives, in plan order.
         outputs: Vec<PlannedOutputArchive>,
-        /// The shortage the Apply run's Capacity Check would fail its
-        /// Archive creation on, before any root mutates: the same check over
-        /// the same [`creation_demand`], so `None` exactly when that Apply
-        /// run would pass it.
-        shortfall: Option<Shortfall>,
+        /// The Dry Run's warning, ready to record, of the shortage the Apply
+        /// run's Capacity Check would fail its Archive creation on before
+        /// any root mutates: the same check over the same
+        /// [`creation_demand`], so `None` exactly when that Apply run would
+        /// pass it.
+        capacity_warning: Option<RunDiagnostic>,
     },
     /// Cancellation was observed while planning; nothing was planned.
     Cancelled,
@@ -363,9 +381,9 @@ pub(crate) enum CreationPlanning {
 ///
 /// It then runs the Capacity Check the Apply run would run before mutating,
 /// through `capacity`, the run's Capacity Check, over the same
-/// [`creation_demand`], and returns any shortage beside the outputs rather
-/// than failing: the Dry Run itself needs no space. The check only reads the
-/// volume probe, whose panics it contains.
+/// [`creation_demand`], and returns the warning it gives beside the outputs
+/// rather than failing: the Dry Run itself needs no space. The check only
+/// reads the volume probe, whose panics it contains.
 ///
 /// Planning has no panic containment of its own, and a Dry Run has no
 /// attempt-phase handle to finish as an Unexpected Exception, so a panic of
@@ -395,11 +413,34 @@ pub(crate) fn plan_archive_creation(
         )?;
         // The plan is held, not finalized, so the demand comes from the
         // frozen plan exactly as an Apply run's does before it mutates.
-        let shortfall = capacity.first_shortfall(&creation_demand(capacity, &plan).phase);
-        Ok((planned_outputs(&plan), shortfall))
+        let verdict = capacity.check(
+            CapacityStage::BeforeCreation,
+            &creation_demand(capacity, &plan).phase,
+        );
+        Ok((planned_outputs(&plan), verdict))
     }));
     match planned {
-        Ok(Ok((outputs, shortfall))) => CreationPlanning::Planned { outputs, shortfall },
+        Ok(Ok((outputs, verdict))) => {
+            // Matched outside the containment above, so an impossible arm
+            // panics rather than passing as a planning failure.
+            let capacity_warning = match verdict {
+                CapacityVerdict::Fits => None,
+                CapacityVerdict::Warn(warning) => Some(warning),
+                // The Run Toolset's mode-aware Archive steps are expected to
+                // remove these arms by sharing one entry point with
+                // `finalize_archives`: card 3, "The Run Toolset's Archive
+                // work knows its mode", of the 2026-10-30 architecture
+                // review, deferred by #652.
+                CapacityVerdict::FailRun(_) | CapacityVerdict::FailWork(_) => unreachable!(
+                    "Archive creation is planned only in a Dry Run, whose Capacity Check warns \
+                     before creation"
+                ),
+            };
+            CreationPlanning::Planned {
+                outputs,
+                capacity_warning,
+            }
+        }
         Ok(Err(PlanningStop::Cancelled)) => CreationPlanning::Cancelled,
         Ok(Err(PlanningStop::Failed(detail))) => CreationPlanning::Failed(detail),
         Err(payload) => CreationPlanning::Failed(take_panic_message(payload)),
@@ -547,13 +588,20 @@ fn finalize_plan(
     // A Mod Root with no planned writes cannot run out of staging space
     // during this phase, so only roots with demand are checked, in root
     // order.
-    if let Some(shortfall) = capacity.first_shortfall(&phase_demand) {
-        let archive = plan
-            .outputs
-            .iter()
-            .find(|output| output.mod_root == shortfall.root)
-            .map(|output| output.archive_path.as_path());
-        return record_shortfall(shortfall, archive, phase, account);
+    match capacity.check(CapacityStage::BeforeCreation, &phase_demand) {
+        CapacityVerdict::Fits => {}
+        CapacityVerdict::FailWork(shortage) => {
+            let archive = plan
+                .outputs
+                .iter()
+                .find(|output| output.mod_root == shortage.root)
+                .map(|output| output.archive_path.as_path());
+            return record_shortage(shortage, archive, phase, account);
+        }
+        verdict @ (CapacityVerdict::FailRun(_) | CapacityVerdict::Warn(_)) => unreachable!(
+            "Archive Finalization runs only in an Apply run, whose shortage before creation \
+             fails only the phase's work, never {verdict:?}"
+        ),
     }
 
     for (index, _) in plan.outputs.iter().enumerate() {
@@ -606,8 +654,10 @@ fn finalize_plan(
         Err(payload) => take_panic_message(payload),
     };
     account.safe_to_continue = false;
-    account.failure = Some(ArchiveFinalizationFailure::UnexpectedException);
-    account.detail = detail;
+    account.fail(OperationFailure::new(
+        ArchiveFinalizationFailure::UnexpectedException,
+        detail,
+    ));
     Ok(())
 }
 
@@ -636,8 +686,8 @@ fn maintain_and_prune(
             for later in &plan.roots[index..] {
                 remaining.add(later, plan.dummy_capacity_by_root[later]);
             }
-            if let Some(shortfall) = capacity.shortfall_at(&remaining, root) {
-                return record_shortfall(shortfall, None, phase, account);
+            if let Some(shortage) = capacity.recheck_at(&remaining, root) {
+                return record_shortage(shortage, None, phase, account);
             }
         }
         // A probe may block while cancellation arrives; do not start the
@@ -667,31 +717,27 @@ fn maintain_and_prune(
     Ok(())
 }
 
-/// Records a known `shortfall` at its Mod Root as the attempt of `archive`,
+/// Records a known `shortage` at its Mod Root as the attempt of `archive`,
 /// or as a phase-level failure when the root has no planned output. The
 /// phase stops after it, before any further mutation.
-fn record_shortfall(
-    shortfall: Shortfall,
+fn record_shortage(
+    shortage: CapacityShortage,
     archive: Option<&Path>,
     phase: &mut ArchiveFinalizationHandle<'_, '_>,
     account: &mut ArchiveFinalizationAccount,
 ) -> Result<(), Escape> {
-    let detail = shortfall.to_string();
+    let root = shortage.root.clone();
+    let failure = OperationFailure::from_capacity_shortage(
+        ArchiveFinalizationFailure::InsufficientCapacity,
+        shortage,
+    );
     match archive {
-        None => {
-            account.failure = Some(ArchiveFinalizationFailure::InsufficientCapacity);
-            account.detail = detail;
-        }
+        None => account.fail(failure),
         Some(archive) => {
             // A known shortage is found before any mutation, so the producer
             // still claims it safe; the phase stops after it regardless.
-            let outcome = AttemptOutcome::failed(
-                OperationFailure::new(ArchiveFinalizationFailure::InsufficientCapacity, detail),
-                MutationState::None,
-                true,
-            );
-            let attempt =
-                ArchiveFinalizationAttempt::new(archive.to_path_buf(), shortfall.root, outcome);
+            let outcome = AttemptOutcome::failed(failure, MutationState::None, true);
+            let attempt = ArchiveFinalizationAttempt::new(archive.to_path_buf(), root, outcome);
             phase.record(attempt).map_err(Escape::Evidence)?;
         }
     }

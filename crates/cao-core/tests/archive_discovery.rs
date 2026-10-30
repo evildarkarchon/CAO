@@ -49,10 +49,10 @@ use cao_core::execution::MutationState;
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ArchiveExtractionFailure, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
-    ArchivePrecedence, CancellationToken, ModSelection, MutationKind, MutationSummary,
-    OptimizationRunResult, RunDiagnosticCode, RunDiagnosticSeverity, RunFailureCode,
-    RunObservationSink, RunOutcome, RunPhase, RunPhaseStatus, RunRequest, SourceCleanup,
-    WorkChoices,
+    ArchivePrecedence, CancellationToken, CapacityShortage, ModSelection, MutationKind,
+    MutationSummary, OptimizationRunResult, RunDiagnosticCode, RunDiagnosticSeverity,
+    RunFailureCode, RunObservationSink, RunOutcome, RunPhase, RunPhaseStatus, RunRequest,
+    SourceCleanup, WorkChoices,
 };
 use cao_core::test_support::{
     CountingCleanup, FakeArchivePacker, FakeArchiveReader, FakeEntry, FakeVolumeProbe, Observed,
@@ -393,7 +393,7 @@ fn each_mod_root_volume_is_looked_up_once_per_run() {
     assert!(result.failures().is_empty(), "{:?}", result.failures());
     assert_eq!(result.archive_extraction_attempts().len(), 2);
     let finalization = result.archive_finalization().unwrap();
-    assert_eq!(finalization.failure, None, "{}", finalization.detail);
+    assert_eq!(finalization.failure, None);
     // Both roots plan an output, so Archive Finalization groups them too.
     assert_eq!(finalization.attempts.len(), 2);
     let mut looked_up = lookups.lock().unwrap().clone();
@@ -1239,13 +1239,20 @@ fn a_dry_run_with_a_capacity_shortage_warns_and_still_plans_every_extraction() {
         .iter()
         .map(|plan| plan.estimated_capacity_bytes)
         .sum();
-    for named in ["shared-volume", &format!("{demand} bytes"), "1500000 bytes"] {
-        assert!(
-            warning.detail.contains(named),
-            "{named:?} missing from {:?}",
-            warning.detail
-        );
-    }
+    assert_eq!(
+        warning.capacity_shortage,
+        Some(CapacityShortage {
+            root: base.join("first"),
+            required: demand,
+            available: 1_500_000,
+        })
+    );
+    // The volume exists only in the warning's text, so the text names it.
+    assert!(
+        warning.detail.contains("shared-volume"),
+        "{:?}",
+        warning.detail
+    );
 }
 
 /// An Apply run with the shortage a Dry Run only warns of still fails before
@@ -1264,13 +1271,25 @@ fn an_apply_run_with_a_capacity_shortage_still_fails_before_extraction() {
         RunFailureCode::ArchiveInsufficientCapacity,
         &base.join("first"),
     );
-    assert!(
-        result.failures()[0]
-            .detail
-            .starts_with("Insufficient Archive staging capacity: estimated "),
-        "{}",
-        result.failures()[0].detail
+    // The Dry Run of the same request plans the demand the Apply run checked.
+    let preview = execute(
+        &several_archives_and_textures_in(ExecutionMode::DryRun, &base),
+        &shared_volume_shortage(&base),
     );
+    let demand: u64 = preview
+        .planned_archive_work()
+        .extractions()
+        .iter()
+        .map(|plan| plan.estimated_capacity_bytes)
+        .sum();
+    let failure = &result.failures()[0];
+    let shortage = CapacityShortage {
+        root: base.join("first"),
+        required: demand,
+        available: 1_500_000,
+    };
+    assert_eq!(failure.capacity_shortage.as_deref(), Some(&shortage));
+    assert_eq!(failure.detail, shortage.to_string());
     assert!(result.planned_archive_work().is_empty());
     assert!(
         result
