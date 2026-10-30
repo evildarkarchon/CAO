@@ -229,18 +229,19 @@ impl RunWorkSettings {
     fn toolset(&self, profile: Arc<PreparedProfile>, mode: ExecutionMode) -> RunToolset {
         // One reader serves discovery, extraction and finalization for the
         // whole run: the Toolset holds only this one.
-        // C++ always wires Archive Finalization, so Apply executes the phase:
-        // it packs only when the Routing Policy requests Archive creation, and
-        // prunes empty directories either way.
+        // Every production run wires Archive Finalization, so that an Apply
+        // run always leaves its Mod Roots tidy: the phase packs only when the
+        // Routing Policy requests Archive creation, and prunes empty
+        // directories either way.
         let seams = ArchiveSeams {
             reader: Arc::new(ArchiveFileReader::default()),
             volume_probe: Arc::new(VolumeProbes),
             packer: Arc::new(GameArchivePacker::new(profile.archive_rules)),
         };
         RunToolset::new(
-            // The adapter creates the backend on the first Asset, as C++
-            // creates its MainOptimizer, so a run with nothing to process
-            // never sets up an optimizer.
+            // The adapter creates the backend on the first Asset, so a run
+            // with nothing to process never pays for the headpart scan or the
+            // COM setup the backend needs.
             Box::new(AssetAttemptAdapter::new(OptimizerBackendFactory {
                 work: self.clone(),
                 profile,

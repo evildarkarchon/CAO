@@ -189,7 +189,7 @@ impl RunDiagnostic {
         self
     }
 
-    /// Attaches the Capacity Shortage this diagnostic warns of. The detail is
+    /// Attaches the [`CapacityShortage`] this diagnostic warns of. The detail is
     /// left as given: the caller owns its wording.
     pub fn with_capacity_shortage(mut self, shortage: CapacityShortage) -> Self {
         self.capacity_shortage = Some(shortage);
@@ -270,7 +270,7 @@ impl RunFailure {
         self
     }
 
-    /// Attaches the Capacity Shortage behind this failure. The detail is left
+    /// Attaches the [`CapacityShortage`] behind this failure. The detail is left
     /// as given: the caller owns its wording.
     pub fn with_capacity_shortage(mut self, shortage: CapacityShortage) -> Self {
         self.capacity_shortage = Some(Box::new(shortage));

@@ -174,6 +174,12 @@ impl RunToolset {
         }
     }
 
+    /// The Execution Mode this Toolset was built for, which every Capacity
+    /// Check of the run decides with.
+    pub(crate) fn mode(&self) -> ExecutionMode {
+        self.mode
+    }
+
     /// The port each Routed Asset is attempted through.
     pub(crate) fn asset_attempt(&mut self) -> &mut dyn AssetAttemptPort {
         &mut *self.asset_attempt

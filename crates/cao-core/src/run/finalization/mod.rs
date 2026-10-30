@@ -197,7 +197,7 @@ impl Default for ArchiveFinalizationResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ArchiveFinalizationAccount {
     /// A phase-level failure, with the detail it reported, such as a
-    /// capacity shortfall or the escaped panic's message. It has no output
+    /// capacity shortage or the escaped panic's message. It has no output
     /// attempt and does not advance progress. Archive Finalization records
     /// it only through [`fail`](Self::fail), and the Operation Failure keeps
     /// a category from ever travelling without its detail.
@@ -428,7 +428,9 @@ pub(crate) fn plan_archive_creation(
                 CapacityVerdict::Warn(warning) => Some(warning),
                 // The Run Toolset's mode-aware Archive steps are expected to
                 // remove these arms by sharing one entry point with
-                // `finalize_archives`.
+                // `finalize_archives`: card 3, "The Run Toolset's Archive
+                // work knows its mode", of the 2026-10-30 architecture
+                // review, deferred by #652.
                 CapacityVerdict::FailRun(_) | CapacityVerdict::FailWork(_) => unreachable!(
                     "Archive creation is planned only in a Dry Run, whose Capacity Check warns \
                      before creation"
@@ -684,14 +686,8 @@ fn maintain_and_prune(
             for later in &plan.roots[index..] {
                 remaining.add(later, plan.dummy_capacity_by_root[later]);
             }
-            match capacity.check_at(CapacityStage::Recheck, &remaining, root) {
-                CapacityVerdict::Fits => {}
-                CapacityVerdict::FailWork(shortage) => {
-                    return record_shortage(shortage, None, phase, account);
-                }
-                verdict @ (CapacityVerdict::FailRun(_) | CapacityVerdict::Warn(_)) => {
-                    unreachable!("a recheck fails only the work it guards, never {verdict:?}")
-                }
+            if let Some(shortage) = capacity.recheck_at(&remaining, root) {
+                return record_shortage(shortage, None, phase, account);
             }
         }
         // A probe may block while cancellation arrives; do not start the

@@ -245,17 +245,11 @@ fn try_extract(
     // attempt's boundary.
     let mut demand = capacity.demand();
     demand.add(&root, required);
-    match capacity.check_at(CapacityStage::Recheck, &demand, &root) {
-        CapacityVerdict::Fits => {}
-        CapacityVerdict::FailWork(shortage) => {
-            return Ok(Some(OperationFailure::from_capacity_shortage(
-                ArchiveExtractionFailure::InsufficientCapacity,
-                shortage,
-            )));
-        }
-        verdict @ (CapacityVerdict::FailRun(_) | CapacityVerdict::Warn(_)) => {
-            unreachable!("a recheck fails only the work it guards, never {verdict:?}")
-        }
+    if let Some(shortage) = capacity.recheck_at(&demand, &root) {
+        return Ok(Some(OperationFailure::from_capacity_shortage(
+            ArchiveExtractionFailure::InsufficientCapacity,
+            shortage,
+        )));
     }
 
     let expected: BTreeSet<&str> = plan.entries.iter().map(String::as_str).collect();
