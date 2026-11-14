@@ -296,23 +296,59 @@ impl StagingScope {
         } else {
             format!("{destination_parent}/{filename}")
         };
-        self.create_registered_file(&root, relative, true)
+        Ok(self
+            .create_registered_files(&root, vec![relative], true)?
+            .pop()
+            .expect("one file was registered"))
     }
 
     /// Durably registers and exclusively creates a unique empty file beneath
     /// the owned run child, for Archive entries, output Archives and Loading
     /// Plugins.
     pub(crate) fn stage_archive_file(&mut self, mod_root: &Path) -> Result<PathBuf, StagingError> {
+        Ok(self
+            .stage_archive_files(mod_root, 1)?
+            .pop()
+            .expect("one file was staged"))
+    }
+
+    /// Durably registers `count` unique files beneath the owned run child
+    /// with one manifest snapshot, then exclusively creates each one empty,
+    /// returning their paths in creation order.
+    ///
+    /// This is how an Archive's entries are staged. Registering them one at
+    /// a time rewrites a manifest that grows with every entry, which is
+    /// quadratic in the entry count; the protocol only needs each name to be
+    /// in a flushed snapshot before its file exists, and one snapshot does
+    /// that for all of them. An interruption between the snapshot and the
+    /// last creation leaves registered names with no file, which cleanup and
+    /// recovery already skip.
+    ///
+    /// # Errors
+    /// As for [`Self::stage_archive_file`]. The manifest's format limit is
+    /// checked before any file is created. After a failure, files this call
+    /// already created stay registered for Safety Cleanup.
+    pub(crate) fn stage_archive_files(
+        &mut self,
+        mod_root: &Path,
+        count: usize,
+    ) -> Result<Vec<PathBuf>, StagingError> {
         if !mod_root.is_absolute() {
             return Err(StagingError::Invalid(
                 "Archive staging requires an absolute Mod Root.".to_owned(),
             ));
         }
+        if count == 0 {
+            // Nothing to own, so the reserved directory is not even claimed.
+            return Ok(Vec::new());
+        }
         let root = canonical(mod_root).map_err(StagingError::lookup("Resolve", mod_root))?;
         self.prepare_area(&root)?;
         let child = &self.areas[&root].child;
-        let relative = format!("{child}/archive-entry-{}", nonce()?);
-        self.create_registered_file(&root, relative, false)
+        let relatives = (0..count)
+            .map(|_| Ok(format!("{child}/archive-entry-{}", nonce()?)))
+            .collect::<Result<Vec<_>, StagingError>>()?;
+        self.create_registered_files(&root, relatives, false)
     }
 
     /// Removes a temporary registration after publication moved its file to
@@ -322,26 +358,65 @@ impl StagingScope {
     /// [`StagingError::Invalid`] when the temporary still exists or is not
     /// registered; otherwise the manifest publication's error.
     pub(crate) fn release_file(&mut self, temporary: &Path) -> Result<(), StagingError> {
-        for (root, area) in &mut self.areas {
-            let Some(position) = area.artifacts.iter().position(|artifact| {
-                !artifact.directory && artifact_path(root, artifact) == temporary
-            }) else {
-                continue;
-            };
-            if inspect(temporary)?.is_some() {
-                return Err(StagingError::Invalid(
-                    "A durable temporary file must be moved before releasing ownership.".to_owned(),
-                ));
+        self.release_files(std::slice::from_ref(&temporary.to_path_buf()))
+    }
+
+    /// Removes the registrations of `temporaries`, each of which publication
+    /// has already moved to its destination, with one manifest snapshot per
+    /// Mod Root. The batch counterpart of [`Self::release_file`], for the
+    /// same reason [`Self::stage_archive_files`] exists.
+    ///
+    /// Until it runs, the moved names stay registered and absent, which is
+    /// the state a crash between a publication and its release always left.
+    ///
+    /// # Errors
+    /// [`StagingError::Invalid`] when a temporary still exists or is not
+    /// registered; otherwise a manifest publication's error. A root whose
+    /// snapshot was published before the failure keeps that release; every
+    /// other name stays registered.
+    pub(crate) fn release_files(&mut self, temporaries: &[PathBuf]) -> Result<(), StagingError> {
+        let wanted: std::collections::BTreeSet<&Path> =
+            temporaries.iter().map(PathBuf::as_path).collect();
+        let leaves = |root: &Path, artifact: &Artifact| {
+            !artifact.directory && wanted.contains(artifact_path(root, artifact).as_path())
+        };
+        // Every name is found, and its file proven moved, before any snapshot
+        // changes: a refused batch must leave ownership exactly as it was.
+        let mut found = 0;
+        for (root, area) in &self.areas {
+            for artifact in area
+                .artifacts
+                .iter()
+                .filter(|artifact| leaves(root, artifact))
+            {
+                if inspect(&artifact_path(root, artifact))?.is_some() {
+                    return Err(StagingError::Invalid(
+                        "A durable temporary file must be moved before releasing ownership."
+                            .to_owned(),
+                    ));
+                }
+                found += 1;
             }
-            let mut retained = area.artifacts.clone();
-            retained.remove(position);
+        }
+        if found != wanted.len() {
+            return Err(StagingError::Invalid(
+                "The durable temporary file is not registered.".to_owned(),
+            ));
+        }
+        for (root, area) in &mut self.areas {
+            let retained: Vec<Artifact> = area
+                .artifacts
+                .iter()
+                .filter(|artifact| !leaves(root, artifact))
+                .cloned()
+                .collect();
+            if retained.len() == area.artifacts.len() {
+                continue;
+            }
             publish_manifest(root, &self.run_id, &area.child, &retained)?;
             area.artifacts = retained;
-            return Ok(());
         }
-        Err(StagingError::Invalid(
-            "The durable temporary file is not registered.".to_owned(),
-        ))
+        Ok(())
     }
 
     /// Removes every registered entry that is still present, in reverse
@@ -452,50 +527,62 @@ impl StagingScope {
         Ok(())
     }
 
-    /// Publishes one file registration, then creates the file exclusively.
+    /// Publishes the registrations of `relatives` in one snapshot, then
+    /// creates each file exclusively, returning their paths in order.
     ///
     /// A name rejected by `CREATE_NEW` was never acquired, so its registration
-    /// is withdrawn again; the colliding entry is never deleted.
-    fn create_registered_file(
+    /// is withdrawn again; the colliding entry is never deleted. The names
+    /// after it in the batch have not been created either, so they are
+    /// withdrawn with it. The files created before it stay registered, for
+    /// Safety Cleanup to remove.
+    fn create_registered_files(
         &mut self,
         root: &Path,
-        relative: String,
+        relatives: Vec<String>,
         root_relative: bool,
-    ) -> Result<PathBuf, StagingError> {
+    ) -> Result<Vec<PathBuf>, StagingError> {
         let area = self
             .areas
             .get_mut(root)
             .expect("prepare_area claimed the area");
+        let first = area.artifacts.len();
         let mut registered = area.artifacts.clone();
-        registered.push(Artifact {
+        registered.extend(relatives.into_iter().map(|relative| Artifact {
             relative,
             directory: false,
             root_relative,
-        });
+        }));
         publish_manifest(root, &self.run_id, &area.child, &registered)?;
         area.artifacts = registered;
-        let path = artifact_path(root, area.artifacts.last().expect("just registered"));
-        match write_new_file(&path, b"") {
-            Ok(()) => Ok(path),
-            Err(collision @ StagingError::Collision(_)) => {
-                area.artifacts.pop();
-                if let Err(error) =
-                    publish_manifest(root, &self.run_id, &area.child, &area.artifacts)
-                {
-                    // An unregistered conflict control makes future recovery
-                    // preserve the whole tree when the release could not be
-                    // published. A failure to write it changes nothing: the
-                    // publication error is what the caller must see.
-                    let _ = write_new_file(
-                        &root.join(STAGING_DIRECTORY).join(CONFLICT_CONTROL),
-                        b"A staged name collided before creation.\n",
-                    );
-                    return Err(error);
+        let mut paths = Vec::with_capacity(area.artifacts.len() - first);
+        for index in first..area.artifacts.len() {
+            let path = artifact_path(root, &area.artifacts[index]);
+            match write_new_file(&path, b"") {
+                Ok(()) => paths.push(path),
+                Err(collision @ StagingError::Collision(_)) => {
+                    area.artifacts.truncate(index);
+                    if let Err(error) =
+                        publish_manifest(root, &self.run_id, &area.child, &area.artifacts)
+                    {
+                        // An unregistered conflict control makes future recovery
+                        // preserve the whole tree when the release could not be
+                        // published. A failure to write it changes nothing: the
+                        // publication error is what the caller must see.
+                        let _ = write_new_file(
+                            &root.join(STAGING_DIRECTORY).join(CONFLICT_CONTROL),
+                            b"A staged name collided before creation.\n",
+                        );
+                        return Err(error);
+                    }
+                    return Err(collision);
                 }
-                Err(collision)
+                // The registration stays: a failure after creation keeps the
+                // file, and the names after it are registered and absent,
+                // which cleanup and recovery skip.
+                Err(error) => return Err(error),
             }
-            Err(error) => Err(error),
         }
+        Ok(paths)
     }
 }
 
@@ -640,8 +727,18 @@ fn publish_manifest(
     }
     let scratch = staging.join(MANIFEST_SCRATCH);
     let manifest = staging.join(MANIFEST);
+    #[cfg(test)]
+    MANIFEST_PUBLICATIONS.with(|count| count.set(count.get() + 1));
     write_new_file(&scratch, text.as_bytes())?;
     move_file_write_through(&scratch, &manifest).map_err(StagingError::io("Publish", &manifest))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many snapshots this thread has tried to publish, so a unit test
+    /// can pin what a batch costs. A scope lives on one thread, its Run
+    /// Worker, so a thread-local count is that scope's own.
+    static MANIFEST_PUBLICATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Creates `path` exclusively, never truncating, and flushes `bytes` before
@@ -805,4 +902,102 @@ fn pin_parent_directories(
         pins.insert(current.clone(), pin_directory(&current)?);
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::run::create_run_id;
+
+    /// A fresh canonical Mod Root under the system temporary directory,
+    /// removed again when dropped. `CARGO_TARGET_TMPDIR` exists only for
+    /// integration tests.
+    struct ScratchRoot(PathBuf);
+
+    impl ScratchRoot {
+        fn new(name: &str) -> Self {
+            let directory = std::env::temp_dir().join("cao-core-unit").join(name);
+            // A missing directory is the expected case; anything else surfaces in create_dir_all.
+            let _ = std::fs::remove_dir_all(&directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            Self(canonical(&directory).unwrap())
+        }
+    }
+
+    impl Drop for ScratchRoot {
+        fn drop(&mut self) {
+            // Best effort: a leftover is removed by the next run's `new`.
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The snapshots this thread has published so far.
+    fn published() -> usize {
+        MANIFEST_PUBLICATIONS.with(std::cell::Cell::get)
+    }
+
+    /// The point of the batch calls: what an Archive's entries cost in
+    /// ownership snapshots does not depend on how many entries there are.
+    /// One at a time, 200 entries would publish 200 snapshots to register
+    /// and 200 to release, each rewriting every record before it.
+    #[test]
+    fn a_batch_costs_one_snapshot_to_register_and_one_to_release() {
+        const ENTRIES: usize = 200;
+        // Declared first so it is dropped last, after the scope's pins.
+        let root = ScratchRoot::new("staging-batch-snapshots");
+        let mut scope = StagingScope::new(create_run_id());
+        // Claims the area, whose bootstrap publishes snapshots of its own.
+        let earlier = scope.stage_archive_file(&root.0).unwrap();
+
+        let before = published();
+        let files = scope.stage_archive_files(&root.0, ENTRIES).unwrap();
+        assert_eq!(published() - before, 1);
+        assert_eq!(files.len(), ENTRIES);
+        assert!(files.iter().all(|file| file.is_file()));
+
+        // Publication moves each staged file to its destination.
+        for (index, file) in files.iter().enumerate() {
+            std::fs::rename(file, root.0.join(format!("entry-{index}"))).unwrap();
+        }
+        let before = published();
+        scope.release_files(&files).unwrap();
+        assert_eq!(published() - before, 1);
+
+        // Only the run child and the file staged earlier are still owned.
+        let area = &scope.areas[&root.0];
+        assert_eq!(area.artifacts.len(), 2);
+        assert!(earlier.is_file());
+        assert!(scope.cleanup_artifacts().is_empty());
+        assert!(!earlier.exists());
+    }
+
+    /// Releasing a name whose file is still in staging would orphan it, and
+    /// releasing a name that was never registered is a caller's mistake. A
+    /// refused batch publishes nothing and releases nothing.
+    #[test]
+    fn a_batch_release_refuses_an_unmoved_or_unregistered_name() {
+        let root = ScratchRoot::new("staging-batch-refusals");
+        let mut scope = StagingScope::new(create_run_id());
+        let files = scope.stage_archive_files(&root.0, 2).unwrap();
+        std::fs::rename(&files[0], root.0.join("entry-0")).unwrap();
+
+        let before = published();
+        // The second file was never moved.
+        assert!(matches!(
+            scope.release_files(&files),
+            Err(StagingError::Invalid(_))
+        ));
+        let stranger = root.0.join(STAGING_DIRECTORY).join("never-registered");
+        assert!(matches!(
+            scope.release_files(&[files[0].clone(), stranger]),
+            Err(StagingError::Invalid(_))
+        ));
+
+        // Neither refusal published a snapshot: the run child and both files
+        // are still registered, the moved one included.
+        assert_eq!(published() - before, 0);
+        assert_eq!(scope.areas[&root.0].artifacts.len(), 3);
+        assert!(scope.cleanup_artifacts().is_empty());
+        assert!(!files[1].exists());
+    }
 }

@@ -14,7 +14,7 @@
 //! one Archive and publishes only the entries that Archive won, never
 //! replacing an existing file.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -31,8 +31,8 @@ use crate::run::source_pin::SourceFilePin;
 use crate::run::staging::{has_staging_component, pin_directory};
 use crate::run::{
     ArchiveEntry, ArchivePrecedence, ArchiveReader, ArchiveSeams, CancellationToken,
-    PublicationPolicy, PublicationReceipt, PublicationState, RunDiagnostic, RunFailure,
-    RunFailureCode, RunPhase, TemporaryArtifactRegistry, is_staging_name, take_panic_message,
+    PublicationPolicy, PublicationReceipt, RunDiagnostic, RunFailure, RunFailureCode, RunPhase,
+    TemporaryArtifactRegistry, is_staging_name, take_panic_message,
 };
 use crate::{AttemptOutcome, CompletedMutation, OperationFailure};
 
@@ -273,17 +273,31 @@ fn try_extract(
         return Err("Archive merge entry is absent from its manifest.".to_owned());
     }
 
-    // Every entry is staged, shadowed ones too, before anything is published.
+    // The listing is checked against the frozen plan before anything is
+    // staged, so a changed Archive costs no staging at all.
     let changed = || "Archive manifest changed after preflight.".to_owned();
-    let mut staged: HashMap<String, PublicationReceipt> = HashMap::new();
+    let mut names = Vec::with_capacity(entries.len());
+    let mut listed = HashSet::with_capacity(entries.len());
     for entry in &entries {
         let canonical = canonical_archive_entry_path(&entry.name).map_err(|_| changed())?;
-        if !expected.contains(canonical.as_str()) || staged.contains_key(&canonical) {
+        if !expected.contains(canonical.as_str()) || !listed.insert(canonical.clone()) {
             return Err(changed());
         }
-        let receipt = artifacts
-            .stage_archive_file_for_publication(&root)
-            .map_err(|error| error.to_string())?;
+        names.push(canonical);
+    }
+    if names.len() != expected.len() {
+        return Err(changed());
+    }
+
+    // Every entry is staged, shadowed ones too, before anything is published.
+    // One ownership snapshot registers them all: registering entry by entry
+    // rewrites a manifest that grows with each one, which is quadratic I/O
+    // and looked like a hang on an Archive of tens of thousands of entries.
+    let receipts = artifacts
+        .stage_archive_files_for_publication(&root, entries.len())
+        .map_err(|error| error.to_string())?;
+    let mut staged: HashMap<String, PublicationReceipt> = HashMap::with_capacity(entries.len());
+    for ((entry, canonical), receipt) in entries.iter().zip(names).zip(receipts) {
         let path = receipt
             .path()
             .map_err(|error| error.to_string())?
@@ -293,28 +307,25 @@ fn try_extract(
             .map_err(|error| error.to_string())?;
         staged.insert(canonical, receipt);
     }
-    if staged.len() != expected.len() {
-        return Err(changed());
-    }
 
     progress.merging = true;
     for entry in &plan.merge_entries {
         let receipt = staged.remove(entry).ok_or_else(changed)?;
         let target = prepare_merge_target(&root, &join_game_path(&directory, entry))?;
-        let publication = receipt.publish(&target.path, PublicationPolicy::NoReplace);
-        // Record the commit before inspecting the state, so a release
-        // failure on this entry already counts as a partial merge.
-        if publication.mutation() == MutationState::Committed {
-            progress.committed = true;
-        }
-        if publication.state != PublicationState::PublishedAndReleased {
-            return Err(if publication.error_detail.is_empty() {
-                "Archive publication did not complete.".to_owned()
-            } else {
-                publication.error_detail
-            });
-        }
+        // An error here precedes the destination mutation: the release that
+        // could fail after it is deferred to the one below.
+        receipt
+            .publish_deferring_release(&target.path, PublicationPolicy::NoReplace)
+            .map_err(|error| error.to_string())?;
+        progress.committed = true;
     }
+    // One snapshot releases every published name, for the reason one
+    // registered them. Until it lands the names are owned and absent, which
+    // recovery skips. `committed` is already set, so a failure here counts
+    // as a partial merge, as a failed release of a single entry always did.
+    artifacts
+        .release_published()
+        .map_err(|error| error.to_string())?;
     Ok(None)
 }
 

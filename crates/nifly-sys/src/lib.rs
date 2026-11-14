@@ -10,7 +10,8 @@
 //!
 //! - A C++ exception inside nifly becomes [`NifError::Exception`], never an
 //!   abort; nifly's own load and save codes become [`NifError::Load`] and
-//!   [`NifError::Save`].
+//!   [`NifError::Save`]. nifly does not notice a write that fails part-way,
+//!   so the shim checks the output stream itself: [`NifError::Write`].
 //! - Paths cross as UTF-16, losslessly. Texture paths are bytes
 //!   ([`TexturePaths`]), because NIF strings carry no encoding.
 //! - [`Nif::optimize_for`] builds nifly's `NiVersion` with `SetFile`,
@@ -34,10 +35,14 @@ pub enum NifError {
     /// unknown block type in a file without block sizes (before 20.2.0.5).
     #[error("{}", describe_load_code(*code))]
     Load { code: i32 },
-    /// `NifFile::Save` could not open the output file. nifly does not check
-    /// for write errors after that, so a short write still succeeds.
+    /// `NifFile::Save` could not open the output file, so nothing was written.
     #[error("nifly could not open the output file")]
     Save,
+    /// The output file opened, but a write, the final flush or the close
+    /// failed, as on a full disk. nifly itself never checks, so the shim does.
+    /// The file holds a truncated Mesh: discard it, never publish it.
+    #[error("nifly could not write the whole output file")]
+    Write,
     /// nifly, or the standard library under it, threw a C++ exception, such as
     /// `std::bad_alloc` from a count read out of a corrupt file. The message is
     /// the exception's `what()`, decoded lossily. The Mesh's in-memory content
@@ -207,12 +212,25 @@ impl Nif {
     ///
     /// Like nifly's `Save`, this first updates bounds, deletes unreferenced
     /// blocks and sorts blocks, so it changes the in-memory Mesh too.
+    ///
+    /// # Errors
+    ///
+    /// [`NifError::Save`] when the file cannot be opened, and
+    /// [`NifError::Write`] when it opened but not every byte reached it. After
+    /// `Write` the file exists and is truncated; the caller owns removing it.
+    /// [`NifError::Exception`] as for every call.
     pub fn save(&mut self, path: &Path) -> Result<(), NifError> {
         let path = utf16(path);
         // SAFETY: as in `load`.
         let status = unsafe { ffi::cao_nif_save(self.raw.as_ptr(), path.as_ptr(), path.len()) };
-        match self.status(status)? {
+        Self::save_result(self.status(status)?)
+    }
+
+    /// Maps a non-negative `cao_nif_save` code to its result.
+    fn save_result(code: i32) -> Result<(), NifError> {
+        match code {
             ffi::OK => Ok(()),
+            ffi::SAVE_WRITE_FAILED => Err(NifError::Write),
             _ => Err(NifError::Save),
         }
     }
@@ -458,6 +476,46 @@ mod tests {
         )
         .unwrap();
         assert!(nif.is_valid());
+    }
+
+    /// Saves `nif` into a sink that takes `capacity` bytes and then refuses
+    /// the rest, and maps the code as [`Nif::save`] does.
+    fn save_with_room_for(nif: &mut Nif, capacity: usize) -> Result<(), NifError> {
+        // SAFETY: `nif.raw` is live and exclusively borrowed.
+        let status = unsafe { ffi::cao_nif_save_to_limited_stream(nif.raw.as_ptr(), capacity) };
+        Nif::save_result(nif.status(status)?)
+    }
+
+    /// nifly's own `Save` returns 0 here: it never looks at the stream it
+    /// wrote through. A truncated Mesh reported as saved would be published
+    /// over the user's original.
+    #[test]
+    fn a_save_cut_short_by_a_full_volume_is_a_write_error() {
+        let path = fixture("TestNifFile_Static_SE.nif");
+        let size = usize::try_from(std::fs::metadata(&path).unwrap().len()).unwrap();
+        let mut nif = Nif::new();
+        nif.load(&path, LoadOptions::default()).unwrap();
+
+        // Room for nothing, for the header only, and for all but the last byte.
+        for capacity in [0, 64, size - 1] {
+            assert_eq!(
+                save_with_room_for(&mut nif, capacity),
+                Err(NifError::Write),
+                "a sink with room for {capacity} of {size} bytes"
+            );
+        }
+    }
+
+    /// The control for the test above: the same sink with room to spare
+    /// succeeds, so the failures there come from the capacity alone and not
+    /// from the sink itself, such as the seek back to the block-size table.
+    #[test]
+    fn a_save_with_room_to_spare_succeeds_through_the_same_sink() {
+        let path = fixture("TestNifFile_Static_SE.nif");
+        let mut nif = Nif::new();
+        nif.load(&path, LoadOptions::default()).unwrap();
+
+        assert_eq!(save_with_room_for(&mut nif, usize::MAX), Ok(()));
     }
 
     /// The application manifest sets the UTF-8 active code page, so this test

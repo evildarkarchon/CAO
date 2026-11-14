@@ -112,6 +112,10 @@ fn errors_describe_what_failed() {
         "nifly could not open the output file"
     );
     assert_eq!(
+        NifError::Write.to_string(),
+        "nifly could not write the whole output file"
+    );
+    assert_eq!(
         NifError::Exception("bad allocation".into()).to_string(),
         "nifly raised a C++ exception: bad allocation"
     );

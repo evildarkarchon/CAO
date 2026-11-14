@@ -893,7 +893,7 @@ fn a_destination_obstructed_by_a_directory_is_refused_without_mutation() {
 
 /// Origin: AssetExecutionTests::texturePublicationReleaseFailure,
 /// meshPublicationReleaseFailure and animationPublicationReleaseFailure. The
-/// destination is replaced, but releasing its temporary name fails: the
+/// destination is published, but releasing its temporary name fails: the
 /// mutation is Committed and unsafe, the bytes survive Safety Cleanup, and a
 /// converted source is never removed.
 #[test]
@@ -947,10 +947,8 @@ fn a_failed_release_after_publication_keeps_the_committed_output() {
         let root = mod_root(&format!("release-failure-{index}"));
         let source = root.join(source);
         let destination = root.join(destination);
+        // A conversion's destination starts free: it never replaces a DDS.
         write(&source, "original");
-        if source != destination {
-            write(&destination, "old destination");
-        }
         // Writes the staged bytes, then blocks the release that follows publication.
         let saving = {
             let root = root.clone();
@@ -1097,6 +1095,10 @@ fn a_native_texture_is_saved_to_staging_and_then_replaces_the_source() {
 /// Conversion loads the Texture as Convertible and requests conversion only;
 /// Apply commits the destination before removing the source, and Dry Run
 /// neither saves, removes nor stages.
+///
+/// The destination starts free: unlike the C++ scenario, a conversion never
+/// replaces a DDS that is already there (see
+/// [`a_conversion_never_replaces_an_existing_dds`]).
 #[test]
 fn conversion_only_work_converts_in_apply_and_only_evaluates_in_dry_run() {
     for (mode, saves) in [(ExecutionMode::Apply, 1), (ExecutionMode::DryRun, 0)] {
@@ -1104,13 +1106,14 @@ fn conversion_only_work_converts_in_apply_and_only_evaluates_in_dry_run() {
         let source = root.join("Source.Name.TgA");
         let destination = root.join("Source.Name.dds");
         write(&source, "original");
-        write(&destination, "old destination");
         let mut backend = HookBackend {
             save: Some(Box::new({
                 let destination = destination.clone();
                 move |path| {
                     assert_sibling(path, &destination);
-                    assert_eq!(read(&destination), "old destination");
+                    // Saving goes to the staged sibling; nothing is at the
+                    // destination until publication.
+                    assert!(!destination.exists());
                     std::fs::write(path, "converted").unwrap();
                     true
                 }
@@ -1146,10 +1149,78 @@ fn conversion_only_work_converts_in_apply_and_only_evaluates_in_dry_run() {
         } else {
             assert_eq!(result.mutation_state(), MutationState::None);
             assert_eq!(read(&source), "original");
-            assert_eq!(read(&destination), "old destination");
+            assert!(!destination.exists());
             assert!(!root.join(".cao-staging").exists());
         }
     }
+}
+
+/// A mod that ships `Source.tga` beside `Source.dds` keeps both. The DDS is
+/// the file the game loads; converting would replace it with a re-encode of
+/// the TGA and then delete the TGA, and nothing could undo that. The attempt
+/// completes with no mutation before the backend loads anything, in Apply and
+/// in Dry Run alike, and stages nothing.
+#[test]
+fn a_conversion_never_replaces_an_existing_dds() {
+    for mode in [ExecutionMode::Apply, ExecutionMode::DryRun] {
+        let root = mod_root(&format!("texture-conversion-occupied-{mode:?}"));
+        let source = root.join("Source.tga");
+        let destination = root.join("Source.dds");
+        write(&source, "original");
+        write(&destination, "authored");
+        let mut backend = HookBackend::default();
+        let asset = route(mode, &[RequestedWork::NativeTextureOptimization], &source);
+
+        let result = execute_and_clean(&asset, &mut backend, &root);
+
+        assert!(result.succeeded(), "{mode:?}: {result:?}");
+        assert_eq!(result.mutation_state(), MutationState::None, "{mode:?}");
+        assert!(backend.calls.is_empty(), "{mode:?}: {:?}", backend.calls);
+        assert_eq!(read(&destination), "authored", "{mode:?}");
+        assert_eq!(read(&source), "original", "{mode:?}");
+        assert_eq!(names(&root), ["Source.dds", "Source.tga"], "{mode:?}");
+    }
+}
+
+/// A DDS that appears at a conversion's destination while the backend is
+/// saving is kept too: the capture found the destination free, so publication
+/// refuses the file that has arrived since. Nothing is committed and the
+/// source stays.
+#[test]
+fn a_dds_that_appears_during_a_conversion_is_kept() {
+    let root = mod_root("texture-conversion-raced");
+    let source = root.join("Source.tga");
+    let destination = root.join("Source.dds");
+    write(&source, "original");
+    let mut backend = HookBackend {
+        save: Some(Box::new({
+            let destination = destination.clone();
+            move |path| {
+                std::fs::write(path, "converted").unwrap();
+                std::fs::write(&destination, "arrived").unwrap();
+                true
+            }
+        })),
+        ..HookBackend::default()
+    };
+    let asset = route(
+        ExecutionMode::Apply,
+        &[RequestedWork::NativeTextureOptimization],
+        &source,
+    );
+
+    let result = execute_and_clean(&asset, &mut backend, &root);
+
+    assert_eq!(
+        result.failure(),
+        Some(AssetExecutionFailure::CommitFailed),
+        "{result:?}"
+    );
+    assert_eq!(result.mutation_state(), MutationState::None);
+    assert!(result.safe_to_continue(), "{result:?}");
+    assert_eq!(read(&destination), "arrived");
+    assert_eq!(read(&source), "original");
+    assert_eq!(backend.count("remove_texture"), 0);
 }
 
 /// Origin: AssetExecutionTests::failedMeshSavePreservesOriginal.
@@ -1728,22 +1799,22 @@ impl Drop for ConverterProcess {
 
 /// Origin: AssetExecutionTests::interruptedTextureRecovery (all three rows).
 /// A converter killed at any filesystem boundary leaves a tree the next run's
-/// recovery makes consistent: the old destination before the commit, the
-/// converted output after it, and the source unless its removal had happened.
+/// recovery makes consistent: no destination before the commit (a conversion
+/// only ever publishes to a free name), the converted output after it, and the
+/// source unless its removal had happened.
 #[test]
 fn a_conversion_killed_at_any_boundary_recovers_consistently() {
     // (boundary, destination after recovery, source survives)
     let rows = [
-        ("during-save", "old destination", true),
-        ("before-source-removal", "converted", true),
-        ("after-source-removal", "converted", false),
+        ("during-save", None, true),
+        ("before-source-removal", Some("converted"), true),
+        ("after-source-removal", Some("converted"), false),
     ];
     for (boundary, destination_bytes, source_survives) in rows {
         let root = mod_root(&format!("conversion-crash-{boundary}"));
         let source = root.join("textures/source.tga");
         let destination = root.join("textures/source.dds");
         write(&source, "original");
-        write(&destination, "old destination");
         let report = root.with_extension("report");
         let output = root.with_extension("child-output");
         // Leftovers from an earlier run would satisfy the wait below; absence is fine.
@@ -1780,15 +1851,19 @@ fn a_conversion_killed_at_any_boundary_recovers_consistently() {
         assert!(failure.is_none(), "{boundary}: {failure:?}");
         drop(recovery);
 
-        assert_eq!(read(&destination), destination_bytes, "{boundary}");
+        assert_eq!(
+            std::fs::read_to_string(&destination).ok().as_deref(),
+            destination_bytes,
+            "{boundary}"
+        );
         assert_eq!(source.exists(), source_survives, "{boundary}");
         if source_survives {
             assert_eq!(read(&source), "original", "{boundary}");
         }
-        let expected: &[&str] = if source_survives {
-            &["source.dds", "source.tga"]
-        } else {
-            &["source.dds"]
+        let expected: &[&str] = match (destination_bytes.is_some(), source_survives) {
+            (true, true) => &["source.dds", "source.tga"],
+            (true, false) => &["source.dds"],
+            (false, _) => &["source.tga"],
         };
         assert_eq!(names(&root.join("textures")), expected, "{boundary}");
         assert!(

@@ -59,6 +59,11 @@ The format records explicit temporary ownership; it is not authentication agains
 can forge the manifest and edit the Mod Root.
 
 Producers flush a complete registration snapshot before exclusively creating each temporary file.
+One snapshot may register many files: Archive extraction registers every entry file of an Archive
+in a single snapshot and then creates them, because a snapshot per entry rewrites a manifest that
+grows with each one. A name registered by that snapshot whose file was never created is absent,
+which cleanup and recovery skip. A name that collides on exclusive creation was never acquired,
+so it is withdrawn again together with the names after it that were not yet created.
 A v2 or v3 manifest additionally authorizes the fixed `ownership.manifest.next` scratch file used to
 publish its next snapshot. The writer exclusively creates and flushes that scratch file, then
 replaces `ownership.manifest` on the same volume. A replacement refused with Access denied or a
@@ -70,7 +75,10 @@ not authorize this extra control file.
 
 Durable producers write and validate bytes at a move-only `PublicationReceipt` path. Texture
 (`.dds`), Mesh (`.nif`, `.btr`, `.bto`), and Animation (`.hkx`) publish from sibling staging with
-`Replace`, bound to the destination selected at staging. Archive extraction writes entry bytes in
+`Replace`, bound to the destination selected at staging. A Texture conversion is the exception:
+its DDS output is a different file from its source, so it never replaces. When a file already
+stands at that destination the attempt completes without staging or touching either file, and
+otherwise it publishes with `NoReplace`. Archive extraction writes entry bytes in
 the run child and publishes with `NoReplace` after case-correct game-path resolution and occupied
 leaf checks; it keeps destination parents pinned through publication. Archive Finalization writes
 each planned output Archive in the run child and publishes with `NoReplace`. A needed loading
@@ -102,6 +110,13 @@ The receipt returns one of three states, which also describe the crash windows:
   preserves the destination. Texture conversion-source removal follows this state; Archive
   Finalization creates any planned loading plugin and then performs its requested source cleanup.
 
+Archive extraction publishes each entry with its release deferred, then releases every published
+name in one snapshot once the merge ends, for the reason one snapshot registered them. Between an
+entry's publication and that snapshot, its name is registered and absent: the same condition as
+`PublishedStillOwned`, entered on purpose, and recovered the same way. If the joint release fails,
+the destinations stay Committed and the names stay owned, and the attempt is unsafe to continue
+exactly as after a single failed release.
+
 The publication result also carries the mutation fact, so producers read it instead of translating
 states. Its mutation is None for `NotPublished` and Committed for both published states. It is safe
 to continue except after a release failure: `PublishedStillOwned` is always Committed and unsafe.
@@ -113,7 +128,7 @@ this verdict but never looser.
 During manifest publication, the previous complete snapshot remains authoritative. Its v2 or v3
 ownership permits removal of an interrupted scratch snapshot. Archive extraction reports an
 attempt-level `PartialOrUnknown` mutation and unsafe continuation only for a merge in which at
-least one entry was committed, including an entry whose release then failed, so a half-merged
+least one entry was committed, including a merge whose joint release then failed, so a half-merged
 Effective Asset Tree is never optimized as if it were complete. A merge failure before the first
 commit, such as a not-published entry or a containment rejection of a linked parent, reports no
 mutation and is safe to continue; every later Archive attempt repeats its own containment checks.
