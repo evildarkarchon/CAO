@@ -416,3 +416,58 @@ fn every_attempt_releases_the_reader_before_returning() {
         assert!(result.cleanup_failures().is_empty(), "{row:?}");
     }
 }
+
+/// An Archive's entries are registered by one ownership snapshot and released
+/// by one, however many there are. Registering and releasing entry by entry
+/// rewrote a manifest that grew with every entry: quadratic I/O that looked
+/// like a hang on a large Archive.
+///
+/// The scenario makes any further snapshot impossible from the moment the
+/// first entry is extracted, by occupying the manifest's fixed scratch name.
+/// Every entry is still extracted and merged, so nothing between the first
+/// extraction and the end of the merge needed a snapshot; the one that then
+/// fails is the joint release.
+#[test]
+fn an_archive_is_staged_by_one_ownership_snapshot_and_released_by_one() {
+    const ENTRIES: usize = 40;
+    let root = canonical(&scratch_dir("extractor-batched-ownership"));
+    let archive = root.join("source.bsa");
+    let names: Vec<String> = (0..ENTRIES)
+        .map(|index| format!("textures/{index:02}.dds"))
+        .collect();
+    let entries: Vec<_> = names.iter().map(|name| entry(name, b"payload")).collect();
+    write_archive(&archive, &entries);
+    let scratch = root.join(".cao-staging").join("ownership.manifest.next");
+    let toolset = ScriptedToolset {
+        reader: Arc::new(FakeArchiveReader {
+            on_extract: Some(Box::new(move |_, _| {
+                std::fs::write(&scratch, "occupied scratch").unwrap();
+            })),
+            ..FakeArchiveReader::default()
+        }),
+        ..ScriptedToolset::default()
+    };
+
+    let (result, _) = run_extraction(&root, toolset, || {});
+
+    let attempt = only_attempt(&result);
+    assert_eq!(
+        attempt.outcome.failure_category(),
+        Some(ArchiveExtractionFailure::MergeFailed),
+        "{:?}",
+        attempt.outcome
+    );
+    // The entries are Committed Mutations whose release failed: a partial
+    // merge, as a failed release of a single entry always was.
+    assert_eq!(attempt.outcome.mutation(), MutationState::PartialOrUnknown);
+    assert!(!attempt.safe_to_continue());
+    for name in &names {
+        assert_eq!(
+            std::fs::read(root.join(name)).unwrap(),
+            b"payload",
+            "{name}"
+        );
+    }
+    // The source keeps its name: its cleanup follows a completed merge only.
+    assert!(archive.exists());
+}

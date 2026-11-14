@@ -22,6 +22,9 @@ pub(crate) const OK: i32 = 0;
 pub(crate) const EXCEPTION: i32 = -1;
 /// An index was out of range or the texture snapshot was stale.
 pub(crate) const BAD_ARGUMENT: i32 = -2;
+/// `cao_nif_save` only: the output opened, but a write, the flush or the
+/// close failed, so the file holds a truncated Mesh.
+pub(crate) const SAVE_WRITE_FAILED: i32 = 2;
 
 /// `cao_nif_opt_flags` bit for `OptResult::versionMismatch`.
 pub(crate) const OPT_VERSION_MISMATCH: u32 = 1;
@@ -94,4 +97,9 @@ unsafe extern "C" {
         bytes: *const u8,
         length: usize,
     ) -> i32;
+
+    /// Test support: saves into a sink that accepts `capacity` bytes and then
+    /// refuses every write, as a full volume does. Returns what `cao_nif_save`
+    /// would for the same stream state.
+    pub(crate) fn cao_nif_save_to_limited_stream(handle: *mut CaoNif, capacity: usize) -> i32;
 }

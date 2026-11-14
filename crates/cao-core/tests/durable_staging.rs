@@ -128,6 +128,202 @@ fn archive_cleanup_keeps_the_committed_entry() {
     assert_eq!(read(&destination), "complete script");
 }
 
+/// How many registrations the manifest's count line declares.
+fn registered(root: &Path) -> usize {
+    manifest(root).lines().nth(3).unwrap().parse().unwrap()
+}
+
+/// A batch of Archive files is registered by one snapshot that names them
+/// all, and each is then created empty beneath the run child, as a file
+/// staged on its own is.
+#[test]
+fn a_batch_of_archive_files_is_registered_together_and_created_empty() {
+    let root = mod_root("archive-batch");
+    let mut registry = registry();
+
+    let receipts = registry
+        .stage_archive_files_for_publication(&root, 25)
+        .unwrap();
+
+    let paths: Vec<PathBuf> = receipts.iter().map(staged).collect();
+    let distinct: std::collections::BTreeSet<&PathBuf> = paths.iter().collect();
+    assert_eq!(distinct.len(), 25);
+    for path in &paths {
+        assert_eq!(path.parent().unwrap().parent().unwrap(), staging(&root));
+        assert_eq!(std::fs::metadata(path).unwrap().len(), 0);
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert!(manifest(&root).contains(name), "{name}");
+    }
+    // The run child and the 25 files.
+    assert_eq!(registered(&root), 26);
+
+    drop(receipts);
+    assert!(registry.cleanup().is_empty());
+    assert!(paths.iter().all(|path| !path.exists()));
+}
+
+/// Staging no files claims nothing: an Archive with no entries leaves the
+/// Mod Root without a reserved directory.
+#[test]
+fn a_batch_of_no_archive_files_touches_nothing() {
+    let root = mod_root("archive-batch-empty");
+    let mut registry = registry();
+
+    let receipts = registry
+        .stage_archive_files_for_publication(&root, 0)
+        .unwrap();
+
+    assert!(receipts.is_empty());
+    assert!(!staging(&root).exists());
+}
+
+/// Deferred publications commit their destinations at once and keep their
+/// temporary names registered, absent, until one snapshot releases them all.
+#[test]
+fn deferred_publications_are_released_together() {
+    let root = mod_root("deferred-release");
+    let mut registry = registry();
+    let receipts = registry
+        .stage_archive_files_for_publication(&root, 3)
+        .unwrap();
+    let mut temporaries = Vec::new();
+
+    for (index, receipt) in receipts.into_iter().enumerate() {
+        let temporary = staged(&receipt);
+        std::fs::write(&temporary, format!("entry {index}")).unwrap();
+        receipt
+            .publish_deferring_release(
+                &root.join(format!("entry{index}.pex")),
+                PublicationPolicy::NoReplace,
+            )
+            .unwrap();
+        temporaries.push(temporary);
+    }
+
+    // Committed, and still owned: the run child and three absent names.
+    for index in 0..3 {
+        assert_eq!(
+            read(&root.join(format!("entry{index}.pex"))),
+            format!("entry {index}")
+        );
+    }
+    assert!(temporaries.iter().all(|temporary| !temporary.exists()));
+    assert_eq!(registered(&root), 4);
+
+    registry.release_published().unwrap();
+
+    assert_eq!(registered(&root), 1);
+    // Nothing is left to release, so a second call changes nothing.
+    registry.release_published().unwrap();
+    assert_eq!(registered(&root), 1);
+    assert!(registry.cleanup().is_empty());
+    assert_eq!(read(&root.join("entry0.pex")), "entry 0");
+}
+
+/// A deferred publication refuses an occupied destination before any
+/// mutation, like an immediate one: the competing file survives and the
+/// staged file stays owned for Safety Cleanup.
+#[test]
+fn a_deferred_publication_refuses_an_occupied_destination() {
+    let root = mod_root("deferred-occupied");
+    let destination = root.join("entry.pex");
+    let mut registry = registry();
+    let receipt = registry
+        .stage_archive_files_for_publication(&root, 1)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let temporary = staged(&receipt);
+    std::fs::write(&temporary, "new entry").unwrap();
+    std::fs::write(&destination, "competing entry").unwrap();
+
+    let error = receipt
+        .publish_deferring_release(&destination, PublicationPolicy::NoReplace)
+        .unwrap_err();
+
+    assert!(!error.to_string().is_empty());
+    assert_eq!(read(&destination), "competing entry");
+    assert!(temporary.exists());
+    // Nothing was deferred, so there is nothing to release.
+    registry.release_published().unwrap();
+    assert!(registry.cleanup().is_empty());
+    assert!(!temporary.exists());
+}
+
+/// When the joint release cannot publish its snapshot, the destinations stay
+/// committed and the names stay owned, so a later release, or a later
+/// recovery, still finds them.
+#[test]
+fn a_failed_joint_release_keeps_the_names_owned_and_the_output_committed() {
+    let root = mod_root("deferred-release-failure");
+    let mut registry = registry();
+    let receipts = registry
+        .stage_archive_files_for_publication(&root, 2)
+        .unwrap();
+    for (index, receipt) in receipts.into_iter().enumerate() {
+        std::fs::write(staged(&receipt), "entry").unwrap();
+        receipt
+            .publish_deferring_release(
+                &root.join(format!("entry{index}.pex")),
+                PublicationPolicy::NoReplace,
+            )
+            .unwrap();
+    }
+    // The manifest's fixed scratch name is occupied, so no snapshot can be
+    // written.
+    let scratch = staging(&root).join("ownership.manifest.next");
+    std::fs::write(&scratch, "occupied scratch").unwrap();
+
+    assert!(registry.release_published().is_err());
+
+    assert_eq!(registered(&root), 3);
+    assert_eq!(read(&root.join("entry0.pex")), "entry");
+    assert_eq!(read(&root.join("entry1.pex")), "entry");
+
+    // Once the obstruction is gone, the same names release.
+    std::fs::remove_file(&scratch).unwrap();
+    registry.release_published().unwrap();
+    assert_eq!(registered(&root), 1);
+}
+
+/// A run that ends between its deferred publications and their joint release
+/// leaves names registered whose files have moved. Recovery skips them,
+/// never follows one to its destination, and removes what was not published.
+#[test]
+fn deferred_publications_abandoned_before_release_recover() {
+    let root = mod_root("deferred-abandoned");
+    let mut registry = registry();
+    let mut receipts = registry
+        .stage_archive_files_for_publication(&root, 3)
+        .unwrap();
+    let unpublished = receipts.pop().unwrap();
+    let unpublished_path = staged(&unpublished);
+    std::fs::write(&unpublished_path, "partial entry").unwrap();
+    for (index, receipt) in receipts.into_iter().enumerate() {
+        std::fs::write(staged(&receipt), format!("entry {index}")).unwrap();
+        receipt
+            .publish_deferring_release(
+                &root.join(format!("entry{index}.pex")),
+                PublicationPolicy::NoReplace,
+            )
+            .unwrap();
+    }
+    assert_eq!(registered(&root), 4);
+    // The run ends here: no release, no Safety Cleanup. Dropping the registry
+    // lets go of its lock, as a dead process would.
+    drop(unpublished);
+    drop(registry);
+
+    assert_recovered(&root);
+
+    assert_eq!(read(&root.join("entry0.pex")), "entry 0");
+    assert_eq!(read(&root.join("entry1.pex")), "entry 1");
+    assert!(!unpublished_path.exists());
+    for entry in std::fs::read_dir(staging(&root)).unwrap() {
+        assert!(!entry.unwrap().file_type().unwrap().is_dir());
+    }
+}
+
 /// Cleanup removes registered temporaries and the run child, but never a
 /// published destination, and a second pass finds nothing.
 #[test]

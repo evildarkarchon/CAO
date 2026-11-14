@@ -10,6 +10,11 @@
 //! staged sibling, and publishes it with `Replace`. The publication result's
 //! mutation fact becomes the attempt's. Dry Run never stages anything.
 //!
+//! A Texture conversion is the one producer whose output is a different file
+//! from its input, and it never replaces: when a file already stands at its
+//! DDS destination the attempt completes without touching either file (see
+//! `conversion_withheld`), and otherwise it publishes with `NoReplace`.
+//!
 //! [`quarantine_failed_load`] is the adapter step C++ `MainOptimizer` ran after
 //! each attempt: in Apply, a Texture or Mesh that failed to load becomes
 //! `.caobad`.
@@ -414,6 +419,39 @@ fn publication_failure(
     )
 }
 
+/// The completed, mutation-free result of a Texture conversion whose DDS
+/// destination is already occupied, logged so the user learns why the source
+/// is still there.
+///
+/// The DDS already in place is the file the game loads; the convertible source
+/// beside it is whatever its author left behind. Converting would replace the
+/// first with a re-encode of the second and then delete the second, and
+/// nothing could undo that. So neither file is touched.
+///
+/// This is a success, not an Operation Failure: nothing went wrong, and a
+/// backend that withholds Mesh reference rewrites after a failed conversion
+/// must not withhold this one, because the DDS the reference would name
+/// exists.
+fn conversion_withheld(source: &Path, output: &Path) -> AssetExecutionResult {
+    log::warn!(
+        "{} was not converted: {} already exists and was kept.",
+        source.display(),
+        output.display()
+    );
+    AssetExecutionResult::success(CompletedMutation::None)
+}
+
+/// Whether a file stands at `path`, read without following a link.
+///
+/// Dry Run's stand-in for [`PublicationTarget::is_occupied`]: it captures
+/// nothing, yet must report the same decision Apply would make. A directory
+/// does not count, as in the capture.
+///
+/// [`PublicationTarget::is_occupied`]: crate::run::PublicationTarget::is_occupied
+fn file_stands_at(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.is_dir())
+}
+
 /// The absolute form of an execution path; discovery already yields absolute
 /// paths, so this only guards a relative one from a test or adapter.
 fn absolute(path: &Path) -> PathBuf {
@@ -593,7 +631,10 @@ impl<'b> AssetExecutor<'b> {
         let apply = asset.execution_mode() == ExecutionMode::Apply;
         let converting = variant == TextureVariant::Convertible
             && asset.operations().contains(AssetOperation::Conversion);
-        let output = absolute(&if variant == TextureVariant::Convertible {
+        // A Convertible Texture's output is a different file from its source,
+        // so publishing it could replace a file this attempt never read.
+        let separate_output = variant == TextureVariant::Convertible;
+        let output = absolute(&if separate_output {
             path.with_extension("dds")
         } else {
             path.to_path_buf()
@@ -621,6 +662,11 @@ impl<'b> AssetExecutor<'b> {
             }
             let root = publication_root(mod_root, &output);
             match artifacts.capture_publication_target(&root, &output) {
+                // Before the backend loads anything: the source pin, if one
+                // was taken, is dropped on the way out.
+                Ok(captured) if separate_output && captured.is_occupied() => {
+                    return conversion_withheld(path, &output);
+                }
                 Ok(captured) => target = Some(captured),
                 Err(error) => {
                     return staging_failed(
@@ -632,6 +678,9 @@ impl<'b> AssetExecutor<'b> {
                     );
                 }
             }
+        } else if separate_output && file_stands_at(&output) {
+            // Dry Run reports what Apply would do, and Apply would withhold.
+            return conversion_withheld(path, &output);
         }
 
         if !self.backend.load_texture(path, variant) {
@@ -693,9 +742,17 @@ impl<'b> AssetExecutor<'b> {
             .with_operation("save_texture");
         };
 
+        // A separate output was free when it was captured, and `NoReplace` has
+        // the rename itself refuse a file that appeared there since; an
+        // in-place output replaces the original it was made from.
+        let policy = if separate_output {
+            PublicationPolicy::NoReplace
+        } else {
+            PublicationPolicy::Replace
+        };
         // Publication commits the destination before releasing ownership, and
         // its result carries that fact even when the release fails.
-        let publication = receipt.publish(&output, PublicationPolicy::Replace);
+        let publication = receipt.publish(&output, policy);
         let mutation = publication.mutation();
         if let Some(failure) = publication_failure(
             &publication,

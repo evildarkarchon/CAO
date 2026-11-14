@@ -39,10 +39,12 @@ use crate::run::{
 /// The native rule for an occupied destination leaf.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublicationPolicy {
-    /// Replace an existing destination file: Texture, Mesh and Animation output.
+    /// Replace an existing destination file: Texture, Mesh and Animation
+    /// output written back over the Asset it was made from.
     Replace,
     /// Fail when the destination is occupied, even after preflight: Archive
-    /// entries, output Archives and Loading Plugins.
+    /// entries, output Archives, Loading Plugins, and a Texture conversion,
+    /// whose DDS output is a different file from its source.
     NoReplace,
 }
 
@@ -102,7 +104,20 @@ struct Inner {
     artifacts: Vec<Artifact>,
     /// Safety Cleanup has started: no further registration or publication.
     cleaned: bool,
+    /// Temporary names whose files a deferred publication already moved to
+    /// their destinations, still registered until
+    /// [`TemporaryArtifactRegistry::release_published`] releases them together.
+    unreleased: Vec<PathBuf>,
     staging: StagingScope,
+}
+
+/// When a publication gives up its temporary name.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Release {
+    /// In its own manifest snapshot, straight after the destination commits.
+    Now,
+    /// Later, with every other deferred name, in one snapshot.
+    Deferred,
 }
 
 /// An opaque handle to one non-durable registration.
@@ -128,6 +143,18 @@ pub struct PublicationTarget {
     destination: PathBuf,
     parent: FileIdentity,
     leaf: Option<DestinationSnapshot>,
+}
+
+impl PublicationTarget {
+    /// Whether a file already stood at the destination when it was captured.
+    ///
+    /// A producer whose output is a different file from its input, such as a
+    /// Texture conversion, asks this before loading anything: publishing would
+    /// replace a file the producer never read. A directory at the destination
+    /// does not count; the capture leaves it for the native rename to refuse.
+    pub fn is_occupied(&self) -> bool {
+        self.leaf.is_some()
+    }
 }
 
 /// One-use authority to publish a durable staged file while its registry lives.
@@ -187,7 +214,14 @@ impl PublicationReceipt {
         };
         let mut inner = lock(&owner);
         let mut state = PublicationState::NotPublished;
-        match publish(&mut inner, &self, destination, policy, &mut state) {
+        match publish(
+            &mut inner,
+            &self,
+            destination,
+            policy,
+            Release::Now,
+            &mut state,
+        ) {
             Ok(()) => PublicationResult {
                 state: PublicationState::PublishedAndReleased,
                 error_detail: String::new(),
@@ -198,15 +232,55 @@ impl PublicationReceipt {
             },
         }
     }
+
+    /// Publishes like [`Self::publish`], but leaves the temporary name
+    /// registered for [`TemporaryArtifactRegistry::release_published`] to
+    /// release together with the others, consuming the receipt whatever
+    /// happens.
+    ///
+    /// For a producer that publishes many staged files in a row, such as an
+    /// Archive's entries: one release snapshot per file rewrites the whole
+    /// manifest each time. Between this call and the release, the name is
+    /// registered and absent, exactly as after a crash between a publication
+    /// and its release, and recovery skips it the same way.
+    ///
+    /// `Ok` means the destination is a Committed Mutation.
+    ///
+    /// # Errors
+    /// Nothing was published: every failure here precedes the destination
+    /// mutation, because no release follows it.
+    pub fn publish_deferring_release(
+        self,
+        destination: &Path,
+        policy: PublicationPolicy,
+    ) -> Result<(), StagingError> {
+        let Some(owner) = self.owner.upgrade() else {
+            return Err(StagingError::Invalid(
+                "The Temporary Ownership scope ended.".to_owned(),
+            ));
+        };
+        let mut inner = lock(&owner);
+        let mut state = PublicationState::NotPublished;
+        publish(
+            &mut inner,
+            &self,
+            destination,
+            policy,
+            Release::Deferred,
+            &mut state,
+        )
+    }
 }
 
-/// Validates, flushes, publishes natively, then releases the temporary name.
+/// Validates, flushes, publishes natively, then releases the temporary name
+/// or, for [`Release::Deferred`], records it for a later joint release.
 /// `state` records how far it got before any error.
 fn publish(
     inner: &mut Inner,
     receipt: &PublicationReceipt,
     destination: &Path,
     policy: PublicationPolicy,
+    release: Release,
     state: &mut PublicationState,
 ) -> Result<(), StagingError> {
     let owned = !inner.cleaned
@@ -249,7 +323,12 @@ fn publish(
     }
     // The destination is committed. A failed release must keep that fact and
     // leave the old temporary name under durable ownership.
-    inner.staging.release_file(&receipt.temporary)?;
+    match release {
+        Release::Now => inner.staging.release_file(&receipt.temporary)?,
+        // Nothing here can fail, so a deferred publication that returns an
+        // error has not reached the rename above.
+        Release::Deferred => inner.unreleased.push(receipt.temporary.clone()),
+    }
     inner.artifacts[receipt.index].committed = true;
     Ok(())
 }
@@ -274,6 +353,7 @@ impl TemporaryArtifactRegistry {
                 id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
                 artifacts: Vec::new(),
                 cleaned: false,
+                unreleased: Vec::new(),
                 staging: StagingScope::new(run_id),
             })),
         }
@@ -435,6 +515,77 @@ impl TemporaryArtifactRegistry {
             staged_parent: None,
             staged_leaf: None,
         })
+    }
+
+    /// Stages `count` durable Archive files with one ownership snapshot,
+    /// returning one receipt each, in creation order. Their destinations are
+    /// chosen at publication, as for
+    /// [`Self::stage_archive_file_for_publication`].
+    ///
+    /// Use it for an Archive's entries: staging them one call at a time
+    /// rewrites the growing ownership manifest once per entry. A `count` of
+    /// zero touches nothing.
+    ///
+    /// # Errors
+    /// As for [`Self::stage_archive_file`]; the manifest's format limit is
+    /// checked before any file is created. Files created before a failure
+    /// stay owned, for Safety Cleanup.
+    pub fn stage_archive_files_for_publication(
+        &mut self,
+        mod_root: &Path,
+        count: usize,
+    ) -> Result<Vec<PublicationReceipt>, StagingError> {
+        let mut inner = self.open()?;
+        if !mod_root.is_absolute() {
+            return Err(StagingError::Invalid(
+                "A Mod Root must be absolute.".to_owned(),
+            ));
+        }
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let root = canonical(mod_root).map_err(StagingError::lookup("Resolve", mod_root))?;
+        let paths = inner.staging.stage_archive_files(&root, count)?;
+        Ok(paths
+            .into_iter()
+            .map(|path| {
+                let index = push_durable(&mut inner, path.clone()).registration.index;
+                PublicationReceipt {
+                    owner: Arc::downgrade(&self.inner),
+                    index,
+                    root: root.clone(),
+                    temporary: path,
+                    intended: None,
+                    staged_parent: None,
+                    staged_leaf: None,
+                }
+            })
+            .collect())
+    }
+
+    /// Releases, in one ownership snapshot per Mod Root, every temporary name
+    /// whose file [`PublicationReceipt::publish_deferring_release`] has moved
+    /// to its destination. With nothing deferred it does nothing.
+    ///
+    /// # Errors
+    /// The release failed and the names stay owned, absent, for a later call
+    /// or a later recovery. Like a single publication's failed release, this
+    /// belongs to the run's Temporary Ownership scope: the destinations are
+    /// already Committed Mutations, and the next staging operation would go
+    /// through the same snapshot path that just failed, so the caller must
+    /// treat it as unsafe to continue. Also an error once Safety Cleanup has
+    /// closed registration.
+    pub fn release_published(&mut self) -> Result<(), StagingError> {
+        let mut inner = self.open()?;
+        if inner.unreleased.is_empty() {
+            return Ok(());
+        }
+        let pending = std::mem::take(&mut inner.unreleased);
+        let released = inner.staging.release_files(&pending);
+        if released.is_err() {
+            inner.unreleased = pending;
+        }
+        released
     }
 
     /// Records an absent absolute path before the caller creates it. Nothing

@@ -18,13 +18,17 @@
 
 #include "NifFile.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <new>
+#include <ostream>
 #include <sstream>
+#include <streambuf>
 #include <string>
 #include <vector>
 
@@ -45,6 +49,8 @@ struct CaoNif {
 namespace {
 constexpr int32_t kException = -1;
 constexpr int32_t kBadArgument = -2;
+// cao_nif_save's own code: the output opened, but not every byte reached it.
+constexpr int32_t kSaveWriteFailed = 2;
 
 void rememberError(CaoNif& handle, const char* message) noexcept {
     try {
@@ -82,6 +88,61 @@ void invalidateTextures(CaoNif& handle) noexcept {
 std::filesystem::path toPath(const uint16_t* units, std::size_t length) {
     return std::filesystem::path(std::wstring(reinterpret_cast<const wchar_t*>(units), length));
 }
+
+// NifFile::Save into `out`, then the check nifly leaves out: nifly writes
+// through the stream without ever looking at its state, so after a failed
+// write (a full disk, a device error) every later write is a no-op and Save
+// still returns 0. A caller would then publish the truncated Mesh. Flushing
+// first matters: a buffered stream reports the failure only once it flushes.
+int32_t saveToStream(CaoNif& handle, std::ostream& out) {
+    // 1 when `out` was already bad, which for a file means it never opened.
+    const int32_t code = static_cast<int32_t>(handle.nif.Save(out));
+    if (code != 0) return code;
+    out.flush();
+    return out.fail() ? kSaveWriteFailed : int32_t{0};
+}
+
+// Test support for cao_nif_save_to_limited_stream: a sink that takes `capacity`
+// bytes and then refuses every write, as a volume that fills up does. It
+// answers nifly's tellp/seekp (Save goes back to patch the block-size table),
+// so a seek never fails the stream on its own and only the capacity can.
+class LimitedSink final : public std::streambuf {
+public:
+    explicit LimitedSink(std::size_t capacity) : remaining_(capacity) {}
+
+protected:
+    std::streamsize xsputn(const char*, std::streamsize count) override {
+        const std::streamsize accepted =
+            remaining_ < static_cast<std::size_t>(count) ? static_cast<std::streamsize>(remaining_) : count;
+        remaining_ -= static_cast<std::size_t>(accepted);
+        position_ += accepted;
+        end_ = std::max(end_, position_);
+        return accepted;
+    }
+
+    int_type overflow(int_type character) override {
+        if (traits_type::eq_int_type(character, traits_type::eof())) return traits_type::not_eof(character);
+        const char byte = traits_type::to_char_type(character);
+        return xsputn(&byte, 1) == 1 ? character : traits_type::eof();
+    }
+
+    pos_type seekoff(off_type offset, std::ios_base::seekdir direction, std::ios_base::openmode) override {
+        const off_type base =
+            direction == std::ios_base::beg ? 0 : direction == std::ios_base::cur ? position_ : end_;
+        position_ = base + offset;
+        return pos_type(position_);
+    }
+
+    pos_type seekpos(pos_type position, std::ios_base::openmode) override {
+        position_ = off_type(position);
+        return position;
+    }
+
+private:
+    std::size_t remaining_;
+    off_type position_ = 0;
+    off_type end_ = 0;
+};
 
 const std::vector<std::string>* optimizationNames(const OptResult& result, int32_t field) noexcept {
     switch (field) {
@@ -122,13 +183,23 @@ int32_t cao_nif_load(CaoNif* handle, const uint16_t* path, std::size_t length, b
     });
 }
 
-// NifFile::Save: 0, or 1 if the file cannot be opened. Write errors after
-// opening go unnoticed, as in nifly.
+// NifFile::Save: 0, 1 if the file cannot be opened, or 2 if it opened but a
+// write, the final flush or the close failed, in which case the file holds a
+// truncated Mesh the caller must not use.
 int32_t cao_nif_save(CaoNif* handle, const uint16_t* path, std::size_t length) noexcept {
     return guard(*handle, [&] {
         // Save's own Optimize() deletes unreferenced blocks.
         invalidateTextures(*handle);
-        return static_cast<int32_t>(handle->nif.Save(toPath(path, length)));
+        // The open nifly's path overload makes, done here so the stream is
+        // ours to check: that overload discards it unexamined. The stream
+        // overload it forwards to is what runs either way, so the bytes
+        // written are the same.
+        std::ofstream file(toPath(path, length), std::ios::out | std::ios::binary);
+        const int32_t code = saveToStream(*handle, file);
+        if (code != 0) return code;
+        // close() can be the first call to see an error the OS deferred.
+        file.close();
+        return file.fail() ? kSaveWriteFailed : int32_t{0};
     });
 }
 
@@ -238,6 +309,19 @@ int32_t cao_nif_load_from_throwing_stream(CaoNif* handle, const uint8_t* bytes, 
                                   std::ios::in | std::ios::binary);
         stream.exceptions(std::ios::eofbit | std::ios::failbit | std::ios::badbit);
         return static_cast<int32_t>(handle->nif.Load(stream, NifLoadOptions()));
+    });
+}
+
+// Test support only; the mesh backend never calls it. Saves through the same
+// saveToStream as cao_nif_save, into a sink that accepts `capacity` bytes and
+// then refuses the rest, so a test can reach the write-failure code without
+// filling a real volume.
+int32_t cao_nif_save_to_limited_stream(CaoNif* handle, std::size_t capacity) noexcept {
+    return guard(*handle, [&] {
+        invalidateTextures(*handle);
+        LimitedSink sink(capacity);
+        std::ostream out(&sink);
+        return saveToStream(*handle, out);
     });
 }
 
