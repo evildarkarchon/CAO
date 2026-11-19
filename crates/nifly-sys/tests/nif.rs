@@ -33,8 +33,10 @@ fn a_new_nif_is_not_valid_until_loaded() {
     assert!(nif.is_valid());
 }
 
+/// A missing file is a read failure, never nifly's load code 1, which would
+/// say nothing about whether the file is corrupt.
 #[test]
-fn loading_a_missing_file_fails_with_nifly_code_1() {
+fn loading_a_missing_file_is_a_read_error() {
     let dir = scratch_dir("load_missing");
     let mut nif = Nif::new();
 
@@ -42,8 +44,48 @@ fn loading_a_missing_file_fails_with_nifly_code_1() {
         .load(&dir.join("absent.nif"), LoadOptions::default())
         .unwrap_err();
 
-    assert!(matches!(error, NifError::Load { code: 1 }), "{error:?}");
+    assert!(matches!(error, NifError::Read(_)), "{error:?}");
     assert!(!nif.is_valid());
+}
+
+/// A Mesh another process holds open without sharing it cannot be read. That
+/// is a read failure: the Mesh itself may be fine.
+#[test]
+fn loading_a_file_held_open_without_sharing_is_a_read_error() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let path = scratch_dir("load_locked").join("locked.nif");
+    std::fs::copy(fixture(STATIC_SE), &path).unwrap();
+    let _lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&path)
+        .unwrap();
+    let mut nif = Nif::new();
+
+    let error = nif.load(&path, LoadOptions::default()).unwrap_err();
+
+    assert!(matches!(error, NifError::Read(_)), "{error:?}");
+    assert!(!nif.is_valid());
+}
+
+/// An empty handle has nothing for nifly to read or write, and nifly would
+/// index through a null pointer if asked, so every such call is refused.
+#[test]
+fn an_empty_handle_refuses_every_call_on_the_mesh() {
+    let output = scratch_dir("empty_handle").join("out.nif");
+    let mut nif = Nif::new();
+
+    assert_eq!(nif.is_sse_compatible(), Err(NifError::NotLoaded));
+    assert_eq!(nif.texture_paths().err(), Some(NifError::NotLoaded));
+    let options = OptimizeOptions {
+        target: NifVersion::SSE,
+        head_parts: false,
+        remove_parallax: false,
+    };
+    assert_eq!(nif.optimize_for(&options).err(), Some(NifError::NotLoaded));
+    assert_eq!(nif.save(&output), Err(NifError::NotLoaded));
+    assert!(!output.exists(), "a refused save writes nothing");
 }
 
 #[test]

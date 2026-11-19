@@ -22,6 +22,8 @@ pub(crate) const OK: i32 = 0;
 pub(crate) const EXCEPTION: i32 = -1;
 /// An index was out of range or the texture snapshot was stale.
 pub(crate) const BAD_ARGUMENT: i32 = -2;
+/// The handle holds no Mesh: it is new, or a load or an exception emptied it.
+pub(crate) const NOT_LOADED: i32 = -3;
 /// `cao_nif_save` only: the output opened, but a write, the flush or the
 /// close failed, so the file holds a truncated Mesh.
 pub(crate) const SAVE_WRITE_FAILED: i32 = 2;
@@ -43,9 +45,10 @@ unsafe extern "C" {
     pub(crate) fn cao_nif_new() -> *mut CaoNif;
     pub(crate) fn cao_nif_free(handle: *mut CaoNif);
 
-    pub(crate) fn cao_nif_load(
+    pub(crate) fn cao_nif_clear(handle: *mut CaoNif);
+    pub(crate) fn cao_nif_load_from_memory(
         handle: *mut CaoNif,
-        path: *const u16,
+        bytes: *const u8,
         length: usize,
         is_terrain: bool,
     ) -> i32;
@@ -97,6 +100,10 @@ unsafe extern "C" {
         bytes: *const u8,
         length: usize,
     ) -> i32;
+
+    /// Test support: writes the length of the NIF header that starts the
+    /// `length` bytes to `out`. 0 on success, 1 when no whole header parses.
+    pub(crate) fn cao_nif_header_length(bytes: *const u8, length: usize, out: *mut usize) -> i32;
 
     /// Test support: saves into a sink that accepts `capacity` bytes and then
     /// refuses every write, as a full volume does. Returns what `cao_nif_save`

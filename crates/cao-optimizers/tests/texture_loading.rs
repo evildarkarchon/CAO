@@ -53,11 +53,35 @@ fn a_file_that_is_not_a_texture_fails_to_load_and_is_left_alone() {
     let error = Texture::load(&root.join("broken.dds"), TextureVariant::Native)
         .err()
         .unwrap();
-    assert!(matches!(error, TextureError::Decode(_)), "{error}");
+    assert!(matches!(error, TextureError::Decode { .. }), "{error}");
+    assert!(
+        !error.is_unreadable(),
+        "corrupt content is not a read failure"
+    );
     assert_eq!(
         std::fs::read(root.join("broken.dds")).unwrap(),
         b"not a texture"
     );
+}
+
+/// A Texture another process holds open without sharing it cannot be read,
+/// which says nothing about its content.
+#[test]
+fn a_texture_held_open_without_sharing_is_unreadable() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let path = scratch_dir("load-locked").join("locked.dds");
+    write_dds(&path, DXGI_FORMAT_R8G8B8A8_UNORM, 4);
+    let _lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&path)
+        .unwrap();
+
+    let error = Texture::load(&path, TextureVariant::Native).err().unwrap();
+
+    assert!(matches!(error, TextureError::Read(_)), "{error}");
+    assert!(error.is_unreadable());
 }
 
 #[test]

@@ -161,8 +161,11 @@ fn is_power_of_two(info: &TexMetadata) -> bool {
 pub enum TextureError {
     #[error("the file could not be read: {0}")]
     Read(#[from] std::io::Error),
-    #[error("DirectXTex could not decode the file: {0}")]
-    Decode(#[from] HResultError),
+    /// DirectXTex refused the bytes. `hresult` is its code and `message` the
+    /// code's rendering; the error itself is not kept, because every accessor
+    /// of `HResultError` consumes it and it is neither `Clone` nor `Copy`.
+    #[error("DirectXTex could not decode the file: {message}")]
+    Decode { hresult: u32, message: String },
     /// A typeless DDS format with no UNORM equivalent, which C++ refused to load.
     #[error("the typeless format {0:?} has no UNORM equivalent")]
     Typeless(DXGI_FORMAT),
@@ -187,6 +190,33 @@ pub enum TextureError {
     /// partial mip chain is cut back; C++ asserted this never happens.
     #[error("the Texture has no top-level image for item {0}")]
     MissingImage(usize),
+}
+
+impl From<HResultError> for TextureError {
+    /// A decode failure, keeping the code so it can be classified later.
+    fn from(error: HResultError) -> Self {
+        let message = error.to_string();
+        Self::Decode {
+            hresult: error.into_underlying(),
+            message,
+        }
+    }
+}
+
+impl TextureError {
+    /// `E_OUTOFMEMORY`, which DirectXTex returns when an allocation fails.
+    const E_OUTOFMEMORY: u32 = 0x8007_000E;
+
+    /// Whether loading failed for a reason outside the file's content: it
+    /// could not be read, or decoding it ran out of memory, as a very large
+    /// Texture can on a busy machine. Such a file is not known to be corrupt.
+    pub fn is_unreadable(&self) -> bool {
+        match self {
+            Self::Read(_) => true,
+            Self::Decode { hresult, .. } => *hresult == Self::E_OUTOFMEMORY,
+            _ => false,
+        }
+    }
 }
 
 /// Wraps a DirectXTex error with the step that raised it.

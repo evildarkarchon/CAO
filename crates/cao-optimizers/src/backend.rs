@@ -21,7 +21,9 @@
 
 use std::path::{Path, PathBuf};
 
-use cao_core::execution::{AssetExecutionBackend, AssetExecutionResult, OperationResult};
+use cao_core::execution::{
+    AssetExecutionBackend, AssetExecutionResult, LoadFailure, OperationResult,
+};
 use cao_core::routing::{
     AssetOperation, AssetOperations, ExecutionMode, MeshVariant, RoutedAsset, TextureVariant,
 };
@@ -34,7 +36,7 @@ use crate::mesh_references::{
     FailedTextureConversions, has_referenced_tga_texture, replace_referenced_tga_texture_names,
 };
 use crate::meshes::MeshOptimizer;
-use crate::textures::{Texture, TextureProfile, TextureRequest};
+use crate::textures::{Texture, TextureError, TextureProfile, TextureRequest};
 
 /// How the user asked Textures to be resized, from the Textures tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -67,7 +69,6 @@ pub struct OptimizerBackend {
     texture_profile: TextureProfile,
     gpu: Option<GpuDevice>,
     loaded: Option<Texture>,
-    texture_failure_detail: String,
     meshes: MeshOptimizer,
     loaded_mesh: Option<Nif>,
     /// The loaded Mesh's execution path. Mesh Reference Maintenance is told
@@ -114,7 +115,6 @@ impl OptimizerBackend {
             texture_profile,
             gpu,
             loaded: None,
-            texture_failure_detail: String::new(),
             meshes,
             loaded_mesh: None,
             loaded_mesh_path: PathBuf::new(),
@@ -148,46 +148,53 @@ impl OptimizerBackend {
             target,
         }
     }
+
+    /// The failed result of a nifly call on the loaded Mesh, which is dropped.
+    ///
+    /// After a C++ exception nifly-sys has emptied the handle, so nothing in
+    /// it is worth keeping, and every other failure ends the attempt before
+    /// anything else reads the Mesh. Dropping it makes sure a half-changed
+    /// Mesh is never saved; the next `load_mesh` starts afresh.
+    fn mesh_call_failed(&mut self, error: &NifError) -> OperationResult {
+        self.loaded_mesh = None;
+        self.loaded_mesh_path = PathBuf::new();
+        OperationResult::failed(error.to_string())
+    }
 }
 
-/// Unwraps a nifly result whose only possible error is a C++ exception.
+/// The [`LoadFailure`] of a Texture that did not load: unreadable when the
+/// file could not be read or decoding ran out of memory, undecodable when
+/// DirectXTex refused its content.
+fn texture_load_failure(error: &TextureError) -> LoadFailure {
+    if error.is_unreadable() {
+        LoadFailure::Unreadable(error.to_string())
+    } else {
+        LoadFailure::Undecodable(error.to_string())
+    }
+}
+
+/// The [`LoadFailure`] of a Mesh that did not load.
 ///
-/// C++ CAO let such an exception reach its Asset Executor, which reported a
-/// backend exception with unknown mutation that stops the run. Panicking here
-/// reaches the same outcome, since the Run Executor contains the panic; the
-/// loaded Mesh's content is unspecified afterwards, and the next load
-/// replaces it.
-fn unless_exception<T>(
-    result: Result<T, NifError>,
-    call: &str,
-    path: &Path,
-) -> Result<T, NifError> {
-    match result {
-        Err(NifError::Exception(message)) => {
-            panic!(
-                "nifly raised a C++ exception in {call} for {}: {message}",
-                path.display()
-            )
-        }
-        other => other,
+/// Only a file that could not be read is unreadable. A nifly load code and a
+/// C++ exception are both about the bytes that were read: nifly does not
+/// throw on its own, and the exceptions that reach here come from parsing,
+/// such as `std::bad_alloc` from a count read out of a corrupt file. So both
+/// are undecodable, and Apply quarantines the Mesh rather than meeting it
+/// again on every run.
+fn mesh_load_failure(error: &NifError) -> LoadFailure {
+    match error {
+        NifError::Read(_) => LoadFailure::Unreadable(error.to_string()),
+        _ => LoadFailure::Undecodable(error.to_string()),
     }
 }
 
 impl AssetExecutionBackend for OptimizerBackend {
-    fn load_texture(&mut self, path: &Path, variant: TextureVariant) -> bool {
+    fn load_texture(&mut self, path: &Path, variant: TextureVariant) -> Result<(), LoadFailure> {
         self.loaded = None;
-        self.texture_failure_detail.clear();
         log::debug!("Opening {} as a {variant:?} Texture", path.display());
-        match Texture::load(path, variant) {
-            Ok(texture) => {
-                self.loaded = Some(texture);
-                true
-            }
-            Err(error) => {
-                self.texture_failure_detail = error.to_string();
-                false
-            }
-        }
+        let texture = Texture::load(path, variant).map_err(|error| texture_load_failure(&error))?;
+        self.loaded = Some(texture);
+        Ok(())
     }
 
     fn optimize_texture(
@@ -245,55 +252,42 @@ impl AssetExecutionBackend for OptimizerBackend {
         }
     }
 
-    fn save_texture(&mut self, path: &Path) -> bool {
-        self.texture_failure_detail.clear();
+    fn save_texture(&mut self, path: &Path) -> Result<(), String> {
         let Some(texture) = self.loaded.as_ref() else {
-            self.texture_failure_detail = "No loaded image is available for DDS saving.".to_owned();
-            return false;
+            return Err("No loaded image is available for DDS saving.".to_owned());
         };
         // The staged path already exists, empty; it is overwritten in place.
-        let saved = texture
-            .save_dds()
-            .map_err(|error| error.to_string())
-            .and_then(|bytes| std::fs::write(path, bytes).map_err(|error| error.to_string()));
-        match saved {
-            Ok(()) => true,
-            Err(detail) => {
-                self.texture_failure_detail = detail;
-                false
-            }
-        }
+        let bytes = texture.save_dds().map_err(|error| error.to_string())?;
+        std::fs::write(path, bytes).map_err(|error| error.to_string())
     }
 
-    fn remove_texture(&mut self, path: &Path, remove_verified: &mut dyn FnMut() -> bool) -> bool {
-        self.texture_failure_detail.clear();
+    fn remove_texture(
+        &mut self,
+        path: &Path,
+        remove_verified: &mut dyn FnMut() -> bool,
+    ) -> Result<(), String> {
         if remove_verified() {
-            return true;
+            return Ok(());
         }
-        self.texture_failure_detail = format!(
+        Err(format!(
             "The verified Texture source could not be removed: {}",
             path.display()
-        );
-        false
+        ))
     }
 
-    fn texture_failure_detail(&self) -> String {
-        self.texture_failure_detail.clone()
-    }
-
-    /// Loads the Mesh with nifly, replacing any loaded one. A load nifly
-    /// refuses is a load failure, which Apply quarantines.
-    fn load_mesh(&mut self, path: &Path, variant: MeshVariant) -> bool {
+    /// Loads the Mesh with nifly, replacing any loaded one. A Mesh that could
+    /// not be read is unreadable; one nifly refuses, or throws on, is
+    /// undecodable, which Apply quarantines (see [`mesh_load_failure`]).
+    fn load_mesh(&mut self, path: &Path, variant: MeshVariant) -> Result<(), LoadFailure> {
         self.loaded_mesh = None;
         self.loaded_mesh_path = PathBuf::new();
-        match unless_exception(self.meshes.load(path, variant), "load", path) {
-            Ok(nif) => {
-                self.loaded_mesh = Some(nif);
-                self.loaded_mesh_path = path.to_path_buf();
-                true
-            }
-            Err(_) => false,
-        }
+        let nif = self
+            .meshes
+            .load(path, variant)
+            .map_err(|error| mesh_load_failure(&error))?;
+        self.loaded_mesh = Some(nif);
+        self.loaded_mesh_path = path.to_path_buf();
+        Ok(())
     }
 
     /// The run's mesh level against the loaded Mesh; see
@@ -307,11 +301,10 @@ impl AssetExecutionBackend for OptimizerBackend {
         let Some(nif) = self.loaded_mesh.as_mut() else {
             return OperationResult::failed("No Mesh is loaded.");
         };
-        let optimized = self.meshes.optimize(nif, path, mod_root, mode);
-        match unless_exception(optimized, "optimize", path) {
+        match self.meshes.optimize(nif, path, mod_root, mode) {
             Ok(true) => OperationResult::changed(),
             Ok(false) => OperationResult::unchanged(),
-            Err(error) => OperationResult::failed(error.to_string()),
+            Err(error) => self.mesh_call_failed(&error),
         }
     }
 
@@ -332,15 +325,10 @@ impl AssetExecutionBackend for OptimizerBackend {
             withheld |= failed;
             !failed
         };
-        // The executor passes no path, so a nifly exception names the Mesh by
-        // the path `load_mesh` captured.
-        let mesh = self.loaded_mesh_path.as_path();
-
         if mode == ExecutionMode::DryRun {
-            let found = has_referenced_tga_texture(nif, is_eligible);
-            let would_change = match unless_exception(found, "texture_paths", mesh) {
+            let would_change = match has_referenced_tga_texture(nif, is_eligible) {
                 Ok(would_change) => would_change,
-                Err(error) => return OperationResult::failed(error.to_string()),
+                Err(error) => return self.mesh_call_failed(&error),
             };
             // Detection stops at the first eligible reference, so this
             // reports at least one withheld rewrite, not a count.
@@ -357,10 +345,9 @@ impl AssetExecutionBackend for OptimizerBackend {
             return OperationResult::unchanged();
         }
 
-        let replaced = replace_referenced_tga_texture_names(nif, is_eligible);
-        let changed = match unless_exception(replaced, "set_texture_path", mesh) {
+        let changed = match replace_referenced_tga_texture_names(nif, is_eligible) {
             Ok(changed) => changed,
-            Err(error) => return OperationResult::failed(error.to_string()),
+            Err(error) => return self.mesh_call_failed(&error),
         };
         if withheld {
             log::warn!(
@@ -376,13 +363,15 @@ impl AssetExecutionBackend for OptimizerBackend {
         }
     }
 
-    /// Saves the loaded Mesh into the staged `path`. The seam has no Mesh
-    /// failure detail; the optimizer logs why a save failed.
-    fn save_mesh(&mut self, path: &Path) -> bool {
+    /// Saves the loaded Mesh into the staged `path`. A failed save drops the
+    /// loaded Mesh, as every failed Mesh call does (see
+    /// [`OptimizerBackend::mesh_call_failed`]).
+    fn save_mesh(&mut self, path: &Path) -> Result<(), String> {
         let Some(nif) = self.loaded_mesh.as_mut() else {
-            return false;
+            return Err("No Mesh is loaded.".to_owned());
         };
-        unless_exception(self.meshes.save(nif, path), "save", path).is_ok()
+        let saved = self.meshes.save(nif, path);
+        saved.map_err(|error| self.mesh_call_failed(&error).message().to_owned())
     }
 
     /// As C++ `MainOptimizer::optimizeAnimation`: a Dry Run reports every
@@ -418,5 +407,62 @@ impl AssetExecutionBackend for OptimizerBackend {
     /// executes.
     fn attempt_finished(&mut self, asset: &RoutedAsset, result: &AssetExecutionResult) {
         self.failed_conversions.record_attempt(asset, result);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Audits BE-1 and BE-2: only a Mesh that could not be read escapes
+    /// Quarantine. A C++ exception while parsing, such as `std::bad_alloc`
+    /// from a corrupt count, used to panic on purpose and stop the run at the
+    /// same file on every run; now it is content that cannot be decoded,
+    /// with the exception's message as the detail.
+    #[test]
+    fn only_a_mesh_that_could_not_be_read_is_unreadable() {
+        let read = NifError::Read("Access is denied. (os error 5)".to_owned());
+        assert_eq!(
+            mesh_load_failure(&read),
+            LoadFailure::Unreadable(read.to_string())
+        );
+        for error in [
+            NifError::Load { code: 1 },
+            NifError::Load { code: 2 },
+            NifError::Exception("bad allocation".to_owned()),
+        ] {
+            assert_eq!(
+                mesh_load_failure(&error),
+                LoadFailure::Undecodable(error.to_string()),
+                "{error:?}"
+            );
+        }
+    }
+
+    /// Audit BE-2: a Texture that could not be read, or whose decode ran out
+    /// of memory, is not known to be corrupt; anything else DirectXTex
+    /// refuses is.
+    #[test]
+    fn a_texture_that_could_not_be_read_or_ran_out_of_memory_is_unreadable() {
+        let denied = TextureError::Read(std::io::ErrorKind::PermissionDenied.into());
+        let out_of_memory = TextureError::Decode {
+            hresult: 0x8007_000E,
+            message: "0x8007000E E_OUTOFMEMORY".to_owned(),
+        };
+        let invalid = TextureError::Decode {
+            hresult: 0x8007_000D,
+            message: "0x8007000D ERROR_INVALID_DATA".to_owned(),
+        };
+
+        for unreadable in [&denied, &out_of_memory] {
+            assert_eq!(
+                texture_load_failure(unreadable),
+                LoadFailure::Unreadable(unreadable.to_string())
+            );
+        }
+        assert_eq!(
+            texture_load_failure(&invalid),
+            LoadFailure::Undecodable(invalid.to_string())
+        );
     }
 }
