@@ -9,6 +9,7 @@
 
 mod common;
 
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -338,6 +339,66 @@ fn an_unloadable_mesh_is_quarantined() {
     assert!(mod_root.join("meshes/empty.nif.caobad").exists());
     assert!(!mod_root.join("meshes/garbage.nif").exists());
     assert_eq!(stream_version(&read(&mod_root, "meshes/le.nif")), 100);
+}
+
+/// Audit BE-2: a Mesh another program holds open without sharing it cannot be
+/// read. nifly used to report that as its load code 1, the same as a bad
+/// header. Now the file is read before nifly sees it, so the attempt is a read
+/// failure with its cause, which Apply never quarantines, and the run carries
+/// on with the other Meshes.
+///
+/// This runs as a Dry Run: under Apply the destination capture opens the
+/// Mesh before the load does and meets the lock first (audit CORE-2).
+#[test]
+fn a_mesh_that_cannot_be_read_is_a_read_failure() {
+    let _serial = serial();
+    let (app, mod_root) = mod_with_meshes(
+        "mesh-unreadable",
+        &[("meshes/le.nif", LE_MESH), ("meshes/locked.nif", SSE_MESH)],
+    );
+    let locked = mod_root.join("meshes/locked.nif");
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&locked)
+        .unwrap();
+
+    let mut options = apply_meshes(&app, "SSE", &mod_root, 3, false);
+    options.dry_run = true;
+
+    let result = run(&app, "SSE", &options);
+    drop(lock);
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::CompletedWithFailures,
+        "{:?}",
+        result.failures()
+    );
+    let failed: Vec<_> = result
+        .asset_attempts()
+        .iter()
+        .filter(|attempt| !attempt.result.succeeded())
+        .collect();
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0].asset.execution_path(), locked);
+    let failed = &failed[0].result;
+    assert_eq!(failed.failure(), Some(AssetExecutionFailure::ReadFailed));
+    assert!(
+        failed.service_detail().contains("could not be read"),
+        "{}",
+        failed.service_detail()
+    );
+    assert_eq!(failed.mutation_state(), MutationState::None);
+    assert!(failed.safe_to_continue());
+    assert_eq!(read(&mod_root, "meshes/locked.nif"), fixture(SSE_MESH));
+    assert!(!mod_root.join("meshes/locked.nif.caobad").exists());
+    let le = result
+        .asset_attempts()
+        .iter()
+        .find(|attempt| attempt.asset.execution_path().ends_with("le.nif"))
+        .unwrap();
+    assert!(le.result.succeeded(), "the other Mesh is still evaluated");
 }
 
 /// Spec (#504): Dry Run evaluates every Mesh, quarantines nothing and writes nothing.

@@ -244,6 +244,7 @@
 
   <div class="callout good">
     <p><strong>Follow-up, same day.</strong> The three high findings below were fixed after the audit, in the same commit that adds this report. Each card now ends with a Resolution paragraph. After the fixes, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets</code> and <code>cargo build</code> pass and the suite is 993 tests, 0 failed (13 new). Everything else in this report describes commit 43dae05 as audited. One statement in the original <a href="#CORE-1">CORE-1</a> card was wrong and is corrected there.</p>
+    <p><strong>Follow-up, 2026-11-18.</strong> Step 2 of the suggested order, the typed backend seam (<a href="#CORE-9">CORE-9</a>, <a href="#BE-2">BE-2</a>, <a href="#BE-1">BE-1</a>, <a href="#FFI-2">FFI-2</a>), was done in a second change, and those four cards also end with a Resolution paragraph. After it, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets</code> and <code>cargo build</code> pass and the suite is 1,002 tests, 0 failed (9 new). The <a href="#BE-2">BE-2</a> resolution notes one case that waits for <a href="#CORE-2">CORE-2</a> in step 3.</p>
   </div>
 
   <h4>The three high findings</h4>
@@ -499,7 +500,7 @@ self.committed.notify_all();</code></pre>
     <div class="f-head">
       <span class="fid">CORE-9</span>
       <h3>Mesh failures carry no cause; the backend seam reports failure as <code>bool</code> plus a Texture-only side channel</h3>
-      <span class="sev sev-low">Low</span><span class="tag">error-handling</span>
+      <span class="sev sev-low">Low</span><span class="tag">error-handling</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/execution.rs:326</code> · <code>:798</code> · <code>crates/cao-optimizers/src/backend.rs:295</code></p>
     <div class="f-body">
@@ -507,6 +508,7 @@ self.committed.notify_all();</code></pre>
 fn texture_failure_detail(&amp;self) -&gt; String {</code></pre>
       <p><strong>Why it matters.</strong> A Mesh load failure leads to Quarantine, which renames the user's file, yet Run Evidence and the window show only "Failed to load Mesh." with no detail; the nifly error is discarded in the backend. The "most recent failure" getter is also stateful and easy to read stale.</p>
       <p><strong>Suggested change.</strong> Have <code>load_*</code>, <code>save_*</code> and <code>remove_texture</code> return <code>Result&lt;(), String&gt;</code> (or a small error type) and delete <code>texture_failure_detail</code>.</p>
+      <p><strong>Resolution.</strong> Fixed in step 2 of the suggested order, together with <a href="#BE-2">BE-2</a>. <code>load_texture</code> and <code>load_mesh</code> return <code>Result&lt;(), LoadFailure&gt;</code>, and <code>save_texture</code>, <code>save_mesh</code> and <code>remove_texture</code> return <code>Result&lt;(), String&gt;</code>; each error carries the backend's detail into the attempt's service detail, and <code>texture_failure_detail</code> is deleted. A Mesh load or save failure now shows nifly's cause, or the I/O error, in Run Evidence and in the window's run details. The Mesh save failure is also split in two: a save that failed (&ldquo;Failed to save Mesh.&rdquo;, with its cause) and a saved file that is not usable (&ldquo;Saved Mesh is not a usable regular file.&rdquo;). The existing executor tests now assert the load and save details.</p>
     </div>
   </article>
 
@@ -870,7 +872,7 @@ state reached so far with an empty detail, so no producer needs defensive handli
     <div class="f-head">
       <span class="fid">FFI-2</span>
       <h3>After a C++ exception during load, safe <code>Nif</code> methods can dereference null</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">soundness</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">soundness</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/nifly-sys/src/lib.rs:41</code> · <code>:185</code> · <code>crates/nifly-sys/shim/cao_nif.cpp:60</code> · <code>crates/nifly-sys/vendor/nifly/src/NifFile.cpp:184</code></p>
     <div class="f-body">
@@ -878,6 +880,7 @@ state reached so far with an empty detail, so no producer needs defensive handli
 /// is then unspecified: reload or drop it.</code></pre>
       <p><strong>Why it matters.</strong> <code>NifFile::Load</code> calls <code>Clear()</code> (which nulls the header's block pointer), reads the header (setting the block count), runs the block loop, and only afterwards calls <code>SetBlockReference</code>. An exception thrown inside the loop, such as <code>bad_alloc</code> from a corrupt count, is caught by the shim and leaves a non-zero count with a null block pointer. <code>texture_paths()</code>, <code>is_sse_compatible()</code> or <code>save()</code> on that handle then index through null, which <code>/EHsc</code> does not catch. Production drops the handle on any load error, so nothing reaches this today; the rule is enforced only by the doc sentence above, on a safe API. The existing exception test truncates inside the header and never reaches the block loop.</p>
       <p><strong>Suggested change.</strong> On a caught exception in the shim, call <code>handle-&gt;nif.Clear()</code> inside its own try so the handle really is empty, or keep a poisoned flag that makes every entry point but load and free return a status. Extend the test to truncate mid-block and call a reader afterwards.</p>
+      <p><strong>Resolution.</strong> Fixed in step 2 of the suggested order, with both suggested changes. The shim empties the handle after any caught exception (<code>NifFile::Clear()</code>, the texture snapshot and the last optimization result), and every entry point that reads or changes the Mesh refuses an empty handle with a new status that Rust maps to <code>NifError::NotLoaded</code>. That also covers a handle that was never loaded: <code>save()</code> on <code>Nif::new()</code> reached the same null header pointer. A new unit test cuts the fixture inside its blocks, past the header (which a test-only entry point measures), loads it through the throwing stream and calls every reader. With both protections removed, the test fails: <code>is_sse_compatible()</code> answered <code>Ok(true)</code> about the half-built Mesh. Two integration tests cover an empty handle and a locked file. <code>NifError::Exception</code>'s doc now says the handle is left empty.</p>
     </div>
   </article>
 
@@ -1001,7 +1004,7 @@ keep_mta_alive()</code></pre>
     <div class="f-head">
       <span class="fid">BE-1</span>
       <h3>A nifly exception on any Mesh call panics on purpose, so one corrupt NIF stops the run, every run</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">error-handling</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">error-handling</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-optimizers/src/backend.rs:163</code> · <code>:289</code> · <code>crates/cao-core/src/execution.rs:303</code></p>
     <div class="f-body">
@@ -1010,6 +1013,7 @@ keep_mta_alive()</code></pre>
         "nifly raised a C++ exception in {call} for {}: {message}",</code></pre>
       <p><strong>Why it matters.</strong> Core turns a backend panic into a failure with unknown mutation that stops the run. A load touches nothing on disk, and optimize and reference edits work on memory, so "unknown mutation" is not true for them; the stated reason is that C++ let the exception reach its executor. One NIF with a corrupt count in a Several Mods selection therefore ends the run before Archive Finalization, and because the file is not quarantined, the next run stops at the same file.</p>
       <p><strong>Suggested change.</strong> Delete <code>unless_exception</code>. Map the exception on load to a load failure (so Apply quarantines the file), on optimize and maintenance to a failed operation, on save to a save failure, and drop the loaded Mesh so its unspecified state is not reused (see <a href="#FFI-2">FFI-2</a>). Add a test with a corrupt block count.</p>
+      <p><strong>Resolution.</strong> Fixed in step 2 of the suggested order. <code>unless_exception</code> is deleted. An exception on load is treated as content that cannot be decoded (<code>LoadFailed</code>), so Apply quarantines the file and the run continues instead of stopping at the same file on every run; an exception in optimization, Mesh Reference Maintenance or the save fails that operation, with the exception's message as the service detail. The backend drops the loaded Mesh after any failed nifly call, so a half-changed Mesh is never saved. No test uses a NIF with a corrupt block count: nifly throws only from inside allocations, so such a file asks for gigabytes before it fails, which would make the test slow and machine-dependent. Instead a unit test pins the mapping from <code>NifError</code> to the load failure, and the <a href="#FFI-2">FFI-2</a> test drives a real exception through nifly's block loop.</p>
     </div>
   </article>
 
@@ -1017,13 +1021,14 @@ keep_mta_alive()</code></pre>
     <div class="f-head">
       <span class="fid">BE-2</span>
       <h3>Load failures collapse to <code>bool</code>, so Quarantine cannot tell "corrupt" from "could not read"</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">error-handling</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">error-handling</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-optimizers/src/backend.rs:181</code> · <code>:295</code> · <code>crates/cao-optimizers/src/textures.rs:261</code> · <code>crates/cao-core/src/execution.rs:1009</code></p>
     <div class="f-body">
 <pre><code>Err(_) =&gt; false,</code></pre>
       <p><strong>Why it matters.</strong> A sharing violation, access denied, an out-of-memory decode of a very large texture and nifly's "cannot open this file" are all environmental, yet each becomes <code>LoadFailed</code>, and in Apply a <code>LoadFailed</code> Asset is renamed to <code>.caobad</code>. The backend has the typed error and discards it at the seam. This is the backend half of <a href="#CORE-9">CORE-9</a>.</p>
       <p><strong>Suggested change.</strong> Widen the seam to distinguish unreadable from undecodable, quarantine only the latter, and treat the former as a contained failure that is safe to continue.</p>
+      <p><strong>Resolution.</strong> Fixed in step 2 of the suggested order. A load now fails with a <code>LoadFailure</code> that is either <code>Unreadable</code> (the file could not be read, or a Texture decode returned <code>E_OUTOFMEMORY</code>) or <code>Undecodable</code>. The executor reports the first as the new <code>ReadFailed</code>, which Quarantine leaves alone and which is safe to continue, and the second as <code>LoadFailed</code>, which Apply quarantines as before. For Meshes, nifly's load code 1 meant both &ldquo;cannot open&rdquo; and &ldquo;bad header&rdquo;, so nifly-sys now reads the file in Rust and hands nifly the bytes; a read error is the new <code>NifError::Read</code>. The twenty byte-identity fixtures still pass. <code>TextureError::Decode</code> keeps the HRESULT so out-of-memory can be told apart. The glossary's Quarantine entry states the rule. One limit remains: under Apply, a file another process holds without sharing still fails before the load, because the destination capture opens it first and fails as an unsafe <code>StagingFailed</code> (<a href="#CORE-2">CORE-2</a>, step 3). The new end-to-end tests with a locked Mesh and a locked Texture therefore run as Dry Run, and Apply's no-Quarantine rule is tested through the real Quarantine adapter with the fake backend. Under Apply the split already matters for an out-of-memory Texture decode and for a file that disappears between capture and load, which used to be sent to Quarantine, fail the rename and stop the run.</p>
     </div>
   </article>
 
@@ -1738,7 +1743,7 @@ env!("CARGO_PKG_VERSION")</code></pre>
       <thead><tr><th>Step</th><th>What</th><th>Findings</th><th>Why here</th></tr></thead>
       <tbody>
         <tr><td class="num">1</td><td>Close the three high findings</td><td><a href="#FFI-1">FFI-1</a>, <a href="#CORE-1">CORE-1</a>, <a href="#FS-1">FS-1</a></td><td><span class="tag pass">done</span> Each was contained: a shim change, one decided rule with tests, and batch registration and release.</td></tr>
-        <tr><td class="num">2</td><td>Widen the backend seam from <code>bool</code> to typed results</td><td><a href="#CORE-9">CORE-9</a>, <a href="#BE-2">BE-2</a>, <a href="#BE-1">BE-1</a>, <a href="#FFI-2">FFI-2</a></td><td>One trait change fixes the missing Mesh cause, the wrong quarantines and the deliberate panic together.</td></tr>
+        <tr><td class="num">2</td><td>Widen the backend seam from <code>bool</code> to typed results</td><td><a href="#CORE-9">CORE-9</a>, <a href="#BE-2">BE-2</a>, <a href="#BE-1">BE-1</a>, <a href="#FFI-2">FFI-2</a></td><td><span class="tag pass">done</span> One trait change fixes the missing Mesh cause, the wrong quarantines and the deliberate panic together.</td></tr>
         <tr><td class="num">3</td><td>Make single-file problems contained failures</td><td><a href="#CORE-2">CORE-2</a>, <a href="#BE-4">BE-4</a>, <a href="#FS-3">FS-3</a>, <a href="#FS-9">FS-9</a>, <a href="#CORE-6">CORE-6</a></td><td>Removes the cases where a real mod folder cannot be processed at all.</td></tr>
         <tr><td class="num">4</td><td>Remove the silent wrong outcomes</td><td><a href="#BE-3">BE-3</a>, <a href="#GUI-2">GUI-2</a>, <a href="#GUI-1">GUI-1</a>, <a href="#GUI-3">GUI-3</a>, <a href="#FS-2">FS-2</a>, <a href="#BE-5">BE-5</a>, <a href="#FS-4">FS-4</a></td><td>Small changes, each with a test that pins the new behaviour; <a href="#FS-4">FS-4</a> needs a decision first.</td></tr>
         <tr><td class="num">5</td><td>Add CI and settle the long-path approach</td><td><a href="#WS-2">WS-2</a>, <a href="#WS-1">WS-1</a>, <a href="#WS-3">WS-3</a></td><td>Protects steps 1 to 4 from regressing and makes a release reproducible.</td></tr>

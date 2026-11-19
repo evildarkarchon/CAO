@@ -9,10 +9,16 @@
 //! on the `research/nifly-rust-bindings` branch):
 //!
 //! - A C++ exception inside nifly becomes [`NifError::Exception`], never an
-//!   abort; nifly's own load and save codes become [`NifError::Load`] and
-//!   [`NifError::Save`]. nifly does not notice a write that fails part-way,
-//!   so the shim checks the output stream itself: [`NifError::Write`].
-//! - Paths cross as UTF-16, losslessly. Texture paths are bytes
+//!   abort, and leaves the handle empty; nifly's own load and save codes
+//!   become [`NifError::Load`] and [`NifError::Save`]. nifly does not notice a
+//!   write that fails part-way, so the shim checks the output stream itself:
+//!   [`NifError::Write`].
+//! - A Mesh is read into memory here and handed to nifly as bytes, so a file
+//!   that cannot be read ([`NifError::Read`]) is told apart from one nifly
+//!   cannot parse, which nifly's own load code 1 conflates.
+//! - An empty handle refuses every call that reads or changes the Mesh with
+//!   [`NifError::NotLoaded`]: nifly would index through a null pointer.
+//! - Output paths cross as UTF-16, losslessly. Texture paths are bytes
 //!   ([`TexturePaths`]), because NIF strings carry no encoding.
 //! - [`Nif::optimize_for`] builds nifly's `NiVersion` with `SetFile`,
 //!   `SetStream` and `SetUser`, as `MeshesOptimizer` does.
@@ -30,9 +36,15 @@ use std::ptr::NonNull;
 /// Why a nifly operation failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NifError {
-    /// `NifFile::Load` returned a non-zero code: 1 when the file cannot be
-    /// opened or its header is invalid, 2 for an unsupported version, 3 for an
-    /// unknown block type in a file without block sizes (before 20.2.0.5).
+    /// The Mesh file could not be read, such as when it is missing, access is
+    /// denied, or another process holds it open without sharing it. The
+    /// message is the I/O error's. Nothing about the file's content is known.
+    #[error("the file could not be read: {0}")]
+    Read(String),
+    /// `NifFile::Load` returned a non-zero code for bytes that were read: 1
+    /// when the header is invalid (an empty file included), 2 for an
+    /// unsupported version, 3 for an unknown block type in a file without
+    /// block sizes (before 20.2.0.5).
     #[error("{}", describe_load_code(*code))]
     Load { code: i32 },
     /// `NifFile::Save` could not open the output file, so nothing was written.
@@ -45,16 +57,21 @@ pub enum NifError {
     Write,
     /// nifly, or the standard library under it, threw a C++ exception, such as
     /// `std::bad_alloc` from a count read out of a corrupt file. The message is
-    /// the exception's `what()`, decoded lossily. The Mesh's in-memory content
-    /// is then unspecified: reload or drop it.
+    /// the exception's `what()`, decoded lossily. The handle is left empty, as
+    /// after a failed load, since the exception may have stopped nifly half
+    /// way through building or changing the Mesh.
     #[error("nifly raised a C++ exception: {0}")]
     Exception(String),
+    /// The handle holds no Mesh: it was never loaded, or a failed load or an
+    /// exception emptied it.
+    #[error("no Mesh is loaded")]
+    NotLoaded,
 }
 
 /// The [`NifError::Load`] message for nifly load `code`.
 fn describe_load_code(code: i32) -> String {
     match code {
-        1 => "nifly cannot open this file or read its header (load code 1)".to_owned(),
+        1 => "nifly cannot read this file's header (load code 1)".to_owned(),
         2 => "nifly cannot load this file version (load code 2)".to_owned(),
         3 => "nifly cannot skip an unknown block in a file without block sizes (load code 3)"
             .to_owned(),
@@ -189,16 +206,42 @@ impl Nif {
 
     /// Loads the Mesh at `path`, replacing whatever this handle held.
     ///
-    /// On failure the handle is left empty, so [`is_valid`](Self::is_valid)
-    /// is `false`.
+    /// The file is read whole into memory here and nifly parses the bytes, so
+    /// a file that cannot be read is [`NifError::Read`] with the I/O error,
+    /// never a nifly load code. On any failure the handle is left empty, so
+    /// [`is_valid`](Self::is_valid) is `false`.
+    ///
+    /// # Errors
+    ///
+    /// [`NifError::Read`] when the file cannot be read, [`NifError::Load`]
+    /// when nifly refuses its bytes, and [`NifError::Exception`] when nifly
+    /// throws while parsing them.
     pub fn load(&mut self, path: &Path, options: LoadOptions) -> Result<(), NifError> {
-        let path = utf16(path);
-        // SAFETY: `self.raw` is live and exclusively borrowed; `path` outlives the call.
+        match std::fs::read(path) {
+            Ok(bytes) => self.load_bytes(&bytes, options),
+            Err(error) => {
+                // SAFETY: `self.raw` is live and exclusively borrowed.
+                unsafe { ffi::cao_nif_clear(self.raw.as_ptr()) };
+                Err(NifError::Read(error.to_string()))
+            }
+        }
+    }
+
+    /// Loads a Mesh from the bytes of a NIF file, replacing whatever this
+    /// handle held. On failure the handle is left empty.
+    ///
+    /// # Errors
+    ///
+    /// [`NifError::Load`] when nifly refuses the bytes, and
+    /// [`NifError::Exception`] when it throws while parsing them.
+    pub fn load_bytes(&mut self, bytes: &[u8], options: LoadOptions) -> Result<(), NifError> {
+        // SAFETY: `self.raw` is live and exclusively borrowed; `bytes` outlives
+        // the call, and the shim only reads them during it.
         let status = unsafe {
-            ffi::cao_nif_load(
+            ffi::cao_nif_load_from_memory(
                 self.raw.as_ptr(),
-                path.as_ptr(),
-                path.len(),
+                bytes.as_ptr(),
+                bytes.len(),
                 options.is_terrain,
             )
         };
@@ -218,6 +261,7 @@ impl Nif {
     /// [`NifError::Save`] when the file cannot be opened, and
     /// [`NifError::Write`] when it opened but not every byte reached it. After
     /// `Write` the file exists and is truncated; the caller owns removing it.
+    /// [`NifError::NotLoaded`] for an empty handle, which writes nothing.
     /// [`NifError::Exception`] as for every call.
     pub fn save(&mut self, path: &Path) -> Result<(), NifError> {
         let path = utf16(path);
@@ -304,6 +348,7 @@ impl Nif {
     fn status(&self, status: i32) -> Result<i32, NifError> {
         match status {
             ffi::EXCEPTION => Err(NifError::Exception(self.last_error())),
+            ffi::NOT_LOADED => Err(NifError::NotLoaded),
             ffi::BAD_ARGUMENT => panic!("the nifly shim rejected an argument nifly-sys validated"),
             code => Ok(code),
         }
@@ -373,7 +418,8 @@ impl TexturePaths<'_> {
         self.len == 0
     }
 
-    /// The path at `index`, as raw bytes, or `None` past the end.
+    /// The path at `index`, as raw bytes, or `None` past the end or once a
+    /// failed [`set`](Self::set) has emptied the Mesh.
     pub fn get(&self, index: usize) -> Option<&[u8]> {
         let (mut ptr, mut len) = (std::ptr::null(), 0);
         // SAFETY: `self.nif.raw` is live, and the snapshot is fresh because
@@ -388,6 +434,11 @@ impl TexturePaths<'_> {
 
     /// Replaces the path at `index` with `path`. Every other index referring
     /// to the same string sees the new value.
+    ///
+    /// # Errors
+    ///
+    /// [`NifError::Exception`] when the copy throws, which empties the Mesh;
+    /// every later call through this view is then [`NifError::NotLoaded`].
     ///
     /// # Panics
     ///
@@ -475,6 +526,57 @@ mod tests {
             LoadOptions::default(),
         )
         .unwrap();
+        assert!(nif.is_valid());
+    }
+
+    /// Audit FFI-2. `NifFile::Load` sets the block count from the header,
+    /// fills the blocks, and only then points the header at them, so an
+    /// exception inside the block loop used to leave a count over a null
+    /// pointer that the next reader indexed through: an access violation, not
+    /// a catchable error. The truncation here falls inside the blocks, past
+    /// the header, unlike the test above. The handle must come back empty and
+    /// every reader must say so.
+    #[test]
+    fn an_exception_among_the_blocks_leaves_an_empty_handle() {
+        let bytes = std::fs::read(fixture("TestNifFile_Static_SE.nif")).unwrap();
+        let mut header_end = 0;
+        // SAFETY: `bytes` outlives the call; `header_end` is a valid place to write.
+        let parsed =
+            unsafe { ffi::cao_nif_header_length(bytes.as_ptr(), bytes.len(), &mut header_end) };
+        assert_eq!(parsed, ffi::OK, "the fixture's header parses");
+        assert!(header_end < bytes.len(), "the fixture has blocks");
+        let truncated = &bytes[..header_end + (bytes.len() - header_end) / 2];
+        let mut nif = Nif::new();
+
+        // SAFETY: `nif.raw` is live and exclusively borrowed; `truncated`
+        // outlives the call.
+        let status = unsafe {
+            ffi::cao_nif_load_from_throwing_stream(
+                nif.raw.as_ptr(),
+                truncated.as_ptr(),
+                truncated.len(),
+            )
+        };
+
+        assert!(
+            matches!(nif.status(status), Err(NifError::Exception(_))),
+            "a read past the end throws"
+        );
+        assert!(!nif.is_valid());
+        assert_eq!(nif.is_sse_compatible(), Err(NifError::NotLoaded));
+        assert_eq!(nif.texture_paths().err(), Some(NifError::NotLoaded));
+        assert_eq!(
+            save_with_room_for(&mut nif, usize::MAX),
+            Err(NifError::NotLoaded)
+        );
+        let options = OptimizeOptions {
+            target: NifVersion::SSE,
+            head_parts: false,
+            remove_parallax: false,
+        };
+        assert_eq!(nif.optimize_for(&options).err(), Some(NifError::NotLoaded));
+
+        nif.load_bytes(&bytes, LoadOptions::default()).unwrap();
         assert!(nif.is_valid());
     }
 

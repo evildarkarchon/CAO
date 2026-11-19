@@ -263,6 +263,39 @@ fn attempt_finished_is_delivered_before_quarantine() {
     assert!(root.join("textures/unloadable.dds.caobad").exists());
 }
 
+/// Audit BE-2: an Asset the backend could not read, as opposed to one whose
+/// content it could not decode, fails as `ReadFailed` with the backend's
+/// cause. Nothing says the file is corrupt, so Quarantine leaves it where it
+/// is, nothing changes, and the run may continue.
+#[test]
+fn an_asset_that_cannot_be_read_is_never_quarantined() {
+    let root = mod_root("unreadable-left-alone", &["unreadable.dds"]);
+    let source = root.join("textures/unreadable.dds");
+    let stop = CancellationToken::new();
+    let mut adapter = AssetAttemptAdapter::new(FakeBackendFactory::default());
+
+    let (outcome, _) = attempt(
+        &mut adapter,
+        ExecutionMode::Apply,
+        &root,
+        "unreadable.dds",
+        &stop,
+    );
+
+    let result = outcome.unwrap();
+    assert_eq!(result.failure(), Some(AssetExecutionFailure::ReadFailed));
+    assert_eq!(result.operation(), "load_texture");
+    assert!(
+        result.service_detail().contains("cannot read"),
+        "{}",
+        result.service_detail()
+    );
+    assert_eq!(result.mutation_state(), MutationState::None);
+    assert!(result.safe_to_continue());
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), "original");
+    assert!(!root.join("textures/unreadable.dds.caobad").exists());
+}
+
 /// Spec #546, user story 22: a factory failure, such as COM failing to
 /// initialize, fails only the attempt that needed the backend, as an unsafe
 /// Operation Failure with unknown mutation, and nothing panics.

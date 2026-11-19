@@ -173,7 +173,7 @@ Why one Asset or Archive attempt did not complete, as a stable category with its
 _Avoid_: Exception, error log, Attempt Outcome
 
 **Quarantine**:
-The Apply-only renaming of a Texture or Mesh that cannot be loaded, so that later runs and Archive creation leave it alone. A completed Quarantine is a Committed Mutation, and the Asset's attempt is still an Operation Failure. An Asset that cannot be quarantined makes the run unsafe to continue.
+The Apply-only renaming of a Texture or Mesh whose content cannot be decoded, so that later runs and Archive creation leave it alone. A Texture or Mesh that could not be read at all, because another program holds it, access is denied or decoding ran out of memory, is never quarantined, since nothing says it is corrupt; its attempt is an Operation Failure that is safe to continue. A completed Quarantine is a Committed Mutation, and the Asset's attempt is still an Operation Failure. An Asset that cannot be quarantined makes the run unsafe to continue.
 _Avoid_: Delete, backup, skip
 
 **Archive Precedence**:

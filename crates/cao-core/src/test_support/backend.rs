@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::execution::{AssetExecutionBackend, AssetExecutionResult, OperationResult};
+use crate::execution::{AssetExecutionBackend, AssetExecutionResult, LoadFailure, OperationResult};
 use crate::routing::{AssetOperations, ExecutionMode, MeshVariant, RoutedAsset, TextureVariant};
 use crate::run::{
     AssetBackendFactory, BackendCreation, BackendCreationError, CancellationToken, RunDiagnostic,
@@ -12,9 +12,11 @@ use crate::run::{
 
 /// How the fake backend treats one Asset, chosen by a marker in its file name.
 ///
-/// `unloadable` fails to load, `panics` panics while optimizing, `changes`
-/// reports a change to persist; anything else is evaluated as unchanged. In
-/// Apply a change is saved as `optimized <name>` (an Animation's output as
+/// `unloadable` fails to load as undecodable content (which Apply
+/// quarantines), `unreadable` fails to load as a file that cannot be read
+/// (which it does not), `panics` panics while optimizing, `changes` reports a
+/// change to persist; anything else is evaluated as unchanged. In Apply a
+/// change is saved as `optimized <name>` (an Animation's output as
 /// `converted <name>`), unless the name also contains `unsaveable`.
 ///
 /// Each attempt-finished notification goes to `finished`, apart from `calls`.
@@ -69,10 +71,18 @@ impl FakeBackend {
         }
     }
 
-    fn load(&mut self, call: &str, path: &Path) -> bool {
+    /// Records the load and fails it as the path's marker says.
+    fn load(&mut self, call: &str, path: &Path) -> Result<(), LoadFailure> {
         self.record(call, path);
         self.loaded = Some(path.to_path_buf());
-        !path.to_string_lossy().contains("unloadable")
+        let path = path.to_string_lossy();
+        if path.contains("unloadable") {
+            Err(LoadFailure::Undecodable(format!("cannot decode {path}")))
+        } else if path.contains("unreadable") {
+            Err(LoadFailure::Unreadable(format!("cannot read {path}")))
+        } else {
+            Ok(())
+        }
     }
 
     /// The loaded Asset's file name.
@@ -83,14 +93,14 @@ impl FakeBackend {
 
     /// Writes `optimized <name>` to the staged `path`, unless the loaded
     /// Asset's name contains `unsaveable`.
-    fn save(&mut self, call: &str, path: &Path) -> bool {
+    fn save(&mut self, call: &str, path: &Path) -> Result<(), String> {
         self.record(call, path);
         let name = self.loaded_name();
         if name.contains("unsaveable") {
-            return false;
+            return Err(format!("cannot save {name}"));
         }
         std::fs::write(path, format!("optimized {name}")).unwrap();
-        true
+        Ok(())
     }
 }
 
@@ -143,7 +153,7 @@ impl AssetBackendFactory for FakeBackendFactory {
 }
 
 impl AssetExecutionBackend for FakeBackend {
-    fn load_texture(&mut self, path: &Path, _variant: TextureVariant) -> bool {
+    fn load_texture(&mut self, path: &Path, _variant: TextureVariant) -> Result<(), LoadFailure> {
         self.load("load_texture", path)
     }
 
@@ -156,16 +166,24 @@ impl AssetExecutionBackend for FakeBackend {
         self.evaluate()
     }
 
-    fn save_texture(&mut self, path: &Path) -> bool {
+    fn save_texture(&mut self, path: &Path) -> Result<(), String> {
         self.save("save_texture", path)
     }
 
-    fn remove_texture(&mut self, path: &Path, remove_verified: &mut dyn FnMut() -> bool) -> bool {
+    fn remove_texture(
+        &mut self,
+        path: &Path,
+        remove_verified: &mut dyn FnMut() -> bool,
+    ) -> Result<(), String> {
         self.record("remove_texture", path);
-        remove_verified()
+        if remove_verified() {
+            Ok(())
+        } else {
+            Err(format!("cannot remove {}", path.display()))
+        }
     }
 
-    fn load_mesh(&mut self, path: &Path, _variant: MeshVariant) -> bool {
+    fn load_mesh(&mut self, path: &Path, _variant: MeshVariant) -> Result<(), LoadFailure> {
         self.load("load_mesh", path)
     }
 
@@ -184,7 +202,7 @@ impl AssetExecutionBackend for FakeBackend {
         OperationResult::unchanged()
     }
 
-    fn save_mesh(&mut self, path: &Path) -> bool {
+    fn save_mesh(&mut self, path: &Path) -> Result<(), String> {
         self.save("save_mesh", path)
     }
 

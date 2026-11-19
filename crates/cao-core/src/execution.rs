@@ -16,8 +16,9 @@
 //! `conversion_withheld`), and otherwise it publishes with `NoReplace`.
 //!
 //! [`quarantine_failed_load`] is the adapter step C++ `MainOptimizer` ran after
-//! each attempt: in Apply, a Texture or Mesh that failed to load becomes
-//! `.caobad`.
+//! each attempt: in Apply, a Texture or Mesh whose content the backend cannot
+//! decode becomes `.caobad`. One it could not read at all ([`LoadFailure`])
+//! is left where it is.
 
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
@@ -52,7 +53,13 @@ pub enum MutationState {
 pub enum AssetExecutionFailure {
     UnsupportedTarget,
     IdentityMismatch,
+    /// The backend read the Asset and cannot decode its content; Apply
+    /// quarantines it.
     LoadFailed,
+    /// The backend could not read the Asset, or ran out of memory decoding
+    /// it, so nothing is known about its content. It is never quarantined,
+    /// and the run may continue.
+    ReadFailed,
     OperationFailed,
     SaveFailed,
     SourceRemovalFailed,
@@ -120,6 +127,33 @@ impl OperationResult {
     /// The backend diagnostic; empty after success.
     pub fn message(&self) -> &str {
         &self.message
+    }
+}
+
+/// Why a backend could not load an Asset, which decides whether Apply
+/// quarantines it.
+///
+/// Quarantine renames the user's file, so it is kept for files whose content
+/// is the problem. A file that merely could not be read this time, because
+/// another program holds it or access is denied, is left alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoadFailure {
+    /// The file could not be read, or decoding it ran out of memory: nothing
+    /// is known about its content. The attempt fails with
+    /// [`AssetExecutionFailure::ReadFailed`], is never quarantined, and the
+    /// run may continue.
+    Unreadable(String),
+    /// The file was read and its content cannot be decoded. The attempt fails
+    /// with [`AssetExecutionFailure::LoadFailed`], which Apply quarantines.
+    Undecodable(String),
+}
+
+impl LoadFailure {
+    /// The backend's detail, which becomes the attempt's service detail.
+    pub fn detail(&self) -> &str {
+        match self {
+            Self::Unreadable(detail) | Self::Undecodable(detail) => detail,
+        }
     }
 }
 
@@ -287,9 +321,8 @@ impl AssetExecutionResult {
             UnsupportedTarget | IdentityMismatch | BackendException => {
                 ExecutionFailureCategory::Contract
             }
-            SaveFailed | SourceRemovalFailed | StagingFailed | CommitFailed | CleanupFailed => {
-                ExecutionFailureCategory::Filesystem
-            }
+            ReadFailed | SaveFailed | SourceRemovalFailed | StagingFailed | CommitFailed
+            | CleanupFailed => ExecutionFailureCategory::Filesystem,
             LoadFailed | OperationFailed => ExecutionFailureCategory::Backend,
         })
     }
@@ -305,11 +338,21 @@ impl AssetExecutionResult {
 /// A backend holds at most one loaded Asset at a time. Load and optimize calls
 /// may change only that loaded state; durable files change only through the
 /// save, remove and Animation output calls, and only at paths the executor
-/// supplies. A panic from any call is contained by the run and becomes an
-/// Operation Failure with unknown mutation that stops the run.
+/// supplies.
+///
+/// Every call reports its own failure with its detail, which becomes the
+/// attempt's service detail. A failure a backend can describe, a C++
+/// exception inside a native library included, is reported that way. A panic
+/// is for bugs: it is contained by the run and becomes an Operation Failure
+/// with unknown mutation that stops the run.
 pub trait AssetExecutionBackend {
     /// Loads one Texture according to its Variant, without mutating durable files.
-    fn load_texture(&mut self, path: &Path, variant: TextureVariant) -> bool;
+    ///
+    /// # Errors
+    /// [`LoadFailure::Unreadable`] when the file cannot be read or decoding
+    /// runs out of memory, and [`LoadFailure::Undecodable`] when its content
+    /// is not a Texture the backend can decode.
+    fn load_texture(&mut self, path: &Path, variant: TextureVariant) -> Result<(), LoadFailure>;
 
     /// Applies or evaluates the Texture operations against the loaded Texture.
     fn optimize_texture(
@@ -320,21 +363,30 @@ pub trait AssetExecutionBackend {
 
     /// Writes the loaded Texture to the supplied staging path, closing every
     /// handle before returning.
-    fn save_texture(&mut self, path: &Path) -> bool;
+    ///
+    /// # Errors
+    /// The detail of why the Texture could not be encoded or written.
+    fn save_texture(&mut self, path: &Path) -> Result<(), String>;
 
     /// Requests removal of a converted source after its replacement is
     /// committed. The backend must delete through `remove_verified`, which
     /// removes only the pinned source identity; pathname removal is never
-    /// authorized.
-    fn remove_texture(&mut self, path: &Path, remove_verified: &mut dyn FnMut() -> bool) -> bool;
-
-    /// Service detail from the most recent Texture load, save or removal failure.
-    fn texture_failure_detail(&self) -> String {
-        String::new()
-    }
+    /// authorized. `Ok` alone never counts as a removal: the executor also
+    /// requires `remove_verified` to have removed the source.
+    ///
+    /// # Errors
+    /// The detail of why the source was not removed.
+    fn remove_texture(
+        &mut self,
+        path: &Path,
+        remove_verified: &mut dyn FnMut() -> bool,
+    ) -> Result<(), String>;
 
     /// Loads one Mesh according to its Variant, without mutating durable files.
-    fn load_mesh(&mut self, path: &Path, variant: MeshVariant) -> bool;
+    ///
+    /// # Errors
+    /// As for [`load_texture`](Self::load_texture), for a Mesh.
+    fn load_mesh(&mut self, path: &Path, variant: MeshVariant) -> Result<(), LoadFailure>;
 
     /// Applies or evaluates ordinary optimization against the loaded Mesh; `path`
     /// is context, never a destination.
@@ -353,7 +405,10 @@ pub trait AssetExecutionBackend {
     fn maintain_mesh_references(&mut self, mode: ExecutionMode) -> OperationResult;
 
     /// Writes the loaded Mesh to the supplied staging path after all operations.
-    fn save_mesh(&mut self, path: &Path) -> bool;
+    ///
+    /// # Errors
+    /// The detail of why the Mesh could not be written whole.
+    fn save_mesh(&mut self, path: &Path) -> Result<(), String>;
 
     /// Reads the source Animation and, in Apply, writes changed output only to
     /// `output_path`. Dry Run receives no output path and must not write.
@@ -395,6 +450,34 @@ fn staging_failed(
     .with_path(path)
     .with_operation(boundary)
     .with_service_detail(error.to_string())
+}
+
+/// The result of a load the backend refused, with the backend's detail.
+///
+/// Content the backend cannot decode is `LoadFailed`, which Apply
+/// quarantines; a file it could not read is `ReadFailed`, which it does not.
+/// Both leave nothing changed and are safe to continue: the next Asset does
+/// not depend on this one.
+fn load_failed(
+    kind: &str,
+    operation: &str,
+    path: &Path,
+    failure: LoadFailure,
+) -> AssetExecutionResult {
+    let (category, message) = match &failure {
+        LoadFailure::Undecodable(_) => (
+            AssetExecutionFailure::LoadFailed,
+            format!("Failed to load {kind}."),
+        ),
+        LoadFailure::Unreadable(_) => (
+            AssetExecutionFailure::ReadFailed,
+            format!("Failed to read {kind}."),
+        ),
+    };
+    AssetExecutionResult::failed(category, message)
+        .with_path(path)
+        .with_operation(operation)
+        .with_service_detail(failure.detail())
 }
 
 /// The `CommitFailed` result of a publication that did not release its
@@ -683,14 +766,8 @@ impl<'b> AssetExecutor<'b> {
             return conversion_withheld(path, &output);
         }
 
-        if !self.backend.load_texture(path, variant) {
-            return AssetExecutionResult::failed(
-                AssetExecutionFailure::LoadFailed,
-                "Failed to load Texture.",
-            )
-            .with_path(path)
-            .with_operation("load_texture")
-            .with_service_detail(self.backend.texture_failure_detail());
+        if let Err(failure) = self.backend.load_texture(path, variant) {
+            return load_failed("Texture", "load_texture", path, failure);
         }
         let operation = self
             .backend
@@ -724,14 +801,14 @@ impl<'b> AssetExecutor<'b> {
             .path()
             .expect("the registry outlives this attempt")
             .to_path_buf();
-        if !self.backend.save_texture(&staged) {
+        if let Err(detail) = self.backend.save_texture(&staged) {
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::SaveFailed,
                 "Failed to save Texture.",
             )
             .with_path(&output)
             .with_operation("save_texture")
-            .with_service_detail(self.backend.texture_failure_detail());
+            .with_service_detail(detail);
         }
         let Some(output_before) = asset_fingerprint(&staged) else {
             return AssetExecutionResult::failed(
@@ -801,19 +878,21 @@ impl<'b> AssetExecutor<'b> {
                 .is_some_and(PinnedSource::remove_verified);
             removed
         });
-        if !reported || !removed {
+        if reported.is_err() || !removed {
             let usable = retained_usable(&source_pin);
             let mutation = if usable {
                 mutation
             } else {
                 MutationState::PartialOrUnknown
             };
+            // A backend that reported success without removing anything has
+            // no detail to give.
             return removal_failed(
                 "Failed to remove converted Texture source.",
                 mutation,
                 usable,
             )
-            .with_service_detail(self.backend.texture_failure_detail());
+            .with_service_detail(reported.err().unwrap_or_default());
         }
         AssetExecutionResult::success(CompletedMutation::Committed)
     }
@@ -852,13 +931,8 @@ impl<'b> AssetExecutor<'b> {
                 }
             }
         }
-        if !self.backend.load_mesh(path, variant) {
-            return AssetExecutionResult::failed(
-                AssetExecutionFailure::LoadFailed,
-                "Failed to load Mesh.",
-            )
-            .with_path(path)
-            .with_operation("load_mesh");
+        if let Err(failure) = self.backend.load_mesh(path, variant) {
+            return load_failed("Mesh", "load_mesh", path, failure);
         }
         let mut would_change = false;
         if asset.operations().contains(AssetOperation::Optimization) {
@@ -909,10 +983,19 @@ impl<'b> AssetExecutor<'b> {
             .path()
             .expect("the registry outlives this attempt")
             .to_path_buf();
-        if !self.backend.save_mesh(&staged) || asset_fingerprint(&staged).is_none() {
+        if let Err(detail) = self.backend.save_mesh(&staged) {
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::SaveFailed,
-                "Failed to save a usable Mesh staging file.",
+                "Failed to save Mesh.",
+            )
+            .with_path(path)
+            .with_operation("save_mesh")
+            .with_service_detail(detail);
+        }
+        if asset_fingerprint(&staged).is_none() {
+            return AssetExecutionResult::failed(
+                AssetExecutionFailure::SaveFailed,
+                "Saved Mesh is not a usable regular file.",
             )
             .with_path(path)
             .with_operation("save_mesh");
@@ -1027,8 +1110,14 @@ impl<'b> AssetExecutor<'b> {
     }
 }
 
-/// Finishes one attempt as C++ `MainOptimizer::finishAttempt` did: logs a
-/// failure and, in Apply, quarantines a Texture or Mesh that failed to load.
+/// Finishes one attempt: logs a failure and, in Apply, quarantines a Texture
+/// or Mesh whose content the backend could not decode (`LoadFailed`).
+///
+/// A `ReadFailed` Asset is left alone: the backend could not read it at all,
+/// because another program holds it, access is denied, or decoding ran out of
+/// memory, so nothing says the file is corrupt. Renaming it would hide a
+/// sound file from the game for a passing condition. It stays packable, which
+/// is right for a sound file, so the attempt stays safe to continue.
 ///
 /// Quarantine renames the Asset to `<name>.caobad` (or `.caobad.1`, `.2`, …)
 /// with a no-replace rename, so a later run and Archive creation leave it

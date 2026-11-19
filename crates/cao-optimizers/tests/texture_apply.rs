@@ -7,9 +7,10 @@
 
 mod common;
 
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::Path;
 
-use cao_core::execution::MutationState;
+use cao_core::execution::{AssetExecutionFailure, MutationState};
 use cao_core::run::RunOutcome;
 use cao_optimizers::composition::run_service;
 use cao_optimizers::device::GpuDevice;
@@ -89,6 +90,65 @@ fn a_tes5_apply_publishes_bc3_textures_and_quarantines_broken_ones() {
     }
     assert_eq!(result.mutation_summaries()[0].committed, 2);
     assert_eq!(staging_leftovers(&mod_root), STAGING_CONTROL_FILES);
+}
+
+/// Audit BE-2: a Texture another program holds open without sharing it
+/// cannot be read. That says nothing about the Texture, so the attempt is a
+/// read failure with its cause, which Apply never quarantines, and the run
+/// carries on with the other Textures.
+///
+/// This runs as a Dry Run: under Apply the destination capture opens the
+/// Texture before the load does and meets the lock first (audit CORE-2).
+#[test]
+fn a_texture_that_cannot_be_read_is_a_read_failure() {
+    let _serial = serial();
+    let app = app_dir("apply-tes5-unreadable-texture");
+    let mod_root = app.join("mods").join("Mod");
+    write_dds(
+        &mod_root.join("textures/plain.dds"),
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        64,
+    );
+    let locked = mod_root.join("textures/locked.dds");
+    write_dds(&locked, DXGI_FORMAT_R8G8B8A8_UNORM, 64);
+    let original = std::fs::read(&locked).unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&locked)
+        .unwrap();
+
+    let mut options = apply_textures(&app, "TES5", &mod_root);
+    options.dry_run = true;
+
+    let result = start_and_wait(&run_service(&app), "TES5", &options);
+    drop(lock);
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::CompletedWithFailures,
+        "{:?}",
+        result.failures()
+    );
+    let failed: Vec<_> = result
+        .asset_attempts()
+        .iter()
+        .filter(|attempt| !attempt.result.succeeded())
+        .collect();
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0].asset.execution_path(), locked);
+    let failed = &failed[0].result;
+    assert_eq!(failed.failure(), Some(AssetExecutionFailure::ReadFailed));
+    assert!(!failed.service_detail().is_empty());
+    assert_eq!(failed.mutation_state(), MutationState::None);
+    assert!(failed.safe_to_continue());
+    assert_eq!(std::fs::read(&locked).unwrap(), original);
+    assert!(!mod_root.join("textures/locked.dds.caobad").exists());
+    assert_eq!(
+        result.asset_attempts().len(),
+        2,
+        "the other Texture is still evaluated"
+    );
 }
 
 /// Spec (#494): mipmaps are generated on the Run Worker. An 8-bit Texture's

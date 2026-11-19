@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 
 use cao_core::execution::{
     AssetExecutionBackend, AssetExecutionFailure, AssetExecutionResult, AssetExecutor,
-    ExecutionFailureCategory, MutationState, OperationResult,
+    ExecutionFailureCategory, LoadFailure, MutationState, OperationResult,
 };
 use cao_core::routing::{
     AssetOperation, AssetOperations, AssetRouter, ExecutionMode, MeshVariant, OptimizerTarget,
@@ -134,9 +134,18 @@ fn block_release(root: &Path) -> bool {
     .is_ok()
 }
 
-type LoadHook = Box<dyn FnMut(&Path) -> bool + Send>;
+type LoadHook = Box<dyn FnMut(&Path) -> Result<(), LoadFailure> + Send>;
+/// Returns whether the save succeeded; a failure carries [`SAVE_DETAIL`].
 type SaveHook = Box<dyn FnMut(&Path) -> bool + Send>;
+/// Returns whether to report the removal as done; a failure carries
+/// [`REMOVAL_DETAIL`]. Reporting it done never makes it so: the executor also
+/// requires the verified removal to have happened.
 type RemoveHook = Box<dyn FnMut(&Path, &mut dyn FnMut() -> bool) -> bool + Send>;
+
+/// The detail [`HookBackend`] gives a failed save.
+const SAVE_DETAIL: &str = "synthetic save failure";
+/// The detail [`HookBackend`] gives a failed source removal.
+const REMOVAL_DETAIL: &str = "synthetic removal failure";
 type AnimationHook = Box<dyn FnMut(Option<&Path>) -> OperationResult + Send>;
 
 /// An Asset Execution Backend whose every call can be scripted.
@@ -195,29 +204,33 @@ impl HookBackend {
         self.calls.iter().filter(|made| *made == call).count()
     }
 
-    fn load(&mut self, call: &'static str, path: &Path) -> bool {
+    fn load(&mut self, call: &'static str, path: &Path) -> Result<(), LoadFailure> {
         self.enter(call);
         self.loaded = Some(path.to_path_buf());
         match self.load.as_mut() {
             Some(hook) => hook(path),
-            None => true,
+            None => Ok(()),
         }
     }
 
-    fn save(&mut self, call: &'static str, path: &Path) -> bool {
+    fn save(&mut self, call: &'static str, path: &Path) -> Result<(), String> {
         self.saved = Some(path.to_path_buf());
         self.enter(call);
         if let Some(hook) = self.save.as_mut() {
-            return hook(path);
+            return if hook(path) {
+                Ok(())
+            } else {
+                Err(SAVE_DETAIL.to_owned())
+            };
         }
         let name = self.loaded.as_ref().unwrap().file_name().unwrap();
         std::fs::write(path, format!("saved {}", name.to_string_lossy())).unwrap();
-        true
+        Ok(())
     }
 }
 
 impl AssetExecutionBackend for HookBackend {
-    fn load_texture(&mut self, path: &Path, variant: TextureVariant) -> bool {
+    fn load_texture(&mut self, path: &Path, variant: TextureVariant) -> Result<(), LoadFailure> {
         self.texture_variant = Some(variant);
         self.load("load_texture", path)
     }
@@ -233,23 +246,28 @@ impl AssetExecutionBackend for HookBackend {
         self.operation.clone()
     }
 
-    fn save_texture(&mut self, path: &Path) -> bool {
+    fn save_texture(&mut self, path: &Path) -> Result<(), String> {
         self.save("save_texture", path)
     }
 
-    fn remove_texture(&mut self, path: &Path, remove_verified: &mut dyn FnMut() -> bool) -> bool {
+    fn remove_texture(
+        &mut self,
+        path: &Path,
+        remove_verified: &mut dyn FnMut() -> bool,
+    ) -> Result<(), String> {
         self.enter("remove_texture");
-        match self.remove.as_mut() {
+        let removed = match self.remove.as_mut() {
             Some(hook) => hook(path, remove_verified),
             None => remove_verified(),
+        };
+        if removed {
+            Ok(())
+        } else {
+            Err(REMOVAL_DETAIL.to_owned())
         }
     }
 
-    fn texture_failure_detail(&self) -> String {
-        "texture service detail".to_owned()
-    }
-
-    fn load_mesh(&mut self, path: &Path, variant: MeshVariant) -> bool {
+    fn load_mesh(&mut self, path: &Path, variant: MeshVariant) -> Result<(), LoadFailure> {
         self.mesh_variant = Some(variant);
         self.load("load_mesh", path)
     }
@@ -271,7 +289,7 @@ impl AssetExecutionBackend for HookBackend {
         self.operation.clone()
     }
 
-    fn save_mesh(&mut self, path: &Path) -> bool {
+    fn save_mesh(&mut self, path: &Path) -> Result<(), String> {
         self.save("save_mesh", path)
     }
 
@@ -359,7 +377,7 @@ impl AssetBackendFactory for SharedBackend {
 
 /// Every call goes to the shared [`HookBackend`].
 impl AssetExecutionBackend for SharedBackend {
-    fn load_texture(&mut self, path: &Path, variant: TextureVariant) -> bool {
+    fn load_texture(&mut self, path: &Path, variant: TextureVariant) -> Result<(), LoadFailure> {
         self.backend().load_texture(path, variant)
     }
 
@@ -371,19 +389,19 @@ impl AssetExecutionBackend for SharedBackend {
         self.backend().optimize_texture(operations, mode)
     }
 
-    fn save_texture(&mut self, path: &Path) -> bool {
+    fn save_texture(&mut self, path: &Path) -> Result<(), String> {
         self.backend().save_texture(path)
     }
 
-    fn remove_texture(&mut self, path: &Path, remove_verified: &mut dyn FnMut() -> bool) -> bool {
+    fn remove_texture(
+        &mut self,
+        path: &Path,
+        remove_verified: &mut dyn FnMut() -> bool,
+    ) -> Result<(), String> {
         self.backend().remove_texture(path, remove_verified)
     }
 
-    fn texture_failure_detail(&self) -> String {
-        self.backend().texture_failure_detail()
-    }
-
-    fn load_mesh(&mut self, path: &Path, variant: MeshVariant) -> bool {
+    fn load_mesh(&mut self, path: &Path, variant: MeshVariant) -> Result<(), LoadFailure> {
         self.backend().load_mesh(path, variant)
     }
 
@@ -400,7 +418,7 @@ impl AssetExecutionBackend for SharedBackend {
         self.backend().maintain_mesh_references(mode)
     }
 
-    fn save_mesh(&mut self, path: &Path) -> bool {
+    fn save_mesh(&mut self, path: &Path) -> Result<(), String> {
         self.backend().save_mesh(path)
     }
 
@@ -500,6 +518,7 @@ fn a_failed_texture_save_preserves_the_original_and_its_staging_is_removed() {
     let result = execute_and_clean(&asset, &mut backend, &root);
 
     assert_eq!(result.failure(), Some(AssetExecutionFailure::SaveFailed));
+    assert_eq!(result.service_detail(), SAVE_DETAIL);
     assert_eq!(result.mutation_state(), MutationState::None);
     assert!(result.safe_to_continue());
     assert_eq!(result.affected_path(), source);
@@ -656,7 +675,7 @@ fn a_source_replaced_during_load_is_never_removed() {
                 *loaded.lock().unwrap() = read(&source);
                 std::fs::rename(&source, &old).unwrap();
                 std::fs::write(&source, "newcomer").unwrap();
-                true
+                Ok(())
             }
         })),
         save: Some(Box::new({
@@ -701,7 +720,7 @@ fn a_native_texture_replaced_during_load_is_never_published_over() {
                 *loaded.lock().unwrap() = read(&native);
                 std::fs::rename(&native, &old).unwrap();
                 std::fs::write(&native, "newcomer").unwrap();
-                true
+                Ok(())
             }
         })),
         save: Some(Box::new({
@@ -1245,6 +1264,7 @@ fn a_failed_mesh_save_preserves_the_original() {
     let result = execute_and_clean(&asset, &mut backend, &root);
 
     assert_eq!(result.failure(), Some(AssetExecutionFailure::SaveFailed));
+    assert_eq!(result.service_detail(), SAVE_DETAIL);
     assert_eq!(result.mutation_state(), MutationState::None);
     assert!(result.safe_to_continue());
     assert_eq!(result.affected_path(), source);
@@ -1310,7 +1330,13 @@ fn an_ordinary_mesh_failure_names_its_operation_and_is_safe_to_continue() {
         write(&source, "original");
         let mut backend = HookBackend {
             operation: OperationResult::failed("synthetic Mesh service error"),
-            load: (boundary == "load_mesh").then(|| Box::new(|_: &Path| false) as LoadHook),
+            load: (boundary == "load_mesh").then(|| {
+                Box::new(|_: &Path| {
+                    Err(LoadFailure::Undecodable(
+                        "synthetic Mesh service error".to_owned(),
+                    ))
+                }) as LoadHook
+            }),
             ..HookBackend::default()
         };
         let requested = if boundary == "maintain_mesh_references" {
@@ -1332,9 +1358,8 @@ fn an_ordinary_mesh_failure_names_its_operation_and_is_safe_to_continue() {
         assert_eq!(result.mutation_state(), MutationState::None, "{boundary}");
         assert!(result.safe_to_continue(), "{boundary}");
         assert_eq!(result.affected_path(), source, "{boundary}");
-        if boundary != "load_mesh" {
-            assert_eq!(result.service_detail(), "synthetic Mesh service error");
-        }
+        // A Mesh load failure carries the backend's cause too (audit CORE-9).
+        assert_eq!(result.service_detail(), "synthetic Mesh service error");
         assert_eq!(backend.count("save_mesh"), 0, "{boundary}");
         assert_eq!(read(&source), "original", "{boundary}");
     }

@@ -16,8 +16,9 @@
 //! - That version mismatch is never logged.
 //!
 //! A C++ exception inside nifly ([`NifError::Exception`]) is returned from
-//! here; the backend turns it into the outcome C++ CAO reported for it (see
-//! `unless_exception` in [`crate::backend`]).
+//! here like any other nifly error; the backend reports it as the failure of
+//! the call that raised it, and an exception on load as content it cannot
+//! decode, which Apply quarantines (see [`crate::backend`]).
 //!
 //! Headpart Meshes (#505) are those the run's [`HeadpartList`] names and those
 //! on a facegen path. Deviation 17 fixes two things C++ did:
@@ -100,8 +101,9 @@ impl MeshOptimizer {
     /// Loads the Mesh at `path`, as a terrain file for a Terrain Mesh.
     ///
     /// # Errors
-    /// The [`NifError`] nifly's load reported; it is logged here, as C++
-    /// `loadMesh` logged it.
+    /// The [`NifError`] the load reported, logged here: [`NifError::Read`]
+    /// when the file could not be read, otherwise nifly's refusal of its
+    /// bytes.
     pub fn load(&self, path: &Path, variant: MeshVariant) -> Result<Nif, NifError> {
         log::trace!("Loading mesh: {}", path.display());
         let mut nif = Nif::new();

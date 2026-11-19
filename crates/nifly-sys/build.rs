@@ -66,9 +66,9 @@ fn build_nifly() {
 
 /// Links CAO's application manifest into every artifact of this crate.
 ///
-/// The manifest's `longPathAware` decides how nifly's `std::ifstream` and
-/// `std::ofstream` treat long paths, so the tests must run under it to
-/// exercise what the app will.
+/// The manifest's `longPathAware` decides how the shim's `std::ofstream`
+/// treats long output paths, so the tests must run under it to exercise what
+/// the app will. Loads read the file in Rust, which needs no manifest.
 fn embed_manifest() {
     const RESOURCE_SCRIPT: &str = "../../resources/cao-manifest.rc";
     const MANIFEST: &str = "../../resources/Cathedral_Assets_Optimizer.manifest";
