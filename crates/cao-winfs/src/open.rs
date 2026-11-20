@@ -102,6 +102,13 @@ impl Open {
     }
 
     /// Adds `FILE_FLAG_BACKUP_SEMANTICS`, which opening a directory needs.
+    ///
+    /// Use it only to open a directory, or for an attribute-only open of an
+    /// entry that may be one. In an elevated administrator's process, a
+    /// backup-semantics open is not refused by other handles' share modes, so
+    /// a *data* open of a file that relies on being refused by an exclusive
+    /// holder must leave it off. This was observed on the GitHub Actions
+    /// Windows runner, where `SeBackupPrivilege` is held though disabled.
     pub const fn directory(self) -> Self {
         Self {
             directory: true,

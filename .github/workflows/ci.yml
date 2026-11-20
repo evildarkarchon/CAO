@@ -40,9 +40,6 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Show the runner's token privileges (diagnostic)
-        run: whoami /priv
-
       - name: Turn on Developer Mode
         # cao-winfs's build script probes for file-symlink privilege and
         # ignores the symlink tests without it. Developer Mode grants it, and
