@@ -22,7 +22,8 @@ anyhow.workspace = true
 cao-archive.workspace = true
 # Profiles, the options model and the settings model the window edits (#482).
 cao-profiles.workspace = true
-# The Slint-drawn menu bar's environment switch; the only `unsafe` call the GUI makes (#508).
+# The Slint-drawn menu bar's environment switch (#508) and a monitor's work area
+# (GUI-6): the only `unsafe` calls the GUI makes.
 cao-gui-unsafe.workspace = true
 # The compiled `.slint` window and dialogs, kept apart because Slint's generated code needs `unsafe` (#508).
 cao-gui-ui.workspace = true

@@ -1,6 +1,6 @@
 //! The unwanted-formats dialog (#509), driven headlessly through the real
 //! `.slint` components (spec seam 4). It edits a scratch copy of the Textures
-//! tab's list: OK commits it, and Cancel or the title bar discard it
+//! tab's list: OK commits it, and Cancel, Escape or the title bar discard it
 //! (deviation 2; C++ committed on any close).
 
 mod common;
@@ -12,7 +12,7 @@ use cao_gui::modal_depth;
 use cao_gui::ui::{FormatsDialog, TexturesTab};
 use cao_profiles::{ClosedSet, Profiles};
 use common::*;
-use slint::platform::WindowEvent;
+use slint::platform::{Key, WindowEvent};
 use slint::{ComponentHandle, Model};
 
 /// What the shipped SSE profile lists, by name and in `profile.ini` order.
@@ -64,14 +64,22 @@ fn open_dialog(app: &App) -> FormatsDialog {
     dialog
 }
 
+/// How the dialog is closed without OK.
+#[derive(Debug, Clone, Copy)]
+enum Discard {
+    Cancel,
+    TitleBar,
+    Escape,
+}
+
 #[test]
-fn cancel_and_the_title_bar_discard_the_dialog_s_edits() {
+fn cancel_escape_and_the_title_bar_discard_the_dialog_s_edits() {
     headless();
     let app_dir = custom_app("formats_cancel");
     let (app, _desktop) = open(&app_dir);
     assert_eq!(listed(&app), SSE_UNWANTED);
 
-    for title_bar in [false, true] {
+    for how in [Discard::Cancel, Discard::TitleBar, Discard::Escape] {
         let dialog = open_dialog(&app);
         enter(&dialog, "Search", "BC7");
         click(&dialog, "BC7_UNORM");
@@ -80,15 +88,16 @@ fn cancel_and_the_title_bar_discard_the_dialog_s_edits() {
         click(&dialog, "B5G6R5_UNORM");
         assert!(!checked(&dialog, "B5G6R5_UNORM"));
 
-        if title_bar {
-            dialog.window().dispatch_event(WindowEvent::CloseRequested);
-        } else {
-            click(&dialog, "Cancel");
+        match how {
+            Discard::Cancel => click(&dialog, "Cancel"),
+            Discard::TitleBar => dialog.window().dispatch_event(WindowEvent::CloseRequested),
+            // From the search box, which the dialog focuses on opening.
+            Discard::Escape => press(&dialog, Key::Escape),
         }
         next_turn();
-        assert!(app.formats_dialog().is_none(), "title bar: {title_bar}");
+        assert!(app.formats_dialog().is_none(), "{how:?}");
         assert_eq!(modal_depth(), 0);
-        assert_eq!(listed(&app), SSE_UNWANTED, "title bar: {title_bar}");
+        assert_eq!(listed(&app), SSE_UNWANTED, "{how:?}");
     }
 
     // Nothing reached the profile, and the next dialog starts from the list.
@@ -168,4 +177,33 @@ fn ok_commits_the_dialog_and_a_one_element_list_is_kept() {
             .any(|line| line.starts_with("texturesUnwantedFormats=@Variant(")),
         "{ini}"
     );
+}
+
+/// The dialog, with a title bar, fits the smallest work area CAO is used on:
+/// 1920×1080 at 150% with a 48px taskbar leaves 688 logical pixels, less than
+/// 1366×768 at 100% does. Its OK and Cancel row lies inside it (GUI-6).
+#[test]
+fn the_dialog_fits_a_small_screen_with_its_buttons_inside() {
+    /// The work area's height in logical pixels: (1080 - 48) / 1.5.
+    const WORK_AREA_HEIGHT: f32 = 688.0;
+    /// A Windows 11 title bar at 100%, with some slack.
+    const TITLE_BAR: f32 = 40.0;
+    headless();
+    let (app, _desktop) = open(&custom_app("formats_size"));
+    let dialog = open_dialog(&app);
+    let height = dialog
+        .window()
+        .size()
+        .to_logical(dialog.window().scale_factor())
+        .height;
+
+    assert!(height + TITLE_BAR <= WORK_AREA_HEIGHT, "{height}");
+    for button in ["OK", "Cancel"] {
+        let button = control(&dialog, button);
+        assert!(
+            button.absolute_position().y + button.size().height <= height,
+            "{:?} below {height}",
+            button.absolute_position()
+        );
+    }
 }

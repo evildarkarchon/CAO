@@ -3,6 +3,12 @@
    <application xmlns="urn:schemas-microsoft-com:asm.v3">
       <windowsSettings xmlns:ws2="http://schemas.microsoft.com/SMI/2016/WindowsSettings">
          <ws2:longPathAware>true</ws2:longPathAware>
+         <!-- Per-monitor DPI awareness from process start, as winit requests it at
+              run time: boxes shown before any window exists, such as the startup
+              error, are drawn at the monitor's DPI instead of being stretched.
+              Windows 10 1607 and later read dpiAwareness; earlier ones dpiAware. -->
+         <ws2:dpiAwareness>PerMonitorV2, PerMonitor</ws2:dpiAwareness>
+         <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
       </windowsSettings>
    </application>
    <asmv3:application>
@@ -10,4 +16,21 @@
          <activeCodePage>UTF-8</activeCodePage>
       </asmv3:windowsSettings>
    </asmv3:application>
+   <!-- Windows 10 and 11, the only Windows Rust's MSVC target supports. Without
+        it Windows treats the process as written for Windows 8 and reports that
+        version to it. -->
+   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+      <application>
+         <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      </application>
+   </compatibility>
+   <!-- Common Controls 6: rfd draws every message box with TaskDialogIndirect,
+        which only version 6 of comctl32.dll exports; without this entry Windows
+        loads version 5.82 and the exe fails to start. It also gives the native
+        dialogs the current visual style. -->
+   <dependency>
+      <dependentAssembly>
+         <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
+      </dependentAssembly>
+   </dependency>
 </assembly>

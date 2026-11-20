@@ -52,7 +52,8 @@ pub use volume::{available_space, volume_guid_path, volume_mount_point};
 mod tests {
     use windows_sys::Win32::Globalization::{CP_UTF8, GetACP};
     use windows_sys::Win32::System::LibraryLoader::{
-        FindResourceW, GetModuleHandleW, LoadResource, LockResource, SizeofResource,
+        FindResourceW, GetModuleHandleW, GetProcAddress, LoadLibraryW, LoadResource, LockResource,
+        SizeofResource,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CREATEPROCESS_MANIFEST_RESOURCE_ID, RT_MANIFEST,
@@ -73,6 +74,75 @@ mod tests {
         // SAFETY: GetACP takes no arguments and only reads process state.
         let code_page = unsafe { GetACP() };
         assert_eq!(code_page, CP_UTF8);
+    }
+
+    /// The manifest's Common Controls 6 dependency takes effect: loading
+    /// `comctl32.dll` in this process gives version 6, the only one that
+    /// exports `TaskDialogIndirect`. `cao-gui` draws its message boxes with
+    /// it (rfd's `common-controls-v6`), and an exe without version 6 fails to
+    /// start with `STATUS_ENTRYPOINT_NOT_FOUND` (GUI-14).
+    #[test]
+    fn common_controls_6_is_activated() {
+        let name: Vec<u16> = "comctl32.dll\0".encode_utf16().collect();
+        // SAFETY: `name` is a NUL-terminated UTF-16 string that outlives the
+        // call, and the procedure name is a NUL-terminated byte literal. The
+        // module stays loaded for the life of the process (it is never freed
+        // here), and the returned procedure address is only tested for
+        // presence, never called.
+        let task_dialog = unsafe {
+            let module = LoadLibraryW(name.as_ptr());
+            assert!(!module.is_null(), "comctl32.dll did not load");
+            GetProcAddress(module, c"TaskDialogIndirect".as_ptr().cast())
+        };
+        assert!(
+            task_dialog.is_some(),
+            "comctl32.dll is version 5: the manifest's Common Controls 6 entry is missing"
+        );
+    }
+
+    /// The manifest makes the process per-monitor DPI aware (version 2) from
+    /// its start, before anything could set it at run time (GUI-14). A thread
+    /// takes the process's awareness unless it sets its own, and this one
+    /// does not.
+    #[test]
+    fn the_process_is_per_monitor_v2_dpi_aware() {
+        use windows_sys::Win32::UI::HiDpi::{
+            AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            GetThreadDpiAwarenessContext,
+        };
+        // SAFETY: both calls take and return plain values; the context
+        // handles are pseudo-handles that need no release.
+        let aware = unsafe {
+            AreDpiAwarenessContextsEqual(
+                GetThreadDpiAwarenessContext(),
+                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            )
+        };
+        assert_ne!(aware, 0, "the process is not per-monitor v2 DPI aware");
+    }
+
+    /// The manifest's `supportedOS` entry for Windows 10 and 11 takes effect:
+    /// without it `GetVersionExW` reports Windows 8 (6.2) to the process.
+    #[test]
+    fn windows_reports_its_real_version() {
+        use windows_sys::Win32::System::SystemInformation::{GetVersionExW, OSVERSIONINFOW};
+        let mut info = OSVERSIONINFOW {
+            dwOSVersionInfoSize: std::mem::size_of::<OSVERSIONINFOW>() as u32,
+            dwMajorVersion: 0,
+            dwMinorVersion: 0,
+            dwBuildNumber: 0,
+            dwPlatformId: 0,
+            szCSDVersion: [0; 128],
+        };
+        // SAFETY: `info` is a live, writable OSVERSIONINFOW whose size field
+        // names its own size, as the call requires.
+        let ok = unsafe { GetVersionExW(&mut info) };
+        assert_ne!(ok, 0, "GetVersionExW failed");
+        assert_eq!(
+            (info.dwMajorVersion, info.dwMinorVersion),
+            (10, 0),
+            "Windows reports an older version: the supportedOS entry is missing"
+        );
     }
 
     /// Reads the process manifest resource from this test executable and

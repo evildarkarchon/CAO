@@ -33,6 +33,25 @@ pub trait Desktop {
         then: Box<dyn FnOnce()>,
     );
 
+    /// Asks a two-way question in a message box modal to `owner`, with one
+    /// button labelled `yes` and one labelled `no`. `then` receives `true`
+    /// for `yes`, and `false` for `no` or when the box is closed some other
+    /// way. `no` comes first and is the default that Enter picks, so a
+    /// question whose `yes` loses something should be asked this way round.
+    // The two labels belong with the question; a struct for one call site
+    // would only move the same seven values around.
+    #[allow(clippy::too_many_arguments)]
+    fn ask(
+        &self,
+        owner: &slint::Window,
+        level: MessageLevel,
+        title: &str,
+        text: &str,
+        yes: &str,
+        no: &str,
+        then: Box<dyn FnOnce(bool)>,
+    );
+
     /// Asks for a folder, starting in `start` when given, modal to `owner`.
     /// `then` receives `None` when the user cancels.
     fn pick_folder(
@@ -48,9 +67,10 @@ pub trait Desktop {
 }
 
 /// The real dialogs: `rfd` 0.17 with `set_parent` for owned modality (#462),
-/// and Explorer for opening. `rfd`'s `common-controls-v6` feature stays off; it
-/// crashes with `STATUS_ENTRYPOINT_NOT_FOUND` without a ComCtl32 v6 manifest
-/// entry (#471).
+/// and Explorer for opening. `rfd`'s `common-controls-v6` feature draws the
+/// message boxes as task dialogs, which can label their buttons; it relies on
+/// the manifest's ComCtl32 v6 entry, without which the exe would fail to start
+/// with `STATUS_ENTRYPOINT_NOT_FOUND` (#462, GUI-14).
 pub struct NativeDesktop;
 
 impl Desktop for NativeDesktop {
@@ -63,11 +83,7 @@ impl Desktop for NativeDesktop {
         then: Box<dyn FnOnce()>,
     ) {
         let mut dialog = rfd::AsyncMessageDialog::new()
-            .set_level(match level {
-                MessageLevel::Info => rfd::MessageLevel::Info,
-                MessageLevel::Warning => rfd::MessageLevel::Warning,
-                MessageLevel::Error => rfd::MessageLevel::Error,
-            })
+            .set_level(rfd_level(level))
             .set_title(title)
             .set_description(text)
             .set_buttons(rfd::MessageButtons::Ok);
@@ -79,6 +95,36 @@ impl Desktop for NativeDesktop {
         let _ = slint::spawn_local(async move {
             dialog.show().await;
             then();
+        });
+    }
+
+    fn ask(
+        &self,
+        owner: &slint::Window,
+        level: MessageLevel,
+        title: &str,
+        text: &str,
+        yes: &str,
+        no: &str,
+        then: Box<dyn FnOnce(bool)>,
+    ) {
+        // `no` in rfd's OK slot: the task dialog makes its first button the
+        // default, and the default should be the answer that loses nothing.
+        // Escape and the title bar return `Cancel`, which is not `yes` either.
+        let dialog = rfd::AsyncMessageDialog::new()
+            .set_level(rfd_level(level))
+            .set_title(title)
+            .set_description(text)
+            .set_buttons(rfd::MessageButtons::OkCancelCustom(
+                no.to_owned(),
+                yes.to_owned(),
+            ))
+            .set_parent(&owner.window_handle());
+        let yes = yes.to_owned();
+        // As in `message`: without an event loop nothing could run `then`.
+        let _ = slint::spawn_local(async move {
+            let answer = dialog.show().await;
+            then(answer == rfd::MessageDialogResult::Custom(yes));
         });
     }
 
@@ -106,5 +152,14 @@ impl Desktop for NativeDesktop {
         // nothing useful (it is 1 even on success), and a failure to start it
         // leaves nothing the user could act on, so the result is ignored.
         let _ = std::process::Command::new("explorer").arg(target).spawn();
+    }
+}
+
+/// rfd's name for a message box's level.
+fn rfd_level(level: MessageLevel) -> rfd::MessageLevel {
+    match level {
+        MessageLevel::Info => rfd::MessageLevel::Info,
+        MessageLevel::Warning => rfd::MessageLevel::Warning,
+        MessageLevel::Error => rfd::MessageLevel::Error,
     }
 }

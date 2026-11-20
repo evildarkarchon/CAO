@@ -67,8 +67,10 @@ slint-build = "~1.18"
 # `cao-gui`'s headless test backend (#508). It is unversioned internals, so it
 # must equal the resolved `slint` exactly; move both together.
 i-slint-backend-testing = "=1.18.1"
-# `common-controls-v6` stays off; the manifest carries no ComCtl32 v6 entry (#471).
-rfd = "0.17"
+# `common-controls-v6` draws message boxes with `TaskDialogIndirect`, which can label
+# its buttons. It needs the manifest's ComCtl32 v6 entry: without it the exe fails
+# to start with `STATUS_ENTRYPOINT_NOT_FOUND` (#462, GUI-14).
+rfd = { version = "0.17", features = ["common-controls-v6"] }
 raw-window-handle = "0.6"
 # Errors, logging and parallelism (#468, #470). `anyhow` is for the binary only.
 thiserror = "2"
