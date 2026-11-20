@@ -159,8 +159,10 @@ impl PublicationTarget {
 
 /// One-use authority to publish a durable staged file while its registry lives.
 ///
-/// Dropping an unpublished receipt leaves its temporary path owned, so Safety
-/// Cleanup or a later recovery removes it.
+/// A producer that will not publish calls [`Self::abandon`], which removes the
+/// staged file and its registration at once; a publication that fails before
+/// its rename does the same. Dropping an unpublished receipt leaves its
+/// temporary path owned, so Safety Cleanup or a later recovery removes it.
 #[derive(Debug)]
 #[must_use = "an unpublished staged file is removed by Safety Cleanup"]
 pub struct PublicationReceipt {
@@ -204,7 +206,8 @@ impl PublicationReceipt {
     ///
     /// It never fails outright: every error comes back as the state reached
     /// before it, so a Committed Mutation is never hidden. A dropped registry
-    /// returns `NotPublished`.
+    /// returns `NotPublished`. A `NotPublished` failure abandons the staged
+    /// file, as [`Self::abandon`] does, since nothing can publish it later.
     pub fn publish(self, destination: &Path, policy: PublicationPolicy) -> PublicationResult {
         let Some(owner) = self.owner.upgrade() else {
             return PublicationResult {
@@ -248,7 +251,8 @@ impl PublicationReceipt {
     ///
     /// # Errors
     /// Nothing was published: every failure here precedes the destination
-    /// mutation, because no release follows it.
+    /// mutation, because no release follows it. The staged file is then
+    /// abandoned, as [`Self::abandon`] does.
     pub fn publish_deferring_release(
         self,
         destination: &Path,
@@ -270,11 +274,39 @@ impl PublicationReceipt {
             &mut state,
         )
     }
+
+    /// Deletes the staged file without publishing it and releases its
+    /// registration, consuming the receipt.
+    ///
+    /// For a producer whose attempt failed, or found nothing to change,
+    /// after staging: without it the empty sibling would stay beside the
+    /// user's Asset, and its record in the growing ownership manifest, until
+    /// Safety Cleanup.
+    ///
+    /// # Errors
+    /// The registry was dropped or closed, or the deletion or release
+    /// failed. Whatever remains stays owned, so Safety Cleanup or a later
+    /// recovery removes it; the caller need not stop for it.
+    pub fn abandon(self) -> Result<(), StagingError> {
+        let Some(owner) = self.owner.upgrade() else {
+            return Err(StagingError::Invalid(
+                "The Temporary Ownership scope ended.".to_owned(),
+            ));
+        };
+        let mut inner = lock(&owner);
+        if inner.cleaned {
+            return Err(StagingError::Invalid(
+                "Temporary artifact registration is closed.".to_owned(),
+            ));
+        }
+        inner.staging.abandon_file(&self.temporary)
+    }
 }
 
 /// Validates, flushes, publishes natively, then releases the temporary name
 /// or, for [`Release::Deferred`], records it for a later joint release.
-/// `state` records how far it got before any error.
+/// `state` records how far it got before any error. A failure before the
+/// rename abandons the staged file.
 fn publish(
     inner: &mut Inner,
     receipt: &PublicationReceipt,
@@ -299,6 +331,39 @@ fn publish(
             "Asset publication changed its staged destination.".to_owned(),
         ));
     }
+    if let Err(error) = rename_into_place(receipt, destination, policy, state) {
+        // Nothing was published, and nothing can publish this staged file
+        // later, so it is removed now rather than left to Safety Cleanup. A
+        // failed removal leaves it owned, which is where it would have been.
+        if let Err(abandon) = inner.staging.abandon_file(&receipt.temporary) {
+            log::warn!(
+                "{} is left for Safety Cleanup: {abandon}",
+                receipt.temporary.display()
+            );
+        }
+        return Err(error);
+    }
+    // The destination is committed. A failed release must keep that fact and
+    // leave the old temporary name under durable ownership.
+    match release {
+        Release::Now => inner.staging.release_file(&receipt.temporary)?,
+        // Nothing here can fail, so a deferred publication that returns an
+        // error has not reached the rename in `rename_into_place`.
+        Release::Deferred => inner.unreleased.push(receipt.temporary.clone()),
+    }
+    inner.artifacts[receipt.index].committed = true;
+    Ok(())
+}
+
+/// Revalidates the destination, flushes the staged file and renames it over
+/// the destination natively. `state` becomes `PublishedStillOwned` at the
+/// rename, the last step, so an error always means nothing was published.
+fn rename_into_place(
+    receipt: &PublicationReceipt,
+    destination: &Path,
+    policy: PublicationPolicy,
+    state: &mut PublicationState,
+) -> Result<(), StagingError> {
     let pinned = pin_destination(&receipt.root, destination, receipt.staged_parent.as_ref())?;
     {
         let staged = flush_staged_file(&receipt.temporary, &pinned.parent)?;
@@ -321,15 +386,6 @@ fn publish(
             .map_err(StagingError::io("Publish staged file to", destination))?;
         *state = PublicationState::PublishedStillOwned;
     }
-    // The destination is committed. A failed release must keep that fact and
-    // leave the old temporary name under durable ownership.
-    match release {
-        Release::Now => inner.staging.release_file(&receipt.temporary)?,
-        // Nothing here can fail, so a deferred publication that returns an
-        // error has not reached the rename above.
-        Release::Deferred => inner.unreleased.push(receipt.temporary.clone()),
-    }
-    inner.artifacts[receipt.index].committed = true;
     Ok(())
 }
 
@@ -914,6 +970,43 @@ pub(crate) fn reserved_device_name(name: &str) -> bool {
         && number.is_some_and(|digit| matches!(digit, '1'..='9' | '¹' | '²' | '³'))
 }
 
+/// Why CAO will not replace the Asset whose facts are `facts`, as the
+/// [`StagingError::Ineligible`] for `path`, or `None` when it may.
+///
+/// A link or reparse point, and a file with more than one hard link, are
+/// never replaced: a hardlink-deploying mod manager deploys every file as a
+/// hard link, and renaming output over one would leave the other names on
+/// the old bytes.
+pub(crate) fn ineligibility(path: &Path, facts: &FileFacts) -> Option<StagingError> {
+    let reason = if facts.is_reparse_point() {
+        "The Asset is a link, which CAO does not replace"
+    } else if !facts.is_directory() && facts.link_count() != 1 {
+        "The Asset has more than one hard link, so CAO does not replace it"
+    } else {
+        return None;
+    };
+    Some(StagingError::Ineligible {
+        path: path.to_path_buf(),
+        reason,
+    })
+}
+
+/// The [`ineligibility`] of whatever stands at `path` now, read without
+/// following a link and without capturing anything: a Dry Run's way to
+/// report what Apply's capture would refuse. An absent or unreadable entry
+/// is `None`; the attempt meets that later, where Apply would too.
+pub(crate) fn probe_ineligibility(path: &Path) -> Option<StagingError> {
+    let entry = Open::new(
+        Access::READ_ATTRIBUTES,
+        Share::READ | Share::WRITE | Share::DELETE,
+    )
+    .directory()
+    .open(path)
+    .ok()?;
+    let facts = FileFacts::of(&entry).ok()?;
+    ineligibility(path, &facts)
+}
+
 /// Reads a destination leaf without following links. `None` when it is
 /// absent or a directory; an existing directory is left for the native
 /// rename to reject.
@@ -932,18 +1025,11 @@ fn destination_snapshot(path: &Path) -> Result<Option<DestinationSnapshot>, Stag
         Err(error) => return Err(io("Snapshot publication destination")(error)),
     };
     let facts = FileFacts::of(&leaf).map_err(io("Inspect"))?;
-    if facts.is_reparse_point() {
-        return Err(StagingError::Invalid(
-            "Publication destination is linked.".to_owned(),
-        ));
+    if let Some(ineligible) = ineligibility(path, &facts) {
+        return Err(ineligible);
     }
     if facts.is_directory() {
         return Ok(None);
-    }
-    if facts.link_count() != 1 {
-        return Err(StagingError::Invalid(
-            "Publication requires an ordinary staged file and parent.".to_owned(),
-        ));
     }
     let identity = FileIdentity::of(&leaf).map_err(io("Identify"))?;
     let (size, fingerprint) = fingerprint(&mut leaf).map_err(io("Read publication destination"))?;

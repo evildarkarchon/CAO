@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 
 use cao_core::execution::{
     AssetExecutionBackend, AssetExecutionFailure, AssetExecutionResult, AssetExecutor,
-    ExecutionFailureCategory, LoadFailure, MutationState, OperationResult,
+    ExecutionFailureCategory, LoadFailure, MutationState, OperationResult, quarantine_failed_load,
 };
 use cao_core::routing::{
     AssetOperation, AssetOperations, AssetRouter, ExecutionMode, MeshVariant, OptimizerTarget,
@@ -122,6 +122,32 @@ fn assert_sibling(staged: &Path, destination: &Path) {
         staged.display()
     );
     assert_ne!(staged, destination);
+}
+
+/// How many registrations `root`'s ownership manifest declares: its fourth
+/// line.
+fn registered(root: &Path) -> usize {
+    std::fs::read_to_string(root.join(".cao-staging").join("ownership.manifest"))
+        .unwrap()
+        .lines()
+        .nth(3)
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+/// A second hard link to `path`, beside its Mod Root rather than in it, as a
+/// hardlink-deploying mod manager leaves one in its own store.
+fn hard_link_elsewhere(path: &Path, root: &Path) -> PathBuf {
+    let alias = root.with_file_name(format!(
+        "{}-store-{}",
+        root.file_name().unwrap().to_string_lossy(),
+        path.file_name().unwrap().to_string_lossy()
+    ));
+    // A leftover from an earlier run would make hard_link fail.
+    let _ = std::fs::remove_file(&alias);
+    std::fs::hard_link(path, &alias).unwrap();
+    alias
 }
 
 /// Occupies the staging manifest's fixed scratch name, so the next ownership
@@ -803,9 +829,11 @@ fn a_texture_operation_failure_keeps_its_message_apart_from_the_service_detail()
     assert_eq!(result.operation(), "optimize_texture");
 }
 
-/// Origin: AssetExecutionTests::textureStagingIsRegisteredBeforeSave.
+/// Origin: AssetExecutionTests::textureStagingIsRegisteredBeforeSave. The
+/// writer gets a staged file that already exists. Once the save fails, the
+/// attempt abandons that file itself, so Safety Cleanup finds nothing left.
 #[test]
-fn the_texture_writer_receives_registered_staging_that_safety_cleanup_removes() {
+fn the_texture_writer_receives_registered_staging_that_a_failed_save_abandons() {
     let root = mod_root("texture-staging-registered");
     let source = root.join("native.dds");
     write(&source, "original");
@@ -835,12 +863,9 @@ fn the_texture_writer_receives_registered_staging_that_safety_cleanup_removes() 
     );
     assert_eq!(result.failure(), Some(AssetExecutionFailure::SaveFailed));
     let staged = backend.saved.clone().unwrap();
-    assert!(
-        staged.exists(),
-        "the run's Safety Cleanup owns the staged file"
-    );
+    assert!(!staged.exists(), "the failed attempt abandoned its staging");
+    assert_eq!(names(&root), [".cao-staging", "native.dds"]);
     assert!(artifacts.cleanup().is_empty());
-    assert!(!staged.exists());
     assert_eq!(read(&source), "original");
 }
 
@@ -1611,7 +1636,8 @@ fn an_animation_failure_is_reported_with_its_service_detail() {
 
 /// Origin: AssetExecutionTests::animationStagedOutcomes (the partial output,
 /// empty output and unchanged rows). Every converter outcome preserves the
-/// original, and the staged output never survives Safety Cleanup.
+/// original. Audit CORE-6: each also abandons its staged output before the
+/// attempt returns, record and all, rather than leaving it to Safety Cleanup.
 #[test]
 fn every_contained_animation_outcome_preserves_the_original() {
     // (row, failure, category, operation)
@@ -1657,15 +1683,19 @@ fn every_contained_animation_outcome_preserves_the_original() {
             &source,
         );
 
-        let result = execute_and_clean(&asset, &mut backend, &root);
+        let (result, mut artifacts) = execute(&asset, &mut backend, &root);
 
+        let staged = backend.saved.clone().unwrap();
+        assert_sibling(&staged, &source);
+        assert!(!staged.exists(), "{row}");
+        // Only the run child is still registered.
+        assert_eq!(registered(&root), 1, "{row}");
+        let failures = artifacts.cleanup();
+        assert!(failures.is_empty(), "{row}: {failures:?}");
         assert_eq!(read(&source), "original", "{row}");
         assert_eq!(result.mutation_state(), MutationState::None, "{row}");
         assert!(result.safe_to_continue(), "{row}");
         assert!(result.cleanup_failures().is_empty(), "{row}");
-        let staged = backend.saved.unwrap();
-        assert_sibling(&staged, &source);
-        assert!(!staged.exists(), "{row}");
         assert_eq!(result.failure(), failure, "{row}");
         if failure.is_some() {
             assert_eq!(result.failure_category(), category, "{row}");
@@ -1951,4 +1981,165 @@ fn a_failure_only_builder_on_a_successful_asset_result_trips_a_debug_assertion()
 fn a_continuation_builder_on_a_successful_asset_result_trips_a_debug_assertion() {
     let _ =
         AssetExecutionResult::success(CompletedMutation::Committed).with_safe_to_continue(false);
+}
+
+/// Audit CORE-2: an Asset with a second hard link, which a hardlink-deploying
+/// mod manager makes of every file it deploys, is never replaced. Every
+/// producer refuses it before anything loads or stages, in both modes, so a
+/// Dry Run reports what Apply would: `Ineligible`, nothing changed, never
+/// quarantined, and safe to continue.
+#[test]
+fn a_hard_linked_asset_is_ineligible_and_safe_to_continue() {
+    // (row, file name, requested work, boundary, the backend call it precedes)
+    let rows = [
+        (
+            "in-place Texture",
+            "native.dds",
+            RequestedWork::NativeTextureOptimization,
+            "capture_texture_destination",
+            "load_texture",
+        ),
+        (
+            "converted Texture",
+            "diffuse.tga",
+            RequestedWork::NativeTextureOptimization,
+            "pin_texture_source",
+            "load_texture",
+        ),
+        (
+            "Mesh",
+            "actor.nif",
+            RequestedWork::StandardMeshOptimization,
+            "capture_mesh_destination",
+            "load_mesh",
+        ),
+        (
+            "Animation",
+            "walk.hkx",
+            RequestedWork::AnimationOptimization,
+            "capture_animation_destination",
+            "optimize_animation",
+        ),
+    ];
+    for mode in [ExecutionMode::Apply, ExecutionMode::DryRun] {
+        for (index, (row, name, work, boundary, call)) in rows.into_iter().enumerate() {
+            let root = mod_root(&format!("hard-linked-{mode:?}-{index}"));
+            let source = root.join(name);
+            write(&source, "original");
+            let alias = hard_link_elsewhere(&source, &root);
+            let mut backend = HookBackend::default();
+            let asset = route(mode, &[work], &source);
+
+            let result = execute_and_clean(&asset, &mut backend, &root);
+
+            let label = format!("{row} ({mode:?})");
+            assert_eq!(
+                result.failure(),
+                Some(AssetExecutionFailure::Ineligible),
+                "{label}: {result:?}"
+            );
+            assert_eq!(
+                result.failure_category(),
+                Some(ExecutionFailureCategory::Filesystem),
+                "{label}"
+            );
+            assert_eq!(result.operation(), boundary, "{label}");
+            assert_eq!(result.affected_path(), source, "{label}");
+            assert!(
+                result.service_detail().contains("more than one hard link"),
+                "{label}: {}",
+                result.service_detail()
+            );
+            assert_eq!(result.mutation_state(), MutationState::None, "{label}");
+            assert!(result.safe_to_continue(), "{label}");
+            assert_eq!(backend.count(call), 0, "{label}");
+            // Quarantine leaves it alone, and nothing was staged.
+            let result = quarantine_failed_load(&asset, result);
+            assert_eq!(result.mutation_state(), MutationState::None, "{label}");
+            assert_eq!(names(&root), [name], "{label}");
+            assert_eq!(read(&source), "original", "{label}");
+            assert_eq!(read(&alias), "original", "{label}");
+        }
+    }
+}
+
+/// Audit CORE-2: a file symlink inside the Mod Root, which discovery accepts
+/// as work, is `Ineligible` too: publishing would replace the link rather
+/// than the file it names. Skipped where this host cannot create symlinks.
+#[test]
+fn a_contained_file_symlink_is_ineligible_in_both_modes() {
+    for mode in [ExecutionMode::Apply, ExecutionMode::DryRun] {
+        let root = mod_root(&format!("file-symlink-{mode:?}"));
+        let target = root.join("meshes").join("real.nif");
+        write(&target, "original");
+        let link = root.join("meshes").join("linked.nif");
+        if std::os::windows::fs::symlink_file(&target, &link).is_err() {
+            eprintln!("skipped: this host cannot create file symlinks");
+            return;
+        }
+        let mut backend = HookBackend::default();
+        let asset = route(mode, &[RequestedWork::StandardMeshOptimization], &link);
+
+        let result = execute_and_clean(&asset, &mut backend, &root);
+
+        assert_eq!(
+            result.failure(),
+            Some(AssetExecutionFailure::Ineligible),
+            "{mode:?}: {result:?}"
+        );
+        assert_eq!(result.operation(), "capture_mesh_destination", "{mode:?}");
+        assert!(result.safe_to_continue(), "{mode:?}");
+        assert_eq!(result.mutation_state(), MutationState::None, "{mode:?}");
+        assert_eq!(backend.count("load_mesh"), 0, "{mode:?}");
+        assert!(
+            std::fs::symlink_metadata(&link).unwrap().is_symlink(),
+            "{mode:?}"
+        );
+        assert_eq!(read(&target), "original", "{mode:?}");
+        assert_eq!(names(&root.join("meshes")), ["linked.nif", "real.nif"]);
+    }
+}
+
+/// Audit CORE-2: one hard-linked Mesh no longer ends an Apply run. Its
+/// attempt is `Ineligible`, the run goes on to the next Mesh, and it
+/// completes with failures rather than failing.
+#[test]
+fn a_hard_linked_mesh_does_not_stop_an_apply_run() {
+    let root = mod_root("hard-linked-run");
+    let linked = root.join("meshes").join("a.nif");
+    let ordinary = root.join("meshes").join("b.nif");
+    write(&linked, "original a");
+    write(&ordinary, "original b");
+    hard_link_elsewhere(&linked, &root);
+    let backend = SharedBackend::new(HookBackend::default());
+
+    let result = run(
+        &root,
+        ExecutionMode::Apply,
+        &[RequestedWork::StandardMeshOptimization],
+        &backend,
+    );
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::CompletedWithFailures,
+        "{:?}",
+        result.failures()
+    );
+    assert_eq!(result.asset_attempts().len(), 2);
+    let attempt = |path: &Path| {
+        &result
+            .asset_attempts()
+            .iter()
+            .find(|attempt| attempt.asset.execution_path() == path)
+            .unwrap()
+            .result
+    };
+    assert_eq!(
+        attempt(&linked).failure(),
+        Some(AssetExecutionFailure::Ineligible)
+    );
+    assert!(attempt(&ordinary).succeeded(), "{:?}", attempt(&ordinary));
+    assert_eq!(read(&linked), "original a");
+    assert_eq!(read(&ordinary), "saved b.nif");
 }

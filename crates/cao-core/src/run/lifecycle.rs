@@ -127,6 +127,13 @@ pub enum RunDiagnosticCode {
     /// the Mod Root, and its detail names the volume, the demand and the
     /// available space.
     CapacityShortage,
+    /// Warning-level: a Dry Run could not plan Archive creation for one Mod
+    /// Root, such as one with a directory that cannot be read. The Apply run
+    /// would leave that root out too, failing Archive Finalization with
+    /// `PlanningFailed` while finalizing the others; the Dry Run warns and
+    /// plans the rest. The diagnostic's path is the Mod Root, and its detail
+    /// says what failed.
+    ArchiveCreationUnplanned,
 }
 
 impl RunDiagnosticCode {
@@ -140,7 +147,9 @@ impl RunDiagnosticCode {
             | Self::SeparatorModExcluded
             | Self::LinkedEntryExcluded
             | Self::PluginUnreadable => RunDiagnosticSeverity::Informational,
-            Self::CapacityShortage => RunDiagnosticSeverity::Warning,
+            Self::CapacityShortage | Self::ArchiveCreationUnplanned => {
+                RunDiagnosticSeverity::Warning
+            }
         }
     }
 }

@@ -47,9 +47,6 @@ pub enum ArchiveError {
         path.display()
     )]
     ArchiveOverSizeCap { path: PathBuf, size: u64, cap: u64 },
-    /// An Archived Asset's name is not UTF-8. `name` is its lossy decoding.
-    #[error("`{}` holds an asset whose name is not UTF-8: `{name}`", archive.display())]
-    InvalidArchivedAssetName { archive: PathBuf, name: String },
     /// No Archived Asset of the Archive has the requested name.
     #[error("`{}` holds no asset named `{name}`", archive.display())]
     MissingArchivedAsset { archive: PathBuf, name: String },

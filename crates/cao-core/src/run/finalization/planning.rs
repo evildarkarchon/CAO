@@ -46,9 +46,25 @@ pub(super) struct FinalizationPlan {
     pub create_dummies: bool,
     /// The plugin allowance each root's existing Archives may need.
     pub dummy_capacity_by_root: BTreeMap<PathBuf, u64>,
+    /// The Mod Roots whose planning failed, in run order. None of them is in
+    /// `roots`, so none is packed, maintained or pruned.
+    pub unplanned: Vec<UnplannedRoot>,
 }
 
-/// Why planning returned no plan.
+/// A Mod Root planning could not plan, and why.
+pub(super) struct UnplannedRoot {
+    /// The Mod Root as the run gave it; it may not even canonicalize.
+    pub root: PathBuf,
+    /// What failed, such as a directory that could not be read.
+    pub detail: String,
+}
+
+/// Cancellation was observed between planning inputs; nothing was mutated
+/// and no plan is returned.
+#[derive(Debug)]
+pub(super) struct PlanningCancelled;
+
+/// Why planning one Mod Root, or rechecking one output's estimate, stopped.
 pub(super) enum PlanningStop {
     /// Cancellation was observed between inputs; nothing was mutated.
     Cancelled,
@@ -69,14 +85,20 @@ const CAPACITY_ALLOWANCE: u64 = 65_536;
 ///
 /// `files_to_not_pack` holds the Packing Exclusions, already lowercase with
 /// `/` separators. `cancelled` is polled between inputs: planning returns
-/// [`PlanningStop::Cancelled`] rather than an incomplete plan.
+/// [`PlanningCancelled`] rather than an incomplete plan.
+///
+/// A Mod Root whose planning fails, because a directory cannot be read or
+/// the packer refuses it, is left out of the plan and recorded in
+/// [`FinalizationPlan::unplanned`]; the other roots are planned as if it
+/// were not there. Planning only reads, so the failed root is unchanged, and
+/// it gets no output, no Loading Plugin maintenance and no pruning.
 pub(super) fn plan_finalization(
     roots: &[PathBuf],
     choices: &ArchiveFinalizationChoices,
     packer: &dyn ArchivePacker,
     files_to_not_pack: &[String],
     cancelled: &dyn Fn() -> bool,
-) -> Result<FinalizationPlan, PlanningStop> {
+) -> Result<FinalizationPlan, PlanningCancelled> {
     let rules = packer.rules().clone();
     let check = || {
         if cancelled() {
@@ -99,146 +121,176 @@ pub(super) fn plan_finalization(
         delete_sources: choices.delete_sources,
         create_dummies: choices.create_dummy_plugins,
         dummy_capacity_by_root: BTreeMap::new(),
+        unplanned: Vec::new(),
     };
+    let create_dummies = plan.create_dummies;
     let dummy_len = rules.dummy_plugin.len() as u64;
     let mut reserved: BTreeSet<PathBuf> = BTreeSet::new();
-    for input_root in roots {
-        check()?;
-        let root = canonical(input_root).map_err(|error| failed(&error))?;
-        plan.roots.push(root.clone());
-        let mut dummy_capacity = 0u64;
-        if plan.create_dummies {
-            // Existing Archives can also need plugins in the final pass, even
-            // with no new outputs. Count each, without assuming plugin reuse.
-            check()?;
-            let existing = packer
-                .list_names(&root, ArchiveNameKind::Archive)
-                .map_err(|error| failed(&error))?;
-            dummy_capacity = (existing.len() as u64).saturating_mul(dummy_len);
-        }
-        plan.dummy_capacity_by_root
-            .insert(root.clone(), dummy_capacity);
-
-        let listed = packer
-            .list_names(&root, ArchiveNameKind::Plugin)
-            .map_err(|error| failed(&error))?;
-        // Ignore only proven Dummy Plugin names while planning; their files
-        // stay until every output attempt finishes, so cancellation cannot
-        // strand an existing Archive.
-        let mut plugins = Vec::with_capacity(listed.len());
-        for plugin in listed {
-            check()?;
-            if !has_exact_dummy_bytes(&plugin.full_path(), &rules.dummy_plugin) {
-                plugins.push(plugin);
-            }
-        }
-        plugins.sort();
-        if plugins.is_empty() {
-            let name = root
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| {
-                    PlanningStop::Failed(format!(
-                        "The Mod Root name of `{}` is not valid Unicode.",
-                        root.display()
-                    ))
-                })?;
-            plugins.push(ArchiveName {
-                dir: root.clone(),
-                name: name.to_owned(),
-                suffix: String::new(),
-                ext: ".esp".to_owned(),
-                counter: None,
-            });
-        }
-
-        let sources = collect_sources(&root, files_to_not_pack, &check)?;
-        check()?;
-        let archives = packer
-            .partition(&root, sources, merge)
-            .map_err(|error| failed(&error))?;
-        for archive in archives {
-            check()?;
-            let suffix = match archive.kind {
-                PackedArchiveKind::Textures => rules.texture_suffix.clone(),
-                PackedArchiveKind::Standard | PackedArchiveKind::Incompressible => {
-                    rules.suffix.clone()
-                }
-            }
-            .unwrap_or_default();
-            let available = |candidate: &ArchiveName| -> Result<bool, PlanningStop> {
-                let path = candidate.full_path();
-                match std::fs::symlink_metadata(&path) {
-                    Ok(_) => Ok(false),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        Ok(!reserved.contains(&path))
-                    }
-                    Err(error) => Err(PlanningStop::Failed(format!(
-                        "Cannot plan output Archive `{}`: {error}",
-                        path.display()
-                    ))),
-                }
-            };
-            let mut selected = None;
-            for plugin in &plugins {
+    // One root's plan: its canonical path, its Dummy Plugin allowance and
+    // its outputs. An error leaves `plan` untouched by this root.
+    let mut plan_root =
+        |input_root: &Path| -> Result<(PathBuf, u64, Vec<FinalizationOutput>), PlanningStop> {
+            let root = canonical(input_root).map_err(|error| failed(&error))?;
+            let mut outputs = Vec::new();
+            let mut dummy_capacity = 0u64;
+            if create_dummies {
+                // Existing Archives can also need plugins in the final pass, even
+                // with no new outputs. Count each, without assuming plugin reuse.
                 check()?;
-                let candidate = ArchiveName {
-                    ext: rules.extension.clone(),
-                    suffix: suffix.clone(),
-                    ..plugin.clone()
-                };
-                if available(&candidate)? {
-                    selected = Some(candidate);
-                    break;
+                let existing = packer
+                    .list_names(&root, ArchiveNameKind::Archive)
+                    .map_err(|error| failed(&error))?;
+                dummy_capacity = (existing.len() as u64).saturating_mul(dummy_len);
+            }
+
+            let listed = packer
+                .list_names(&root, ArchiveNameKind::Plugin)
+                .map_err(|error| failed(&error))?;
+            // Ignore only proven Dummy Plugin names while planning; their files
+            // stay until every output attempt finishes, so cancellation cannot
+            // strand an existing Archive.
+            let mut plugins = Vec::with_capacity(listed.len());
+            for plugin in listed {
+                check()?;
+                if !has_exact_dummy_bytes(&plugin.full_path(), &rules.dummy_plugin) {
+                    plugins.push(plugin);
                 }
             }
-            if selected.is_none() {
-                let mut candidate = ArchiveName {
-                    ext: rules.extension.clone(),
-                    suffix: suffix.clone(),
-                    ..plugins[0].clone()
+            plugins.sort();
+            if plugins.is_empty() {
+                let name = root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| {
+                        PlanningStop::Failed(format!(
+                            "The Mod Root name of `{}` is not valid Unicode.",
+                            root.display()
+                        ))
+                    })?;
+                plugins.push(ArchiveName {
+                    dir: root.clone(),
+                    name: name.to_owned(),
+                    suffix: String::new(),
+                    ext: ".esp".to_owned(),
+                    counter: None,
+                });
+            }
+
+            let sources = collect_sources(&root, files_to_not_pack, &check)?;
+            check()?;
+            let archives = packer
+                .partition(&root, sources, merge)
+                .map_err(|error| failed(&error))?;
+            for archive in archives {
+                check()?;
+                let suffix = match archive.kind {
+                    PackedArchiveKind::Textures => rules.texture_suffix.clone(),
+                    PackedArchiveKind::Standard | PackedArchiveKind::Incompressible => {
+                        rules.suffix.clone()
+                    }
+                }
+                .unwrap_or_default();
+                let available = |candidate: &ArchiveName| -> Result<bool, PlanningStop> {
+                    let path = candidate.full_path();
+                    match std::fs::symlink_metadata(&path) {
+                        Ok(_) => Ok(false),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            Ok(!reserved.contains(&path))
+                        }
+                        Err(error) => Err(PlanningStop::Failed(format!(
+                            "Cannot plan output Archive `{}`: {error}",
+                            path.display()
+                        ))),
+                    }
                 };
-                for counter in 0..NAME_COUNTERS {
+                let mut selected = None;
+                for plugin in &plugins {
                     check()?;
-                    candidate.counter = Some(counter);
+                    let candidate = ArchiveName {
+                        ext: rules.extension.clone(),
+                        suffix: suffix.clone(),
+                        ..plugin.clone()
+                    };
                     if available(&candidate)? {
                         selected = Some(candidate);
                         break;
                     }
                 }
-            }
-            let Some(selected) = selected else {
-                return Err(PlanningStop::Failed(
-                    "No available output Archive name.".to_owned(),
-                ));
-            };
-            let archive_path = selected.full_path();
-            reserved.insert(archive_path.clone());
-            let mut plugin_path = None;
-            let mut loading_plugin_paths = Vec::new();
-            if plan.create_dummies {
-                check()?;
-                loading_plugin_paths = loading_plugin_names(&selected, &rules);
-                if find_loading_plugin(&loading_plugin_paths, LoadingPluginStrength::Present, None)
+                if selected.is_none() {
+                    let mut candidate = ArchiveName {
+                        ext: rules.extension.clone(),
+                        suffix: suffix.clone(),
+                        ..plugins[0].clone()
+                    };
+                    for counter in 0..NAME_COUNTERS {
+                        check()?;
+                        candidate.counter = Some(counter);
+                        if available(&candidate)? {
+                            selected = Some(candidate);
+                            break;
+                        }
+                    }
+                }
+                let Some(selected) = selected else {
+                    return Err(PlanningStop::Failed(
+                        "No available output Archive name.".to_owned(),
+                    ));
+                };
+                let archive_path = selected.full_path();
+                reserved.insert(archive_path.clone());
+                let mut plugin_path = None;
+                let mut loading_plugin_paths = Vec::new();
+                if create_dummies {
+                    check()?;
+                    loading_plugin_paths = loading_plugin_names(&selected, &rules);
+                    if find_loading_plugin(
+                        &loading_plugin_paths,
+                        LoadingPluginStrength::Present,
+                        None,
+                    )
                     .map_err(PlanningStop::Failed)?
                     .is_none()
-                {
-                    plugin_path = loading_plugin_paths.last().cloned();
+                    {
+                        plugin_path = loading_plugin_paths.last().cloned();
+                    }
                 }
+                let mut output = FinalizationOutput {
+                    mod_root: root.clone(),
+                    archive_path,
+                    archive,
+                    plugin_path,
+                    estimated_capacity_bytes: 0,
+                    loading_plugin_paths,
+                };
+                output.estimated_capacity_bytes =
+                    estimate_packed_capacity(&output, dummy_len, &check)?;
+                outputs.push(output);
             }
-            let mut output = FinalizationOutput {
-                mod_root: root.clone(),
-                archive_path,
-                archive,
-                plugin_path,
-                estimated_capacity_bytes: 0,
-                loading_plugin_paths,
-            };
-            output.estimated_capacity_bytes = estimate_packed_capacity(&output, dummy_len, &check)?;
-            plan.outputs.push(output);
+            Ok((root, dummy_capacity, outputs))
+        };
+    for input_root in roots {
+        if cancelled() {
+            return Err(PlanningCancelled);
+        }
+        match plan_root(input_root) {
+            Ok((root, dummy_capacity, outputs)) => {
+                plan.roots.push(root.clone());
+                plan.dummy_capacity_by_root.insert(root, dummy_capacity);
+                plan.outputs.extend(outputs);
+            }
+            Err(PlanningStop::Cancelled) => return Err(PlanningCancelled),
+            Err(PlanningStop::Failed(detail)) => {
+                log::error!("Archive creation skips {}: {detail}", input_root.display());
+                plan.unplanned.push(UnplannedRoot {
+                    root: input_root.clone(),
+                    detail,
+                });
+            }
         }
     }
-    check()?;
+    if cancelled() {
+        return Err(PlanningCancelled);
+    }
     Ok(plan)
 }
 

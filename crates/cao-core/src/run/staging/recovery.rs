@@ -40,6 +40,12 @@ pub(super) enum Halt {
     /// Deleting owned entries had begun when removing `path` failed
     /// (`StagingRecoveryFailed`). The remaining entries stay owned.
     RecoveryFailed { path: PathBuf, error: StagingError },
+    /// The reserved directory at `staging` holds a claimable `owner.lock`,
+    /// perhaps a scratch snapshot, and nothing else: no manifest. Only a run
+    /// stopped between claiming the area and publishing its first manifest
+    /// leaves that, before it could stage anything. Ownership is still
+    /// unproven, so nothing is deleted, but the user is told what it means.
+    NoManifest { staging: PathBuf },
 }
 
 impl From<StagingError> for Halt {
@@ -162,8 +168,15 @@ impl StagingScope {
         }
         // Proves no live run owns the area before anything else is said about it.
         let lock = claim_lock(&lock_path, OwnerLock::open_existing)?;
-        // Denies manifest writes and renames while parsing and deletion rely on it.
         let manifest_path = staging.join(MANIFEST);
+        // A lone lock is what an interrupted bootstrap leaves; anything more
+        // without a manifest fails closed below, at the missing manifest.
+        if unknown.is_empty() && inspect(&manifest_path)?.is_none() && only_controls(staging)? {
+            return Err(Halt::NoManifest {
+                staging: staging.to_path_buf(),
+            });
+        }
+        // Denies manifest writes and renames while parsing and deletion rely on it.
         let manifest_pin = pin_manifest(&manifest_path)?;
         let manifest = read_manifest(&manifest_pin, &manifest_path, &generic(mod_root)?, stop)?;
         for path in &unknown {
@@ -210,6 +223,19 @@ impl StagingScope {
         self.areas.insert(mod_root.to_path_buf(), Area::default());
         Ok(())
     }
+}
+
+/// Whether `staging` holds nothing but `owner.lock` and, at most, the scratch
+/// snapshot: what an interrupted bootstrap leaves.
+fn only_controls(staging: &Path) -> Result<bool, StagingError> {
+    for entry in std::fs::read_dir(staging).map_err(StagingError::io("Read", staging))? {
+        let entry = entry.map_err(StagingError::io("Read", staging))?;
+        let name = entry.file_name();
+        if name != OWNER_LOCK && name != MANIFEST_SCRATCH {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Removes one validated entry through its pin: a file's pinned identity, or

@@ -245,6 +245,7 @@
   <div class="callout good">
     <p><strong>Follow-up, same day.</strong> The three high findings below were fixed after the audit, in the same commit that adds this report. Each card now ends with a Resolution paragraph. After the fixes, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets</code> and <code>cargo build</code> pass and the suite is 993 tests, 0 failed (13 new). Everything else in this report describes commit 43dae05 as audited. One statement in the original <a href="#CORE-1">CORE-1</a> card was wrong and is corrected there.</p>
     <p><strong>Follow-up, 2026-11-18.</strong> Step 2 of the suggested order, the typed backend seam (<a href="#CORE-9">CORE-9</a>, <a href="#BE-2">BE-2</a>, <a href="#BE-1">BE-1</a>, <a href="#FFI-2">FFI-2</a>), was done in a second change, and those four cards also end with a Resolution paragraph. After it, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets</code> and <code>cargo build</code> pass and the suite is 1,002 tests, 0 failed (9 new). The <a href="#BE-2">BE-2</a> resolution notes one case that waits for <a href="#CORE-2">CORE-2</a> in step 3.</p>
+    <p><strong>Follow-up, 2026-11-19.</strong> Step 3 of the suggested order, contained single-file failures (<a href="#CORE-2">CORE-2</a>, <a href="#BE-4">BE-4</a>, <a href="#FS-3">FS-3</a>, <a href="#FS-9">FS-9</a>, <a href="#CORE-6">CORE-6</a>), was done in a third change, and those five cards end with a Resolution paragraph. After it, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets</code> and <code>cargo build</code> pass and the suite is 1,014 tests, 0 failed (12 new). The case the <a href="#BE-2">BE-2</a> resolution left for step 3 is closed. <a href="#BE-4">BE-4</a> keeps one limit, by decision, which its resolution states.</p>
   </div>
 
   <h4>The three high findings</h4>
@@ -379,7 +380,7 @@ let publication = receipt.publish(&amp;output, PublicationPolicy::Replace);</cod
     <div class="f-head">
       <span class="fid">CORE-2</span>
       <h3>One un-capturable file stops the whole Apply run, including hard-linked files</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">correctness</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">correctness</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/execution.rs:374</code> · <code>:623</code> · <code>crates/cao-core/src/run/artifacts.rs:784</code></p>
     <div class="f-body">
@@ -394,6 +395,7 @@ let publication = receipt.publish(&amp;output, PublicationPolicy::Replace);</cod
       <p><strong>Why it matters.</strong> <code>capture_publication_target</code> runs before anything is staged and reports <code>MutationState::None</code>, yet any error other than a lookup is marked unsafe to continue, which ends the run. <code>destination_snapshot</code> returns <code>Invalid</code> for a file with more than one hard link and for any reparse-point leaf, and <code>Io</code> for a sharing violation. Hard links are what a hardlink-deploying mod manager creates for every deployed file, and discovery deliberately accepts in-root file symlinks as work. A Dry Run never captures, so it succeeds where the Apply run then stops at the first such file. The rule's only stated reason is C++ parity.</p>
       <p><strong>Suggested change.</strong> Treat the pre-stage boundaries (<code>pin_texture_source</code>, the <code>capture_*_destination</code> calls) as contained, safe-to-continue failures, and keep the strict rule from staging onward. Either have discovery exclude what the executor will refuse or give the executor an "ineligible Asset" outcome. Add tests that drive the real <code>AssetExecutor</code> over a hard-linked file and a contained file symlink.</p>
       <p class="confidence">Confidence: high for the code path; the run-engine and staging readers each reached this finding independently. How often it occurs depends on how the user's mod manager deploys files.</p>
+      <p><strong>Resolution.</strong> Fixed in step 3 of the suggested order, with an ineligible-Asset outcome. The captures made before anything is staged (<code>pin_texture_source</code> and the Texture, Mesh and Animation destination captures, the Animation's now split from its staging) are contained: whatever their error, the attempt changed nothing and is safe to continue. A link, or a file with more than one hard link, is the new <code>StagingError::Ineligible</code> and the new <code>Ineligible</code> attempt category, which Quarantine leaves alone; any other capture error, such as a sharing violation, stays <code>StagingFailed</code>, now safe. Dry Run reads the same facts without capturing, so it reports <code>Ineligible</code> where Apply would. From staging onward only a lookup failure is safe, as before, now justified by the protocol (it comes before any manifest change) rather than by C++. New tests drive the real <code>AssetExecutor</code> over a hard-linked in-place Texture, converted Texture, Mesh and Animation in both modes and over an in-root file symlink, and run a whole Apply run in which one hard-linked Mesh no longer stops the next. The locked Mesh and Texture tests from <a href="#BE-2">BE-2</a> now have Apply companions.</p>
     </div>
   </article>
 
@@ -450,7 +452,7 @@ let Ok(entries) = std::fs::read_dir(directory) else {
     <div class="f-head">
       <span class="fid">CORE-6</span>
       <h3>Failed attempts leave their staged sibling registered until Safety Cleanup</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">design</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">design</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/execution.rs:941</code> · <code>:678</code> · <code>crates/cao-core/src/run/staging.rs:48</code></p>
     <div class="f-body">
@@ -460,6 +462,7 @@ const REGISTRATION_LIMIT: usize = 100_000;</code></pre>
       <p><strong>Why it matters.</strong> Apply stages a durable sibling for every Animation before the converter runs, and a failed or unchanged attempt returns without releasing it; the same holds for a failed Texture or Mesh save. Each leftover is an empty file beside the user's Asset for the rest of the run plus a manifest record, and every later release rewrites a manifest that keeps growing. If the outstanding records reach the registration or byte limit, the next stage fails with <code>StagingError::Invalid</code>, which <a href="#CORE-2">CORE-2</a>'s rule turns into a run-ending failure.</p>
       <p><strong>Suggested change.</strong> Give <code>PublicationReceipt</code> an explicit abandon step (delete the sibling, release the record) and call it on the failed and unchanged paths, or stage an Animation only once the converter is known to be needed.</p>
       <p class="confidence">Confidence: high for the mechanism; how often it bites depends on how many attempts fail in one Mod Root.</p>
+      <p><strong>Resolution.</strong> Fixed in step 3 of the suggested order, with the explicit abandon step. <code>PublicationReceipt::abandon</code> deletes the staged file through a handle that proves its identity, then releases its manifest record, so a crash between the two leaves a registered, absent name, which cleanup and recovery already skip. The executor calls it on every path that staged and will not publish: a failed or unchanged Animation conversion, a failed Texture or Mesh save, and output that is not a usable file. A publication that fails before its rename abandons its file the same way. If abandoning fails, the file stays owned for Safety Cleanup, as before, and the attempt's result does not change. The Animation outcome tests now check that the sibling and its record are gone before Safety Cleanup runs, and the publication tests that a refused publication leaves only the run child registered.</p>
     </div>
   </article>
 
@@ -667,7 +670,7 @@ parent_pins: BTreeMap&lt;PathBuf, File&gt;,</code></pre>
     <div class="f-head">
       <span class="fid">FS-3</span>
       <h3>A failure during staging bootstrap leaves a <code>.cao-staging</code> that blocks every later run on that Mod Root</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">error-handling</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">error-handling</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/staging.rs:416</code> · <code>:433</code> · <code>crates/cao-core/src/run/staging/recovery.rs:156</code></p>
     <div class="f-body">
@@ -675,6 +678,7 @@ parent_pins: BTreeMap&lt;PathBuf, File&gt;,</code></pre>
 let lock = claim_lock(&amp;staging.join(OWNER_LOCK), OwnerLock::create)?;</code></pre>
       <p><strong>Why it matters.</strong> If anything after <code>create_dir(.cao-staging)</code> fails (the lock, or the first manifest publish held past its one-second retry), the directory is left without a manifest and nothing undoes it. This run then reports "initialization did not complete", and every later run fails Preparing because ownership cannot be verified; in Several Mods mode that one root fails the whole run. The guidance tells the user to inspect an <code>ownership.manifest</code> that does not exist.</p>
       <p><strong>Suggested change.</strong> On a bootstrap failure before the first manifest, remove what this call created; nothing else can exist yet. Give the no-manifest state its own guidance, and add a crash-child test mode for the bootstrap window.</p>
+      <p><strong>Resolution.</strong> Fixed in step 3 of the suggested order. A bootstrap that fails after creating <code>.cao-staging</code> and before its first manifest gives back its pins and lock and removes what it created: its scratch snapshot, <code>owner.lock</code> and the directory, each only while it is still the ordinary entry bootstrap made, and the directory only if empty. A later stage in the same run starts over instead of failing as "initialization did not complete". A bootstrap interrupted in that window, by a crash rather than an error, still leaves the lock. Recovery now recognises a reserved directory that holds only its lock, perhaps with a scratch snapshot, and fails closed with guidance of its own: a run stopped before staging anything, and the directory can be deleted once no CAO run uses the Mod Root. A new crash-child mode holds the lock in that state, and another test fails a real bootstrap at its first manifest (a Mod Root whose name has no UTF-8 form) and finds nothing left. <code>docs/architecture/staging-ownership.md</code> describes both.</p>
     </div>
   </article>
 
@@ -765,7 +769,7 @@ prune_empty_directories(preparation.mod_roots(), cancelled, account);</code></pr
     <div class="f-head">
       <span class="fid">FS-9</span>
       <h3>A planning read error is reported as an unexpected exception, unsafe to continue, for every Mod Root</h3>
-      <span class="sev sev-low">Low</span><span class="tag">error-handling</span>
+      <span class="sev sev-low">Low</span><span class="tag">error-handling</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/finalization/mod.rs:547</code> · <code>:339</code></p>
     <div class="f-body">
@@ -776,6 +780,7 @@ prune_empty_directories(preparation.mod_roots(), cancelled, account);</code></pr
 account.safe_to_continue = false;</code></pre>
       <p><strong>Why it matters.</strong> Planning is documented as mutation-free, yet one unreadable directory in any root produces an "unexpected exception" with an unsafe verdict, and no root is packed or pruned.</p>
       <p><strong>Suggested change.</strong> Add a planning-failed category that is safe to continue, and consider failing only the affected root.</p>
+      <p><strong>Resolution.</strong> Fixed in step 3 of the suggested order, with both suggestions. Planning plans each Mod Root on its own: a root whose planning fails, such as one with a directory that cannot be read, is logged and left out of the plan, and the other roots are planned, packed, maintained and pruned as before. The phase then fails with the new <code>PlanningFailed</code>, which is safe to continue, so the run completes with failures; a shortage, plugin failure or Unexpected Exception found later in the phase takes precedence. A Dry Run plans the other roots too and warns at the skipped root with the new <code>ArchiveCreationUnplanned</code> diagnostic, as it warns of a capacity shortage. A planning panic is still an Unexpected Exception. One new test runs two roots, one with a directory held open without sharing, in both modes.</p>
     </div>
   </article>
 
@@ -1028,7 +1033,7 @@ keep_mta_alive()</code></pre>
 <pre><code>Err(_) =&gt; false,</code></pre>
       <p><strong>Why it matters.</strong> A sharing violation, access denied, an out-of-memory decode of a very large texture and nifly's "cannot open this file" are all environmental, yet each becomes <code>LoadFailed</code>, and in Apply a <code>LoadFailed</code> Asset is renamed to <code>.caobad</code>. The backend has the typed error and discards it at the seam. This is the backend half of <a href="#CORE-9">CORE-9</a>.</p>
       <p><strong>Suggested change.</strong> Widen the seam to distinguish unreadable from undecodable, quarantine only the latter, and treat the former as a contained failure that is safe to continue.</p>
-      <p><strong>Resolution.</strong> Fixed in step 2 of the suggested order. A load now fails with a <code>LoadFailure</code> that is either <code>Unreadable</code> (the file could not be read, or a Texture decode returned <code>E_OUTOFMEMORY</code>) or <code>Undecodable</code>. The executor reports the first as the new <code>ReadFailed</code>, which Quarantine leaves alone and which is safe to continue, and the second as <code>LoadFailed</code>, which Apply quarantines as before. For Meshes, nifly's load code 1 meant both &ldquo;cannot open&rdquo; and &ldquo;bad header&rdquo;, so nifly-sys now reads the file in Rust and hands nifly the bytes; a read error is the new <code>NifError::Read</code>. The twenty byte-identity fixtures still pass. <code>TextureError::Decode</code> keeps the HRESULT so out-of-memory can be told apart. The glossary's Quarantine entry states the rule. One limit remains: under Apply, a file another process holds without sharing still fails before the load, because the destination capture opens it first and fails as an unsafe <code>StagingFailed</code> (<a href="#CORE-2">CORE-2</a>, step 3). The new end-to-end tests with a locked Mesh and a locked Texture therefore run as Dry Run, and Apply's no-Quarantine rule is tested through the real Quarantine adapter with the fake backend. Under Apply the split already matters for an out-of-memory Texture decode and for a file that disappears between capture and load, which used to be sent to Quarantine, fail the rename and stop the run.</p>
+      <p><strong>Resolution.</strong> Fixed in step 2 of the suggested order. A load now fails with a <code>LoadFailure</code> that is either <code>Unreadable</code> (the file could not be read, or a Texture decode returned <code>E_OUTOFMEMORY</code>) or <code>Undecodable</code>. The executor reports the first as the new <code>ReadFailed</code>, which Quarantine leaves alone and which is safe to continue, and the second as <code>LoadFailed</code>, which Apply quarantines as before. For Meshes, nifly's load code 1 meant both &ldquo;cannot open&rdquo; and &ldquo;bad header&rdquo;, so nifly-sys now reads the file in Rust and hands nifly the bytes; a read error is the new <code>NifError::Read</code>. The twenty byte-identity fixtures still pass. <code>TextureError::Decode</code> keeps the HRESULT so out-of-memory can be told apart. The glossary's Quarantine entry states the rule. One limit remained until step 3: under Apply, a file another process holds without sharing still failed before the load, because the destination capture opens it first and failed as an unsafe <code>StagingFailed</code> (<a href="#CORE-2">CORE-2</a>). The new end-to-end tests with a locked Mesh and a locked Texture therefore run as Dry Run, and Apply's no-Quarantine rule is tested through the real Quarantine adapter with the fake backend. Since step 3 that capture failure is contained and safe to continue, and both tests have Apply companions. Under Apply the split already matters for an out-of-memory Texture decode and for a file that disappears between capture and load, which used to be sent to Quarantine, fail the rename and stop the run.</p>
     </div>
   </article>
 
@@ -1051,7 +1056,7 @@ keep_mta_alive()</code></pre>
     <div class="f-head">
       <span class="fid">BE-4</span>
       <h3>One Archived Asset name that is not UTF-8 makes the whole Archive unreadable and fails the run</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">correctness</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">correctness</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-archive/src/read.rs:322</code> · <code>crates/cao-core/src/run/archives.rs:735</code></p>
     <div class="f-body">
@@ -1060,6 +1065,7 @@ fn decode&lt;'name&gt;(&amp;self, name: &amp;'name ba2::BStr) -&gt; Result&lt;&a
     std::str::from_utf8(name).map_err(|_| ArchiveError::InvalidArchivedAssetName {</code></pre>
       <p><strong>Why it matters.</strong> Names in BSA and BA2 files are raw bytes, in practice an ANSI code page when an author used accented or Cyrillic file names. One such entry fails <code>list_entries</code>, and core turns that into an unreadable-Archive failure during preflight, before anything is extracted, for every mod in the selection.</p>
       <p><strong>Suggested change.</strong> Carry the name as bytes plus a display string: decode UTF-8, fall back to Windows-1252, and look the entry up by its original bytes. Let the existing Unsafe Game Path rule report an entry whose name still cannot be a Windows path.</p>
+      <p><strong>Resolution.</strong> Fixed in step 3 of the suggested order, as suggested. Each stored name (for a BSA, its directory and file names separately) is decoded as UTF-8 when it is valid UTF-8 and as Windows-1252 otherwise, so no name makes an Archive unreadable, and <code>InvalidArchivedAssetName</code> is gone. <code>extract</code> finds a decoded name again by its stored bytes, trying its UTF-8 bytes and then its Windows-1252 ones. Every byte has exactly one Windows-1252 character, so the decoding reverses; the five bytes the code page leaves undefined decode to the C1 control of the same value, as the WHATWG Encoding Standard has it. Unit tests pin the round trip, and new tests write a real BSA and BA2 with Windows-1252 names and extract them through <code>ReadArchive</code>. One limit stays, on purpose: a name in another code page, such as Cyrillic in 1251, decodes to the Windows-1252 reading of its bytes, and the Archive writer stores a loose file's name as UTF-8, so a non-UTF-8 name that is extracted and repacked gets different bytes. That was accepted because the games themselves can crash on non-Latin file names; how the writer encodes names is a separate question.</p>
     </div>
   </article>
 
@@ -1744,7 +1750,7 @@ env!("CARGO_PKG_VERSION")</code></pre>
       <tbody>
         <tr><td class="num">1</td><td>Close the three high findings</td><td><a href="#FFI-1">FFI-1</a>, <a href="#CORE-1">CORE-1</a>, <a href="#FS-1">FS-1</a></td><td><span class="tag pass">done</span> Each was contained: a shim change, one decided rule with tests, and batch registration and release.</td></tr>
         <tr><td class="num">2</td><td>Widen the backend seam from <code>bool</code> to typed results</td><td><a href="#CORE-9">CORE-9</a>, <a href="#BE-2">BE-2</a>, <a href="#BE-1">BE-1</a>, <a href="#FFI-2">FFI-2</a></td><td><span class="tag pass">done</span> One trait change fixes the missing Mesh cause, the wrong quarantines and the deliberate panic together.</td></tr>
-        <tr><td class="num">3</td><td>Make single-file problems contained failures</td><td><a href="#CORE-2">CORE-2</a>, <a href="#BE-4">BE-4</a>, <a href="#FS-3">FS-3</a>, <a href="#FS-9">FS-9</a>, <a href="#CORE-6">CORE-6</a></td><td>Removes the cases where a real mod folder cannot be processed at all.</td></tr>
+        <tr><td class="num">3</td><td>Make single-file problems contained failures</td><td><a href="#CORE-2">CORE-2</a>, <a href="#BE-4">BE-4</a>, <a href="#FS-3">FS-3</a>, <a href="#FS-9">FS-9</a>, <a href="#CORE-6">CORE-6</a></td><td><span class="tag pass">done</span> Removes the cases where a real mod folder cannot be processed at all.</td></tr>
         <tr><td class="num">4</td><td>Remove the silent wrong outcomes</td><td><a href="#BE-3">BE-3</a>, <a href="#GUI-2">GUI-2</a>, <a href="#GUI-1">GUI-1</a>, <a href="#GUI-3">GUI-3</a>, <a href="#FS-2">FS-2</a>, <a href="#BE-5">BE-5</a>, <a href="#FS-4">FS-4</a></td><td>Small changes, each with a test that pins the new behaviour; <a href="#FS-4">FS-4</a> needs a decision first.</td></tr>
         <tr><td class="num">5</td><td>Add CI and settle the long-path approach</td><td><a href="#WS-2">WS-2</a>, <a href="#WS-1">WS-1</a>, <a href="#WS-3">WS-3</a></td><td>Protects steps 1 to 4 from regressing and makes a release reproducible.</td></tr>
         <tr><td class="num">6</td><td>Make runs idempotent and cut repeated I/O</td><td><a href="#BE-6">BE-6</a>, <a href="#BE-7">BE-7</a>, <a href="#CORE-4">CORE-4</a>, <a href="#CORE-3">CORE-3</a>, <a href="#FS-6">FS-6</a>, <a href="#BE-8">BE-8</a></td><td>Mostly independent of each other; measure before and after.</td></tr>

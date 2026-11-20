@@ -42,13 +42,13 @@ use crate::run::capacity::{
 };
 use crate::run::staging::has_staging_component;
 use crate::run::{
-    ArchiveFinalizationHandle, ArchiveSeams, PlannedOutputArchive, RunDiagnostic, RunPreparation,
-    TemporaryArtifactRegistry, take_panic_message,
+    ArchiveFinalizationHandle, ArchiveSeams, PlannedOutputArchive, RunDiagnostic,
+    RunDiagnosticCode, RunPhase, RunPreparation, TemporaryArtifactRegistry, take_panic_message,
 };
 use crate::{AttemptOutcome, Error, OperationFailure};
 
 use attempt::attempt_output;
-use planning::{FinalizationPlan, PlanningStop, plan_finalization};
+use planning::{FinalizationPlan, PlanningCancelled, UnplannedRoot, plan_finalization};
 use plugins::maintain_existing_loading_plugins;
 
 /// Why Archive Finalization, or one of its output attempts, failed.
@@ -66,6 +66,11 @@ pub enum ArchiveFinalizationFailure {
     PluginRemovalFailed,
     /// A packed source could not be removed.
     SourceCleanupFailed,
+    /// Planning could not plan one or more Mod Roots, such as one with a
+    /// directory that cannot be read. Planning only reads, so those roots
+    /// are unchanged; they get no output, Loading Plugin maintenance or
+    /// pruning, while every other root is finalized. Safe to continue.
+    PlanningFailed,
     /// The phase failed outside any attempt it could classify.
     UnexpectedException,
 }
@@ -291,8 +296,11 @@ impl Default for ArchiveFinalizationChoices {
 /// attempt; cancelled planning finishes the phase as cancelled without an
 /// output total. A failure or panic of the phase's own work finishes it
 /// once as a phase-level `UnexpectedException` that keeps every attempt
-/// already recorded and forbids continuation. The caller owns `artifacts`
-/// through Safety Cleanup.
+/// already recorded and forbids continuation. A Mod Root planning could not
+/// plan is left out while the others are finalized, and the phase then fails
+/// with `PlanningFailed`, which is safe to continue, unless it already
+/// failed some other way. The caller owns `artifacts` through Safety
+/// Cleanup.
 ///
 /// # Errors
 /// Only a Run Evidence invariant violation, returned unchanged so the Run
@@ -361,11 +369,16 @@ pub(crate) enum CreationPlanning {
         /// [`creation_demand`], so `None` exactly when that Apply run would
         /// pass it.
         capacity_warning: Option<RunDiagnostic>,
+        /// One warning per Mod Root planning could not plan, in run order:
+        /// the roots an Apply run would leave out with
+        /// [`ArchiveFinalizationFailure::PlanningFailed`].
+        unplanned: Vec<RunDiagnostic>,
     },
     /// Cancellation was observed while planning; nothing was planned.
     Cancelled,
-    /// Planning failed, or panicked, with this detail: the failure an Apply
-    /// run reports as the phase's Unexpected Exception.
+    /// Planning panicked, with this message: the failure an Apply run
+    /// reports as the phase's Unexpected Exception. A Mod Root that merely
+    /// could not be planned is one of [`Self::Planned`]'s `unplanned`.
     Failed(String),
 }
 
@@ -417,10 +430,10 @@ pub(crate) fn plan_archive_creation(
             CapacityStage::BeforeCreation,
             &creation_demand(capacity, &plan).phase,
         );
-        Ok((planned_outputs(&plan), verdict))
+        Ok((planned_outputs(&plan), verdict, unplanned_warnings(&plan)))
     }));
     match planned {
-        Ok(Ok((outputs, verdict))) => {
+        Ok(Ok((outputs, verdict, unplanned))) => {
             // Matched outside the containment above, so an impossible arm
             // panics rather than passing as a planning failure.
             let capacity_warning = match verdict {
@@ -439,12 +452,38 @@ pub(crate) fn plan_archive_creation(
             CreationPlanning::Planned {
                 outputs,
                 capacity_warning,
+                unplanned,
             }
         }
-        Ok(Err(PlanningStop::Cancelled)) => CreationPlanning::Cancelled,
-        Ok(Err(PlanningStop::Failed(detail))) => CreationPlanning::Failed(detail),
+        Ok(Err(PlanningCancelled)) => CreationPlanning::Cancelled,
         Err(payload) => CreationPlanning::Failed(take_panic_message(payload)),
     }
+}
+
+/// One line per unplanned Mod Root, naming it and what failed, for the
+/// phase-level [`ArchiveFinalizationFailure::PlanningFailed`].
+fn unplanned_detail(unplanned: &[UnplannedRoot]) -> String {
+    unplanned
+        .iter()
+        .map(|root| format!("{}: {}", root.root.display(), root.detail))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A Dry Run's warning for each Mod Root `plan` could not plan, as a
+/// [`RunDiagnosticCode::ArchiveCreationUnplanned`] at that root.
+fn unplanned_warnings(plan: &FinalizationPlan) -> Vec<RunDiagnostic> {
+    plan.unplanned
+        .iter()
+        .map(|root| {
+            RunDiagnostic::new(
+                RunDiagnosticCode::ArchiveCreationUnplanned,
+                RunPhase::ArchiveFinalization,
+                root.detail.clone(),
+            )
+            .with_path(&root.root)
+        })
+        .collect()
 }
 
 /// Archive creation's capacity demand over one frozen plan, as
@@ -538,16 +577,25 @@ fn run_phase(
             cancelled,
         ) {
             Ok(plan) => plan,
-            Err(PlanningStop::Cancelled) => {
+            Err(PlanningCancelled) => {
                 // Planning made no mutation and has no trustworthy output
                 // total to publish.
                 account.cancelled = true;
                 return Ok(());
             }
-            Err(PlanningStop::Failed(detail)) => return Err(Escape::Work(detail)),
         };
         phase.plan(plan.outputs.len()).map_err(Escape::Evidence)?;
         finalize_plan(seams, capacity, &plan, artifacts, cancelled, phase, account)?;
+        // Recorded after the other roots are finalized, and only when the
+        // phase found no failure of its own: a shortage, plugin failure or
+        // Unexpected Exception says more about the run, and every unplanned
+        // root was already logged when planning skipped it.
+        if account.failure.is_none() && !plan.unplanned.is_empty() {
+            account.fail(OperationFailure::new(
+                ArchiveFinalizationFailure::PlanningFailed,
+                unplanned_detail(&plan.unplanned),
+            ));
+        }
     }
     Ok(())
 }

@@ -20,8 +20,15 @@ const DX10_HEADER_LEN: u64 = 4 + 124 + 20;
 /// One Archived Asset, as [`ReadArchive::archived_assets`] lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchivedAsset {
-    /// The name as stored. TES4 names join directory and file with a backslash
-    /// and map any `/` to `\`; FO4 and TES3 names are kept as stored.
+    /// The name as stored, decoded for display and as a Windows path. TES4
+    /// names join directory and file with a backslash and map any `/` to
+    /// `\`; FO4 and TES3 names are kept as stored.
+    ///
+    /// Stored names are bytes. Each name (for TES4, its directory and its
+    /// file name separately) is decoded as UTF-8 when it is valid UTF-8 and
+    /// as Windows-1252 otherwise, which an author's accented names usually
+    /// are. Every byte decodes, so no name makes the Archive unreadable;
+    /// [`ReadArchive::extract`] finds the entry again by its stored bytes.
     pub name: String,
     /// The bytes it extracts to, as C++ CAO's inventory counts them: the
     /// decompressed size, plus [`DX10_HEADER_LEN`] for a DX10 texture.
@@ -201,19 +208,19 @@ impl ReadArchive {
         }
     }
 
-    /// Lists every Archived Asset, in the Archive's own (hash) order.
+    /// Lists every Archived Asset, in the Archive's own (hash) order, with
+    /// each name decoded as [`ArchivedAsset::name`] describes.
     ///
     /// # Errors
     ///
-    /// [`ArchiveError::InvalidArchivedAssetName`] for a name that is not UTF-8. C++ CAO's
-    /// discovery failed such an Archive the same way (`ArchiveEntryInvalid`).
+    /// None at present; the `Result` keeps room for a listing that can fail.
     pub fn archived_assets(&self) -> Result<Vec<ArchivedAsset>, ArchiveError> {
         let mut assets = Vec::new();
         match &self.inner {
             Inner::Tes3(archive) => {
                 for (key, file) in archive {
                     assets.push(ArchivedAsset {
-                        name: self.decode(key.name())?.to_owned(),
+                        name: decode(key.name()),
                         size: file.len() as u64,
                         compressed: false,
                         chunks: 1,
@@ -223,11 +230,11 @@ impl ReadArchive {
             }
             Inner::Tes4(archive, _) => {
                 for (directory_key, directory) in archive {
-                    let directory_name = self.decode(directory_key.name())?;
+                    let directory_name = decode(directory_key.name());
                     for (file_key, file) in directory {
-                        let file_name = self.decode(file_key.name())?;
+                        let file_name = decode(file_key.name());
                         let name = if directory_name.is_empty() {
-                            file_name.to_owned()
+                            file_name
                         } else {
                             format!("{directory_name}\\{file_name}")
                         };
@@ -253,7 +260,7 @@ impl ReadArchive {
                         .map(|chunk| chunk.decompressed_len().unwrap_or(chunk.len()) as u64)
                         .sum();
                     assets.push(ArchivedAsset {
-                        name: self.decode(key.name())?.to_owned(),
+                        name: decode(key.name()),
                         size: data + header,
                         compressed: !file.is_empty()
                             && file.iter().all(|chunk| chunk.is_compressed()),
@@ -271,6 +278,9 @@ impl ReadArchive {
     /// formats extract where `rsm-bsa` failed (deviation 7).
     ///
     /// `name` is looked up by its hash, so case and `/` versus `\` do not matter.
+    /// A name [`Self::archived_assets`] decoded from Windows-1252 is found by
+    /// its stored bytes: each name (for TES4, its directory and its file name)
+    /// is tried as UTF-8 first and then encoded back to Windows-1252.
     ///
     /// # Errors
     ///
@@ -284,8 +294,8 @@ impl ReadArchive {
         };
         match &self.inner {
             Inner::Tes3(archive) => {
-                let file = archive
-                    .get(&tes3::ArchiveKey::from(name))
+                let file = stored_names(name)
+                    .find_map(|stored| archive.get(&tes3::ArchiveKey::from(stored)))
                     .ok_or_else(missing)?;
                 file.write(out).map_err(|source| ArchiveError::Tes3 {
                     path: self.path.clone(),
@@ -295,9 +305,12 @@ impl ReadArchive {
             Inner::Tes4(archive, options) => {
                 let normalized = name.replace('/', "\\");
                 let (directory, file) = normalized.rsplit_once('\\').unwrap_or(("", &normalized));
-                let file = archive
-                    .get(&tes4::ArchiveKey::from(directory))
-                    .and_then(|directory| directory.get(&tes4::DirectoryKey::from(file)))
+                let file = stored_names(directory)
+                    .find_map(|stored| archive.get(&tes4::ArchiveKey::from(stored)))
+                    .and_then(|directory| {
+                        stored_names(file)
+                            .find_map(|stored| directory.get(&tes4::DirectoryKey::from(stored)))
+                    })
                     .ok_or_else(missing)?;
                 file.write(out, &options.into())
                     .map_err(|source| ArchiveError::Tes4 {
@@ -306,8 +319,8 @@ impl ReadArchive {
                     })
             }
             Inner::Fo4(archive, options) => {
-                let file = archive
-                    .get(&fo4::ArchiveKey::from(name))
+                let file = stored_names(name)
+                    .find_map(|stored| archive.get(&fo4::ArchiveKey::from(stored)))
                     .ok_or_else(missing)?;
                 file.write(out, &options.into())
                     .map_err(|source| ArchiveError::Fo4 {
@@ -317,12 +330,92 @@ impl ReadArchive {
             }
         }
     }
+}
 
-    /// Decodes a stored name as strict UTF-8.
-    fn decode<'name>(&self, name: &'name ba2::BStr) -> Result<&'name str, ArchiveError> {
-        std::str::from_utf8(name).map_err(|_| ArchiveError::InvalidArchivedAssetName {
-            archive: self.path.clone(),
-            name: String::from_utf8_lossy(name).into_owned(),
+/// The characters Windows-1252 assigns to bytes 0x80 to 0x9F, as the WHATWG
+/// Encoding Standard decodes them. The five bytes the code page leaves
+/// undefined decode to the C1 control of the same value, so every byte has
+/// exactly one character and the decoding can be reversed.
+const WINDOWS_1252_HIGH: [char; 32] = [
+    '\u{20AC}', '\u{0081}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
+    '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{008D}', '\u{017D}', '\u{008F}',
+    '\u{0090}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
+    '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}', '\u{009D}', '\u{017E}', '\u{0178}',
+];
+
+/// Decodes a stored name: as UTF-8 when it is valid UTF-8, and otherwise as
+/// Windows-1252, which never fails.
+///
+/// A name that is neither, such as one written in the Cyrillic code page,
+/// still decodes, to the Windows-1252 reading of its bytes. Whether that is
+/// a safe Windows path is for the caller's path rules to decide.
+fn decode(name: &ba2::BStr) -> String {
+    match std::str::from_utf8(name) {
+        Ok(text) => text.to_owned(),
+        Err(_) => name
+            .iter()
+            .map(|&byte| match byte {
+                0x80..=0x9F => WINDOWS_1252_HIGH[usize::from(byte - 0x80)],
+                _ => char::from(byte),
+            })
+            .collect(),
+    }
+}
+
+/// The Windows-1252 bytes of `name`, or `None` when a character has none.
+/// The inverse of [`decode`]'s fallback.
+fn encode_windows_1252(name: &str) -> Option<Vec<u8>> {
+    name.chars()
+        .map(|character| match u32::from(character) {
+            code @ (0..=0x7F | 0xA0..=0xFF) => u8::try_from(code).ok(),
+            _ => WINDOWS_1252_HIGH
+                .iter()
+                .position(|&high| high == character)
+                .and_then(|index| u8::try_from(index + 0x80).ok()),
         })
+        .collect()
+}
+
+/// The stored bytes `name` may have come from, in the order to try them:
+/// its UTF-8 bytes, then, for a name that is not plain ASCII, its
+/// Windows-1252 bytes when it has them.
+fn stored_names(name: &str) -> impl Iterator<Item = Vec<u8>> {
+    let utf8 = name.as_bytes().to_vec();
+    let windows_1252 = if name.is_ascii() {
+        None
+    } else {
+        encode_windows_1252(name)
+    };
+    std::iter::once(utf8).chain(windows_1252)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every byte decodes to one character and encodes back to itself, so a
+    /// Windows-1252 name is always found again by its stored bytes.
+    #[test]
+    fn windows_1252_round_trips_every_byte() {
+        let bytes: Vec<u8> = (0x80..=0xFF).collect();
+        let decoded = decode(ba2::BStr::new(&bytes));
+        assert_eq!(decoded.chars().count(), bytes.len());
+        assert_eq!(encode_windows_1252(&decoded), Some(bytes));
+        assert_eq!(decode(ba2::BStr::new(b"caf\xE9.dds")), "café.dds");
+        assert_eq!(decode(ba2::BStr::new(b"\x80")), "€");
+    }
+
+    /// Valid UTF-8 is read as UTF-8, and its UTF-8 bytes are tried first.
+    #[test]
+    fn utf8_names_stay_utf8() {
+        assert_eq!(decode(ba2::BStr::new("café.dds".as_bytes())), "café.dds");
+        let tried: Vec<Vec<u8>> = stored_names("café.dds").collect();
+        assert_eq!(
+            tried,
+            [b"caf\xC3\xA9.dds".to_vec(), b"caf\xE9.dds".to_vec()]
+        );
+        assert_eq!(stored_names("plain.dds").count(), 1);
+        // A character Windows-1252 cannot spell is only tried as UTF-8.
+        assert_eq!(stored_names("кот.dds").count(), 1);
     }
 }

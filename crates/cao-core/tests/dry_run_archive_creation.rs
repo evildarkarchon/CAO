@@ -268,11 +268,12 @@ fn a_dry_run_without_archive_creation_plans_no_output() {
     assert!(root.join("empty").is_dir(), "nothing is pruned");
 }
 
-/// Spec (#643): a planning failure is a Run Failure, as under Apply, where
-/// it is Archive Finalization's Unexpected Exception
+/// Spec (#643): a planning panic is a Run Failure, as under Apply, where it
+/// is Archive Finalization's Unexpected Exception
 /// (`an_unexpected_failure_is_recorded_once` in `archive_finalization.rs`).
-/// A panic of the packer while planning is contained, and nothing is
-/// planned.
+/// The panic is contained, and nothing is planned. A Mod Root that merely
+/// cannot be planned is a warning instead
+/// (`an_unreadable_directory_fails_only_its_own_mod_root`).
 #[test]
 fn a_planning_failure_fails_the_dry_run() {
     let root = mod_root("planning-fails");
@@ -533,4 +534,113 @@ fn an_apply_run_with_a_creation_capacity_shortage_still_fails_its_output() {
     assert!(result.planned_archive_work().is_empty());
     assert!(toolset.packer.writes().is_empty());
     assert_eq!(snapshot_tree(&root), before, "the Mod Root is unchanged");
+}
+
+/// Opens the directory at `path` sharing nothing, so no other handle, a
+/// directory listing included, can open it while the result lives.
+fn hold_directory(path: &Path) -> std::fs::File {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .unwrap()
+}
+
+/// A packer that, as planning lists `root`'s Plugins, starts holding the
+/// directory `blocked` in `held`, so planning's walk of `root` cannot read
+/// it. Earlier phases have already read it by then.
+fn packer_blocking(
+    root: &Path,
+    blocked: &Path,
+    held: &Arc<std::sync::Mutex<Option<std::fs::File>>>,
+) -> FakeArchivePacker {
+    let (root, blocked, held) = (root.to_path_buf(), blocked.to_path_buf(), Arc::clone(held));
+    FakeArchivePacker {
+        before_list: Some(Box::new(move |dir, kind| {
+            let mut held = held.lock().unwrap();
+            if dir == root && kind == ArchiveNameKind::Plugin && held.is_none() {
+                *held = Some(hold_directory(&blocked));
+            }
+        })),
+        ..FakeArchivePacker::default()
+    }
+}
+
+/// Audit FS-9: a directory planning cannot read fails only its own Mod
+/// Root, in both modes. Planning only reads, so that root is left exactly as
+/// it was while the other is planned and, under Apply, packed. Apply records
+/// the phase's `PlanningFailed`, which is safe to continue, so the run
+/// completes with failures rather than failing; a Dry Run warns with
+/// `ArchiveCreationUnplanned` at the root and still plans the other's
+/// output.
+#[test]
+fn an_unreadable_directory_fails_only_its_own_mod_root() {
+    for mode in [ExecutionMode::Apply, ExecutionMode::DryRun] {
+        let (parent, [blocked_root, other_root]) =
+            two_roots_to_pack(&format!("unplanned-{mode:?}"));
+        let blocked = blocked_root.join("meshes");
+        let before = snapshot_tree(&blocked_root);
+        let held = Arc::new(std::sync::Mutex::new(None));
+
+        let (result, _) = run_over(
+            ArchiveRunRequest::over_mods(&parent).with_execution_mode(mode),
+            packer_blocking(&blocked_root, &blocked, &held),
+            FakeVolumeProbe::default(),
+            &CancellationToken::new(),
+        );
+        drop(held.lock().unwrap().take());
+
+        assert!(
+            result.failures().is_empty(),
+            "{mode:?}: {:?}",
+            result.failures()
+        );
+        assert_eq!(snapshot_tree(&blocked_root), before, "{mode:?}");
+        match mode {
+            ExecutionMode::Apply => {
+                assert_eq!(result.outcome(), RunOutcome::CompletedWithFailures);
+                let finalization = result.archive_finalization().unwrap();
+                assert_eq!(
+                    finalization.failure_category(),
+                    Some(ArchiveFinalizationFailure::PlanningFailed)
+                );
+                let detail = finalization.failure.as_ref().unwrap().detail();
+                assert!(
+                    detail.contains(&blocked_root.display().to_string()),
+                    "{detail}"
+                );
+                assert!(finalization.safe_to_continue);
+                // The other root's output was attempted and committed.
+                assert_eq!(finalization.attempts.len(), 1);
+                let attempt = &finalization.attempts[0];
+                assert_eq!(attempt.mod_root, other_root);
+                assert!(attempt.succeeded(), "{:?}", attempt.outcome);
+                assert_eq!(attempt.outcome.mutation(), MutationState::Committed);
+                assert!(
+                    !other_root.join("meshes/a.nif").exists(),
+                    "packed and removed"
+                );
+            }
+            ExecutionMode::DryRun => {
+                assert_eq!(result.outcome(), RunOutcome::Succeeded);
+                let warnings: Vec<&RunDiagnostic> = result
+                    .diagnostics()
+                    .iter()
+                    .filter(|diagnostic| {
+                        diagnostic.code == RunDiagnosticCode::ArchiveCreationUnplanned
+                    })
+                    .collect();
+                assert_eq!(warnings.len(), 1, "{:?}", result.diagnostics());
+                assert_eq!(warnings[0].path, blocked_root);
+                assert_eq!(warnings[0].phase, RunPhase::ArchiveFinalization);
+                let outputs = result.planned_archive_work().outputs();
+                assert_eq!(outputs.len(), 1, "{outputs:?}");
+                assert_eq!(outputs[0].mod_root, other_root);
+                assert!(other_root.join("meshes/a.nif").exists());
+            }
+        }
+    }
 }
