@@ -93,3 +93,12 @@ jobs:
             exit 1
           fi
           echo "No test was ignored."
+
+      - name: Drop the tests' scratch files before the cache is saved
+        # rust-cache saves target/ after the job, and target/tmp holds only the
+        # tests' scratch trees: worthless to restore, and tar fails on an entry
+        # removed while it reads ("File removed before we read it"), which
+        # loses the whole cache. Best effort: a leftover only costs that save.
+        if: always()
+        shell: bash
+        run: rm -rf target/tmp || echo "::warning::target/tmp could not be removed fully"
