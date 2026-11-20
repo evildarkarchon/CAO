@@ -36,7 +36,7 @@ pub struct FilePath {
     pub name: String,
     /// The game's suffix the stem ended with, or empty.
     pub suffix: String,
-    /// The extension, with its dot.
+    /// The extension, with its dot, spelled as on disk: `.ESP` stays `.ESP`.
     pub ext: String,
     /// The trailing number of the stem, if any.
     pub counter: Option<u32>,
@@ -46,8 +46,12 @@ pub struct FilePath {
 
 impl FilePath {
     /// Parses `path` as a name of `kind` under `settings`' rules, or `None` when
-    /// its extension is not one of the game's (case-sensitive: `Foo.ESP` is not a
-    /// plugin), or its file name is missing or not Unicode.
+    /// its extension is not one of the game's, or its file name is missing or not
+    /// Unicode.
+    ///
+    /// Extensions match ignoring ASCII case, as Windows and the games do: mods ship
+    /// `Foo.ESP` and `Foo.BSA`. [`FilePath::ext`] keeps the spelling on disk, so
+    /// [`FilePath::full_path`] still names the file that was parsed.
     ///
     /// The stem is parsed as bethutil does: trailing digits become the counter,
     /// then the text after the last ` - ` becomes the suffix if it is exactly one
@@ -58,8 +62,11 @@ impl FilePath {
         let file_name = path.file_name()?.to_str()?;
         let (stem, ext) = split_file_name(file_name);
         let known = match kind {
-            NameKind::Plugin => settings.plugin_extensions.contains(&ext),
-            NameKind::Archive => ext == settings.extension,
+            NameKind::Plugin => settings
+                .plugin_extensions
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(ext)),
+            NameKind::Archive => settings.extension.eq_ignore_ascii_case(ext),
         };
         if !known {
             return None;

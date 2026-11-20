@@ -1,7 +1,7 @@
 //! The options model of a profile's `settings.ini`: the user's choices for a run,
 //! as C++ held them in `OptionsCAO`.
 
-use crate::ini::IniFile;
+use crate::ini::{IniFile, Value};
 
 /// How the selected folder becomes the Mod Selection (`mode`). The name is C++'s
 /// `OptionsCAO::OptimizationMode`, kept so the INI key and the code line up.
@@ -43,7 +43,8 @@ impl OptimizationMode {
 /// [`Options::default`] is C++'s member defaults, which apply only when the first
 /// profile loaded has no file. Otherwise every field reads with `QVariant`'s conversions, so a missing
 /// key is `false` or `0`: the shipped files have no `bBsaMergeIncomp`, so it loads as
-/// `false`. Keys this model does not hold, such as the dead `[BSA] bBsaLeastBSA`
+/// `false`. The one exception is `bBsaCreateDummies`, which a missing key leaves on:
+/// with it off, Archive creation skips any Archive no plugin loads. Keys this model does not hold, such as the dead `[BSA] bBsaLeastBSA`
 /// (deviation 10), are never read and survive a save.
 ///
 /// The model holds what the file holds; whether the values make a valid run is
@@ -175,7 +176,10 @@ impl Options {
             bsa_merge_incompressible: flag("BSA/bBsaMergeIncomp"),
             bsa_merge_textures: flag("BSA/bBsaMergeTexture"),
             bsa_process_content: flag("BSA/bBsaProcessContent"),
-            bsa_create_dummies: flag("BSA/bBsaCreateDummies"),
+            // On unless the file turns it off: without a Dummy Plugin a packed
+            // Archive may have no plugin to load it, so Archive creation skips
+            // it. A file written before the key existed keeps the default.
+            bsa_create_dummies: ini.get("BSA/bBsaCreateDummies").is_none_or(Value::to_bool),
             bsa_compress: flag("BSA/bBsaCompress"),
             bsa_delete_source: flag("BSA/bBsaDeleteSource"),
             textures_necessary: flag("Textures/bTexturesNecessary"),

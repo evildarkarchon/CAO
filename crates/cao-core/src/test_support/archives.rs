@@ -379,8 +379,8 @@ impl FakeArchivePacker {
                 .rules
                 .plugin_extensions
                 .iter()
-                .any(|known| known == ext),
-            ArchiveNameKind::Archive => ext == self.rules.extension,
+                .any(|known| known.eq_ignore_ascii_case(ext)),
+            ArchiveNameKind::Archive => self.rules.extension.eq_ignore_ascii_case(ext),
         };
         if !known {
             return None;
@@ -479,7 +479,12 @@ impl ArchivePacker for FakeArchivePacker {
             }
             partition.files.push(source);
         }
-        if merge.incompressible && size(&standard) + size(&incompressible) < self.archive_limit {
+        // As the real packer: an empty Incompressible partition joins nothing,
+        // so it never makes the Standard Archive Incompressible.
+        if merge.incompressible
+            && !incompressible.files.is_empty()
+            && size(&standard) + size(&incompressible) < self.archive_limit
+        {
             standard.files.append(&mut incompressible.files);
             standard.kind = PackedArchiveKind::Incompressible;
         }

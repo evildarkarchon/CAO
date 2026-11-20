@@ -87,6 +87,45 @@ fn switching_away_from_an_unreadable_profile_keeps_its_asset_options() {
     assert_eq!(std::fs::read(&profile_ini).unwrap(), profile_ini_before);
 }
 
+/// A `settings.ini` that cannot be read when its profile is selected leaves
+/// the previous profile's options in the window; no later save may write them
+/// into this profile, even once its file is readable again (GUI-3).
+#[test]
+fn options_that_could_not_be_read_are_never_saved_into_their_profile() {
+    let _serial = serial();
+    headless();
+    let app_dir = app_with_sse_asset_options_on("unreadable_settings_ini");
+    let settings_ini = app_dir.join("profiles").join("SSE").join("settings.ini");
+    let aside = settings_ini.with_extension("ini.aside");
+    let settings_ini_before = std::fs::read(&settings_ini).unwrap();
+
+    let (app, desktop) = open(&app_dir);
+    let ui = app.window();
+    // The window starts on TES5; give its options a mark of their own.
+    enter(ui, "Mod folder", "C:/Mods/FromTes5");
+    // A directory under the file's name exists but cannot be read as an INI
+    // file, as a sharing violation from a sync client would leave it.
+    std::fs::rename(&settings_ini, &aside).unwrap();
+    std::fs::create_dir(&settings_ini).unwrap();
+    choose(ui, "Profile", "SSE");
+    assert_eq!(desktop.message_titles(), ["Profile"]);
+
+    // Readable again before any of the saves that follow.
+    std::fs::remove_dir(&settings_ini).unwrap();
+    std::fs::rename(&aside, &settings_ini).unwrap();
+    assert!(app.save());
+    // Toggling the debug log saves the window at once.
+    click_menu(ui, "Tools");
+    click_menu(ui, "Enable debug log");
+    // Switching profile saves the window again.
+    choose(ui, "Profile", "TES5");
+
+    assert_eq!(std::fs::read(&settings_ini).unwrap(), settings_ini_before);
+    // Selecting SSE again reads its own options, with no new error.
+    choose(ui, "Profile", "SSE");
+    assert_eq!(desktop.message_titles(), ["Profile"]);
+}
+
 #[test]
 fn a_malformed_profile_ini_is_reported_on_selection_and_never_rewritten() {
     // Saves rewrite `profile.ini` from its parsed entries, so a lenient read

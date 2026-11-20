@@ -7,10 +7,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use cao_winfs::{canonical, is_reparse_point};
+use cao_winfs::{OrdinalIgnoreCase, canonical, is_reparse_point};
 
 use super::ArchiveFinalizationChoices;
-use super::plugins::{LoadingPluginStrength, find_loading_plugin, has_exact_dummy_bytes};
+use super::plugins::{
+    LoadingPluginStrength, existing_entry, find_loading_plugin, has_exact_dummy_bytes,
+};
 use crate::run::staging::has_staging_component;
 use crate::run::{
     ArchiveMerge, ArchiveName, ArchiveNameKind, ArchiveNamingRules, ArchivePacker,
@@ -30,7 +32,10 @@ pub(super) struct FinalizationOutput {
     /// A conservative content and framing allowance, not a reservation.
     pub estimated_capacity_bytes: u64,
     /// The recognized Loading Plugin names; the last is the suffix-free
-    /// Dummy Plugin destination. Empty when Dummy Plugins are not created.
+    /// Dummy Plugin destination. Set whenever a plugin must load the output:
+    /// when Dummy Plugins are created, and when they are not but the packed
+    /// sources will be deleted, which only a plugin that loads the Archive
+    /// justifies. Empty otherwise.
     pub loading_plugin_paths: Vec<PathBuf>,
 }
 
@@ -49,6 +54,38 @@ pub(super) struct FinalizationPlan {
     /// The Mod Roots whose planning failed, in run order. None of them is in
     /// `roots`, so none is packed, maintained or pruned.
     pub unplanned: Vec<UnplannedRoot>,
+    /// The outputs left out because nothing would load them: Dummy Plugins
+    /// are not created, the sources would be deleted, and no plugin at any
+    /// recognized name loads the Archive. Their sources stay loose.
+    pub unloadable: Vec<UnloadableOutput>,
+    /// The planned Mod Roots holding plugins or Archives whose names differ
+    /// only in case, in run order. Planning goes on with them: they are only
+    /// reported.
+    pub case_twins: Vec<CaseTwins>,
+}
+
+/// A Mod Root whose plugins or Archives include names that differ only in
+/// case, as a case-sensitive directory can hold: a Linux mod manager's, or one
+/// WSL or `fsutil` made. The game, under Windows, Wine or Proton, sees each
+/// group as one name and loads only one of its files.
+pub(super) struct CaseTwins {
+    pub mod_root: PathBuf,
+    /// Each group's file names, as on disk and in ordinal order, two or more
+    /// per group; the groups are ordered by their first name.
+    pub groups: Vec<Vec<String>>,
+}
+
+/// An output planning left out because no plugin would load it, so packing
+/// it and deleting its sources could make the mod stop loading them.
+pub(super) struct UnloadableOutput {
+    pub mod_root: PathBuf,
+    /// The Archive that would have been created.
+    pub archive_path: PathBuf,
+    /// How many loose files it would have packed, which stay loose.
+    pub file_count: usize,
+    /// The suffix-free plugin name that would load it, where a Dummy Plugin
+    /// would have gone.
+    pub plugin_path: PathBuf,
 }
 
 /// A Mod Root planning could not plan, and why.
@@ -57,6 +94,18 @@ pub(super) struct UnplannedRoot {
     pub root: PathBuf,
     /// What failed, such as a directory that could not be read.
     pub detail: String,
+}
+
+/// What planning one Mod Root produced, before it joins the plan.
+struct RootPlan {
+    /// The canonical Mod Root.
+    root: PathBuf,
+    /// The plugin allowance the root's existing Archives may need.
+    dummy_capacity: u64,
+    outputs: Vec<FinalizationOutput>,
+    unloadable: Vec<UnloadableOutput>,
+    /// The root's plugin and Archive names that differ only in case.
+    case_twins: Vec<Vec<String>>,
 }
 
 /// Cancellation was observed between planning inputs; nothing was mutated
@@ -92,6 +141,11 @@ const CAPACITY_ALLOWANCE: u64 = 65_536;
 /// [`FinalizationPlan::unplanned`]; the other roots are planned as if it
 /// were not there. Planning only reads, so the failed root is unchanged, and
 /// it gets no output, no Loading Plugin maintenance and no pruning.
+///
+/// Without Dummy Plugins, an output whose sources would be deleted is planned
+/// only when a plugin at one of its recognized names already loads it;
+/// otherwise it is recorded in [`FinalizationPlan::unloadable`] and its
+/// sources stay loose (audit FS-4).
 pub(super) fn plan_finalization(
     roots: &[PathBuf],
     choices: &ArchiveFinalizationChoices,
@@ -122,161 +176,228 @@ pub(super) fn plan_finalization(
         create_dummies: choices.create_dummy_plugins,
         dummy_capacity_by_root: BTreeMap::new(),
         unplanned: Vec::new(),
+        unloadable: Vec::new(),
+        case_twins: Vec::new(),
     };
     let create_dummies = plan.create_dummies;
+    let delete_sources = plan.delete_sources;
     let dummy_len = rules.dummy_plugin.len() as u64;
-    let mut reserved: BTreeSet<PathBuf> = BTreeSet::new();
-    // One root's plan: its canonical path, its Dummy Plugin allowance and
-    // its outputs. An error leaves `plan` untouched by this root.
-    let mut plan_root =
-        |input_root: &Path| -> Result<(PathBuf, u64, Vec<FinalizationOutput>), PlanningStop> {
-            let root = canonical(input_root).map_err(|error| failed(&error))?;
-            let mut outputs = Vec::new();
-            let mut dummy_capacity = 0u64;
-            if create_dummies {
-                // Existing Archives can also need plugins in the final pass, even
-                // with no new outputs. Count each, without assuming plugin reuse.
-                check()?;
-                let existing = packer
-                    .list_names(&root, ArchiveNameKind::Archive)
-                    .map_err(|error| failed(&error))?;
-                dummy_capacity = (existing.len() as u64).saturating_mul(dummy_len);
-            }
-
-            let listed = packer
-                .list_names(&root, ArchiveNameKind::Plugin)
-                .map_err(|error| failed(&error))?;
-            // Ignore only proven Dummy Plugin names while planning; their files
-            // stay until every output attempt finishes, so cancellation cannot
-            // strand an existing Archive.
-            let mut plugins = Vec::with_capacity(listed.len());
-            for plugin in listed {
-                check()?;
-                if !has_exact_dummy_bytes(&plugin.full_path(), &rules.dummy_plugin) {
-                    plugins.push(plugin);
-                }
-            }
-            plugins.sort();
-            if plugins.is_empty() {
-                let name = root
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .ok_or_else(|| {
-                        PlanningStop::Failed(format!(
-                            "The Mod Root name of `{}` is not valid Unicode.",
-                            root.display()
-                        ))
-                    })?;
-                plugins.push(ArchiveName {
-                    dir: root.clone(),
-                    name: name.to_owned(),
-                    suffix: String::new(),
-                    ext: ".esp".to_owned(),
-                    counter: None,
-                });
-            }
-
-            let sources = collect_sources(&root, files_to_not_pack, &check)?;
+    // A fallback Dummy Plugin is only ever published when they are created.
+    let dummy_allowance = if create_dummies { dummy_len } else { 0 };
+    // Names this plan already gave an output, compared as Windows compares
+    // them, so two plugins differing only in case never get twin Archives.
+    let mut reserved: BTreeSet<OrdinalIgnoreCase<PathBuf>> = BTreeSet::new();
+    // One root's plan: its canonical path, its Dummy Plugin allowance, its
+    // outputs and the outputs nothing would load. An error leaves `plan`
+    // untouched by this root.
+    let mut plan_root = |input_root: &Path| -> Result<RootPlan, PlanningStop> {
+        let root = canonical(input_root).map_err(|error| failed(&error))?;
+        let mut outputs = Vec::new();
+        let mut unloadable = Vec::new();
+        let mut dummy_capacity = 0u64;
+        if create_dummies {
+            // Existing Archives can also need plugins in the final pass, even
+            // with no new outputs. Count each, without assuming plugin reuse.
             check()?;
-            let archives = packer
-                .partition(&root, sources, merge)
+            let existing = packer
+                .list_names(&root, ArchiveNameKind::Archive)
                 .map_err(|error| failed(&error))?;
-            for archive in archives {
-                check()?;
-                let suffix = match archive.kind {
-                    PackedArchiveKind::Textures => rules.texture_suffix.clone(),
-                    PackedArchiveKind::Standard | PackedArchiveKind::Incompressible => {
-                        rules.suffix.clone()
-                    }
+            dummy_capacity = (existing.len() as u64).saturating_mul(dummy_len);
+        }
+
+        check()?;
+        let case_twins = case_twins(&root, &rules).map_err(|error| failed(&error))?;
+        let listed = packer
+            .list_names(&root, ArchiveNameKind::Plugin)
+            .map_err(|error| failed(&error))?;
+        // Ignore only proven Dummy Plugin names while naming outputs; the
+        // files themselves are never removed, so they keep loading the
+        // Archives earlier runs packed.
+        let mut plugins = Vec::with_capacity(listed.len());
+        for plugin in listed {
+            check()?;
+            if !has_exact_dummy_bytes(&plugin.full_path(), &rules.dummy_plugin) {
+                plugins.push(plugin);
+            }
+        }
+        plugins.sort();
+        if plugins.is_empty() {
+            let name = root
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| {
+                    PlanningStop::Failed(format!(
+                        "The Mod Root name of `{}` is not valid Unicode.",
+                        root.display()
+                    ))
+                })?;
+            plugins.push(ArchiveName {
+                dir: root.clone(),
+                name: name.to_owned(),
+                suffix: String::new(),
+                ext: ".esp".to_owned(),
+                counter: None,
+            });
+        }
+
+        let sources = collect_sources(&root, files_to_not_pack, &check)?;
+        check()?;
+        let archives = packer
+            .partition(&root, sources, merge)
+            .map_err(|error| failed(&error))?;
+        for archive in archives {
+            check()?;
+            let suffix = match archive.kind {
+                PackedArchiveKind::Textures => rules.texture_suffix.clone(),
+                PackedArchiveKind::Standard | PackedArchiveKind::Incompressible => {
+                    rules.suffix.clone()
                 }
-                .unwrap_or_default();
-                let available = |candidate: &ArchiveName| -> Result<bool, PlanningStop> {
-                    let path = candidate.full_path();
-                    match std::fs::symlink_metadata(&path) {
-                        Ok(_) => Ok(false),
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                            Ok(!reserved.contains(&path))
-                        }
-                        Err(error) => Err(PlanningStop::Failed(format!(
-                            "Cannot plan output Archive `{}`: {error}",
-                            path.display()
-                        ))),
-                    }
+            }
+            .unwrap_or_default();
+            // Taken under any spelling: in a case-sensitive directory an
+            // existing `MyMod.BSA` must still keep `MyMod.bsa` from being
+            // created beside it.
+            let available = |candidate: &ArchiveName| -> Result<bool, PlanningStop> {
+                let path = candidate.full_path();
+                match existing_entry(&path) {
+                    Ok(Some(_)) => Ok(false),
+                    Ok(None) => Ok(!reserved.contains(&OrdinalIgnoreCase(path))),
+                    Err(detail) => Err(PlanningStop::Failed(format!(
+                        "Cannot plan output Archive `{}`: {detail}",
+                        path.display()
+                    ))),
+                }
+            };
+            let mut selected = None;
+            for plugin in &plugins {
+                check()?;
+                let candidate = ArchiveName {
+                    ext: rules.extension.clone(),
+                    suffix: suffix.clone(),
+                    ..plugin.clone()
                 };
-                let mut selected = None;
-                for plugin in &plugins {
+                if available(&candidate)? {
+                    selected = Some(candidate);
+                    break;
+                }
+            }
+            if selected.is_none() {
+                let mut candidate = ArchiveName {
+                    ext: rules.extension.clone(),
+                    suffix: suffix.clone(),
+                    ..plugins[0].clone()
+                };
+                for counter in 0..NAME_COUNTERS {
                     check()?;
-                    let candidate = ArchiveName {
-                        ext: rules.extension.clone(),
-                        suffix: suffix.clone(),
-                        ..plugin.clone()
-                    };
+                    candidate.counter = Some(counter);
                     if available(&candidate)? {
                         selected = Some(candidate);
                         break;
                     }
                 }
-                if selected.is_none() {
-                    let mut candidate = ArchiveName {
-                        ext: rules.extension.clone(),
-                        suffix: suffix.clone(),
-                        ..plugins[0].clone()
-                    };
-                    for counter in 0..NAME_COUNTERS {
-                        check()?;
-                        candidate.counter = Some(counter);
-                        if available(&candidate)? {
-                            selected = Some(candidate);
-                            break;
-                        }
-                    }
+            }
+            let Some(selected) = selected else {
+                return Err(PlanningStop::Failed(
+                    "No available output Archive name.".to_owned(),
+                ));
+            };
+            let archive_path = selected.full_path();
+            let mut plugin_path = None;
+            let mut loading_plugin_paths = Vec::new();
+            if !create_dummies && delete_sources {
+                check()?;
+                let names = loading_plugin_names(&selected, &rules);
+                // The strength the attempt requires before deleting
+                // sources, so a planned output can only fail there if
+                // its plugin changes meanwhile.
+                let loaded = find_loading_plugin(
+                    &names,
+                    LoadingPluginStrength::DurableForSourceDeletion,
+                    None,
+                )
+                .map_err(PlanningStop::Failed)?;
+                if loaded.is_none() {
+                    // Packing it would delete loose files the game then
+                    // loads from nowhere; leave them loose instead.
+                    unloadable.push(UnloadableOutput {
+                        mod_root: root.clone(),
+                        archive_path,
+                        file_count: archive.files.len(),
+                        plugin_path: names
+                            .last()
+                            .expect("every game has a plugin extension")
+                            .clone(),
+                    });
+                    continue;
                 }
-                let Some(selected) = selected else {
-                    return Err(PlanningStop::Failed(
-                        "No available output Archive name.".to_owned(),
-                    ));
-                };
-                let archive_path = selected.full_path();
-                reserved.insert(archive_path.clone());
-                let mut plugin_path = None;
-                let mut loading_plugin_paths = Vec::new();
-                if create_dummies {
-                    check()?;
-                    loading_plugin_paths = loading_plugin_names(&selected, &rules);
-                    if find_loading_plugin(
-                        &loading_plugin_paths,
-                        LoadingPluginStrength::Present,
-                        None,
-                    )
+                loading_plugin_paths = names;
+            }
+            reserved.insert(OrdinalIgnoreCase(archive_path.clone()));
+            if create_dummies {
+                check()?;
+                loading_plugin_paths = loading_plugin_names(&selected, &rules);
+                if find_loading_plugin(&loading_plugin_paths, LoadingPluginStrength::Present, None)
                     .map_err(PlanningStop::Failed)?
                     .is_none()
-                    {
-                        plugin_path = loading_plugin_paths.last().cloned();
-                    }
+                {
+                    plugin_path = loading_plugin_paths.last().cloned();
                 }
-                let mut output = FinalizationOutput {
-                    mod_root: root.clone(),
-                    archive_path,
-                    archive,
-                    plugin_path,
-                    estimated_capacity_bytes: 0,
-                    loading_plugin_paths,
-                };
-                output.estimated_capacity_bytes =
-                    estimate_packed_capacity(&output, dummy_len, &check)?;
-                outputs.push(output);
             }
-            Ok((root, dummy_capacity, outputs))
-        };
+            let mut output = FinalizationOutput {
+                mod_root: root.clone(),
+                archive_path,
+                archive,
+                plugin_path,
+                estimated_capacity_bytes: 0,
+                loading_plugin_paths,
+            };
+            output.estimated_capacity_bytes =
+                estimate_packed_capacity(&output, dummy_allowance, &check)?;
+            outputs.push(output);
+        }
+        Ok(RootPlan {
+            root,
+            dummy_capacity,
+            outputs,
+            unloadable,
+            case_twins,
+        })
+    };
     for input_root in roots {
         if cancelled() {
             return Err(PlanningCancelled);
         }
         match plan_root(input_root) {
-            Ok((root, dummy_capacity, outputs)) => {
+            Ok(RootPlan {
+                root,
+                dummy_capacity,
+                outputs,
+                unloadable,
+                case_twins,
+            }) => {
+                if !case_twins.is_empty() {
+                    log::warn!(
+                        "{} holds plugins or Archives whose names differ only in case: {}",
+                        root.display(),
+                        describe_case_twins(&case_twins)
+                    );
+                    plan.case_twins.push(CaseTwins {
+                        mod_root: root.clone(),
+                        groups: case_twins,
+                    });
+                }
                 plan.roots.push(root.clone());
                 plan.dummy_capacity_by_root.insert(root, dummy_capacity);
                 plan.outputs.extend(outputs);
+                for output in &unloadable {
+                    log::warn!(
+                        "Archive creation skips {}: no plugin loads it and Dummy Plugins are \
+                         off, so its {} loose files stay loose",
+                        output.archive_path.display(),
+                        output.file_count
+                    );
+                }
+                plan.unloadable.extend(unloadable);
             }
             Err(PlanningStop::Cancelled) => return Err(PlanningCancelled),
             Err(PlanningStop::Failed(detail)) => {
@@ -388,7 +509,9 @@ pub(super) fn loading_plugin_names(
 }
 
 /// Estimates an output's source content plus format and staging overhead,
-/// and the fallback Dummy Plugin when the output maintains Loading Plugins.
+/// plus `dummy_allowance`: the fallback Dummy Plugin's size when Dummy
+/// Plugins are created, since a Loading Plugin can disappear before
+/// publication and require one, and 0 when they are not.
 ///
 /// Zlib and LZ4 framing, up to four BA2 texture chunks, and BSA name tables
 /// need space beyond source bytes, so each source counts twice, plus a fixed
@@ -397,14 +520,10 @@ pub(super) fn loading_plugin_names(
 /// between them; a source that cannot be sized fails the estimate.
 pub(super) fn estimate_packed_capacity(
     output: &FinalizationOutput,
-    dummy_len: u64,
+    dummy_allowance: u64,
     check: &dyn Fn() -> Result<(), PlanningStop>,
 ) -> Result<u64, PlanningStop> {
-    let mut estimate: u64 = CAPACITY_ALLOWANCE;
-    // A Loading Plugin can disappear before publication, requiring the dummy.
-    if !output.loading_plugin_paths.is_empty() {
-        estimate = estimate.saturating_add(dummy_len);
-    }
+    let mut estimate: u64 = CAPACITY_ALLOWANCE.saturating_add(dummy_allowance);
     for source in &output.archive.files {
         check()?;
         let size = std::fs::metadata(&source.path)
@@ -425,4 +544,68 @@ pub(super) fn estimate_packed_capacity(
         estimate = estimate.saturating_add(size.saturating_mul(2).saturating_add(overhead));
     }
     Ok(estimate)
+}
+
+/// The groups of plugin and Archive file names directly in `root` that differ
+/// only in case, as `rules` recognise them: each group's names as on disk,
+/// in ordinal order, and the groups ordered by their first name. Empty on any
+/// case-insensitive directory, which cannot hold two such names.
+///
+/// The names are read from the directory itself rather than from the
+/// packer's parsed names, which re-render a counter and drop its leading
+/// zeros, so two different files never look alike.
+///
+/// # Errors
+/// `root` cannot be listed.
+fn case_twins(root: &Path, rules: &ArchiveNamingRules) -> std::io::Result<Vec<Vec<String>>> {
+    let recognised = |name: &str| {
+        let extension = name.rfind('.').map_or("", |dot| &name[dot..]);
+        rules.extension.eq_ignore_ascii_case(extension)
+            || rules
+                .plugin_extensions
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(extension))
+    };
+    let mut groups: BTreeMap<OrdinalIgnoreCase<String>, Vec<String>> = BTreeMap::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        // A directory is never a plugin or Archive, whatever its name.
+        if entry.file_type()?.is_dir() {
+            continue;
+        }
+        // A name that is not Unicode is no plugin or Archive name.
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if recognised(&name) {
+            groups
+                .entry(OrdinalIgnoreCase(name.clone()))
+                .or_default()
+                .push(name);
+        }
+    }
+    Ok(groups
+        .into_values()
+        .filter(|names| names.len() > 1)
+        .map(|mut names| {
+            names.sort();
+            names
+        })
+        .collect())
+}
+
+/// `groups` as one line for the log and the warning: each group's names
+/// joined by " and ", the groups by "; ".
+pub(super) fn describe_case_twins(groups: &[Vec<String>]) -> String {
+    groups
+        .iter()
+        .map(|names| {
+            names
+                .iter()
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>()
+                .join(" and ")
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }

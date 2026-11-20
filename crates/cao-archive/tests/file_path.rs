@@ -90,11 +90,20 @@ fn a_counter_too_large_for_u32_stays_part_of_the_name() {
     assert_eq!(plug.counter, None);
 }
 
+/// Mods ship `Mod.ESP` and `Mod.BSA`, which Windows and the games load, so
+/// extensions match ignoring case and keep their spelling for the round trip.
 #[test]
-fn extensions_match_case_sensitively() {
-    assert!(plugin(Game::Sse, "C:/Mod.ESP").is_none());
-    assert!(archive(Game::Sse, "C:/Mod.BSA").is_none());
+fn extensions_match_ignoring_case_and_keep_their_spelling() {
+    let plug = plugin(Game::Sse, "C:/Mod.ESP").unwrap();
+    assert_eq!(plug.ext, ".ESP");
+    assert_eq!(plug.full_path(), Path::new("C:/Mod.ESP"));
+    let packed = archive(Game::Sse, "C:/Mod - Textures.BSA").unwrap();
+    assert_eq!(packed.suffix, "Textures");
+    assert_eq!(packed.full_path(), Path::new("C:/Mod - Textures.BSA"));
+    assert!(plugin(Game::Sse, "C:/Mod.EsM").is_some());
+    // Other games' extensions are still not this game's, in any case.
     assert!(plugin(Game::Tes5, "C:/Mod.esl").is_none());
+    assert!(plugin(Game::Tes5, "C:/Mod.ESL").is_none());
     assert!(archive(Game::Sse, "C:/Mod.ba2").is_none());
     assert!(archive(Game::Fo4, "C:/Mod - Main.ba2").is_some());
 }
@@ -186,7 +195,15 @@ fn listing_skips_directories_and_names_of_other_kinds() {
     let mut plugins = list_plugins(&dir, &sets).unwrap();
     plugins.sort();
     let plugins: Vec<_> = plugins.iter().map(FilePath::full_path).collect();
-    assert_eq!(plugins, [dir.join("Mod.esm"), dir.join("Mod.esp")]);
+    // `Other.ESP` is a plugin too, listed under its own spelling.
+    assert_eq!(
+        plugins,
+        [
+            dir.join("Mod.esm"),
+            dir.join("Mod.esp"),
+            dir.join("Other.ESP")
+        ]
+    );
 
     let archives = list_archives(&dir, &sets).unwrap();
     assert_eq!(archives.len(), 1);

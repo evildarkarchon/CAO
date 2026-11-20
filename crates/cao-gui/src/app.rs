@@ -56,6 +56,10 @@ struct Loaded {
     common: CommonSettings,
     /// The selected profile's options, over which the controls are read back.
     options: Options,
+    /// Whether `options` were read from the selected profile's `settings.ini`.
+    /// While false they are another profile's, so they are never saved into
+    /// this one, as an unreadable `profile.ini` is never written either.
+    options_read: bool,
     /// The selected profile's settings; `None` when its `profile.ini` could not
     /// be read, in which case it is never written either.
     settings: Option<ProfileSettings>,
@@ -131,6 +135,8 @@ impl App {
                 profile: profiles.open(&current),
                 common: common.clone(),
                 options: Options::default(),
+                // Nothing is read yet; the first `load_profile` sets it.
+                options_read: false,
                 settings: None,
             }),
             profiles,
@@ -286,14 +292,18 @@ impl App {
             );
         }
 
-        let options = match profile.load_options(&loaded.options) {
-            Ok(options) => options,
+        let (options, options_read) = match profile.load_options(&loaded.options) {
+            Ok(options) => (options, true),
             Err(error) => {
                 self.error(
                     "Profile",
-                    &format!("The profile's options could not be read: {error}"),
+                    &format!(
+                        "The profile's options could not be read: {error}\n\nThe window keeps \
+                         the options it showed, and changes to them are not saved into this \
+                         profile until it is selected again."
+                    ),
                 );
-                loaded.options.clone()
+                (loaded.options.clone(), false)
             }
         };
         // Preparing's read: a Profile the run would refuse, including one with a
@@ -324,6 +334,7 @@ impl App {
 
         loaded.profile = profile;
         loaded.options = options;
+        loaded.options_read = options_read;
         loaded.settings = settings;
         // An unreadable profile enables no asset tab.
         let capabilities = loaded.capabilities();
@@ -390,7 +401,12 @@ impl App {
         // what the profile supports, so its asset options are kept as loaded
         // (#580).
         let options = form::read_options(ui, &loaded.options, loaded.settings.is_some());
-        if let Err(error) = loaded.profile.save_options(&options) {
+        // Options that could not be read from this profile came from the one
+        // before it; saving them would merge them over this profile's own
+        // file once it is readable again (GUI-3).
+        if loaded.options_read
+            && let Err(error) = loaded.profile.save_options(&options)
+        {
             self.error(
                 "Save",
                 &format!("The profile's options could not be saved: {error}"),
@@ -440,11 +456,19 @@ impl App {
                     return;
                 };
                 let name = dialog.get_value().to_string();
-                app.name_dialog.close();
                 // C++ returns on an empty name, as on Cancel.
-                if !name.is_empty() {
-                    app.ask_base_profile(name);
+                if name.is_empty() {
+                    app.name_dialog.close();
+                    return;
                 }
+                // Refused in place, before the base is asked for: the dialog
+                // stays open with the reason, so the name can be corrected.
+                if let Err(error) = app.profiles.check_new_name(&name) {
+                    dialog.set_error(error.to_string().into());
+                    return;
+                }
+                app.name_dialog.close();
+                app.ask_base_profile(name);
             });
             let dismiss = app.clone();
             dialog.on_dismiss(move || {

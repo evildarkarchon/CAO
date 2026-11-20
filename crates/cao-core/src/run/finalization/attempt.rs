@@ -9,7 +9,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
 use super::planning::{FinalizationPlan, PlanningStop, estimate_packed_capacity};
-use super::plugins::ensure_output_loading_plugin;
+use super::plugins::{
+    LoadingPluginStrength, ensure_output_loading_plugin, existing_entry, find_loading_plugin,
+};
 use super::{ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinalizationMutation};
 use crate::execution::MutationState;
 use crate::run::capacity::{CapacityCheck, CapacityShortage, Demand};
@@ -176,12 +178,17 @@ fn try_attempt(
     // Sources can grow after planning: re-stat them before any mutation,
     // keeping the frozen allowance if they shrank. Capacity is still only a
     // momentary sample.
-    let current =
-        estimate_packed_capacity(output, plan.rules.dummy_plugin.len() as u64, &|| Ok(()))
-            .map_err(|stop| match stop {
-                PlanningStop::Failed(detail) => detail,
-                PlanningStop::Cancelled => unreachable!("the recheck never polls cancellation"),
-            })?;
+    let dummy_allowance = if plan.create_dummies {
+        plan.rules.dummy_plugin.len() as u64
+    } else {
+        0
+    };
+    let current = estimate_packed_capacity(output, dummy_allowance, &|| Ok(())).map_err(
+        |stop| match stop {
+            PlanningStop::Failed(detail) => detail,
+            PlanningStop::Cancelled => unreachable!("the recheck never polls cancellation"),
+        },
+    )?;
     // The output joins every root's plugin allowance, so its volume is
     // charged with the output plus the allowance still needed there.
     let mut demand = dummy_demand.clone();
@@ -223,6 +230,20 @@ fn try_attempt(
         .map_err(|error| error.to_string())?;
 
     progress.boundary = ArchiveFinalizationFailure::CommitFailed;
+    // No-replace refuses the exact name natively, but in a case-sensitive
+    // directory not `MyMod.BSA` arriving after planning for `MyMod.bsa`; a
+    // twin differing only in case would be one name to the game.
+    if let Some(occupant) = existing_entry(&output.archive_path)?
+        && occupant != output.archive_path
+    {
+        // Nothing was published; Safety Cleanup removes whatever an
+        // abandonment that fails leaves behind.
+        let _ = receipt.abandon();
+        return Err(AttemptStop::Failed(format!(
+            "The output Archive name is taken by `{}`.",
+            occupant.display()
+        )));
+    }
     let publication = receipt.publish(&output.archive_path, PublicationPolicy::NoReplace);
     // Publication commits the Archive before its ownership is released.
     progress.mutation = publication.mutation();
@@ -244,7 +265,23 @@ fn try_attempt(
     // the Archive loads through this plugin.
     let mut _loading_plugin_pin = None;
     if !output.loading_plugin_paths.is_empty() {
-        let loading_plugin = ensure_output_loading_plugin(plan, output, artifacts, mutations)?;
+        let loading_plugin = if plan.create_dummies {
+            ensure_output_loading_plugin(plan, output, artifacts, mutations)?
+        } else {
+            // Without Dummy Plugins only the plugin planning found justifies
+            // deleting the sources; if it went meanwhile, they stay loose
+            // beside the committed Archive (audit FS-4).
+            find_loading_plugin(
+                &output.loading_plugin_paths,
+                LoadingPluginStrength::DurableForSourceDeletion,
+                None,
+            )?
+            .ok_or_else(|| {
+                "No plugin loads the Archive any more, and Dummy Plugins are off, so its \
+                 sources are kept."
+                    .to_owned()
+            })?
+        };
         if plan.delete_sources {
             _loading_plugin_pin = Some(
                 LoadingPluginPin::new(&loading_plugin, &output.mod_root)

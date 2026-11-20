@@ -50,6 +50,10 @@ fn a_panic_after_the_plan_reaching_the_outer_containment_keeps_the_streamed_atte
         let texture = root.join("textures").join("asset.dds");
         std::fs::create_dir_all(texture.parent().unwrap()).unwrap();
         std::fs::write(&texture, b"source bytes").unwrap();
+        // A real plugin loads each root's Archive, so with Dummy Plugins off
+        // its output is still planned (audit FS-4).
+        let name = root.file_name().unwrap().to_str().unwrap();
+        std::fs::write(root.join(format!("{name}.esp")), b"a real plugin").unwrap();
     }
     // One Texture per Mod Root plans one output each.
     let run = ArchiveRunRequest::over_mods(&parent).with_archive_finalization(

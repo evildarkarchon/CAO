@@ -260,8 +260,9 @@ impl SplitArchives {
     ///
     /// - Incompressible joins Standard when their sizes sum to strictly less than
     ///   the limit and, for a BSA under a size cap, their merged layout fits it.
-    ///   Even an empty Incompressible partition joins, which makes the
-    ///   Standard Archive Incompressible, so it is written uncompressed.
+    ///   The merged Archive is then Incompressible, so it is written
+    ///   uncompressed. An empty Incompressible partition joins nothing: the
+    ///   Standard Archive stays Standard and is compressed as asked.
     /// - Textures then join Standard on the same strict test. The merged Archive
     ///   keeps Standard's container: under FO4 the DDS files go into the `GNRL`
     ///   BA2. Callers that must not do that do not ask for it.
@@ -272,7 +273,13 @@ impl SplitArchives {
             mut incompressible,
             mut textures,
         } = self;
-        if merge.incompressible && standard.can_absorb(&incompressible) {
+        // Absorbing an empty partition would still make Standard
+        // Incompressible, and so uncompressed, for a mod with no sound,
+        // strings or scripts at all (audit BE-5).
+        if merge.incompressible
+            && !incompressible.is_empty()
+            && standard.can_absorb(&incompressible)
+        {
             standard.absorb(&mut incompressible);
         }
         if merge.textures && standard.can_absorb(&textures) {

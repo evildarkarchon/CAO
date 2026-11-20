@@ -52,11 +52,11 @@ use cao_core::routing::{
 use cao_core::run::{
     ArchiveFinalizationChoices, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
     ArchivePrecedence, ArchiveReader, CancellationToken, MeshChoices, MeshLevel, ModSelection,
-    MutationKind, OptimizationRunResult, PhaseSkipReason, ResizeRatio, RunConfigurationProvider,
-    RunDiagnosticCode, RunExecutor, RunFailure, RunFailureCode, RunOutcome, RunPhase,
-    RunPhaseRecord, RunPhaseStatus, RunProgress, RunRequest, SafetyCleanupService, SelectedProfile,
-    SourceCleanup, TemporaryArtifactRegistry, TextureChoices, TextureResizeChoice, WorkChoices,
-    create_run_id,
+    MutationKind, OptimizationRunResult, PhaseSkipReason, PublicationPolicy, PublicationState,
+    ResizeRatio, RunConfigurationProvider, RunDiagnosticCode, RunExecutor, RunFailure,
+    RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord, RunPhaseStatus, RunProgress, RunRequest,
+    SafetyCleanupService, SelectedProfile, SourceCleanup, TemporaryArtifactRegistry,
+    TextureChoices, TextureResizeChoice, WorkChoices, create_run_id,
 };
 use cao_core::test_support::{
     CallbackConfiguration, CountingCleanup, FakeArchivePacker, FakeArchiveReader, FakeVolumeProbe,
@@ -1448,6 +1448,64 @@ fn a_panicking_progress_observer_keeps_the_failed_attempt() {
         staged.assert_removed();
         assert_eq!(read(&root.join("asset.dds")), "original", "{row}");
     }
+}
+
+/// Audit FS-2. A Loose Asset optimized through staging, then packed with its
+/// source deleted, leaves its folders empty, and Archive Finalization prunes
+/// them: staging released each folder's pin with the last sibling beneath
+/// it, instead of holding every pin, which denies deletion, until Safety
+/// Cleanup.
+#[test]
+fn folders_an_optimized_and_packed_asset_leaves_empty_are_pruned() {
+    let root = mod_root("optimize-pack-prune", &[]);
+    let texture = root.join("textures/armor/cuirass.dds");
+    std::fs::create_dir_all(texture.parent().unwrap()).unwrap();
+    std::fs::write(&texture, "original").unwrap();
+    let toolset = Arc::new(
+        ScriptedToolset::default().with_assets(|asset, mod_root, artifacts| {
+            let path = asset.execution_path();
+            let receipt = artifacts
+                .capture_and_stage_file(mod_root, path)
+                .expect("the optimized Texture is staged");
+            std::fs::write(receipt.path().unwrap(), "optimized").unwrap();
+            let published = receipt.publish(path, PublicationPolicy::Replace);
+            assert_eq!(published.state, PublicationState::PublishedAndReleased);
+            Ok(AssetExecutionResult::success(CompletedMutation::Committed))
+        }),
+    );
+    let mut cleanup = CountingCleanup::default();
+    let result = execute(
+        &request(
+            ExecutionMode::Apply,
+            &root,
+            &[
+                RequestedWork::NativeTextureOptimization,
+                RequestedWork::ArchiveCreation,
+            ],
+        ),
+        &mut cleanup,
+        Some(&ToolsetConfiguration::sse(Arc::clone(&toolset))),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(result.outcome(), RunOutcome::Succeeded, "{result:?}");
+    assert_eq!(result.asset_attempts().len(), 1);
+    let finalization = result.archive_finalization().unwrap();
+    assert_eq!(finalization.attempts.len(), 1, "{finalization:?}");
+    assert!(finalization.attempts[0].succeeded());
+    assert!(!texture.exists(), "the packed source was deleted");
+    assert!(
+        !root.join("textures").exists(),
+        "the folders the packed Texture left empty were not pruned"
+    );
+    assert!(
+        finalization.mutations.iter().any(|mutation| {
+            mutation.kind == ArchiveFinalizationMutationKind::EmptyDirectoryPruning
+                && mutation.count == 2
+        }),
+        "{:?}",
+        finalization.mutations
+    );
 }
 
 /// Origin: RunExecutorTests::mixedWorkEvidenceOutlivesServices. Mixed Asset

@@ -101,20 +101,79 @@ impl Profiles {
         update(&self.common_ini(), |ini| settings.write(ini))
     }
 
+    /// Checks that `name` can name a new profile, as [`Profiles::create`] does
+    /// first, so a dialog can refuse a name before asking anything else.
+    ///
+    /// A name is refused when it is empty; when anything already exists under
+    /// `profiles/` by that name ignoring case, profile or not, since NTFS makes
+    /// `sse` the `SSE` directory; when it holds a path separator, another
+    /// character Windows reserves, or a control character; when it ends in a dot
+    /// or a space, which Windows strips; and when it is a device name such as
+    /// `CON` or `NUL`, with or without an extension.
+    ///
+    /// # Errors
+    /// [`ProfileError::InvalidName`] with the reason, or [`ProfileError::Create`]
+    /// when whether the name is taken cannot be determined.
+    pub fn check_new_name(&self, name: &str) -> Result<(), ProfileError> {
+        let invalid = |reason| {
+            Err(ProfileError::InvalidName {
+                name: name.to_owned(),
+                reason,
+            })
+        };
+        if let Some(reason) = unusable_name(name) {
+            return invalid(reason);
+        }
+        // `list` only shows directories with a `profile.ini`; any entry blocks
+        // the name, and the listing also covers a case-sensitive directory.
+        let taken = |existing: &String| existing.to_lowercase() == name.to_lowercase();
+        if self.list().iter().any(taken) {
+            return invalid("a profile with this name already exists");
+        }
+        let path = self.root.join(name);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                invalid("a file or folder with this name already exists in the profiles folder")
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(ProfileError::Create { path, source }),
+        }
+    }
+
     /// Creates the profile `name` as a copy of `base`, or of `profiles/SSE` when `base`
     /// is not a profile, as C++'s `Profiles::create` does. Every file is copied,
     /// subdirectories included, and then `isBase` is removed so the new profile is
     /// editable. Dead data such as `customLandscape.txt` is copied unchanged.
     ///
-    /// As in C++, a file already at the destination is kept rather than overwritten,
-    /// and `name` is not validated; the GUI that asks for it decides what is allowed.
-    /// Unlike C++, a file that fails to copy is reported instead of skipped.
+    /// `name` is checked first ([`Profiles::check_new_name`]), and the profile's
+    /// directory must not exist: it is created by this call, so `isBase` is only ever
+    /// removed from a copy, never from the profile a name collided with. Unlike
+    /// C++, a file that fails to copy is reported instead of skipped.
     ///
     /// # Errors
-    /// [`ProfileError::Create`] when a directory or file cannot be created or copied,
-    /// or `isBase` cannot be removed. Files copied before the failure stay.
+    /// [`ProfileError::InvalidName`] when `name` is refused, including when its
+    /// directory appears between the check and its creation. [`ProfileError::Create`]
+    /// when a directory or file cannot be created or copied, or `isBase` cannot be
+    /// removed. Files copied before the failure stay.
     pub fn create(&self, name: &str, base: &str) -> Result<Profile, ProfileError> {
+        self.check_new_name(name)?;
         let profile = self.open(name);
+        let create_error = |path: &Path| {
+            let path = path.to_owned();
+            move |source| ProfileError::Create { path, source }
+        };
+        fs::create_dir_all(&self.root).map_err(create_error(&self.root))?;
+        // Created exclusively: a directory that appeared since the check is
+        // someone else's, and must not lose its `isBase` below.
+        match fs::create_dir(&profile.directory) {
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                return Err(ProfileError::InvalidName {
+                    name: name.to_owned(),
+                    reason: "a file or folder with this name already exists in the profiles folder",
+                });
+            }
+            created => created.map_err(create_error(&profile.directory))?,
+        }
         copy_missing(&self.root.join(self.resolve(base)), &profile.directory)?;
         let flag = profile.directory.join("isBase");
         match fs::remove_file(&flag) {
@@ -166,39 +225,44 @@ impl Profile {
     }
 
     /// The paths in `customHeadparts.txt`, from this profile or else from
-    /// `profiles/SSE`. A file that is missing or cannot be read gives an empty list,
-    /// as in C++.
-    pub fn custom_headparts(&self) -> Vec<String> {
-        self.optional_list(auxiliary::CUSTOM_HEADPARTS)
+    /// `profiles/SSE`. A missing file gives an empty list.
+    ///
+    /// # Errors
+    /// [`ProfileError::AuxiliaryList`] when the file exists but cannot be read:
+    /// the Meshes it names would be optimized as ordinary Meshes.
+    pub fn custom_headparts(&self) -> Result<Vec<String>, ProfileError> {
+        self.list(auxiliary::CUSTOM_HEADPARTS)
     }
 
     /// The Packing Exclusion rules in `FilesToNotPack.txt`, from this profile or else
-    /// from `profiles/SSE`. A file that is missing or cannot be read gives an empty
-    /// list, as in C++.
-    pub fn files_to_not_pack(&self) -> Vec<String> {
-        self.optional_list(auxiliary::FILES_TO_NOT_PACK)
+    /// from `profiles/SSE`. A missing file gives an empty list.
+    ///
+    /// # Errors
+    /// [`ProfileError::AuxiliaryList`] when the file exists but cannot be read:
+    /// packing without its rules would pack, and then delete, the loose files it
+    /// keeps out of Archives.
+    pub fn files_to_not_pack(&self) -> Result<Vec<String>, ProfileError> {
+        self.list(auxiliary::FILES_TO_NOT_PACK)
     }
 
     /// The Mod Exclusion names in `ignoredMods.txt`, from this profile or else from
     /// `profiles/SSE`. A missing file gives an empty list.
     ///
     /// # Errors
-    /// [`ProfileError::IgnoredMods`] when the file exists but cannot be read: ignoring
-    /// it would process mods the profile means to exclude.
+    /// [`ProfileError::AuxiliaryList`] when the file exists but cannot be read:
+    /// ignoring it would process mods the profile means to exclude.
     pub fn ignored_mods(&self) -> Result<Vec<String>, ProfileError> {
-        let path = self.auxiliary_path(auxiliary::IGNORED_MODS);
-        match auxiliary::read_list(&path) {
-            Ok(list) => Ok(list.unwrap_or_default()),
-            Err(source) => Err(ProfileError::IgnoredMods { path, source }),
-        }
+        self.list(auxiliary::IGNORED_MODS)
     }
 
-    /// Reads an auxiliary list whose read failures C++ treated as an empty list.
-    fn optional_list(&self, name: &str) -> Vec<String> {
-        auxiliary::read_list(&self.auxiliary_path(name))
-            .ok()
-            .flatten()
-            .unwrap_or_default()
+    /// Reads the auxiliary list `name`, with the per-file SSE fallback: empty when
+    /// missing, an error naming the path when it exists but cannot be read.
+    fn list(&self, name: &str) -> Result<Vec<String>, ProfileError> {
+        let path = self.auxiliary_path(name);
+        match auxiliary::read_list(&path) {
+            Ok(list) => Ok(list.unwrap_or_default()),
+            Err(source) => Err(ProfileError::AuxiliaryList { path, source }),
+        }
     }
 
     /// The path an auxiliary file is read from, with the per-file SSE fallback.
@@ -290,6 +354,68 @@ impl Profile {
         }
         Ok(IniFile::load(&path)?)
     }
+}
+
+/// Why `name` cannot be a directory name of its own under Windows, or `None` when
+/// it can. Whether it is taken is [`Profiles::check_new_name`]'s concern.
+fn unusable_name(name: &str) -> Option<&'static str> {
+    /// Characters Win32 reserves in a file name, separators included.
+    const RESERVED: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
+    /// Device names, which Win32 resolves to a device whatever the extension.
+    const DEVICES: &[&str] = &[
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "COM0",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "COM\u{B9}",
+        "COM\u{B2}",
+        "COM\u{B3}",
+        "LPT0",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
+        "LPT\u{B9}",
+        "LPT\u{B2}",
+        "LPT\u{B3}",
+    ];
+    if name.is_empty() {
+        return Some("a profile name cannot be empty");
+    }
+    if name.contains(RESERVED) {
+        return Some("a profile name cannot contain any of < > : \" / \\ | ? *");
+    }
+    if name.chars().any(char::is_control) {
+        return Some("a profile name cannot contain control characters");
+    }
+    // Also covers `.` and `..`, which name the profiles folder and its parent.
+    if name.ends_with('.') || name.ends_with(' ') {
+        return Some("a profile name cannot end in a dot or a space");
+    }
+    // Win32 ignores what follows the first dot, and spaces before it.
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+    if DEVICES
+        .iter()
+        .any(|device| device.eq_ignore_ascii_case(stem))
+    {
+        return Some("a profile name cannot be a Windows device name such as CON or NUL");
+    }
+    None
 }
 
 /// Copies every file under `from` to the same relative path under `to`, keeping any

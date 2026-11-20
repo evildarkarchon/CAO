@@ -97,6 +97,49 @@ fn the_profile_name_dialog_closes_every_way() {
     }
 }
 
+/// A taken name, in any case, is refused in the name dialog itself: it stays
+/// open with the reason, the base dialog never opens, and the shipped profile
+/// keeps its `isBase` marker. A corrected name then goes on (GUI-1).
+#[test]
+fn the_name_dialog_refuses_a_taken_name_in_place() {
+    headless();
+    let app_dir = app_dir("name_dialog_taken");
+    edit_ini(&app_dir, "common.ini", "showTutorial", "false");
+    let (app, desktop) = open(&app_dir);
+    let ui = app.window();
+
+    click(ui, "New");
+    let name = app.name_dialog().expect("the name dialog is open");
+    assert_eq!(name.get_error(), "");
+    for taken in ["SSE", "sse"] {
+        name.set_value(taken.into());
+        close(&name, Close::Ok);
+        assert!(app.name_dialog().is_some(), "{taken}: the dialog closed");
+        assert!(
+            app.base_dialog().is_none(),
+            "{taken}: the base was asked for"
+        );
+        assert!(
+            name.get_error().contains("already exists"),
+            "{taken}: {}",
+            name.get_error()
+        );
+        assert_blocked(ui);
+    }
+    // The reason is shown in the dialog, not in a message box.
+    assert!(desktop.message_titles().is_empty());
+    let profiles = cao_profiles::Profiles::new(&app_dir);
+    assert!(profiles.open("SSE").is_base());
+
+    name.set_value("Mine".into());
+    close(&name, Close::Ok);
+    let base = app.base_dialog().expect("the base dialog is open");
+    assert!(app.name_dialog().is_none());
+    close(&base, Close::Cancel);
+    assert!(!profiles.exists("Mine"), "Cancel creates nothing");
+    assert_usable(ui);
+}
+
 #[test]
 fn the_base_profile_dialog_closes_every_way() {
     headless();

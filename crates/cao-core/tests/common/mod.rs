@@ -41,6 +41,49 @@ pub fn scratch_dir(name: &str) -> PathBuf {
     dir
 }
 
+/// A fresh, empty Mod Root `<name>/mod` whose directory is case-sensitive,
+/// as WSL or `fsutil` makes one, or `None` on a host that cannot make it:
+/// per-directory case sensitivity needs NTFS, the support Windows ships for
+/// WSL, and a volume that allows it.
+///
+/// It lives under the system temporary directory, not the target directory,
+/// since a volume may refuse the attribute. `fsutil` can report a refusal
+/// and still exit 0, so the directory is proven case-sensitive by creating
+/// two names that differ only in case.
+pub fn case_sensitive_dir(name: &str) -> Option<PathBuf> {
+    let parent = std::env::temp_dir()
+        .join("cao-core-case-sensitive")
+        .join(name);
+    // A missing directory is the expected case; anything else surfaces in create_dir_all.
+    let _ = std::fs::remove_dir_all(&parent);
+    let root = parent.join("mod");
+    std::fs::create_dir_all(&root).unwrap();
+    let root = canonical(&root);
+    // Only an empty directory can change its case sensitivity.
+    let _ = std::process::Command::new("fsutil.exe")
+        .args(["file", "setCaseSensitiveInfo"])
+        .arg(&root)
+        .arg("enable")
+        .output();
+    let probe = |name: &str| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(root.join(name))
+            .is_ok()
+    };
+    let case_sensitive = probe("case-probe") && probe("CASE-PROBE");
+    for name in ["case-probe", "CASE-PROBE"] {
+        // Absent when its creation failed; the root must be empty either way.
+        let _ = std::fs::remove_file(root.join(name));
+    }
+    if !case_sensitive {
+        eprintln!("skipped: case-sensitive directories are unavailable on this host");
+        return None;
+    }
+    Some(root)
+}
+
 /// Writes each relative file under `root` with its own name as content.
 pub fn write_tree(root: &Path, files: &[&str]) {
     for file in files {

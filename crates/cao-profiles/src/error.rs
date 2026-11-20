@@ -47,14 +47,21 @@ pub enum ProfileError {
         value: Option<String>,
         accepted: String,
     },
-    /// `ignoredMods.txt` exists but could not be read. Unlike the other auxiliary
-    /// files this is an error: ignoring it would process mods the profile excludes.
-    #[error("the ignored-mod list `{}` could not be read: {source}", path.display())]
-    IgnoredMods {
+    /// An auxiliary list (`ignoredMods.txt`, `FilesToNotPack.txt` or
+    /// `customHeadparts.txt`) exists but could not be read. Reading it as empty
+    /// would process excluded mods, pack excluded files or miss Headpart Meshes,
+    /// so the run refuses it instead.
+    #[error("the list `{}` exists but could not be read: {source}", path.display())]
+    AuxiliaryList {
         path: PathBuf,
         #[source]
         source: io::Error,
     },
+    /// `name` cannot name a new profile: it is taken, empty, or not a name
+    /// Windows can give a directory of its own. `reason` says which, in words
+    /// the "New profile" dialog shows as they are.
+    #[error("`{name}` cannot be a profile name: {reason}")]
+    InvalidName { name: String, reason: &'static str },
     /// A new profile's files could not be copied from its base.
     #[error("cannot create the profile at `{}`: {source}", path.display())]
     Create {

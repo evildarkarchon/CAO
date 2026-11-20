@@ -93,6 +93,93 @@ fn a_new_profile_with_an_unknown_base_copies_sse() {
     assert!(mine.directory().join("ignoredMods.txt").exists());
 }
 
+/// A name that is already taken, in any case, is refused before anything is
+/// copied, so the shipped base profile keeps its `isBase` marker (GUI-1).
+#[test]
+fn a_new_profile_never_takes_an_existing_name() {
+    let app_dir = common::copy_of_shipped("create-existing-name");
+    let profiles = Profiles::new(&app_dir);
+    let before = common::read(&profiles.open("SSE").profile_ini());
+
+    // `TES4` holds only `isBase`: not a profile, but its directory is taken.
+    for name in ["SSE", "sse", "TES4"] {
+        assert!(
+            matches!(
+                profiles.create(name, "FO4"),
+                Err(ProfileError::InvalidName { name: refused, .. }) if refused == name
+            ),
+            "{name}"
+        );
+    }
+
+    assert!(profiles.open("SSE").is_base());
+    assert!(profiles.open("TES4").is_base());
+    assert_eq!(common::read(&profiles.open("SSE").profile_ini()), before);
+    assert_eq!(profiles.list(), ["FO4", "SSE", "TES5"]);
+}
+
+/// Names Windows cannot give a profile directory of its own are refused before
+/// anything is created: a separator would nest the profile where the list
+/// never shows it, and `..` would copy into the app directory (GUI-1).
+#[test]
+fn a_new_profile_name_must_be_a_plain_windows_directory_name() {
+    let app_dir = common::copy_of_shipped("create-invalid-name");
+    let profiles = Profiles::new(&app_dir);
+    let entries = || {
+        let mut names: Vec<_> = fs::read_dir(&app_dir)
+            .unwrap()
+            .chain(fs::read_dir(profiles.root()).unwrap())
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = entries();
+
+    for name in [
+        "",
+        ".",
+        "..",
+        "a/b",
+        "a\\b",
+        "a:b",
+        "what?",
+        "star*",
+        "pipe|",
+        "quote\"",
+        "<angle>",
+        "tab\tname",
+        "dot.",
+        "space ",
+        "CON",
+        "nul",
+        "Aux.txt",
+        "com1",
+        "LPT9 .log",
+    ] {
+        assert!(
+            matches!(
+                profiles.check_new_name(name),
+                Err(ProfileError::InvalidName { .. })
+            ),
+            "{name:?} was accepted"
+        );
+        assert!(
+            matches!(
+                profiles.create(name, "SSE"),
+                Err(ProfileError::InvalidName { .. })
+            ),
+            "{name:?} was created"
+        );
+    }
+
+    assert_eq!(entries(), before);
+    // Ordinary names, including dots and spaces inside, are fine.
+    for name in ["My Profile", "SSE 2", "v1.2", "CONsole", "Ünïcode"] {
+        profiles.check_new_name(name).unwrap();
+    }
+}
+
 #[test]
 fn deviation_10_dead_data_files_are_left_alone() {
     // `customLandscape.txt` (UTF-16LE with a BOM) and the profile `DummyPlugin.esp`
@@ -138,7 +225,7 @@ fn the_sse_profile_reads_its_auxiliary_lists() {
         ["Nemesis", "FNIS", "Bodyslide"]
     );
     assert_eq!(
-        sse.files_to_not_pack(),
+        sse.files_to_not_pack().unwrap(),
         [
             "meshes/actors/character/animations",
             "meshes/actors/character/behaviors",
@@ -151,7 +238,7 @@ fn the_sse_profile_reads_its_auxiliary_lists() {
             "dialogueviews/",
         ]
     );
-    let headparts = sse.custom_headparts();
+    let headparts = sse.custom_headparts().unwrap();
     assert_eq!(headparts.len(), 474);
     assert_eq!(
         headparts.first().unwrap(),
@@ -171,8 +258,14 @@ fn a_profile_without_auxiliary_files_falls_back_to_sse() {
     let sse = profiles.open("SSE");
 
     assert_eq!(fo4.ignored_mods().unwrap(), sse.ignored_mods().unwrap());
-    assert_eq!(fo4.files_to_not_pack(), sse.files_to_not_pack());
-    assert_eq!(fo4.custom_headparts(), sse.custom_headparts());
+    assert_eq!(
+        fo4.files_to_not_pack().unwrap(),
+        sse.files_to_not_pack().unwrap()
+    );
+    assert_eq!(
+        fo4.custom_headparts().unwrap(),
+        sse.custom_headparts().unwrap()
+    );
 }
 
 #[test]
@@ -186,10 +279,10 @@ fn the_fallback_to_sse_is_per_file() {
     .unwrap();
     let tes5 = profiles.open("TES5");
 
-    assert_eq!(tes5.files_to_not_pack(), ["textures/keep"]);
+    assert_eq!(tes5.files_to_not_pack().unwrap(), ["textures/keep"]);
     assert_eq!(
-        tes5.custom_headparts(),
-        profiles.open("SSE").custom_headparts()
+        tes5.custom_headparts().unwrap(),
+        profiles.open("SSE").custom_headparts().unwrap()
     );
 }
 
@@ -231,12 +324,15 @@ fn missing_auxiliary_files_read_as_empty_lists() {
     let profile = Profiles::new(&app_dir).open("Mine");
 
     assert!(profile.ignored_mods().unwrap().is_empty());
-    assert!(profile.files_to_not_pack().is_empty());
-    assert!(profile.custom_headparts().is_empty());
+    assert!(profile.files_to_not_pack().unwrap().is_empty());
+    assert!(profile.custom_headparts().unwrap().is_empty());
 }
 
+/// An auxiliary list that exists but cannot be read is an error naming its path,
+/// never an empty list: an empty `FilesToNotPack.txt` would pack the files it
+/// keeps loose (GUI-2).
 #[test]
-fn an_unreadable_ignored_mods_file_is_an_error_but_other_lists_read_as_empty() {
+fn an_unreadable_auxiliary_list_is_an_error() {
     // A directory exists under the file's name but cannot be opened as a file. As in
     // C++, an existing path stops the fallback to SSE.
     let app_dir = common::copy_of_shipped("auxiliary-unreadable");
@@ -252,8 +348,16 @@ fn an_unreadable_ignored_mods_file_is_an_error_but_other_lists_read_as_empty() {
 
     assert!(matches!(
         tes5.ignored_mods(),
-        Err(ProfileError::IgnoredMods { path, .. }) if path.ends_with("TES5/ignoredMods.txt")
+        Err(ProfileError::AuxiliaryList { path, .. }) if path.ends_with("TES5/ignoredMods.txt")
     ));
-    assert!(tes5.files_to_not_pack().is_empty());
-    assert!(tes5.custom_headparts().is_empty());
+    assert!(matches!(
+        tes5.files_to_not_pack(),
+        Err(ProfileError::AuxiliaryList { path, .. })
+            if path.ends_with("TES5/FilesToNotPack.txt")
+    ));
+    assert!(matches!(
+        tes5.custom_headparts(),
+        Err(ProfileError::AuxiliaryList { path, .. })
+            if path.ends_with("TES5/customHeadparts.txt")
+    ));
 }

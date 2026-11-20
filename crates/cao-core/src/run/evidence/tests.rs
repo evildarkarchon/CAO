@@ -614,7 +614,7 @@ fn plugin_only_finalization_mutations_are_sealed() {
                 plugin(
                     "second-mod",
                     "second-mod/old.esp",
-                    ArchiveFinalizationMutationKind::PluginRemoval,
+                    ArchiveFinalizationMutationKind::PluginCreation,
                 ),
             ],
             ..ArchiveFinalizationAccount::default()

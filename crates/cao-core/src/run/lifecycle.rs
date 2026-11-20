@@ -134,6 +134,22 @@ pub enum RunDiagnosticCode {
     /// plans the rest. The diagnostic's path is the Mod Root, and its detail
     /// says what failed.
     ArchiveCreationUnplanned,
+    /// Warning-level: Archive creation left one output Archive out because
+    /// nothing would load it. Dummy Plugins are off, the packed sources would
+    /// be deleted, and no plugin at any of the Archive's recognized names
+    /// exists, so packing it could make the mod stop loading those files.
+    /// Apply and Dry Run both record it; the loose files stay as they are.
+    /// The diagnostic's path is the Mod Root, and its detail names the
+    /// Archive and the plugin that would load it.
+    ArchiveCreationSkipped,
+    /// Warning-level: a Mod Root holds plugins or Archives whose names
+    /// differ only in case, as a case-sensitive directory can, such as one a
+    /// Linux mod manager wrote. The game, under Windows, Wine or Proton,
+    /// sees each group as one name and loads only one of its files, so which
+    /// one is not up to CAO. Archive creation records it once per Mod Root
+    /// it plans, under Apply and Dry Run, and goes on. The diagnostic's path
+    /// is the Mod Root, and its detail names every group.
+    CaseTwinNames,
 }
 
 impl RunDiagnosticCode {
@@ -147,9 +163,10 @@ impl RunDiagnosticCode {
             | Self::SeparatorModExcluded
             | Self::LinkedEntryExcluded
             | Self::PluginUnreadable => RunDiagnosticSeverity::Informational,
-            Self::CapacityShortage | Self::ArchiveCreationUnplanned => {
-                RunDiagnosticSeverity::Warning
-            }
+            Self::CapacityShortage
+            | Self::ArchiveCreationUnplanned
+            | Self::ArchiveCreationSkipped
+            | Self::CaseTwinNames => RunDiagnosticSeverity::Warning,
         }
     }
 }

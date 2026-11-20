@@ -796,6 +796,7 @@ fn plan_archive_finalization(
             outputs,
             capacity_warning,
             unplanned,
+            plan_warnings,
         } => {
             // As at Discovering Archives, the warning neither fails the Dry
             // Run nor drops a planned output: every one is recorded below.
@@ -806,6 +807,12 @@ fn plan_archive_finalization(
             // carries it as a warning, as an Apply run carries it as a
             // contained PlanningFailed.
             for warning in unplanned {
+                evidence.record_diagnostic(warning);
+            }
+            // So did each output nothing would load and each root with names
+            // that differ only in case; an Apply run records the same
+            // warnings.
+            for warning in plan_warnings {
                 evidence.record_diagnostic(warning);
             }
             outputs
