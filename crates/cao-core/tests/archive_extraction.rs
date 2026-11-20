@@ -108,6 +108,42 @@ fn panicking_reader() -> ScriptedToolset {
     }
 }
 
+/// Audit FS-6: preflight and merge read each directory once and keep that
+/// listing up to date with what the merge creates. Entries whose directories
+/// differ only in case land in the directory the first one created, spelled
+/// as it first was, and a folder of hundreds of entries merges whole.
+#[test]
+fn a_merge_reuses_the_directories_it_created_whatever_their_case() {
+    let root = canonical(&scratch_dir("extractor-listing-cache"));
+    let archive = root.join("source.bsa");
+    let voices: Vec<String> = (0..300)
+        .map(|index| format!("Sound/Voice/line{index:03}.fuz"))
+        .collect();
+    let mut entries = vec![
+        entry("Textures/Armor/a.dds", b"a"),
+        entry("textures/ARMOR/b.dds", b"b"),
+    ];
+    entries.extend(voices.iter().map(|name| entry(name, b"voice")));
+    write_archive(&archive, &entries);
+
+    let (result, _) = run_extraction(&root, ScriptedToolset::default(), || {});
+
+    let attempt = only_attempt(&result);
+    assert!(attempt.succeeded(), "{:?}", attempt.outcome);
+    let names = |directory: &Path| {
+        let mut names: Vec<String> = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(names(&root.join("Textures")), ["Armor"]);
+    assert_eq!(names(&root.join("Textures/Armor")), ["a.dds", "b.dds"]);
+    assert_eq!(names(&root.join("Sound/Voice")).len(), voices.len());
+    assert!(result.cleanup_failures().is_empty());
+}
+
 /// Origin: extractionCapacityRecheck (shortage and unknown rows). Free space
 /// is rechecked just before staging: a shortage the preflight did not see
 /// leaves no staging and no output, and unknown capacity proceeds.

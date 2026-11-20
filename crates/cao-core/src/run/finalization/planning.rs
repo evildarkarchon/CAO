@@ -352,7 +352,7 @@ pub(super) fn plan_finalization(
                 loading_plugin_paths,
             };
             output.estimated_capacity_bytes =
-                estimate_packed_capacity(&output, dummy_allowance, &check)?;
+                estimate_packed_capacity(&output, dummy_allowance, SourceSizes::Planned, &check)?;
             outputs.push(output);
         }
         Ok(RootPlan {
@@ -443,8 +443,12 @@ fn collect_sources(
             let entry = entry.map_err(|error| failed(&directory, error))?;
             let path = entry.path();
             let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
-            let metadata =
-                std::fs::symlink_metadata(&path).map_err(|error| failed(&path, error))?;
+            // The directory entry's own metadata, which on Windows comes with
+            // the listing and is never followed through a link, so the walk
+            // costs no stat per file (audit FS-6). The attempt re-stats every
+            // source before it writes, so a size the listing reports stale
+            // for a file being written still cannot undercount its capacity.
+            let metadata = entry.metadata().map_err(|error| failed(&path, error))?;
             // Never descend into reserved staging or directory links just to
             // filter their files.
             if has_staging_component(&relative)
@@ -508,6 +512,15 @@ pub(super) fn loading_plugin_names(
     names
 }
 
+/// Which size of each packed source [`estimate_packed_capacity`] counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SourceSizes {
+    /// The size planning's own walk read, moments earlier.
+    Planned,
+    /// The size on disk now, stat'ed again: sources can grow after planning.
+    Current,
+}
+
 /// Estimates an output's source content plus format and staging overhead,
 /// plus `dummy_allowance`: the fallback Dummy Plugin's size when Dummy
 /// Plugins are created, since a Loading Plugin can disappear before
@@ -516,24 +529,29 @@ pub(super) fn loading_plugin_names(
 /// Zlib and LZ4 framing, up to four BA2 texture chunks, and BSA name tables
 /// need space beyond source bytes, so each source counts twice, plus a fixed
 /// allowance and three bytes per name byte. The formula is internal; only
-/// conservatism is contract. Every source is stat'ed again, polling `check`
-/// between them; a source that cannot be sized fails the estimate.
+/// conservatism is contract. `sizes` says whether each source counts the
+/// size planning read or is stat'ed again; `check` is polled between
+/// sources, and a source that cannot be sized fails the estimate.
 pub(super) fn estimate_packed_capacity(
     output: &FinalizationOutput,
     dummy_allowance: u64,
+    sizes: SourceSizes,
     check: &dyn Fn() -> Result<(), PlanningStop>,
 ) -> Result<u64, PlanningStop> {
     let mut estimate: u64 = CAPACITY_ALLOWANCE.saturating_add(dummy_allowance);
     for source in &output.archive.files {
         check()?;
-        let size = std::fs::metadata(&source.path)
-            .map_err(|error| {
-                PlanningStop::Failed(format!(
-                    "Cannot size packed source `{}`: {error}",
-                    source.path.display()
-                ))
-            })?
-            .len();
+        let size = match sizes {
+            SourceSizes::Planned => source.size,
+            SourceSizes::Current => std::fs::metadata(&source.path)
+                .map_err(|error| {
+                    PlanningStop::Failed(format!(
+                        "Cannot size packed source `{}`: {error}",
+                        source.path.display()
+                    ))
+                })?
+                .len(),
+        };
         let name = source
             .path
             .strip_prefix(&output.mod_root)

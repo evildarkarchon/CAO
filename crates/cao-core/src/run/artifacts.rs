@@ -509,7 +509,17 @@ impl TemporaryArtifactRegistry {
             &target.destination,
             Some(&target.parent),
         )?);
-        if destination_snapshot(&target.destination)? != target.leaf {
+        // Identity and change metadata only: the publication compares the
+        // whole snapshot, bytes included, before it renames anything, so a
+        // second hash here would only fail earlier (audit CORE-4).
+        let unchanged = match (destination_leaf(&target.destination)?, &target.leaf) {
+            (None, None) => true,
+            (Some((identity, facts)), Some(leaf)) => {
+                identity == leaf.identity && facts.unchanged_since(&leaf.facts)
+            }
+            _ => false,
+        };
+        if !unchanged {
             return Err(StagingError::Invalid(
                 "Publication destination changed after input capture.".to_owned(),
             ));
@@ -1021,30 +1031,10 @@ pub(crate) fn probe_ineligibility(path: &Path) -> Option<StagingError> {
 /// directory cannot be opened that way, so an access-denied leaf is looked at
 /// once more through an attribute-only open, which share modes never govern.
 fn destination_snapshot(path: &Path) -> Result<Option<DestinationSnapshot>, StagingError> {
-    const ERROR_FILE_NOT_FOUND: i32 = 2;
-    const ERROR_ACCESS_DENIED: i32 = 5;
-    let io = |context: &'static str| StagingError::io(context, path);
-    let mut leaf =
-        match Open::new(Access::READ_DATA | Access::READ_ATTRIBUTES, Share::READ).open(path) {
-            Ok(leaf) => leaf,
-            Err(error) if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND) => return Ok(None),
-            Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
-                return match directory_leaf(path) {
-                    Some(outcome) => outcome,
-                    // A file this process may not read: the refusal stands.
-                    None => Err(io("Snapshot publication destination")(error)),
-                };
-            }
-            Err(error) => return Err(io("Snapshot publication destination")(error)),
-        };
-    let facts = FileFacts::of(&leaf).map_err(io("Inspect"))?;
-    if let Some(ineligible) = ineligibility(path, &facts) {
-        return Err(ineligible);
-    }
-    if facts.is_directory() {
+    let Some((mut leaf, identity, facts)) = open_destination_leaf(path)? else {
         return Ok(None);
-    }
-    let identity = FileIdentity::of(&leaf).map_err(io("Identify"))?;
+    };
+    let io = |context: &'static str| StagingError::io(context, path);
     let (size, fingerprint) = fingerprint(&mut leaf).map_err(io("Read publication destination"))?;
     if size != facts.size() {
         return Err(StagingError::Invalid(
@@ -1058,12 +1048,54 @@ fn destination_snapshot(path: &Path) -> Result<Option<DestinationSnapshot>, Stag
     }))
 }
 
-/// What [`destination_snapshot`] makes of a leaf its data open was denied:
-/// `Some(Ok(None))` for an eligible directory, `Some(Err(..))` for a link or
+/// The identity and change metadata of a destination leaf, opened and judged
+/// exactly as [`destination_snapshot`] opens and judges it, without reading
+/// its bytes. `None` when it is absent or a directory.
+fn destination_leaf(path: &Path) -> Result<Option<(FileIdentity, FileFacts)>, StagingError> {
+    Ok(open_destination_leaf(path)?.map(|(_, identity, facts)| (identity, facts)))
+}
+
+/// Opens a destination leaf for [`destination_snapshot`] and
+/// [`destination_leaf`]: the open file with its identity and facts, `None`
+/// when it is absent or a directory, and the leaf's ineligibility as an
+/// error. The open is described on [`destination_snapshot`].
+fn open_destination_leaf(
+    path: &Path,
+) -> Result<Option<(File, FileIdentity, FileFacts)>, StagingError> {
+    const ERROR_FILE_NOT_FOUND: i32 = 2;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    let io = |context: &'static str| StagingError::io(context, path);
+    let leaf = match Open::new(Access::READ_DATA | Access::READ_ATTRIBUTES, Share::READ).open(path)
+    {
+        Ok(leaf) => leaf,
+        Err(error) if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND) => return Ok(None),
+        Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
+            return match directory_leaf(path) {
+                // An eligible directory has no leaf to open.
+                Some(outcome) => outcome.map(|()| None),
+                // A file this process may not read: the refusal stands.
+                None => Err(io("Snapshot publication destination")(error)),
+            };
+        }
+        Err(error) => return Err(io("Snapshot publication destination")(error)),
+    };
+    let facts = FileFacts::of(&leaf).map_err(io("Inspect"))?;
+    if let Some(ineligible) = ineligibility(path, &facts) {
+        return Err(ineligible);
+    }
+    if facts.is_directory() {
+        return Ok(None);
+    }
+    let identity = FileIdentity::of(&leaf).map_err(io("Identify"))?;
+    Ok(Some((leaf, identity, facts)))
+}
+
+/// What [`open_destination_leaf`] makes of a leaf its data open was denied:
+/// `Some(Ok(()))` for an eligible directory, `Some(Err(..))` for a link or
 /// reparse point (which a directory-like leaf such as a junction is), and
 /// `None` when the leaf is a file or cannot be inspected, so the denial is the
 /// answer.
-fn directory_leaf(path: &Path) -> Option<Result<Option<DestinationSnapshot>, StagingError>> {
+fn directory_leaf(path: &Path) -> Option<Result<(), StagingError>> {
     let entry = Open::new(
         Access::READ_ATTRIBUTES,
         Share::READ | Share::WRITE | Share::DELETE,
@@ -1075,7 +1107,7 @@ fn directory_leaf(path: &Path) -> Option<Result<Option<DestinationSnapshot>, Sta
     if let Some(ineligible) = ineligibility(path, &facts) {
         return Some(Err(ineligible));
     }
-    facts.is_directory().then_some(Ok(None))
+    facts.is_directory().then_some(Ok(()))
 }
 
 /// FNV-1a over every byte `reader` yields, with the byte count.

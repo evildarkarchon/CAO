@@ -21,7 +21,7 @@
 //! is left where it is.
 
 use std::fs::File;
-use std::io::{Seek, SeekFrom};
+use std::io::{BufRead as _, Read};
 use std::path::{Path, PathBuf};
 
 use cao_winfs::{
@@ -414,8 +414,18 @@ pub trait AssetExecutionBackend {
     /// The detail of why the Mesh could not be written whole.
     fn save_mesh(&mut self, path: &Path) -> Result<(), String>;
 
+    /// Reports whether the Animation at `path` would change at all, before
+    /// anything is captured or staged for it, so an Animation that needs no
+    /// work costs neither a destination snapshot nor a staged file. Never
+    /// writes. By default every Animation would change.
+    fn evaluate_animation(&mut self, _path: &Path) -> OperationResult {
+        OperationResult::changed()
+    }
+
     /// Reads the source Animation and, in Apply, writes changed output only to
     /// `output_path`. Dry Run receives no output path and must not write.
+    /// Only called for an Animation [`Self::evaluate_animation`] reported
+    /// would change.
     fn optimize_animation(
         &mut self,
         path: &Path,
@@ -598,6 +608,60 @@ fn publication_root(mod_root: &Path, destination: &Path) -> PathBuf {
     }
 }
 
+/// Whether a backend's output at `path` is a non-empty regular file, read
+/// from its metadata alone, without following a link.
+///
+/// That is all a staged output must be before it is published: the
+/// publication flushes it through an exclusive open, and only a converted
+/// Texture's output, which must still hold its bytes when its source is
+/// deleted, is hashed (audit CORE-4).
+fn usable_output(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.len() != 0)
+}
+
+/// Whether the staged output at `staged` holds exactly the bytes of the file
+/// at `destination` it would replace, compared byte for byte.
+///
+/// Publishing such an output would rewrite the file with what it already
+/// holds and report a Committed Mutation, so a run over an already optimized
+/// tree would never be idempotent: a Mesh re-saved at the medium level, or
+/// one whose Resave option is on, reaches here on every run. Different sizes
+/// are told apart from metadata alone. Any error reads as "not identical",
+/// so the output is published as it would have been.
+fn identical_output(staged: &Path, destination: &Path) -> bool {
+    let size = |path: &Path| {
+        std::fs::symlink_metadata(path)
+            .ok()
+            .map(|metadata| metadata.len())
+    };
+    match (size(staged), size(destination)) {
+        (Some(left), Some(right)) if left == right => {}
+        _ => return false,
+    }
+    let (Ok(left), Ok(right)) = (File::open(staged), File::open(destination)) else {
+        return false;
+    };
+    same_contents(left, right).unwrap_or(false)
+}
+
+/// Whether `left` and `right` yield the same bytes to their ends.
+fn same_contents(left: impl Read, right: impl Read) -> std::io::Result<bool> {
+    let mut left = std::io::BufReader::with_capacity(65536, left);
+    let mut right = std::io::BufReader::with_capacity(65536, right);
+    loop {
+        let (left_bytes, right_bytes) = (left.fill_buf()?, right.fill_buf()?);
+        if left_bytes.is_empty() || right_bytes.is_empty() {
+            return Ok(left_bytes.is_empty() && right_bytes.is_empty());
+        }
+        let count = left_bytes.len().min(right_bytes.len());
+        if left_bytes[..count] != right_bytes[..count] {
+            return Ok(false);
+        }
+        left.consume(count);
+        right.consume(count);
+    }
+}
+
 /// The size and FNV-1a hash of a readable, non-empty regular file, without
 /// following a link. `None` when it is anything else.
 fn asset_fingerprint(path: &Path) -> Option<(u64, u64)> {
@@ -615,17 +679,21 @@ fn asset_fingerprint(path: &Path) -> Option<(u64, u64)> {
 ///
 /// Write sharing is denied, so the loaded bytes cannot change underneath it;
 /// delete sharing is granted, so readers, renames and the later delete-access
-/// open still work.
+/// open still work. Because the pin itself keeps the bytes from changing, it
+/// checks only that its path still names the pinned file object, and never
+/// hashes the source (audit CORE-4). The one open a deny-write share mode
+/// does not refuse, an elevated process's backup-semantics open (see
+/// [`Open::directory`]), is no more a concern here than for every other pin
+/// CAO holds.
 struct PinnedSource {
     path: PathBuf,
     file: Option<File>,
     identity: FileIdentity,
-    bytes: (u64, u64),
 }
 
 impl PinnedSource {
-    /// Pins an ordinary, single-link, readable source and records its bytes.
-    /// A link or a hard-linked source is [`StagingError::Ineligible`].
+    /// Pins an ordinary, single-link, non-empty source. A link or a
+    /// hard-linked source is [`StagingError::Ineligible`].
     fn open(path: &Path) -> Result<Self, StagingError> {
         let io = |context: &'static str| StagingError::io(context, path);
         let file = Open::new(
@@ -639,26 +707,17 @@ impl PinnedSource {
             return Err(ineligible);
         }
         let identity = FileIdentity::of(&file).map_err(io("Identify"))?;
-        let bytes = Self::hash(&file);
-        match bytes {
-            Some(bytes) if facts.is_ordinary_file() && facts.link_count() == 1 => Ok(Self {
+        if facts.is_ordinary_file() && facts.link_count() == 1 && facts.size() != 0 {
+            Ok(Self {
                 path: path.to_path_buf(),
                 file: Some(file),
                 identity,
-                bytes,
-            }),
-            _ => Err(StagingError::Invalid(
+            })
+        } else {
+            Err(StagingError::Invalid(
                 "Convertible Texture source is not an ordinary readable file.".to_owned(),
-            )),
+            ))
         }
-    }
-
-    /// Hashes the pinned file object, so a replacement at its path cannot
-    /// supply the comparison bytes. `None` for an empty or unreadable file.
-    fn hash(mut file: &File) -> Option<(u64, u64)> {
-        file.seek(SeekFrom::Start(0)).ok()?;
-        let (size, hash) = fingerprint(&mut file).ok()?;
-        (size != 0).then_some((size, hash))
     }
 
     /// The identity of the ordinary single-link file `path` names now.
@@ -672,18 +731,18 @@ impl PinnedSource {
         Some((file, identity))
     }
 
-    /// Whether the original path still names the pinned, unmodified file.
+    /// Whether the original path still names the pinned file, which the pin
+    /// has kept from being written since it was opened.
     fn unchanged_at_path(&self) -> bool {
-        let Some(file) = &self.file else {
+        if self.file.is_none() {
             return false;
-        };
+        }
         let current = Self::identity_at(
             &self.path,
             Access::READ_ATTRIBUTES,
             Share::READ | Share::WRITE | Share::DELETE,
         );
         current.is_some_and(|(_, identity)| identity == self.identity)
-            && Self::hash(file) == Some(self.bytes)
     }
 
     /// Deletes the pinned file object, never whatever replaced it at its
@@ -859,7 +918,15 @@ impl<'b> AssetExecutor<'b> {
             .with_operation("save_texture")
             .with_service_detail(detail);
         }
-        let Some(output_before) = asset_fingerprint(&staged) else {
+        // Only a conversion compares the published output's bytes again
+        // before deleting its source, so only a conversion hashes them; any
+        // other output needs only to exist.
+        let output_before = if converting {
+            asset_fingerprint(&staged)
+        } else {
+            None
+        };
+        if !usable_output(&staged) || (converting && output_before.is_none()) {
             abandon(receipt, &staged);
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::SaveFailed,
@@ -867,7 +934,13 @@ impl<'b> AssetExecutor<'b> {
             )
             .with_path(&output)
             .with_operation("save_texture");
-        };
+        }
+        // A separate output's destination was free when it was captured, so
+        // only an in-place output can repeat what is already there.
+        if !separate_output && identical_output(&staged, &output) {
+            abandon(receipt, &staged);
+            return AssetExecutionResult::success(CompletedMutation::None);
+        }
 
         // A separate output was free when it was captured, and `NoReplace` has
         // the rename itself refuse a file that appeared there since; an
@@ -897,7 +970,7 @@ impl<'b> AssetExecutor<'b> {
         }
 
         let retained_usable = |pin: &Option<PinnedSource>| {
-            asset_fingerprint(&output) == Some(output_before)
+            asset_fingerprint(&output) == output_before
                 && pin.as_ref().is_some_and(PinnedSource::unchanged_at_path)
         };
         let removal_failed = |message: &str, mutation, safe| {
@@ -1040,7 +1113,7 @@ impl<'b> AssetExecutor<'b> {
             .with_operation("save_mesh")
             .with_service_detail(detail);
         }
-        if asset_fingerprint(&staged).is_none() {
+        if !usable_output(&staged) {
             abandon(receipt, &staged);
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::SaveFailed,
@@ -1048,6 +1121,11 @@ impl<'b> AssetExecutor<'b> {
             )
             .with_path(path)
             .with_operation("save_mesh");
+        }
+        // A re-save that reproduces the Mesh is no change (audit BE-6).
+        if identical_output(&staged, &destination) {
+            abandon(receipt, &staged);
+            return AssetExecutionResult::success(CompletedMutation::None);
         }
         // Publication commits the replacement before releasing Temporary
         // Ownership; that fact is kept when the release fails.
@@ -1091,6 +1169,21 @@ impl<'b> AssetExecutor<'b> {
             .with_safe_to_continue(false)
             .with_path(path)
             .with_operation("execute_animation");
+        }
+        // Asked before the capture, so an Animation that needs no work is
+        // never snapshotted or staged (audit BE-7).
+        let evaluation = self.backend.evaluate_animation(path);
+        if !evaluation.succeeded() {
+            return AssetExecutionResult::failed(
+                AssetExecutionFailure::OperationFailed,
+                "Failed to optimize Animation.",
+            )
+            .with_path(path)
+            .with_operation("evaluate_animation")
+            .with_service_detail(evaluation.message());
+        }
+        if !evaluation.would_change() {
+            return AssetExecutionResult::success(CompletedMutation::None);
         }
         let destination = absolute(path);
         let mut receipt = None;
@@ -1160,7 +1253,7 @@ impl<'b> AssetExecutor<'b> {
             abandon(receipt, &staged);
             return AssetExecutionResult::success(CompletedMutation::None);
         }
-        if asset_fingerprint(&staged).is_none() {
+        if !usable_output(&staged) {
             abandon(receipt, &staged);
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::SaveFailed,
@@ -1168,6 +1261,11 @@ impl<'b> AssetExecutor<'b> {
             )
             .with_path(path)
             .with_operation("save_animation");
+        }
+        // A conversion that reproduces its source is no change.
+        if identical_output(&staged, &destination) {
+            abandon(receipt, &staged);
+            return AssetExecutionResult::success(CompletedMutation::None);
         }
         // The native replacement precedes the ownership release; a release
         // failure still leaves a Committed Mutation, unsafe to continue.

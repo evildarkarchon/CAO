@@ -55,6 +55,12 @@ unsafe extern "C" {
     pub(crate) fn cao_nif_save(handle: *mut CaoNif, path: *const u16, length: usize) -> i32;
     pub(crate) fn cao_nif_is_valid(handle: *const CaoNif) -> bool;
     pub(crate) fn cao_nif_is_sse_compatible(handle: *mut CaoNif, out: *mut bool) -> i32;
+    pub(crate) fn cao_nif_version(
+        handle: *const CaoNif,
+        file: *mut u32,
+        user: *mut u32,
+        stream: *mut u32,
+    ) -> i32;
 
     pub(crate) fn cao_nif_optimize_for(
         handle: *mut CaoNif,

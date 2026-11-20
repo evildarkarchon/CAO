@@ -28,6 +28,10 @@ pub enum Error {
     /// The archive reader could not read or extract an Archive.
     #[error("{0}")]
     Archive(String),
+    /// The run was cancelled while the work was under way, before it changed
+    /// anything, so the work stopped early (audit BE-8).
+    #[error("cancelled")]
+    Cancelled,
     /// A filesystem operation failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),

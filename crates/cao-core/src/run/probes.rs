@@ -211,13 +211,20 @@ pub trait ArchivePacker: Send + Sync {
     /// Temporary Ownership. Every handle and mapping of the destination and
     /// the sources is released before this returns.
     ///
+    /// `cancelled` may be asked from several threads at once, as often as the
+    /// packer likes; once it answers yes the packer should stop reading
+    /// sources and return [`Error::Cancelled`] without writing anything more.
+    ///
     /// # Errors
-    /// A source cannot be read or compressed, or the Archive cannot be written.
+    /// A source cannot be read or compressed, or the Archive cannot be
+    /// written. [`Error::Cancelled`] when `cancelled` stopped the write;
+    /// `destination` may then hold anything, and is abandoned unpublished.
     fn write(
         &self,
         archive: &PlannedArchive,
         compress: bool,
         root: &Path,
         destination: &Path,
+        cancelled: &(dyn Fn() -> bool + Sync),
     ) -> Result<(), Error>;
 }

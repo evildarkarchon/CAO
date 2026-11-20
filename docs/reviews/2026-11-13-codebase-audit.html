@@ -248,6 +248,7 @@
     <p><strong>Follow-up, 2026-11-19.</strong> Step 3 of the suggested order, contained single-file failures (<a href="#CORE-2">CORE-2</a>, <a href="#BE-4">BE-4</a>, <a href="#FS-3">FS-3</a>, <a href="#FS-9">FS-9</a>, <a href="#CORE-6">CORE-6</a>), was done in a third change, and those five cards end with a Resolution paragraph. After it, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets</code> and <code>cargo build</code> pass and the suite is 1,014 tests, 0 failed (12 new). The case the <a href="#BE-2">BE-2</a> resolution left for step 3 is closed. <a href="#BE-4">BE-4</a> keeps one limit, by decision, which its resolution states.</p>
     <p><strong>Follow-up, 2026-11-19 (second).</strong> Step 4 of the suggested order, the silent wrong outcomes (<a href="#BE-3">BE-3</a>, <a href="#GUI-2">GUI-2</a>, <a href="#GUI-1">GUI-1</a>, <a href="#GUI-3">GUI-3</a>, <a href="#FS-2">FS-2</a>, <a href="#BE-5">BE-5</a>, <a href="#FS-4">FS-4</a>), was done in a fourth change, and those seven cards end with a Resolution paragraph. The owner decided <a href="#FS-4">FS-4</a>: with Dummy Plugins off, no plugin is created or removed, and an Archive nothing would load is skipped with a warning. After it, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets</code> and <code>cargo build</code> pass and the suite is 1,024 tests (15 new, 5 removal tests retired), five of them in a case-sensitive directory (see <a href="#BE-3">BE-3</a>). <code>optimization_run_service</code> fails intermittently, one test at a time, and fails the same way on the commit before this change.</p>
     <p><strong>Follow-up, 2026-11-19 (third).</strong> Step 5 of the suggested order, CI and the long-path approach (<a href="#WS-2">WS-2</a>, <a href="#WS-1">WS-1</a>, <a href="#WS-3">WS-3</a>), was done in a fifth change, and those three cards end with a Resolution paragraph. The owner made the three decisions: extended-length paths for <a href="#WS-1">WS-1</a>, a CI that runs every test with <code>LongPathsEnabled</code> off for <a href="#WS-2">WS-2</a>, and a <code>cargo xtask</code> for <a href="#WS-3">WS-3</a>. The intermittent <code>optimization_run_service</code> failures were a test-isolation bug and are fixed (see <a href="#WS-2">WS-2</a>). After it, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets -- -D warnings</code> and <code>cargo build</code> pass and the suite is 1,054 tests, 0 failed, 0 ignored (30 new). CI's first runs exposed an elevated-host bug in the <a href="#CORE-2">CORE-2</a> capture, which is fixed (see <a href="#WS-2">WS-2</a>).</p>
+    <p><strong>Follow-up, 2026-11-19 (fourth).</strong> Step 6 of the suggested order, idempotent runs and less repeated I/O (<a href="#BE-6">BE-6</a>, <a href="#BE-7">BE-7</a>, <a href="#CORE-4">CORE-4</a>, <a href="#CORE-3">CORE-3</a>, <a href="#FS-6">FS-6</a>, <a href="#BE-8">BE-8</a>), was done in a sixth change, and those six cards end with a Resolution paragraph. The owner made the two decisions: for <a href="#BE-6">BE-6</a> the medium level keeps its re-save and core drops output identical to what it would replace, and for <a href="#CORE-4">CORE-4</a> the destination snapshot is still taken before load. <a href="#CORE-3">CORE-3</a> and <a href="#FS-6">FS-6</a> were measured before and after, and their cards give the figures. nifly's save turned out to need up to two saves to settle, which the <a href="#BE-6">BE-6</a> resolution records. After it, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets -- -D warnings</code> and <code>cargo build</code> pass and the suite is 1,069 tests, 0 failed, 0 ignored (15 new).</p>
   </div>
 
   <h4>The three high findings</h4>
@@ -405,7 +406,7 @@ let publication = receipt.publish(&amp;output, PublicationPolicy::Replace);</cod
     <div class="f-head">
       <span class="fid">CORE-3</span>
       <h3>The Several Mods overlap check opens directories a quadratic number of times</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">performance</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">performance</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/mod_selection.rs:229</code> · <code>:89</code></p>
     <div class="f-body">
@@ -415,6 +416,7 @@ let publication = receipt.publish(&amp;output, PublicationPolicy::Replace);</cod
       <p><strong>Why it matters.</strong> Each <code>contains_directory</code> call opens the boundary and every ancestor of the other path to read its identity, and each new child is compared with every root accepted so far, in both directions. For N children at depth d that is on the order of N² × d handle opens. A mods directory with a thousand entries a few levels deep comes to millions of opens during Preparing, before any work starts, with cancellation polled only once per child.</p>
       <p><strong>Suggested change.</strong> Compute each resolved root's identity and its ancestor-identity chain once, keep one set of root identities and one of ancestor identities, and test each new child against both. That is linear in N × d.</p>
       <p class="confidence">Confidence: high for the complexity; the wall-clock cost was estimated, not measured.</p>
+      <p><strong>Resolution.</strong> Fixed in step 6, as suggested. Each child's identity chain, itself and every ancestor, is read once. The accepted roots are kept in two identity maps, their own identities and every identity in their chains, so each new child is checked against all of them in one pass, linear in N × d. The failure still names the earliest overlapping root, which a new test pins with a non-adjacent pair. Measured on a release build, a Several Mods Dry Run over 1,000 children took 0.27 s against 521 to 552 s on the commit before. The baseline checkout sat six directory levels deeper (24 against 18), which inflates its figure by roughly a third; the difference is still more than three orders of magnitude.</p>
     </div>
   </article>
 
@@ -422,13 +424,14 @@ let publication = receipt.publish(&amp;output, PublicationPolicy::Replace);</cod
     <div class="f-head">
       <span class="fid">CORE-4</span>
       <h3>Every Apply Asset is read and hashed several times, even when nothing changes</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">performance</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">performance</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/execution.rs:622</code> · <code>:687</code> · <code>:855</code> · <code>:504</code> · <code>crates/cao-core/src/run/artifacts.rs:812</code></p>
     <div class="f-body">
 <pre><code>if !self.backend.save_mesh(&amp;staged) || asset_fingerprint(&amp;staged).is_none() {</code></pre>
       <p><strong>Why it matters.</strong> The destination snapshot (a full read with a byte-at-a-time FNV-1a loop) is taken for every Texture and Mesh before the backend loads it, so a re-run over an already optimized tree reads every file twice. A changed Asset's original is hashed again at stage and publish, and its output is hashed once more only to learn that it is non-empty. A converted TGA is hashed four times on the success path although the pin's own comment says the bytes cannot change while write sharing is denied. On texture-heavy mods this is a large share of run time spent on I/O that decides nothing.</p>
       <p><strong>Suggested change.</strong> Replace the <code>asset_fingerprint(..).is_none()</code> non-empty checks with a metadata size check and compute the output fingerprint only when converting. Let <code>PinnedSource::unchanged_at_path</code> compare identity alone. Consider deferring the destination snapshot until the backend reports a change.</p>
+      <p><strong>Resolution.</strong> Fixed in step 6 with the safe cuts. By the owner's decision, the destination snapshot is still taken before the backend loads, since it is what proves the saved bytes came from the file that was read. The non-empty checks on a staged output are now a metadata size check, and an output is hashed only for a conversion. <code>PinnedSource</code> compares identity alone, because its deny-write share mode keeps the bytes from changing. Staging compares the destination's identity and change metadata without hashing it, and publication still compares the whole snapshot, bytes included. A changed Mesh or in-place Texture now hashes its original twice instead of three times and its output not at all. A converted TGA's source is never hashed (four times before). A re-run over unchanged Assets still reads each one twice, the snapshot and the load, as decided. The identical-output check that <a href="#BE-6">BE-6</a> adds reads both files only when their sizes match.</p>
     </div>
   </article>
 
@@ -725,7 +728,7 @@ let lock = claim_lock(&amp;staging.join(OWNER_LOCK), OwnerLock::create)?;</code>
     <div class="f-head">
       <span class="fid">FS-6</span>
       <h3>Preflight and merge list a whole directory for every path component of every Archive entry</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">performance</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">performance</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/archives.rs:780</code> · <code>:481</code> · <code>crates/cao-core/src/run/finalization/planning.rs:273</code></p>
     <div class="f-body">
@@ -734,6 +737,7 @@ let lock = claim_lock(&amp;staging.join(OWNER_LOCK), OwnerLock::create)?;</code>
     if compare_ordinal_ignore_case(entry.file_name(), name).is_eq() {</code></pre>
       <p><strong>Why it matters.</strong> The case-insensitive child lookup enumerates the directory each time it is asked, in preflight and again in the merge. During the merge the leaf directory grows as entries land, so K files in one folder cost on the order of K² directory reads; voice and facegen folders hold thousands. Planning also stats every source three times.</p>
       <p><strong>Suggested change.</strong> Cache one case-insensitive listing per directory for the duration of a preflight or extraction, updating it on create and publish; use the directory entry's own metadata in the planning walk.</p>
+      <p><strong>Resolution.</strong> Fixed in step 6, as suggested. Preflight and merge each keep one case-insensitive listing per directory, read from disk at most once. The merge records each directory it creates and each file it publishes, so its listings stay exact for its own changes. An entry another program creates after a listing is read is not seen; the no-replace publication still refuses the exact name, but a case twin appearing mid-merge in a case-sensitive directory is not detected. Planning's walk uses the directory entry's own metadata, and planning's capacity estimate counts the size that walk read; the attempt still re-stats every source before it writes. Measured on a release build with the fake reader, an Archive of 1,000, 2,000 and 8,000 entries in one folder took 3.6, 7.2 and 33.0 s, against 3.7, 8.4 and 59.3 s on the commit before. The quadratic term is gone; the remaining cost, about 4 ms per entry, is the stage-and-publish protocol, not the lookups.</p>
     </div>
   </article>
 
@@ -1094,7 +1098,7 @@ fn decode&lt;'name&gt;(&amp;self, name: &amp;'name ba2::BStr) -&gt; Result&lt;&a
     <div class="f-head">
       <span class="fid">BE-6</span>
       <h3>Meshes the optimizer did not change are still re-saved and reported as changed</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">correctness</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">correctness</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-optimizers/src/meshes.rs:232</code> · <code>:14</code> · <code>:191</code></p>
     <div class="f-body">
@@ -1102,6 +1106,7 @@ fn decode&lt;'name&gt;(&amp;self, name: &amp;'name ba2::BStr) -&gt; Result&lt;&a
     self.settings.resave || (level &gt;= 1 &amp;&amp; scan &gt;= Scan::CriticalIssue) || level &gt;= 2;</code></pre>
       <p><strong>Why it matters.</strong> <code>modified</code> is derived from the level and the scan, not from what nifly reported. A Mesh whose versions are not an LE/SSE pair comes back with <code>version_mismatch</code> and no change, yet is re-serialised and published with no log line. At level 2 a Mesh scanned as good is re-saved on every run, and Dry Run says it "would be optimized". Under a TES5 target every valid Mesh scans as a critical issue. Each needless round trip through nifly is I/O and risk, and it makes runs non-idempotent.</p>
       <p><strong>Suggested change.</strong> Return nifly's <code>OptimizeReport</code> and derive <code>modified</code> from it (or from <code>resave</code>), log a version mismatch as a warning and treat it as unchanged, and replace <code>level: u8</code> with core's <code>MeshLevel</code>.</p>
+      <p><strong>Resolution.</strong> Fixed in step 6 of the suggested order. The owner chose to keep the medium level's re-save and drop identical output, rather than stop the medium level re-saving. <code>MeshSettings::level</code> is now core's <code>MeshLevel</code>. A Mesh changes when <code>OptimizeFor</code> converted it, from the medium level up, or with Resave on; a call nifly answers with a version mismatch no longer saves the Mesh on its own. The mismatch is logged at the verbose level when the Mesh is already in the target's version (every LE Mesh under a TES5 target) and as a warning otherwise. Dry Run predicts the conversion from the Mesh's header version, read through a new <code>cao_nif_version</code> shim call. Core now abandons any staged in-place output, Mesh, native Texture or Animation, whose bytes equal the file it would replace, and reports no mutation. A re-save is therefore a change only until nifly's save settles. <code>nifly-sys</code>'s fixture tests pin that: 18 of nifly's 20 fixtures repeat their first save, and <code>Animated_LE</code> and <code>FO76</code> reorder their string table once more on the second save. So a Mesh re-saved on every run is a change on the first run, at most once more on the second, and never after. Dry Run at the medium level still reports every valid Mesh as one that would be optimized, because it cannot save to compare. An SSE Headpart Mesh under the SSE profile is no longer re-saved, so the Headpart tests now use an LE fixture that really converts.</p>
     </div>
   </article>
 
@@ -1109,7 +1114,7 @@ fn decode&lt;'name&gt;(&amp;self, name: &amp;'name ba2::BStr) -&gt; Result&lt;&a
     <div class="f-head">
       <span class="fid">BE-7</span>
       <h3>Every <code>.hkx</code> is handed to <code>hkxcmd</code> on every run; nothing recognises an already-converted Animation</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">performance</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">performance</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-optimizers/src/backend.rs:392</code> · <code>crates/cao-optimizers/src/animations.rs:168</code> · <code>crates/cao-core/src/routing.rs:834</code></p>
     <div class="f-body">
@@ -1119,6 +1124,7 @@ return OperationResult::changed();</code></pre>
       <p><strong>Why it matters.</strong> Routing is by extension only, so after a first successful run, or for any native SSE mod, each later run still spawns one process per Animation. It either rewrites an identical file and reports a Committed Mutation or fails and marks the run "completed with failures"; Dry Run claims every Animation would change. A conversion also cannot be cancelled for up to its 30-second timeout.</p>
       <p><strong>Suggested change.</strong> Read the packfile header before spawning (the pointer-size byte distinguishes 32-bit from 64-bit) and report unchanged for an already-64-bit file in both modes.</p>
       <p class="confidence">Confidence: high that the process is spawned per file per run; what the real converter does with an already-converted file was not observed.</p>
+      <p><strong>Resolution.</strong> Fixed in step 6, as suggested. <code>hkx_layout</code> reads a packfile's first 17 bytes, and an Animation whose pointer size is 8 is unchanged in both modes. It is decided through a new <code>evaluate_animation</code> backend call, which core makes before it captures or stages anything, so such an Animation costs no destination snapshot, staged file or process. A 32-bit packfile, and anything without a packfile header such as an XML Animation, goes to <code>hkxcmd</code> as before, and a conversion whose output equals its source is not published (see <a href="#BE-6">BE-6</a>). An Animation that cannot be read now fails at evaluation, in Dry Run too. Not changed: a conversion in progress still cannot be cancelled before its 30-second timeout.</p>
     </div>
   </article>
 
@@ -1126,7 +1132,7 @@ return OperationResult::changed();</code></pre>
     <div class="f-head">
       <span class="fid">BE-8</span>
       <h3>An Archive is fully read and compressed into memory before the first byte is written, and the write cannot be cancelled</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">performance</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">performance</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-archive/src/write.rs:70</code> · <code>:161</code> · <code>crates/cao-optimizers/src/archives.rs:254</code></p>
     <div class="f-body">
@@ -1134,6 +1140,7 @@ return OperationResult::changed();</code></pre>
 /// every source mapping is released before this returns. Nothing is written</code></pre>
       <p><strong>Why it matters.</strong> Peak memory is roughly the compressed size of the whole Archive: up to about 2 GiB for a Skyrim BSA and unbounded for Fallout 4, whose Archive limit is never capped. Every source is mapped at once. <code>ArchivePacker::write</code> takes no cancellation check, so Cancel waits for the whole compress-and-write of the current Archive.</p>
       <p><strong>Suggested change.</strong> Pass a cancel check into the parallel prepare step and document the memory bound next to the limit. Longer term, compress in bounded batches or contribute a streaming writer to <code>ba2</code>.</p>
+      <p><strong>Resolution.</strong> Fixed in step 6 with the short-term change. <code>write_archive_into</code> takes a cancel check, asked before each source is read on the threads that read them and once more before anything is written, and <code>ArchivePacker::write</code> passes the run's. A cancelled write abandons its staged Archive. The output counts as never attempted, as one that cancellation reached first does, so nothing is published or deleted. A cancellation that arrives during an attempt's capacity recheck now stops that attempt at its write instead of letting it finish, and two finalization tests were updated to that contract. The memory bound is documented on <code>write_archive</code>: about the stored size of the whole Archive, at most 2 GiB for a BSA and up to the Archive Limit for a BA2. Not done: compressing in bounded batches, or a streaming writer for <code>ba2</code>.</p>
     </div>
   </article>
 
@@ -1765,7 +1772,7 @@ env!("CARGO_PKG_VERSION")</code></pre>
         <tr><td class="num">3</td><td>Make single-file problems contained failures</td><td><a href="#CORE-2">CORE-2</a>, <a href="#BE-4">BE-4</a>, <a href="#FS-3">FS-3</a>, <a href="#FS-9">FS-9</a>, <a href="#CORE-6">CORE-6</a></td><td><span class="tag pass">done</span> Removes the cases where a real mod folder cannot be processed at all.</td></tr>
         <tr><td class="num">4</td><td>Remove the silent wrong outcomes</td><td><a href="#BE-3">BE-3</a>, <a href="#GUI-2">GUI-2</a>, <a href="#GUI-1">GUI-1</a>, <a href="#GUI-3">GUI-3</a>, <a href="#FS-2">FS-2</a>, <a href="#BE-5">BE-5</a>, <a href="#FS-4">FS-4</a></td><td><span class="tag pass">done</span> Small changes, each with a test that pins the new behaviour; <a href="#FS-4">FS-4</a> needs a decision first.</td></tr>
         <tr><td class="num">5</td><td>Add CI and settle the long-path approach</td><td><a href="#WS-2">WS-2</a>, <a href="#WS-1">WS-1</a>, <a href="#WS-3">WS-3</a></td><td><span class="tag pass">done</span> Protects steps 1 to 4 from regressing and makes a release reproducible.</td></tr>
-        <tr><td class="num">6</td><td>Make runs idempotent and cut repeated I/O</td><td><a href="#BE-6">BE-6</a>, <a href="#BE-7">BE-7</a>, <a href="#CORE-4">CORE-4</a>, <a href="#CORE-3">CORE-3</a>, <a href="#FS-6">FS-6</a>, <a href="#BE-8">BE-8</a></td><td>Mostly independent of each other; measure before and after.</td></tr>
+        <tr><td class="num">6</td><td>Make runs idempotent and cut repeated I/O</td><td><a href="#BE-6">BE-6</a>, <a href="#BE-7">BE-7</a>, <a href="#CORE-4">CORE-4</a>, <a href="#CORE-3">CORE-3</a>, <a href="#FS-6">FS-6</a>, <a href="#BE-8">BE-8</a></td><td><span class="tag pass">done</span> Mostly independent of each other; measured before and after where the cost was arithmetic.</td></tr>
         <tr><td class="num">7</td><td>Keyboard access and dialog sizing</td><td><a href="#GUI-5">GUI-5</a>, <a href="#GUI-6">GUI-6</a>, <a href="#GUI-4">GUI-4</a></td><td>Confined to the <code>.slint</code> files and the close path.</td></tr>
         <tr><td class="num">8</td><td>Hygiene sweep</td><td>the remaining low findings</td><td>Dead code, stale documents and parity comments; best done file by file as other work touches them.</td></tr>
       </tbody>

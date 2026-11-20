@@ -232,7 +232,13 @@ pub struct FakeArchivePacker {
     /// Runs before each [`ArchivePacker::list_names`] call reads its
     /// directory.
     pub before_list: Option<BeforeList>,
+    /// Runs before each source of a write is read, before the write asks its
+    /// cancel check about that source: a test cancels a run mid-write here.
+    pub before_source_read: Option<BeforeSourceRead>,
 }
+
+/// A hook [`FakeArchivePacker`] runs before reading one source of a write.
+pub type BeforeSourceRead = Box<dyn Fn(&Path) + Send + Sync>;
 
 /// A hook [`FakeArchivePacker`] runs after writing one Archive.
 pub type AfterWrite = Box<dyn Fn(&PlannedArchive) + Send + Sync>;
@@ -261,6 +267,7 @@ impl Default for FakeArchivePacker {
             partitioned: Mutex::default(),
             after_write: None,
             before_list: None,
+            before_source_read: None,
         }
     }
 }
@@ -502,9 +509,18 @@ impl ArchivePacker for FakeArchivePacker {
         compress: bool,
         root: &Path,
         destination: &Path,
+        cancelled: &(dyn Fn() -> bool + Sync),
     ) -> Result<(), Error> {
         let mut stored = Vec::new();
         for file in &archive.files {
+            if let Some(before_source_read) = &self.before_source_read {
+                before_source_read(&file.path);
+            }
+            // As the real packer: a cancel stops before the next source is
+            // read, and nothing is written.
+            if cancelled() {
+                return Err(Error::Cancelled);
+            }
             let payload = std::fs::read(&file.path).map_err(|error| {
                 Error::Archive(format!("cannot read `{}`: {error}", file.path.display()))
             })?;

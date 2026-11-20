@@ -286,6 +286,18 @@ int32_t cao_nif_is_sse_compatible(CaoNif* handle, bool* out) noexcept {
     });
 }
 
+// The loaded Mesh's header version into *file, *user and *stream: inline reads
+// of the header, which cannot throw. -3 for an empty handle, whose header block
+// pointer is null.
+int32_t cao_nif_version(const CaoNif* handle, uint32_t* file, uint32_t* user, uint32_t* stream) noexcept {
+    if (!handle->nif.IsValid()) return kNotLoaded;
+    const NiVersion& version = handle->nif.GetHeader().GetVersion();
+    *file = static_cast<uint32_t>(version.File());
+    *user = version.User();
+    *stream = version.Stream();
+    return 0;
+}
+
 // NifFile::OptimizeFor towards the version (file, user, stream). The result is
 // kept for cao_nif_opt_flags and cao_nif_opt_name*, replacing the last one.
 // -3 for an empty handle.

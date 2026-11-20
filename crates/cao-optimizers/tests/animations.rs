@@ -61,6 +61,10 @@ const SCENARIOS: &[(&str, fn())] = &[
         "conversion_requires_an_empty_hkx_staging_file_apart_from_the_source",
         conversion_requires_an_empty_hkx_staging_file_apart_from_the_source,
     ),
+    (
+        "an_animation_already_in_the_64_bit_format_is_never_converted",
+        an_animation_already_in_the_64_bit_format_is_never_converted,
+    ),
 ];
 
 /// Acts as the fake converter when started with `convert`; otherwise runs the
@@ -431,6 +435,81 @@ fn a_converter_that_does_not_finish_is_stopped_before_convert_returns() {
         started.elapsed()
     );
     std::fs::remove_file(install.join("staged.hkx")).unwrap();
+}
+
+/// A binary Havok packfile header with `pointer_size`-byte pointers: the two
+/// magic words, a user tag and a file version, then the layout rules, and a
+/// body that only the fake converter would read.
+fn packfile(pointer_size: u8) -> Vec<u8> {
+    let mut bytes = vec![0x57, 0xE0, 0xE0, 0x57, 0x10, 0xC0, 0xC0, 0x10];
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&8u32.to_le_bytes());
+    bytes.extend_from_slice(&[pointer_size, 1, 0, 1]);
+    bytes.extend_from_slice(b"body");
+    bytes
+}
+
+/// Audit BE-7: an Animation whose header already says 64-bit is SSE's format,
+/// so neither an Apply nor a Dry Run starts the converter for it or stages
+/// anything, and Apply reports no mutation. A 32-bit packfile and a file with
+/// no packfile header are converted as before.
+fn an_animation_already_in_the_64_bit_format_is_never_converted() {
+    let app = app_dir("animations-64-bit");
+    install_fake_hkxcmd(&app);
+    let mod_root = app.join("mods").join("Mod");
+    write(&mod_root, "meshes/converted.hkx", &packfile(8));
+    write(&mod_root, "meshes/le.hkx", &packfile(4));
+    write(&mod_root, "meshes/unknown.hkx", b"unknown");
+    let before = snapshot_tree(&mod_root);
+
+    let dry = run(&app, &animations_only(&app, &mod_root, true));
+    assert_eq!(dry.outcome(), RunOutcome::Succeeded);
+    assert_eq!(snapshot_tree(&mod_root), before);
+    assert_eq!(calls(&app), Vec::<Vec<String>>::new());
+
+    let result = run(&app, &animations_only(&app, &mod_root, false));
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.asset_attempts()
+    );
+    let mut states: Vec<(String, MutationState)> = result
+        .asset_attempts()
+        .iter()
+        .map(|attempt| {
+            let name = attempt.asset.execution_path().file_name().unwrap();
+            (
+                name.to_string_lossy().into_owned(),
+                attempt.result.mutation_state(),
+            )
+        })
+        .collect();
+    states.sort();
+    assert_eq!(
+        states,
+        [
+            ("converted.hkx".to_owned(), MutationState::None),
+            ("le.hkx".to_owned(), MutationState::Committed),
+            ("unknown.hkx".to_owned(), MutationState::Committed),
+        ]
+    );
+    assert_eq!(
+        std::fs::read(mod_root.join("meshes/converted.hkx")).unwrap(),
+        packfile(8)
+    );
+    let mut converted = calls(&app)
+        .iter()
+        .map(|call| {
+            let source = Path::new(&call[1]).file_name().unwrap();
+            source.to_string_lossy().into_owned()
+        })
+        .collect::<Vec<_>>();
+    converted.sort();
+    assert_eq!(converted, ["le.hkx", "unknown.hkx"]);
+    assert_eq!(staging_leftovers(&mod_root), STAGING_CONTROL_FILES);
+    assert_decoy_untouched();
 }
 
 /// C++ `AnimationsOptimizer::convert`'s precondition: the output must be an

@@ -267,7 +267,7 @@ impl RunToolset {
         choices: &ArchiveFinalizationChoices,
         phase: ArchiveFinalizationHandle<'_, '_>,
         artifacts: &mut TemporaryArtifactRegistry,
-        cancelled: &dyn Fn() -> bool,
+        cancelled: &(dyn Fn() -> bool + Sync),
     ) -> Result<(), Error> {
         finalization::finalize_archives(
             &self.seams,

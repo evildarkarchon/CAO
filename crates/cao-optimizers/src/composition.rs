@@ -87,7 +87,7 @@ fn texture_settings(choices: &TextureChoices) -> TextureSettings {
 /// already within 0 to 3, so nothing here can fail.
 fn mesh_settings(choices: &MeshChoices) -> MeshSettings {
     MeshSettings {
-        level: choices.level.get(),
+        level: choices.level,
         headparts: choices.headparts,
         resave: choices.resave,
     }

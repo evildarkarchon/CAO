@@ -292,8 +292,9 @@ impl Default for ArchiveFinalizationChoices {
 ///
 /// `phase` must have just opened the executed Archive Finalization phase,
 /// unplanned; the phase is finished through it. `cancelled` is polled
-/// between outputs and between Mod Roots, never inside an atomic output
-/// attempt; cancelled planning finishes the phase as cancelled without an
+/// between outputs and between Mod Roots, and inside an output attempt only
+/// while its Archive is written, before anything is published (audit BE-8),
+/// so an attempt is still atomic; cancelled planning finishes the phase as cancelled without an
 /// output total. A failure or panic of the phase's own work finishes it
 /// once as a phase-level `UnexpectedException` that keeps every attempt
 /// already recorded and forbids continuation. A Mod Root planning could not
@@ -316,7 +317,7 @@ pub(crate) fn finalize_archives(
     preparation: &RunPreparation,
     mut phase: ArchiveFinalizationHandle<'_, '_>,
     artifacts: &mut TemporaryArtifactRegistry,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<(), Error> {
     // The handle and the account are owned here, outside the panic
     // containment, and only lent to the contained work: a panic after
@@ -602,7 +603,7 @@ fn run_phase(
     preparation: &RunPreparation,
     phase: &mut ArchiveFinalizationHandle<'_, '_>,
     artifacts: &mut TemporaryArtifactRegistry,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &(dyn Fn() -> bool + Sync),
     account: &mut ArchiveFinalizationAccount,
 ) -> Result<(), Escape> {
     if !preparation
@@ -668,7 +669,7 @@ fn finalize_plan(
     capacity: &CapacityCheck<'_>,
     plan: &FinalizationPlan,
     artifacts: &mut TemporaryArtifactRegistry,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &(dyn Fn() -> bool + Sync),
     phase: &mut ArchiveFinalizationHandle<'_, '_>,
     account: &mut ArchiveFinalizationAccount,
 ) -> Result<(), Escape> {
@@ -709,7 +710,7 @@ fn finalize_plan(
             account.cancelled = true;
             break;
         }
-        let attempt = attempt_output(
+        let Some(attempt) = attempt_output(
             plan,
             index,
             artifacts,
@@ -717,7 +718,12 @@ fn finalize_plan(
             capacity,
             &dummy_demand,
             &mut account.mutations,
-        );
+            cancelled,
+        ) else {
+            // Cancelled inside the write, before anything was published.
+            account.cancelled = true;
+            break;
+        };
         // Only the attempt's own capacity recheck reports this, before
         // any mutation; it ends the phase without plugin work or pruning.
         let capacity_rejected = attempt.outcome.failure_category()
