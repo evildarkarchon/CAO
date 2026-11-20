@@ -6,7 +6,7 @@
 //! beside it. Nothing in Cargo puts them there:
 //!
 //! - `dist` builds `cao-gui` and lays out an install folder: the exe, `profiles/`,
-//!   `bin/hkxcmd.exe` and `LICENSE`.
+//!   `bin/hkxcmd.exe`, `LICENSE` and `LICENSE-nifly`.
 //! - `dev` copies `profiles/` (and `bin/hkxcmd.exe` when one is at hand) beside
 //!   `target/<profile>/cao-gui.exe`, so `cargo run -p cao-gui` starts.
 //!
@@ -26,7 +26,8 @@ Usage: cargo xtask <task> [options]
 
 Tasks:
   dist   Build cao-gui and lay out an install folder:
-         cao-gui.exe, profiles/, bin/hkxcmd.exe and LICENSE.
+         cao-gui.exe, profiles/, bin/hkxcmd.exe, LICENSE and
+         LICENSE-nifly.
   dev    Copy profiles/ (and bin/hkxcmd.exe, if found) beside
          target/<profile>/cao-gui.exe so `cargo run -p cao-gui` starts.
   help   Print this text.
@@ -200,6 +201,17 @@ impl Workspace {
         self.root.join("LICENSE")
     }
 
+    /// nifly's GPL-3.0 licence text. `cao-gui.exe` links nifly statically, so
+    /// an install that passes the exe on must carry it beside CAO's own.
+    pub fn nifly_license(&self) -> PathBuf {
+        self.root
+            .join("crates")
+            .join("nifly-sys")
+            .join("vendor")
+            .join("nifly")
+            .join("LICENSE")
+    }
+
     /// Where `cao-gui.exe` is built for `profile`, which is also that build's
     /// app directory.
     pub fn exe_directory(&self, profile: Profile) -> PathBuf {
@@ -237,12 +249,14 @@ pub struct Install<'a> {
     pub profiles: &'a Path,
     /// The licence file.
     pub license: &'a Path,
+    /// nifly's licence, installed as `LICENSE-nifly`.
+    pub nifly_license: &'a Path,
     /// The converter, or `None` to install none.
     pub hkxcmd: Option<&'a Path>,
 }
 
-/// Lays out `install` in `folder`: `cao-gui.exe`, `profiles/`, `LICENSE` and,
-/// when given, `bin/hkxcmd.exe`.
+/// Lays out `install` in `folder`: `cao-gui.exe`, `profiles/`, `LICENSE`,
+/// `LICENSE-nifly` and, when given, `bin/hkxcmd.exe`.
 ///
 /// `folder` must be absent or empty, so an install never mixes with files
 /// left from another; the caller clears a folder it owns first.
@@ -265,6 +279,7 @@ pub fn lay_out_install(folder: &Path, install: &Install<'_>) -> io::Result<()> {
     require(install.exe)?;
     require(install.profiles)?;
     require(install.license)?;
+    require(install.nifly_license)?;
     if let Some(hkxcmd) = install.hkxcmd {
         require(hkxcmd)?;
     }
@@ -276,6 +291,7 @@ pub fn lay_out_install(folder: &Path, install: &Install<'_>) -> io::Result<()> {
         Existing::Replace,
     )?;
     fs::copy(install.license, folder.join("LICENSE"))?;
+    fs::copy(install.nifly_license, folder.join("LICENSE-nifly"))?;
     if let Some(hkxcmd) = install.hkxcmd {
         let bin = folder.join("bin");
         fs::create_dir_all(&bin)?;

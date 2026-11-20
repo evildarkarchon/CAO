@@ -20,6 +20,10 @@ use directxtex::{
     ScratchImage, TEX_COMPRESS_DEFAULT, TEX_THRESHOLD_DEFAULT,
 };
 
+/// The game path the scenarios' Textures are optimized under: an ordinary
+/// Texture, not interface art.
+const GAME_PATH: &str = "textures/plain.dds";
+
 /// An adapter index no host has: `createDevice` fails on it, which is how
 /// these scenarios force the CPU fallback.
 const MISSING_ADAPTER: u32 = u32::MAX;
@@ -138,7 +142,7 @@ fn optimized_pixels(path: &Path, gpu: Option<&GpuDevice>) -> (DXGI_FORMAT, Vec<u
     let mut texture = Texture::load(path, TextureVariant::Native).unwrap();
     assert!(
         texture
-            .optimize(&sse_profile(), &compress_only(), gpu)
+            .optimize(GAME_PATH, &sse_profile(), &compress_only(), gpu)
             .unwrap()
     );
     let format = texture.metadata().format;
@@ -255,7 +259,7 @@ fn other_block_formats_stay_on_the_cpu_with_a_device() {
 
     assert!(
         texture
-            .optimize(&profile, &compress_only(), Some(&gpu))
+            .optimize(GAME_PATH, &profile, &compress_only(), Some(&gpu))
             .unwrap()
     );
 

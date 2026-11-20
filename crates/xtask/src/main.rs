@@ -84,12 +84,14 @@ fn dist(
     };
     let exe = workspace.exe_directory(profile).join(EXE);
     let (profiles, license) = (workspace.profiles(), workspace.license());
+    let nifly_license = workspace.nifly_license();
     xtask::lay_out_install(
         &folder,
         &Install {
             exe: &exe,
             profiles: &profiles,
             license: &license,
+            nifly_license: &nifly_license,
             hkxcmd: converter.as_deref(),
         },
     )?;

@@ -38,14 +38,14 @@ impl OptimizationMode {
     }
 }
 
-/// A profile's `settings.ini`: the options C++ held in `OptionsCAO`.
+/// A profile's `settings.ini`: the user's choices for a run.
 ///
-/// [`Options::default`] is C++'s member defaults, which apply only when the first
-/// profile loaded has no file. Otherwise every field reads with `QVariant`'s conversions, so a missing
-/// key is `false` or `0`: the shipped files have no `bBsaMergeIncomp`, so it loads as
-/// `false`. The one exception is `bBsaCreateDummies`, which a missing key leaves on:
-/// with it off, Archive creation skips any Archive no plugin loads. Keys this model does not hold, such as the dead `[BSA] bBsaLeastBSA`
-/// (deviation 10), are never read and survive a save.
+/// [`Options::default`] holds each option's default. A profile without the file
+/// starts from them, and a key missing from the file reads as its default, so an
+/// option added in a later version starts at its intended value for every
+/// existing user rather than off. A key that is present reads with `QVariant`'s
+/// lenient conversions. Keys this model does not hold, such as the dead
+/// `[BSA] bBsaLeastBSA` (deviation 10), are never read and survive a save.
 ///
 /// The model holds what the file holds; whether the values make a valid run is
 /// decided when a run starts, not here. It is not a Run Request: the composition root
@@ -114,8 +114,11 @@ pub struct Options {
 }
 
 impl Default for Options {
-    /// C++'s `OptionsCAO` member defaults. C++ left `mode` uninitialized; here it is
-    /// Single Mod.
+    /// Each option's default: what a profile without `settings.ini` starts with,
+    /// and what a key missing from the file reads as. They match core's default
+    /// Work Choices, which `cao-optimizers`' tests pin to this form. The
+    /// shipped profiles set the keys that differ, such as keeping incompressible
+    /// files out of the main Archive, in their own files.
     fn default() -> Self {
         Self {
             dry_run: false,
@@ -149,60 +152,87 @@ impl Default for Options {
 }
 
 impl Options {
-    /// Reads the model from an existing `settings.ini` over `current`, as C++'s
-    /// `OptionsCAO::readFromIni` reads into the GUI's one live `OptionsCAO`.
+    /// Reads the model from an existing `settings.ini`. Each key that is missing
+    /// reads as its [`Options::default`] value.
     ///
-    /// Every key is read and replaces `current`'s value, except an empty `userPath`,
-    /// which keeps `current.user_path`. That is how the selected folder follows the
-    /// user between profiles: every shipped `settings.ini` has `userPath=`. When the
-    /// file does not exist, C++ keeps all of `current` instead; see
-    /// [`crate::Profile::load_options`].
-    pub fn read(ini: &IniFile, current: &Self) -> Self {
-        let flag = |key| ini.value(key).to_bool();
-        let number = |key| ini.value(key).to_u32();
+    /// `carried_path` is the mod folder in use before this profile was selected.
+    /// An empty `userPath` keeps it, which is how the selected folder follows the
+    /// user between profiles: every shipped `settings.ini` has `userPath=`.
+    /// Nothing else carries over; see [`crate::Profile::load_options`].
+    pub(crate) fn read(ini: &IniFile, carried_path: &str) -> Self {
+        let defaults = Self::default();
+        let flag = |key, default| ini.get(key).map_or(default, Value::to_bool);
+        let number = |key, default| ini.get(key).map_or(default, Value::to_u32);
         let user_path = ini.value("userPath").to_qstring();
         Self {
-            dry_run: flag("bDryRun"),
-            debug_log: flag("bDebugLog"),
-            mode: OptimizationMode::from_number(ini.value("mode").to_i32()),
+            dry_run: flag("bDryRun", defaults.dry_run),
+            debug_log: flag("bDebugLog", defaults.debug_log),
+            mode: ini.get("mode").map_or(defaults.mode, |mode| {
+                OptimizationMode::from_number(mode.to_i32())
+            }),
             user_path: if user_path.is_empty() {
-                current.user_path.clone()
+                carried_path.to_owned()
             } else {
                 user_path
             },
-            bsa_extract: flag("BSA/bBsaExtract"),
-            bsa_create: flag("BSA/bBsaCreate"),
-            bsa_delete_backup: flag("BSA/bBsaDeleteBackup"),
-            bsa_merge_incompressible: flag("BSA/bBsaMergeIncomp"),
-            bsa_merge_textures: flag("BSA/bBsaMergeTexture"),
-            bsa_process_content: flag("BSA/bBsaProcessContent"),
-            // On unless the file turns it off: without a Dummy Plugin a packed
-            // Archive may have no plugin to load it, so Archive creation skips
-            // it. A file written before the key existed keeps the default.
-            bsa_create_dummies: ini.get("BSA/bBsaCreateDummies").is_none_or(Value::to_bool),
-            bsa_compress: flag("BSA/bBsaCompress"),
-            bsa_delete_source: flag("BSA/bBsaDeleteSource"),
-            textures_necessary: flag("Textures/bTexturesNecessary"),
-            textures_compress: flag("Textures/bTexturesCompress"),
-            textures_mipmaps: flag("Textures/bTexturesMipmaps"),
-            textures_resize_size: flag("Textures/bTexturesResizeSize"),
-            textures_target_width: number("Textures/iTexturesTargetWidth"),
-            textures_target_height: number("Textures/iTexturesTargetHeight"),
-            textures_resize_ratio: flag("Textures/bTexturesResizeRatio"),
-            textures_target_width_ratio: number("Textures/iTexturesTargetWidthRatio"),
-            textures_target_height_ratio: number("Textures/iTexturesTargetHeightRatio"),
-            meshes_optimization_level: ini.value("Meshes/iMeshesOptimizationLevel").to_i32(),
-            meshes_headparts: flag("Meshes/bMeshesHeadparts"),
-            meshes_resave: flag("Meshes/bMeshesResave"),
-            animations_optimization: flag("Animations/bAnimationsOptimization"),
+            bsa_extract: flag("BSA/bBsaExtract", defaults.bsa_extract),
+            bsa_create: flag("BSA/bBsaCreate", defaults.bsa_create),
+            bsa_delete_backup: flag("BSA/bBsaDeleteBackup", defaults.bsa_delete_backup),
+            bsa_merge_incompressible: flag(
+                "BSA/bBsaMergeIncomp",
+                defaults.bsa_merge_incompressible,
+            ),
+            bsa_merge_textures: flag("BSA/bBsaMergeTexture", defaults.bsa_merge_textures),
+            bsa_process_content: flag("BSA/bBsaProcessContent", defaults.bsa_process_content),
+            // On by default: without a Dummy Plugin a packed Archive may have
+            // no plugin to load it, so Archive creation skips it.
+            bsa_create_dummies: flag("BSA/bBsaCreateDummies", defaults.bsa_create_dummies),
+            bsa_compress: flag("BSA/bBsaCompress", defaults.bsa_compress),
+            bsa_delete_source: flag("BSA/bBsaDeleteSource", defaults.bsa_delete_source),
+            textures_necessary: flag("Textures/bTexturesNecessary", defaults.textures_necessary),
+            textures_compress: flag("Textures/bTexturesCompress", defaults.textures_compress),
+            textures_mipmaps: flag("Textures/bTexturesMipmaps", defaults.textures_mipmaps),
+            textures_resize_size: flag(
+                "Textures/bTexturesResizeSize",
+                defaults.textures_resize_size,
+            ),
+            textures_target_width: number(
+                "Textures/iTexturesTargetWidth",
+                defaults.textures_target_width,
+            ),
+            textures_target_height: number(
+                "Textures/iTexturesTargetHeight",
+                defaults.textures_target_height,
+            ),
+            textures_resize_ratio: flag(
+                "Textures/bTexturesResizeRatio",
+                defaults.textures_resize_ratio,
+            ),
+            textures_target_width_ratio: number(
+                "Textures/iTexturesTargetWidthRatio",
+                defaults.textures_target_width_ratio,
+            ),
+            textures_target_height_ratio: number(
+                "Textures/iTexturesTargetHeightRatio",
+                defaults.textures_target_height_ratio,
+            ),
+            meshes_optimization_level: ini
+                .get("Meshes/iMeshesOptimizationLevel")
+                .map_or(defaults.meshes_optimization_level, Value::to_i32),
+            meshes_headparts: flag("Meshes/bMeshesHeadparts", defaults.meshes_headparts),
+            meshes_resave: flag("Meshes/bMeshesResave", defaults.meshes_resave),
+            animations_optimization: flag(
+                "Animations/bAnimationsOptimization",
+                defaults.animations_optimization,
+            ),
         }
     }
 
-    /// Writes the model into `settings.ini` as C++'s `OptionsCAO::saveToIni` does.
-    /// Keys already in `ini` keep their place; the order of the calls below is the
-    /// order Qt appends missing keys in, the order C++ wrote. Keys the model
-    /// does not hold are left alone.
-    pub fn write(&self, ini: &mut IniFile) {
+    /// Writes the model into `settings.ini`. Keys already in `ini` keep their
+    /// place; the order of the calls below is the order missing keys are
+    /// appended in, the order of the shipped files. Keys the model does not hold
+    /// are left alone.
+    pub(crate) fn write(&self, ini: &mut IniFile) {
         ini.set("bDryRun", self.dry_run);
         ini.set("bDebugLog", self.debug_log);
         ini.set("mode", self.mode.number());

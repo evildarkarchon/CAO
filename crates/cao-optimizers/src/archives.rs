@@ -2,8 +2,7 @@
 //!
 //! [`ArchiveFileReader`] is the archive reader over `cao-archive`,
 //! [`GameArchivePacker`] the packer, and [`VolumeProbes`] answers the volume
-//! probe's capacity and volume-identity questions through `cao-winfs`, as C++
-//! `availableArchiveCapacity` and `archiveVolumeIdentity` did. `cao-core` owns
+//! probe's capacity and volume-identity questions through `cao-winfs`. `cao-core` owns
 //! everything they feed: discovery's preflight, the Capacity Check,
 //! extraction with source cleanup, and Archive Finalization.
 
@@ -28,8 +27,8 @@ use cao_winfs::{Access, Open, Share};
 /// `ba2` memory-maps an Archive, and Windows refuses to delete a mapped file.
 /// Listing therefore maps and unmaps its Archive within the call. Extraction
 /// keeps one Archive mapped from its first entry until the next Archive or
-/// [`ArchiveReader::release`], since C++ read an Archive once per extraction
-/// and re-parsing a large manifest per entry would be quadratic. The extractor
+/// [`ArchiveReader::release`], since re-parsing a large manifest per entry
+/// would make extraction quadratic in its entries. The extractor
 /// releases the reader before any source cleanup.
 #[derive(Default)]
 pub struct ArchiveFileReader {
@@ -47,12 +46,17 @@ impl ArchiveFileReader {
     }
 }
 
-/// Opens `archive`, treating an unrecognized magic as unreadable, as C++
-/// extraction's "Unrecognized Archive format." did.
+/// Opens `archive`, treating an unrecognized magic as unreadable.
 fn open(archive: &Path) -> Result<ReadArchive, Error> {
     ReadArchive::open(archive)
-        .map_err(|error| Error::Archive(error.to_string()))?
+        .map_err(archive_error)?
         .ok_or_else(|| Error::Archive("Unrecognized Archive format.".to_owned()))
+}
+
+/// An I/O failure on the file at `path`, as core reports it: the path is
+/// part of the detail, which a bare `Error::Io` would lose (audit BE-16).
+fn io_error(path: &Path, error: &std::io::Error) -> Error {
+    Error::Archive(format!("cannot access `{}`: {error}", path.display()))
 }
 
 impl ArchiveReader for ArchiveFileReader {
@@ -60,9 +64,7 @@ impl ArchiveReader for ArchiveFileReader {
     /// rebuilt DDS header included. The Archive is unmapped before returning.
     fn list_entries(&self, archive: &Path) -> Result<Vec<ArchiveEntry>, Error> {
         let read = open(archive)?;
-        let assets = read
-            .archived_assets()
-            .map_err(|error| Error::Archive(error.to_string()))?;
+        let assets = read.archived_assets().map_err(archive_error)?;
         Ok(assets
             .into_iter()
             .map(|asset| ArchiveEntry {
@@ -84,14 +86,16 @@ impl ArchiveReader for ArchiveFileReader {
         }
         let read = held.as_ref().expect("the Archive was just opened");
         // Staging already created the file, so open it as it is: exclusively,
-        // and never through a link that replaced it, as every other staged
-        // write does. A fresh staged file is empty, so nothing is truncated.
-        let staged = Open::new(Access::WRITE, Share::NONE).open(destination)?;
+        // and never through a link that replaced it, as the staged Texture
+        // and Archive writers do too (audit BE-17). A fresh staged file is
+        // empty, so nothing is truncated.
+        let staged = Open::new(Access::WRITE, Share::NONE)
+            .open(destination)
+            .map_err(|error| io_error(destination, &error))?;
         let mut out = BufWriter::new(staged);
-        read.extract(entry, &mut out)
-            .map_err(|error| Error::Archive(error.to_string()))?;
+        read.extract(entry, &mut out).map_err(archive_error)?;
         out.into_inner()
-            .map_err(|error| Error::Io(error.into_error()))?;
+            .map_err(|error| io_error(destination, error.error()))?;
         Ok(())
     }
 
@@ -107,7 +111,7 @@ pub struct VolumeProbes;
 impl VolumeProbe for VolumeProbes {
     /// The bytes available to this process at `root`, honouring quotas. A
     /// failed query is unknown capacity, and so is an all-ones answer, which
-    /// C++ treated as the library's "unknown" sentinel.
+    /// is no volume's real free space and is taken as "unknown".
     fn available_bytes(&self, root: &Path) -> Option<u64> {
         cao_winfs::available_space(root)
             .ok()
@@ -188,9 +192,16 @@ fn archive_type(kind: PackedArchiveKind) -> ArchiveType {
     }
 }
 
-/// An archive failure as core reports it.
-fn archive_error(error: impl std::fmt::Display) -> Error {
-    Error::Archive(error.to_string())
+/// An archive failure as core reports it: a file too large for any Archive
+/// as [`Error::AssetTooLarge`], which core acts on by leaving just that file
+/// loose, and anything else as its message (audit BE-16).
+fn archive_error(error: cao_archive::ArchiveError) -> Error {
+    match error {
+        cao_archive::ArchiveError::AssetTooLarge { path, size, cap } => {
+            Error::AssetTooLarge { path, size, cap }
+        }
+        error => Error::Archive(error.to_string()),
+    }
 }
 
 impl ArchivePacker for GameArchivePacker {
@@ -269,16 +280,18 @@ impl ArchivePacker for GameArchivePacker {
             }
         }
         // Staging already created the file, so open it as it is: exclusively,
-        // and never through a link that replaced it, as every other staged
-        // write does.
-        let staged = Open::new(Access::WRITE, Share::NONE).open(destination)?;
+        // and never through a link that replaced it, as the extraction and
+        // staged Texture writers do too (audit BE-17).
+        let staged = Open::new(Access::WRITE, Share::NONE)
+            .open(destination)
+            .map_err(|error| io_error(destination, &error))?;
         let mut out = BufWriter::new(staged);
         cao_archive::write_archive_into(compress, &data, root, &mut out, destination, cancelled)
             .map_err(|error| match error {
                 cao_archive::ArchiveError::Cancelled { .. } => Error::Cancelled,
                 error => archive_error(error),
             })?;
-        out.flush()?;
+        out.flush().map_err(|error| io_error(destination, &error))?;
         // Close the staged file before it is published.
         drop(out);
         Ok(())

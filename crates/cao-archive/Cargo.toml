@@ -1,7 +1,7 @@
 [package]
 name = "cao-archive"
-description = "The bethutil archive layer ported onto the ba2 crate for CAO."
-version = "0.1.0"
+description = "CAO's Archive layer over the ba2 crate: the per-game Archive Rules, packing and extraction."
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -16,8 +16,8 @@ workspace = true
 # `ba2` depends on `directxtex` itself; the root `[patch.crates-io]` makes it link
 # the same fork as `cao-optimizers` (#479).
 ba2.workspace = true
-# Parallel read and compress of an Archive's files, as bethutil's
-# `std::execution::par` did (#461). The only place the port uses `rayon`.
+# Parallel read and compress of an Archive's files (#461). The only place the
+# workspace uses `rayon`.
 rayon.workspace = true
 thiserror.workspace = true
 

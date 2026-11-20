@@ -250,6 +250,7 @@
     <p><strong>Follow-up, 2026-11-19 (third).</strong> Step 5 of the suggested order, CI and the long-path approach (<a href="#WS-2">WS-2</a>, <a href="#WS-1">WS-1</a>, <a href="#WS-3">WS-3</a>), was done in a fifth change, and those three cards end with a Resolution paragraph. The owner made the three decisions: extended-length paths for <a href="#WS-1">WS-1</a>, a CI that runs every test with <code>LongPathsEnabled</code> off for <a href="#WS-2">WS-2</a>, and a <code>cargo xtask</code> for <a href="#WS-3">WS-3</a>. The intermittent <code>optimization_run_service</code> failures were a test-isolation bug and are fixed (see <a href="#WS-2">WS-2</a>). After it, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets -- -D warnings</code> and <code>cargo build</code> pass and the suite is 1,054 tests, 0 failed, 0 ignored (30 new). CI's first runs exposed an elevated-host bug in the <a href="#CORE-2">CORE-2</a> capture, which is fixed (see <a href="#WS-2">WS-2</a>).</p>
     <p><strong>Follow-up, 2026-11-19 (fourth).</strong> Step 6 of the suggested order, idempotent runs and less repeated I/O (<a href="#BE-6">BE-6</a>, <a href="#BE-7">BE-7</a>, <a href="#CORE-4">CORE-4</a>, <a href="#CORE-3">CORE-3</a>, <a href="#FS-6">FS-6</a>, <a href="#BE-8">BE-8</a>), was done in a sixth change, and those six cards end with a Resolution paragraph. The owner made the two decisions: for <a href="#BE-6">BE-6</a> the medium level keeps its re-save and core drops output identical to what it would replace, and for <a href="#CORE-4">CORE-4</a> the destination snapshot is still taken before load. <a href="#CORE-3">CORE-3</a> and <a href="#FS-6">FS-6</a> were measured before and after, and their cards give the figures. nifly's save turned out to need up to two saves to settle, which the <a href="#BE-6">BE-6</a> resolution records. After it, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets -- -D warnings</code> and <code>cargo build</code> pass and the suite is 1,069 tests, 0 failed, 0 ignored (15 new).</p>
     <p><strong>Follow-up, 2026-11-19 (fifth).</strong> Step 7 of the suggested order, keyboard access and dialog sizing (<a href="#GUI-5">GUI-5</a>, <a href="#GUI-6">GUI-6</a>, <a href="#GUI-4">GUI-4</a>), was done in a seventh change, and those three cards end with a Resolution paragraph. The four modal dialogs became plain windows with their own OK and Cancel row, so that Escape reaches one handler from any focused control; the <a href="#GUI-5">GUI-5</a> resolution says why. After it, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets -- -D warnings</code> and <code>cargo build</code> pass and the suite is 1,088 tests, 0 failed, 0 ignored (19 new). The same change resolves <a href="#GUI-14">GUI-14</a>, whose Common Controls entry the labelled close question needed.</p>
+    <p><strong>Follow-up, 2026-11-20.</strong> Step 8 of the suggested order, the hygiene sweep, was done in an eighth change, and every finding still open ends with a Resolution paragraph: the 47 low findings and the three medium ones no step had scheduled (<a href="#CORE-5">CORE-5</a>, <a href="#FS-5">FS-5</a>, <a href="#GUI-7">GUI-7</a>). With it, all 82 findings are resolved. The owner made the decisions: CAO overrides read-only (<a href="#FFI-4">FFI-4</a>), supports network Mod Roots (<a href="#FFI-3">FFI-3</a>), is version 1.0.0 as a fork (<a href="#WS-9">WS-9</a>), prunes only folders a run emptied and has Dry Run plan the same pruning (<a href="#FS-7">FS-7</a>), writes run details to the Application Log (<a href="#GUI-12">GUI-12</a>), keeps Dry Run verifying Textures exactly as Apply does (<a href="#BE-9">BE-9</a>), untracks the scratch trees and versions every review (<a href="#WS-7">WS-7</a>). Comments that justified behaviour only by the deleted C++ build were restated where step 8 touched them, and "deviation N" now resolves to <code>docs/deviations.md</code> (<a href="#WS-6">WS-6</a>). After it, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets -- -D warnings</code>, <code>cargo build</code> and <code>cargo deny check</code> pass and the suite is 1,187 tests, 0 failed, 0 ignored (99 more than after step 7). Step 7's four cards also gain the fixed tag they lacked.</p>
   </div>
 
   <h4>The three high findings</h4>
@@ -440,7 +441,7 @@ let publication = receipt.publish(&amp;output, PublicationPolicy::Replace);</cod
     <div class="f-head">
       <span class="fid">CORE-5</span>
       <h3>Discovery drops unreadable directories with no diagnostic</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">error-handling</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">error-handling</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/executor/work_phases.rs:149</code> · <code>:160</code> · <code>:81</code></p>
     <div class="f-body">
@@ -451,6 +452,7 @@ let Ok(entries) = std::fs::read_dir(directory) else {
 };</code></pre>
       <p><strong>Why it matters.</strong> Tolerating an entry that vanished mid-walk is reasonable. Treating access-denied or a device error the same way is not: a subtree the run could not read yields a run that succeeds with fewer Assets and leaves no Run Diagnostic or log line saying so.</p>
       <p><strong>Suggested change.</strong> Distinguish <code>NotFound</code> from other errors and retain a warning-level Run Diagnostic for the latter, using the existing once-per-path set.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. Discovery still treats a directory that vanished as a tree that changed while work ran. Any other error, opening the directory or part way through listing it, records a new warning-level <code>DirectoryUnreadable</code> Run Diagnostic, once per directory across both passes through the existing once-per-path set. A new test holds a directory open with no sharing: the run succeeds with the Assets it could reach and carries one such warning.</p>
     </div>
   </article>
 
@@ -476,7 +478,7 @@ const REGISTRATION_LIMIT: usize = 100_000;</code></pre>
     <div class="f-head">
       <span class="fid">CORE-7</span>
       <h3>A cancel that arrives after all work finished still classifies the run as Cancelled</h3>
-      <span class="sev sev-low">Low</span><span class="tag">correctness</span><span class="tag pass">verified</span>
+      <span class="sev sev-low">Low</span><span class="tag">correctness</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/executor.rs:448</code></p>
     <div class="f-body">
@@ -485,6 +487,7 @@ const REGISTRATION_LIMIT: usize = 100_000;</code></pre>
 }</code></pre>
       <p><strong>Why it matters.</strong> The token is sampled once at Safety Cleanup whether or not the work phases stopped short. A user who clicks Cancel as Archive Finalization completes sees "Cancelled" for a run in which every phase ran and committed.</p>
       <p><strong>Suggested change.</strong> Record cancellation only when the work actually stopped early, for example by sampling the token only when a phase returned a break.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. The executor's traversal reports how it ended, and Safety Cleanup records cancellation only when the work stopped short with the token cancelled, or when a backend reported cancellation. A cancel that arrives once every work phase has finished is not observed; Archive Finalization still records a cancellation it observed itself. A new unit test cancels as the last phase returns. Three scenarios that cancelled during Safety Cleanup now cancel while the work runs, and a cancel during cleanup is shown not to count.</p>
     </div>
   </article>
 
@@ -492,7 +495,7 @@ const REGISTRATION_LIMIT: usize = 100_000;</code></pre>
     <div class="f-head">
       <span class="fid">CORE-8</span>
       <h3><code>commit</code> releases waiters only after dropping the caller's dispatcher, outside any containment</h3>
-      <span class="sev sev-low">Low</span><span class="tag">concurrency</span><span class="tag pass">verified</span>
+      <span class="sev sev-low">Low</span><span class="tag">concurrency</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/service.rs:263</code></p>
     <div class="f-body">
@@ -502,6 +505,7 @@ lock(&amp;self.published).terminal_dispatched = true;
 self.committed.notify_all();</code></pre>
       <p><strong>Why it matters.</strong> The crate guards against panicking payload drops elsewhere, but a panic in the drop of something the dispatcher closure captured unwinds the Run Worker before <code>terminal_dispatched</code> is set, and every <code>RunHandle::wait</code> then blocks forever.</p>
       <p><strong>Suggested change.</strong> Set the flag and notify from a drop guard, or drop the dispatcher inside <code>catch_unwind</code> as the other payload drops are.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8, by the second option. The dispatcher is dropped inside <code>catch_unwind</code>, as the other payload drops are, both after the terminal event and when a panicking dispatcher is disabled, which had the same flaw. A panic from the drop is recorded as a <code>DispatcherFailed</code> diagnostic, so <code>terminal_dispatched</code> is always set and every waiter is released. A new test covers both cases with a dispatcher whose capture panics when dropped.</p>
     </div>
   </article>
 
@@ -525,7 +529,7 @@ fn texture_failure_detail(&amp;self) -&gt; String {</code></pre>
     <div class="f-head">
       <span class="fid">CORE-10</span>
       <h3><code>PartialOrUnknown</code> is used as a stop signal for attempts that touched nothing</h3>
-      <span class="sev sev-low">Low</span><span class="tag">design</span>
+      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/executor/work_phases.rs:635</code> · <code>crates/cao-core/src/run/asset_attempt.rs:150</code></p>
     <div class="f-body">
@@ -535,6 +539,7 @@ fn texture_failure_detail(&amp;self) -&gt; String {</code></pre>
 .with_safe_to_continue(false)</code></pre>
       <p><strong>Why it matters.</strong> <code>with_safe_to_continue(false)</code> already stops the run. Adding <code>PartialOrUnknown</code> makes the mutation summary report an unknown mutation for a file that was never opened, and the failure is filed as <code>BackendException</code>, which it is not.</p>
       <p><strong>Suggested change.</strong> Report <code>MutationState::None</code> with <code>safe_to_continue(false)</code>, under a dedicated failure category.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested, with two categories rather than one. A Routed Asset that resolves outside the prepared Mod Roots is <code>OutsideModRoots</code>, and a backend factory error, which was also filed as unknown mutation, is <code>BackendUnavailable</code>. Both record no mutation and stay unsafe to continue, so the run still stops, but the mutation summary no longer counts an unknown mutation. The factory's documented contract now says creation never changes a durable file. A new scenario swaps a folder for a junction after discovery.</p>
     </div>
   </article>
 
@@ -542,7 +547,7 @@ fn texture_failure_detail(&amp;self) -&gt; String {</code></pre>
     <div class="f-head">
       <span class="fid">CORE-11</span>
       <h3>Discovery makes avoidable per-entry filesystem queries and routes every file three times</h3>
-      <span class="sev sev-low">Low</span><span class="tag">performance</span>
+      <span class="sev sev-low">Low</span><span class="tag">performance</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/executor/work_phases.rs:81</code> · <code>:165</code> · <code>crates/cao-core/src/routing.rs:755</code></p>
     <div class="f-body">
@@ -551,6 +556,7 @@ fn texture_failure_detail(&amp;self) -&gt; String {</code></pre>
 } else if path.is_dir() &amp;&amp; !self.visit_directory(evidence, &amp;path, root, visitor) {</code></pre>
       <p><strong>Why it matters.</strong> Each entry costs two or three path-based metadata queries on top of <code>read_dir</code>, in both the Archive pass and the definitive pass, although a Windows <code>DirEntry</code> already carries its attributes. The Archive-name test runs a full <code>route()</code> per file in both passes and <code>route_all</code> routes them again; the ledger and each Routed Asset are then cloned per attempt.</p>
       <p><strong>Suggested change.</strong> Use <code>entry.metadata()</code> once per entry, add an extension-only Archive test, and share the ledger by reference or <code>Arc</code>.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. Discovery reads each entry's attributes from the directory listing, so only a reparse-point file pays one more query. A new allocation-free <code>AssetRouter::names_archive</code> replaces the full route per file in both passes, so each non-Archive file is routed once, by <code>route_all</code>. The Routing Ledger is shared with the evidence through an <code>Arc</code>. Routed Assets are still cloned into each attempt record: one path per attempt is small beside the attempt, and avoiding it would change the public <code>RoutedAssetAttempt</code>. New tests check that <code>names_archive</code> agrees with routing and that the listing's metadata drives classification.</p>
     </div>
   </article>
 
@@ -558,7 +564,7 @@ fn texture_failure_detail(&amp;self) -&gt; String {</code></pre>
     <div class="f-head">
       <span class="fid">CORE-12</span>
       <h3>Discovery excludes every directory with any reparse attribute and explains it as a link</h3>
-      <span class="sev sev-low">Low</span><span class="tag">correctness</span>
+      <span class="sev sev-low">Low</span><span class="tag">correctness</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/executor/work_phases.rs:84</code> · <code>crates/cao-winfs/src/facts.rs:19</code></p>
     <div class="f-body">
@@ -569,6 +575,7 @@ if !metadata.file_type().is_symlink() &amp;&amp; !cao_winfs::is_reparse_point(&a
       <p><strong>Why it matters.</strong> The attribute test covers every reparse tag, and <code>is_reparse_point</code>'s own comment lists cloud placeholders among them. A directory that carries a non-link tag is excluded with the informational text "Directory links and reparse points are not followed", and a tree made of such directories ends as a successful run with no work.</p>
       <p><strong>Suggested change.</strong> For directories, treat only name-surrogate tags as links, or emit a distinct warning-level diagnostic for other tags.</p>
       <p class="confidence">Confidence: low for real-world reach. Windows can hide cloud-placeholder reparse attributes from ordinary processes, and that was not tested here.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. Only a name-surrogate directory (a junction, directory symlink or mounted folder) is excluded as a directory link, judged by std's <code>is_symlink_dir</code> on the listing's metadata, with the message "Directory links are not followed during discovery". A directory with any other reparse tag, such as a cloud placeholder, is walked like any other, and a file link that resolves to a directory is excluded too. A non-surrogate directory cannot be made from cao-core's safe test code, so a unit test checks the rule through the pure <code>EntryScope::classify</code>, and another checks real files, directories and junctions.</p>
     </div>
   </article>
 
@@ -576,7 +583,7 @@ if !metadata.file_type().is_symlink() &amp;&amp; !cao_winfs::is_reparse_point(&a
     <div class="f-head">
       <span class="fid">CORE-13</span>
       <h3>Dead and test-only items in the public surface</h3>
-      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">verified</span>
+      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/execution.rs:58</code> · <code>:135</code> · <code>crates/cao-core/src/run/evidence.rs:65</code> · <code>crates/cao-core/src/run/scheduler.rs:120</code> · <code>crates/cao-core/src/run/service.rs:134</code></p>
     <div class="f-body">
@@ -588,6 +595,7 @@ if !metadata.file_type().is_symlink() &amp;&amp; !cao_winfs::is_reparse_point(&a
       </ul>
       <p><strong>Why it matters.</strong> Readers and the window see failure categories and evidence fields that can never be populated, and an always-empty list feeds outcome classification.</p>
       <p><strong>Suggested change.</strong> Delete the unpopulated fields and variants, and move test-only helpers behind the existing <code>test-support</code> feature.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. <code>CleanupFailed</code>, the attempt-local cleanup list, <code>AssetExecutionResult::phase()</code>, the evidence derivation that merged them, the duplicate <code>safety_cleanup_failures()</code> and <code>unsupported_explicit_paths</code> are deleted; <code>cleanup_failures()</code> now returns the Safety Cleanup pass's failures. <code>ExecutionFailureCategory</code>, <code>failure_category()</code>, <code>optimize_native_textures()</code> and <code>routed_assets_in_phase</code> are built only with <code>test-support</code>, and <code>InlineRunScheduler</code> moved into <code>cao_core::test_support</code>. The executor keeps its injected Safety Cleanup Service, because scenarios inject failing cleanup through it and a run that fails to schedule performs its pass through it; its documentation now says so.</p>
     </div>
   </article>
 
@@ -595,7 +603,7 @@ if !metadata.file_type().is_symlink() &amp;&amp; !cao_winfs::is_reparse_point(&a
     <div class="f-head">
       <span class="fid">CORE-14</span>
       <h3>Routing indexes arrays by enum discriminant, against the crate's own stated rule; two unrelated items are named <code>RunWork</code></h3>
-      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">verified</span>
+      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/routing.rs:203</code> · <code>:236</code> · <code>:289</code> · <code>crates/cao-core/src/admission.rs:96</code> · <code>crates/cao-core/src/run/scheduler.rs:14</code></p>
     <div class="f-body">
@@ -604,6 +612,7 @@ if !metadata.file_type().is_symlink() &amp;&amp; !cao_winfs::is_reparse_point(&a
 /// discriminant would instead compile and panic at run time.</code></pre>
       <p><strong>Why it matters.</strong> <code>admission.rs</code> uses an exhaustive <code>const fn</code> so a new <code>RequestedWork</code> variant fails to compile until it is handled, and says why. <code>routing.rs</code> does the thing that comment warns about, in eight places over hand-sized arrays. Separately, <code>run::RunWork</code> is a boxed closure alias and <code>run::executor::RunWork</code> is a trait.</p>
       <p><strong>Suggested change.</strong> Reuse the exhaustive mapping in routing, and rename the executor trait.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. <code>work_bit</code> moved from admission into routing, beside new exhaustive <code>capability_bit</code> and <code>operation_bit</code>. <code>RoutingPolicyRequest</code>, <code>RoutingPolicy</code>, <code>ProfileCapabilities</code> and <code>AssetOperations</code> store bitsets instead of arrays indexed by discriminant, so a new variant fails to compile until it has a bit. The executor's trait is renamed <code>RunWorkPhases</code>.</p>
     </div>
   </article>
 
@@ -611,7 +620,7 @@ if !metadata.file_type().is_symlink() &amp;&amp; !cao_winfs::is_reparse_point(&a
     <div class="f-head">
       <span class="fid">CORE-15</span>
       <h3>User-facing wording and headers kept only for C++ parity; one inaccurate thread contract</h3>
-      <span class="sev sev-low">Low</span><span class="tag">docs</span>
+      <span class="sev sev-low">Low</span><span class="tag">docs</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/mod_selection.rs:119</code> · <code>crates/cao-core/src/run/toolset.rs:242</code> · <code>crates/cao-core/src/run/service.rs:29</code></p>
     <div class="f-body">
@@ -622,6 +631,7 @@ if !metadata.file_type().is_symlink() &amp;&amp; !cao_winfs::is_reparse_point(&a
         <li>The dispatcher is documented as running "on the Run Worker", but a scheduling failure dispatches every event on the thread that called <code>start</code>, before the caller holds the Run Handle.</li>
       </ul>
       <p><strong>Suggested change.</strong> Reword the two messages, drop the port pointers as files are touched, and correct the dispatcher's thread contract.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. The separator exclusion now says the folder name ends in <code>_separator</code>, which marks a Mod Organizer 2 separator rather than a mod. The extraction log line, which lived in cao-core, reads "extracted … into … (N files)" for any Archive, matching the Dry Run's line. Every "Ported from" header that cites the deleted tree is gone, each remaining sentence restated to stand alone. The dispatcher's documentation now says that when no worker can be scheduled, events are dispatched on the thread that called <code>start</code>, before it returns the Run Handle.</p>
     </div>
   </article>
 
@@ -711,7 +721,7 @@ let lock = claim_lock(&amp;staging.join(OWNER_LOCK), OwnerLock::create)?;</code>
     <div class="f-head">
       <span class="fid">FS-5</span>
       <h3>The retry for transient refusals covers only the manifest move, not the exclusive opens beside it</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">concurrency</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">concurrency</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/artifacts.rs:836</code> · <code>crates/cao-core/src/run/staging.rs:714</code> · <code>crates/cao-winfs/src/mutate.rs:128</code></p>
     <div class="f-body">
@@ -722,6 +732,7 @@ let lock = claim_lock(&amp;staging.join(OWNER_LOCK), OwnerLock::create)?;</code>
       <p><strong>Why it matters.</strong> <code>move_file_write_through</code> retries for about a second because "a real-time scanner briefly opens a file a run has just written". The staged file is opened with no sharing immediately after the backend closes it, which is when that same scanner is most likely to hold it, and that open has no retry: a sharing violation there is a spurious Asset failure, and during cleanup a cleanup failure.</p>
       <p><strong>Suggested change.</strong> Put the bounded backoff in one helper and use it for these opens too, retrying only sharing violations.</p>
       <p class="confidence">Confidence: medium; inferred from the code's own rationale for the existing retry, not reproduced.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. The backoff of about a second moved into one cao-winfs helper, <code>retry_transient</code>, which <code>move_file_write_through</code> uses and <code>Open::open_retrying</code> exposes. <code>open_retrying</code> retries only sharing and lock violations; any other error returns at once. The exclusive open of a staged file before publication (<code>flush_staged_file</code>) and the delete-access open of staging entries (<code>open_temporary_file</code>, which cleanup and recovery both use) go through it. New tests count attempts and waits without sleeping, and check against real files that a brief exclusive hold is waited out and a lasting one still fails with its sharing violation.</p>
     </div>
   </article>
 
@@ -746,7 +757,7 @@ let lock = claim_lock(&amp;staging.join(OWNER_LOCK), OwnerLock::create)?;</code>
     <div class="f-head">
       <span class="fid">FS-7</span>
       <h3>Every Apply run prunes pre-existing empty directories, and Dry Run does not preview it</h3>
-      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">verified</span>
+      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/finalization/mod.rs:527</code> · <code>:814</code></p>
     <div class="f-body">
@@ -756,6 +767,7 @@ phase.plan(0).map_err(Escape::Evidence)?;
 prune_empty_directories(preparation.mod_roots(), cancelled, account);</code></pre>
       <p><strong>Why it matters.</strong> A textures-only run still removes every empty, non-hidden directory in each mod, including ones a mod ships on purpose. The only stated reason is that the old implementation did, the hidden-directory exception exists because Qt's iterator skipped them, and the evidence records only a count.</p>
       <p><strong>Suggested change.</strong> Prune only directories this run emptied, or gate pruning on Archive creation, and include it in the Dry Run plan.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 by the first option, as the owner decided. Packing and Archive extraction's source removal record each folder they delete a file from. At the end of Archive Finalization a recorded folder is removed only if it is now empty, followed by each parent this left empty, up to but never including the Mod Root. A folder a mod ships empty is never touched, and hidden folders are no longer special. A Texture conversion records nothing: its DDS stays beside the source. A Dry Run walks the same chains, records each folder as Planned Archive Work (<code>PlannedPruning</code>), logs a "would remove" line and shows a Planned Pruning row. At the owner's request it reports what Apply would prune from both sources: the files its planned packing deletes, and the source Archives its planned extractions remove, with every folder an extraction publishes a winning entry beneath counted as kept, since an extraction publishes into the Archive's own folder. It plans that pruning whether or not Archive creation is requested, as Apply prunes either way, and planned pruning no longer needs an output plan basis. The one remaining estimate is the planned outputs' own: packing is planned from the Mod Roots before extraction, so a folder Apply would empty only by packing and deleting a file an extraction published is not reported. Tests that relied on pruning pre-existing empty folders were rewritten, and new tests cover a folder emptied by a removed source Archive, the exact chain packing empties next to a shipped-empty folder, the Dry Run's list for packing, the same layout under Dry Run and Apply with extraction, where the planned folders are exactly those Apply removes, and case-insensitive occupancy of a published entry's folders.</p>
     </div>
   </article>
 
@@ -763,7 +775,7 @@ prune_empty_directories(preparation.mod_roots(), cancelled, account);</code></pr
     <div class="f-head">
       <span class="fid">FS-8</span>
       <h3>Archive entries that lose precedence are still extracted to staging and kept until the run ends</h3>
-      <span class="sev sev-low">Low</span><span class="tag">design</span>
+      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/archives.rs:147</code> · <code>:276</code> · <code>crates/cao-core/src/run/artifacts.rs:135</code></p>
     <div class="f-body">
@@ -771,6 +783,7 @@ prune_empty_directories(preparation.mod_roots(), cancelled, account);</code></pr
 /// Cleanup removes them.</code></pre>
       <p><strong>Why it matters.</strong> Every entry shadowed by a Loose Asset is fully decompressed to staging and held, and its record rides along in every later manifest rewrite for that root (<a href="#FS-1">FS-1</a>). An Archive with no winning entries is still extracted whole. This is the Archive side of <a href="#CORE-6">CORE-6</a>.</p>
       <p><strong>Suggested change.</strong> Stage only the entries that will be merged, or discard the losers straight after the merge through the same abandon step.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 by the first option. Extraction stages and extracts only the entries the Archive won; a shadowed entry is never read out of the Archive and costs neither staging space nor a manifest record. The capacity estimate, at preflight and at the recheck, counts only the merged entries. An Archive with no winning entries stages nothing and still has its source cleaned up. New tests check that the reader is asked only for the winning entry, and that the same Archive and free space block the batch when its entry wins but pass when a Loose Asset shadows it.</p>
     </div>
   </article>
 
@@ -797,7 +810,7 @@ account.safe_to_continue = false;</code></pre>
     <div class="f-head">
       <span class="fid">FS-10</span>
       <h3>A failed manifest replace leaves its scratch file, and the next publish reports a collision with CAO's own file</h3>
-      <span class="sev sev-low">Low</span><span class="tag">error-handling</span><span class="tag pass">verified</span>
+      <span class="sev sev-low">Low</span><span class="tag">error-handling</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/staging.rs:643</code></p>
     <div class="f-body">
@@ -805,6 +818,7 @@ account.safe_to_continue = false;</code></pre>
 move_file_write_through(&amp;scratch, &amp;manifest).map_err(StagingError::io("Publish", &amp;manifest))</code></pre>
       <p><strong>Why it matters.</strong> <code>write_new_file</code> creates exclusively and keeps the file on failure. After one failed move or a short write on a full disk, every later stage or release in that root fails because the scratch name is occupied, with a message about an unowned entry that misdescribes the cause.</p>
       <p><strong>Suggested change.</strong> When this scope holds the lock and a scratch file exists, remove and recreate it, or report it with a distinct error.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8, by both parts of the suggestion in a different shape. A snapshot whose write or move fails now removes the scratch file it created, which ends the cascade at its source. A scratch name already occupied is reported as the new <code>StagingError::ScratchOccupied</code>, whose message names the scratch file, and the file is kept: after the first change it is not one this scope wrote, and staging never deletes an entry it does not own. New tests fail a move by holding the manifest past the retry and check that the scratch is gone and the next snapshot succeeds, and that a foreign scratch file is reported and kept.</p>
     </div>
   </article>
 
@@ -812,7 +826,7 @@ move_file_write_through(&amp;scratch, &amp;manifest).map_err(StagingError::io("P
     <div class="f-head">
       <span class="fid">FS-11</span>
       <h3>Smaller policy inconsistencies in extraction and output naming</h3>
-      <span class="sev sev-low">Low</span><span class="tag">correctness</span>
+      <span class="sev sev-low">Low</span><span class="tag">correctness</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/archives.rs:400</code> · <code>crates/cao-core/src/run/finalization/planning.rs:104</code> · <code>crates/cao-core/src/run/finalization/plugins.rs:422</code></p>
     <div class="f-body">
@@ -822,6 +836,7 @@ move_file_write_through(&amp;scratch, &amp;manifest).map_err(StagingError::io("P
         <li>Dummy Plugin removal requests delete access on every plugin before checking its size, so a real plugin another tool holds open fails the phase although it is plainly not a dummy.</li>
       </ul>
       <p><strong>Suggested change.</strong> Run the readability check for the nothing-merged case too, key the reservation set case-insensitively, and check the size before asking for delete access.</p>
+      <p><strong>Resolution.</strong> Bullet 1 fixed in step 8 as suggested; bullets 2 and 3 had already been resolved by step 4. A source cleanup that fails after a merge that published nothing now gets the same readability check as one after a commit: if the source is still the same readable Archive, the attempt is a <code>SourceCleanupFailed</code> with no mutation and safe to continue, and otherwise the mutation is unknown and the run stops. Step 4 keyed output-name reservation case-insensitively and removed Dummy Plugin removal entirely. A new test holds the source Archive open, so its removal is refused, after a merge that published nothing.</p>
     </div>
   </article>
 
@@ -829,7 +844,7 @@ move_file_write_through(&amp;scratch, &amp;manifest).map_err(StagingError::io("P
     <div class="f-head">
       <span class="fid">FS-12</span>
       <h3>Duplicated safety helpers have drifted; stringly errors and dead API remain from the C++ design</h3>
-      <span class="sev sev-low">Low</span><span class="tag">design</span>
+      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/staging.rs:770</code> · <code>artifacts.rs:667</code> · <code>source_pin.rs:326</code> · <code>archives.rs:476</code> · <code>artifacts.rs:64</code> · <code>artifacts.rs:312</code></p>
     <div class="f-body">
@@ -840,6 +855,7 @@ move_file_write_through(&amp;scratch, &amp;manifest).map_err(StagingError::io("P
         <li>The non-durable registration API (<code>register_artifact</code>, <code>commit</code>, <code>stage_file</code>, <code>remove_registered</code> and their types) has no production caller.</li>
       </ul>
       <p><strong>Suggested change.</strong> One directory-chain pinner and one Windows-name predicate; make the publication result an enum that carries its error; a small error enum with action, path and source; delete or test-gate the unused API.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested, with the receiptless API test-gated rather than deleted, because executor and staging tests use it to make Safety Cleanup remove or fail on a path. A new <code>run/path_safety.rs</code> holds the one directory-chain pinner and the one Windows-name rule, which refuses a trailing dot or space, separators, reserved and control characters and DOS device names; staging, recovery, publication, the Archive merge and source and Loading Plugin pins all use them. Every chain starts at the canonical Mod Root, never the volume root: everything CAO touches lies beneath that root, which an Apply run keeps pinned, and the folders above it may not be listable on a share or a locked-down folder. <code>PublicationResult</code> is an enum whose incomplete variants carry their <code>StagingError</code>, so the three fallbacks for an empty detail are gone. Archive and plugin work carries <code>ArchiveWorkError</code> (action, path and source) until it records an Operation Failure. New tests cover the name rule, device names in recovery records, and the pinner's rename refusal, shared pins, junction and outside-root refusals and absent folders.</p>
     </div>
   </article>
 
@@ -847,7 +863,7 @@ move_file_write_through(&amp;scratch, &amp;manifest).map_err(StagingError::io("P
     <div class="f-head">
       <span class="fid">FS-13</span>
       <h3>The staging design document and two comments describe behaviour the Rust code does not have</h3>
-      <span class="sev sev-low">Low</span><span class="tag">docs</span><span class="tag pass">verified</span>
+      <span class="sev sev-low">Low</span><span class="tag">docs</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>docs/architecture/staging-ownership.md:84</code> · <code>crates/cao-core/src/run/archives.rs:145</code> · <code>crates/cao-core/src/run/staging/recovery.rs:449</code></p>
     <div class="f-body">
@@ -855,6 +871,7 @@ move_file_write_through(&amp;scratch, &amp;manifest).map_err(StagingError::io("P
 state reached so far with an empty detail, so no producer needs defensive handling around it. The</code></pre>
       <p><strong>Why it matters.</strong> <code>staging-ownership.md</code> is the one live architecture document, and this passage describes a C++ function. In the code, a comment says a Loose Asset that appears after preflight "wins", but the code fails the merge with "Archive destination appeared after preflight". The manifest reader is described as byte-for-byte C++ stream extraction and so accepts forms the writer never emits.</p>
       <p><strong>Suggested change.</strong> Rewrite each to state the Rust contract and the reason CAO needs it; where parity was the only reason, change the behaviour or record a real one.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. <code>staging-ownership.md</code> now states the Rust contract: publication returns an enum, and an incomplete result carries the error that stopped it. It also documents the shared Windows-name rule and directory-chain pinner, staging only the winning entries, failing the merge when a destination appears after preflight, the test-only <code>commit</code>, and pruning only emptied folders. The extraction comment now says that a file appearing at a merge destination after preflight fails the merge, because the frozen precedence no longer describes it and the newcomer may be the user's. The manifest reader keeps its leniency about whitespace and a leading <code>+</code>, and its comment gives the real reason: staging left by an earlier CAO release after a crash must still be recovered after an upgrade, and the leniency covers only spacing between fields.</p>
     </div>
   </article>
 
@@ -902,7 +919,7 @@ state reached so far with an empty detail, so no producer needs defensive handli
     <div class="f-head">
       <span class="fid">FFI-3</span>
       <h3>Volume identity may not resolve for network Mod Roots, and no test feeds it one</h3>
-      <span class="sev sev-low">Low</span><span class="tag">correctness</span>
+      <span class="sev sev-low">Low</span><span class="tag">correctness</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-winfs/src/volume.rs:51</code> · <code>crates/cao-core/src/run/staging.rs:262</code> · <code>crates/cao-winfs/tests/volumes.rs:93</code></p>
     <div class="f-body">
@@ -910,6 +927,7 @@ state reached so far with an empty detail, so no producer needs defensive handli
       <p><strong>Why it matters.</strong> <code>canonical</code> deliberately produces <code>\\server\share\…</code> and <code>\\?\GLOBALROOT\Device\…</code> forms, but <code>GetVolumeNameForVolumeMountPointW</code> resolves local mount-manager volumes. If it fails for a share root, every stage on a NAS or mapped drive fails with a generic "Resolve" error. The tests check <code>canonical</code>'s text for letterless volumes but never pass that text to <code>volume_guid_path</code> or <code>available_space</code>.</p>
       <p><strong>Suggested change.</strong> Decide whether network roots are supported. If so, do the same-volume check from the two pinned handles' identities, as publication already does; if not, return a specific "network volumes are not supported" error. Add a test with a faked query either way.</p>
       <p class="confidence">Confidence: low for the Win32 behaviour, which was not confirmed against documentation or a share; high for the test gap.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as the owner decided: network Mod Roots are supported. <code>stage_file</code> checks the same volume from the identities of the pinned root and parent, as publication does, rather than from mount-manager volume names, which a share does not have, and releases the parent pins it took when they differ. <code>same_volume</code> no longer treats a full 128-bit ID and the 64-bit fallback as the same volume. <code>GetDiskFreeSpaceExW</code> documents that a UNC name needs a trailing backslash, so <code>available_space</code> asks a refused UNC path again with one, then at its share root, and returns the first error when nothing answers; a local path is asked once. The Archive capacity check's volume identity still comes from the volume GUID path, and an unknown one keeps that check conservative rather than failing. New tests use a faked query to play a share that answers only some forms of its path; CI has no share, so no test runs against a real one.</p>
     </div>
   </article>
 
@@ -917,13 +935,14 @@ state reached so far with an empty detail, so no producer needs defensive handli
     <div class="f-head">
       <span class="fid">FFI-4</span>
       <h3>Read-only files are refused by delete and by replace renames, undocumented for the latter</h3>
-      <span class="sev sev-low">Low</span><span class="tag">correctness</span>
+      <span class="sev sev-low">Low</span><span class="tag">correctness</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-winfs/src/mutate.rs:97</code> · <code>:31</code></p>
     <div class="f-body">
 <pre><code>(*info).Anonymous.ReplaceIfExists = mode == RenameMode::Replace;</code></pre>
       <p><strong>Why it matters.</strong> The plain <code>FileDispositionInfo</code> and <code>FileRenameInfo</code> classes do not override the read-only attribute. A read-only original Mesh or Texture cannot be replaced and a read-only converted TGA or extracted Archive cannot be removed; the caller reports the latter as a bare failure. <code>delete_by_handle</code> documents this, <code>rename_by_handle</code> does not, and no test covers a read-only source or destination.</p>
       <p><strong>Suggested change.</strong> Decide the policy: respect read-only with a clear message and a test, or use the <code>…InfoEx</code> classes with the ignore-read-only flags while keeping the non-POSIX replace semantics.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as the owner decided: CAO overrides read-only. <code>delete_by_handle</code> uses <code>FileDispositionInfoEx</code> with the ignore-read-only flag, and a replacing <code>rename_by_handle</code> uses <code>FileRenameInfoEx</code> with the replace and ignore-read-only flags but without POSIX semantics, so a destination someone holds open still refuses the rename. A file system without the newer classes gets the plain ones, and a no-replace rename is unchanged. New tests delete a read-only file, replace a read-only destination, rename a read-only source, and check that a no-replace rename onto a read-only file is still refused. Two recovery tests that used a read-only file to make a removal fail now run the file as a process instead.</p>
     </div>
   </article>
 
@@ -931,7 +950,7 @@ state reached so far with an empty detail, so no producer needs defensive handli
     <div class="f-head">
       <span class="fid">FFI-5</span>
       <h3><code>move_file_write_through</code> documents a cross-volume copy its flags make impossible</h3>
-      <span class="sev sev-low">Low</span><span class="tag">docs</span><span class="tag pass">verified</span>
+      <span class="sev sev-low">Low</span><span class="tag">docs</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-winfs/src/mutate.rs:122</code> · <code>:151</code></p>
     <div class="f-body">
@@ -942,6 +961,7 @@ state reached so far with an empty detail, so no producer needs defensive handli
 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,</code></pre>
       <p><strong>Why it matters.</strong> Without <code>MOVEFILE_COPY_ALLOWED</code>, <code>MoveFileExW</code> fails a cross-volume move; it never copies. The manifest's durability actually comes from the caller flushing the scratch file. A reader could conclude a cross-volume move is supported and flushed.</p>
       <p><strong>Suggested change.</strong> Rewrite the paragraph: same-volume only, byte durability comes from the caller's flush, and the flag is kept as a request to commit the rename.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. The documentation now says the move is same-volume only, because without <code>MOVEFILE_COPY_ALLOWED</code> it never copies; that the bytes are made durable by the caller's flush; and that the write-through flag is kept as a request that the rename itself be committed.</p>
     </div>
   </article>
 
@@ -949,7 +969,7 @@ MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,</code></pre>
     <div class="f-head">
       <span class="fid">FFI-6</span>
       <h3>The "same object, unchanged" test uses the weaker file identity, and the strong one downgrades on any error</h3>
-      <span class="sev sev-low">Low</span><span class="tag">design</span>
+      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-winfs/src/facts.rs:111</code> · <code>:153</code> · <code>crates/cao-core/src/run/source_pin.rs:207</code></p>
     <div class="f-body">
@@ -957,6 +977,7 @@ MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,</code></pre>
     &amp;&amp; self.file_index == earlier.file_index</code></pre>
       <p><strong>Why it matters.</strong> The crate's own documentation says 64-bit indexes are not unique on ReFS, yet <code>FileFacts::unchanged_since</code>, which guards deleting or backing up a source, compares exactly that index with the 32-bit serial. The timestamp and size comparisons beside it make a false match very unlikely, so this is hardening. Separately, <code>FileIdentity::of</code> falls back to the weaker identity on any <code>FileIdInfo</code> failure and drops the original error.</p>
       <p><strong>Suggested change.</strong> Carry a <code>FileIdentity</code> inside <code>FileFacts</code> and compare it, and restrict the fallback to the "unsupported" error codes.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. <code>FileFacts</code> carries a <code>FileIdentity</code>, and <code>unchanged_since</code> compares it, so it uses the 128-bit ID wherever the file system has one. <code>FileIdentity::of</code> falls back to the volume serial and 64-bit index only when <code>FileIdInfo</code> is unsupported, and returns any other failure. New tests use a faked query for the full ID, the unsupported fallback, a refused query, and identities from different sources.</p>
     </div>
   </article>
 
@@ -964,7 +985,7 @@ MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,</code></pre>
     <div class="f-head">
       <span class="fid">FFI-7</span>
       <h3>nifly build: <code>NDEBUG</code> is not defined, CAO's own shim compiles with warnings off, and a test hook ships</h3>
-      <span class="sev sev-low">Low</span><span class="tag">build</span><span class="tag pass">verified</span>
+      <span class="sev sev-low">Low</span><span class="tag">build</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/nifly-sys/build.rs:41</code> · <code>crates/nifly-sys/shim/cao_nif.cpp:229</code></p>
     <div class="f-body">
@@ -975,6 +996,7 @@ MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,</code></pre>
       <p><strong>Why it matters.</strong> The build script says its flags mirror nifly's CMake options, but a CMake Release build defines <code>NDEBUG</code> and this one does not, so the <code>assert</code>s in the vendored <code>Miniball.hpp</code> stay live in release; a failed CRT assert shows a dialog and aborts, which the shim's exception guard cannot convert. <code>.warnings(false)</code> is justified for nifly but also silences CAO's own shim, which shares the build. The test-only entry point <code>cao_nif_load_from_throwing_stream</code> is compiled into every binary.</p>
       <p><strong>Suggested change.</strong> Add <code>.define("NDEBUG", None)</code>, compile the shim in a second <code>cc::Build</code> with warnings on, and guard the test entry point with a define the tests set.</p>
       <p class="confidence">Confidence: high for the facts; no input was found that trips one of those asserts.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. nifly and the shim compile with <code>NDEBUG</code>, as a CMake Release build does, through one set of shared options. The shim is a second <code>cc::Build</code> at warning level 4 with warnings as errors, because <code>cc</code> does not pass compiler warnings on to Cargo; nifly's headers are external at level 0. The shim compiled clean. The test-only entry points are compiled only under a new <code>test-hooks</code> feature, which the crate's dev-dependency on itself enables for its own tests, so no shipped binary carries them; building the tests now compiles nifly a second time.</p>
     </div>
   </article>
 
@@ -982,7 +1004,7 @@ MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,</code></pre>
     <div class="f-head">
       <span class="fid">FFI-8</span>
       <h3>Per-thread <code>CoInitializeEx</code> is never balanced and may be unnecessary; one device check exists only for parity</h3>
-      <span class="sev sev-low">Low</span><span class="tag">design</span>
+      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-optimizers/src/device.rs:62</code> · <code>:186</code></p>
     <div class="f-body">
@@ -992,6 +1014,7 @@ MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,</code></pre>
 keep_mta_alive()</code></pre>
       <p><strong>Why it matters.</strong> Nothing calls <code>CoUninitialize</code>; the code relies on thread exit. Once <code>keep_mta_alive</code> holds the multithreaded apartment for the process, a thread that never initialized COM is implicitly in it, so the per-thread call appears to add only an unbalanced reference and the <code>RPC_E_CHANGED_MODE</code> failure mode. Further down, the device is cast to <code>IDXGIDevice</code> and the result discarded, with "C++ also required" as the reason.</p>
       <p><strong>Suggested change.</strong> Reduce <code>initialize_com</code> to the once-per-process MTA hold, or pair the init with a guard that uninitializes on the same thread. Drop the cast or give it a reason of its own.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 by the guard option. <code>initialize_com</code> returns a <code>ComApartment</code> guard that is neither <code>Send</code> nor <code>Sync</code>, and dropping it calls <code>CoUninitialize</code> on the thread that joined; the backend holds it as its last field. The explicit, balanced join is kept rather than relying on the process-wide MTA hold alone, so a thread already in a single-threaded apartment still fails early. The discarded <code>IDXGIDevice</code> cast is removed, and the choice of the first adapter is documented by CAO's own reason. A new test checks that dropping the guard leaves the apartment.</p>
     </div>
   </article>
 
@@ -999,12 +1022,13 @@ keep_mta_alive()</code></pre>
     <div class="f-head">
       <span class="fid">FFI-9</span>
       <h3>Guarantees stated only as C++ parity, one of them unverified, and a test that pins a private layout</h3>
-      <span class="sev sev-low">Low</span><span class="tag">docs</span>
+      <span class="sev sev-low">Low</span><span class="tag">docs</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-winfs/src/canonical.rs:38</code> · <code>:10</code> · <code>crates/cao-winfs/src/facts.rs:167</code> · <code>crates/cao-winfs/src/compare.rs:19</code></p>
     <div class="f-body">
       <p><strong>Why it matters.</strong> <code>canonical.rs</code> promises "the exact text MSVC <code>std::filesystem::canonical</code> returns" while its module doc says it "is not checked against MSVC"; the requirement CAO actually has is the one the module doc already gives, that one location always yields one text. <code>fallback_identity_matches_the_cpp_layout</code> pins an in-memory layout that nothing serializes. Several panics and choices ("C++ throws in both cases", "C++ always asks for adapter 0") are justified only by what the deleted code did.</p>
       <p><strong>Suggested change.</strong> When these files are next touched, restate each in terms of what CAO needs, and delete the layout-pinning test.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. <code>canonical</code> and <code>weakly_canonical</code> now promise CAO's own requirement, one readable text per location, and the module says it follows MSVC's algorithm without matching MSVC as a goal. <code>compare_ordinal_ignore_case</code> explains its panics by what CAO needs. The test that pinned the fallback identity's in-memory layout is deleted, and the other parity justifications in cao-winfs are restated.</p>
     </div>
   </article>
 
@@ -1149,12 +1173,13 @@ return OperationResult::changed();</code></pre>
     <div class="f-head">
       <span class="fid">BE-9</span>
       <h3>Dry Run fully reads and decodes every Texture; Apply copies the encoded DDS an extra time</h3>
-      <span class="sev sev-low">Low</span><span class="tag">performance</span>
+      <span class="sev sev-low">Low</span><span class="tag">performance</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-optimizers/src/backend.rs:181</code> · <code>crates/cao-optimizers/src/textures.rs:261</code> · <code>:385</code></p>
     <div class="f-body">
       <p><strong>Why it matters.</strong> The plan needs only the texture's metadata, and the DirectXTex fork has header-only readers, but Dry Run pays a full read and decode per Texture. On save the image exists three times (scratch image, blob, <code>Vec</code>) before it is written.</p>
       <p><strong>Suggested change.</strong> Use the metadata-only readers for Dry Run, and write the blob straight to the staged handle.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 for the save only; the Dry Run half was declined by the owner's decision. Apply encodes with <code>Texture::encode_dds</code> and writes DirectXTex's blob straight into the staged handle, with no copy into a <code>Vec</code>. Dry Run still loads and decodes every Texture in full, as Apply does: the owner ruled that a Dry Run must verify Textures exactly as Apply does, or it is not a true dry run. A header-only reader was built in this step, which would have let a DDS with a corrupt body pass a Dry Run and fail only Apply, and was removed for that reason. A Dry Run still creates no D3D11 device, which only encoding uses. A new test runs a DDS cut short after its header through both modes and checks that each fails it at <code>load_texture</code> with <code>LoadFailed</code>.</p>
     </div>
   </article>
 
@@ -1162,7 +1187,7 @@ return OperationResult::changed();</code></pre>
     <div class="f-head">
       <span class="fid">BE-10</span>
       <h3>A GPU encode failure fails the Texture instead of falling back to the CPU codec</h3>
-      <span class="sev sev-low">Low</span><span class="tag">correctness</span>
+      <span class="sev sev-low">Low</span><span class="tag">correctness</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-optimizers/src/textures.rs:480</code></p>
     <div class="f-body">
@@ -1170,6 +1195,7 @@ return OperationResult::changed();</code></pre>
 /// than falling back to the CPU, also as in C++.</code></pre>
       <p><strong>Why it matters.</strong> A driver reset or exhausted video memory on one large texture becomes an Operation Failure, and after a device loss presumably every later BC7 Texture in the run fails the same way, with a working CPU path one match arm away.</p>
       <p><strong>Suggested change.</strong> On a GPU error, log a warning and retry on the CPU; drop the device for the rest of the run on device-removed results.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. When a GPU encode fails, <code>Texture::convert</code> logs a warning and encodes on the CPU. <code>GpuDevice::compress</code> checks <code>GetDeviceRemovedReason</code> after a failure and marks the device lost; a lost device is skipped from then on, and the backend drops it with a warning for the rest of the run. A test-only fault makes the GPU encoder genuinely refuse the call, and a new test checks the CPU bytes, that a device that was not lost is used again, and that a lost one is never tried again.</p>
     </div>
   </article>
 
@@ -1177,13 +1203,14 @@ return OperationResult::changed();</code></pre>
     <div class="f-head">
       <span class="fid">BE-11</span>
       <h3>The "interface texture" test is a substring of the absolute path</h3>
-      <span class="sev sev-low">Low</span><span class="tag">correctness</span><span class="tag pass">verified</span>
+      <span class="sev sev-low">Low</span><span class="tag">correctness</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-optimizers/src/textures.rs:97</code> · <code>:78</code> · <code>:369</code></p>
     <div class="f-body">
 <pre><code>let is_interface = name.to_lowercase().contains("interface");</code></pre>
       <p><strong>Why it matters.</strong> With a profile that turns interface compression off, a Mod Root under any folder whose name contains "interface" has all its Textures treated as UI art: never compressed or mipmapped, and saved as uncompressed BGRA8 when resized. The shipped profiles all leave interface compression on, which hides this. The BGRA8 fallback beside it also fires for non-power-of-two sizes, which its comment does not mention.</p>
       <p><strong>Suggested change.</strong> Test the first component of the game path relative to the Mod Root, and make the fallback condition explicit.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8, with one difference from the card. <code>plan</code> takes the game path, which <code>optimize_texture</code> now receives with the Asset's Mod Root, and an interface texture is one under any whole folder named <code>interface</code> within the Mod Root, not only the first: interface art also ships under <code>textures/interface/</code>, which the old rule matched too. The Mod Root's own location, folder names that merely contain the word, and the file name no longer count. The BGRA8 fallback is explicit: it applies only when the target is a block format and either the size cannot take one or interface art the profile keeps uncompressed would be newly compressed, so a compressed Texture that is only resized keeps its format. A new test covers both folder placements and the near misses.</p>
     </div>
   </article>
 
@@ -1191,7 +1218,7 @@ return OperationResult::changed();</code></pre>
     <div class="f-head">
       <span class="fid">BE-12</span>
       <h3>Texture planning edge cases: 1×1 with a ratio, Dry Run sizes, volume textures</h3>
-      <span class="sev sev-low">Low</span><span class="tag">correctness</span><span class="tag pass">verified</span>
+      <span class="sev sev-low">Low</span><span class="tag">correctness</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-optimizers/src/backend.rs:139</code> · <code>crates/cao-optimizers/src/textures.rs:90</code> · <code>:400</code> · <code>:466</code></p>
     <div class="f-body">
@@ -1203,6 +1230,7 @@ return OperationResult::changed();</code></pre>
         <li>A 3D texture's mip count is compared with the 2D optimum and generated with the 2D call, which DirectXTex rejects, giving a permanent failure for that file.</li>
       </ul>
       <p><strong>Suggested change.</strong> Clamp the ratio target to 1×1, compute the final rounded size once inside <code>plan</code> for both modes, and skip mipmap planning for volume textures. Add the three cases to <code>texture_decisions</code>.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. <code>plan</code> treats a target side of 0 as 1 and rounds the resized size up to powers of two, so that is the size Dry Run reports, and <code>Texture::resize</code> no longer rounds. Mipmaps are decided once, for the size after the resize, and Apply uses that decision; volume Textures get no mipmaps. Four new cases in <code>texture_decisions</code> cover the three edges and the rounded size.</p>
     </div>
   </article>
 
@@ -1210,7 +1238,7 @@ return OperationResult::changed();</code></pre>
     <div class="f-head">
       <span class="fid">BE-13</span>
       <h3>Path text matching quirks in head-part and Mesh reference handling</h3>
-      <span class="sev sev-low">Low</span><span class="tag">correctness</span>
+      <span class="sev sev-low">Low</span><span class="tag">correctness</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-optimizers/src/plugins.rs:196</code> · <code>crates/cao-optimizers/src/mesh_references.rs:11</code> · <code>:131</code></p>
     <div class="f-body">
@@ -1222,6 +1250,7 @@ return OperationResult::changed();</code></pre>
         <li>The check that withholds a rewrite after a failed conversion misses references stored with a leading separator or a <code>data\</code> prefix, so such a Mesh is pointed at a DDS that was never written.</li>
       </ul>
       <p><strong>Suggested change.</strong> Decode with a Windows-1252 fallback, require a separator after <code>meshes</code>, replace only a trailing <code>.tga</code>, and normalise leading separators and <code>data/</code> before comparing.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. <code>plugins::decode_game_text</code> reads text as UTF-8 when it is valid and as Windows-1252 otherwise, through a hand-written table so no dependency was added; MODL paths and Mesh references both go through it. <code>modl_path</code> accepts the <code>meshes</code> prefix only when a separator follows it, reference rewriting changes only a trailing <code>.tga</code>, and the check that withholds a rewrite strips leading separators and a leading <code>data/</code> before comparing. New unit and plugin tests cover each case.</p>
     </div>
   </article>
 
@@ -1229,12 +1258,13 @@ return OperationResult::changed();</code></pre>
     <div class="f-head">
       <span class="fid">BE-14</span>
       <h3>The head-part plugin scan opens every file twice and runs when Mesh work was held back</h3>
-      <span class="sev sev-low">Low</span><span class="tag">performance</span>
+      <span class="sev sev-low">Low</span><span class="tag">performance</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-optimizers/src/headparts.rs:162</code> · <code>:170</code> · <code>crates/cao-optimizers/src/composition.rs:288</code></p>
     <div class="f-body">
       <p><strong>Why it matters.</strong> The walk calls <code>symlink_metadata</code> on every entry and <code>is_file()</code> on every non-directory before looking at the name, where the directory entry's own metadata is free on Windows. It is gated on the Mesh level rather than on whether Mesh work is actually requested, and logs "customHeadparts.txt not found" when the file exists but is empty.</p>
       <p><strong>Suggested change.</strong> Use <code>entry.metadata()</code>, test the name first, and gate on the request's Mesh work.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. <code>list_plugins</code> uses the directory entry's own metadata and checks the name first; only a symlink costs a second query, so a linked plugin still counts. The scan runs only when the request asks for Standard or Terrain Mesh optimization, through the new <code>RunWorkSettings::meshes_requested</code>. The profile reader returns the same empty list for a missing and an empty <code>customHeadparts.txt</code>, so the log message now says "is missing or empty" rather than telling them apart. A new test checks that a run without Mesh work scans no plugin.</p>
     </div>
   </article>
 
@@ -1242,7 +1272,7 @@ return OperationResult::changed();</code></pre>
     <div class="f-head">
       <span class="fid">BE-15</span>
       <h3>Log rotation shifts up to 999 files per roll under the sink lock, and a failed rename makes every record roll</h3>
-      <span class="sev sev-low">Low</span><span class="tag">performance</span>
+      <span class="sev sev-low">Low</span><span class="tag">performance</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-optimizers/src/application_log.rs:461</code> · <code>:436</code></p>
     <div class="f-body">
@@ -1253,6 +1283,7 @@ return OperationResult::changed();</code></pre>
         let _ = std::fs::rename(&amp;from, self.numbered(n + 1));</code></pre>
       <p><strong>Why it matters.</strong> Every 250 KB of log costs 999 existence probes plus a rename per existing chunk while holding the lock every logging thread needs. If the live file's rename fails, the same oversized file is reopened and the next record rolls again, so each record costs about a thousand system calls and pushes history toward the end of the range.</p>
       <p><strong>Suggested change.</strong> Number chunks ascending so a roll is one rename, back off when the live rename fails, and add a failed-roll test.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. The first roll lists the folder once; after that, chunks are numbered upwards, newest highest, so a roll is one rename of the live file plus one delete of the chunk that falls out of the 999 kept. When the live rename fails, the same file is reopened and the next roll waits until it has grown by another chunk. The rotation test was updated, and new tests check successive rolls and the back-off after a failed roll, holding the live file open without delete sharing.</p>
     </div>
   </article>
 
@@ -1260,7 +1291,7 @@ return OperationResult::changed();</code></pre>
     <div class="f-head">
       <span class="fid">BE-16</span>
       <h3>Typed archive errors are flattened to a string, and I/O errors lose their path</h3>
-      <span class="sev sev-low">Low</span><span class="tag">error-handling</span>
+      <span class="sev sev-low">Low</span><span class="tag">error-handling</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-optimizers/src/archives.rs:192</code> · <code>:93</code> · <code>crates/cao-optimizers/src/backend.rs:257</code></p>
     <div class="f-body">
@@ -1268,6 +1299,7 @@ return OperationResult::changed();</code></pre>
     Error::Archive(error.to_string())</code></pre>
       <p><strong>Why it matters.</strong> <code>cao-archive</code> has a careful taxonomy (<code>AssetTooLarge</code> with path, size and cap, among others), but core receives a sentence, so it cannot fail just the one Asset the error names. A texture save failure reaches the user as a bare "Access is denied" with no path and no indication whether encoding or writing failed.</p>
       <p><strong>Suggested change.</strong> Let <code>Error::Archive</code> wrap a source error or add variants for the cases core should act on, and attach the destination path to I/O errors in the adapter.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8, by the second option. Core gets a new <code>Error::AssetTooLarge { path, size, cap }</code>, which the adapter maps from <code>ArchiveError::AssetTooLarge</code>; other archive errors stay a sentence. Planning then leaves that one file loose, partitions the rest of the Mod Root again, and records an <code>ArchiveCreationSkipped</code> warning whose path is the file, so the GUI needs no new diagnostic code. The adapter's I/O errors name their path, and <code>save_texture</code> says whether encoding or writing failed. New tests pack a Mod Root with one file past the size cap and save a Texture only into an existing staged file.</p>
     </div>
   </article>
 
@@ -1275,7 +1307,7 @@ return OperationResult::changed();</code></pre>
     <div class="f-head">
       <span class="fid">BE-17</span>
       <h3>Staged Textures are written with <code>std::fs::write</code>, unlike the other staged writers</h3>
-      <span class="sev sev-low">Low</span><span class="tag">design</span>
+      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-optimizers/src/backend.rs:254</code> · <code>crates/cao-optimizers/src/archives.rs:86</code></p>
     <div class="f-body">
@@ -1284,6 +1316,7 @@ return OperationResult::changed();</code></pre>
 // write does. A fresh staged file is empty, so nothing is truncated.</code></pre>
       <p><strong>Why it matters.</strong> That comment is on the Archive writer. The Texture writer, the most numerous staged write, uses <code>std::fs::write</code>, which follows a reparse point that replaced the staged file, truncates and shares the handle. <code>cao_winfs::Open</code> exists to avoid exactly that.</p>
       <p><strong>Suggested change.</strong> Open the staged Texture with <code>Open</code> and write through that handle; reword the comment to say which writers it covers.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. <code>save_texture</code> opens the existing staged file with <code>cao_winfs::Open</code> (write access, no sharing) and writes the blob through that handle. The staged-write comments now name the writers they cover, Texture, extraction and Archive; the Mesh writer saves through nifly's own open and is not covered. A new test checks that a path with no staged file fails and is not created.</p>
     </div>
   </article>
 
@@ -1291,7 +1324,7 @@ return OperationResult::changed();</code></pre>
     <div class="f-head">
       <span class="fid">BE-18</span>
       <h3>Hand-synchronised rule tables and rules kept only for bethutil parity</h3>
-      <span class="sev sev-low">Low</span><span class="tag">design</span>
+      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-archive/src/settings.rs:193</code> · <code>:180</code> · <code>:79</code></p>
     <div class="f-body">
@@ -1300,6 +1333,7 @@ AllowedPath::new(".hkb", &amp;["meshes"]),
 AllowedPath::new(".hkb", &amp;["meshes"]),</code></pre>
       <p><strong>Why it matters.</strong> The Fallout 4 table is an 18-row copy of the Skyrim SE table that a comment asks maintainers to "keep in step". The duplicate row, and a <code>.jpg</code> rule that only matches under a folder literally named <code>root</code>, exist for parity with a library CAO no longer uses.</p>
       <p><strong>Suggested change.</strong> Build both tables from one list (a macro or a <code>const fn</code>) and drop the two parity rules.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. A <code>standard_files!</code> macro builds both Standard tables from one list, FO4 adding <code>.png</code> and <code>.uvd</code>. The duplicate <code>.hkb</code> row and the <code>.jpg</code>-under-<code>root</code> rule are gone; files directly in the Mod Root are never packed anyway, so that rule only matched a folder literally named <code>root</code>, and <code>AllowedPath::check</code> no longer treats <code>root</code> as special. New tests check that a JPEG is never packed and that FO4's list is SSE's plus <code>.png</code> and <code>.uvd</code>.</p>
     </div>
   </article>
 
@@ -1372,7 +1406,7 @@ fn optional_list(&amp;self, name: &amp;str) -&gt; Vec&lt;String&gt; {
     <div class="f-head">
       <span class="fid">GUI-4</span>
       <h3>Save failures while the window closes are neither shown nor logged</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">error-handling</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">error-handling</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-gui/src/app.rs:241</code> · <code>:628</code> · <code>crates/cao-gui/src/desktop.rs:79</code></p>
     <div class="f-body">
@@ -1392,7 +1426,7 @@ let _ = slint::quit_event_loop();</code></pre>
     <div class="f-head">
       <span class="fid">GUI-5</span>
       <h3>Hand-drawn controls cannot be reached by keyboard, and help text is hover-only</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">accessibility</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">accessibility</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-gui-ui/ui/widgets.slint:82</code> · <code>:347</code> · <code>:543</code> · <code>crates/cao-gui-ui/ui/dialogs.slint:40</code></p>
     <div class="f-body">
@@ -1412,7 +1446,7 @@ let _ = slint::quit_event_loop();</code></pre>
     <div class="f-head">
       <span class="fid">GUI-6</span>
       <h3>The unwanted-formats dialog asks for 742 px of height</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">accessibility</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">accessibility</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-gui-ui/ui/dialogs.slint:109</code> · <code>crates/cao-gui/src/modal.rs:248</code></p>
     <div class="f-body">
@@ -1431,7 +1465,7 @@ let _ = slint::quit_event_loop();</code></pre>
     <div class="f-head">
       <span class="fid">GUI-7</span>
       <h3>The INI escape and quoting paths lost their main test when the Qt differential harness was removed</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">testing</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">testing</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-profiles/tests/ini_read.rs:1</code> · <code>crates/cao-profiles/tests/ini_write.rs</code> · <code>crates/cao-profiles/src/ini/value.rs:300</code></p>
     <div class="f-body">
@@ -1439,6 +1473,7 @@ let _ = slint::quit_event_loop();</code></pre>
 //! Qt 5.15 (spec #476, items 12–14), UTF-8 BOM files, format errors and lookup.</code></pre>
       <p><strong>Why it matters.</strong> Reading existing users' QSettings files is the one compatibility requirement that survives the port. The remaining tests were written to cover what the differential could not, and the differential is gone. No test now covers quoting on <code>;</code>, <code>,</code> and <code>=</code>, leading and trailing spaces, <code>%XX</code> and <code>%UXXXX</code> keys, backslash-newline continuation, multi-line quoted values or octal escapes. The reading of this code found no defect, but nothing would catch one introduced later.</p>
       <p><strong>Suggested change.</strong> Add a write-then-parse round trip over a table of awkward strings, golden cases for each escape form, and table tests for <code>form::clean_path</code>.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. The INI tests moved into cao-profiles as unit tests, since <code>ini</code> is now private to the crate (<a href="#GUI-15">GUI-15</a>). New golden cases pin each escape form on read: the simple escapes, greedy <code>\x</code> and octal escapes building 16-bit units (surrogate pairs included), unknown escapes, backslash-newline continuation, multi-line quoted values, spaces around a value with and without quotes, <code>;</code>, <code>,</code> and <code>=</code> with and without quotes, <code>%XX</code> and <code>%UXXXX</code> keys (malformed ones too), <code>[%General]</code>, and the <code>@</code> forms, including the <code>@Variant</code> blob Qt wrote. Golden writes cover value and key escaping, and round-trip tests write and re-parse a table of awkward strings as values, keys and list entries. <code>form::clean_path</code> has a table test.</p>
     </div>
   </article>
 
@@ -1446,7 +1481,7 @@ let _ = slint::quit_event_loop();</code></pre>
     <div class="f-head">
       <span class="fid">GUI-8</span>
       <h3><code>resolve()</code> falls back to <code>SSE</code> without checking that it exists</h3>
-      <span class="sev sev-low">Low</span><span class="tag">correctness</span><span class="tag pass">verified</span>
+      <span class="sev sev-low">Low</span><span class="tag">correctness</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-profiles/src/profiles.rs:71</code> · <code>crates/cao-gui/src/app.rs:120</code></p>
     <div class="f-body">
@@ -1457,6 +1492,7 @@ let _ = slint::quit_event_loop();</code></pre>
 }</code></pre>
       <p><strong>Why it matters.</strong> <code>App::new</code> requires only that some profile exists. With SSE deleted and a stale remembered profile, the app loads a nonexistent <code>SSE</code>: an error box, disabled tabs, a combo showing a different profile from the one loaded, and a later save that recreates <code>profiles/SSE/settings.ini</code>.</p>
       <p><strong>Suggested change.</strong> Fall back to SSE only when it is listed, otherwise to the first listed profile, and refuse to create a missing profile directory on save.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. <code>Profiles::resolve</code> returns the name when it is listed, otherwise SSE when SSE is listed, otherwise the first profile listed, and <code>None</code> only when there is none. <code>App::new</code>, <code>bootstrap_log</code> and <code>Profiles::create</code> all go through it, so the window always loads the profile its combo shows. <code>IniFile::save</code> no longer creates a missing directory, so saving into a profile deleted while CAO runs fails and is reported, and the folder is not recreated. New tests cover resolving without SSE and with no profiles, a stale profile in an install without SSE, and saving into a deleted profile.</p>
     </div>
   </article>
 
@@ -1464,7 +1500,7 @@ let _ = slint::quit_event_loop();</code></pre>
     <div class="f-head">
       <span class="fid">GUI-9</span>
       <h3>The run lock leaves the mod folder, mode, Dry run and folder drop live</h3>
-      <span class="sev sev-low">Low</span><span class="tag">design</span>
+      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-gui/tests/run_lock.rs:14</code> · <code>crates/cao-gui-ui/ui/main.slint:370</code> · <code>crates/cao-gui/src/app.rs:383</code></p>
     <div class="f-body">
@@ -1472,6 +1508,7 @@ let _ = slint::quit_event_loop();</code></pre>
 /// tab widget, the profile combo and New.</code></pre>
       <p><strong>Why it matters.</strong> During an Apply run the user can tick "Dry run" or change the folder. The window then shows a state the running run is not using, at the moment files are being changed, and the end of the run saves it. A comment in <code>save()</code> says the run "holds the controls", which is not true for these.</p>
       <p><strong>Suggested change.</strong> Include those controls in the lock, ignore a dropped folder while running, and update the test constant.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. The run lock now also disables the mod folder, Open Directory, the optimization mode and Dry run, and a folder drop is ignored, with no drop hint, while a run holds the controls. "Show advanced settings" stays enabled because it changes only what the window shows. <code>run_lock.rs</code> expects the new controls to be locked, and a new <code>folder_drop.rs</code> test checks that a drop during a run is ignored.</p>
     </div>
   </article>
 
@@ -1479,12 +1516,13 @@ let _ = slint::quit_event_loop();</code></pre>
     <div class="f-head">
       <span class="fid">GUI-10</span>
       <h3>Every save rewrites all three INI files, including untouched base profiles, and drops hand-written comments</h3>
-      <span class="sev sev-low">Low</span><span class="tag">design</span>
+      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-gui/src/app.rs:371</code> · <code>crates/cao-profiles/src/ini/mod.rs:206</code> · <code>crates/cao-profiles/src/ini/read.rs:132</code></p>
     <div class="f-body">
       <p><strong>Why it matters.</strong> The reader accepts <code>#</code> comment lines in hand-edited profiles, yet the first profile switch, run start or close rewrites the file without them. Opening and closing CAO modifies the shipped base files. Each save is three write-flush-rename cycles on the UI thread, and in a non-writable install each action raises several separate error boxes.</p>
       <p><strong>Suggested change.</strong> Skip a write when the model read from the form equals the loaded one, never write <code>profile.ini</code> for a base profile, and batch save errors into one message.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. The window keeps a copy of what <code>common.ini</code>, <code>settings.ini</code> and <code>profile.ini</code> held when last read or written, and a save writes a file only when the model differs from it; a failed write keeps the old copy, so the next save tries again. A base profile's <code>profile.ini</code> is never written. A save or profile switch shows every failure in one box, and the profile choice is part of that batch. New tests check that opening and closing CAO changes no file and keeps a <code>#</code> comment, that switching profiles writes only <code>common.ini</code>, and that three read-only files produce one box and are written by the next save.</p>
     </div>
   </article>
 
@@ -1492,7 +1530,7 @@ let _ = slint::quit_event_loop();</code></pre>
     <div class="f-head">
       <span class="fid">GUI-11</span>
       <h3>Option handling still shaped by Qt behaviour, including state that leaks between profiles</h3>
-      <span class="sev sev-low">Low</span><span class="tag">design</span>
+      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-gui/src/form.rs:231</code> · <code>:250</code> · <code>crates/cao-profiles/src/options.rs:41</code> · <code>crates/cao-gui/src/app/input.rs:59</code></p>
     <div class="f-body">
@@ -1504,6 +1542,7 @@ let _ = slint::quit_event_loop();</code></pre>
         <li>A dropped file, not only a folder, is accepted as the mod folder.</li>
       </ul>
       <p><strong>Suggested change.</strong> Read each key with an explicit default, reset sub-controls when a group loads off, carry only the mod path across profiles, and accept only directories on drop.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. <code>Options::read</code> reads each key with its default from <code>Options::default</code>, which stays aligned with core's default Work Choices; the three shipped <code>settings.ini</code> files now set <code>bBsaMergeIncomp</code> and <code>bBsaMergeTexture</code> explicitly to keep their behaviour. <code>Profile::load_options</code> takes only the carried mod folder, so a profile without <code>settings.ini</code> loads the defaults. <code>show_options</code> sets or resets every Textures, resize and Meshes control from the model when its group loads off. Only a folder is accepted on drop. New tests cover missing keys reading as defaults, only the folder carrying across profiles, groups that load off resetting their sub-choices, and a dropped file being ignored.</p>
     </div>
   </article>
 
@@ -1511,7 +1550,7 @@ let _ = slint::quit_event_loop();</code></pre>
     <div class="f-head">
       <span class="fid">GUI-12</span>
       <h3>Run-detail rows exist only in the Log tab, cannot be selected, and are cleared by the next run</h3>
-      <span class="sev sev-low">Low</span><span class="tag">design</span>
+      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-gui-ui/ui/log.slint:8</code> · <code>:80</code> · <code>crates/cao-gui/src/log_tab.rs:10</code></p>
     <div class="f-body">
@@ -1519,6 +1558,7 @@ let _ = slint::quit_event_loop();</code></pre>
 // never written to the file.</code></pre>
       <p><strong>Why it matters.</strong> The whole product of a Dry Run (planned Archives, planned extractions, collisions) and the per-Asset failure rows cannot be copied into a bug report or re-read after the next run starts. The light theme also draws warnings in orange on a near-white page.</p>
       <p><strong>Suggested change.</strong> Write the detail rows to the Application Log at run end or add a copy action, and use a darker amber in the light theme.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as the owner decided. At a run's end, <code>end_run</code> writes every detail row to the attached Application Log, one record per row, failures and warnings at warn level and the rest at info. They then return to the Log tab as ordinary log rows, so they survive the next run and can be attached to a bug report; without an attached log they stay pinned as before. In the light theme, warnings use <code>#9a5b00</code>, about 5.4:1 on white. New tests check that the rows reach the file and the tab, are not shown twice, and survive the next run's start.</p>
     </div>
   </article>
 
@@ -1526,12 +1566,13 @@ let _ = slint::quit_event_loop();</code></pre>
     <div class="f-head">
       <span class="fid">GUI-13</span>
       <h3>One UI-thread render per Run Event, each rescanning the detail rows</h3>
-      <span class="sev sev-low">Low</span><span class="tag">performance</span>
+      <span class="sev sev-low">Low</span><span class="tag">performance</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-gui/src/app/run.rs:164</code> · <code>crates/cao-gui/src/log_tab.rs:171</code></p>
     <div class="f-body">
       <p><strong>Why it matters.</strong> A run over a large mods directory queues one closure per Asset attempt; each sets several properties and re-counts the trailing detail rows. Detail rows are uncapped and the terminal result pushes them one at a time, so a run with very many failures can stall the window when it ends.</p>
       <p><strong>Suggested change.</strong> Keep the latest view state and render once per frame, track the shown-detail count in a field, and append terminal details in one batch.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8. Run events that are not terminal queue a single render behind the events already posted to the event loop, so each batch of queued events renders once; the terminal result still renders at once. That is once per event-loop batch rather than per frame, because a zero-delay timer is unreliable under the test backend's mock time. <code>LogTab.detail-count</code> holds the number of detail rows, so nothing scans the model, and new detail rows are appended in one <code>VecModel::extend</code>. <code>run_lock.rs</code> now checks the count.</p>
     </div>
   </article>
 
@@ -1539,7 +1580,7 @@ let _ = slint::quit_event_loop();</code></pre>
     <div class="f-head">
       <span class="fid">GUI-14</span>
       <h3>The manifest is kept byte-identical to the C++ build's</h3>
-      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">verified</span>
+      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>resources/cao-manifest.rc:2</code> · <code>resources/Cathedral_Assets_Optimizer.manifest</code> · <code>crates/cao-gui/src/desktop.rs:50</code></p>
     <div class="f-body">
@@ -1555,7 +1596,7 @@ let _ = slint::quit_event_loop();</code></pre>
     <div class="f-head">
       <span class="fid">GUI-15</span>
       <h3>Unused, parity-only code and API in the INI layer</h3>
-      <span class="sev sev-low">Low</span><span class="tag">design</span>
+      <span class="sev sev-low">Low</span><span class="tag">design</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-profiles/src/ini/value.rs:300</code> · <code>:39</code> · <code>crates/cao-profiles/src/ini/mod.rs:146</code> · <code>crates/cao-profiles/src/lib.rs:25</code></p>
     <div class="f-body">
@@ -1563,6 +1604,7 @@ let _ = slint::quit_event_loop();</code></pre>
 //! the C++ build can read every file Rust saves.</code></pre>
       <p><strong>Why it matters.</strong> <code>format_double</code> (about sixty lines porting Qt's double formatter, untested), <code>From&lt;f64&gt;</code> and <code>From&lt;i64&gt;</code> for <code>Value</code>, <code>Value::to_f64</code>, <code>IniFile::keys</code> and <code>IniFile::contains</code> have no production caller. A one-element list is written as an opaque <code>@Variant</code> blob only so the deleted C++ build could read it. The whole <code>ini</code> module is public although no other crate uses it.</p>
       <p><strong>Suggested change.</strong> Delete the unused conversions, make <code>ini</code> crate-private, and restate the module's requirement as "read existing users' files".</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested, plus one change. <code>format_double</code>, <code>From&lt;f64&gt;</code>, <code>From&lt;i64&gt;</code>, <code>Value::to_f64</code>, <code>Value::to_int_list</code>, <code>IniFile::keys</code> and <code>IniFile::contains</code> are deleted, and <code>ini</code> is private to the crate; only the error types <code>ProfileError</code> uses are exported. The module documentation names reading existing users' files as the requirement. The extra change: a one-element list is written as the plain value, which the reader already takes as a one-element list, instead of the <code>@Variant</code> blob only the C++ build needed; the blob is still read from existing files, and a test pins that.</p>
     </div>
   </article>
 
@@ -1570,7 +1612,7 @@ let _ = slint::quit_event_loop();</code></pre>
     <div class="f-head">
       <span class="fid">GUI-16</span>
       <h3><code>bsaGame</code> is read with a wrapping integer conversion</h3>
-      <span class="sev sev-low">Low</span><span class="tag">correctness</span><span class="tag pass">verified</span>
+      <span class="sev sev-low">Low</span><span class="tag">correctness</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-profiles/src/settings.rs:40</code> · <code>crates/cao-profiles/src/closed.rs:112</code></p>
     <div class="f-body">
@@ -1580,6 +1622,7 @@ let _ = slint::quit_event_loop();</code></pre>
     5 =&gt; Ok(Game::Fo4),</code></pre>
       <p><strong>Why it matters.</strong> <code>bsaGame=4294967300</code> wraps to 4 and loads as Skyrim SE, then is saved as <code>4</code>. A list value produces the message "<code>bsaGame=</code> is not a supported game" with the value missing. The crate's closed-set reader was written to avoid exactly this and is not used here.</p>
       <p><strong>Suggested change.</strong> Read the key through <code>closed::member</code> and build the message from the value as written.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. <code>bsaGame</code> is read through <code>closed::member</code>, so <code>4294967300</code> is refused rather than wrapping to 4, and <code>UnsupportedBsaGame</code> quotes the value as written, so a list value is named in the message. New tests cover a value past 32 bits and a list value.</p>
     </div>
   </article>
 
@@ -1645,12 +1688,13 @@ if names.is_empty() {
     <div class="f-head">
       <span class="fid">WS-4</span>
       <h3>README still describes the C++ application in places</h3>
-      <span class="sev sev-low">Low</span><span class="tag">docs</span>
+      <span class="sev sev-low">Low</span><span class="tag">docs</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>README.md</code> · <code>crates/nifly-sys/Cargo.toml</code> (licence field)</p>
     <div class="f-body">
       <p><strong>Why it matters.</strong> The credits thank QLogger, Libbsarch and BSArch, none of which the Rust workspace uses (logging is CAO's own sink; Archives go through the <code>ba2</code> crate), while <code>ba2</code>, Slint and nifly by name are absent. The documentation link points at the original author's GitLab pages. The build section lists three of the four validation commands (<code>cargo fmt --check</code> is missing). And the only statement that the shipped binary statically links GPL-3.0 code is the <code>license = "MPL-2.0 AND GPL-3.0-only"</code> line in <code>nifly-sys</code>; the README, <code>LICENSE</code> and the About box mention the Mozilla Public License alone.</p>
       <p><strong>Suggested change.</strong> Refresh the credits to match the dependency set, add <code>cargo fmt --check</code>, and add a short licensing note for the combined binary.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. The README's credits name what CAO uses: ba2 and directxtex-rs, DirectXTex, nifly, hkxcmd and Slint, beside G'k's original application and the people thanked before; QLogger, Libbsarch and BSArch are gone, and the documentation link is labelled as the original application's. <code>cargo fmt --check</code> was already listed from an earlier step. A new License section says CAO's code is MPL-2.0, that the vendored nifly is GPL-3.0-only and is linked statically, so the combined binary is distributed under the GPL-3.0's terms (MPL-2.0 section 3.3), and that Slint is used under its Royalty-free License 2.0. <code>cargo xtask dist</code> now also installs nifly's licence text as <code>LICENSE-nifly</code>, and <code>deny.toml</code> records the same licences (<a href="#WS-11">WS-11</a>).</p>
     </div>
   </article>
 
@@ -1658,7 +1702,7 @@ if names.is_empty() {
     <div class="f-head">
       <span class="fid">WS-5</span>
       <h3>Three architecture "handoff" documents cite deleted C++ files as current evidence</h3>
-      <span class="sev sev-low">Low</span><span class="tag">docs</span>
+      <span class="sev sev-low">Low</span><span class="tag">docs</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>docs/architecture/optimization-run-lifecycle-handoff.md:11</code> · <code>texture-optimization-handoff.md:11</code> · <code>profile-backed-planning-handoff.md:11</code></p>
     <div class="f-body">
@@ -1666,6 +1710,7 @@ if names.is_empty() {
 - `src/Manager.cpp:120-178` owns extract, rescan, optimize, pack, cleanup, progress, cancellation checks, and completion emission.</code></pre>
       <p><strong>Why it matters.</strong> Each opens with "Use this handoff when resuming architectural grilling" and then lists line ranges in <code>src/*.cpp</code>, a tree that no longer exists. They sit beside <code>staging-ownership.md</code>, which is live. A reader, human or agent, sent to <code>docs/architecture/</code> gets instructions to settle designs that the Rust port has already built (the Optimization Run Service, the texture decision module, profile-backed requests).</p>
       <p><strong>Suggested change.</strong> Delete them, or move them under an <code>archive/</code> folder with a one-line header saying which issue or ADR superseded each.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. The three handoff documents are deleted; git history keeps them. <code>staging-ownership.md</code> is the only document left in <code>docs/architecture/</code>.</p>
     </div>
   </article>
 
@@ -1673,7 +1718,7 @@ if names.is_empty() {
     <div class="f-head">
       <span class="fid">WS-6</span>
       <h3>"Deviation N" is cited about a hundred times but defined only in a scratch file</h3>
-      <span class="sev sev-low">Low</span><span class="tag">docs</span>
+      <span class="sev sev-low">Low</span><span class="tag">docs</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>.claude/scratch/spec458/spec.md:396</code> (the list) · e.g. <code>crates/cao-winfs/src/mutate.rs:129</code>, <code>crates/cao-gui/src/main.rs:39</code>, <code>Cargo.toml:59</code></p>
     <div class="f-body">
@@ -1681,6 +1726,7 @@ if names.is_empty() {
 /// backoff for about a second before that error is returned (deviation 25).</code></pre>
       <p><strong>Why it matters.</strong> Comments across every crate say things like "deviation 1", "deviation 17", "deviation 24". The numbered list they refer to exists in one place, a research note under <code>.claude/scratch/</code>, and it stops at 24, so "deviation 25" resolves to nothing. No ADR, glossary entry or doc under <code>docs/</code> carries the list. More broadly, about 725 lines of Rust source and tests explain behaviour by what C++, Qt or bethutil did; <code>AGENTS.md</code> now calls that history rather than requirement.</p>
       <p><strong>Suggested change.</strong> Promote the list to a tracked document (<code>docs/deviations.md</code>), add the missing entry, and treat it as a closed historical record. When a comment that leans on a deviation number is next touched, restate the reason in the comment itself so it stands without the lookup.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. <code>docs/deviations.md</code> promotes the list from the scratch spec, with detail from #458, and calls itself a closed historical record. It adds entry 25, which a commit introduced without listing: <code>move_file_write_through</code> retries Access denied or a sharing violation for about a second, because a real-time scanner briefly holds a file a run has just written (now the shared retry of <a href="#FS-5">FS-5</a>). AGENTS.md says what "deviation N" refers to and that a comment leaning on a number restates its reason when next touched; the comments step 8 touched already do.</p>
     </div>
   </article>
 
@@ -1688,12 +1734,13 @@ if names.is_empty() {
     <div class="f-head">
       <span class="fid">WS-7</span>
       <h3>Scratch notes and IDE files are tracked; <code>.gitignore</code> is a 430-line Visual Studio template</h3>
-      <span class="sev sev-low">Low</span><span class="tag">hygiene</span>
+      <span class="sev sev-low">Low</span><span class="tag">hygiene</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>.claude/scratch/</code> (21 files) · <code>.scratch/</code> (19 files) · <code>.idea/</code> (5 files) · <code>CAO.code-workspace</code> · <code>.gitignore</code></p>
     <div class="f-body">
       <p><strong>Why it matters.</strong> <code>docs/agents/issue-tracker.md</code> says issues and specs live in GitHub Issues, yet two spec-and-issue trees remain in the repository as files, last changed in early October. The ignore file is almost entirely rules for MSBuild, NuGet, Azure and similar outputs that a Cargo workspace never produces, with a few stray lines (<code>/q</code>, <code>tests/local</code>, <code>graphify-out/</code>). One of its rules, <code>[Bb]in/</code>, is what hides <code>bin/hkxcmd.exe</code> (<a href="#WS-3">WS-3</a>). Its last line, <code>docs/Architecture Review*</code>, ignores the earlier review saved under <code>docs/Architecture reviews/</code>, so that review is unversioned while this one is not.</p>
       <p><strong>Suggested change.</strong> Remove the scratch trees once anything still wanted is in an issue or under <code>docs/</code> (with <a href="#WS-6">WS-6</a>'s list rescued first). Cut <code>.gitignore</code> down to what this workspace produces, and decide deliberately whether review reports are versioned.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8, with the owner's two decisions. The deviation list was rescued first (<a href="#WS-6">WS-6</a>). <code>.claude/scratch/</code>, <code>.scratch/</code>, <code>.idea/</code> and <code>CAO.code-workspace</code> are no longer tracked; they are ignored and stay on disk in the checkout that untracks them. <code>.gitignore</code> is cut from the Visual Studio template to what this workspace produces and its tools leave behind, keeping <code>/bin/</code> for the downloaded <code>hkxcmd.exe</code> (<a href="#WS-3">WS-3</a>). Reviews are versioned: the <code>docs/Architecture Review*</code> rule is gone, and the earlier review is tracked as <code>docs/reviews/2026-10-30-architecture-review.html</code>.</p>
     </div>
   </article>
 
@@ -1701,7 +1748,7 @@ if names.is_empty() {
     <div class="f-head">
       <span class="fid">WS-8</span>
       <h3>The shipped <code>common.ini</code> carries one user's state; <code>profiles/TES4</code> is an empty shell</h3>
-      <span class="sev sev-low">Low</span><span class="tag">data</span>
+      <span class="sev sev-low">Low</span><span class="tag">data</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>profiles/common.ini</code> · <code>profiles/TES4/isBase</code> · <code>crates/cao-gui/src/app.rs:562</code></p>
     <div class="f-body">
@@ -1713,6 +1760,7 @@ showTutorial=true
 notFirstStart=true</code></pre>
       <p><strong>Why it matters.</strong> With <code>notFirstStart=true</code> already in the tracked file, an install assembled from this tree never shows the first-start welcome (<code>first_start</code> returns early), opens on TES5 rather than the default SSE profile, and starts with advanced settings on. Separately, <code>profiles/TES4/</code> contains only an <code>isBase</code> marker: with no <code>profile.ini</code> it is never listed as a profile, and <code>cao_archive::Game</code> has no Oblivion variant.</p>
       <p><strong>Suggested change.</strong> Ship no <code>common.ini</code> (a missing file already reads as defaults) or ship one with defaults only. Delete <code>profiles/TES4/</code>.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8. The tracked <code>profiles/common.ini</code> is removed, since a missing file already reads as defaults, so there is one source of truth; a new install opens on SSE with the advanced settings hidden and the welcome message shown. <code>profiles/TES4/</code> is deleted. The GUI tests' <code>app_dir</code> helper writes a returning user's <code>common.ini</code>, and a new <code>new_install</code> helper gives the install as shipped; new tests check that no <code>common.ini</code> is shipped and that a new install opens on SSE with the welcome message.</p>
     </div>
   </article>
 
@@ -1720,7 +1768,7 @@ notFirstStart=true</code></pre>
     <div class="f-head">
       <span class="fid">WS-9</span>
       <h3>The application reports itself as version 0.1.0 and the exe has no version resource</h3>
-      <span class="sev sev-low">Low</span><span class="tag">identity</span>
+      <span class="sev sev-low">Low</span><span class="tag">identity</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-gui/src/app.rs:532</code> · <code>crates/cao-gui/src/app.rs:576</code> · <code>resources/cao-gui.rc</code></p>
     <div class="f-body">
@@ -1728,6 +1776,7 @@ notFirstStart=true</code></pre>
 env!("CARGO_PKG_VERSION")</code></pre>
       <p><strong>Why it matters.</strong> Every crate is <code>0.1.0</code>, so the About box and the welcome box of the successor to a 5.x application say "Cathedral Assets Optimizer 0.1.0". <code>cao-gui.rc</code> embeds the manifest and icon but no <code>VERSIONINFO</code>, so Explorer's Details tab and crash reports show no product name or version. The About text also has a typo ("WARRANTLY").</p>
       <p><strong>Suggested change.</strong> Give the application one version in <code>[workspace.package]</code>, add a <code>VERSIONINFO</code> block generated from it, and fix the typo.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. <code>[workspace.package]</code> sets <code>version = "1.0.0"</code>, the owner's choice for a fork, and every member inherits it, so the About and welcome boxes say 1.0.0. cao-gui's build script writes the package version into a header that <code>cao-gui.rc</code> uses in a new VERSIONINFO block with the product name, description, file names and versions, so the resource cannot drift from the About box. A new test reads the exe's version resource and compares it with the package version. The About text says "WARRANTY".</p>
     </div>
   </article>
 
@@ -1735,7 +1784,7 @@ env!("CARGO_PKG_VERSION")</code></pre>
     <div class="f-head">
       <span class="fid">WS-10</span>
       <h3>In-crate unit tests leave a new scratch folder in <code>%TEMP%</code> on every run</h3>
-      <span class="sev sev-low">Low</span><span class="tag">testing</span>
+      <span class="sev sev-low">Low</span><span class="tag">testing</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/executor/tests.rs:29</code> · <code>crates/cao-core/src/run/finalization/tests.rs:31</code></p>
     <div class="f-body">
@@ -1747,6 +1796,7 @@ env!("CARGO_PKG_VERSION")</code></pre>
     let _ = std::fs::remove_dir_all(&amp;dir);</code></pre>
       <p><strong>Why it matters.</strong> The directory name includes the process id, so the remove-before-create line never finds the previous run's folder, and nothing removes it afterwards. On this machine <code>%TEMP%\cao-core-unit</code> held 1,875 leftover directories from roughly 330 test runs. The integration tests avoid this by using <code>CARGO_TARGET_TMPDIR</code> with a stable name, which <code>cargo clean</code> removes. The same ten-line <code>scratch_dir</code> helper is also written out in ten places across the workspace.</p>
       <p><strong>Suggested change.</strong> Drop the pid from the name (each test already passes a unique name) so reruns reuse and clear the folder, or return a guard that removes it on drop. Consider moving the one helper into <code>cao-core</code>'s <code>test-support</code> feature, which the other crates' tests already depend on.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8 as suggested. Unit tests' scratch directories go under <code>&lt;target&gt;/tmp/cao-core-unit</code> with stable names and no pid, found from the test executable, so reruns clear and reuse the folder and <code>cargo clean</code> removes it. The remove-then-create logic is one helper, <code>cao_core::test_support::fresh_dir</code>, which the unit tests and the integration helpers of cao-core, cao-gui and cao-optimizers use. The five crates that cannot depend on cao-core keep their own copies, which already used stable <code>CARGO_TARGET_TMPDIR</code> names.</p>
     </div>
   </article>
 
@@ -1754,12 +1804,13 @@ env!("CARGO_PKG_VERSION")</code></pre>
     <div class="f-head">
       <span class="fid">WS-11</span>
       <h3>Dependency and lint policy is kept in step by hand</h3>
-      <span class="sev sev-low">Low</span><span class="tag">dependencies</span>
+      <span class="sev sev-low">Low</span><span class="tag">dependencies</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>Cargo.toml:33</code> · <code>Cargo.toml:49</code> · <code>Cargo.toml:69</code> · the <code>[lints.rust]</code> tables of five crates</p>
     <div class="f-body">
       <p><strong>Why it matters.</strong> Three things rely on a maintainer remembering a comment. (1) Five crates replace <code>[workspace.lints]</code> with their own table and are told to "keep every other lint in step with the root"; today the root has one lint, so there is nothing to drift, but the first added lint must be copied five times. (2) <code>i-slint-backend-testing = "=1.18.1"</code> must equal the resolved <code>slint ~1.18</code> exactly, and <code>ba2 = "=3.0.1"</code> and the <code>directxtex</code> fork revision are pinned for stated reasons; a routine <code>cargo update</code> can separate the first pair. (3) Nothing audits the graph: there is no <code>cargo deny</code> or <code>cargo audit</code> configuration, and the lock file carries duplicate majors (<code>thiserror</code> 1 and 2, three <code>windows-sys</code>, three <code>hashbrown</code>), all of them transitive: <code>thiserror</code> 1 through <code>ba2</code>, the rest through Slint's windowing and text stack.</p>
       <p><strong>Suggested change.</strong> Add a <code>deny.toml</code> with advisories, licences (it would also document <a href="#WS-4">WS-4</a>'s GPL component) and a duplicate-version allowlist, and run it in the workflow from <a href="#WS-2">WS-2</a>. A one-line CI check that the two Slint versions in <code>Cargo.lock</code> match would replace the comment.</p>
+      <p><strong>Resolution.</strong> Fixed in step 8, except point 1. <code>deny.toml</code> checks advisories, licences, duplicate versions and sources for the Windows MSVC graph. It allows GPL-3.0-only for <code>nifly-sys</code> alone and lists each known duplicate with what pulls it in; the chrono unmaintained advisory is ignored with its reason, since no maintained release exists, and three crates were updated in <code>Cargo.lock</code> to clear four advisories and a yanked release. A "dependency policy" CI job runs <code>cargo deny check</code> and fails when <code>Cargo.lock</code> resolves <code>slint</code> and <code>i-slint-backend-testing</code> to different versions. The lint tables stay duplicated: Cargo 1.99 still rejects a local key beside <code>lints.workspace = true</code>, and the root <code>Cargo.toml</code> records why and names the five crates a new lint must be copied to.</p>
     </div>
   </article>
 
@@ -1779,7 +1830,7 @@ env!("CARGO_PKG_VERSION")</code></pre>
         <tr><td class="num">5</td><td>Add CI and settle the long-path approach</td><td><a href="#WS-2">WS-2</a>, <a href="#WS-1">WS-1</a>, <a href="#WS-3">WS-3</a></td><td><span class="tag pass">done</span> Protects steps 1 to 4 from regressing and makes a release reproducible.</td></tr>
         <tr><td class="num">6</td><td>Make runs idempotent and cut repeated I/O</td><td><a href="#BE-6">BE-6</a>, <a href="#BE-7">BE-7</a>, <a href="#CORE-4">CORE-4</a>, <a href="#CORE-3">CORE-3</a>, <a href="#FS-6">FS-6</a>, <a href="#BE-8">BE-8</a></td><td><span class="tag pass">done</span> Mostly independent of each other; measured before and after where the cost was arithmetic.</td></tr>
         <tr><td class="num">7</td><td>Keyboard access and dialog sizing</td><td><a href="#GUI-5">GUI-5</a>, <a href="#GUI-6">GUI-6</a>, <a href="#GUI-4">GUI-4</a></td><td><span class="tag pass">done</span> Confined to the <code>.slint</code> files and the close path.</td></tr>
-        <tr><td class="num">8</td><td>Hygiene sweep</td><td>the remaining low findings</td><td>Dead code, stale documents and parity comments; best done file by file as other work touches them.</td></tr>
+        <tr><td class="num">8</td><td>Hygiene sweep</td><td>the remaining low findings, with <a href="#CORE-5">CORE-5</a>, <a href="#FS-5">FS-5</a> and <a href="#GUI-7">GUI-7</a></td><td><span class="tag pass">done</span> Dead code, stale documents and parity comments; done as one sweep at the owner's request, with the three medium findings no step had scheduled.</td></tr>
       </tbody>
     </table>
   </div>

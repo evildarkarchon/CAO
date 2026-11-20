@@ -7,6 +7,19 @@ use std::sync::{Arc, Mutex};
 use crate::Error;
 use crate::run::{RunScheduler, RunWork, ScheduledRunWorker, StandardRunScheduler};
 
+/// Runs each worker inline before scheduling returns, so the run is already
+/// terminal when its Run Handle exists, for scenarios that need a run to be
+/// deterministic.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct InlineRunScheduler;
+
+impl RunScheduler for InlineRunScheduler {
+    fn schedule(&self, work: RunWork) -> Result<Box<dyn ScheduledRunWorker>, Error> {
+        work();
+        Ok(Box::new(CompletedWorker))
+    }
+}
+
 /// Runs each worker inline, counting how many workers it was asked to start.
 #[derive(Default)]
 pub struct CountingInlineScheduler {

@@ -6,8 +6,10 @@
 import { ListView, Palette } from "std-widgets.slint";
 
 // A Log tab row's kind: the Application Log's severities, where `trace` is plog's
-// verbose (written `VERB`), and `detail` for a run-detail row, which is GUI-only and
-// never written to the file.
+// verbose (written `VERB`), and `detail` for a run-detail row pinned below the log's
+// rows while its run is shown. At the run's end the rows are also written to the
+// Application Log (GUI-12), so they can be copied from the file and outlive the next
+// run.
 export enum LogSeverity {
     error,
     warn,
@@ -26,6 +28,10 @@ export struct LogRow {
 // the run-detail rows, which are never dropped.
 export global LogTab {
     in property <[LogRow]> rows;
+    // How many run-detail rows end `rows`, kept by Rust as it adds and removes
+    // them, so neither the run's rows nor the log's need to scan the model to find
+    // where the log's rows end (GUI-13).
+    in-out property <int> detail-count;
 }
 
 export component LogPage inherits VerticalLayout {
@@ -33,7 +39,9 @@ export component LogPage inherits VerticalLayout {
 
     // plog's colour table (ERROR Red, WARN Orange, INFO Green, DEBUG Blue, VERB
     // Purple). On the dark palette the named colours are lightened: pure blue,
-    // purple and green on a near-black background are barely legible.
+    // purple and green on a near-black background are barely legible. On the light
+    // palette warnings are a dark amber: orange on a near-white page is under 2:1,
+    // and #9a5b00 is about 5:1 (GUI-12).
     property <bool> dark: Palette.color-scheme == ColorScheme.dark;
 
     pure function colour(severity: LogSeverity) -> color {
@@ -41,7 +49,7 @@ export component LogPage inherits VerticalLayout {
             return root.dark ? #ff6b6b : Colors.red;
         }
         if severity == LogSeverity.warn {
-            return root.dark ? #ffb347 : Colors.orange;
+            return root.dark ? #ffb347 : #9a5b00;
         }
         if severity == LogSeverity.info {
             return root.dark ? #6fcf6f : Colors.green;

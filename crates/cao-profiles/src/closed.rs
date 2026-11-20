@@ -109,6 +109,6 @@ pub(crate) fn read_list<T: ClosedSet>(ini: &IniFile, key: &str) -> Result<Vec<T>
 /// The text is read as `QVariant::toLongLong()` reads it, so surrounding
 /// whitespace is allowed, but text, a fraction or a number past 32 bits is not
 /// a member: a narrower read would wrap `2^32 + 85` to `85` and accept it.
-fn member<T: ClosedSet>(value: &Value) -> Option<T> {
+pub(crate) fn member<T: ClosedSet>(value: &Value) -> Option<T> {
     u32::try_from(value.to_i64()).ok().and_then(T::from_number)
 }

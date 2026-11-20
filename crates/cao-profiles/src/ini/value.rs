@@ -1,4 +1,4 @@
-//! INI values and the `QVariant` conversions CAO's C++ code relies on.
+//! INI values and the `QVariant` conversions that read them as QSettings did.
 
 /// One INI value, as QSettings holds it after reading a file.
 ///
@@ -17,8 +17,8 @@ pub enum Value {
     /// element is `@`-encoded). Elements are never lists themselves.
     List(Vec<Value>),
     /// Any other `@…)` encoding (`@Variant(…)`, `@String(…)`, `@ByteArray(…)`, …),
-    /// kept as Qt's unescaped text so it is written back verbatim. Qt writes a
-    /// one-element list as `@Variant(…)`; [`Value::to_int_list`] decodes that shape.
+    /// kept as Qt's unescaped text so it is written back verbatim. Qt wrote a
+    /// one-element list as `@Variant(…)`; [`Value::list_entries`] decodes that shape.
     Encoded(String),
 }
 
@@ -34,25 +34,16 @@ const TYPE_VARIANT_LIST: u32 = 9;
 const TYPE_STRING: u32 = 10;
 
 impl Value {
-    /// The value Qt's `setValue` stores for a list of integers.
+    /// The value to store for a list of integers: `@Invalid()` for an empty list,
+    /// as Qt writes one, and otherwise the plain `a, b, c`.
     ///
-    /// Qt writes an empty list as `@Invalid()` and a one-element `QVariantList` as a
-    /// `@Variant(…)` QDataStream blob holding one `Int`; longer lists are plain
-    /// `a, b, c`. The C++ build reads all three back, so a list written here survives
-    /// a round trip through either build.
+    /// A one-element list is written as the plain number, which the reader takes
+    /// as a one-element list (deviation 12). Qt wrote it as an opaque
+    /// `@Variant(…)` blob instead, which only a QSettings reader understands;
+    /// that shape is still read, from files Qt saved, but never written.
     pub fn int_list(values: &[i32]) -> Self {
         match values {
             [] => Self::Invalid,
-            [value] => {
-                let mut blob = Vec::with_capacity(16);
-                for word in [TYPE_VARIANT_LIST, 1, TYPE_INT] {
-                    blob.extend_from_slice(&word.to_be_bytes());
-                }
-                blob.extend_from_slice(&value.to_be_bytes());
-                // The blob is a Latin-1 string to Qt: one char per byte.
-                let text: String = blob.iter().map(|&byte| char::from(byte)).collect();
-                Self::Encoded(format!("@Variant({text})"))
-            }
             _ => Self::List(
                 values
                     .iter()
@@ -98,50 +89,16 @@ impl Value {
             .map_or(0, |text| text.trim().parse::<u64>().unwrap_or(0) as u32)
     }
 
-    /// `QVariant::toDouble()`: the C-locale number with surrounding whitespace allowed,
-    /// or `0.0` when the text does not parse.
-    pub fn to_f64(&self) -> f64 {
-        self.as_str()
-            .map_or(0.0, |text| text.trim().parse().unwrap_or(0.0))
-    }
-
-    /// `QVariant::toList()` with each element converted by `toInt()`, which is how CAO
-    /// reads `texturesUnwantedFormats`.
-    ///
-    /// A comma list converts each element; `@Invalid()` and a missing key give `[]`;
-    /// a `@Variant(…)` `QVariantList` of integers or strings is decoded, and one Qt
-    /// cannot finish reading gives `[]` as it does in Qt.
-    ///
-    /// **Deviation 12:** a plain scalar such as `texturesUnwantedFormats=85` reads as
-    /// `[85]`, where Qt reads `[]`. An empty scalar still reads as `[]`.
-    pub fn to_int_list(&self) -> Vec<i32> {
-        match self {
-            Self::Invalid => Vec::new(),
-            Self::List(elements) => elements.iter().map(Self::to_i32).collect(),
-            Self::Encoded(raw) if raw.starts_with("@Variant(") => {
-                decode_variant_list(&raw["@Variant(".len()..])
-                    .unwrap_or_default()
-                    .iter()
-                    .map(Self::to_i32)
-                    .collect()
-            }
-            _ => match self.as_str() {
-                Some(text) if !text.trim().is_empty() => vec![self.to_i32()],
-                _ => Vec::new(),
-            },
-        }
-    }
-
     /// Each entry of a list value, unconverted, so a strict reader can check
     /// every entry at full width and quote it as written.
     ///
-    /// The shapes are those of [`Value::to_int_list`]: a comma list gives its
-    /// elements, a plain scalar gives itself (deviation 12), and `@Invalid()`, a
-    /// missing key or an empty scalar give `[]`. A `@Variant(…)` list's integers
-    /// become their decimal text, untruncated.
+    /// A comma list gives its elements, a plain scalar gives itself (deviation
+    /// 12; Qt reads `[]`), and `@Invalid()`, a missing key or an empty scalar
+    /// give `[]`. A `@Variant(…)` list, the shape Qt wrote for a one-element
+    /// list, gives its entries, integers as their decimal text, untruncated.
     ///
-    /// Returns `None` where [`Value::to_int_list`] would read `[]` from something
-    /// that is not empty: a `@Variant(…)` that is not a `QVariantList` of
+    /// Returns `None` where Qt would read `[]` from something that is not
+    /// empty: a `@Variant(…)` that is not a `QVariantList` of
     /// integers or strings, or is cut short, and any other `@…)` encoding but
     /// `@String(…)`. Reading those as empty would let the next save overwrite
     /// the user's value with nothing.
@@ -193,8 +150,7 @@ fn parse_i64(text: &str) -> i64 {
 /// Returns `None` when the payload is not a `QVariantList`, when Qt would fail to
 /// read its elements (Qt's QDataStream then clears the container, so Qt itself
 /// reads `[]`), or when an element has a type CAO never writes (anything but the
-/// integer types and `QString`). [`Value::to_int_list`] reads all of these as
-/// `[]`; [`Value::list_entries`] reports them.
+/// integer types and `QString`). [`Value::list_entries`] reports all of these.
 fn decode_variant_list(payload: &str) -> Option<Vec<Value>> {
     // `QString::toLatin1` turns anything above U+00FF into `?`.
     let bytes: Vec<u8> = payload
@@ -289,82 +245,4 @@ impl From<u32> for Value {
     fn from(value: u32) -> Self {
         Self::String(value.to_string())
     }
-}
-
-impl From<i64> for Value {
-    fn from(value: i64) -> Self {
-        Self::String(value.to_string())
-    }
-}
-
-impl From<f64> for Value {
-    /// Qt writes doubles with `QString::number(d, 'g', QLocale::FloatingPointShortest)`.
-    fn from(value: f64) -> Self {
-        Self::String(format_double(value))
-    }
-}
-
-/// `QString::number(d, 'g', QLocale::FloatingPointShortest)`, which `QVariant`
-/// uses to write a double: the shortest digits that read back exactly, in fixed
-/// notation unless the exponent form is shorter (`2e+09`, `1e-05`).
-///
-/// Port of the `DFSignificantDigits` branch of `QLocaleData::doubleToString` with
-/// `decimalForm` and `exponentForm` (Qt 5.15 `qlocale.cpp`, `qlocale_tools.cpp`).
-fn format_double(d: f64) -> String {
-    if d.is_nan() {
-        return "nan".to_owned();
-    }
-    if d.is_infinite() {
-        return if d < 0.0 { "-inf" } else { "inf" }.to_owned();
-    }
-
-    // Rust's `{:e}` prints the same shortest round-trip digits Qt's double-conversion
-    // does, as `d.ddde±x`. `decpt` is Qt's decimal-point position.
-    let scientific = format!("{:e}", d.abs());
-    let (mantissa, exponent) = scientific.split_once('e').expect("`{:e}` has an exponent");
-    let mut digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
-    let decpt = exponent
-        .parse::<i32>()
-        .expect("`{:e}` exponent is an integer")
-        + 1;
-    let length = digits.len() as i32;
-
-    // Qt uses the exponent form when the fixed form would be longer.
-    let mut cutoff = 6;
-    if decpt > 0 {
-        // 'e', the sign, and a two-digit exponent (three past e+100).
-        cutoff = length + 4 + if decpt > 100 { 2 } else { 1 };
-        if length > decpt {
-            cutoff += 1;
-        }
-    }
-
-    let text = if decpt != length && (decpt <= -4 || decpt > cutoff) {
-        // exponentForm, with the exponent zero-padded to two digits as printf does.
-        if digits.len() > 1 {
-            digits.insert(1, '.');
-        }
-        let exponent = decpt - 1;
-        let sign = if exponent < 0 { '-' } else { '+' };
-        format!("{digits}e{sign}{:02}", exponent.abs())
-    } else {
-        // decimalForm, chopping trailing zeros.
-        let mut decpt = decpt;
-        if decpt < 0 {
-            digits.insert_str(0, &"0".repeat(decpt.unsigned_abs() as usize));
-            decpt = 0;
-        } else if decpt > length {
-            digits.push_str(&"0".repeat((decpt - length) as usize));
-        }
-        if (decpt as usize) < digits.len() {
-            digits.insert(decpt as usize, '.');
-        }
-        if decpt == 0 {
-            digits.insert(0, '0');
-        }
-        digits
-    };
-
-    // Qt never writes `-0`.
-    if d < 0.0 { format!("-{text}") } else { text }
 }

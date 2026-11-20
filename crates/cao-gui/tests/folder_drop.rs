@@ -50,18 +50,45 @@ fn dropping_a_folder_selects_it_as_the_mod_folder() {
     assert_eq!(mod_folder(app.window()), mods.display().to_string());
 }
 
+/// A file is no mod folder, so dropping one changes nothing (GUI-11).
 #[test]
-fn dropping_an_existing_file_selects_it_too() {
+fn dropping_a_file_leaves_the_mod_folder_alone() {
     headless();
     let app_dir = app_dir("drop_file");
     let file = scratch_dir("drop_file_mods").join("readme.txt");
     std::fs::write(&file, "x").unwrap();
     let (app, _desktop) = open(&app_dir);
+    let before = mod_folder(app.window());
 
-    // C++ accepted any existing path (`QDir::exists`), and so does the port.
     drop_paths(&app, &[&file]);
 
-    assert_eq!(mod_folder(app.window()), file.display().to_string());
+    assert_eq!(mod_folder(app.window()), before);
+}
+
+/// A run has already read the mod folder, which the run lock disables, so a
+/// drop during it is ignored and shows no hint (GUI-9).
+#[test]
+fn a_drop_while_a_run_holds_the_controls_is_ignored() {
+    let _serial = serial();
+    headless();
+    let app_dir = app_dir("drop_running");
+    edit_ini(&app_dir, "common.ini", "profile", "SSE");
+    edit_ini(&app_dir, "common.ini", "showTutorial", "false");
+    let mods = scratch_dir("drop_running_mods");
+    let other = scratch_dir("drop_running_other");
+    let (app, _desktop) = open(&app_dir);
+    let ui = app.window();
+    ui.set_user_path(mods.display().to_string().into());
+    ui.set_dry_run(true);
+    click(ui, "Run");
+    assert!(ui.get_running());
+
+    app.window_event(&WindowEvent::HoveredFile(other.clone()));
+    next_turn();
+    assert!(!hint_shown(ui));
+    drop_paths(&app, &[&other]);
+
+    assert_eq!(mod_folder(ui), mods.display().to_string());
 }
 
 #[test]

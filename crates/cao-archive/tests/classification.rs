@@ -51,8 +51,10 @@ fn the_first_component_and_the_extension_pick_the_archive_type() {
     }
 }
 
-/// Every row of bethutil's SSE tables (`settings.hpp` at `81f882ed`), as
-/// `(extension, directory, type)`. TES5 shares them; FO4 changes two rows.
+/// Every row of the SSE tables, as `(extension, directory, type)`: bethutil's
+/// (`settings.hpp` at `81f882ed`) without its duplicate `.hkb` row and its
+/// `.jpg` rule under `root` (audit BE-18). TES5 shares them; FO4 changes two
+/// rows.
 const SSE_ROWS: &[(&str, &str, FileType)] = &[
     (".bgem", "materials", FileType::Standard),
     (".bgsm", "materials", FileType::Standard),
@@ -63,7 +65,6 @@ const SSE_ROWS: &[(&str, &str, FileType)] = &[
     (".dlodsettings", "lodsettings", FileType::Standard),
     (".dtl", "meshes", FileType::Standard),
     (".egm", "meshes", FileType::Standard),
-    (".jpg", "root", FileType::Standard),
     (".hkb", "meshes", FileType::Standard),
     (".hkx", "meshes", FileType::Standard),
     (".lst", "meshes", FileType::Standard),
@@ -168,11 +169,32 @@ fn uvd_visibility_files_pack_only_under_fo4() {
     assert_eq!(classify(Game::Sse, r"vis\cell.uvd"), FileType::Unpackable);
 }
 
+/// Audit BE-18: the `.jpg` rule under `root`, kept only for bethutil
+/// parity, is gone, so a JPEG stays loose wherever it is.
 #[test]
-fn the_root_token_matches_only_a_folder_named_root() {
-    // A root-level file's first component is its own name, never `root`.
-    assert_eq!(classify(Game::Sse, "splash.jpg"), FileType::Unpackable);
-    assert_eq!(classify(Game::Sse, r"root\splash.jpg"), FileType::Standard);
+fn a_jpeg_is_never_packed() {
+    for game in [Game::Tes5, Game::Sse, Game::Fo4] {
+        assert_eq!(classify(game, "splash.jpg"), FileType::Unpackable);
+        assert_eq!(classify(game, r"root\splash.jpg"), FileType::Unpackable);
+    }
+}
+
+/// Audit BE-18: both games' Standard tables are built from one list, so
+/// FO4's is SSE's, row for row, plus its two additions, and no row repeats.
+#[test]
+fn fo4_standard_files_are_sse_s_plus_png_and_uvd() {
+    let sse = Settings::get(Game::Sse).standard_files;
+    let fo4 = Settings::get(Game::Fo4).standard_files;
+    assert_eq!(&fo4[..sse.len()], sse);
+    let extra: Vec<_> = fo4[sse.len()..]
+        .iter()
+        .map(|rule| (rule.extension, rule.directories))
+        .collect();
+    assert_eq!(extra, [(".png", &["textures"][..]), (".uvd", &["vis"][..])]);
+    let mut extensions: Vec<_> = fo4.iter().map(|rule| rule.extension).collect();
+    extensions.sort_unstable();
+    extensions.dedup();
+    assert_eq!(extensions.len(), fo4.len(), "a Standard row repeats");
 }
 
 #[test]

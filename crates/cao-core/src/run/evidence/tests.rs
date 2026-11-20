@@ -356,15 +356,11 @@ fn a_finalization_plan_is_immutable_and_cleanup_failures_stay_separate() {
 
     assert!(terminal.failures().is_empty());
     let details: Vec<_> = terminal
-        .safety_cleanup_failures()
+        .cleanup_failures()
         .iter()
         .map(|failure| failure.detail.as_str())
         .collect();
     assert_eq!(details, ["artifact", "service"]);
-    assert_eq!(
-        terminal.cleanup_failures(),
-        terminal.safety_cleanup_failures()
-    );
     let plan = terminal
         .phase(RunPhase::ArchiveFinalization)
         .unwrap()
@@ -844,7 +840,6 @@ fn each_archive_discovery_fact_is_recorded_once() {
         terminal.archive_discovery(),
         Some(&ArchiveDiscoveryEvidence {
             skipped_archive_counts: skipped_archives(SkipReason::ExcludedAssetVariant, 2),
-            unsupported_explicit_paths: Vec::new(),
             nested_archive_count: 3,
         })
     );

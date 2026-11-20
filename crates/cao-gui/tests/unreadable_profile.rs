@@ -39,10 +39,7 @@ fn app_with_sse_asset_options_on(name: &str) -> PathBuf {
 
 /// The options the SSE profile holds on disk.
 fn sse_options(app_dir: &Path) -> Options {
-    Profiles::new(app_dir)
-        .open("SSE")
-        .load_options(&Options::default())
-        .unwrap()
+    Profiles::new(app_dir).open("SSE").load_options("").unwrap()
 }
 
 #[test]

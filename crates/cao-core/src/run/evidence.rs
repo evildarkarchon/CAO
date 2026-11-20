@@ -1,10 +1,10 @@
 //! Run Evidence: the owned factual record of one Optimization Run.
 //!
-//! Ported from `src/Run/RunEvidence.h`. [`MutableRunEvidence`] is the sole
-//! mutable owner while the run executes; consuming it after Safety Cleanup
-//! yields the immutable [`RunEvidence`]. Each fact is retained before it is
-//! published through the [`RunObservationSink`], so an observer never sees a
-//! fact the evidence could later lose.
+//! [`MutableRunEvidence`] is the sole mutable owner while the run executes;
+//! consuming it after Safety Cleanup yields the immutable [`RunEvidence`].
+//! Each fact is retained before it is published through the
+//! [`RunObservationSink`], so an observer never sees a fact the evidence
+//! could later lose.
 //!
 //! Structural violations are programming errors. They return
 //! [`Error::EvidenceInvariant`], which the Run Executor turns into a panic only
@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::execution::{AssetExecutionResult, MutationState};
 use crate::routing::{RoutedAsset, RoutingLedger, SkipReason};
@@ -31,6 +32,7 @@ use attempt_phase::{ATTEMPT_BEARING_PHASES, PLANNABLE_PHASES};
 pub(crate) use attempt_phase::{ArchiveFinalizationHandle, AttemptPhaseHandle, PhaseAttempt};
 pub use planned_work::{
     OutputPlanBasis, PlannedArchiveExtraction, PlannedArchiveWork, PlannedOutputArchive,
+    PlannedPruning,
 };
 
 /// One completed attempt: its routed identity, resolved Mod Root and durable outcome.
@@ -61,8 +63,6 @@ pub trait RunObservationSink {
 pub struct ArchiveDiscoveryEvidence {
     /// Recognized Archives excluded by Routing Policy, by Skip Reason.
     pub skipped_archive_counts: BTreeMap<SkipReason, usize>,
-    /// Unsupported paths the caller named explicitly as files.
-    pub unsupported_explicit_paths: Vec<PathBuf>,
     /// Distinct Archives that appeared only after extraction.
     pub nested_archive_count: usize,
 }
@@ -93,7 +93,9 @@ pub(crate) struct Storage {
     archive_discovery: Option<ArchiveDiscoveryEvidence>,
     skipped_archive_counts_recorded: bool,
     nested_archive_count_recorded: bool,
-    routing_ledger: Option<RoutingLedger>,
+    /// Shared with the Processing Assets loop, which walks the same ledger
+    /// while this evidence records its attempts, so neither copies it.
+    routing_ledger: Option<Arc<RoutingLedger>>,
     asset_attempts: Vec<RoutedAssetAttempt>,
     /// Archive Finalization's public result, the only holder of its
     /// attempts: opened by the plan, or by an unplanned finish, it holds the
@@ -109,7 +111,6 @@ pub(crate) struct Storage {
     safety_cleanup_failures: Vec<RunFailure>,
     cancellation_observed: bool,
     // Derived when the evidence is consumed, after every producer has stopped.
-    cleanup_failures: Vec<RunFailure>,
     mutation_summaries: Vec<MutationSummary>,
     skipped_asset_counts: BTreeMap<SkipReason, usize>,
 }
@@ -257,7 +258,7 @@ impl RunEvidence {
     /// The definitive routing, or `None` when it did not complete. An empty
     /// ledger still means routing completed with no Routed Assets.
     pub fn routing_ledger(&self) -> Option<&RoutingLedger> {
-        self.storage.routing_ledger.as_ref()
+        self.storage.routing_ledger.as_deref()
     }
 
     /// Completed Asset attempts in execution order, including unsafe failures.
@@ -291,13 +292,8 @@ impl RunEvidence {
     }
 
     /// Failures of the final Safety Cleanup pass, in attempted order.
-    pub fn safety_cleanup_failures(&self) -> &[RunFailure] {
-        &self.storage.safety_cleanup_failures
-    }
-
-    /// Attempt-local cleanup failures followed by final Safety Cleanup failures.
     pub fn cleanup_failures(&self) -> &[RunFailure] {
-        &self.storage.cleanup_failures
+        &self.storage.safety_cleanup_failures
     }
 
     /// Whether cooperative cancellation was observed before the evidence was sealed.
@@ -787,7 +783,8 @@ impl<'a> MutableRunEvidence<'a> {
     /// determinate progress starting at zero.
     ///
     /// The total is derived from `ledger`'s Routed Assets, so it cannot
-    /// disagree with the routing. The returned handle is the only way to
+    /// disagree with the routing. A caller that walks the ledger while it
+    /// records may pass a shared `Arc` and keep a clone of it. The returned handle is the only way to
     /// record the phase's attempts, and it holds this evidence until its
     /// borrow ends, which closes the phase.
     ///
@@ -797,7 +794,7 @@ impl<'a> MutableRunEvidence<'a> {
     /// missing, a Run Failure was recorded, or routing was already retained.
     pub fn open_processing_assets(
         &mut self,
-        ledger: RoutingLedger,
+        ledger: impl Into<Arc<RoutingLedger>>,
     ) -> Result<AttemptPhaseHandle<'_, 'a, RoutedAssetAttempt>, Error> {
         if self.storage.current_phase() != Some(RunPhase::BuildingEffectiveAssetTree)
             || !self.storage.archive_discovery_complete()
@@ -815,6 +812,7 @@ impl<'a> MutableRunEvidence<'a> {
                 "Definitive routing can only be recorded once",
             ));
         }
+        let ledger = ledger.into();
         let total = ledger.routed_assets().len();
         self.storage.routing_ledger = Some(ledger);
         // The checks above already keep Processing Assets from opening
@@ -897,6 +895,26 @@ impl<'a> MutableRunEvidence<'a> {
         Ok(())
     }
 
+    /// Retains one folder a Dry Run expects its Apply run to prune, after
+    /// those already recorded.
+    ///
+    /// Unlike a planned output it needs no output plan basis: a run that
+    /// creates no Archive still prunes the folders its Archive extraction
+    /// emptied, and plans no output to have a basis.
+    ///
+    /// # Errors
+    /// A Run Evidence invariant violation, retaining nothing, outside a
+    /// Planned Archive Finalization.
+    pub(crate) fn record_planned_pruning(&mut self, pruning: PlannedPruning) -> Result<(), Error> {
+        if !self.storage.is_planning(RunPhase::ArchiveFinalization) {
+            return Err(Error::EvidenceInvariant(
+                "Planned pruning must be recorded during a Planned Archive Finalization",
+            ));
+        }
+        self.storage.planned_archive_work.push_pruning(pruning);
+        Ok(())
+    }
+
     /// Retains one final Safety Cleanup failure without publishing it as a Run Failure.
     pub fn record_safety_cleanup_failure(&mut self, failure: RunFailure) -> Result<(), Error> {
         if self.storage.current_phase() != Some(RunPhase::SafetyCleanup)
@@ -939,7 +957,7 @@ impl<'a> MutableRunEvidence<'a> {
     // with.
     #[cfg(test)]
     pub fn routing_ledger(&self) -> Option<&RoutingLedger> {
-        self.storage.routing_ledger.as_ref()
+        self.storage.routing_ledger.as_deref()
     }
 
     /// Runs one presentation callback, retaining a panic as an unpublished
@@ -970,12 +988,6 @@ impl<'a> MutableRunEvidence<'a> {
         }
         let storage = &mut self.storage;
         storage.mutation_summaries = derive_mutation_summaries(storage);
-        storage.cleanup_failures = storage
-            .asset_attempts
-            .iter()
-            .flat_map(|attempt| attempt.result.cleanup_failures().iter().cloned())
-            .chain(storage.safety_cleanup_failures.iter().cloned())
-            .collect();
         storage.skipped_asset_counts = SkipReason::ALL
             .into_iter()
             .map(|reason| (reason, storage.skipped_asset_count(reason)))

@@ -1,18 +1,18 @@
 //! Mod Selection resolution: the part of Preparing that turns a request's Mod
 //! Selection into the canonical Mod Roots a run processes.
 //!
-//! Ported from `resolveModRoots` in `src/Run/RunExecutor.cpp`. One Mod Root
-//! resolves to itself. Several Mods resolves each immediate child directory of
-//! the mods directory as its own Mod Root, less its Mod Exclusions, which are
-//! recorded as Run Diagnostics and never affect the Run Outcome. Nothing here
-//! mutates the filesystem.
+//! One Mod Root resolves to itself. Several Mods resolves each immediate child
+//! directory of the mods directory as its own Mod Root, less its Mod
+//! Exclusions, which are recorded as Run Diagnostics and never affect the Run
+//! Outcome. Nothing here mutates the filesystem.
 //!
-//! Two recorded deviations from C++ live here:
+//! Two rules decide which children are not mods at all:
 //!
-//! - Deviation 19: a child in CAO's reserved `.cao-staging` namespace is never
-//!   a Mod Root, and is skipped silently rather than diagnosed.
-//! - Deviation 20: a separator is a child whose name *ends in*
-//!   [`SEPARATOR_SUFFIX`] (MO2's convention), not one containing a marker.
+//! - A child in CAO's reserved `.cao-staging` namespace is CAO's own working
+//!   space, never a Mod Root, so it is skipped silently rather than diagnosed.
+//! - A separator is a child whose name *ends in* [`SEPARATOR_SUFFIX`], the
+//!   name Mod Organizer 2 gives its separator folders. A mod whose name merely
+//!   contains "separator" is still a mod.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -28,8 +28,9 @@ use crate::run::{
 /// The suffix Mod Organizer 2 gives its separator folders. A Several Mods
 /// child whose name ends in it, matched case-sensitively, is a separator.
 ///
-/// Deviation 20: MO2 names its separators `<name>_separator`. C++ passed the
-/// marker "separator" and excluded any child containing it.
+/// MO2 names its separators `<name>_separator`, so only that ending marks
+/// one: matching the word anywhere in a name would also exclude real mods
+/// that happen to contain it.
 ///
 /// It is a fixed convention of the mod manager, not a profile fact, so it is
 /// not part of the Selected Profile.
@@ -151,15 +152,15 @@ struct Child {
 /// Which Mod Exclusion, if any, applies to a child.
 ///
 /// A child matching both policies owes one exclusion, and the separator rule
-/// takes precedence, as in C++.
+/// takes precedence: a separator is not a mod at all, which says more than
+/// that the user chose to ignore it.
 fn mod_exclusion(child: &Child, ignored: &HashSet<String>) -> Option<RunDiagnostic> {
-    // Deviation 20: a suffix, matched case-sensitively.
+    // A suffix, matched case-sensitively, as MO2 writes it.
     let separator = child.name.ends_with(SEPARATOR_SUFFIX);
-    // The details keep C++'s wording, "marker" included.
     let (code, detail) = if separator {
         (
             RunDiagnosticCode::SeparatorModExcluded,
-            "The child Mod Root matches a configured separator marker",
+            "The child folder's name ends in _separator, which marks a Mod Organizer 2 separator rather than a mod",
         )
     } else if ignored.contains(&child.folded) {
         (

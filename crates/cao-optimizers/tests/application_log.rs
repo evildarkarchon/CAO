@@ -216,11 +216,24 @@ fn reopening_an_oversized_file_rolls_only_after_its_first_record() {
     );
 }
 
+/// Writes records of 10,000 bytes until the live file at `path` passes
+/// `limit`. The size is checked before each write, so the record that passes
+/// the limit still lands in the live file.
+fn fill_past(sink: &ApplicationLog, path: &Path, limit: u64) {
+    let big = "x".repeat(10_000);
+    while std::fs::metadata(path).unwrap().len() <= limit {
+        emit(sink, Level::Info, &big);
+    }
+}
+
+/// Audit BE-15: chunks are numbered upwards, so a roll renames only the live
+/// file, to one past the highest chunk, and deletes the one chunk that falls
+/// out of the 999 kept; no other chunk moves.
 #[test]
 fn the_log_rolls_past_the_size_limit_into_numbered_files() {
     let dir = scratch_dir("log-rotation");
     let path = dir.join("log.html");
-    // Older chunks shift up by one; the oldest kept chunk (999) falls off.
+    // The next chunk is 1000, so chunk 1 falls out of the 999 kept.
     std::fs::write(dir.join("log.1.html"), "chunk one").unwrap();
     std::fs::write(dir.join("log.998.html"), "chunk 998").unwrap();
     std::fs::write(dir.join("log.999.html"), "chunk 999").unwrap();
@@ -235,10 +248,76 @@ fn the_log_rolls_past_the_size_limit_into_numbered_files() {
     let full = read(&path);
     emit(&sink, Level::Info, "after the roll");
 
-    assert_eq!(read(&dir.join("log.1.html")), full);
-    assert_eq!(read(&dir.join("log.2.html")), "chunk one");
-    assert_eq!(read(&dir.join("log.999.html")), "chunk 998");
-    assert!(!dir.join("log.998.html").exists());
+    assert_eq!(read(&dir.join("log.1000.html")), full);
+    assert_eq!(read(&dir.join("log.999.html")), "chunk 999");
+    assert_eq!(read(&dir.join("log.998.html")), "chunk 998");
+    assert!(!dir.join("log.1.html").exists());
+    assert!(!dir.join("log.2.html").exists());
+    assert_eq!(
+        read(&path),
+        [
+            HEADER,
+            "<br><font color=Green>2026-10-08 14:03:07 [INFO] after the roll</font>\n"
+        ]
+        .concat()
+    );
+}
+
+/// Audit BE-15: successive rolls of one file take successive numbers, the
+/// newest highest.
+#[test]
+fn successive_rolls_number_the_chunks_upwards() {
+    let dir = scratch_dir("log-rotation-upwards");
+    let path = dir.join("log.html");
+    let sink = open(&path, false);
+
+    fill_past(&sink, &path, MAX_FILE_SIZE);
+    emit(&sink, Level::Info, "second chunk");
+    fill_past(&sink, &path, MAX_FILE_SIZE);
+    emit(&sink, Level::Info, "live");
+
+    assert!(!read(&dir.join("log.1.html")).contains("second chunk"));
+    assert!(read(&dir.join("log.2.html")).contains("second chunk"));
+    assert!(!dir.join("log.3.html").exists());
+    assert!(read(&path).contains("live"));
+}
+
+/// Audit BE-15: a roll that cannot rename the live file keeps writing to it
+/// and waits for another [`MAX_FILE_SIZE`] before trying again, rather than
+/// trying, and reopening the file, before every record.
+#[test]
+fn a_failed_roll_backs_off_for_another_chunk() {
+    use std::os::windows::fs::OpenOptionsExt;
+    /// `FILE_SHARE_READ | FILE_SHARE_WRITE`, without `FILE_SHARE_DELETE`,
+    /// so the live file cannot be renamed while the handle is open.
+    const SHARE_READ_WRITE: u32 = 0x1 | 0x2;
+
+    let dir = scratch_dir("log-rotation-failed");
+    let path = dir.join("log.html");
+    let sink = open(&path, false);
+    fill_past(&sink, &path, MAX_FILE_SIZE);
+    let blocker = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(SHARE_READ_WRITE)
+        .open(&path)
+        .unwrap();
+
+    emit(&sink, Level::Info, "the roll fails");
+    emit(&sink, Level::Info, "no new attempt");
+    drop(blocker);
+    // The rename would succeed now, but the next attempt waits.
+    emit(&sink, Level::Info, "still backing off");
+
+    assert!(!dir.join("log.1.html").exists());
+    let live = read(&path);
+    for record in ["the roll fails", "no new attempt", "still backing off"] {
+        assert!(live.contains(record), "{record}");
+    }
+
+    fill_past(&sink, &path, 2 * MAX_FILE_SIZE);
+    emit(&sink, Level::Info, "after the roll");
+
+    assert!(read(&dir.join("log.1.html")).contains("still backing off"));
     assert_eq!(
         read(&path),
         [

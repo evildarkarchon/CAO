@@ -18,7 +18,7 @@ use common::{junction, scratch_dir, write};
 const NEEDS_SYMLINKS: &str =
     "creating file symlinks needs SeCreateSymbolicLinkPrivilege or Developer Mode";
 
-/// The directory pin every C++ ancestor walk opens.
+/// The directory pin every staging ancestor walk opens.
 fn directory_pin(path: &Path) -> std::fs::File {
     Open::new(
         Access::LIST_DIRECTORY | Access::READ_ATTRIBUTES,

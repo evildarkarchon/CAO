@@ -1,24 +1,22 @@
-//! The HDPT reader, ported from C++ `PluginsOperations::listHeadparts` (#505).
+//! The HDPT reader (#505).
 //!
 //! A plugin is a `TES4` header record followed by top-level groups. Each MODL
 //! field of a record in the `HDPT` group names a Headpart Mesh. [`headparts`]
-//! reads them as C++ did, `/`-separated under `meshes/`, with deviation 17's
-//! fixes:
+//! reads them `/`-separated under `meshes/` (deviation 17):
 //!
-//! - **No overflow.** C++ copied each MODL field into a 1024-byte buffer and
-//!   read it up to a NUL that might not be there. Here a MODL path ends at its
-//!   first NUL or at the end of its field, whatever its length.
-//! - **No hang.** C++ looped forever on HDPT framing that ran past the end of
-//!   the file or of its group. Here every header is checked against what
-//!   encloses it, and each step moves past at least one header, so a read
-//!   always ends. A truncated HDPT group, record or field makes the plugin
-//!   unreadable ([`PluginError::Truncated`]).
-//! - **Compressed records.** C++ read a compressed record's zlib stream as if
-//!   it were fields. Here it is decompressed first.
+//! - A MODL path ends at its first NUL or at the end of its field, whatever
+//!   its length, so a field without a NUL is never read past.
+//! - Every header is checked against what encloses it, and each step moves
+//!   past at least one header, so a read always ends. A truncated HDPT group,
+//!   record or field makes the plugin unreadable ([`PluginError::Truncated`]).
+//! - A compressed record is decompressed before its fields are read.
+//! - A path's text is UTF-8 when it is valid UTF-8, and Windows-1252
+//!   otherwise, the code page plugin strings are written in
+//!   ([`decode_game_text`], audit BE-13).
 //!
-//! Outside the HDPT group nothing changes: a file that does not start with
-//! `TES4` names no Headpart Mesh, and framing cut short before the HDPT group
-//! only ends the read early, as it ended C++'s.
+//! A file that does not start with `TES4` names no Headpart Mesh, and framing
+//! cut short before the HDPT group only ends the read early: a plugin's other
+//! groups are none of this reader's business.
 
 use std::io::{self, Read, Seek, SeekFrom};
 
@@ -52,8 +50,7 @@ const MAX_DECOMPRESSED: u32 = 16 * 1024 * 1024;
 /// The Headpart Meshes `plugin`'s HDPT records name, in record order, each
 /// `/`-separated and under `meshes/` (see [`modl_path`]).
 ///
-/// Only the first top-level `HDPT` group is read, as C++ read only that one;
-/// a game writes at most one.
+/// Only the first top-level `HDPT` group is read; a game writes at most one.
 ///
 /// # Errors
 /// [`PluginError::Truncated`] when the HDPT group, one of its records or one
@@ -69,8 +66,9 @@ pub fn headparts<R: Read + Seek>(plugin: &mut R) -> Result<Vec<String>, PluginEr
         return Ok(Vec::new());
     }
     let mut at = HEADER as u64 + u64::from(u32_at(&header, 4));
-    // Each top-level group needs a whole header. As in C++, the walk ends at
-    // the first entry it cannot read or that is not a group.
+    // Each top-level group needs a whole header. The walk ends at the first
+    // entry it cannot read or that is not a group: past it, nothing says
+    // where the next group starts.
     while let Some(header) = read_header(plugin, at, length)?
         && &header[..4] == b"GRUP"
     {
@@ -78,7 +76,8 @@ pub fn headparts<R: Read + Seek>(plugin: &mut R) -> Result<Vec<String>, PluginEr
         let size = u64::from(u32_at(&header, 4));
         if &header[8..12] != b"HDPT" {
             if size < HEADER as u64 {
-                // C++'s unsigned skip wrapped around here, which ended its read.
+                // A group smaller than its own header cannot be skipped
+                // past, so the read ends here.
                 break;
             }
             at += size;
@@ -187,20 +186,53 @@ fn record_headparts(fields: &[u8], headparts: &mut Vec<String>) -> Result<(), Pl
     Ok(())
 }
 
-/// The Headpart Mesh a MODL field names, as C++ built it: the text up to the
-/// first NUL, read as UTF-8 (Qt's `QString(const char*)`), under `meshes/`
-/// unless it already starts with `meshes` in any case, then cleaned with
-/// [`clean_path`].
+/// The Headpart Mesh a MODL field names: the text up to the first NUL,
+/// decoded with [`decode_game_text`], under `meshes/` unless its first folder
+/// already is `meshes` in any case, then cleaned with [`clean_path`].
+///
+/// Only a whole first folder counts, so `MeshesHD/hair.nif` is placed under
+/// `meshes/` like any other path relative to it (audit BE-13).
 fn modl_path(data: &[u8]) -> String {
     let text = data.split(|&byte| byte == 0).next().unwrap_or_default();
-    let text = String::from_utf8_lossy(text);
-    let under_meshes = text
-        .get(..6)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("meshes"));
+    let text = decode_game_text(text);
+    let bytes = text.as_bytes();
+    let under_meshes = bytes.len() > 6
+        && bytes[..6].eq_ignore_ascii_case(b"meshes")
+        && matches!(bytes[6], b'/' | b'\\');
     if under_meshes {
         clean_path(&text)
     } else {
         clean_path(&format!("meshes/{text}"))
+    }
+}
+
+/// The characters Windows-1252 gives the bytes 0x80 to 0x9F; the five
+/// bytes it leaves undefined map to the C1 control of the same value, as
+/// Windows' own conversion maps them. Every other byte is the Latin-1
+/// character of the same value.
+const WINDOWS_1252_HIGH: [char; 32] = [
+    '\u{20AC}', '\u{81}', '\u{201A}', '\u{192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
+    '\u{2C6}', '\u{2030}', '\u{160}', '\u{2039}', '\u{152}', '\u{8D}', '\u{17D}', '\u{8F}',
+    '\u{90}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
+    '\u{2DC}', '\u{2122}', '\u{161}', '\u{203A}', '\u{153}', '\u{9D}', '\u{17E}', '\u{178}',
+];
+
+/// Decodes a path stored in a plugin or a NIF: as UTF-8 when the bytes are
+/// valid UTF-8, and otherwise as Windows-1252, the code page the games' tools
+/// write paths in, so a path with an accented letter still names its file
+/// (audit BE-13). Decoding the ANSI bytes lossily as UTF-8 would turn each
+/// such letter into U+FFFD, which no file name holds.
+pub(crate) fn decode_game_text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => std::borrow::Cow::Borrowed(text),
+        Err(_) => bytes
+            .iter()
+            .map(|&byte| match byte {
+                0x80..=0x9F => WINDOWS_1252_HIGH[usize::from(byte - 0x80)],
+                _ => char::from(byte),
+            })
+            .collect::<String>()
+            .into(),
     }
 }
 

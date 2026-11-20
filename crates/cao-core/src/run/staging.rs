@@ -1,5 +1,4 @@
-//! The staging-ownership protocol's producer side, ported from the producing
-//! half of C++ `StagingRecovery` (`src/Run/StagingRecovery.cpp`).
+//! The staging-ownership protocol's producer side.
 //!
 //! See `docs/architecture/staging-ownership.md`. Each Mod Root reserves
 //! `.cao-staging`, which holds a stable `owner.lock`, the `ownership.manifest`
@@ -27,14 +26,17 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs::{File, Metadata};
 use std::io::{self, Write as _};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use cao_winfs::{
-    Access, FileFacts, Open, OwnerLock, OwnerLockError, Share, canonical,
-    compare_ordinal_ignore_case, delete_by_handle, generic_utf8, is_reparse_point,
-    move_file_write_through, random_nonce, volume_guid_path, weakly_canonical,
+    Access, FileFacts, FileIdentity, Open, OwnerLock, OwnerLockError, Share, canonical,
+    delete_by_handle, generic_utf8, is_reparse_point, move_file_write_through, random_nonce,
+    weakly_canonical,
 };
 
+use crate::run::path_safety::{
+    ChainError, DirectoryPins, pin_directory_chain, pin_ordinary_directory,
+};
 use crate::run::{CancellationToken, RunFailure, RunFailureCode, RunId, RunPhase};
 use recovery::Halt;
 
@@ -84,6 +86,15 @@ pub enum StagingError {
     /// an entry this run does not own.
     #[error("An unowned entry already occupies a new staging path: {}", .0.display())]
     Collision(PathBuf),
+    /// The manifest's fixed scratch name was occupied when a snapshot was to
+    /// be written (FS-10). A publication that fails removes the scratch file
+    /// it wrote, so this is a file the scope could not remove or another
+    /// program's, and it is never deleted here.
+    #[error(
+        "The staging manifest's scratch name is already occupied, so no ownership snapshot can be written until it is removed: {}",
+        .0.display()
+    )]
+    ScratchOccupied(PathBuf),
     /// The request breaks the staging contract, such as a destination
     /// outside its Mod Root or a changed destination.
     #[error("{0}")]
@@ -309,14 +320,6 @@ impl StagingScope {
                 "A staged output must belong to its canonical Mod Root.".to_owned(),
             ));
         }
-        let root_volume = volume_guid_path(&root).map_err(StagingError::io("Resolve", &root))?;
-        let parent_volume =
-            volume_guid_path(&parent).map_err(StagingError::io("Resolve", &parent))?;
-        if compare_ordinal_ignore_case(&root_volume, &parent_volume).is_ne() {
-            return Err(StagingError::Invalid(
-                "The staged output and Mod Root must be on the same volume.".to_owned(),
-            ));
-        }
         // The manifest grammar is canonical even though routed Asset extensions
         // are case-insensitive.
         let extension = destination
@@ -339,6 +342,23 @@ impl StagingScope {
                 &parent,
                 "A staged Asset parent disappeared before creation.",
             ));
+        }
+        // The volume check compares the identities of the pinned root and
+        // parent, as publication does, rather than mount-manager volume names,
+        // which a network share does not have (FFI-3). A parent that is the
+        // root has no pin of its own and is trivially on its volume.
+        if let Some(parent_pin) = area.parent_pins.get(&parent) {
+            let root_identity = FileIdentity::of(&pin_directory(&root)?)
+                .map_err(StagingError::io("Identify", &root))?;
+            let parent_identity =
+                FileIdentity::of(parent_pin).map_err(StagingError::io("Identify", &parent))?;
+            if !root_identity.same_volume(&parent_identity) {
+                // Nothing is registered beneath the pins just taken.
+                area.release_unneeded_parent_pins(&root);
+                return Err(StagingError::Invalid(
+                    "The staged output and Mod Root must be on the same volume.".to_owned(),
+                ));
+            }
         }
         let filename = format!("{prefix}{}-{}{extension}", self.run_id, nonce()?);
         let relative = if destination_parent.is_empty() {
@@ -627,13 +647,13 @@ impl StagingScope {
                     if let Some((pins, locks)) = created {
                         // No manifest names anything yet, so nothing else can
                         // exist: drop this call's pins and lock, which deny
-                        // the deletions, then remove what it created. A
-                        // collision found a scratch file this call did not
+                        // the deletions, then remove what it created. An
+                        // occupied scratch name is a file this call did not
                         // write, which stays.
                         self.areas.remove(root);
                         self.locks.truncate(locks);
                         self.pins.truncate(pins);
-                        if matches!(error, StagingError::Collision(_)) {
+                        if matches!(error, StagingError::ScratchOccupied(_)) {
                             remove_bootstrap(&staging, &[OWNER_LOCK]);
                         } else {
                             remove_bootstrap(&staging, &[MANIFEST_SCRATCH, OWNER_LOCK]);
@@ -839,6 +859,12 @@ pub(crate) fn quoted(text: &str) -> String {
 
 /// Publishes a complete v3 snapshot: writes and flushes the fixed scratch
 /// file exclusively, then replaces the manifest with it on the same volume.
+///
+/// Callers hold the area's owner lock. When the write or the move fails, the
+/// scratch file this call created is removed again, so one failed snapshot
+/// (a full disk, a lasting hold on the manifest) does not occupy the name for
+/// every later one (FS-10). A scratch name that is already occupied is
+/// [`StagingError::ScratchOccupied`] and is left alone.
 fn publish_manifest(
     root: &Path,
     run_id: &str,
@@ -875,8 +901,35 @@ fn publish_manifest(
     let manifest = staging.join(MANIFEST);
     #[cfg(test)]
     MANIFEST_PUBLICATIONS.with(|count| count.set(count.get() + 1));
-    write_new_file(&scratch, text.as_bytes())?;
-    move_file_write_through(&scratch, &manifest).map_err(StagingError::io("Publish", &manifest))
+    let mut file = create_new_file(&scratch).map_err(|error| match error {
+        StagingError::Collision(path) => StagingError::ScratchOccupied(path),
+        other => other,
+    })?;
+    let written = file
+        .write_all(text.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(StagingError::io("Write", &scratch));
+    // The move needs the scratch closed: this handle shares nothing.
+    drop(file);
+    let published = written.and_then(|()| {
+        move_file_write_through(&scratch, &manifest).map_err(StagingError::io("Publish", &manifest))
+    });
+    if published.is_err() {
+        discard_scratch(&scratch);
+    }
+    published
+}
+
+/// Removes the scratch file a failed [`publish_manifest`] created, checking
+/// it is still an ordinary single-link file. Best effort: the publication
+/// error is what the caller reports, and a scratch that stays is reported as
+/// [`StagingError::ScratchOccupied`] by the next snapshot and removed by
+/// recovery.
+fn discard_scratch(scratch: &Path) {
+    if let Ok(file) = open_temporary_file(scratch) {
+        // A failed delete leaves the scratch; see above.
+        let _ = delete_by_handle(&file);
+    }
 }
 
 #[cfg(test)]
@@ -890,9 +943,18 @@ thread_local! {
 /// Creates `path` exclusively, never truncating, and flushes `bytes` before
 /// returning. A failure after creation keeps the file.
 fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), StagingError> {
+    let mut file = create_new_file(path)?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(StagingError::io("Write", path))
+}
+
+/// Creates `path` exclusively for writing, never truncating: an occupied
+/// name is [`StagingError::Collision`].
+fn create_new_file(path: &Path) -> Result<File, StagingError> {
     const ERROR_FILE_EXISTS: i32 = 80;
     const ERROR_ALREADY_EXISTS: i32 = 183;
-    let mut file = Open::new(Access::WRITE, Share::NONE)
+    Open::new(Access::WRITE, Share::NONE)
         .create_new()
         .open(path)
         .map_err(|error| match error.raw_os_error() {
@@ -900,10 +962,7 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), StagingError> {
                 StagingError::Collision(path.to_path_buf())
             }
             _ => StagingError::io("Create", path)(error),
-        })?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(StagingError::io("Write", path))
+        })
 }
 
 /// Claims `owner.lock` with `claim`, classifying a held lock as active staging.
@@ -932,30 +991,46 @@ fn claim_lock(
 }
 
 /// Opens an ordinary directory so Windows denies its rename and deletion
-/// while the handle lives.
+/// while the handle lives, through the shared
+/// [`pin_ordinary_directory`](crate::run::path_safety::pin_ordinary_directory).
 pub(crate) fn pin_directory(path: &Path) -> Result<File, StagingError> {
-    let pin = Open::new(
-        Access::LIST_DIRECTORY | Access::READ_ATTRIBUTES,
-        Share::READ | Share::WRITE,
-    )
-    .directory()
-    .open(path)
-    .map_err(StagingError::io("Pin", path))?;
-    let facts = FileFacts::of(&pin).map_err(StagingError::io("Inspect", path))?;
-    if !facts.is_directory() || facts.is_reparse_point() {
-        return Err(StagingError::unverified(
-            path,
-            "The opened staging entry does not match its expected identity type.",
-        ));
+    Ok(pin_ordinary_directory(path, Share::READ | Share::WRITE)?)
+}
+
+impl From<ChainError> for StagingError {
+    /// A pin refused for its type, place or name is unproven ownership, as
+    /// any other unexpected staging entry is; a failed open or query keeps
+    /// its I/O error.
+    fn from(error: ChainError) -> Self {
+        match error {
+            ChainError::Outside(path) => {
+                Self::unverified(&path, "A staging artifact parent left its Mod Root.")
+            }
+            ChainError::UnsafeName(path) => Self::unverified(
+                &path,
+                "A staging artifact parent has a name Windows would alias.",
+            ),
+            ChainError::NotDirectory(path) => Self::unverified(
+                &path,
+                "The opened staging entry does not match its expected identity type.",
+            ),
+            ChainError::Missing { path, source } | ChainError::Io { path, source } => Self::Io {
+                context: "Pin",
+                path,
+                source,
+            },
+        }
     }
-    Ok(pin)
 }
 
 /// Opens a single-link temporary file with delete access, pinning that
 /// identity so deletion can never reach a replacement at its name.
+///
+/// The open waits out a sharing violation (FS-5): a scanner that opened the
+/// file just after a backend wrote it would otherwise fail its cleanup.
 fn open_temporary_file(path: &Path) -> Result<File, StagingError> {
     let file = Open::new(Access::DELETE | Access::READ_ATTRIBUTES, Share::READ)
-        .open(path)
+        .open_retrying(path)
         .map_err(StagingError::io("Open", path))?;
     let facts = FileFacts::of(&file).map_err(StagingError::io("Inspect", path))?;
     if !facts.is_ordinary_file() || facts.link_count() != 1 {
@@ -1006,48 +1081,23 @@ fn inspect(path: &Path) -> Result<Option<Metadata>, StagingError> {
     Ok(Some(metadata))
 }
 
-/// Pins each ordinary directory from the pinned Mod Root down to `parent`.
+/// Pins each ordinary directory from the Mod Root down to `parent` into
+/// `pins`, through the shared
+/// [`pin_directory_chain`](crate::run::path_safety::pin_directory_chain).
 ///
-/// Returns `false` when a component is absent. Holding every ancestor denies
-/// Windows renames and junction substitution while later names are opened.
+/// Returns `false` when a directory on the chain is absent. Holding every
+/// ancestor denies Windows renames and junction substitution while later
+/// names are opened.
 fn pin_parent_directories(
     root: &Path,
     parent: &Path,
-    pins: &mut BTreeMap<PathBuf, File>,
+    pins: &mut DirectoryPins,
 ) -> Result<bool, StagingError> {
-    let Ok(relative) = parent.strip_prefix(root) else {
-        return Err(StagingError::unverified(
-            parent,
-            "A staging artifact parent left its Mod Root.",
-        ));
-    };
-    let mut current = root.to_path_buf();
-    for component in relative.components() {
-        let Component::Normal(name) = component else {
-            return Err(StagingError::unverified(
-                parent,
-                "A staging artifact parent contains traversal.",
-            ));
-        };
-        current.push(name);
-        // The root and each previous component are still pinned while this
-        // name is opened.
-        if pins.contains_key(&current) {
-            continue;
-        }
-        match inspect(&current)? {
-            None => return Ok(false),
-            Some(metadata) if !metadata.is_dir() => {
-                return Err(StagingError::unverified(
-                    &current,
-                    "A staging artifact parent is not an ordinary directory.",
-                ));
-            }
-            Some(_) => {}
-        }
-        pins.insert(current.clone(), pin_directory(&current)?);
+    match pin_directory_chain(root, parent, Share::READ | Share::WRITE, pins) {
+        Ok(()) => Ok(true),
+        Err(ChainError::Missing { .. }) => Ok(false),
+        Err(error) => Err(error.into()),
     }
-    Ok(true)
 }
 
 #[cfg(test)]
@@ -1145,5 +1195,61 @@ mod tests {
         assert_eq!(scope.areas[&root.0].artifacts.len(), 3);
         assert!(scope.cleanup_artifacts().is_empty());
         assert!(!files[1].exists());
+    }
+
+    /// FS-10: a snapshot whose move fails removes the scratch file it wrote,
+    /// so the next snapshot in that root is not refused over CAO's own file.
+    /// The move is failed by holding the manifest without delete sharing for
+    /// longer than its wait for a scanner.
+    #[test]
+    fn a_failed_snapshot_removes_its_scratch_so_the_next_one_succeeds() {
+        let root = ScratchRoot::new("staging-failed-snapshot");
+        let mut scope = StagingScope::new(create_run_id());
+        scope.stage_archive_file(&root.0).unwrap();
+        let staging = root.0.join(STAGING_DIRECTORY);
+        let held = Open::new(Access::READ, Share::READ | Share::WRITE)
+            .open(&staging.join(MANIFEST))
+            .unwrap();
+
+        let error = scope.stage_archive_file(&root.0).unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                StagingError::Io {
+                    context: "Publish",
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(!staging.join(MANIFEST_SCRATCH).exists());
+        drop(held);
+        let staged = scope.stage_archive_file(&root.0).unwrap();
+        assert!(staged.is_file());
+        assert!(scope.cleanup_artifacts().is_empty());
+    }
+
+    /// FS-10: a scratch name some other file occupies is reported as such,
+    /// not as a collision of a new staging name, and the file is kept.
+    #[test]
+    fn an_occupied_scratch_name_is_reported_and_kept() {
+        let root = ScratchRoot::new("staging-occupied-scratch");
+        let mut scope = StagingScope::new(create_run_id());
+        scope.stage_archive_file(&root.0).unwrap();
+        let scratch = root.0.join(STAGING_DIRECTORY).join(MANIFEST_SCRATCH);
+        std::fs::write(&scratch, "not CAO's").unwrap();
+
+        let error = scope.stage_archive_file(&root.0).unwrap_err();
+
+        assert!(
+            matches!(&error, StagingError::ScratchOccupied(path) if *path == scratch),
+            "{error}"
+        );
+        assert!(error.to_string().contains("scratch"), "{error}");
+        assert_eq!(std::fs::read_to_string(&scratch).unwrap(), "not CAO's");
+        std::fs::remove_file(&scratch).unwrap();
+        scope.stage_archive_file(&root.0).unwrap();
+        assert!(scope.cleanup_artifacts().is_empty());
     }
 }

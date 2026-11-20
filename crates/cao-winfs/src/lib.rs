@@ -10,7 +10,9 @@
 //! `research/windows-file-safety-rust` branch.
 //!
 //! - Opening: [`Open`], [`Access`], [`Share`], [`is_sharing_violation`], and
-//!   the staging [`OwnerLock`].
+//!   the staging [`OwnerLock`]. [`Open::open_retrying`] and
+//!   [`move_file_write_through`] wait out a scanner's brief hold on a file a
+//!   run has just written.
 //! - Facts: [`FileFacts`] (link count, change time, change detection),
 //!   [`FileIdentity`] (`FileIdInfo` with a 64-bit fallback), and
 //!   [`is_reparse_point`].
@@ -35,6 +37,8 @@ mod mutate;
 mod nonce;
 mod open;
 mod owner_lock;
+mod retry;
+mod unsupported;
 mod volume;
 
 pub use canonical::{canonical, generic_utf8, weakly_canonical};

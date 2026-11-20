@@ -60,7 +60,7 @@ use crate::execution::AssetExecutionResult;
 use crate::routing::{ExecutionMode, RoutedAsset};
 use crate::run::archives::{self, Preflight, RootArchives, preflight};
 use crate::run::capacity::{CapacityCheck, FrozenVolumes};
-use crate::run::finalization::{self, CreationPlanning};
+use crate::run::finalization::{self, CreationPlanning, PlannedExtractionEffects};
 use crate::run::{
     ArchiveExtractionPlan, ArchiveExtractionResult, ArchiveFinalizationChoices,
     ArchiveFinalizationHandle, ArchivePacker, ArchivePrecedence, ArchiveReader, CancellationToken,
@@ -221,7 +221,8 @@ impl RunToolset {
     /// Extracts one planned Archive with [`archives::extract_archive`] over
     /// the seams and the run's Capacity Check, cleaning up its source with
     /// `cleanup`, the Run Request's Archive extraction choice, and logs a
-    /// success to the Application Log.
+    /// success to the Application Log, as the Dry Run logs what it would
+    /// extract.
     ///
     /// Never fails outright and never panics: extraction contains its own
     /// panics and classifies every failure by how far the attempt got.
@@ -239,12 +240,15 @@ impl RunToolset {
             artifacts,
         );
         if attempt.succeeded() {
-            // The Application Log line C++ `BSAOptimizer::extract` wrote. It
-            // is logged from this module so its module path, which the debug
+            // Worded for any Archive format, BSA or BA2, and matching the Dry
+            // Run's "would extract" line, so the two logs read alike. It is
+            // logged from this module so its module path, which the debug
             // Application Log layout prints, stays `cao_core::run::toolset`.
             log::info!(
-                "BSA successfully extracted: {}",
-                plan.archive_path.display()
+                "extracted {} into {} ({} files)",
+                plan.archive_path.display(),
+                plan.mod_root.display(),
+                plan.merge_entries.len()
             );
         }
         attempt
@@ -299,6 +303,7 @@ impl RunToolset {
         &self,
         preparation: &RunPreparation,
         choices: &ArchiveFinalizationChoices,
+        extractions: &PlannedExtractionEffects,
         cancelled: &dyn Fn() -> bool,
     ) -> CreationPlanning {
         finalization::plan_archive_creation(
@@ -306,6 +311,7 @@ impl RunToolset {
             &self.capacity_check(),
             choices,
             preparation,
+            extractions,
             cancelled,
         )
     }

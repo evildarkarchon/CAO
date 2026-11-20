@@ -16,8 +16,8 @@ use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ArchiveFinalizationChoices, ArchiveFinalizationFailure, ArchiveNameKind, CancellationToken,
     CapacityShortage, OptimizationRunResult, OutputPlanBasis, PackedArchiveKind,
-    PlannedOutputArchive, RunDiagnostic, RunDiagnosticCode, RunFailure, RunFailureCode, RunOutcome,
-    RunPhase, RunPhaseRecord,
+    PlannedOutputArchive, PlannedPruning, RunDiagnostic, RunDiagnosticCode, RunFailure,
+    RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord,
 };
 use cao_core::test_support::{
     ArchiveRunRequest, FakeArchivePacker, FakeVolumeProbe, ScriptedToolset, fake_dummy_plugin,
@@ -124,7 +124,9 @@ fn two_roots_to_pack(name: &str) -> (PathBuf, [PathBuf; 2]) {
 /// run would create, a split included, each with the Dummy Plugin it would
 /// need, and reaches only the packer's planning seams. It packs nothing,
 /// creates no Loading Plugin for its outputs or for an existing Archive, and
-/// prunes no directory, so the Mod Root stays byte-for-byte unchanged.
+/// prunes no directory, so the Mod Root stays byte-for-byte unchanged. Its
+/// plan lists the one folder the packing would empty, which an Apply run
+/// would prune (audit FS-7).
 #[test]
 fn a_dry_run_plans_its_output_archives_without_creating_any() {
     let root = mod_root("split");
@@ -132,7 +134,8 @@ fn a_dry_run_plans_its_output_archives_without_creating_any() {
         write_file(&root.join(format!("meshes/{name}.nif")), b"twelve bytes");
     }
     // An Apply run would create a Dummy Plugin for this existing Archive
-    // while maintaining Loading Plugins, and would prune the empty directory.
+    // while maintaining Loading Plugins. It would prune `meshes`, which its
+    // packing empties, but never `empty`, which the mod ships empty.
     write_file(&root.join("old.bsa"), b"an existing archive");
     std::fs::create_dir_all(root.join("empty/nested")).unwrap();
     let before = snapshot_tree(&root);
@@ -184,6 +187,13 @@ fn a_dry_run_plans_its_output_archives_without_creating_any() {
         Some(OutputPlanBasis::EstimateFromModRootsAsTheyAre)
     );
     assert!(work.extractions().is_empty());
+    assert_eq!(
+        work.pruning(),
+        [PlannedPruning {
+            directory: root.join("meshes"),
+            mod_root: root.clone(),
+        }]
+    );
     assert!(result.mutation_summaries().is_empty());
 
     let packer = &toolset.packer;

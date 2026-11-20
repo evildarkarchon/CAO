@@ -45,7 +45,8 @@ struct CaoNif {
     NifFile nif;
     OptResult lastOptimization;
     // The references `GetShapes()` x `GetTexturePathRefs()` yields, in nifly's
-    // order, so a shared texture set appears once per shape as it does for C++.
+    // order: a texture set shared by several shapes appears once per shape, so
+    // each index names one shape's reference.
     std::vector<std::reference_wrapper<std::string>> textures;
     bool texturesValid = false;
     std::string lastError;
@@ -167,6 +168,7 @@ int32_t saveToStream(CaoNif& handle, std::ostream& out) {
     return out.fail() ? kSaveWriteFailed : int32_t{0};
 }
 
+#ifdef CAO_NIF_TEST_HOOKS
 // Test support for cao_nif_save_to_limited_stream: a sink that takes `capacity`
 // bytes and then refuses every write, as a volume that fills up does. It
 // answers nifly's tellp/seekp (Save goes back to patch the block-size table),
@@ -208,6 +210,7 @@ private:
     off_type position_ = 0;
     off_type end_ = 0;
 };
+#endif  // CAO_NIF_TEST_HOOKS
 
 const std::vector<std::string>* optimizationNames(const OptResult& result, int32_t field) noexcept {
     switch (field) {
@@ -308,8 +311,8 @@ int32_t cao_nif_optimize_for(CaoNif* handle, uint32_t file, uint32_t user, uint3
         invalidateTextures(*handle);
         handle->lastOptimization = OptResult();
         OptOptions options;
-        // The calls MeshesOptimizer::optimize makes, in its order: SetFile also
-        // rebuilds the header version string that Save writes.
+        // SetFile rather than a field write: it also rebuilds the header
+        // version string that Save writes.
         options.targetVersion.SetFile(static_cast<NiFileVersion>(file));
         options.targetVersion.SetStream(stream);
         options.targetVersion.SetUser(user);
@@ -370,7 +373,7 @@ bool cao_nif_texture_get(const CaoNif* handle, std::size_t index, const char** p
 }
 
 // Assigns through the live reference, so a shared texture set sees the write
-// at every index that refers to it, as C++ CAO's in-place rewrite does. -3 when
+// at every index that refers to it and reads back the same at each. -3 when
 // the handle was emptied since the snapshot, as an exception here empties it.
 int32_t cao_nif_texture_set(CaoNif* handle, std::size_t index, const char* ptr, std::size_t length) noexcept {
     if (!handle->nif.IsValid()) return kNotLoaded;
@@ -386,6 +389,11 @@ std::size_t cao_nif_last_error(const CaoNif* handle, const char** ptr) noexcept 
     *ptr = handle->lastError.data();
     return handle->lastError.size();
 }
+
+#ifdef CAO_NIF_TEST_HOOKS
+// The entry points below exist for nifly-sys's own tests only. build.rs
+// defines CAO_NIF_TEST_HOOKS for those builds alone, so no shipped binary
+// carries them.
 
 // Test support only; the mesh backend never calls it. Loads `length` bytes
 // through a stream whose exception mask makes reading past their end throw
@@ -436,5 +444,6 @@ int32_t cao_nif_save_to_limited_stream(CaoNif* handle, std::size_t capacity) noe
         return saveToStream(*handle, out);
     });
 }
+#endif  // CAO_NIF_TEST_HOOKS
 
 }  // extern "C"

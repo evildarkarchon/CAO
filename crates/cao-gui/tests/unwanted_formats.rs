@@ -169,12 +169,11 @@ fn ok_commits_the_dialog_and_a_one_element_list_is_kept() {
         Some(1)
     );
 
-    // Saved as Qt writes a one-element list, and read back as one element.
+    // Saved as the plain number, and read back as one element.
     assert_eq!(saved_unwanted(&app, &app_dir), [98]);
     let ini = std::fs::read_to_string(app_dir.join("profiles/Custom/profile.ini")).unwrap();
     assert!(
-        ini.lines()
-            .any(|line| line.starts_with("texturesUnwantedFormats=@Variant(")),
+        ini.lines().any(|line| line == "texturesUnwantedFormats=98"),
         "{ini}"
     );
 }

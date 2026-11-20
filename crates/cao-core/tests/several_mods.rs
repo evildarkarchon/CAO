@@ -12,13 +12,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
-    InlineRunScheduler, MeshChoices, MeshLevel, ModSelection, OptimizationRunResult,
-    OptimizationRunService, RunDiagnosticCode, RunEventPayload, RunFailureCode, RunHandle,
-    RunOutcome, RunPhase, RunRequest, RunSnapshot, SelectedProfile, WorkChoices,
+    MeshChoices, MeshLevel, ModSelection, OptimizationRunResult, OptimizationRunService,
+    RunDiagnosticCode, RunEventPayload, RunFailureCode, RunHandle, RunOutcome, RunPhase,
+    RunRequest, RunSnapshot, SelectedProfile, WorkChoices,
 };
 use cao_core::test_support::{
-    CallbackConfiguration, EventLog, FakeBackendFactory, GatedScheduler, ScriptedToolset,
-    ToolsetConfiguration, sse_profile,
+    CallbackConfiguration, EventLog, FakeBackendFactory, GatedScheduler, InlineRunScheduler,
+    ScriptedToolset, ToolsetConfiguration, sse_profile,
 };
 use common::{
     HandleSlot, backend_toolset, canonical, junction, reclaim, scratch_dir, serial, write_tree,

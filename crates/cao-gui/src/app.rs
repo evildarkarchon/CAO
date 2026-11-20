@@ -52,16 +52,32 @@ pub enum StartupError {
 struct Loaded {
     /// The selected profile.
     profile: Profile,
-    /// `common.ini`, as last loaded or saved.
+    /// `common.ini` as the window holds it.
     common: CommonSettings,
     /// The selected profile's options, over which the controls are read back.
     options: Options,
-    /// Whether `options` were read from the selected profile's `settings.ini`.
-    /// While false they are another profile's, so they are never saved into
-    /// this one, as an unreadable `profile.ini` is never written either.
-    options_read: bool,
     /// The selected profile's settings; `None` when its `profile.ini` could not
     /// be read, in which case it is never written either.
+    settings: Option<ProfileSettings>,
+    /// What the files held when last read or written.
+    on_disk: OnDisk,
+}
+
+/// The models as the files held them when last read or written. A save
+/// writes only a file whose model the window has changed (GUI-10): opening and
+/// closing CAO then leaves every file as it was, keeps the comments of a
+/// hand-edited one, and a read-only install raises no error for a file
+/// nothing changed. A file that failed to save keeps its old model here, so
+/// the next save tries again.
+struct OnDisk {
+    /// `common.ini`.
+    common: CommonSettings,
+    /// The selected profile's `settings.ini`; `None` when it could not be
+    /// read. The window's options are then the previous profile's, so they are
+    /// never saved into this one, as an unreadable `profile.ini` is never
+    /// written either.
+    options: Option<Options>,
+    /// The selected profile's `profile.ini`; `None` when it could not be read.
     settings: Option<ProfileSettings>,
 }
 
@@ -116,9 +132,9 @@ impl App {
     /// holding the exe (deviation 1: only `main` derives it, from the exe; the
     /// working directory is never consulted). The window is not shown yet.
     ///
-    /// As C++ did at startup, this loads `common.ini`, selects its profile (or
-    /// SSE when that profile is gone), shows the profile's settings and, on the
-    /// very first start, a welcome message.
+    /// This loads `common.ini`, selects its profile (or, when that profile is
+    /// gone, the one [`Profiles::resolve`] picks, which always exists), shows
+    /// the profile's settings and, on the very first start, a welcome message.
     ///
     /// # Errors
     /// [`StartupError`] when `profiles/` has no profile, `common.ini` cannot be
@@ -132,7 +148,12 @@ impl App {
             });
         }
         let common = profiles.load_common()?;
-        let current = profiles.resolve(&common.profile);
+        let current =
+            profiles
+                .resolve(&common.profile)
+                .ok_or_else(|| StartupError::NoProfiles {
+                    path: profiles.root().to_owned(),
+                })?;
 
         let window = MainWindow::new()?;
         let tab = |tab: Tab| TabInfo {
@@ -146,9 +167,13 @@ impl App {
                 profile: profiles.open(&current),
                 common: common.clone(),
                 options: Options::default(),
-                // Nothing is read yet; the first `load_profile` sets it.
-                options_read: false,
                 settings: None,
+                // Nothing is read yet; the first `load_profile` sets the profile's.
+                on_disk: OnDisk {
+                    common: common.clone(),
+                    options: None,
+                    settings: None,
+                },
             }),
             profiles,
             desktop,
@@ -181,6 +206,10 @@ impl App {
         app.wire();
         app.load_profile(&current);
         app.first_start();
+        // The profile chosen and the first start, in one write.
+        if let Some(message) = app.write_common() {
+            app.error("Save", &message);
+        }
         Ok(app)
     }
 
@@ -281,33 +310,41 @@ impl App {
         }
     }
 
-    /// C++ `setGameMode`: saves the window into the current profile, then loads
-    /// `name` into it, and stamps a new Application Log for it.
+    /// Saves the window into the current profile, then loads `name` into it,
+    /// remembers it in `common.ini` at once, and stamps a new Application Log
+    /// for it. Whatever could not be saved, before the switch or after it, is
+    /// shown in one box.
     fn select_profile(&self, name: &str) {
-        self.save();
+        let mut failures = self.write_window();
         self.load_profile(name);
+        failures.messages.extend(self.write_common());
+        self.show_save_failures(&failures.messages);
         self.stamp_log(name);
     }
 
-    /// Loads profile `name` into the window: remembers it in `common.ini`, shows
-    /// its options and settings, enables the tabs it allows, and makes the
-    /// advanced groups read-only for a base profile.
+    /// Loads profile `name` into the window: selects it in the common
+    /// settings, which the caller writes, shows its options and settings,
+    /// enables the tabs it allows, and makes the advanced groups read-only for
+    /// a base profile.
     fn load_profile(&self, name: &str) {
         let ui = &self.window;
         let profile = self.profiles.open(name);
         let mut loaded = self.loaded.borrow_mut();
-
-        // C++ `Profiles::setCurrentProfile` writes the choice at once.
         loaded.common.profile = name.to_owned();
-        if let Err(error) = self.profiles.save_common(&loaded.common) {
-            self.error(
-                "Profile",
-                &format!("The selected profile could not be remembered: {error}"),
-            );
-        }
 
-        let (options, options_read) = match profile.load_options(&loaded.options) {
-            Ok(options) => (options, true),
+        // Read without the folder in use, so `on_disk` holds what the file
+        // holds; the folder is carried over only into the window's options, as
+        // `Profile::load_options` carries it. A carried folder then differs
+        // from the file's empty `userPath`, so the next save writes it and the
+        // profile remembers it. Nothing else carries over (GUI-11).
+        let (options, on_disk_options) = match profile.load_options("") {
+            Ok(saved) => {
+                let mut options = saved.clone();
+                if options.user_path.is_empty() {
+                    options.user_path.clone_from(&loaded.options.user_path);
+                }
+                (options, Some(saved))
+            }
             Err(error) => {
                 self.error(
                     "Profile",
@@ -317,7 +354,7 @@ impl App {
                          profile until it is selected again."
                     ),
                 );
-                (loaded.options.clone(), false)
+                (loaded.options.clone(), None)
             }
         };
         // Preparing's read: a Profile the run would refuse, including one with a
@@ -348,7 +385,8 @@ impl App {
 
         loaded.profile = profile;
         loaded.options = options;
-        loaded.options_read = options_read;
+        loaded.on_disk.options = on_disk_options;
+        loaded.on_disk.settings.clone_from(&settings);
         loaded.settings = settings;
         // An unreadable profile enables no asset tab.
         let capabilities = loaded.capabilities();
@@ -412,10 +450,11 @@ impl App {
         self.window.set_current_tab(tabs[at].id.clone());
     }
 
-    /// C++ `saveUi`: saves the common settings, then, unless a run holds the
-    /// controls, the options into `settings.ini` and the settings into
-    /// `profile.ini` of the current profile. A failure is shown and logged,
-    /// not raised.
+    /// Saves the common settings, then, unless a run holds the controls, the
+    /// options into `settings.ini` and the settings into `profile.ini` of the
+    /// current profile. Only a file whose model the window changed is written,
+    /// and a base profile's `profile.ini` never is (GUI-10). Every failure is
+    /// shown in one box and logged, not raised.
     ///
     /// Returns `false` when the window's settings could not be written to
     /// `profile.ini`, which then differs from what the window shows. The other
@@ -423,10 +462,34 @@ impl App {
     /// takes its options from memory (#545).
     pub fn save(&self) -> bool {
         let failures = self.write_window();
-        for message in &failures.messages {
-            self.error("Save", message);
-        }
+        self.show_save_failures(&failures.messages);
         !failures.settings
+    }
+
+    /// Shows what a save could not write, one sentence per file, in a single
+    /// box, so a read-only install raises one box per action rather than one
+    /// per file. Shows nothing when `messages` is empty.
+    fn show_save_failures(&self, messages: &[String]) {
+        if !messages.is_empty() {
+            self.error("Save", &messages.join("\n"));
+        }
+    }
+
+    /// Writes `common.ini` when the window's common settings differ from what
+    /// the file holds. Returns the sentence to show when that fails; the file
+    /// then keeps its old model in [`OnDisk`], so the next save tries again.
+    fn write_common(&self) -> Option<String> {
+        let mut loaded = self.loaded.borrow_mut();
+        if loaded.common == loaded.on_disk.common {
+            return None;
+        }
+        match self.profiles.save_common(&loaded.common) {
+            Ok(()) => {
+                loaded.on_disk.common = loaded.common.clone();
+                None
+            }
+            Err(error) => Some(format!("The common settings could not be saved: {error}")),
+        }
     }
 
     /// The writes of [`App::save`], without showing anything: returns what
@@ -434,15 +497,14 @@ impl App {
     fn write_window(&self) -> SaveFailures {
         let ui = &self.window;
         let mut failures = SaveFailures::default();
-        let mut loaded = self.loaded.borrow_mut();
-        loaded.common.show_advanced_settings = ui.get_show_advanced();
-        loaded.common.dark_mode = ui.get_dark();
-        loaded.common.show_tutorial = ui.get_show_tutorials();
-        if let Err(error) = self.profiles.save_common(&loaded.common) {
-            failures
-                .messages
-                .push(format!("The common settings could not be saved: {error}"));
+        {
+            let mut loaded = self.loaded.borrow_mut();
+            loaded.common.show_advanced_settings = ui.get_show_advanced();
+            loaded.common.dark_mode = ui.get_dark();
+            loaded.common.show_tutorial = ui.get_show_tutorials();
         }
+        failures.messages.extend(self.write_common());
+        let mut loaded = self.loaded.borrow_mut();
         // A run holds the controls, so the window still shows the settings
         // saved when it started.
         if self.locked.get() {
@@ -456,21 +518,37 @@ impl App {
         // Options that could not be read from this profile came from the one
         // before it; saving them would merge them over this profile's own
         // file once it is readable again (GUI-3).
-        if loaded.options_read
-            && let Err(error) = loaded.profile.save_options(&options)
+        if loaded
+            .on_disk
+            .options
+            .as_ref()
+            .is_some_and(|saved| *saved != options)
         {
-            failures
-                .messages
-                .push(format!("The profile's options could not be saved: {error}"));
+            match loaded.profile.save_options(&options) {
+                Ok(()) => loaded.on_disk.options = Some(options.clone()),
+                Err(error) => failures
+                    .messages
+                    .push(format!("The profile's options could not be saved: {error}")),
+            }
         }
         loaded.options = options;
-        if let Some(current) = &loaded.settings {
+        // A base profile ships with CAO and shows its advanced groups
+        // read-only, so its `profile.ini` is never written: the shipped file
+        // stays as shipped (GUI-10).
+        if !loaded.profile.is_base()
+            && let Some(current) = &loaded.settings
+        {
             let settings = form::read_settings(ui, current);
-            if let Err(error) = loaded.profile.save_settings(&settings) {
-                failures.messages.push(format!(
-                    "The profile's settings could not be saved: {error}"
-                ));
-                failures.settings = true;
+            if loaded.on_disk.settings.as_ref() != Some(&settings) {
+                match loaded.profile.save_settings(&settings) {
+                    Ok(()) => loaded.on_disk.settings = Some(settings.clone()),
+                    Err(error) => {
+                        failures.messages.push(format!(
+                            "The profile's settings could not be saved: {error}"
+                        ));
+                        failures.settings = true;
+                    }
+                }
             }
             loaded.settings = Some(settings);
         }
@@ -651,7 +729,7 @@ impl App {
     /// Help → About.
     fn about(&self) {
         let text = format!(
-            "Cathedral Assets Optimizer {}\nMade by G'k\nThis program is distributed in the hope that it will be useful but WITHOUT ANY WARRANTLY. See the Mozilla Public License",
+            "Cathedral Assets Optimizer {}\nMade by G'k\nThis program is distributed in the hope that it will be useful but WITHOUT ANY WARRANTY. See the Mozilla Public License",
             env!("CARGO_PKG_VERSION")
         );
         self.desktop.message(
@@ -678,19 +756,15 @@ impl App {
         self.report_dialog_error(opened);
     }
 
-    /// C++ `firstStart`: a standalone welcome box the first time CAO runs.
+    /// A standalone welcome box the first time CAO runs, which a missing
+    /// `common.ini` means (WS-8). Marks the first start as done in the common
+    /// settings; [`App::new`] writes them.
     fn first_start(&self) {
         let mut loaded = self.loaded.borrow_mut();
         if loaded.common.not_first_start {
             return;
         }
         loaded.common.not_first_start = true;
-        if let Err(error) = self.profiles.save_common(&loaded.common) {
-            self.error(
-                "Save",
-                &format!("The common settings could not be saved: {error}"),
-            );
-        }
         drop(loaded);
         self.desktop.message(
             None,

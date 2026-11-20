@@ -1,6 +1,6 @@
-//! Core's Archive extraction writes the "BSA successfully extracted"
-//! Application Log line for each Archive it extracts, wherever extraction
-//! runs (#584).
+//! Core's Archive extraction writes an "extracted" Application Log line for
+//! each Archive it extracts, wherever extraction runs (#584), worded for any
+//! Archive format and matching the Dry Run's "would extract" line.
 //!
 //! This is its own test binary with one test, because `log::set_logger`
 //! succeeds only once per process.
@@ -52,7 +52,11 @@ fn a_run_logs_each_successful_extraction() {
         level: Level::Info,
         target: "cao_core::run::toolset".to_owned(),
         module_path: Some("cao_core::run::toolset".to_owned()),
-        message: format!("BSA successfully extracted: {}", archive.display()),
+        message: format!(
+            "extracted {} into {} (1 files)",
+            archive.display(),
+            root.display()
+        ),
     };
     let records = capture_log::records();
     assert!(records.contains(&expected), "{records:?}");

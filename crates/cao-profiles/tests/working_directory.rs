@@ -10,7 +10,7 @@ mod common;
 use std::fs;
 
 use cao_archive::Game;
-use cao_profiles::{Options, Profiles};
+use cao_profiles::Profiles;
 
 #[test]
 fn deviation_1_profiles_resolve_against_the_app_directory_from_another_working_directory() {
@@ -29,13 +29,10 @@ fn deviation_1_profiles_resolve_against_the_app_directory_from_another_working_d
     let fo4 = profiles.open("FO4");
 
     assert_eq!(profiles.list(), ["FO4", "SSE", "TES5"]);
-    assert_eq!(profiles.load_common().unwrap().profile, "TES5");
+    // The install ships no `common.ini`, so the decoy's must not be read either.
+    assert_eq!(profiles.load_common().unwrap().profile, "");
     assert_eq!(sse.load_settings().unwrap().bsa_game, Game::Sse);
-    assert!(
-        sse.load_options(&Options::default())
-            .unwrap()
-            .bsa_create_dummies
-    );
+    assert!(sse.load_options("").unwrap().bsa_create_dummies);
     // FO4 has no ignoredMods.txt, so it falls back to the app directory's SSE.
     assert_eq!(
         fo4.ignored_mods().unwrap(),
@@ -43,8 +40,7 @@ fn deviation_1_profiles_resolve_against_the_app_directory_from_another_working_d
     );
 
     let mine = profiles.create("Mine", "SSE").unwrap();
-    mine.save_options(&mine.load_options(&Options::default()).unwrap())
-        .unwrap();
+    mine.save_options(&mine.load_options("").unwrap()).unwrap();
     assert!(app_dir.join("profiles/Mine/settings.ini").exists());
     assert!(!decoy.join("profiles/Mine").exists());
 }

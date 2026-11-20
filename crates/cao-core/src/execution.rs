@@ -1,8 +1,8 @@
 //! Asset execution: the Asset Execution Backend seam and the Asset Executor.
 //!
-//! Ported from the C++ `cao::execution` module (`src/AssetExecution`). The
-//! executor carries a Routed Asset's facts to one backend without reclassifying
-//! it, and reports one Operation Failure shape for every unsuccessful attempt.
+//! The executor carries a Routed Asset's facts to one backend without
+//! reclassifying it, and reports one Operation Failure shape for every
+//! unsuccessful attempt.
 //!
 //! Apply-mode persistence goes through staged publication under the run's
 //! Temporary Ownership: the executor captures each destination before the
@@ -15,8 +15,8 @@
 //! DDS destination the attempt completes without touching either file (see
 //! `conversion_withheld`), and otherwise it publishes with `NoReplace`.
 //!
-//! [`quarantine_failed_load`] is the adapter step C++ `MainOptimizer` ran after
-//! each attempt: in Apply, a Texture or Mesh whose content the backend cannot
+//! [`quarantine_failed_load`] is the adapter step that runs after each
+//! attempt: in Apply, a Texture or Mesh whose content the backend cannot
 //! decode becomes `.caobad`. One it could not read at all ([`LoadFailure`])
 //! is left where it is.
 
@@ -34,8 +34,8 @@ use crate::routing::{
     RoutedAsset, TextureVariant,
 };
 use crate::run::{
-    PublicationPolicy, PublicationReceipt, PublicationResult, PublicationState, RunFailure,
-    RunPhase, StagingError, TemporaryArtifactRegistry,
+    PublicationPolicy, PublicationReceipt, PublicationResult, StagingError,
+    TemporaryArtifactRegistry,
 };
 use crate::run::{fingerprint, ineligibility, probe_ineligibility};
 
@@ -71,10 +71,23 @@ pub enum AssetExecutionFailure {
     CommitFailed,
     /// The backend panicked, or failed in a way that leaves mutation unknown.
     BackendException,
-    CleanupFailed,
+    /// No Asset Execution Backend could be created for the run, such as when
+    /// COM fails to initialize. The Asset was never opened, so nothing
+    /// changed, but every later attempt would need the same backend, so the
+    /// attempt is not safe to continue and the run stops.
+    BackendUnavailable,
+    /// The Routed Asset resolves outside every prepared Mod Root, as when a
+    /// folder is swapped for a link after discovery. It is never opened, so
+    /// nothing changed, but the run's tree is no longer the one it
+    /// discovered, so the attempt is not safe to continue and the run stops.
+    OutsideModRoots,
 }
 
 /// Stable boundary categories, so adapters never parse backend diagnostics.
+///
+/// Only the Asset execution scenarios read them, so only the `test-support`
+/// feature builds them.
+#[cfg(feature = "test-support")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExecutionFailureCategory {
     Backend,
@@ -167,15 +180,13 @@ impl LoadFailure {
 /// the Operation Failure (category plus presentable message) and the
 /// safe-to-continue verdict; partial or unknown mutation is always unsafe,
 /// whatever the producer claimed. The Asset-only failure context (operation,
-/// affected path, service detail and attempt-local cleanup failures) stays on
-/// the result itself.
+/// affected path and service detail) stays on the result itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssetExecutionResult {
     outcome: AttemptOutcome<AssetExecutionFailure>,
     path: PathBuf,
     operation: String,
     service_detail: String,
-    cleanup_failures: Vec<RunFailure>,
 }
 
 impl AssetExecutionResult {
@@ -187,7 +198,6 @@ impl AssetExecutionResult {
             path: PathBuf::new(),
             operation: String::new(),
             service_detail: String::new(),
-            cleanup_failures: Vec::new(),
         }
     }
 
@@ -203,7 +213,6 @@ impl AssetExecutionResult {
             path: PathBuf::new(),
             operation: "execute_asset".to_owned(),
             service_detail: String::new(),
-            cleanup_failures: Vec::new(),
         }
     }
 
@@ -309,31 +318,21 @@ impl AssetExecutionResult {
         &self.operation
     }
 
-    /// Safety Cleanup for cleanup failures, Processing Assets for everything else.
-    pub fn phase(&self) -> RunPhase {
-        if self.failure() == Some(AssetExecutionFailure::CleanupFailed) {
-            RunPhase::SafetyCleanup
-        } else {
-            RunPhase::ProcessingAssets
-        }
-    }
-
     /// The stable category of a failed attempt, or `None` after success.
+    ///
+    /// Only the Asset execution scenarios read it, so only the
+    /// `test-support` feature builds it.
+    #[cfg(feature = "test-support")]
     pub fn failure_category(&self) -> Option<ExecutionFailureCategory> {
         use AssetExecutionFailure::*;
         self.failure().map(|failure| match failure {
-            UnsupportedTarget | IdentityMismatch | BackendException => {
+            UnsupportedTarget | IdentityMismatch | BackendException | OutsideModRoots => {
                 ExecutionFailureCategory::Contract
             }
             ReadFailed | SaveFailed | SourceRemovalFailed | StagingFailed | Ineligible
-            | CommitFailed | CleanupFailed => ExecutionFailureCategory::Filesystem,
-            LoadFailed | OperationFailed => ExecutionFailureCategory::Backend,
+            | CommitFailed => ExecutionFailureCategory::Filesystem,
+            LoadFailed | OperationFailed | BackendUnavailable => ExecutionFailureCategory::Backend,
         })
-    }
-
-    /// Attempt-local cleanup failures, kept apart from the primary failure.
-    pub fn cleanup_failures(&self) -> &[RunFailure] {
-        &self.cleanup_failures
     }
 }
 
@@ -358,10 +357,18 @@ pub trait AssetExecutionBackend {
     /// is not a Texture the backend can decode.
     fn load_texture(&mut self, path: &Path, variant: TextureVariant) -> Result<(), LoadFailure>;
 
-    /// Applies or evaluates the Texture operations against the loaded Texture.
+    /// Applies or evaluates the Texture operations against the loaded Texture;
+    /// `path` is context, never a destination.
+    ///
+    /// `mod_root` is the canonical Mod Root the attempt is attributed to, or
+    /// empty for a standalone call without one, as for
+    /// [`optimize_mesh`](Self::optimize_mesh). A backend reads the Texture's
+    /// game path within it, such as to tell interface Textures (audit BE-11).
     fn optimize_texture(
         &mut self,
         operations: AssetOperations,
+        path: &Path,
+        mod_root: &Path,
         mode: ExecutionMode,
     ) -> OperationResult;
 
@@ -546,16 +553,14 @@ fn publication_failure(
     path: &Path,
     boundary: &str,
 ) -> Option<AssetExecutionResult> {
-    if publication.state == PublicationState::PublishedAndReleased {
-        return None;
-    }
+    let error = publication.error()?;
     Some(
         AssetExecutionResult::failed(AssetExecutionFailure::CommitFailed, message)
             .with_mutation(publication.mutation())
             .with_safe_to_continue(publication.safe_to_continue())
             .with_path(path)
             .with_operation(boundary)
-            .with_service_detail(publication.error_detail.clone()),
+            .with_service_detail(error.to_string()),
     )
 }
 
@@ -876,9 +881,12 @@ impl<'b> AssetExecutor<'b> {
         if let Err(failure) = self.backend.load_texture(path, variant) {
             return load_failed("Texture", "load_texture", path, failure);
         }
-        let operation = self
-            .backend
-            .optimize_texture(asset.operations(), asset.execution_mode());
+        let operation = self.backend.optimize_texture(
+            asset.operations(),
+            path,
+            mod_root,
+            asset.execution_mode(),
+        );
         if !operation.succeeded() {
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::OperationFailed,

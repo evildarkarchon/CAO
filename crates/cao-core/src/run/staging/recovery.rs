@@ -1,6 +1,4 @@
-//! Recovery of a crashed run's leftover staging, ported from the recovering
-//! half of C++ `StagingRecovery` (`readManifest`, `validateTree` and `recover`
-//! in `src/Run/StagingRecovery.cpp`).
+//! Recovery of a crashed run's leftover staging.
 //!
 //! Recovery reads `CAO-STAGING` v1, v2 and v3 manifests: the recorded Mod Root
 //! is compared with the canonical text the scope was given, byte for
@@ -27,6 +25,7 @@ use super::{
     generic, has_staging_component, inspect, open_temporary_file, pin_directory,
     pin_parent_directories, staging_prefix,
 };
+use crate::run::path_safety::unsafe_windows_name;
 use crate::run::{CancellationToken, is_staging_name};
 
 /// Why preparing a Mod Root stopped before it finished.
@@ -472,9 +471,15 @@ const UNSAFE_RECORD: Rejection =
 /// `root` (generic UTF-8 text), its run child matches its Run ID, and every
 /// record is a safe name contained in its namespace.
 ///
-/// The grammar is C++ stream extraction, byte for byte: fields are separated
-/// by any C whitespace, the version and count are unsigned decimal numbers,
-/// and each string is a `std::quoted` field.
+/// The writer, [`publish_manifest`](super::publish_manifest), separates
+/// fields with one space or newline; this reader accepts any run of C
+/// whitespace between them, and an optional `+` before a number. It reads
+/// what CAO's earlier releases wrote as well as what this one writes, so a
+/// crash under an older CAO is still recovered after an upgrade. That
+/// leniency is safe: it covers only the spacing between fields, never what a
+/// field may hold, and every Mod Root, Run ID, child and record is then
+/// validated as strictly as the writer's own output. A string is a quoted
+/// field in which `\` takes the next byte literally.
 fn parse_manifest(
     bytes: &[u8],
     root: &str,
@@ -600,23 +605,14 @@ fn is_lowercase_nonce(text: &[u8]) -> bool {
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// C++ `safeRelativeName`: a relative generic path whose every component is
-/// a portable Windows name, with no traversal, stream, alias or backslash.
-///
-/// C++ also compared the name with its own generic form, which rejects any
-/// backslash and repeated separators; both are rejected here directly.
+/// Whether `name` is a relative generic path the writer could have
+/// recorded: `/`-separated, with no empty component, and every component a
+/// name Win32 reads as itself ([`unsafe_windows_name`]), so no record can
+/// reach a parent, a stream, a device or another entry's alias. A backslash
+/// is refused with the other reserved characters, since the writer only
+/// ever separates with `/`.
 fn safe_relative_name(name: &str) -> bool {
-    if name.is_empty() || name.starts_with('/') || name.ends_with('/') || name.contains("//") {
-        return false;
-    }
-    name.split('/').all(|part| {
-        !part.is_empty()
-            && part != "."
-            && part != ".."
-            && !part.ends_with(['.', ' '])
-            && !part.contains(['<', '>', ':', '"', '\\', '|', '?', '*'])
-            && !part.chars().any(|character| character < ' ')
-    })
+    !name.is_empty() && name.split('/').all(|part| !unsafe_windows_name(part))
 }
 
 /// C++ `safeSiblingAssetName`: a v3 sibling filename carries its Asset
@@ -639,7 +635,8 @@ fn safe_sibling_asset_name(name: &str, run_id: &str) -> bool {
         .is_some_and(|nonce| is_lowercase_nonce(nonce.as_bytes()))
 }
 
-/// A cursor over manifest bytes with C++ `istream` extraction semantics.
+/// A cursor over manifest bytes that reads the whitespace-separated fields
+/// [`parse_manifest`] accepts: tokens, unsigned numbers and quoted strings.
 struct Fields<'a> {
     bytes: &'a [u8],
     at: usize,
@@ -910,6 +907,9 @@ mod tests {
         for name in [
             "", "/x", "x/", "x//y", "x\\\\y", "./x", "x/..", "x.", "x ", "x:y", "x<", "x>", "x|",
             "x?", "x*", "x\\\"", "x\u{1}", "C:x",
+            // DOS device names, which the shared Windows-name rule refuses
+            // in any directory and with any extension (audit FS-12).
+            "CON", "nul.dds", "aux/x", "COM1.txt", "lpt9", "NUL .x",
         ] {
             assert_eq!(
                 rejected(&manifest(

@@ -1,8 +1,7 @@
 //! The Run lifecycle vocabulary: phases, progress, failures, requests, results and events.
 //!
-//! Ported from `src/Run/RunLifecycle.h`. Every type here is plain owned data,
-//! so a terminal result or event stays readable after the run, its services
-//! and its handle are gone.
+//! Every type here is plain owned data, so a terminal result or event stays
+//! readable after the run, its services and its handle are gone.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -141,6 +140,11 @@ pub enum RunDiagnosticCode {
     /// Apply and Dry Run both record it; the loose files stay as they are.
     /// The diagnostic's path is the Mod Root, and its detail names the
     /// Archive and the plugin that would load it.
+    ///
+    /// It also records one loose file left out because it is too large for
+    /// any Archive its game can load, while the rest of its Mod Root is
+    /// packed (audit BE-16). That diagnostic's path is the file, and its
+    /// detail gives its size and the cap.
     ArchiveCreationSkipped,
     /// Warning-level: a Mod Root holds plugins or Archives whose names
     /// differ only in case, as a case-sensitive directory can, such as one a
@@ -150,6 +154,12 @@ pub enum RunDiagnosticCode {
     /// it plans, under Apply and Dry Run, and goes on. The diagnostic's path
     /// is the Mod Root, and its detail names every group.
     CaseTwinNames,
+    /// Warning-level: discovery could not read a directory inside a Mod
+    /// Root, for a reason other than its having vanished, such as access
+    /// being denied or a device error. Nothing beneath it is discovered, so
+    /// the run works on fewer Assets than the tree holds. The diagnostic's
+    /// path is the directory, and its detail gives the error.
+    DirectoryUnreadable,
 }
 
 impl RunDiagnosticCode {
@@ -166,7 +176,8 @@ impl RunDiagnosticCode {
             Self::CapacityShortage
             | Self::ArchiveCreationUnplanned
             | Self::ArchiveCreationSkipped
-            | Self::CaseTwinNames => RunDiagnosticSeverity::Warning,
+            | Self::CaseTwinNames
+            | Self::DirectoryUnreadable => RunDiagnosticSeverity::Warning,
         }
     }
 }
@@ -667,7 +678,7 @@ impl OptimizationRunResult {
         self.evidence.failures()
     }
 
-    /// Attempt-local and final Safety Cleanup failures.
+    /// Failures of the final Safety Cleanup pass, in attempted order.
     pub fn cleanup_failures(&self) -> &[RunFailure] {
         self.evidence.cleanup_failures()
     }

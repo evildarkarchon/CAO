@@ -1,9 +1,8 @@
 //! The Run Executor: the synchronous, deterministic traversal of one run's phases.
 //!
-//! Ported from `src/Run/RunExecutor.h`. The executor owns phase sequencing,
-//! phase applicability, Safety Cleanup and terminal classification. It
-//! schedules nothing and dispatches nothing; the Optimization Run Service and
-//! its Run Worker sit above it.
+//! The executor owns phase sequencing, phase applicability, Safety Cleanup and
+//! terminal classification. It schedules nothing and dispatches nothing; the
+//! Optimization Run Service and its Run Worker sit above it.
 //!
 //! The configuration provider returns a Run Toolset with the run's Selected
 //! Profile, and the executor runs every work phase itself: Asset attempts
@@ -17,10 +16,10 @@
 //! Safety Cleanup, and the work phases enter, skip and plan their own Run
 //! Phases through it.
 //!
-//! C++ caught exceptions at three boundaries here; they are `Result`s and
-//! `catch_unwind` now. A panic in the configuration provider, the run's work
-//! or the cleanup service becomes the same Run Failure an exception did. A
-//! panic that escapes those boundaries is caught around the whole traversal,
+//! Three containment boundaries, `Result`s and `catch_unwind`, sit here: a
+//! failure or panic in the configuration provider, the run's work or the
+//! cleanup service becomes a Run Failure rather than unwinding past Safety
+//! Cleanup. A panic that escapes those boundaries is caught around the whole traversal,
 //! so it still fails the run before Safety Cleanup rather than skipping it. A Run
 //! Evidence invariant violation is a bug: the executor finishes Safety Cleanup
 //! and then panics, and the Run Worker turns that panic into a Failed outcome.
@@ -73,7 +72,10 @@ pub(crate) enum Stop {
 /// [`RunExecutor::execute_with_work`]. `Ok` says whether the work finished
 /// or stopped, and why; an error is a Run Evidence invariant violation or
 /// escaped work.
-pub(crate) trait RunWork:
+///
+/// Named apart from [`crate::run::RunWork`], the boxed closure a Run
+/// Scheduler starts, which is a different thing.
+pub(crate) trait RunWorkPhases:
     FnOnce(
     &RunPreparation,
     &WorkChoices,
@@ -85,7 +87,7 @@ pub(crate) trait RunWork:
 {
 }
 
-impl<F> RunWork for F where
+impl<F> RunWorkPhases for F where
     F: FnOnce(
         &RunPreparation,
         &WorkChoices,
@@ -299,6 +301,23 @@ fn classify_terminal_outcome(evidence: &RunEvidence) -> RunOutcome {
     RunOutcome::Succeeded
 }
 
+/// How the traversal before Safety Cleanup ended, which decides whether
+/// cancellation the run's token shows by then counts as observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TraversalEnd {
+    /// Every work phase ran to its end, or a request with no work recorded
+    /// every skip: a cancel that arrives now stopped nothing, so the run
+    /// keeps the outcome its work earned.
+    Finished,
+    /// The traversal stopped short: before any work phase, at a work phase's
+    /// stop or failure, or when the work escaped. Cancellation the token
+    /// shows is observed.
+    StoppedShort,
+    /// An Asset backend reported cancellation, which the token need not
+    /// show; it is observed whatever the token says.
+    BackendCancelled,
+}
+
 /// Remembers the first Run Evidence invariant violation, so the executor can
 /// finish Safety Cleanup before panicking with it.
 #[derive(Default)]
@@ -376,7 +395,7 @@ impl RunExecutor {
         services: RunServices<'_>,
         stop: &CancellationToken,
         run_id: RunId,
-        run_work: impl RunWork,
+        run_work: impl RunWorkPhases,
     ) -> OptimizationRunResult {
         let RunServices {
             safety_cleanup,
@@ -407,15 +426,15 @@ impl RunExecutor {
                 run_work,
             )
         }));
-        let backend_cancelled = match traversal {
-            Ok(backend_cancelled) => backend_cancelled,
+        let end = match traversal {
+            Ok(end) => end,
             Err(payload) => {
                 // The traversal's borrow of the evidence ended with the
                 // unwind. The owned evidence keeps every fact recorded before
                 // the panic, including whatever the interrupted step had
                 // partly written.
                 Self::fail_at_current_phase(&mut evidence, run_worker_panic_detail(payload));
-                false
+                TraversalEnd::StoppedShort
             }
         };
         // The work phases retain some Run Diagnostics without publishing them.
@@ -444,8 +463,16 @@ impl RunExecutor {
         // Cancellation a backend reported, which the token may not show,
         // reaches this same sample through the work's stop, so cancellation
         // is recorded here alone and the caller's token is never cancelled
-        // on the backend's behalf.
-        if stop.is_cancelled() || backend_cancelled {
+        // on the backend's behalf. A cancel that arrives once every work
+        // phase has finished stopped nothing, so it is not observed: the run
+        // keeps the outcome of the work it completed. Archive Finalization
+        // records a cancellation it observed itself.
+        let cancelled = match end {
+            TraversalEnd::Finished => false,
+            TraversalEnd::StoppedShort => stop.is_cancelled(),
+            TraversalEnd::BackendCancelled => true,
+        };
+        if cancelled {
             evidence.record_cancellation_observation();
         }
         let Some(violation) = invariant.into_violation() else {
@@ -473,9 +500,9 @@ impl RunExecutor {
     /// caller cleans up whatever happens here. `run_work` runs the work
     /// phases when Preparing succeeded for a request with work.
     ///
-    /// Returns whether the work stopped on a backend's report of
-    /// cancellation, which the caller records with its Safety Cleanup sample
-    /// of `stop`.
+    /// Returns how the traversal ended: whether every work phase finished,
+    /// or it stopped short, perhaps on a backend's report of cancellation,
+    /// which the caller weighs with its Safety Cleanup sample of `stop`.
     fn traverse(
         request: &RunRequest,
         configuration: Option<&dyn RunConfigurationProvider>,
@@ -483,10 +510,12 @@ impl RunExecutor {
         artifacts: &mut TemporaryArtifactRegistry,
         invariant: &mut DeferredInvariant,
         stop: &CancellationToken,
-        run_work: impl RunWork,
-    ) -> bool {
+        run_work: impl RunWorkPhases,
+    ) -> TraversalEnd {
         let mut failed = false;
-        let mut backend_cancelled = false;
+        // Only a path that runs every work phase, or records every skip, to
+        // its end finishes the traversal.
+        let mut end = TraversalEnd::StoppedShort;
 
         // Preparing always executes: it is where the request becomes run-scoped
         // state. It is indeterminate work, so it reports no progress.
@@ -556,8 +585,13 @@ impl RunExecutor {
                     stop,
                 )
             }));
-            backend_cancelled =
-                matches!(outcome, Ok(Ok(ControlFlow::Break(Stop::BackendCancelled))));
+            end = match outcome {
+                Ok(Ok(ControlFlow::Continue(()))) => TraversalEnd::Finished,
+                Ok(Ok(ControlFlow::Break(Stop::BackendCancelled))) => {
+                    TraversalEnd::BackendCancelled
+                }
+                _ => TraversalEnd::StoppedShort,
+            };
             if let Some(detail) = escaped_work_detail(outcome, invariant) {
                 Self::fail_at_current_phase(evidence, detail);
             }
@@ -567,10 +601,12 @@ impl RunExecutor {
             // no Archives were found, and execution mode is not consulted.
             // Every phase between Preparing and Safety Cleanup.
             let work_phases = &RunPhase::SEQUENCE[1..RunPhase::SEQUENCE.len() - 1];
+            end = TraversalEnd::Finished;
             for phase in work_phases {
                 // An inline observer can cancel on a skipped phase; traversal
                 // then stops rather than invent further skips.
                 if stop.is_cancelled() {
+                    end = TraversalEnd::StoppedShort;
                     break;
                 }
                 invariant.note(evidence.record_phase(RunPhaseRecord::skipped(
@@ -579,7 +615,7 @@ impl RunExecutor {
                 )));
             }
         }
-        backend_cancelled
+        end
     }
 
     /// Records work that escaped with `detail` as a fatal Run Failure at the

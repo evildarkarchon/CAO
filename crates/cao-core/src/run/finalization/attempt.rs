@@ -1,10 +1,8 @@
-//! One planned output's atomic attempt.
-//!
-//! Ported from `src/Run/ArchiveFinalizationAttempt.cpp`: capacity recheck,
-//! Archive write and no-replace publication, its Loading Plugin, then packed
-//! source cleanup. Cancellation is observed only inside the write, before
-//! anything is published (audit BE-8): a cancelled write abandons its staged
-//! Archive and the output counts as never attempted.
+//! One planned output's atomic attempt: capacity recheck, Archive write and
+//! no-replace publication, its Loading Plugin, then packed source cleanup.
+//! Cancellation is observed only inside the write, before anything is
+//! published (audit BE-8): a cancelled write abandons its staged Archive and
+//! the output counts as never attempted.
 
 use std::io::Read as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -18,8 +16,9 @@ use super::{ArchiveFinalizationAttempt, ArchiveFinalizationFailure, ArchiveFinal
 use crate::execution::MutationState;
 use crate::run::capacity::{CapacityCheck, CapacityShortage, Demand};
 use crate::run::source_pin::{LoadingPluginPin, SourceDirectoryPins, SourceFilePin};
+use crate::run::work_error::ArchiveWorkError;
 use crate::run::{
-    ArchiveSeams, PublicationPolicy, PublicationState, TemporaryArtifactRegistry,
+    ArchiveSeams, PublicationPolicy, PublicationResult, TemporaryArtifactRegistry,
     take_panic_message,
 };
 use crate::{AttemptOutcome, CompletedMutation, Error, OperationFailure};
@@ -44,16 +43,16 @@ enum AttemptStop {
     /// The run was cancelled during the Archive write, before any mutation;
     /// the staged Archive was abandoned.
     Cancelled,
-    /// A failure at the progress's current boundary, with its detail.
-    Failed(String),
+    /// A failure at the progress's current boundary.
+    Failed(ArchiveWorkError),
     /// The capacity recheck's shortage, found before any mutation. It is kept
     /// whole, so the Operation Failure carries its bytes as well as its text.
     Short(CapacityShortage),
 }
 
-impl From<String> for AttemptStop {
-    fn from(detail: String) -> Self {
-        Self::Failed(detail)
+impl From<ArchiveWorkError> for AttemptStop {
+    fn from(error: ArchiveWorkError) -> Self {
+        Self::Failed(error)
     }
 }
 
@@ -126,7 +125,7 @@ pub(super) fn attempt_output(
             progress.mutation,
             progress.claimed_safe_to_continue,
         ),
-        Ok(Err(AttemptStop::Failed(detail))) => {
+        Ok(Err(AttemptStop::Failed(error))) => {
             // Publication or plugin errors leave sources intact. Once
             // committed, only a usable Archive and usable surviving sources
             // justify continuing, and verification can only confirm a
@@ -147,7 +146,7 @@ pub(super) fn attempt_output(
                 });
             }
             AttemptOutcome::failed(
-                OperationFailure::new(progress.boundary, detail),
+                OperationFailure::new(progress.boundary, error.to_string()),
                 progress.mutation,
                 progress.claimed_safe_to_continue,
             )
@@ -170,8 +169,9 @@ pub(super) fn attempt_output(
 }
 
 /// Performs the attempt, recording in `progress` which failure an
-/// [`AttemptStop::Failed`] detail stands for, the mutation publication made,
-/// and the continuation claim. A capacity rejection is an
+/// [`AttemptStop::Failed`] error stands for, the mutation publication made,
+/// and the continuation claim. Each packed source it deletes has its folder
+/// recorded in `artifacts` as vacated, for pruning. A capacity rejection is an
 /// [`AttemptStop::Short`] carrying the recheck's shortage, returned before any
 /// mutation, so its claim stays safe.
 #[expect(
@@ -201,7 +201,7 @@ fn try_attempt(
     let current =
         estimate_packed_capacity(output, dummy_allowance, SourceSizes::Current, &|| Ok(()))
             .map_err(|stop| match stop {
-                PlanningStop::Failed(detail) => detail,
+                PlanningStop::Failed(error) => error,
                 PlanningStop::Cancelled => unreachable!("the recheck never polls cancellation"),
             })?;
     // The output joins every root's plugin allowance, so its volume is
@@ -228,16 +228,22 @@ fn try_attempt(
                     &output.mod_root,
                     &mut directory_pins,
                 )
-                .map_err(|error| error.to_string())?,
+                .map_err(ArchiveWorkError::of("Pin packed source", &source.path))?,
             );
         }
     }
     let receipt = artifacts
         .stage_archive_file_for_publication(&output.mod_root)
-        .map_err(|error| error.to_string())?;
+        .map_err(ArchiveWorkError::of(
+            "Stage output Archive",
+            &output.archive_path,
+        ))?;
     let staged = receipt
         .path()
-        .map_err(|error| error.to_string())?
+        .map_err(ArchiveWorkError::of(
+            "Stage output Archive",
+            &output.archive_path,
+        ))?
         .to_path_buf();
     match seams.packer.write(
         &output.archive,
@@ -255,7 +261,11 @@ fn try_attempt(
             }
             return Err(AttemptStop::Cancelled);
         }
-        Err(error) => return Err(AttemptStop::Failed(error.to_string())),
+        Err(error) => {
+            return Err(
+                ArchiveWorkError::new("Write output Archive", &output.archive_path, error).into(),
+            );
+        }
     }
 
     progress.boundary = ArchiveFinalizationFailure::CommitFailed;
@@ -268,25 +278,25 @@ fn try_attempt(
         // Nothing was published; Safety Cleanup removes whatever an
         // abandonment that fails leaves behind.
         let _ = receipt.abandon();
-        return Err(AttemptStop::Failed(format!(
-            "The output Archive name is taken by `{}`.",
-            occupant.display()
-        )));
+        return Err(ArchiveWorkError::refused(
+            "Publish output Archive",
+            &output.archive_path,
+            format!("the name is taken by `{}`", occupant.display()),
+        )
+        .into());
     }
     let publication = receipt.publish(&output.archive_path, PublicationPolicy::NoReplace);
     // Publication commits the Archive before its ownership is released.
     progress.mutation = publication.mutation();
-    if publication.state != PublicationState::PublishedAndReleased {
-        // Publication's verdict stands; a later read-back cannot override a
-        // release failure.
-        progress.claimed_safe_to_continue = publication.safe_to_continue();
-        return Err(AttemptStop::Failed(
-            if publication.error_detail.is_empty() {
-                "Archive publication did not complete.".to_owned()
-            } else {
-                publication.error_detail
-            },
-        ));
+    // Publication's verdict stands; a later read-back cannot override a
+    // release failure.
+    progress.claimed_safe_to_continue = publication.safe_to_continue();
+    if let PublicationResult::NotPublished(error) | PublicationResult::PublishedStillOwned(error) =
+        publication
+    {
+        return Err(
+            ArchiveWorkError::new("Publish output Archive", &output.archive_path, error).into(),
+        );
     }
 
     progress.boundary = ArchiveFinalizationFailure::PluginCreationFailed;
@@ -306,25 +316,33 @@ fn try_attempt(
                 None,
             )?
             .ok_or_else(|| {
-                "No plugin loads the Archive any more, and Dummy Plugins are off, so its \
-                 sources are kept."
-                    .to_owned()
+                ArchiveWorkError::refused(
+                    "Delete the packed sources of",
+                    &output.archive_path,
+                    "no plugin loads the Archive any more, and Dummy Plugins are off, so its \
+                     sources are kept",
+                )
             })?
         };
         if plan.delete_sources {
             _loading_plugin_pin = Some(
                 LoadingPluginPin::new(&loading_plugin, &output.mod_root)
-                    .map_err(|error| error.to_string())?,
+                    .map_err(ArchiveWorkError::of("Pin Loading Plugin", &loading_plugin))?,
             );
         }
     }
 
     progress.boundary = ArchiveFinalizationFailure::SourceCleanupFailed;
     for pin in &mut source_pins {
+        let source = pin.path().to_path_buf();
         pin.release_for_cleanup();
         pin.remove_if_unchanged()
-            .map_err(|error| error.to_string())?;
+            .map_err(ArchiveWorkError::of("Remove packed source", &source))?;
         progress.removed_sources += 1;
+        // The folder may now be empty; pruning removes it only if it is.
+        if let Some(folder) = source.parent() {
+            artifacts.record_vacated(&output.mod_root, folder);
+        }
     }
     Ok(())
 }

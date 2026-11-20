@@ -11,8 +11,7 @@ use crate::mesh::{MeshFileVersion, MeshStreamVersion, MeshUserVersion};
 use crate::texture::{TextureFormat, UnwantedFormat};
 
 /// The games a Profile may name in `[BSA] bsaGame`, as `cao-archive` names
-/// them, numbered as bethutil's `btu::Game` numbers them, so files stay
-/// readable by older builds.
+/// them, numbered as existing users' files number them.
 ///
 /// Only these three exist because `cao-archive` has Archive Rules only for
 /// them; any other number is refused rather than packed by another game's
@@ -31,21 +30,22 @@ impl ClosedSet for Game {
     }
 }
 
-/// Reads `bsaGame` as `QVariant::toInt()` reads it, then rejects anything but
-/// 3, 4 or 5.
+/// Reads `bsaGame` strictly, as every closed set is read ([`closed::member`]):
+/// only 3, 4 or 5, so a number past 32 bits is refused rather than wrapped onto
+/// a game (`4294967300` is not `4`).
 ///
 /// # Errors
-/// [`ProfileError::UnsupportedBsaGame`] for any other number, for text and for
-/// a missing key, which all read as a number no game has.
+/// [`ProfileError::UnsupportedBsaGame`] for any other number, for text, for a
+/// list and for a missing key. Its value is the text as the file holds it
+/// ([`Value::to_written`]), so a list is quoted too; a missing key gives an
+/// empty one.
 fn read_game(value: &Value) -> Result<Game, ProfileError> {
-    match value.to_i32() {
-        3 => Ok(Game::Tes5),
-        4 => Ok(Game::Sse),
-        5 => Ok(Game::Fo4),
-        _ => Err(ProfileError::UnsupportedBsaGame {
-            value: value.to_qstring(),
-        }),
-    }
+    closed::member(value).ok_or_else(|| ProfileError::UnsupportedBsaGame {
+        value: match value {
+            Value::Invalid => String::new(),
+            value => value.to_written(),
+        },
+    })
 }
 
 /// A profile's `profile.ini`: the per-game settings C++ held in `Profiles`.
@@ -117,7 +117,7 @@ impl ProfileSettings {
     /// The maximum Archive size is also [`ProfileError::UnsupportedValue`] when
     /// it is neither a number of bytes nor a size with a unit, is `0`, or does
     /// not fit in whole bytes: see [`ArchiveSize`].
-    pub fn read(ini: &IniFile) -> Result<Self, ProfileError> {
+    pub(crate) fn read(ini: &IniFile) -> Result<Self, ProfileError> {
         Ok(Self {
             bsa_enabled: ini.value("BSA/bsaEnabled").to_bool(),
             max_bsa_uncompressed_size: ArchiveSize::read(ini, "BSA/maxBsaUncompressedSize")?,
@@ -138,7 +138,7 @@ impl ProfileSettings {
     /// Writes the model into `profile.ini` in the shipped files' key order, so a
     /// missing key is appended in its section where QSettings appends it. Keys
     /// the model does not hold are left alone.
-    pub fn write(&self, ini: &mut IniFile) {
+    pub(crate) fn write(&self, ini: &mut IniFile) {
         ini.set("BSA/bsaEnabled", self.bsa_enabled);
         self.max_bsa_uncompressed_size
             .write(ini, "BSA/maxBsaUncompressedSize");
@@ -154,9 +154,9 @@ impl ProfileSettings {
 
         ini.set("Animations/animationsEnabled", self.animations_enabled);
 
-        // `Value::int_list` writes the `Int` list QSettings reads back, including
-        // the `@Variant(…)` shape of a one-element list. Every unwanted format's
-        // number is at most 115, so it fits an `i32`.
+        // `Value::int_list` writes the list the reader reads back, including a
+        // one-element list. Every unwanted format's number is at most 115, so it
+        // fits an `i32`.
         let formats: Vec<i32> = self
             .textures_unwanted_formats
             .iter()

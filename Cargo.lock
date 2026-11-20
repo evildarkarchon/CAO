@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "cao-archive"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ba2",
  "cao-archive",
@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "cao-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "cao-core",
  "cao-winfs",
@@ -682,7 +682,7 @@ dependencies = [
 
 [[package]]
 name = "cao-gui"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "cao-archive",
@@ -703,7 +703,7 @@ dependencies = [
 
 [[package]]
 name = "cao-gui-ui"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "slint",
  "slint-build",
@@ -711,14 +711,14 @@ dependencies = [
 
 [[package]]
 name = "cao-gui-unsafe"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "cao-optimizers"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ba2",
  "cao-archive",
@@ -737,7 +737,7 @@ dependencies = [
 
 [[package]]
 name = "cao-profiles"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "cao-archive",
  "thiserror 2.0.21",
@@ -745,7 +745,7 @@ dependencies = [
 
 [[package]]
 name = "cao-winfs"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "dunce",
  "embed-resource",
@@ -822,9 +822,9 @@ dependencies = [
 
 [[package]]
 name = "clipboard-win"
-version = "5.4.1"
+version = "5.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
+checksum = "052af7878466feccda12ba7a6a67d019d712f296809559b47c12c8cc196d3a9a"
 dependencies = [
  "error-code",
 ]
@@ -2638,9 +2638,9 @@ dependencies = [
 
 [[package]]
 name = "libz-sys"
-version = "1.1.29"
+version = "1.1.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85bc9657773828b90eeb625adff10eeac83cc21bbfd8e23a03eaa8a33c9e28d9"
+checksum = "fee3f59f4321dab0c78d828942e7aa09d0bd8ad6e78a501977e6bf3d02938045"
 dependencies = [
  "cc",
  "pkg-config",
@@ -2903,10 +2903,11 @@ dependencies = [
 
 [[package]]
 name = "nifly-sys"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "cc",
  "embed-resource",
+ "nifly-sys",
  "thiserror 2.0.21",
 ]
 
@@ -3664,9 +3665,9 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.13.4"
+version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9f068eba8e7071c5f9511831b44f32c740d5adf574e990f946ddb53db2f314e"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
 dependencies = [
  "bitflags 2.13.2",
  "memchr",
@@ -4511,7 +4512,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",
@@ -5905,7 +5906,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "yazi"

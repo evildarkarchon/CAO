@@ -781,3 +781,43 @@ fn an_empty_batch_produces_an_empty_ledger() {
         assert_eq!(ledger.skipped_asset_count(reason), 0);
     }
 }
+
+/// Audit CORE-11: discovery tells Archives apart by `names_archive`, so it
+/// must agree with full routing for every path, enabled or not, in any case
+/// and whatever else the name holds.
+#[test]
+fn names_archive_agrees_with_routing_for_every_path() {
+    for work in [
+        &[RequestedWork::ArchiveExtraction][..],
+        &[RequestedWork::NativeTextureOptimization][..],
+    ] {
+        let router = AssetRouter::new(policy(ExecutionMode::Apply, work, ALL_ROUTING_CAPABILITIES));
+        for path in [
+            "content.ba2",
+            "Content.BA2",
+            "dir.ba2/texture.dds",
+            "content.ba2.dds",
+            "content.dds.ba2",
+            "content.bsa",
+            "content.ba",
+            "content.ba22",
+            "content.bä2",
+            ".ba2",
+            "content",
+            "textures/a.dds",
+        ] {
+            let path = Path::new(path);
+            let archive = match router.route(path) {
+                RoutingDecision::Routed(asset) => asset.kind() == AssetKind::Archive,
+                RoutingDecision::Skipped(asset) => asset.kind() == AssetKind::Archive,
+                RoutingDecision::Unsupported => false,
+            };
+            assert_eq!(
+                router.names_archive(path),
+                archive,
+                "{} {work:?}",
+                path.display()
+            );
+        }
+    }
+}

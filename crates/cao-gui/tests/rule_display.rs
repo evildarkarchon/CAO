@@ -38,7 +38,7 @@ fn saved_options(app: &App, app_dir: &Path, profile: &str) -> Options {
     app.save();
     Profiles::new(app_dir)
         .open(profile)
-        .load_options(&Options::default())
+        .load_options("")
         .unwrap()
 }
 
@@ -123,7 +123,7 @@ fn a_save_under_dry_run_keeps_the_base_and_extra_archive_options() {
     // Every base and Extra choice on, and both Separate boxes cleared
     // (merging), so a save reading any of them as off shows on disk.
     let sse = Profiles::new(&app_dir).open("SSE");
-    let mut options = sse.load_options(&Options::default()).unwrap();
+    let mut options = sse.load_options("").unwrap();
     options.bsa_extract = true;
     options.bsa_create = true;
     options.bsa_delete_backup = true;
@@ -350,7 +350,7 @@ fn an_fo4_profile_loads_with_separate_textures_checked_and_disabled() {
     let app_dir = app_on("fo4_load", "FO4");
     // A profile C++ could save: FO4 merging textures into the general archive.
     let fo4 = Profiles::new(&app_dir).open("FO4");
-    let mut options = fo4.load_options(&Options::default()).unwrap();
+    let mut options = fo4.load_options("").unwrap();
     options.bsa_merge_textures = true;
     fo4.save_options(&options).unwrap();
     let (app, _desktop) = open(&app_dir);

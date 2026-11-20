@@ -5,3 +5,46 @@
 // `src/styles/cao.ico`, kept here so it survives the C++ deletion (#515).
 1 24 "Cathedral_Assets_Optimizer.manifest"
 IDI_ICON1 ICON "cao.ico"
+
+// The version resource Explorer's Details tab and crash reports read (WS-9).
+// cao-gui's build script writes cao-version.h, from the workspace version in
+// the root Cargo.toml, into its OUT_DIR, which embed-resource passes to rc.exe
+// with /I; so the numbers here cannot drift from the About box.
+// The VS_* and VOS_* constants are spelled as numbers: embed-resource runs
+// rc.exe without setting the Windows SDK's include path, so <winver.h> is not
+// reliably found outside a Developer Command Prompt.
+#include "cao-version.h"
+
+// 1 = VS_VERSION_INFO. RT_VERSION is its own resource type, so this ID does
+// not clash with the manifest's.
+1 VERSIONINFO
+FILEVERSION CAO_VERSION_NUMBERS
+PRODUCTVERSION CAO_VERSION_NUMBERS
+// VS_FFI_FILEFLAGSMASK
+FILEFLAGSMASK 0x3FL
+// 0, or VS_FF_PRERELEASE for a version with a pre-release part
+FILEFLAGS CAO_VERSION_FLAGS
+// VOS_NT_WINDOWS32
+FILEOS 0x40004L
+// VFT_APP
+FILETYPE 0x1L
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        // U.S. English, Unicode
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "Cathedral Assets Optimizer"
+            VALUE "FileVersion", CAO_VERSION_STRING
+            VALUE "InternalName", "cao-gui"
+            VALUE "OriginalFilename", "cao-gui.exe"
+            VALUE "ProductName", "Cathedral Assets Optimizer"
+            VALUE "ProductVersion", CAO_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

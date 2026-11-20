@@ -1,18 +1,20 @@
-//! A port of Qt 5.15's QSettings INI reader and writer (IniFormat on Windows).
+//! The QSettings INI format (IniFormat on Windows, as Qt 5.15 reads and writes it).
 //!
-//! CAO keeps every setting in QSettings INI files: `profiles/common.ini` and each
-//! profile's `settings.ini` and `profile.ini`. This module reads them the way Qt
-//! does, so existing profiles load unchanged, and writes exactly what Qt writes, so
-//! the C++ build can read every file Rust saves.
+//! CAO keeps every setting in INI files in that format: `profiles/common.ini` and
+//! each profile's `settings.ini` and `profile.ini`. Existing users' files were
+//! written by QSettings, and reading them unchanged is the requirement this module
+//! serves: it reads them the way Qt does. It writes the same format, so a file it
+//! saves reads back the same, here and in a hand editor.
 //!
 //! Keys are full paths as QSettings names them: `"Textures/texturesFormat"`, or
 //! `"profile"` for a root key under `[General]`. Lookup ignores case; writing keeps
 //! each key's original spelling and place.
 //!
-//! Three recorded deviations from Qt (#476, items 12–14) change only how hand-edited
-//! files read, never what is written:
+//! Three recorded deviations from Qt (#476, items 12–14) change how hand-edited
+//! files read:
 //! - a plain scalar where a list is expected reads as a one-element list
-//!   ([`Value::to_int_list`]);
+//!   ([`Value::list_entries`]), which is also how a one-element list is written
+//!   ([`Value::int_list`]), where Qt wrote an opaque `@Variant(…)` blob;
 //! - a line starting with `#` is a comment;
 //! - a file without a BOM decodes as UTF-8 when the whole file is valid UTF-8, and
 //!   as Latin-1 otherwise.
@@ -24,6 +26,8 @@
 //! writes a BOM, so only hand-edited files can tell the difference.
 
 mod read;
+#[cfg(test)]
+mod tests;
 mod value;
 mod write;
 
@@ -141,17 +145,6 @@ impl IniFile {
         self.format_error.as_ref()
     }
 
-    /// Every key, in the order a save writes them within their sections, with the
-    /// spelling it was first read or set with.
-    pub fn keys(&self) -> impl Iterator<Item = &str> {
-        self.entries.iter().map(|entry| entry.key.as_str())
-    }
-
-    /// Whether `key` is present, ignoring case.
-    pub fn contains(&self, key: &str) -> bool {
-        self.index.contains_key(&key.to_lowercase())
-    }
-
     /// The value of `key`, ignoring case, or `None` when it is missing.
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.index
@@ -211,15 +204,19 @@ impl IniFile {
 
     /// Rewrites the file at `path` atomically, as QSettings does through `QSaveFile`:
     /// the bytes go to a temporary file in the same directory, which is flushed to
-    /// disk and then renamed over `path`. Missing parent directories are created,
-    /// as QSettings does. On failure `path` is untouched and the temporary file is
-    /// removed.
+    /// disk and then renamed over `path`. On failure `path` is untouched and the
+    /// temporary file is removed.
+    ///
+    /// The directory must exist. Unlike QSettings, a missing one is not created:
+    /// a profile deleted while CAO runs would otherwise come back as a folder
+    /// holding only the file saved into it (GUI-8).
     ///
     /// Qt also takes a `<file>.lock` file; there is one CAO process per user, so this
     /// does not.
     ///
     /// # Errors
-    /// [`IniError::Write`] when the directory, the temporary file or the rename fails.
+    /// [`IniError::Write`] when the directory is missing, or the temporary file or the
+    /// rename fails.
     pub fn save(&self, path: &Path) -> Result<(), IniError> {
         let error = |source| IniError::Write {
             path: path.to_owned(),
@@ -229,7 +226,6 @@ impl IniFile {
             Some(parent) if !parent.as_os_str().is_empty() => parent,
             _ => Path::new("."),
         };
-        fs::create_dir_all(directory).map_err(error)?;
 
         let (temporary, mut file) = create_temporary(directory, path).map_err(error)?;
         let written = file

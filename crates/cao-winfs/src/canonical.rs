@@ -5,9 +5,10 @@
 //! always resolve to the same text. Neither `std::fs::canonicalize` (which keeps
 //! `\\?\` and fails on volumes with no DOS name) nor `dunce::canonicalize`
 //! (which keeps `\\?\` past 260 characters and never rewrites UNC) gives one
-//! readable form for every volume. The algorithm is MSVC STL 14.51's
+//! readable form for every volume. The algorithm follows MSVC STL 14.51's
 //! `_Canonical`, `weakly_canonical`, `lexically_normal` and root-name parser,
-//! ported line for line; it is not checked against MSVC.
+//! which give such a form; matching MSVC's output is not itself a goal, and
+//! it is not checked against MSVC.
 //!
 //! Paths are handled as UTF-16 units, as the STL does, so text that is not
 //! valid Unicode passes through unchanged.
@@ -35,7 +36,8 @@ const ALT_SEPARATOR: u16 = b'/' as u16;
 const DOT: &[u16] = &[b'.' as u16];
 const DOT_DOT: &[u16] = &[b'.' as u16, b'.' as u16];
 
-/// Resolves `path` to the exact text MSVC `std::filesystem::canonical` returns.
+/// Resolves `path` to CAO's canonical text: one readable form per location,
+/// however the path spelled it.
 ///
 /// Opens the path (following links) and asks Windows for its final normalized
 /// name. A drive-letter result loses its `\\?\` prefix whatever its length,
@@ -51,8 +53,7 @@ pub fn canonical(path: &Path) -> io::Result<PathBuf> {
     canonical_units(&units(path)).map(path_from_units)
 }
 
-/// Resolves `path` to the exact text MSVC `std::filesystem::weakly_canonical`
-/// returns.
+/// Resolves `path`, which may not exist yet, to CAO's canonical text.
 ///
 /// When the whole path exists this is [`canonical`]. Otherwise the path is
 /// lexically normalized, the longest existing prefix is canonicalized, and the

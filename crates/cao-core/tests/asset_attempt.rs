@@ -297,8 +297,11 @@ fn an_asset_that_cannot_be_read_is_never_quarantined() {
 }
 
 /// Spec #546, user story 22: a factory failure, such as COM failing to
-/// initialize, fails only the attempt that needed the backend, as an unsafe
-/// Operation Failure with unknown mutation, and nothing panics.
+/// initialize, fails only the attempt that needed the backend, and nothing
+/// panics. Audit CORE-10: the Asset was never opened and creation changes no
+/// durable file, so it is a `BackendUnavailable` Operation Failure that
+/// changed nothing, yet still unsafe, since every later attempt needs the
+/// same backend.
 #[test]
 fn a_factory_error_is_contained_as_an_unsafe_operation_failure() {
     let root = mod_root("factory-error", &["unloadable.dds"]);
@@ -321,9 +324,9 @@ fn a_factory_error_is_contained_as_an_unsafe_operation_failure() {
     let result = outcome.expect("a factory error is an attempt, not a cancellation");
     assert_eq!(
         result.failure(),
-        Some(AssetExecutionFailure::BackendException)
+        Some(AssetExecutionFailure::BackendUnavailable)
     );
-    assert_eq!(result.mutation_state(), MutationState::PartialOrUnknown);
+    assert_eq!(result.mutation_state(), MutationState::None);
     assert!(!result.safe_to_continue());
     assert_eq!(result.affected_path(), root.join("textures/unloadable.dds"));
     assert!(
@@ -370,7 +373,7 @@ fn a_factory_error_still_hands_back_its_diagnostics() {
     let result = outcome.expect("a factory error is an attempt, not a cancellation");
     assert_eq!(
         result.failure(),
-        Some(AssetExecutionFailure::BackendException)
+        Some(AssetExecutionFailure::BackendUnavailable)
     );
     assert_eq!(retained, [unreadable]);
 }

@@ -150,7 +150,7 @@ fn the_maximum_size_goes_down_to_a_hundredth_of_a_gigabyte() {
 }
 
 #[test]
-fn each_shipped_profile_shows_its_size_in_gigabytes_and_saves_it_as_whole_bytes() {
+fn each_shipped_profile_shows_its_size_in_gigabytes_and_keeps_it_as_shipped() {
     headless();
     let app_dir = app_dir("archive_size_shipped");
     edit_ini(&app_dir, "common.ini", "profile", "SSE");
@@ -159,12 +159,13 @@ fn each_shipped_profile_shows_its_size_in_gigabytes_and_saves_it_as_whole_bytes(
     let ui = app.window();
 
     // The shipped sizes are 1.96 GiB (`2104533975.04`) and 3.9 GiB
-    // (`4187593113.6`); switching away saves each Profile, which drops only
-    // the fractional byte.
+    // (`4187593113.6`). The shipped profiles are base profiles, whose
+    // `profile.ini` is never written (GUI-10), so switching through them and
+    // saving leaves each size as shipped, fraction and all.
     let expected = [
-        ("SSE", "1.96", "maxBsaUncompressedSize=2104533975"),
-        ("FO4", "3.90", "maxBsaUncompressedSize=4187593113"),
-        ("TES5", "1.96", "maxBsaUncompressedSize=2104533975"),
+        ("SSE", "1.96", "maxBsaUncompressedSize=2104533975.04"),
+        ("FO4", "3.90", "maxBsaUncompressedSize=4187593113.6"),
+        ("TES5", "1.96", "maxBsaUncompressedSize=2104533975.04"),
     ];
     for (profile, shown, _) in expected {
         choose(ui, "Profile", profile);

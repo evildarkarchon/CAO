@@ -227,25 +227,33 @@ pub(crate) fn show_options(ui: &MainWindow, options: &Options) {
     bsa.set_compress(options.bsa_compress);
     bsa.set_delete_source(options.bsa_delete_source);
 
+    // Every control is set from `options` or reset, never left as the
+    // previous profile showed it: a group that loads off would otherwise keep
+    // that profile's sub-choices, and ticking it again would preselect them
+    // (GUI-11).
     let textures = ui.global::<TexturesTab>();
-    // C++ leaves the three boxes as they were when it unchecks the group.
+    let defaults = Options::default();
     if options.textures_mipmaps || options.textures_compress || options.textures_necessary {
         textures.set_process(true);
         textures.set_necessary(options.textures_necessary);
         textures.set_compress(options.textures_compress);
         textures.set_mipmaps(options.textures_mipmaps);
     } else {
+        // An unchecked group saves all three off, so the boxes show the
+        // defaults a newly ticked group starts with.
         textures.set_process(false);
+        textures.set_necessary(defaults.textures_necessary);
+        textures.set_compress(defaults.textures_compress);
+        textures.set_mipmaps(defaults.textures_mipmaps);
     }
 
     textures.set_resize(options.textures_resize_size || options.textures_resize_ratio);
-    // The radios are auto-exclusive, and Qt cannot uncheck the checked one, so
-    // C++'s `setChecked(size)` then `setChecked(ratio)` lets ratio win and keeps
-    // the previous choice when neither is set.
-    if options.textures_resize_ratio {
-        textures.set_resize_mode(RESIZE_BY_RATIO);
-    } else if options.textures_resize_size {
+    // Ratio wins when a hand-edited file turns both on; with neither on, the
+    // radios show the first, By ratio, as a newly ticked group starts with.
+    if options.textures_resize_size && !options.textures_resize_ratio {
         textures.set_resize_mode(RESIZE_BY_SIZE);
+    } else {
+        textures.set_resize_mode(RESIZE_BY_RATIO);
     }
     textures.set_size_width(clamp(options.textures_target_width, SIZE_RANGE));
     textures.set_size_height(clamp(options.textures_target_height, SIZE_RANGE));
@@ -253,20 +261,22 @@ pub(crate) fn show_options(ui: &MainWindow, options: &Options) {
     textures.set_ratio_height(clamp(options.textures_target_height_ratio, RATIO_RANGE));
 
     let meshes = ui.global::<MeshesTab>();
-    meshes.set_process(true);
-    match options.meshes_optimization_level {
-        0 => meshes.set_process(false),
-        // All three, so the global stays exclusive while the Meshes page (whose
-        // RadioGroup would uncheck the others) is not shown. When it is shown,
-        // the group's change handlers settle on the same choice in any order.
-        level @ 1..=3 => {
-            meshes.set_necessary(level == 1);
-            meshes.set_medium(level == 2);
-            meshes.set_full(level == 3);
-        }
-        // C++ checks the group and leaves the radios for any other number.
-        _ => {}
-    }
+    // The radio to check: the level's, or, for a group that loads off, the
+    // first, which a newly ticked group starts with. A number outside 0 to 3,
+    // from a hand-edited file, checks the group and no radio, so
+    // `read_options` keeps the number as loaded.
+    let (process, level) = match options.meshes_optimization_level {
+        0 => (false, 1),
+        level @ 1..=3 => (true, level),
+        _ => (true, 0),
+    };
+    meshes.set_process(process);
+    // All three, so the global stays exclusive while the Meshes page (whose
+    // RadioGroup would uncheck the others) is not shown. When it is shown,
+    // the group's change handlers settle on the same choice in any order.
+    meshes.set_necessary(level == 1);
+    meshes.set_medium(level == 2);
+    meshes.set_full(level == 3);
     meshes.set_resave(options.meshes_resave);
     meshes.set_headparts(options.meshes_headparts);
 
@@ -564,13 +574,47 @@ fn is_drive(segment: &str) -> bool {
 }
 
 /// The tab bar's layout of work groups, without a window: which work a
-/// tab's enabling answers to.
+/// tab's enabling answers to; and [`clean_path`]'s table.
 #[cfg(test)]
 mod tests {
     use cao_core::admission::Admission;
     use cao_core::routing::{ProfileCapabilities, ProfileCapability};
 
-    use super::{Tab, tab_enabled};
+    use super::{Tab, clean_path, tab_enabled};
+
+    /// The mod folder as typed, and as the window reads it back (GUI-7).
+    #[test]
+    fn clean_path_normalizes_a_typed_folder() {
+        for (typed, cleaned) in [
+            ("", ""),
+            (r"C:\Mods", "C:/Mods"),
+            (r"C:\Mods\", "C:/Mods"),
+            ("C:/Mods//sub/./x/../y", "C:/Mods/sub/y"),
+            (r"C:\Mods\.\a\..\..\Other", "C:/Other"),
+            // A drive's root keeps its separator; `..` cannot climb above it.
+            (r"C:\", "C:/"),
+            ("C:/..", "C:/"),
+            ("C:/../Mods", "C:/Mods"),
+            ("C:", "C:"),
+            // A UNC path keeps its leading `//`.
+            (r"\\server\share\mods\", "//server/share/mods"),
+            ("//server/share/../other", "//server/other"),
+            ("/", "/"),
+            ("/..", "/"),
+            ("/a/../..", "/"),
+            // A relative path keeps the `..` it cannot resolve.
+            (".", "."),
+            ("./", "."),
+            ("a/./b", "a/b"),
+            ("a/..", "."),
+            ("a/../..", ".."),
+            ("../a", "../a"),
+            ("../../a/b/..", "../../a"),
+            ("D:/Mods/Café; v2/", "D:/Mods/Café; v2"),
+        ] {
+            assert_eq!(clean_path(typed), cleaned, "{typed:?}");
+        }
+    }
 
     /// The tabs enabled under `admission`, in the bar's order.
     fn enabled_tabs(admission: &Admission) -> Vec<Tab> {

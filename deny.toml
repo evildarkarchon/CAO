@@ -1,0 +1,88 @@
+# cargo-deny's policy for CAO's dependency graph (WS-11). CI runs
+# `cargo deny check`; run it locally after changing a dependency.
+
+[graph]
+# CAO targets Windows only, so only the Windows MSVC graph is checked: a crate
+# pulled in for another platform never ships.
+targets = ["x86_64-pc-windows-msvc"]
+
+[advisories]
+# RustSec advisories: a vulnerable, unsound or yanked crate fails the check.
+# An unmaintained crate fails only when CAO depends on it directly, since a
+# transitive one can only be replaced by its dependent's maintainers.
+unmaintained = "workspace"
+yanked = "deny"
+ignore = [
+    # chrono is CAO's Application Log clock (cao-optimizers) and Slint's too,
+    # and no maintained release exists to move to. Replacing it in CAO is a
+    # change of its own; Slint would still pull it in.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; no replacement chosen yet" },
+]
+
+[licenses]
+# The licences of every crate CAO links. A new licence in the graph fails the
+# check until it is reviewed and added here.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+    # Slint is offered as GPL-3.0-only OR its Royalty-free License 2.0 OR its
+    # commercial licence. CAO takes the royalty-free option for desktop
+    # applications, whose attribution condition Help > About Slint meets; the
+    # GPL-3.0 option stays open, since the binary is GPL-bound anyway.
+    "LicenseRef-Slint-Royalty-free-2.0",
+]
+confidence-threshold = 0.9
+# CAO's own crates are unpublished but still checked, so the GPL component
+# below is stated here and not only in nifly-sys's manifest.
+private = { ignore = false }
+
+# nifly-sys compiles nifly, which is GPL-3.0-only, into its static library, and
+# cao-gui.exe links it: the shipped binary combines MPL-2.0 and GPL-3.0 code
+# (README.md, "License"). No other crate may bring in GPL code.
+[[licenses.exceptions]]
+crate = "nifly-sys"
+allow = ["GPL-3.0-only"]
+
+[bans]
+# A second major version of a crate is a duplicate unless listed in `skip`
+# with its reason. All of today's come from CAO's dependencies, not from CAO.
+multiple-versions = "deny"
+# Path dependencies between CAO's own unpublished crates carry no version.
+wildcards = "deny"
+allow-wildcard-paths = true
+# Each entry names the older copy of a duplicated crate and what pulls it in.
+# Drop an entry once `cargo deny check bans` warns it no longer matches.
+skip = [
+    # CAO's own getrandom 0.3 (cao-core, cao-winfs) beside the 0.4 that the
+    # jobserver crate under `cc` uses. Moving CAO to 0.4 removes it.
+    { crate = "getrandom@0.3", reason = "CAO on 0.3, jobserver (via cc) on 0.4" },
+    # ba2 =3.0.1 (pinned in the root Cargo.toml) is on thiserror 1.
+    { crate = "thiserror@1", reason = "ba2 3.0.1 is on thiserror 1" },
+    { crate = "thiserror-impl@1", reason = "ba2 3.0.1 is on thiserror 1" },
+    # Slint 1.18's windowing and text stack.
+    { crate = "hashbrown@0.14", reason = "rowan, under i-slint-compiler" },
+    { crate = "hashbrown@0.16", reason = "accesskit and clru, under Slint" },
+    { crate = "smol_str@0.2", reason = "winit 0.30, under Slint" },
+    { crate = "windows-sys@0.52", reason = "winit 0.30 and glutin, under Slint" },
+    { crate = "windows-targets@0.52", reason = "windows-sys 0.52, under Slint" },
+    { crate = "windows_x86_64_msvc@0.52", reason = "windows-sys 0.52, under Slint" },
+    { crate = "windows-sys@0.60", reason = "arboard, under Slint" },
+    { crate = "miniz_oxide@0.8", reason = "png, under Slint; flate2 is on 0.9" },
+    # thiserror 1, windows-implement and other proc macros are still on syn 2.
+    { crate = "syn@2", reason = "proc macros not yet on syn 3" },
+]
+
+[sources]
+# crates.io, plus CAO's directxtex-rs fork, which the root Cargo.toml patches
+# in by commit (#479).
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = ["https://github.com/evildarkarchon/directxtex-rs"]

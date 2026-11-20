@@ -14,11 +14,12 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use cao_core::routing::{ExecutionMode, ProfileCapabilities, RequestedWork};
 use cao_core::run::{
-    InlineRunScheduler, ModSelection, OptimizationRunResult, OptimizationRunService, RunHandle,
-    RunRequest, SelectedProfile, TemporaryArtifactRegistry,
+    ModSelection, OptimizationRunResult, OptimizationRunService, RunHandle, RunRequest,
+    SelectedProfile, TemporaryArtifactRegistry,
 };
 use cao_core::test_support::{
-    EventLog, FakeBackendFactory, ScriptedToolset, ToolsetConfiguration, sse_profile,
+    EventLog, FakeBackendFactory, InlineRunScheduler, ScriptedToolset, ToolsetConfiguration,
+    fresh_dir, sse_profile,
 };
 
 /// Serializes scenarios that start runs: one active run is allowed per
@@ -32,13 +33,11 @@ pub fn serial() -> MutexGuard<'static, ()> {
 
 /// A fresh, empty directory under the target directory for one scenario.
 pub fn scratch_dir(name: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("cao-core")
-        .join(name);
-    // A missing directory is the expected case; anything else surfaces in create_dir_all.
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    fresh_dir(
+        Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join("cao-core")
+            .join(name),
+    )
 }
 
 /// A fresh, empty Mod Root `<name>/mod` whose directory is case-sensitive,
@@ -255,6 +254,40 @@ pub fn relative_to_working_directory(target: &Path) -> PathBuf {
     }
     relative.extend(target.components().skip(common));
     relative
+}
+
+/// A process running the file at a path, killed when dropped.
+///
+/// Windows refuses to delete a file mapped as a running image, even through a
+/// handle that holds delete access. CAO's deletes ignore the read-only
+/// attribute (audit FFI-4), so this is how a scenario makes the removal of an
+/// owned file fail after recovery has opened and verified it.
+pub struct RunningImage(std::process::Child);
+
+impl RunningImage {
+    /// Overwrites `path` with a copy of `cmd.exe` and starts it with piped
+    /// standard streams, where it waits for input until dropped. The image is
+    /// mapped once `spawn` returns, so no wait is needed.
+    pub fn start(path: &Path) -> Self {
+        let system = std::env::var_os("SystemRoot").expect("SystemRoot is set on Windows");
+        std::fs::copy(Path::new(&system).join("System32").join("cmd.exe"), path).unwrap();
+        let child = std::process::Command::new(path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        Self(child)
+    }
+}
+
+impl Drop for RunningImage {
+    fn drop(&mut self) {
+        // Either can fail only if the process already exited, which is the
+        // state this drop is after.
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 /// Leaves the staging of a run that crashed while staging `destination`, a

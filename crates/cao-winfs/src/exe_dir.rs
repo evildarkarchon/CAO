@@ -1,8 +1,9 @@
 //! The directory of the running executable (#463).
 //!
-//! The port resolves `profiles/`, `logs/`, `bin/hkxcmd.exe` and
-//! `translations/` next to the exe (deviation 1), so this must name the folder
-//! the user sees beside the exe.
+//! CAO resolves `profiles/`, `logs/`, `bin/hkxcmd.exe` and `translations/`
+//! next to the exe, never against the working directory, which a shortcut or
+//! a mod manager launching CAO sets to somewhere else. So this must name the
+//! folder the user sees beside the exe.
 
 use std::io;
 use std::path::{Path, PathBuf};

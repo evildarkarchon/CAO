@@ -25,16 +25,11 @@ use crate::run::{
 };
 use crate::test_support::{ArchiveRunRequest, CountingCleanup, ScriptedToolset};
 
-/// A fresh, empty, canonical directory for one scenario under the system
-/// temporary directory: `CARGO_TARGET_TMPDIR` exists only for integration
-/// tests.
+/// A fresh, empty, canonical directory for one scenario under the unit
+/// tests' scratch root in the target directory: `CARGO_TARGET_TMPDIR` exists
+/// only for integration tests.
 fn scratch_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join("cao-core-unit")
-        .join(format!("{name}-{}", std::process::id()));
-    // A missing directory is the expected case; anything else surfaces in create_dir_all.
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_support::unit_scratch_dir(&format!("finalization/{name}"));
     cao_winfs::canonical(&dir).unwrap()
 }
 

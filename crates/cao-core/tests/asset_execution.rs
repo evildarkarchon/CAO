@@ -47,8 +47,8 @@ use cao_core::routing::{
 };
 use cao_core::run::{
     AssetBackendFactory, BackendCreation, BackendCreationError, CancellationToken,
-    OptimizationRunResult, RunExecutor, RunFailure, RunFailureCode, RunOutcome, RunPhase,
-    RunServices, TemporaryArtifactRegistry, create_run_id, is_staging_name,
+    OptimizationRunResult, RunExecutor, RunFailure, RunFailureCode, RunOutcome, RunServices,
+    TemporaryArtifactRegistry, create_run_id, is_staging_name,
 };
 use cao_core::test_support::{CountingCleanup, ScriptedToolset};
 use cao_core::{AttemptOutcome, CompletedMutation};
@@ -268,6 +268,8 @@ impl AssetExecutionBackend for HookBackend {
     fn optimize_texture(
         &mut self,
         operations: AssetOperations,
+        _path: &Path,
+        _mod_root: &Path,
         mode: ExecutionMode,
     ) -> OperationResult {
         self.texture_operations = Some(operations);
@@ -421,9 +423,12 @@ impl AssetExecutionBackend for SharedBackend {
     fn optimize_texture(
         &mut self,
         operations: AssetOperations,
+        path: &Path,
+        mod_root: &Path,
         mode: ExecutionMode,
     ) -> OperationResult {
-        self.backend().optimize_texture(operations, mode)
+        self.backend()
+            .optimize_texture(operations, path, mod_root, mode)
     }
 
     fn save_texture(&mut self, path: &Path) -> Result<(), String> {
@@ -519,7 +524,6 @@ fn assert_contained_panic(result: &OptimizationRunResult, boundary: &str, path: 
         Some(ExecutionFailureCategory::Contract),
         "{boundary}"
     );
-    assert_eq!(attempt.phase(), RunPhase::ProcessingAssets, "{boundary}");
     assert_eq!(
         attempt.mutation_state(),
         MutationState::PartialOrUnknown,
@@ -1838,13 +1842,11 @@ fn every_contained_animation_outcome_preserves_the_original() {
         assert_eq!(read(&source), "original", "{row}");
         assert_eq!(result.mutation_state(), MutationState::None, "{row}");
         assert!(result.safe_to_continue(), "{row}");
-        assert!(result.cleanup_failures().is_empty(), "{row}");
         assert_eq!(result.failure(), failure, "{row}");
         if failure.is_some() {
             assert_eq!(result.failure_category(), category, "{row}");
             assert_eq!(result.operation(), operation, "{row}");
             assert_eq!(result.affected_path(), source, "{row}");
-            assert_eq!(result.phase(), RunPhase::ProcessingAssets, "{row}");
         }
     }
 }

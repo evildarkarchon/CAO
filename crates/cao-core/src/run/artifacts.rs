@@ -1,40 +1,44 @@
 //! Temporary Ownership: the run's registry of temporary artifacts, and staged
 //! publication through one-use receipts.
 //!
-//! Ported from `src/Run/TemporaryArtifactRegistry.h`. A producer captures its
-//! destination before loading the original bytes, stages a durable sibling,
-//! writes it, and publishes it through a [`PublicationReceipt`]. Publication
-//! revalidates the destination, flushes the staged bytes, renames them over
-//! the destination natively on the same volume, and only then releases the
-//! temporary name from the ownership manifest. Its [`PublicationResult`]
-//! carries the mutation fact either way.
+//! A producer captures its destination before loading the original bytes,
+//! stages a durable sibling, writes it, and publishes it through a
+//! [`PublicationReceipt`]. Publication revalidates the destination, flushes
+//! the staged bytes, renames them over the destination natively on the same
+//! volume, and only then releases the temporary name from the ownership
+//! manifest. Its [`PublicationResult`] carries the mutation fact either way,
+//! and the error when it did not complete.
 //!
-//! In C++ the receipt was move-only and every `publish` consumed it, so a
-//! second call reported `NotPublished`. Here [`PublicationReceipt::publish`]
-//! takes the receipt by value: a second publication does not compile.
+//! [`PublicationReceipt::publish`] takes the receipt by value, so a staged
+//! file is published at most once: a second publication does not compile.
 //!
 //! Registrations name only temporary paths. Source Assets, committed
 //! destinations, backups and retained evidence are never registered, so
 //! Safety Cleanup never deletes them.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{self, Read};
+#[cfg(any(test, feature = "test-support"))]
 use std::os::windows::fs::FileTypeExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
+#[cfg(any(test, feature = "test-support"))]
+use cao_winfs::weakly_canonical;
 use cao_winfs::{
     Access, FileFacts, FileIdentity, Open, RenameMode, Share, canonical,
-    compare_ordinal_ignore_case, rename_by_handle, weakly_canonical,
+    compare_ordinal_ignore_case, rename_by_handle,
 };
 
 use crate::Error;
 use crate::execution::MutationState;
-use crate::run::staging::{StagingError, StagingScope, has_staging_component, pin_directory};
-use crate::run::{
-    CancellationToken, RunFailure, RunFailureCode, RunId, RunPhase, SafetyCleanupService,
-};
+use crate::run::path_safety::{DirectoryPins, pin_directory_chain, unsafe_windows_name};
+use crate::run::staging::{StagingError, StagingScope, has_staging_component};
+use crate::run::{CancellationToken, RunFailure, RunId, SafetyCleanupService};
+#[cfg(any(test, feature = "test-support"))]
+use crate::run::{RunFailureCode, RunPhase};
 
 /// The native rule for an occupied destination leaf.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,21 +65,51 @@ pub enum PublicationState {
     PublishedAndReleased,
 }
 
-/// The outcome of one publication: its state and, unless it completed, why.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PublicationResult {
-    pub state: PublicationState,
-    /// Empty after a completed publication.
-    pub error_detail: String,
+/// The outcome of one publication: how far it got and, unless it completed,
+/// the error that stopped it. A publication that did not complete always
+/// carries its error, so no caller needs a fallback for a missing one.
+#[derive(Debug)]
+pub enum PublicationResult {
+    /// No destination mutation happened, because of this error. Cleanup or a
+    /// later recovery removes only the registered temporary path.
+    NotPublished(StagingError),
+    /// The destination was committed, but the manifest snapshot releasing the
+    /// temporary name failed with this error. Ownership of that (now absent)
+    /// name remains.
+    PublishedStillOwned(StagingError),
+    /// The destination was committed and the temporary name released.
+    PublishedAndReleased,
 }
 
 impl PublicationResult {
+    /// How far the publication got.
+    pub fn state(&self) -> PublicationState {
+        match self {
+            Self::NotPublished(_) => PublicationState::NotPublished,
+            Self::PublishedStillOwned(_) => PublicationState::PublishedStillOwned,
+            Self::PublishedAndReleased => PublicationState::PublishedAndReleased,
+        }
+    }
+
+    /// Whether the destination was committed and the temporary name released.
+    pub fn completed(&self) -> bool {
+        matches!(self, Self::PublishedAndReleased)
+    }
+
+    /// Why the publication did not complete, or `None` when it did.
+    pub fn error(&self) -> Option<&StagingError> {
+        match self {
+            Self::NotPublished(error) | Self::PublishedStillOwned(error) => Some(error),
+            Self::PublishedAndReleased => None,
+        }
+    }
+
     /// The destination's mutation fact: None when nothing was published, and
     /// Committed for both published states, even when the release failed.
     pub fn mutation(&self) -> MutationState {
-        match self.state {
-            PublicationState::NotPublished => MutationState::None,
-            _ => MutationState::Committed,
+        match self {
+            Self::NotPublished(_) => MutationState::None,
+            Self::PublishedStillOwned(_) | Self::PublishedAndReleased => MutationState::Committed,
         }
     }
 
@@ -86,7 +120,7 @@ impl PublicationResult {
     /// go through the same snapshot path that just failed. A phase may be
     /// stricter than this verdict, never looser.
     pub fn safe_to_continue(&self) -> bool {
-        self.state != PublicationState::PublishedStillOwned
+        !matches!(self, Self::PublishedStillOwned(_))
     }
 }
 
@@ -94,7 +128,9 @@ impl PublicationResult {
 struct Artifact {
     path: PathBuf,
     committed: bool,
-    /// Owned by the staging manifest: only publication can release it.
+    /// Owned by the staging manifest: only publication can release it. Every
+    /// artifact a run registers is; only tests register any other kind.
+    #[cfg(any(test, feature = "test-support"))]
     durable: bool,
 }
 
@@ -109,6 +145,9 @@ struct Inner {
     /// [`TemporaryArtifactRegistry::release_published`] releases them together.
     unreleased: Vec<PathBuf>,
     staging: StagingScope,
+    /// The directories, keyed by canonical Mod Root, that this run deleted a
+    /// file from; see [`TemporaryArtifactRegistry::record_vacated`].
+    vacated: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
 }
 
 /// When a publication gives up its temporary name.
@@ -120,14 +159,19 @@ enum Release {
     Deferred,
 }
 
-/// An opaque handle to one non-durable registration.
+/// An opaque handle to one registration made without a receipt. Only tests
+/// register that way (audit FS-12), so it exists only with `test-support`.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Registration {
     registry: u64,
     index: usize,
 }
 
-/// A staged file and its registration, from [`TemporaryArtifactRegistry::stage_file`].
+/// A staged file and its registration, from
+/// [`TemporaryArtifactRegistry::stage_file`]; test-only, like
+/// [`Registration`].
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StagedFile {
     pub path: PathBuf,
@@ -204,16 +248,16 @@ impl PublicationReceipt {
     /// Publishes the staged file at `destination` with `policy`, consuming
     /// the receipt whatever happens.
     ///
-    /// It never fails outright: every error comes back as the state reached
-    /// before it, so a Committed Mutation is never hidden. A dropped registry
-    /// returns `NotPublished`. A `NotPublished` failure abandons the staged
-    /// file, as [`Self::abandon`] does, since nothing can publish it later.
+    /// It never fails outright: every error comes back inside the state
+    /// reached before it, so a Committed Mutation is never hidden. A dropped
+    /// registry returns `NotPublished`. A `NotPublished` failure abandons the
+    /// staged file, as [`Self::abandon`] does, since nothing can publish it
+    /// later.
     pub fn publish(self, destination: &Path, policy: PublicationPolicy) -> PublicationResult {
         let Some(owner) = self.owner.upgrade() else {
-            return PublicationResult {
-                state: PublicationState::NotPublished,
-                error_detail: "The Temporary Ownership scope ended.".to_owned(),
-            };
+            return PublicationResult::NotPublished(StagingError::Invalid(
+                "The Temporary Ownership scope ended.".to_owned(),
+            ));
         };
         let mut inner = lock(&owner);
         let mut state = PublicationState::NotPublished;
@@ -225,14 +269,13 @@ impl PublicationReceipt {
             Release::Now,
             &mut state,
         ) {
-            Ok(()) => PublicationResult {
-                state: PublicationState::PublishedAndReleased,
-                error_detail: String::new(),
-            },
-            Err(error) => PublicationResult {
-                state,
-                error_detail: error.to_string(),
-            },
+            Ok(()) => PublicationResult::PublishedAndReleased,
+            // `publish` leaves `state` at the rename's outcome: a later error
+            // can only be the release's.
+            Err(error) if state == PublicationState::NotPublished => {
+                PublicationResult::NotPublished(error)
+            }
+            Err(error) => PublicationResult::PublishedStillOwned(error),
         }
     }
 
@@ -411,6 +454,7 @@ impl TemporaryArtifactRegistry {
                 cleaned: false,
                 unreleased: Vec::new(),
                 staging: StagingScope::new(run_id),
+                vacated: BTreeMap::new(),
             })),
         }
     }
@@ -440,11 +484,13 @@ impl TemporaryArtifactRegistry {
 
     /// Flushes ownership, then creates an empty Asset sibling of
     /// `destination` without publication authority, for recoverable staging
-    /// only. Use [`Self::stage_file_for_publication`] for durable output.
+    /// only: tests use it to leave staging behind as a crashed run would.
+    /// Production output goes through [`Self::stage_file_for_publication`].
     ///
     /// # Errors
     /// Invalid ownership or confinement, an unavailable lock, an I/O failure,
     /// or closed registration.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn stage_file(
         &mut self,
         mod_root: &Path,
@@ -452,18 +498,20 @@ impl TemporaryArtifactRegistry {
     ) -> Result<StagedFile, StagingError> {
         let mut inner = self.open()?;
         let path = inner.staging.stage_file(mod_root, destination)?;
-        Ok(push_durable(&mut inner, path))
+        Ok(staged_file(&mut inner, path))
     }
 
     /// Flushes ownership, then creates an empty Archive file beneath the run
-    /// child without publication authority.
+    /// child without publication authority; test-only, like
+    /// [`Self::stage_file`].
     ///
     /// # Errors
     /// As for [`Self::stage_file`].
+    #[cfg(any(test, feature = "test-support"))]
     pub fn stage_archive_file(&mut self, mod_root: &Path) -> Result<StagedFile, StagingError> {
         let mut inner = self.open()?;
         let path = inner.staging.stage_archive_file(mod_root)?;
-        Ok(push_durable(&mut inner, path))
+        Ok(staged_file(&mut inner, path))
     }
 
     /// Captures an Asset destination before its original bytes are loaded,
@@ -527,7 +575,7 @@ impl TemporaryArtifactRegistry {
         let path = inner
             .staging
             .stage_file(&target.root, &target.destination)?;
-        let index = push_durable(&mut inner, path.clone()).registration.index;
+        let index = push_durable(&mut inner, path.clone());
         Ok(PublicationReceipt {
             owner: Arc::downgrade(&self.inner),
             index,
@@ -571,7 +619,7 @@ impl TemporaryArtifactRegistry {
         }
         let root = canonical(mod_root).map_err(StagingError::lookup("Resolve", mod_root))?;
         let path = inner.staging.stage_archive_file(&root)?;
-        let index = push_durable(&mut inner, path.clone()).registration.index;
+        let index = push_durable(&mut inner, path.clone());
         Ok(PublicationReceipt {
             owner: Arc::downgrade(&self.inner),
             index,
@@ -615,7 +663,7 @@ impl TemporaryArtifactRegistry {
         Ok(paths
             .into_iter()
             .map(|path| {
-                let index = push_durable(&mut inner, path.clone()).registration.index;
+                let index = push_durable(&mut inner, path.clone());
                 PublicationReceipt {
                     owner: Arc::downgrade(&self.inner),
                     index,
@@ -654,12 +702,44 @@ impl TemporaryArtifactRegistry {
         released
     }
 
+    /// Records that this run deleted a file directly in `directory`, beneath
+    /// the canonical `mod_root`, so Archive Finalization may prune the
+    /// directory if that left it empty. Nothing on disk changes.
+    ///
+    /// Pruning removes only directories a run emptied, never one a mod ships
+    /// empty (audit FS-7). The registry keeps the record because it is the
+    /// one run-scoped object every phase that deletes a file in a Mod Root
+    /// already holds: Archive extraction's source removal and Archive
+    /// Finalization's packed-source removal.
+    pub(crate) fn record_vacated(&mut self, mod_root: &Path, directory: &Path) {
+        lock(&self.inner)
+            .vacated
+            .entry(mod_root.to_path_buf())
+            .or_default()
+            .insert(directory.to_path_buf());
+    }
+
+    /// The directories beneath the canonical `mod_root` this run recorded
+    /// with [`Self::record_vacated`], in path order.
+    pub(crate) fn vacated_directories(&self, mod_root: &Path) -> Vec<PathBuf> {
+        lock(&self.inner)
+            .vacated
+            .get(mod_root)
+            .map(|directories| directories.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Records an absent absolute path before the caller creates it. Nothing
     /// on disk changes. Keep its parent stable through cleanup.
+    ///
+    /// Only tests register a path without a receipt, to give Safety Cleanup
+    /// something to remove or fail on, so this exists only with
+    /// `test-support` (audit FS-12).
     ///
     /// # Errors
     /// An existing or already registered path, an ambiguous Windows name, a
     /// lookup failure, or closed registration.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn register_artifact(&mut self, path: &Path) -> Result<Registration, StagingError> {
         let mut inner = self.open()?;
         let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
@@ -677,13 +757,11 @@ impl TemporaryArtifactRegistry {
         let normalized = weakly_canonical(parent)
             .map_err(StagingError::lookup("Resolve", parent))?
             .join(name);
-        // Win32 strips trailing dots and spaces and reads colons as streams, so
-        // aliases could otherwise reacquire cleanup ownership of committed output.
+        // Win32 strips trailing dots and spaces, reads colons as streams and
+        // names as devices, so aliases could otherwise reacquire cleanup
+        // ownership of committed output.
         let ambiguous = normalized.components().any(|component| match component {
-            Component::Normal(name) => {
-                let name = name.to_string_lossy();
-                name.ends_with('.') || name.ends_with(' ') || name.contains(':')
-            }
+            Component::Normal(name) => unsafe_windows_name(&name.to_string_lossy()),
             _ => false,
         });
         if ambiguous {
@@ -726,11 +804,13 @@ impl TemporaryArtifactRegistry {
         })
     }
 
-    /// Retains a non-durable registered artifact instead of deleting it.
+    /// Retains a non-durable registered artifact instead of deleting it;
+    /// test-only, like [`Self::register_artifact`].
     ///
     /// # Errors
     /// [`StagingError::Invalid`] for a durable, foreign, already committed or
     /// closed registration: only publication releases a durable claim.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn commit(&mut self, registration: Registration) -> Result<(), StagingError> {
         let mut inner = self.open()?;
         let id = inner.id;
@@ -763,6 +843,9 @@ impl TemporaryArtifactRegistry {
         // retry a failed deletion.
         inner.cleaned = true;
         let mut failures = Vec::new();
+        // Only tests register artifacts without a receipt; every one a run
+        // stages is durable and removed by the staging scope below.
+        #[cfg(any(test, feature = "test-support"))]
         for artifact in inner.artifacts.iter().rev() {
             // The staging scope also knows durable paths whose creation failed
             // before a receipt was returned.
@@ -803,6 +886,7 @@ impl SafetyCleanupService for TemporaryArtifactRegistry {
 }
 
 /// Removes one non-durable registered path without following its contents.
+#[cfg(any(test, feature = "test-support"))]
 fn remove_registered(path: &Path) -> Result<(), String> {
     let parent = path.parent().unwrap_or(path);
     // A link substituted after registration must not redirect a child
@@ -826,18 +910,28 @@ fn remove_registered(path: &Path) -> Result<(), String> {
     removed.map_err(|error| error.to_string())
 }
 
-/// Records a durable path the staging scope just created.
-fn push_durable(inner: &mut Inner, path: PathBuf) -> StagedFile {
+/// Records a durable path the staging scope just created, returning its
+/// index, which only the receipt for it holds.
+fn push_durable(inner: &mut Inner, path: PathBuf) -> usize {
     inner.artifacts.push(Artifact {
-        path: path.clone(),
+        path,
         committed: false,
+        #[cfg(any(test, feature = "test-support"))]
         durable: true,
     });
+    inner.artifacts.len() - 1
+}
+
+/// Records a durable path as [`push_durable`] does, for the test-only
+/// staging calls that hand back a [`StagedFile`] instead of a receipt.
+#[cfg(any(test, feature = "test-support"))]
+fn staged_file(inner: &mut Inner, path: PathBuf) -> StagedFile {
+    let index = push_durable(inner, path.clone());
     StagedFile {
         path,
         registration: Registration {
             registry: inner.id,
-            index: inner.artifacts.len() - 1,
+            index,
         },
     }
 }
@@ -875,7 +969,7 @@ impl PartialEq for DestinationSnapshot {
 /// The ordinary directories from a Mod Root down to a destination's parent,
 /// pinned against rename, with the parent's identity.
 struct PinnedDestination {
-    _directories: Vec<File>,
+    _directories: DirectoryPins,
     parent: FileIdentity,
 }
 
@@ -913,7 +1007,7 @@ fn pin_destination(
                 "Publication destination is outside its Mod Root or reserved.".to_owned(),
             ));
         };
-        if ambiguous_windows_name(&name.to_string_lossy()) {
+        if unsafe_windows_name(&name.to_string_lossy()) {
             return Err(StagingError::Invalid(
                 "Publication destination has an ambiguous Windows name.".to_owned(),
             ));
@@ -926,15 +1020,13 @@ fn pin_destination(
             "Publication destination parent changed or is linked.".to_owned(),
         ));
     }
-    let mut directories = vec![pin_directory(root)?];
-    let mut current = root.to_path_buf();
-    for component in relative.parent().into_iter().flat_map(Path::components) {
-        current.push(component);
-        directories.push(pin_directory(&current)?);
-    }
-    let parent_pin = directories.last().expect("the root is always pinned");
+    let mut directories = DirectoryPins::new();
+    pin_directory_chain(root, parent, Share::READ | Share::WRITE, &mut directories)?;
+    let parent_pin = directories
+        .get(parent)
+        .expect("the chain ends at the parent it pinned");
     let parent_identity =
-        FileIdentity::of(parent_pin).map_err(StagingError::io("Identify", &current))?;
+        FileIdentity::of(parent_pin).map_err(StagingError::io("Identify", parent))?;
     if staged_parent.is_some_and(|staged| *staged != parent_identity) {
         return Err(StagingError::Invalid(
             "Publication destination parent changed after staging.".to_owned(),
@@ -944,40 +1036,6 @@ fn pin_destination(
         _directories: directories,
         parent: parent_identity,
     })
-}
-
-/// Whether Win32 would alias `name` to another entry, a stream or a device:
-/// a trailing dot or space, a reserved character, a control character, or a
-/// DOS device name.
-fn ambiguous_windows_name(name: &str) -> bool {
-    name.is_empty()
-        || name.ends_with('.')
-        || name.ends_with(' ')
-        || name.contains(['<', '>', ':', '"', '|', '?', '*'])
-        || name.chars().any(|character| (character as u32) < 32)
-        || reserved_device_name(name)
-}
-
-/// Whether Win32 resolves `name` to a DOS device, which it does in any
-/// directory and with any extension.
-///
-/// Deviation 15: trailing spaces and dots are trimmed from the stem, so
-/// `NUL .pex` is recognized too.
-pub(crate) fn reserved_device_name(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or_default();
-    let stem = stem.trim_end_matches([' ', '.']).to_ascii_uppercase();
-    if matches!(
-        stem.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
-    ) {
-        return true;
-    }
-    let mut characters = stem.chars();
-    let prefix: String = characters.by_ref().take(3).collect();
-    let number = characters.next();
-    (prefix == "COM" || prefix == "LPT")
-        && characters.next().is_none()
-        && number.is_some_and(|digit| matches!(digit, '1'..='9' | '¹' | '²' | '³'))
 }
 
 /// Why CAO will not replace the Asset whose facts are `facts`, as the
@@ -1133,6 +1191,10 @@ pub(crate) fn fingerprint(reader: &mut impl Read) -> io::Result<(u64, u64)> {
 /// Opens the staged file exclusively and flushes it before any destination
 /// mutation, requiring it to share the destination parent's volume: the
 /// native rename never falls back to a copy.
+///
+/// The open waits out a sharing violation (FS-5): the backend has only just
+/// closed the file, which is when a real-time scanner is most likely to hold
+/// it, and refusing then would fail the Asset for nothing.
 fn flush_staged_file(temporary: &Path, parent: &FileIdentity) -> Result<File, StagingError> {
     let io = |context: &'static str| StagingError::io(context, temporary);
     let staged = Open::new(
@@ -1140,7 +1202,7 @@ fn flush_staged_file(temporary: &Path, parent: &FileIdentity) -> Result<File, St
         Share::NONE,
     )
     .write_through()
-    .open(temporary)
+    .open_retrying(temporary)
     .map_err(io("Open staged file"))?;
     let facts = FileFacts::of(&staged).map_err(io("Inspect"))?;
     if !facts.is_ordinary_file() || facts.link_count() != 1 {
@@ -1164,16 +1226,11 @@ mod tests {
 
     use super::*;
 
-    /// A fresh, empty directory under the system temporary directory:
-    /// `CARGO_TARGET_TMPDIR` exists only for integration tests.
+    /// A fresh, empty directory under the unit tests' scratch root in the
+    /// target directory: `CARGO_TARGET_TMPDIR` exists only for integration
+    /// tests.
     fn scratch_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join("cao-core-unit")
-            .join(format!("{name}-{}", std::process::id()));
-        // A missing directory is the expected case; anything else surfaces in create_dir_all.
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::test_support::unit_scratch_dir(&format!("artifacts/{name}"))
     }
 
     /// A file another program holds without sharing refuses the snapshot,
@@ -1242,24 +1299,5 @@ mod tests {
         let snapshot = destination_snapshot(&path).unwrap().unwrap();
 
         assert_eq!(snapshot.facts.size(), 5);
-    }
-
-    #[test]
-    fn device_names_are_recognized_with_any_extension_and_trailing_spaces() {
-        for name in [
-            "NUL", "nul.pex", "Con.txt", "COM1.esp", "lpt9", "COM¹.x", "NUL .pex",
-        ] {
-            assert!(reserved_device_name(name), "{name}");
-        }
-        for name in [
-            "NULL.pex",
-            "COM0",
-            "COM10",
-            "console",
-            "LPT",
-            "aux_file.dds",
-        ] {
-            assert!(!reserved_device_name(name), "{name}");
-        }
     }
 }

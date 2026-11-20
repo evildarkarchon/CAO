@@ -36,7 +36,7 @@ fn a_read_pin_denies_writers_and_renames_but_not_readers() {
 }
 
 /// Attribute-only access takes no part in sharing checks, which is why every
-/// C++ pin also asks for read access.
+/// pin also asks for read access.
 #[test]
 fn an_attribute_only_open_does_not_deny_renames() {
     let dir = scratch_dir("attribute-pin");
@@ -115,7 +115,7 @@ fn facts_report_links_and_size() {
 }
 
 /// The change time catches an edit that keeps the size and restores the
-/// last-write time, which C++ relies on to notice in-place edits.
+/// last-write time, which is how `unchanged_since` notices in-place edits.
 #[test]
 fn unchanged_since_catches_in_place_edits() {
     let dir = scratch_dir("facts-change");
@@ -177,7 +177,7 @@ fn a_second_owner_lock_open_is_a_sharing_violation() {
         Err(OwnerLockError::Active(error)) => assert!(is_sharing_violation(&error), "{error}"),
         other => panic!("expected StagingActive, got {other:?}"),
     }
-    // Any other share-mode-0 open, such as a C++ run's, fails the same way.
+    // Any other share-mode-0 open, such as another tool's, fails the same way.
     let raw = Open::new(Access::READ, Share::NONE)
         .open(&path)
         .unwrap_err();

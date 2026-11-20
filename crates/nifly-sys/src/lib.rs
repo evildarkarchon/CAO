@@ -21,7 +21,8 @@
 //! - Output paths cross as UTF-16, losslessly. Texture paths are bytes
 //!   ([`TexturePaths`]), because NIF strings carry no encoding.
 //! - [`Nif::optimize_for`] builds nifly's `NiVersion` with `SetFile`,
-//!   `SetStream` and `SetUser`, as `MeshesOptimizer` does.
+//!   `SetStream` and `SetUser`, so the header version string that
+//!   `NifFile::Save` writes is rebuilt with the version.
 //!
 //! A nifly call cannot be interrupted, and a corrupt file can keep `load`
 //! busy for minutes, so cancellation waits for the call in progress.

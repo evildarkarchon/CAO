@@ -28,6 +28,10 @@
 //! [`SeamsConfiguration`] builds each run's Toolset over the Archive seams a
 //! scenario's builder makes, so `cao-optimizers` can run the same way over
 //! its production reader, packer and volume probes.
+//!
+//! Beside the fakes, [`fresh_dir`] gives each scenario a clean scratch
+//! directory, and [`InlineRunScheduler`] runs each run on the caller's
+//! thread, so its result exists as soon as `start` returns.
 
 mod archive_run;
 mod archives;
@@ -36,6 +40,7 @@ mod cleanup;
 mod configuration;
 mod observation;
 mod scheduling;
+mod scratch;
 mod toolset;
 
 pub use archive_run::ArchiveRunRequest;
@@ -50,8 +55,12 @@ pub use configuration::{
 };
 pub use observation::{EventLog, ObservationHook, Observed, RecordingSink};
 pub use scheduling::{
-    CountingInlineScheduler, DeferredScheduler, ExhaustedScheduler, GatedScheduler, WorkerHook,
+    CountingInlineScheduler, DeferredScheduler, ExhaustedScheduler, GatedScheduler,
+    InlineRunScheduler, WorkerHook,
 };
+pub use scratch::fresh_dir;
+#[cfg(test)]
+pub(crate) use scratch::unit_scratch_dir;
 pub use toolset::{
     AssetAdapterMaker, AssetAttemptScript, AssetAttempts, ProviderLoads, ScriptedToolset,
     SeamsBuilder, SeamsConfiguration, ToolsetConfiguration, execute_run,

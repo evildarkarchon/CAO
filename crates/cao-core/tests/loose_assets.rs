@@ -69,16 +69,17 @@ use cao_core::execution::{
 };
 use cao_core::routing::{AssetOperation, ExecutionMode, RequestedWork, SkipReason};
 use cao_core::run::{
-    AssetInitializationCancelled, CancellationToken, InlineRunScheduler, MutationKind,
-    OptimizationRunResult, OptimizationRunService, RunDiagnosticCode, RunEvent, RunEventPayload,
+    AssetInitializationCancelled, CancellationToken, MutationKind, OptimizationRunResult,
+    OptimizationRunService, RunDiagnosticCode, RunDiagnosticSeverity, RunEvent, RunEventPayload,
     RunExecutor, RunOutcome, RunPhase, RunPhaseRecord, RunPhaseStatus, RunProgress, RunRequest,
     RunServices, create_run_id,
 };
 use cao_core::test_support::{
-    CountingCleanup, EventLog, FakeArchivePacker, FakeBackendFactory, GatedScheduler, Observed,
-    RecordingSink, ScriptedToolset, entry, write_archive,
+    CountingCleanup, EventLog, FakeArchivePacker, FakeBackendFactory, GatedScheduler,
+    InlineRunScheduler, Observed, RecordingSink, ScriptedToolset, entry, write_archive,
 };
 use cao_core::{AttemptOutcome, CompletedMutation};
+use cao_winfs::{Access, Open, Share};
 use common::{
     HandleSlot, backend_toolset, canonical, converting_configuration, junction, reclaim, request,
     run_with, scratch_dir, serial, snapshot_tree, toolset_configuration, write_tree,
@@ -1281,4 +1282,110 @@ fn a_dry_run_leaves_the_complete_mod_tree_unchanged() {
     assert!(result.archive_extraction_attempts().is_empty());
     assert_eq!(result.skipped_asset_count(SkipReason::DisabledAssetKind), 1);
     assert_eq!(processing_progress(&events), [(0, 2), (1, 2), (2, 2)]);
+}
+
+/// Audit CORE-10: a Routed Asset whose folder is swapped for a link out of
+/// the Mod Root after discovery is never opened, so its failure changed
+/// nothing. It is `OutsideModRoots`, not a backend exception with unknown
+/// mutation, and it still stops the run, since the tree is no longer the
+/// one discovery saw.
+#[test]
+fn an_asset_moved_outside_the_mod_roots_stops_the_run_without_unknown_mutation() {
+    let _serial = serial();
+    let scratch = scratch_dir("loose-outside-mod-roots");
+    write_tree(&scratch, &["mod/a/first.dds", "mod/b/second.dds"]);
+    let root = canonical(&scratch.join("mod"));
+    let outside = scratch.join("outside");
+    let toolset = Arc::new(ScriptedToolset::default().with_assets({
+        let (root, outside) = (root.clone(), outside.clone());
+        move |asset, _, _| {
+            // Once the first Asset is attempted, its sibling folder becomes a
+            // junction that leads out of the Mod Root.
+            if asset.execution_path().ends_with("first.dds") {
+                std::fs::create_dir(&outside).unwrap();
+                std::fs::rename(root.join("b"), outside.join("b")).unwrap();
+                junction(&root.join("b"), &outside.join("b"));
+            }
+            Ok(AssetExecutionResult::success(CompletedMutation::None))
+        }
+    }));
+
+    let (result, _) = run(
+        &toolset,
+        request(
+            ExecutionMode::DryRun,
+            &root,
+            &[RequestedWork::NativeTextureOptimization],
+        ),
+    );
+    std::fs::remove_dir(root.join("b")).unwrap();
+
+    assert_eq!(result.outcome(), RunOutcome::Failed);
+    assert_eq!(attempted_names(&result), ["first.dds", "second.dds"]);
+    let outside_attempt = &result.asset_attempts()[1].result;
+    assert_eq!(
+        outside_attempt.failure(),
+        Some(AssetExecutionFailure::OutsideModRoots)
+    );
+    assert_eq!(outside_attempt.mutation_state(), MutationState::None);
+    assert!(!outside_attempt.safe_to_continue());
+    assert!(
+        result
+            .mutation_summaries()
+            .iter()
+            .all(|summary| summary.partial_or_unknown == 0),
+        "{:?}",
+        result.mutation_summaries()
+    );
+    assert!(
+        result.archive_finalization().is_none(),
+        "an unsafe attempt stops the run before Archive Finalization"
+    );
+}
+
+/// Audit CORE-5: a directory discovery cannot read, here one another
+/// program holds open without sharing, is not silently absent. The run
+/// still succeeds with the Assets it could reach, and says what it left out
+/// with one warning-level `DirectoryUnreadable` diagnostic, though both
+/// discovery passes meet it.
+#[test]
+fn an_unreadable_directory_is_diagnosed_once_as_a_warning() {
+    let _serial = serial();
+    let root = canonical(&scratch_dir("loose-unreadable-directory"));
+    write_tree(&root, &["textures/a.dds", "locked/b.dds"]);
+    let locked = root.join("locked");
+    // A listing opens the directory for reading with every share mode, so a
+    // handle that shares nothing refuses it with a sharing violation.
+    let held = Open::new(Access::LIST_DIRECTORY, Share::NONE)
+        .directory()
+        .open(&locked)
+        .unwrap();
+    assert!(
+        std::fs::read_dir(&locked).is_err(),
+        "the held handle keeps this process from listing the directory"
+    );
+
+    let (result, _) = run(
+        &Arc::new(ScriptedToolset::default()),
+        request(
+            ExecutionMode::DryRun,
+            &root,
+            &[RequestedWork::NativeTextureOptimization],
+        ),
+    );
+    drop(held);
+
+    assert_eq!(result.outcome(), RunOutcome::Succeeded);
+    assert_eq!(attempted_names(&result), ["a.dds"]);
+    let unreadable: Vec<_> = result
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.code == RunDiagnosticCode::DirectoryUnreadable)
+        .collect();
+    let [diagnostic] = unreadable.as_slice() else {
+        panic!("diagnosed once across both discovery passes: {unreadable:?}");
+    };
+    assert_eq!(diagnostic.path, locked);
+    assert_eq!(diagnostic.phase, RunPhase::DiscoveringArchives);
+    assert_eq!(diagnostic.code.severity(), RunDiagnosticSeverity::Warning);
 }
