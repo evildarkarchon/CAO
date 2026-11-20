@@ -16,7 +16,7 @@ use cao_core::run::{
     CancellationToken, RunFailure, RunFailureCode, RunPhase, TemporaryArtifactRegistry,
     create_run_id,
 };
-use common::{canonical, scratch_dir, snapshot_tree};
+use common::{RunningImage, canonical, scratch_dir, snapshot_tree};
 
 const V1: &[u8] = include_bytes!("fixtures/staging/v1.manifest");
 const V2: &[u8] = include_bytes!("fixtures/staging/v2.manifest");
@@ -362,19 +362,18 @@ fn an_entry_recovery_cannot_open_is_named() {
 /// Spec (#492): a removal that fails after recovery began deleting is
 /// `StagingRecoveryFailed`, naming the entry it could not remove. The
 /// entries removed before it stay removed, the rest stay owned, and a later
-/// run finishes the recovery.
+/// run finishes the recovery. The entry is kept from being removed by
+/// running it, since a read-only attribute no longer stops CAO (FFI-4).
 #[test]
 fn a_failed_removal_is_staging_recovery_failed() {
     let root = v2_leftover("recovery-failed");
     let child = staging(&root).join(V2_CHILD);
     let stuck = child.join(V2_ENTRY);
-    let mut permissions = std::fs::metadata(&stuck).unwrap().permissions();
-    permissions.set_readonly(true);
-    std::fs::set_permissions(&stuck, permissions.clone()).unwrap();
+    let running = RunningImage::start(&stuck);
 
     let (registry, failure) = recover(&root);
 
-    let failure = failure.expect("the read-only entry cannot be removed");
+    let failure = failure.expect("a running image cannot be removed");
     assert_eq!(
         failure.code,
         RunFailureCode::StagingRecoveryFailed,
@@ -394,9 +393,7 @@ fn a_failed_removal_is_staging_recovery_failed() {
     assert!(stuck.exists());
     drop(registry);
 
-    #[allow(clippy::permissions_set_readonly_false)]
-    permissions.set_readonly(false);
-    std::fs::set_permissions(&stuck, permissions).unwrap();
+    drop(running);
     let (_registry, failure) = recover(&root);
     assert!(failure.is_none(), "{failure:?}");
     assert!(!child.exists());

@@ -1,10 +1,11 @@
 //! The Application Log: the `log` facade's sink for `cao-gui` (#470).
 //!
 //! It keeps plog's file: the per-profile `logs/<profile>/yy.MM.dd.hh.mm.html`
-//! path, a UTF-8 BOM and `<style>` header written only into an empty file, one
-//! `<br><font color=…>` record per write in the info or debug layout, and
-//! rotation into `name.1.html` … `name.999.html` once the live file passes
-//! [`MAX_FILE_SIZE`]. Deviations: the debug layout names `{module::path@line}`
+//! path, a UTF-8 BOM and `<style>` header written only into an empty file, and
+//! one `<br><font color=…>` record per write in the info or debug layout. Once
+//! the live file passes [`MAX_FILE_SIZE`] it rolls into the next numbered
+//! chunk, `name.N.html`, numbered upwards so the highest is the newest, and
+//! at most [`MAX_FILES`] - 1 chunks are kept (audit BE-15). Deviations: the debug layout names `{module::path@line}`
 //! because `log` has no function name, `log` has no fatal level, the text is
 //! HTML-escaped, and each record ends with `\n` (deviation 22). One handle serves
 //! both layouts, so toggling debug logging between runs keeps logging
@@ -34,7 +35,8 @@ use log::{Level, LevelFilter, Log, Metadata, Record};
 /// The live file rolls before a write that finds it larger than this, except
 /// the first write after opening it, as plog did.
 pub const MAX_FILE_SIZE: u64 = 250_000;
-/// The live file plus `name.1.html` … `name.999.html`.
+/// The live file plus at most 999 numbered chunks; the oldest chunk is deleted
+/// as each new one is made.
 pub const MAX_FILES: u32 = 1_000;
 /// The Log tab rows a [`LogFeed`] replays and queues, newest kept.
 pub const MAX_FEED_ROWS: usize = 10_000;
@@ -386,7 +388,7 @@ fn html_line(line: &LogLine) -> String {
     html
 }
 
-/// The live log file and plog's rotation over it.
+/// The live log file and its rotation into numbered chunks.
 struct RollingFile {
     path: PathBuf,
     /// `None` after a roll could not reopen the live file; the next record
@@ -396,17 +398,25 @@ struct RollingFile {
     /// plog skipped the size check on the first write after opening a file
     /// (`m_firstWrite`), so a reopened oversized file takes one more record.
     first_write: bool,
+    /// The live file rolls before a write that finds it larger than this:
+    /// [`MAX_FILE_SIZE`], or further on after a roll failed.
+    roll_at: u64,
+    /// The number the next chunk takes, found by listing the folder at the
+    /// first roll, and again after a failed one; `None` until then.
+    next_chunk: Option<u32>,
 }
 
 impl RollingFile {
-    /// Creates the file's folder and opens the file, as C++ `prepareLogFile`
-    /// did, so an unopenable path fails here rather than on the first record.
+    /// Creates the file's folder and opens the file, so an unopenable path
+    /// fails here rather than on the first record.
     fn open(path: &Path) -> Result<Self, LogError> {
         let mut rolling = Self {
             path: path.to_owned(),
             file: None,
             size: 0,
             first_write: true,
+            roll_at: MAX_FILE_SIZE,
+            next_chunk: None,
         };
         let opened = match path.parent() {
             Some(folder) => std::fs::create_dir_all(folder),
@@ -433,7 +443,7 @@ impl RollingFile {
     /// Writes one record in one unbuffered write, so a reader sees it at once
     /// and a crash loses nothing. Failures are swallowed.
     fn write(&mut self, record: &[u8]) {
-        if !mem::take(&mut self.first_write) && self.file.is_some() && self.size > MAX_FILE_SIZE {
+        if !mem::take(&mut self.first_write) && self.file.is_some() && self.size > self.roll_at {
             self.roll();
         }
         // A failed reopen is retried by the next record.
@@ -456,21 +466,70 @@ impl RollingFile {
         }
     }
 
-    /// Shifts `name.N.html` to `name.N+1.html`, dropping the oldest, then
-    /// starts a fresh live file. Only files that exist are renamed.
+    /// Renames the live file to the next numbered chunk, deletes the chunk
+    /// that falls out of the [`MAX_FILES`] - 1 kept, and starts a fresh live
+    /// file: one rename and one delete, whatever the number of chunks, while
+    /// every logging thread waits on the sink's lock (audit BE-15).
+    ///
+    /// When the rename fails, as it does while another process holds the
+    /// live file without delete sharing, the same file is reopened and
+    /// written on, and the next attempt waits until it has grown by another
+    /// [`MAX_FILE_SIZE`], so a stuck roll costs one attempt per chunk's worth
+    /// of records rather than one per record. Failures are swallowed.
     fn roll(&mut self) {
         self.file = None;
-        // A missing oldest chunk is the usual case.
-        let _ = std::fs::remove_file(self.numbered(MAX_FILES - 1));
-        for n in (0..MAX_FILES - 1).rev() {
-            let from = self.numbered(n);
-            if from.exists() {
-                // A failed shift is swallowed, as plog did.
-                let _ = std::fs::rename(&from, self.numbered(n + 1));
+        let chunk = match self.next_chunk {
+            Some(chunk) => chunk,
+            None => self.first_free_chunk(),
+        };
+        if std::fs::rename(&self.path, self.numbered(chunk)).is_ok() {
+            self.next_chunk = Some(chunk.saturating_add(1));
+            self.roll_at = MAX_FILE_SIZE;
+            if let Some(oldest) = chunk
+                .checked_sub(MAX_FILES - 1)
+                .filter(|&oldest| oldest > 0)
+            {
+                // A chunk already gone, removed by hand say, is the same outcome.
+                let _ = std::fs::remove_file(self.numbered(oldest));
             }
+        } else {
+            // List the folder again next time, in case the chunk's name was
+            // what got in the way.
+            self.next_chunk = None;
+            self.roll_at = self.size.saturating_add(MAX_FILE_SIZE);
         }
         // A failure leaves no handle, and the next record retries.
         let _ = self.reopen();
+    }
+
+    /// One past the highest chunk number beside the live file, or 1 when
+    /// there is none or the folder cannot be listed. The folder is listed
+    /// only here, at the first roll of a file and after a failed one.
+    fn first_free_chunk(&self) -> u32 {
+        let (Some(folder), Some(stem)) = (self.path.parent(), self.path.file_stem()) else {
+            return 1;
+        };
+        let stem = stem.to_string_lossy();
+        let extension = self
+            .path
+            .extension()
+            .map(|extension| format!(".{}", extension.to_string_lossy()))
+            .unwrap_or_default();
+        let Ok(entries) = std::fs::read_dir(folder) else {
+            return 1;
+        };
+        entries
+            .filter_map(|entry| {
+                let name = entry.ok()?.file_name();
+                let name = name.to_str()?;
+                name.strip_prefix(stem.as_ref())?
+                    .strip_prefix('.')?
+                    .strip_suffix(extension.as_str())?
+                    .parse::<u32>()
+                    .ok()
+            })
+            .max()
+            .map_or(1, |highest| highest.saturating_add(1))
     }
 
     /// `name.N.html`, or the live file's own path for 0.

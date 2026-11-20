@@ -285,14 +285,15 @@ impl MeshOptimizer {
     }
 }
 
-/// The `/`-separated game path of the Mesh at `path` within `mod_root`, such
-/// as `meshes/actors/hair.nif` (deviation 17).
+/// The `/`-separated game path of the Asset at `path` within `mod_root`, such
+/// as `meshes/actors/hair.nif`: what Headpart Meshes are matched against
+/// (deviation 17), and what tells interface Textures (audit BE-11).
 ///
 /// Discovery joins every path it finds onto its canonical Mod Root, so the
 /// prefix strips; a path spelled otherwise is resolved first, as the Run
 /// Executor resolved it to attribute the attempt. A path still outside `mod_root`, or
 /// any path when `mod_root` is empty (a standalone call), is matched whole.
-fn game_path(path: &Path, mod_root: &Path) -> String {
+pub(crate) fn game_path(path: &Path, mod_root: &Path) -> String {
     let within = |path: &Path| {
         (!mod_root.as_os_str().is_empty())
             .then(|| path.strip_prefix(mod_root).ok().map(Path::to_path_buf))

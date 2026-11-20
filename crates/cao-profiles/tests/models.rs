@@ -5,7 +5,7 @@ mod common;
 
 use cao_archive::Game;
 use cao_profiles::{
-    CommonSettings, FormatErrorKind, IniFile, MeshFileVersion, MeshStreamVersion, MeshUserVersion,
+    CommonSettings, FormatErrorKind, MeshFileVersion, MeshStreamVersion, MeshUserVersion,
     OptimizationMode, Options, ProfileError, ProfileSettings, Profiles, TextureFormat,
     UnwantedFormat,
 };
@@ -14,6 +14,33 @@ use common::{shipped_app_dir, size};
 /// The shipped profiles, with the repository root as their app directory.
 fn shipped() -> Profiles {
     Profiles::new(&shipped_app_dir())
+}
+
+/// Reads `text` as the `profile.ini` of a scratch profile named after `test`.
+fn read_profile_ini(test: &str, text: &str) -> Result<ProfileSettings, ProfileError> {
+    let app_dir = common::scratch_dir(test);
+    let directory = app_dir.join("profiles").join("Scratch");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("profile.ini"), text).unwrap();
+    Profiles::new(&app_dir).open("Scratch").load_settings()
+}
+
+/// The `profile.ini` text of a readable Profile whose `bsaGame` line is
+/// `bsa_game`: a Mesh Target and Texture format too, whose missing keys would
+/// make the Profile unreadable.
+fn profile_ini_with(bsa_game: &str) -> String {
+    format!(
+        "[BSA]\r\n{bsa_game}\r\n[Meshes]\r\nmeshesFileVersion=335675399\r\n\
+         meshesStream=100\r\nmeshesUser=12\r\n[Textures]\r\ntexturesFormat=98\r\n"
+    )
+}
+
+/// An app directory named after `test` whose `common.ini` holds `text`.
+fn profiles_with_common_ini(test: &str, text: &str) -> Profiles {
+    let app_dir = common::scratch_dir(test);
+    std::fs::create_dir_all(app_dir.join("profiles")).unwrap();
+    std::fs::write(app_dir.join("profiles").join("common.ini"), text).unwrap();
+    Profiles::new(&app_dir)
 }
 
 #[test]
@@ -43,21 +70,12 @@ fn the_shipped_tes5_profile_loads_into_the_settings_model() {
 #[test]
 fn bsa_game_3_4_and_5_read_as_cao_archives_tes5_sse_and_fo4() {
     for (text, game) in [("3", Game::Tes5), ("4", Game::Sse), ("5", Game::Fo4)] {
-        // A Mesh Target and Texture format too, whose missing keys would make the
-        // Profile unreadable.
-        let ini = IniFile::parse(
-            format!(
-                "[BSA]\r\nbsaGame={text}\r\n[Meshes]\r\nmeshesFileVersion=335675399\r\n\
-                 meshesStream=100\r\nmeshesUser=12\r\n[Textures]\r\ntexturesFormat=98\r\n"
-            )
-            .as_bytes(),
+        let settings = read_profile_ini(
+            &format!("bsa-game-{text}"),
+            &profile_ini_with(&format!("bsaGame={text}")),
         );
 
-        assert_eq!(
-            ProfileSettings::read(&ini).unwrap().bsa_game,
-            game,
-            "{text}"
-        );
+        assert_eq!(settings.unwrap().bsa_game, game, "{text}");
     }
 }
 
@@ -66,10 +84,15 @@ fn any_other_bsa_game_makes_the_profile_unreadable_naming_the_value() {
     // CAO has Archive Rules only for these three games, so bethutil's other
     // numbers (TES3 is 0, which text also reads as; TES4 1; FNV 2) and any
     // other number are refused rather than packed by another game's rules.
-    for text in ["0", "1", "2", "6", "-4", "SSE", "4.0"] {
-        let ini = IniFile::parse(format!("[BSA]\r\nbsaGame={text}\r\n").as_bytes());
-
-        let error = ProfileSettings::read(&ini).unwrap_err();
+    for (index, text) in ["0", "1", "2", "6", "-4", "SSE", "4.0"]
+        .into_iter()
+        .enumerate()
+    {
+        let error = read_profile_ini(
+            &format!("bsa-game-other-{index}"),
+            &profile_ini_with(&format!("bsaGame={text}")),
+        )
+        .unwrap_err();
 
         assert!(
             matches!(&error, ProfileError::UnsupportedBsaGame { value } if value == text),
@@ -82,23 +105,55 @@ fn any_other_bsa_game_makes_the_profile_unreadable_naming_the_value() {
     }
 }
 
+/// A number past 32 bits is refused rather than wrapped onto a game:
+/// `4294967300` is `4` once truncated to 32 bits (GUI-16).
+#[test]
+fn a_bsa_game_past_32_bits_is_refused_rather_than_wrapped() {
+    for (index, text) in ["4294967300", "4294967299", "-4294967292"]
+        .into_iter()
+        .enumerate()
+    {
+        let error = read_profile_ini(
+            &format!("bsa-game-wide-{index}"),
+            &profile_ini_with(&format!("bsaGame={text}")),
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(&error, ProfileError::UnsupportedBsaGame { value } if value == text),
+            "{text}: {error:?}"
+        );
+    }
+}
+
+/// A list holds no game; the message quotes it as the file holds it, where it
+/// showed an empty value (GUI-16).
+#[test]
+fn a_bsa_game_list_is_refused_naming_the_list() {
+    let error = read_profile_ini("bsa-game-list", &profile_ini_with("bsaGame=4, 5")).unwrap_err();
+
+    assert!(
+        matches!(&error, ProfileError::UnsupportedBsaGame { value } if value == "4, 5"),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("`bsaGame=4, 5`"), "{error}");
+}
+
 #[test]
 fn a_missing_bsa_game_makes_the_profile_unreadable() {
-    // A missing key reads as 0, which names no game CAO has rules for.
-    let ini = IniFile::parse(b"[BSA]\r\nbsaEnabled=true\r\n");
+    // A missing key names no game CAO has rules for.
+    let error =
+        read_profile_ini("bsa-game-missing", &profile_ini_with("bsaEnabled=true")).unwrap_err();
 
-    assert!(matches!(
-        ProfileSettings::read(&ini),
-        Err(ProfileError::UnsupportedBsaGame { value }) if value.is_empty()
-    ));
+    assert!(
+        matches!(&error, ProfileError::UnsupportedBsaGame { value } if value.is_empty()),
+        "{error:?}"
+    );
 }
 
 #[test]
 fn the_shipped_sse_settings_load_into_the_options_model() {
-    let options = shipped()
-        .open("SSE")
-        .load_options(&Options::default())
-        .unwrap();
+    let options = shipped().open("SSE").load_options("").unwrap();
 
     assert_eq!(
         options,
@@ -110,8 +165,8 @@ fn the_shipped_sse_settings_load_into_the_options_model() {
             bsa_extract: false,
             bsa_create: false,
             bsa_delete_backup: false,
-            // Not in the shipped file. C++ reads a missing key as `false`, not as its
-            // member default `true`, and the port keeps that.
+            // The shipped files keep incompressible files out of the main
+            // Archive, where the default would merge them.
             bsa_merge_incompressible: false,
             bsa_merge_textures: false,
             bsa_process_content: false,
@@ -137,11 +192,10 @@ fn the_shipped_sse_settings_load_into_the_options_model() {
 
 #[test]
 fn a_first_load_without_settings_ini_has_the_default_options() {
-    // C++ keeps its member defaults only when the file does not exist at all.
     let app_dir = common::scratch_dir("options-without-settings-ini");
     let options = Profiles::new(&app_dir)
         .open("Bare")
-        .load_options(&Options::default())
+        .load_options("")
         .unwrap();
 
     assert_eq!(options, Options::default());
@@ -150,37 +204,65 @@ fn a_first_load_without_settings_ini_has_the_default_options() {
     assert_eq!(options.mode, OptimizationMode::SingleMod);
 }
 
+/// A profile without `settings.ini` takes the defaults and only the mod folder
+/// from the profile before it, so its options never depend on which profile
+/// was selected first (GUI-11).
 #[test]
-fn switching_to_a_profile_without_settings_ini_keeps_the_current_options() {
-    // C++ read settings.ini into the GUI's one live OptionsCAO and returned early
-    // when the file was missing, so the previous profile's options carried over.
+fn switching_to_a_profile_without_settings_ini_carries_only_the_mod_folder() {
     let app_dir = common::scratch_dir("options-switch-without-settings-ini");
-    let current = Options {
-        dry_run: true,
-        user_path: "D:/Mods".to_owned(),
-        meshes_optimization_level: 3,
-        ..Options::default()
-    };
 
     let options = Profiles::new(&app_dir)
         .open("Bare")
-        .load_options(&current)
+        .load_options("D:/Mods")
         .unwrap();
 
-    assert_eq!(options, current);
+    assert_eq!(
+        options,
+        Options {
+            user_path: "D:/Mods".to_owned(),
+            ..Options::default()
+        }
+    );
+}
+
+/// A key missing from `settings.ini` reads as its default, not as `false` or
+/// `0`, so an option added later starts at its intended value for files
+/// written before it existed (GUI-11).
+#[test]
+fn a_missing_option_key_reads_as_its_default() {
+    let app_dir = common::scratch_dir("options-missing-keys");
+    let directory = app_dir.join("profiles").join("Sparse");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("settings.ini"),
+        "[General]\r\nbDryRun=true\r\n\r\n[Textures]\r\niTexturesTargetWidth=512\r\n",
+    )
+    .unwrap();
+
+    let options = Profiles::new(&app_dir)
+        .open("Sparse")
+        .load_options("")
+        .unwrap();
+
+    assert_eq!(
+        options,
+        Options {
+            dry_run: true,
+            textures_target_width: 512,
+            ..Options::default()
+        }
+    );
+    // Each of these reads `true` or non-zero only through its default.
+    assert!(options.bsa_compress && options.bsa_delete_source && options.textures_necessary);
+    assert!(options.meshes_headparts && options.bsa_create_dummies);
+    assert_eq!(options.textures_target_height, 2048);
 }
 
 #[test]
 fn an_empty_user_path_keeps_the_current_one_when_switching_profiles() {
-    // Every shipped settings.ini has `userPath=`, so in C++ the selected folder
-    // follows the user from one profile to the next. Every other key is replaced.
-    let current = Options {
-        user_path: "D:/Mods".to_owned(),
-        dry_run: true,
-        ..Options::default()
-    };
-
-    let options = shipped().open("FO4").load_options(&current).unwrap();
+    // Every shipped settings.ini has `userPath=`, so the selected folder follows
+    // the user from one profile to the next. Every other key is the file's.
+    let options = shipped().open("FO4").load_options("D:/Mods").unwrap();
 
     assert_eq!(options.user_path, "D:/Mods");
     assert!(!options.dry_run);
@@ -196,13 +278,8 @@ fn a_saved_user_path_replaces_the_current_one() {
         ..Options::default()
     };
     profile.save_options(&saved).unwrap();
-    let current = Options {
-        user_path: "D:/Mods".to_owned(),
-        ..Options::default()
-    };
-
     assert_eq!(
-        profile.load_options(&current).unwrap().user_path,
+        profile.load_options("D:/Mods").unwrap().user_path,
         "E:/Other"
     );
 }
@@ -250,11 +327,11 @@ fn saving_an_unchanged_profile_ini_rewrites_the_shipped_bytes_but_the_fractional
 
 #[test]
 fn saving_options_writes_what_qt_writes_and_keeps_dead_keys() {
-    // Qt appends the two keys the shipped file lacks to the end of `[BSA]`, and
-    // leaves `bBsaLeastBSA`, which nothing reads, where it was (deviation 10).
+    // Every key keeps its place, including `bBsaLeastBSA`, which nothing reads
+    // (deviation 10).
     let app_dir = common::copy_of_shipped("save-options-sse");
     let profile = Profiles::new(&app_dir).open("SSE");
-    let mut options = profile.load_options(&Options::default()).unwrap();
+    let mut options = profile.load_options("").unwrap();
     options.mode = OptimizationMode::SeveralMods;
     options.user_path = "D:/Mods/Café; v2".to_owned();
     options.meshes_optimization_level = 2;
@@ -302,7 +379,7 @@ fn saving_options_writes_what_qt_writes_and_keeps_dead_keys() {
     );
     let saved = common::read(&profile.settings_ini());
     assert!(saved == expected.as_bytes(), "{}", common::show(&saved));
-    assert_eq!(profile.load_options(&Options::default()).unwrap(), options);
+    assert_eq!(profile.load_options("").unwrap(), options);
 }
 
 #[test]
@@ -318,11 +395,8 @@ fn saved_settings_load_back_including_a_one_element_unwanted_format_list() {
 
     assert_eq!(profile.load_settings().unwrap(), settings);
     let saved = String::from_utf8(common::read(&profile.profile_ini())).unwrap();
-    // Qt writes a one-element list as a QDataStream blob, which the C++ build reads.
-    assert!(
-        saved.contains(r"texturesUnwantedFormats=@Variant(\0\0\0\t\0\0\0\x1\0\0\0\x2\0\0\0U)"),
-        "{saved}"
-    );
+    // A one-element list is the plain number, which reads back as one entry.
+    assert!(saved.contains("texturesUnwantedFormats=85\r\n"), "{saved}");
     assert!(
         saved.contains("maxBsaUncompressedSize=2147483648\r\n"),
         "{saved}"
@@ -334,13 +408,33 @@ fn saved_settings_load_back_including_a_one_element_unwanted_format_list() {
 fn saving_options_creates_a_missing_settings_ini() {
     let app_dir = common::scratch_dir("save-options-new-file");
     let profile = Profiles::new(&app_dir).open("Fresh");
+    std::fs::create_dir_all(profile.directory()).unwrap();
 
     profile.save_options(&Options::default()).unwrap();
 
-    assert_eq!(
-        profile.load_options(&Options::default()).unwrap(),
-        Options::default()
-    );
+    assert_eq!(profile.load_options("").unwrap(), Options::default());
+}
+
+/// A profile whose folder was deleted while CAO ran is not recreated by a
+/// save: the folder would come back holding only the saved file (GUI-8).
+#[test]
+fn saving_into_a_deleted_profile_fails_and_recreates_nothing() {
+    let app_dir = common::copy_of_shipped("save-deleted-profile");
+    let profiles = Profiles::new(&app_dir);
+    let mine = profiles.create("Mine", "SSE").unwrap();
+    let options = mine.load_options("").unwrap();
+    let settings = mine.load_settings().unwrap();
+    std::fs::remove_dir_all(mine.directory()).unwrap();
+
+    assert!(matches!(
+        mine.save_options(&options),
+        Err(ProfileError::Ini(_))
+    ));
+    assert!(matches!(
+        mine.save_settings(&settings),
+        Err(ProfileError::Ini(_))
+    ));
+    assert!(!mine.directory().exists());
 }
 
 #[test]
@@ -486,35 +580,22 @@ fn a_missing_create_dummies_key_leaves_dummy_plugins_on() {
     );
     std::fs::write(profile.settings_ini(), without.join("\r\n")).unwrap();
     assert!(Options::default().bsa_create_dummies);
-    assert!(
-        profile
-            .load_options(&Options::default())
-            .unwrap()
-            .bsa_create_dummies
-    );
+    assert!(profile.load_options("").unwrap().bsa_create_dummies);
 
     let off = text.replace("bBsaCreateDummies=true", "bBsaCreateDummies=false");
     std::fs::write(profile.settings_ini(), off).unwrap();
-    assert!(
-        !profile
-            .load_options(&Options::default())
-            .unwrap()
-            .bsa_create_dummies
-    );
+    assert!(!profile.load_options("").unwrap().bsa_create_dummies);
 }
 
 #[test]
 fn every_shipped_profile_loads_cleanly() {
     let profiles = shipped();
-    let sse_options = profiles
-        .open("SSE")
-        .load_options(&Options::default())
-        .unwrap();
+    let sse_options = profiles.open("SSE").load_options("").unwrap();
 
     for name in profiles.list() {
         let profile = profiles.open(&name);
         profile.load_settings().unwrap();
-        let options = profile.load_options(&Options::default()).unwrap();
+        let options = profile.load_options("").unwrap();
         // The shipped settings.ini files differ only in FO4's headpart choice.
         let expected = Options {
             meshes_headparts: name != "FO4",
@@ -524,25 +605,32 @@ fn every_shipped_profile_loads_cleanly() {
     }
 }
 
+/// CAO ships no `common.ini`, so a new install reads the defaults: it opens on
+/// the default profile, shows the welcome message and hides the advanced
+/// settings (WS-8).
 #[test]
-fn the_shipped_common_ini_loads_into_the_common_settings_model() {
+fn no_common_ini_is_shipped_so_a_new_install_reads_the_defaults() {
+    assert!(!common::shipped_profiles().join("common.ini").exists());
+    let common = shipped().load_common().unwrap();
+
     assert_eq!(
-        shipped().load_common().unwrap(),
+        common,
         CommonSettings {
-            profile: "TES5".to_owned(),
-            show_advanced_settings: true,
+            profile: String::new(),
+            show_advanced_settings: false,
             dark_mode: true,
             show_tutorial: true,
-            not_first_start: true,
+            not_first_start: false,
         }
     );
+    assert_eq!(shipped().resolve(&common.profile).as_deref(), Some("SSE"));
 }
 
 #[test]
 fn a_missing_common_ini_is_dark_shows_tutorials_and_is_a_first_start() {
-    // C++ reads `showTutorial` with an explicit default of `true`, and the port is
-    // dark by default (spec #476), so a missing `bDarkMode` reads as `true`; every
-    // other key reads as `false` or empty.
+    // Tutorials are shown and the theme is dark by default (spec #476), so a
+    // missing `showTutorial` or `bDarkMode` reads as `true`; every other key
+    // reads as `false` or empty.
     let app_dir = common::scratch_dir("common-missing");
 
     assert_eq!(
@@ -559,26 +647,33 @@ fn a_missing_common_ini_is_dark_shows_tutorials_and_is_a_first_start() {
 
 #[test]
 fn an_explicit_light_theme_choice_is_honoured() {
-    let ini = IniFile::parse(b"[General]\r\nbDarkMode=false\r\n");
+    let profiles = profiles_with_common_ini("common-light", "[General]\r\nbDarkMode=false\r\n");
 
-    assert!(!CommonSettings::read(&ini).dark_mode);
+    assert!(!profiles.load_common().unwrap().dark_mode);
 }
 
 #[test]
 fn a_common_ini_without_a_theme_key_is_dark() {
-    let ini = IniFile::parse(b"[General]\r\nprofile=SSE\r\n");
+    let profiles = profiles_with_common_ini("common-no-theme", "[General]\r\nprofile=SSE\r\n");
 
-    assert!(CommonSettings::read(&ini).dark_mode);
+    assert!(profiles.load_common().unwrap().dark_mode);
 }
 
 #[test]
 fn saving_common_settings_keeps_unknown_keys() {
-    let app_dir = common::copy_of_shipped("common-save");
-    let profiles = Profiles::new(&app_dir);
+    let profiles = profiles_with_common_ini(
+        "common-save",
+        concat!(
+            "[General]\r\n",
+            "profile=TES5\r\n",
+            "bShowAdvancedSettings=true\r\n",
+            "bDarkMode=true\r\n",
+            "showTutorial=true\r\n",
+            "notFirstStart=true\r\n",
+            "futureKey=42\r\n",
+        ),
+    );
     let path = profiles.root().join("common.ini");
-    let mut bytes = common::read(&path);
-    bytes.extend_from_slice(b"futureKey=42\r\n");
-    std::fs::write(&path, &bytes).unwrap();
     let mut settings = profiles.load_common().unwrap();
     settings.profile = "FO4".to_owned();
     settings.dark_mode = true;
@@ -602,10 +697,30 @@ fn saving_common_settings_keeps_unknown_keys() {
 fn a_remembered_profile_that_does_not_exist_resolves_to_sse() {
     let profiles = shipped();
 
-    assert_eq!(profiles.resolve("FO4"), "FO4");
-    assert_eq!(profiles.resolve("TES4"), "SSE");
-    assert_eq!(profiles.resolve("fo4"), "SSE");
-    assert_eq!(profiles.resolve(""), "SSE");
+    assert_eq!(profiles.resolve("FO4").as_deref(), Some("FO4"));
+    assert_eq!(profiles.resolve("TES4").as_deref(), Some("SSE"));
+    assert_eq!(profiles.resolve("fo4").as_deref(), Some("SSE"));
+    assert_eq!(profiles.resolve("").as_deref(), Some("SSE"));
+}
+
+/// Without SSE, a stale name resolves to the first profile listed, never to a
+/// profile that does not exist (GUI-8).
+#[test]
+fn without_sse_a_stale_profile_resolves_to_the_first_listed() {
+    let app_dir = common::copy_of_shipped("resolve-without-sse");
+    let profiles = Profiles::new(&app_dir);
+    std::fs::remove_dir_all(profiles.root().join("SSE")).unwrap();
+
+    assert_eq!(profiles.resolve("TES5").as_deref(), Some("TES5"));
+    assert_eq!(profiles.resolve("SSE").as_deref(), Some("FO4"));
+    assert_eq!(profiles.resolve("Gone").as_deref(), Some("FO4"));
+}
+
+#[test]
+fn with_no_profile_at_all_nothing_resolves() {
+    let app_dir = common::scratch_dir("resolve-nothing");
+
+    assert_eq!(Profiles::new(&app_dir).resolve("SSE"), None);
 }
 
 #[test]

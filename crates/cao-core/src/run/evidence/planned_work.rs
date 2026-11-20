@@ -3,9 +3,10 @@
 //!
 //! These are facts, not attempts. Run Evidence keeps them apart from every
 //! attempt list, so Run Outcome classification and mutation summaries, which
-//! read only attempts, never count them. The two kinds are independent lists:
+//! read only attempts, never count them. The kinds are independent lists:
 //! Extracting Archives records planned extractions, and Archive Finalization
-//! records planned output Archives, each only while its phase is Planned.
+//! records planned output Archives and the folders their packing would
+//! empty, each only while its phase is Planned.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -83,6 +84,20 @@ impl PlannedOutputArchive {
     }
 }
 
+/// One folder a Dry Run expects an Apply run to prune: one its planned packing
+/// or its planned Archive extractions would empty, by deleting the packed
+/// sources or the extracted source Archives in it, with no extraction
+/// publishing beneath it. It is judged from the Mod Roots as they are when
+/// the Dry Run plans, so where packing is involved it shares
+/// [`PlannedOutputArchive`]'s estimate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedPruning {
+    /// The folder that would be removed.
+    pub directory: PathBuf,
+    /// The canonical Mod Root it lies beneath.
+    pub mod_root: PathBuf,
+}
+
 /// What a Dry Run's planned output Archives were planned from, which says
 /// how far an Apply run's outputs can differ from them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -96,13 +111,14 @@ pub enum OutputPlanBasis {
     EstimateFromModRootsAsTheyAre,
 }
 
-/// The Planned Archive Work one Dry Run recorded, as two independent lists in
+/// The Planned Archive Work one Dry Run recorded, as independent lists in
 /// record order. Empty for an Apply run, and for a Dry Run that planned no
 /// Archive work.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PlannedArchiveWork {
     extractions: Vec<PlannedArchiveExtraction>,
     outputs: Vec<PlannedOutputArchive>,
+    pruning: Vec<PlannedPruning>,
     /// Set once Archive Finalization planned Archive creation, before any
     /// output is recorded; `None` when no creation was planned.
     output_basis: Option<OutputPlanBasis>,
@@ -123,6 +139,13 @@ impl PlannedArchiveWork {
         &self.outputs
     }
 
+    /// The folders the planned packing would empty, which an Apply run would
+    /// prune, in the order Archive Finalization recorded them (see
+    /// [`PlannedPruning`]).
+    pub fn pruning(&self) -> &[PlannedPruning] {
+        &self.pruning
+    }
+
     /// What the planned output Archives were planned from, or `None` when
     /// the Dry Run planned no Archive creation. Set whenever creation was
     /// planned, even when it planned no output: an Apply run could still
@@ -131,9 +154,9 @@ impl PlannedArchiveWork {
         self.output_basis
     }
 
-    /// Whether neither list holds a fact.
+    /// Whether no list holds a fact.
     pub fn is_empty(&self) -> bool {
-        self.extractions.is_empty() && self.outputs.is_empty()
+        self.extractions.is_empty() && self.outputs.is_empty() && self.pruning.is_empty()
     }
 
     /// Records what the planned outputs are planned from; Run Evidence
@@ -150,5 +173,10 @@ impl PlannedArchiveWork {
     /// Appends one planned output Archive; Run Evidence checks the phase first.
     pub(super) fn push_output(&mut self, output: PlannedOutputArchive) {
         self.outputs.push(output);
+    }
+
+    /// Appends one planned pruning; Run Evidence checks the phase first.
+    pub(super) fn push_pruning(&mut self, pruning: PlannedPruning) {
+        self.pruning.push(pruning);
     }
 }

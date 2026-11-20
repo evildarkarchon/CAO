@@ -1469,7 +1469,7 @@ fn folders_an_optimized_and_packed_asset_leaves_empty_are_pruned() {
                 .expect("the optimized Texture is staged");
             std::fs::write(receipt.path().unwrap(), "optimized").unwrap();
             let published = receipt.publish(path, PublicationPolicy::Replace);
-            assert_eq!(published.state, PublicationState::PublishedAndReleased);
+            assert_eq!(published.state(), PublicationState::PublishedAndReleased);
             Ok(AssetExecutionResult::success(CompletedMutation::Committed))
         }),
     );
@@ -2127,7 +2127,9 @@ fn a_fatal_preparing_failure_stays_failed_when_cleanup_cancels() {
 
 /// Origin: RunExecutorTests::cleanupExceptionsPreserveCancellation. A
 /// panicking cleanup service that also cancels is a secondary cleanup
-/// failure, whether cancellation came before cleanup or during it.
+/// failure to a cancellation requested before the run, which stopped it.
+/// Audit CORE-7: the same cancel requested during Safety Cleanup stopped no
+/// work, so it is not observed, and the failed service fails the run.
 #[test]
 fn a_panicking_cleanup_service_never_replaces_cancellation() {
     for cancel_before in [false, true] {
@@ -2149,8 +2151,17 @@ fn a_panicking_cleanup_service_never_replaces_cancellation() {
             &token,
         );
 
-        assert_eq!(result.outcome(), RunOutcome::Cancelled, "{cancel_before}");
-        assert!(result.cancellation_observed());
+        let expected = if cancel_before {
+            RunOutcome::Cancelled
+        } else {
+            RunOutcome::Failed
+        };
+        assert_eq!(result.outcome(), expected, "{cancel_before}");
+        assert_eq!(
+            result.cancellation_observed(),
+            cancel_before,
+            "{cancel_before}"
+        );
         assert_eq!(cleanup.passes, 1);
         assert!(result.failures().is_empty());
         assert_eq!(result.cleanup_failures().len(), 1);
@@ -2201,7 +2212,9 @@ enum WorkFact {
 /// executor's own classification table; these full runs show the executor
 /// feeds its evidence into classification and retains every fact. Unsafe
 /// work is Failed even when cancelled; otherwise cancellation is Cancelled;
-/// otherwise a contained or cleanup failure completes with failures.
+/// otherwise a contained or cleanup failure completes with failures. The
+/// cancel arrives during the Asset attempt, so it stops the run short of
+/// Archive Finalization, as only such a cancel is observed (audit CORE-7).
 #[test]
 fn terminal_precedence_classifies_each_outcome_and_keeps_every_fact() {
     use RunOutcome::{Cancelled, CompletedWithFailures, Failed, Succeeded};
@@ -2221,7 +2234,11 @@ fn terminal_precedence_classifies_each_outcome_and_keeps_every_fact() {
     for (fact, cleanup_fails, cancelled, expected) in table {
         let case = format!("{fact:?}, cleanup failure {cleanup_fails}, cancelled {cancelled}");
         let token = CancellationToken::new();
+        let attempt_token = token.clone();
         let toolset = Arc::new(ScriptedToolset::default().with_assets(move |_, _, _| {
+            if cancelled {
+                attempt_token.cancel();
+            }
             Ok(match fact {
                 WorkFact::ContainedFailure => {
                     AssetExecutionResult::failed(AssetExecutionFailure::LoadFailed, "contained")
@@ -2234,7 +2251,6 @@ fn terminal_precedence_classifies_each_outcome_and_keeps_every_fact() {
             })
         }));
         let mut cleanup = ScriptedCleanup {
-            cancels: cancelled.then(|| token.clone()),
             failures: if cleanup_fails {
                 vec![RunFailure::new(
                     RunFailureCode::TemporaryArtifactCleanupFailed,
@@ -2291,9 +2307,10 @@ fn terminal_precedence_classifies_each_outcome_and_keeps_every_fact() {
 fn a_failed_staging_recovery_still_performs_safety_cleanup() {
     let root = mod_root("recovery-failure", &["textures/a.dds"]);
     let leftover = common::crashed_run_leftover(&root, "textures/a.dds");
-    let mut permissions = std::fs::metadata(&leftover).unwrap().permissions();
-    permissions.set_readonly(true);
-    std::fs::set_permissions(&leftover, permissions.clone()).unwrap();
+    // A running image cannot be deleted; a read-only attribute no longer
+    // stops CAO's delete (audit FFI-4).
+    let running = common::RunningImage::start(&leftover);
+    let bytes = std::fs::read(&leftover).unwrap();
     let mut cleanup = CountingCleanup::default();
 
     let result = execute(
@@ -2302,11 +2319,9 @@ fn a_failed_staging_recovery_still_performs_safety_cleanup() {
         Some(&*test_configuration()),
         &CancellationToken::new(),
     );
-    // Restored before asserting, so a failing assertion cannot leave a
-    // read-only file that blocks the next run from clearing its scratch.
-    #[allow(clippy::permissions_set_readonly_false)]
-    permissions.set_readonly(false);
-    std::fs::set_permissions(&leftover, permissions).unwrap();
+    // Stopped before asserting, so a failing assertion cannot leave a
+    // running image that blocks the next run from clearing its scratch.
+    drop(running);
 
     assert_eq!(result.outcome(), RunOutcome::Failed);
     assert_eq!(result.final_phase(), RunPhase::Preparing);
@@ -2316,7 +2331,7 @@ fn a_failed_staging_recovery_still_performs_safety_cleanup() {
     );
     assert_eq!(result.failures()[0].path, leftover);
     assert_eq!(cleanup.passes, 1);
-    assert_eq!(read(&leftover), "partial output");
+    assert_eq!(std::fs::read(&leftover).unwrap(), bytes);
 }
 
 /// Origin: RunExecutorTests::activeStagingBlocksUntilItsOwnerExits. Staging
@@ -2885,9 +2900,9 @@ fn registered_artifacts_are_cleaned_on_every_terminal_path() {
 }
 
 /// Origin: RunExecutorTests::cleanupFailuresPreserveThePrimaryOutcome (both
-/// paths). A cleanup failure stays secondary to cancellation requested when
-/// Safety Cleanup is published, and to a fatal Preparing failure, which alone
-/// is published as a Run Failure.
+/// paths). A cleanup failure stays secondary to a cancellation that stopped
+/// the run, here requested as its first skipped work phase is published, and
+/// to a fatal Preparing failure, which alone is published as a Run Failure.
 #[test]
 fn a_cleanup_failure_never_replaces_the_primary_outcome() {
     for fatal in [false, true] {
@@ -2901,7 +2916,7 @@ fn a_cleanup_failure_never_replaces_the_primary_outcome() {
             let token = token.clone();
             move |observed| {
                 if let Observed::Phase(record) = observed
-                    && record.phase() == RunPhase::SafetyCleanup
+                    && record.phase() == RunPhase::DiscoveringArchives
                 {
                     token.cancel();
                 }

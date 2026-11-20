@@ -1,6 +1,4 @@
 //! Preparing: the Run Configuration Provider seam and the facts Preparing establishes.
-//!
-//! Ported from `src/Run/RunPreparation.h` and `src/Run/RunSetup.h`.
 
 use std::path::PathBuf;
 

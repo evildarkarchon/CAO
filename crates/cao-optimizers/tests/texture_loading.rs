@@ -1,5 +1,6 @@
-//! Loading Textures as C++ `TexturesOptimizer::open` does: DDS and TGA, with
-//! typeless DDS formats reinterpreted as UNORM, and nothing on disk changed.
+//! Loading Textures: DDS and TGA, with typeless DDS formats reinterpreted as
+//! UNORM, and nothing on disk changed. Dry Run and Apply load alike, so these
+//! hold for both modes.
 
 mod common;
 

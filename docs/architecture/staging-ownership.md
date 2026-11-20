@@ -28,8 +28,11 @@ Recovery never unlinks or replaces either control file or the reserved directory
 run cannot acquire a new lock identity while an earlier run still owns the old one.
 
 The writer emits v3 manifests; recovery also accepts existing v1 and v2 manifests. All are UTF-8,
-bounded to 8 MiB and 100,000 registrations. Whitespace separates fields;
-strings use C++ `std::quoted` double-quote/backslash escaping. All string fields must be quoted.
+bounded to 8 MiB and 100,000 registrations. Whitespace separates fields; every string field is
+double-quoted, with a backslash taking the next byte literally. The writer separates fields with
+one space or newline, as below; the reader accepts any run of whitespace between them, so staging
+an earlier CAO release left behind after a crash is still recovered after an upgrade. That
+leniency covers only spacing: every field is then validated as strictly as the writer's own output.
 The grammar is:
 
 ```text
@@ -53,8 +56,12 @@ names are `.cao-staging-texture-<Run ID>-<nonce>.dds`,
 `.cao-staging-mesh-<Run ID>-<nonce>.nif` (also `.btr` or `.bto`), and
 `.cao-staging-animation-<Run ID>-<nonce>.hkx`. Each must be beside its destination and outside
 the reserved control area. Parents must be registered before control-area children. Absolute
-paths, traversal components, Windows stream or ambiguous names, backslash separators, extra
-records, and unsupported versions are invalid.
+paths, traversal components, backslash separators, extra records, unsupported versions, and any
+component Win32 would read as something else are invalid: a trailing dot or space, a reserved or
+control character, which includes the `:` of a stream, or a DOS device name such as `NUL` or
+`COM1.dds`. That last rule is the one Windows-name rule CAO applies everywhere: to staging and
+publication paths, Archive entry names, every directory a pin chain passes through, and these
+records.
 The format records explicit temporary ownership; it is not authentication against someone who
 can forge the manifest and edit the Mod Root.
 
@@ -73,14 +80,18 @@ is reported. Recovery can discard a partial scratch file
 only after validating the authoritative v2 or v3 manifest and the owned tree. A v1 manifest does
 not authorize this extra control file.
 
-Durable producers write and validate bytes at a move-only `PublicationReceipt` path. Texture
+Durable producers write and validate bytes at a one-use `PublicationReceipt` path. Texture
 (`.dds`), Mesh (`.nif`, `.btr`, `.bto`), and Animation (`.hkx`) publish from sibling staging with
 `Replace`, bound to the destination selected at staging. A Texture conversion is the exception:
 its DDS output is a different file from its source, so it never replaces. When a file already
 stands at that destination the attempt completes without staging or touching either file, and
-otherwise it publishes with `NoReplace`. Archive extraction writes entry bytes in
-the run child and publishes with `NoReplace` after case-correct game-path resolution and occupied
-leaf checks; it keeps destination parents pinned through publication. Archive Finalization writes
+otherwise it publishes with `NoReplace`. Archive extraction stages only the entries an Archive
+won, writes their bytes in the run child and publishes with `NoReplace` after case-correct
+game-path resolution and occupied leaf checks; it keeps destination parents pinned through
+publication. An entry another Archive or a Loose Asset shadows is never staged, so it costs
+neither staging space nor a manifest record. A file that appears at a merge destination after
+preflight fails the merge rather than being overwritten or silently kept: the frozen precedence
+no longer describes that destination, and the newcomer may be the user's. Archive Finalization writes
 each planned output Archive in the run child and publishes with `NoReplace`. A needed loading
 plugin is staged and published separately with `NoReplace` after the Archive, unless the exact
 planned dummy is already present.
@@ -97,24 +108,27 @@ continue; any other staging failure stops the run.
 The receipt's single publication attempt revalidates an absolute destination beneath its canonical
 Mod Root, outside reserved staging, on the same volume, through an ordinary parent. It flushes
 staged bytes before a native same-volume publication with no copy fallback; `NoReplace` also
-rejects a leaf occupied after preflight. Publication consumes the receipt even on failure, and it
-never throws: it is declared `noexcept`, and a failure while building the error detail returns the
-state reached so far with an empty detail, so no producer needs defensive handling around it. The
-native destination mutation precedes the snapshot that releases the temporary registration.
-Generic `commit` retains only non-durable registrations; it cannot release a durable claim even
-after a separate move. Registrations identify deletion candidates by their temporary paths:
-source Assets, committed destinations, backups, and retained evidence are never registered.
+rejects a leaf occupied after preflight. Publication consumes the receipt even on failure and never
+fails outright: it returns a `PublicationResult` whose variant is the state reached, and a
+publication that did not complete carries the error that stopped it, so every producer can report
+why without a fallback for a missing reason. The native destination mutation precedes the
+snapshot that releases the temporary registration. A run registers temporary paths only through
+staging calls that return a receipt or that the staging scope owns; the receiptless registration
+and `commit` calls exist only with the `test-support` feature, for tests that need Safety Cleanup
+to remove or fail on a path, and `commit` cannot release a durable claim. Registrations identify
+deletion candidates by their temporary paths: source Assets, committed destinations, backups, and
+retained evidence are never registered.
 
-The receipt returns one of three states, which also describe the crash windows:
+The publication result is one of three variants, which also describe the crash windows:
 
-- `NotPublished`: no destination mutation occurred in this attempt. A flushed registration may
+- `NotPublished`, with its error: no destination mutation occurred in this attempt. A flushed registration may
   name an absent file before creation. The failed publication abandons its staged file: it deletes
   the file through a handle proving its identity, then releases the record, so a crash between the
   two leaves a registered, absent name. A producer that stops after staging, because its save or
   converter failed or it found nothing to change, abandons its receipt the same way. Whatever an
   abandonment cannot remove stays owned, and Safety Cleanup or later recovery removes only the
   registered temporary path and retains the original Asset or occupied destination.
-- `PublishedStillOwned`: the native destination mutation succeeded, but the ownership snapshot
+- `PublishedStillOwned`, with its error: the native destination mutation succeeded, but the ownership snapshot
   could not release the old temporary name. That name may already be absent after a move; recovery
   skips an absent temporary and never follows it to the committed destination. The returned state
   preserves the committed fact for producer mutation evidence even when release fails.
@@ -164,11 +178,20 @@ junctions, reparse points, hard links, unknown children, type
 mismatches, and inaccessible contents fail closed. Windows handles pin temporary files against
 replacement and delete those file identities. Windows also pins every ordinary ancestor of a
 present sibling before opening its file by name, then holds the ancestor pins through deletion.
+Every such chain, in recovery, staging, publication, Archive extraction and source cleanup, goes
+through one pinner. It starts at the canonical Mod Root, never above it: everything CAO creates,
+replaces or deletes lies beneath that root, which an Apply run keeps pinned from Preparing on, and
+the folders above it are the user's own layout, which a network share or a locked-down parent
+folder may not even let CAO list. Each directory is opened only while its parent is pinned, and
+a link, a junction or a name Win32 would alias stops the chain.
 Production pins a sibling's ordinary ancestors when it is staged and releases each pin with the
 last registered sibling beneath that directory, after the release snapshot is published: the
 pins deny deletion, so holding them to Safety Cleanup kept Archive Finalization from pruning
 folders whose packed sources it had deleted. A sibling still registered at Safety Cleanup keeps
-its ancestors pinned through cleanup. The run child stays pinned until its staged Archive files
+its ancestors pinned through cleanup. That pruning removes only folders the run itself emptied:
+each folder packing or an Archive's source removal deleted a file from, if it is now empty, then
+each parent that left empty, up to but never including the Mod Root. A folder a mod ships empty is
+never touched, and a Dry Run lists the folders its planned packing would empty. The run child stays pinned until its staged Archive files
 have been removed. Directory removal is nonrecursive.
 This protects staging from competing CAO processes, without claiming a sandbox against arbitrary
 filesystem changes by the same operating-system user.

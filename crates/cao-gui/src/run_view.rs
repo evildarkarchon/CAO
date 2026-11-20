@@ -1,5 +1,4 @@
-//! What the window shows of an Optimization Run (C++ `cao::gui::RunViewModel`,
-//! `src/GuiRun.cpp`, deleted with the C++ tree in #515).
+//! What the window shows of an Optimization Run.
 //!
 //! [`RunView`] turns the ordered Run Events of one run into presentation facts:
 //! a label naming the phase or the Run Outcome, the phase's attempt counts, and
@@ -244,6 +243,22 @@ fn mark_cancelling(label: &mut String) {
 /// The start of every [`failure_row`].
 const FAILURE_PREFIX: &str = "Failure: ";
 
+/// The level a run-detail row is written to the Application Log at (GUI-12):
+/// warn for a row that reports a failure or a warning, so the Log tab and the
+/// file mark it as one, and info for the rest of the run's evidence.
+///
+/// The kind is the row's label, the text before its first `:`, as the row
+/// builders in this module spell it (`Failure`, `Asset Failure`, `Warning`,
+/// `Planned Archive`, …).
+pub(crate) fn detail_level(row: &str) -> log::Level {
+    let label = row.split_once(':').map_or(row, |(label, _)| label);
+    if label == "Warning" || label.ends_with("Failure") {
+        log::Level::Warn
+    } else {
+        log::Level::Info
+    }
+}
+
 /// A Run Failure's detail row. The streamed row and the terminal result's copy
 /// must come out identical: the terminal copy is dropped by matching the text.
 fn failure_row(failure: &RunFailure) -> String {
@@ -387,7 +402,8 @@ fn append_result_details(details: &mut Vec<String>, result: &OptimizationRunResu
 
 /// Appends a Dry Run's planned Archive creation to the detail rows: each
 /// planned output Archive, followed by the Dummy Plugin it would need unless
-/// an earlier output already needed it, then the note saying what the plan
+/// an earlier output already needed it, then each folder its packing would
+/// empty and an Apply run would prune, then the note saying what the plan
 /// was made from. Appends nothing when no creation was planned.
 fn append_planned_creation(details: &mut Vec<String>, work: &PlannedArchiveWork) {
     for (output, first_plugin) in PlannedOutputArchive::with_first_dummy_plugins(work.outputs()) {
@@ -405,6 +421,13 @@ fn append_planned_creation(details: &mut Vec<String>, work: &PlannedArchiveWork)
         if let Some(plugin) = first_plugin {
             details.push(format!("Planned Dummy Plugin: {}", shown(plugin)));
         }
+    }
+    for pruning in work.pruning() {
+        details.push(format!(
+            "Planned Pruning: {} | {}",
+            shown(&pruning.directory),
+            shown(&pruning.mod_root)
+        ));
     }
     match work.output_basis() {
         Some(OutputPlanBasis::EstimateFromModRootsAsTheyAre) => details.push(
@@ -424,5 +447,35 @@ fn packed_kind_name(kind: PackedArchiveKind) -> &'static str {
         PackedArchiveKind::Standard => "Standard",
         PackedArchiveKind::Incompressible => "Incompressible",
         PackedArchiveKind::Textures => "Textures",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::detail_level;
+
+    /// Failure and warning rows are marked as warnings in the Application Log;
+    /// the rest of a run's evidence is information (GUI-12).
+    #[test]
+    fn a_detail_rows_level_follows_its_label() {
+        for (row, level) in [
+            ("Failure: cannot read | D:/m/a.dds", log::Level::Warn),
+            ("Asset Failure: a | b | c | d | e", log::Level::Warn),
+            ("Archive Failure: D:/m/a.bsa | bad", log::Level::Warn),
+            ("Cleanup Failure: x | D:/m", log::Level::Warn),
+            ("Finalization Failure: no space", log::Level::Warn),
+            ("Warning: short of space | D:/m", log::Level::Warn),
+            ("Diagnostic: noted | D:/m", log::Level::Info),
+            ("Final Phase: Archive Finalization", log::Level::Info),
+            (
+                "Planned Archive: D:/m/a.bsa | D:/m | Standard",
+                log::Level::Info,
+            ),
+            // A path holding a label's words does not change the row's kind.
+            ("Mod Root: D:/Failure: Warning", log::Level::Info),
+            ("no label at all", log::Level::Info),
+        ] {
+            assert_eq!(detail_level(row), level, "{row}");
+        }
     }
 }

@@ -9,6 +9,7 @@ use std::io;
 use std::os::windows::fs::MetadataExt;
 use std::os::windows::io::AsRawHandle;
 
+use crate::unsupported::is_unsupported;
 use windows_sys::Win32::Foundation::FILETIME;
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -31,8 +32,7 @@ pub fn is_reparse_point(metadata: &Metadata) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FileFacts {
     attributes: u32,
-    volume_serial: u32,
-    file_index: u64,
+    identity: FileIdentity,
     link_count: u32,
     size: u64,
     creation_time: u64,
@@ -44,13 +44,20 @@ impl FileFacts {
     /// Reads the facts of the file object `file` holds open.
     ///
     /// The handle needs `FILE_READ_ATTRIBUTES` (any [`crate::Access`] that
-    /// includes it, or read access).
+    /// includes it, or read access). The identity is read as
+    /// [`FileIdentity::of`] reads it.
     ///
     /// # Errors
     ///
     /// Returns the `GetFileInformationByHandle(Ex)` error.
     pub fn of(file: &File) -> io::Result<Self> {
         let info = handle_information(file)?;
+        let identity = FileIdentity::resolve(query_file_id(file), || {
+            Ok((
+                info.dwVolumeSerialNumber,
+                join(info.nFileIndexHigh, info.nFileIndexLow),
+            ))
+        })?;
         let mut basic = FILE_BASIC_INFO::default();
         // SAFETY: the handle stays open for the borrow of `file`, and `basic`
         // is a writable FILE_BASIC_INFO of the size passed.
@@ -67,8 +74,7 @@ impl FileFacts {
         }
         Ok(Self {
             attributes: info.dwFileAttributes,
-            volume_serial: info.dwVolumeSerialNumber,
-            file_index: join(info.nFileIndexHigh, info.nFileIndexLow),
+            identity,
             link_count: info.nNumberOfLinks,
             size: join(info.nFileSizeHigh, info.nFileSizeLow),
             creation_time: filetime(info.ftCreationTime),
@@ -104,13 +110,19 @@ impl FileFacts {
         self.size
     }
 
+    /// The object's [`FileIdentity`].
+    pub fn identity(&self) -> FileIdentity {
+        self.identity
+    }
+
     /// Whether `self` is the same file object as `earlier` with unchanged
-    /// content metadata: volume, 64-bit file index, creation and last-write
-    /// times, size and change time. This is C++'s `sameSourceFile`; the change
-    /// time catches in-place edits that keep the size and write time.
+    /// content metadata: the same [`FileIdentity`], creation and last-write
+    /// times, size and change time. It guards deleting or backing up a source,
+    /// so it compares the full 128-bit ID where the file system has one: ReFS
+    /// 64-bit indexes are not unique (FFI-6). The change time catches in-place
+    /// edits that keep the size and write time.
     pub fn unchanged_since(&self, earlier: &Self) -> bool {
-        self.volume_serial == earlier.volume_serial
-            && self.file_index == earlier.file_index
+        self.identity == earlier.identity
             && self.creation_time == earlier.creation_time
             && self.last_write_time == earlier.last_write_time
             && self.size == earlier.size
@@ -123,7 +135,9 @@ impl FileFacts {
 /// This is the 128-bit `FileIdInfo` ID where the file system provides it (ReFS
 /// 64-bit indexes are not unique), or the volume serial and 64-bit file index
 /// where it does not (Wine, older file systems). Two identities from different
-/// sources never compare equal, as in C++.
+/// sources never compare equal: a 64-bit index and a 128-bit ID of one object
+/// are different numbers, and objects on one file system always yield the
+/// same source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FileIdentity {
     volume: u64,
@@ -134,37 +148,49 @@ pub struct FileIdentity {
 impl FileIdentity {
     /// Reads the identity of the file object `file` holds open.
     ///
+    /// Only a file system that does not implement `FileIdInfo` falls back to
+    /// the 64-bit identity (FFI-6). Any other `FileIdInfo` failure is
+    /// returned, so a transient error can never downgrade one read of an
+    /// object to an identity that no longer equals its earlier one.
+    ///
     /// # Errors
     ///
-    /// Returns the `GetFileInformationByHandle` error when the 64-bit
-    /// fallback is needed and fails too.
+    /// Returns the `FileIdInfo` error, or the `GetFileInformationByHandle`
+    /// error when the 64-bit fallback is needed and fails too.
     pub fn of(file: &File) -> io::Result<Self> {
-        let mut id = FILE_ID_INFO::default();
-        // SAFETY: the handle stays open for the borrow of `file`, and `id` is
-        // a writable FILE_ID_INFO of the size passed.
-        let read = unsafe {
-            GetFileInformationByHandleEx(
-                file.as_raw_handle(),
-                FileIdInfo,
-                (&raw mut id).cast(),
-                size_of::<FILE_ID_INFO>() as u32,
-            )
-        };
-        if read != 0 {
-            return Ok(Self {
+        Self::resolve(query_file_id(file), || {
+            let info = handle_information(file)?;
+            Ok((
+                info.dwVolumeSerialNumber,
+                join(info.nFileIndexHigh, info.nFileIndexLow),
+            ))
+        })
+    }
+
+    /// The identity a `FileIdInfo` query answered with `full`, falling back
+    /// to the volume serial and 64-bit index `fallback` reads only when that
+    /// query is unsupported.
+    fn resolve(
+        full: io::Result<FILE_ID_INFO>,
+        fallback: impl FnOnce() -> io::Result<(u32, u64)>,
+    ) -> io::Result<Self> {
+        match full {
+            Ok(id) => Ok(Self {
                 volume: id.VolumeSerialNumber,
                 file: id.FileId.Identifier,
                 full_file_id: true,
-            });
+            }),
+            Err(error) if is_unsupported(&error) => {
+                let (volume_serial, index) = fallback()?;
+                Ok(Self::from_index(volume_serial, index))
+            }
+            Err(error) => Err(error),
         }
-        let info = handle_information(file)?;
-        Ok(Self::from_index(
-            info.dwVolumeSerialNumber,
-            join(info.nFileIndexHigh, info.nFileIndexLow),
-        ))
     }
 
-    /// The fallback identity, laid out as C++'s `memcpy` of the index.
+    /// The fallback identity: the index in the first eight bytes of the ID.
+    /// Identities are only compared and hashed in memory, never stored, so
+    /// the layout only has to be the same for every read.
     fn from_index(volume_serial: u32, index: u64) -> Self {
         let mut file = [0; 16];
         file[..8].copy_from_slice(&index.to_le_bytes());
@@ -180,15 +206,35 @@ impl FileIdentity {
         self.full_file_id
     }
 
-    /// Whether both objects live on the same volume, as C++ staged publication
-    /// checks before a rename that must never fall back to a copy.
+    /// Whether both objects live on the same volume. Staging checks this
+    /// before a rename, which fails across volumes rather than copying.
     ///
-    /// Compares the recorded volume serials. Like C++, it assumes both
-    /// identities came from the same source; a full ID's 64-bit serial and the
-    /// fallback's 32-bit one are not comparable.
+    /// Compares the recorded volume serials of identities from the same
+    /// source. A full ID's 64-bit serial and the fallback's 32-bit one are not
+    /// comparable, and one volume always answers with one source, so
+    /// identities from different sources are on different volumes.
     pub fn same_volume(&self, other: &Self) -> bool {
-        self.volume == other.volume
+        self.full_file_id == other.full_file_id && self.volume == other.volume
     }
+}
+
+/// The `FileIdInfo` of the file object `file` holds open.
+fn query_file_id(file: &File) -> io::Result<FILE_ID_INFO> {
+    let mut id = FILE_ID_INFO::default();
+    // SAFETY: the handle stays open for the borrow of `file`, and `id` is a
+    // writable FILE_ID_INFO of the size passed.
+    let read = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            (&raw mut id).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    if read == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(id)
 }
 
 fn handle_information(file: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
@@ -211,16 +257,67 @@ fn filetime(time: FILETIME) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER};
+    use windows_sys::Win32::Storage::FileSystem::FILE_ID_128;
+
     use super::*;
 
+    fn full_id(volume: u64, first: u8) -> FILE_ID_INFO {
+        let mut identifier = [0; 16];
+        identifier[0] = first;
+        FILE_ID_INFO {
+            VolumeSerialNumber: volume,
+            FileId: FILE_ID_128 {
+                Identifier: identifier,
+            },
+        }
+    }
+
     #[test]
-    fn fallback_identity_matches_the_cpp_layout() {
-        let identity = FileIdentity::from_index(0xAABB_CCDD, 0x0102_0304_0506_0708);
-        assert_eq!(identity.volume, 0xAABB_CCDD);
-        assert_eq!(
-            identity.file,
-            [8, 7, 6, 5, 4, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0]
-        );
+    fn a_full_id_is_used_without_the_fallback() {
+        let identity = FileIdentity::resolve(Ok(full_id(7, 1)), || {
+            panic!("the fallback was read though FileIdInfo answered")
+        })
+        .unwrap();
+        assert!(identity.is_full_file_id());
+    }
+
+    #[test]
+    fn an_unsupported_query_falls_back_to_the_index() {
+        let identity = FileIdentity::resolve(
+            Err(io::Error::from_raw_os_error(ERROR_INVALID_PARAMETER as i32)),
+            || Ok((7, 1)),
+        )
+        .unwrap();
         assert!(!identity.is_full_file_id());
+    }
+
+    /// Any other failure is returned: a fallback here would give the same
+    /// object an identity unequal to the full one it had before.
+    #[test]
+    fn other_query_failures_are_returned() {
+        let error = FileIdentity::resolve(
+            Err(io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32)),
+            || panic!("the fallback was read for a failure that is not unsupported"),
+        )
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+    }
+
+    /// A full ID's 64-bit serial and the fallback's 32-bit serial are never
+    /// read as the same volume, even when the numbers match.
+    #[test]
+    fn identities_from_different_sources_are_on_different_volumes() {
+        let full = FileIdentity::resolve(Ok(full_id(7, 1)), || unreachable!()).unwrap();
+        let fallback = FileIdentity::from_index(7, 1);
+        assert_ne!(full, fallback);
+        assert!(!full.same_volume(&fallback));
+        assert!(
+            full.same_volume(&FileIdentity::resolve(Ok(full_id(7, 2)), || unreachable!()).unwrap())
+        );
+        assert!(
+            !full
+                .same_volume(&FileIdentity::resolve(Ok(full_id(8, 1)), || unreachable!()).unwrap())
+        );
     }
 }

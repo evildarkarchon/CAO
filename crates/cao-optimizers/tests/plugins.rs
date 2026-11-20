@@ -209,3 +209,37 @@ fn compressed_hdpt_records_are_decompressed() {
         ]
     );
 }
+
+/// Audit BE-13: only a whole first folder named `meshes` counts as the
+/// prefix, so `MeshesHD\\...` is placed under `meshes/` like any other path.
+#[test]
+fn only_a_whole_meshes_folder_is_taken_as_the_prefix() {
+    let bytes = plugin(&[group(
+        b"HDPT",
+        &[
+            hdpt("MeshesHD\\Hair\\Long.nif"),
+            hdpt("MESHES/Hair/Short.nif"),
+        ]
+        .concat(),
+    )]);
+
+    assert_eq!(
+        read(&bytes).unwrap(),
+        ["meshes/MeshesHD/Hair/Long.nif", "MESHES/Hair/Short.nif"]
+    );
+}
+
+/// Audit BE-13: a MODL path that is not UTF-8 is read in Windows-1252, the
+/// code page plugin strings are written in, so its accented letters survive
+/// and it can match its Mesh. Valid UTF-8 is read as UTF-8.
+#[test]
+fn a_windows_1252_modl_path_keeps_its_letters() {
+    let ansi = record(b"HDPT", 0, &field(b"MODL", b"Hair\\Caf\xE9 \x80.nif\0"));
+    let utf8 = record(b"HDPT", 0, &field(b"MODL", "Hair\\Café.nif\0".as_bytes()));
+    let bytes = plugin(&[group(b"HDPT", &[ansi, utf8].concat())]);
+
+    assert_eq!(
+        read(&bytes).unwrap(),
+        ["meshes/Hair/Café €.nif", "meshes/Hair/Café.nif"]
+    );
+}

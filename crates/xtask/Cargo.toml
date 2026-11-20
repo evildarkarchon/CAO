@@ -1,7 +1,7 @@
 [package]
 name = "xtask"
 description = "CAO's development tasks: `cargo xtask dist` lays out an install folder and `cargo xtask dev` prepares the dev app directory."
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

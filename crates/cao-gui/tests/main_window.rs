@@ -148,12 +148,7 @@ fn choosing_a_profile_enables_its_tabs_and_saves_the_one_left() {
     assert!(!enabled(ui, "Maximum size") && !enabled(ui, "Game"));
 
     // Leaving Custom saved it, as C++'s `setGameMode` does.
-    assert!(
-        custom
-            .load_options(&cao_profiles::Options::default())
-            .unwrap()
-            .meshes_resave
-    );
+    assert!(custom.load_options("").unwrap().meshes_resave);
     assert_eq!(
         cao_profiles::Profiles::new(&app_dir)
             .load_common()
@@ -352,7 +347,7 @@ fn toggling_debug_logging_saves_the_window_at_once() {
     let options = || {
         cao_profiles::Profiles::new(&app_dir)
             .open("TES5")
-            .load_options(&cao_profiles::Options::default())
+            .load_options("")
             .unwrap()
     };
     assert!(!options().debug_log);

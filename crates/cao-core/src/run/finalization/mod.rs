@@ -3,21 +3,20 @@
 //! Run plans its output Archives, runs the Apply run's Capacity Check over
 //! them without failing, and stops ([`plan_archive_creation`]).
 //!
-//! Ported from `src/Run/ArchiveFinalization.cpp` and its private parts
-//! (`ArchiveFinalizationPlanning.cpp`, `ArchiveFinalizationAttempt.cpp`,
-//! `ArchiveFinalizationLoadingPlugins.cpp`), plus the empty-directory pruning
-//! of `FilesystemOperations::deleteEmptyDirectories`. Archives are written
-//! only through the [`ArchivePacker`](crate::run::ArchivePacker) seam and
-//! read back only through the [`ArchiveReader`](crate::run::ArchiveReader),
-//! so none of this needs `ba2`.
+//! Archives are written only through the
+//! [`ArchivePacker`](crate::run::ArchivePacker) seam and read back only
+//! through the [`ArchiveReader`](crate::run::ArchiveReader), so none of this
+//! needs `ba2`.
 //!
 //! When the Routing Policy requests Archive creation, the phase freezes an
 //! output plan for every Mod Root without mutating anything, checks staging
 //! capacity per volume, then runs one atomic attempt per output: write and
 //! no-replace publication of the Archive, its Loading Plugin, then packed
 //! source cleanup. Loading Plugins of existing Archives are maintained after
-//! the last output. Empty directories are pruned whether or not Archive
-//! creation is requested. The phase records its output total, each attempt
+//! the last output. Last, the folders this run emptied are pruned, whether
+//! or not Archive creation is requested: those packing or Archive extraction
+//! deleted the last file from, never a folder a mod ships empty (audit
+//! FS-7). The phase records its output total, each attempt
 //! before the next output starts, and one final phase-level account into Run
 //! Evidence through the handle that opened its phase, which reaches nothing
 //! else. Run Evidence is the only holder of the attempts.
@@ -28,12 +27,11 @@ mod plugins;
 #[cfg(test)]
 mod tests;
 
-use std::os::windows::ffi::OsStrExt as _;
-use std::os::windows::fs::MetadataExt as _;
+use std::collections::{BTreeSet, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
-use cao_winfs::is_reparse_point;
+use cao_winfs::{OrdinalIgnoreCase, is_reparse_point};
 
 use crate::execution::MutationState;
 use crate::routing::RequestedWork;
@@ -42,8 +40,9 @@ use crate::run::capacity::{
 };
 use crate::run::staging::has_staging_component;
 use crate::run::{
-    ArchiveFinalizationHandle, ArchiveSeams, PlannedOutputArchive, RunDiagnostic,
-    RunDiagnosticCode, RunPhase, RunPreparation, TemporaryArtifactRegistry, take_panic_message,
+    ArchiveExtractionPlan, ArchiveFinalizationHandle, ArchiveSeams, PlannedOutputArchive,
+    PlannedPruning, RunDiagnostic, RunDiagnosticCode, RunPhase, RunPreparation, SourceCleanup,
+    TemporaryArtifactRegistry, take_panic_message,
 };
 use crate::{AttemptOutcome, Error, OperationFailure};
 
@@ -353,12 +352,89 @@ pub(crate) fn finalize_archives(
     phase.finish(account)
 }
 
+/// What a Dry Run's planned Archive extractions would leave in the Mod Roots
+/// by the time an Apply run prunes: the source Archives Source Cleanup would
+/// remove, and every folder that would hold a file the extractions publish.
+///
+/// Apply prunes the folders a removed source Archive vacated, but an
+/// extraction publishes its winning entries beneath the Archive's own
+/// folder, so that folder empties only when its Archive was alone there and
+/// won nothing. A Dry Run therefore needs both halves to report the same
+/// folders ([`planned_pruning`]).
+#[derive(Debug, Default)]
+pub(crate) struct PlannedExtractionEffects {
+    /// The source Archives Apply would delete after extracting them.
+    removed: Vec<PathBuf>,
+    /// Each folder that would hold a published entry, at any depth, keyed as
+    /// NTFS compares names: a merge publishes beneath an existing folder
+    /// whatever the case its entry names it in.
+    occupied: BTreeSet<OrdinalIgnoreCase<PathBuf>>,
+}
+
+impl PlannedExtractionEffects {
+    /// The effects of extracting every one of `plans` with `cleanup`, as a
+    /// Dry Run assumes each extraction succeeds. Only
+    /// [`SourceCleanup::Remove`] deletes a source; a backup stays in the
+    /// Archive's folder, so it vacates nothing.
+    pub(crate) fn of(plans: &[ArchiveExtractionPlan], cleanup: SourceCleanup) -> Self {
+        let mut effects = Self::default();
+        for plan in plans {
+            let Some(folder) = plan.archive_path.parent() else {
+                continue;
+            };
+            if cleanup == SourceCleanup::Remove {
+                effects.removed.push(plan.archive_path.clone());
+            }
+            for entry in &plan.merge_entries {
+                // Entries are `/`-separated and relative to the Archive's
+                // folder; only the folders above the file are occupied.
+                let mut directory = folder.to_path_buf();
+                let mut components = entry.split('/').peekable();
+                while let Some(component) = components.next() {
+                    if components.peek().is_none() {
+                        break;
+                    }
+                    directory.push(component);
+                    effects
+                        .occupied
+                        .insert(OrdinalIgnoreCase(directory.clone()));
+                }
+                // The Archive's folder and its parents up to the Mod Root
+                // hold the published file too.
+                for ancestor in folder.ancestors() {
+                    if !ancestor.starts_with(&plan.mod_root) {
+                        break;
+                    }
+                    if !effects
+                        .occupied
+                        .insert(OrdinalIgnoreCase(ancestor.to_path_buf()))
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+        effects
+    }
+
+    /// Whether a published entry would lie somewhere beneath `directory`.
+    fn occupies(&self, directory: &Path) -> bool {
+        self.occupied
+            .contains(&OrdinalIgnoreCase(directory.to_path_buf()))
+    }
+}
+
 /// What planning a Dry Run's Archive creation produced.
 #[derive(Debug)]
 pub(crate) enum CreationPlanning {
     /// The Routing Policy requests no Archive creation, so nothing was
-    /// planned.
-    NotRequested,
+    /// planned. An Apply run still prunes the folders its Archive
+    /// extraction's source removal emptied, which `pruning` lists
+    /// ([`planned_pruning`]), in the order they would go.
+    NotRequested {
+        /// The folders the Apply run would prune.
+        pruning: Vec<PlannedPruning>,
+    },
     /// The output Archives an Apply run over the Mod Roots as they are now
     /// would create, in plan order. Empty when nothing would be packed.
     Planned {
@@ -377,6 +453,10 @@ pub(crate) enum CreationPlanning {
         /// The plan's own warnings, as [`plan_warnings`] lists them: the
         /// same ones an Apply run records over the same Mod Roots.
         plan_warnings: Vec<RunDiagnostic>,
+        /// The folders an Apply run would prune once the planned packing
+        /// and the planned Archive extractions deleted their sources
+        /// ([`planned_pruning`]), in the order they would go.
+        pruning: Vec<PlannedPruning>,
     },
     /// Cancellation was observed while planning; nothing was planned.
     Cancelled,
@@ -393,8 +473,9 @@ pub(crate) enum CreationPlanning {
 /// It stops where [`finalize_archives`] would start mutating: it never
 /// writes, commits or cleans an output, maintains no existing Loading
 /// Plugin and prunes no directory, so it reaches only the packer's `rules`,
-/// `list_names` and `partition`. `cancelled` is polled as planning polls it
-/// under Apply.
+/// `list_names` and `partition`; it only lists the folders it reports
+/// Apply would prune. `cancelled` is polled as planning polls it under
+/// Apply.
 ///
 /// It then runs the Capacity Check the Apply run would run before mutating,
 /// through `capacity`, the run's Capacity Check, over the same
@@ -411,13 +492,17 @@ pub(crate) fn plan_archive_creation(
     capacity: &CapacityCheck<'_>,
     choices: &ArchiveFinalizationChoices,
     preparation: &RunPreparation,
+    extractions: &PlannedExtractionEffects,
     cancelled: &dyn Fn() -> bool,
 ) -> CreationPlanning {
     if !preparation
         .policy()
         .requests(RequestedWork::ArchiveCreation)
     {
-        return CreationPlanning::NotRequested;
+        // Apply's phase still prunes over every Mod Root without packing.
+        return CreationPlanning::NotRequested {
+            pruning: planned_pruning(preparation.mod_roots(), None, extractions),
+        };
     }
     let exclusions = checked_packing_exclusions(preparation);
     let planned = catch_unwind(AssertUnwindSafe(|| {
@@ -439,10 +524,11 @@ pub(crate) fn plan_archive_creation(
             verdict,
             unplanned_warnings(&plan),
             plan_warnings(&plan),
+            planned_pruning(&plan.roots, Some(&plan), extractions),
         ))
     }));
     match planned {
-        Ok(Ok((outputs, verdict, unplanned, plan_warnings))) => {
+        Ok(Ok((outputs, verdict, unplanned, plan_warnings, pruning))) => {
             // Matched outside the containment above, so an impossible arm
             // panics rather than passing as a planning failure.
             let capacity_warning = match verdict {
@@ -463,6 +549,7 @@ pub(crate) fn plan_archive_creation(
                 capacity_warning,
                 unplanned,
                 plan_warnings,
+                pruning,
             }
         }
         Ok(Err(PlanningCancelled)) => CreationPlanning::Cancelled,
@@ -500,7 +587,9 @@ fn unplanned_warnings(plan: &FinalizationPlan) -> Vec<RunDiagnostic> {
 /// [`RunDiagnosticCode::CaseTwinNames`] per Mod Root holding plugin or
 /// Archive names that differ only in case, then one
 /// [`RunDiagnosticCode::ArchiveCreationSkipped`] per output left out because
-/// nothing would load it, each at its Mod Root and in plan order.
+/// nothing would load it, each at its Mod Root, then one
+/// [`RunDiagnosticCode::ArchiveCreationSkipped`] per loose file too large for
+/// any Archive, at the file (audit BE-16), all in plan order.
 fn plan_warnings(plan: &FinalizationPlan) -> Vec<RunDiagnostic> {
     let case_twins = plan.case_twins.iter().map(|root| {
         RunDiagnostic::new(
@@ -530,7 +619,22 @@ fn plan_warnings(plan: &FinalizationPlan) -> Vec<RunDiagnostic> {
         )
         .with_path(&output.mod_root)
     });
-    case_twins.chain(skipped).collect()
+    let oversized = plan.oversized.iter().map(|asset| {
+        RunDiagnostic::new(
+            RunDiagnosticCode::ArchiveCreationSkipped,
+            RunPhase::ArchiveFinalization,
+            format!(
+                "{} stays loose: at {} bytes it is past its game's {}-byte Archive Size Cap, \
+                 so no Archive the game can load may hold it. The rest of its Mod Root is \
+                 packed.",
+                asset.path.display(),
+                asset.size,
+                asset.cap
+            ),
+        )
+        .with_path(&asset.path)
+    });
+    case_twins.chain(skipped).chain(oversized).collect()
 }
 
 /// Archive creation's capacity demand over one frozen plan, as
@@ -610,10 +714,10 @@ fn run_phase(
         .policy()
         .requests(RequestedWork::ArchiveCreation)
     {
-        // Empty-directory pruning is the legacy Apply finalization even
-        // without packing.
+        // Without packing the phase plans no output, but Archive extraction
+        // may still have emptied a folder by removing its source Archive.
         phase.plan(0).map_err(Escape::Evidence)?;
-        prune_empty_directories(preparation.mod_roots(), cancelled, account);
+        prune_vacated_directories(preparation.mod_roots(), artifacts, cancelled, account);
     } else {
         let exclusions = checked_packing_exclusions(preparation);
         let plan = match plan_finalization(
@@ -810,7 +914,7 @@ fn maintain_and_prune(
             cancelled,
             account,
         )
-        .map_err(Escape::Work)?
+        .map_err(|error| Escape::Work(error.to_string()))?
         {
             return Ok(());
         }
@@ -818,7 +922,7 @@ fn maintain_and_prune(
     // Recoverable attempts keep their source evidence; cancellation keeps
     // every path.
     if !account.cancelled {
-        prune_empty_directories(&plan.roots, cancelled, account);
+        prune_vacated_directories(&plan.roots, artifacts, cancelled, account);
     }
     Ok(())
 }
@@ -897,10 +1001,19 @@ fn packing_exclusions(preparation: &RunPreparation) -> Vec<String> {
         .collect()
 }
 
-/// Prunes empty directories beneath each Mod Root, recording one mutation per
-/// root that lost any. Cancellation stops before the next root.
-fn prune_empty_directories(
+/// Prunes, beneath each of `roots`, the folders this run emptied, recording
+/// one mutation per root that lost any. Cancellation stops before the next
+/// root.
+///
+/// The folders are those `artifacts` recorded as vacated: each one a file
+/// was deleted from by packing or by Archive extraction's source removal.
+/// One is removed only if it is now empty, and then each parent its removal
+/// left empty, up to but never including the Mod Root ([`prune_chains`]).
+/// A folder that held nothing before the run, which a mod may ship on
+/// purpose, is never touched (audit FS-7).
+fn prune_vacated_directories(
     roots: &[PathBuf],
+    artifacts: &TemporaryArtifactRegistry,
     cancelled: &dyn Fn() -> bool,
     account: &mut ArchiveFinalizationAccount,
 ) {
@@ -909,7 +1022,12 @@ fn prune_empty_directories(
             account.cancelled = true;
             break;
         }
-        let pruned = delete_empty_directories(root);
+        let pruned = prune_chains(
+            root,
+            artifacts.vacated_directories(root),
+            remove_emptied_directory,
+        )
+        .len();
         if pruned != 0 {
             account.mutations.push(ArchiveFinalizationMutation {
                 mod_root: root.clone(),
@@ -922,65 +1040,204 @@ fn prune_empty_directories(
     }
 }
 
-/// Windows' hidden attribute, which C++'s `QDirIterator` neither listed nor
-/// descended into without `QDir::Hidden`.
-const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
-
-/// Removes every empty directory beneath `root`, deepest first, and returns
-/// how many went (C++ `FilesystemOperations::deleteEmptyDirectories`).
+/// Walks the pruning chain of each of `vacated` beneath `root`, deepest
+/// first: the folder itself, then each parent while `remove` removed the
+/// folder below it. A chain stops at the Mod Root, which is never removed, at
+/// reserved staging, which belongs to Safety Cleanup, and at the first folder
+/// `remove` keeps. Returns the folders removed, in the order they went.
 ///
-/// The root itself is never removed. Reserved staging belongs to Safety
-/// Cleanup and is skipped, as are links and other reparse points, which are
-/// neither descended into nor removed, and hidden directories, as Qt skipped
-/// them. Removal is nonrecursive, so a directory that is not empty, or that
-/// cannot be listed, simply stays; an empty one that cannot be removed stays
-/// too, with an Application Log warning naming it. **Deviation 20:** C++ also skipped any
-/// directory whose full path contained "separator", case-insensitively;
-/// that rule is gone.
-fn delete_empty_directories(root: &Path) -> usize {
-    let mut directories = Vec::new();
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(&directory) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            // `DirEntry::metadata` does not follow links on Windows.
-            let Ok(metadata) = entry.metadata() else {
-                continue;
+/// Apply passes [`remove_emptied_directory`]; a Dry Run passes a check
+/// against what its planned packing and Archive extractions would delete and
+/// publish ([`planned_pruning`]), so both walk the same chains. Deepest first, a folder vacated inside another
+/// is tried before it. A chain that reaches a folder an earlier chain already
+/// removed stops there: that chain already tried every parent above it after
+/// the removal.
+fn prune_chains(
+    root: &Path,
+    vacated: impl IntoIterator<Item = PathBuf>,
+    mut remove: impl FnMut(&Path) -> bool,
+) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = vacated
+        .into_iter()
+        .filter(|directory| directory != root && directory.starts_with(root))
+        .collect();
+    candidates.sort_by_key(|directory| std::cmp::Reverse(directory.components().count()));
+    candidates.dedup();
+    let mut removed = Vec::new();
+    for candidate in &candidates {
+        let mut directory = candidate.as_path();
+        while directory != root
+            && let Ok(relative) = directory.strip_prefix(root)
+            && !has_staging_component(relative)
+            && remove(directory)
+        {
+            removed.push(directory.to_path_buf());
+            let Some(parent) = directory.parent() else {
+                break;
             };
-            if !metadata.is_dir()
-                || metadata.is_symlink()
-                || is_reparse_point(&metadata)
-                || metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0
-            {
-                continue;
-            }
-            let path = entry.path();
-            if has_staging_component(path.strip_prefix(root).unwrap_or(&path)) {
-                continue;
-            }
-            directories.push(path.clone());
-            pending.push(path);
+            directory = parent;
         }
     }
-    // A child's path is always longer than its parent's, so longest first
-    // empties each child before its parent is tried, as C++'s length-keyed
-    // map iterated from the back did.
-    directories.sort_by_key(|path| std::cmp::Reverse(path.as_os_str().encode_wide().count()));
-    let mut pruned = 0;
-    for directory in &directories {
-        match std::fs::remove_dir(directory) {
-            Ok(()) => pruned += 1,
-            // Most candidates still hold files; trying them is the walk.
-            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
-            // An empty directory that stays, held open or denied, is the
-            // user's to know about: it used to vanish behind `is_ok` (FS-2).
-            Err(error) => log::warn!(
+    removed
+}
+
+/// Removes `directory` if it is still an empty ordinary folder, returning
+/// whether it went.
+///
+/// A link or other reparse point now standing at the path is not the folder
+/// the run emptied, so it stays. Removal is nonrecursive, so a folder that is
+/// not empty simply stays; an empty one that cannot be removed stays too,
+/// with an Application Log warning naming it.
+fn remove_emptied_directory(directory: &Path) -> bool {
+    match std::fs::symlink_metadata(directory) {
+        Ok(metadata)
+            if metadata.is_dir() && !metadata.is_symlink() && !is_reparse_point(&metadata) => {}
+        // Absent, replaced or unreadable: nothing this run emptied to remove.
+        _ => return false,
+    }
+    match std::fs::remove_dir(directory) {
+        Ok(()) => true,
+        // Most chains end at a folder that still holds something; trying it
+        // is the walk.
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::NotFound
+            ) =>
+        {
+            false
+        }
+        // An empty folder that stays, held open or denied, is the user's to
+        // know about: it used to vanish behind `is_ok` (FS-2).
+        Err(error) => {
+            log::warn!(
                 "Could not remove empty directory {}: {error}",
                 directory.display()
-            ),
+            );
+            false
         }
     }
-    pruned
+}
+
+/// The folders an Apply run would prune beneath `roots` once it deleted
+/// the sources its packing (`packed`, when Archive creation is planned) and
+/// its Archive extractions (`extractions`) remove, for a Dry Run to report,
+/// in the order they would go.
+///
+/// Every folder a deleted source lies in is walked as Apply walks the
+/// folders it recorded as vacated ([`prune_chains`]), but nothing is
+/// removed: a folder counts as emptied when no extraction would publish
+/// beneath it and every entry in it is a deleted source or a folder already
+/// counted. `roots` are the roots Apply would prune: the planned roots when
+/// it packs, and every Mod Root when it does not. Packing without source
+/// deletion and extraction with a backup vacate nothing.
+///
+/// The packing plan is an estimate from the Mod Roots as they are now,
+/// before extraction: a file an extraction publishes is never among the
+/// packed sources here, so a folder an Apply run would empty by packing such
+/// a file and deleting it is not reported. That limit is the planned
+/// outputs' ([`OutputPlanBasis::EstimateFromModRootsAsTheyAre`](crate::run::OutputPlanBasis)).
+fn planned_pruning(
+    roots: &[PathBuf],
+    packed: Option<&FinalizationPlan>,
+    extractions: &PlannedExtractionEffects,
+) -> Vec<PlannedPruning> {
+    let mut gone: HashSet<PathBuf> = extractions.removed.iter().cloned().collect();
+    if let Some(plan) = packed.filter(|plan| plan.delete_sources) {
+        gone.extend(
+            plan.outputs
+                .iter()
+                .flat_map(|output| output.archive.files.iter().map(|file| file.path.clone())),
+        );
+    }
+    let mut pruning = Vec::new();
+    for root in roots {
+        let vacated: BTreeSet<PathBuf> = gone
+            .iter()
+            .filter(|source| source.starts_with(root))
+            .filter_map(|source| source.parent().map(Path::to_path_buf))
+            .collect();
+        let removed = prune_chains(root, vacated, |directory| {
+            // A published entry keeps every folder above it, however empty
+            // the folder is now.
+            if extractions.occupies(directory) {
+                return false;
+            }
+            let Ok(entries) = std::fs::read_dir(directory) else {
+                return false;
+            };
+            let emptied = entries
+                .into_iter()
+                .all(|entry| entry.is_ok_and(|entry| gone.contains(&entry.path())));
+            if emptied {
+                gone.insert(directory.to_path_buf());
+            }
+            emptied
+        });
+        pruning.extend(removed.into_iter().map(|directory| PlannedPruning {
+            directory,
+            mod_root: root.clone(),
+        }));
+    }
+    pruning
+}
+
+/// [`PlannedExtractionEffects`]: what a Dry Run assumes its planned
+/// extractions leave behind, without touching the filesystem.
+#[cfg(test)]
+mod extraction_effects_tests {
+    use std::path::{Path, PathBuf};
+
+    use super::PlannedExtractionEffects;
+    use crate::run::{ArchiveExtractionPlan, SourceCleanup};
+
+    /// A plan for `archive` under `mod_root` that wins `winners`.
+    fn plan(mod_root: &str, archive: &str, winners: &[&str]) -> ArchiveExtractionPlan {
+        ArchiveExtractionPlan {
+            archive_path: PathBuf::from(archive),
+            mod_root: PathBuf::from(mod_root),
+            entries: winners.iter().map(|winner| (*winner).to_owned()).collect(),
+            merge_entries: winners.iter().map(|winner| (*winner).to_owned()).collect(),
+            estimated_capacity_bytes: 0,
+        }
+    }
+
+    /// Removal deletes the source and Backup keeps it; a winner occupies its
+    /// own folders, the Archive's folder and every folder up to the Mod
+    /// Root, whatever case it names them in, and nothing above or beside.
+    #[test]
+    fn winners_occupy_their_folders_up_to_the_mod_root_ignoring_case() {
+        let plans = [
+            plan(r"C:\mods\m", r"C:\mods\m\kept\a.bsa", &["Sub/Deeper/x.dds"]),
+            plan(r"C:\mods\m", r"C:\mods\m\lonely\b.bsa", &[]),
+        ];
+
+        let removed = PlannedExtractionEffects::of(&plans, SourceCleanup::Remove);
+        assert_eq!(
+            removed.removed,
+            [
+                PathBuf::from(r"C:\mods\m\kept\a.bsa"),
+                PathBuf::from(r"C:\mods\m\lonely\b.bsa"),
+            ]
+        );
+        for occupied in [
+            r"C:\mods\m",
+            r"C:\mods\m\kept",
+            r"C:\mods\m\KEPT\sub",
+            r"c:\mods\m\kept\SUB\deeper",
+        ] {
+            assert!(removed.occupies(Path::new(occupied)), "{occupied}");
+        }
+        for free in [
+            r"C:\mods",
+            r"C:\mods\m\lonely",
+            r"C:\mods\m\kept\sub\deeper\x.dds",
+        ] {
+            assert!(!removed.occupies(Path::new(free)), "{free}");
+        }
+
+        let backed_up = PlannedExtractionEffects::of(&plans, SourceCleanup::Backup);
+        assert!(backed_up.removed.is_empty());
+        assert!(backed_up.occupies(Path::new(r"C:\mods\m\kept\sub")));
+    }
 }

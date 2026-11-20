@@ -1,15 +1,17 @@
-//! The Texture decisions C++ `TexturesOptimizer::processArguments` makes, which
-//! Dry Run reports and Apply acts on: resize, compress and mipmaps.
+//! The Texture decisions Dry Run reports and Apply acts on: resize, compress
+//! and mipmaps.
 //!
-//! Each scenario is a texture's metadata and name against a profile and the
-//! user's Texture options; none needs a file.
+//! Each scenario is a texture's metadata and game path against a profile and
+//! the user's Texture options; none needs a file.
 
 use cao_core::routing::TextureVariant;
-use cao_optimizers::textures::{TexturePlan, TextureProfile, TextureRequest, plan};
+use cao_optimizers::textures::{
+    TexturePlan, TextureProfile, TextureRequest, is_interface_texture, plan,
+};
 use directxtex::{
     DXGI_FORMAT, DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC7_UNORM,
     DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, TEX_ALPHA_MODE_OPAQUE,
-    TEX_DIMENSION_TEXTURE2D, TEX_MISC_TEXTURECUBE, TexMetadata,
+    TEX_DIMENSION_TEXTURE2D, TEX_DIMENSION_TEXTURE3D, TEX_MISC_TEXTURECUBE, TexMetadata,
 };
 
 /// The shipped SSE profile's Texture settings: BC7, three unwanted 16-bit
@@ -36,7 +38,8 @@ fn metadata(format: DXGI_FORMAT, width: usize, height: usize, mip_levels: usize)
     }
 }
 
-const NAME: &str = "C:/mods/Mod/textures/armor/plate.dds";
+/// An ordinary Texture's game path: its path within its Mod Root.
+const NAME: &str = "textures/armor/plate.dds";
 
 fn necessary() -> TextureRequest {
     TextureRequest {
@@ -134,12 +137,37 @@ fn interface_textures_are_left_uncompressed_and_unmipped_unless_the_profile_allo
     };
     let mut profile = sse();
     profile.compress_interface = false;
-    // C++ looks for "interface" anywhere in the full path, ignoring case.
-    let name = "C:/mods/Mod/textures/InterFace/map.dds";
-    let decided = plan(&info, name, TextureVariant::Native, &profile, &request);
-    assert!(!decided.compress && !decided.mipmaps, "{decided:?}");
+    // A folder named "interface", in any case, makes interface art.
+    for name in ["textures/InterFace/map.dds", "Interface/map.dds"] {
+        let decided = plan(&info, name, TextureVariant::Native, &profile, &request);
+        assert!(!decided.compress && !decided.mipmaps, "{name}: {decided:?}");
 
-    let decided = plan(&info, name, TextureVariant::Native, &sse(), &request);
+        let decided = plan(&info, name, TextureVariant::Native, &sse(), &request);
+        assert!(decided.compress && decided.mipmaps, "{name}: {decided:?}");
+    }
+}
+
+/// Audit BE-11: only a whole folder within the Mod Root makes interface art,
+/// never where the Mod Root lies, a folder that only contains the word, or
+/// the file's own name.
+#[test]
+fn only_an_interface_folder_within_the_mod_root_makes_interface_art() {
+    assert!(is_interface_texture("interface/map.dds"));
+    assert!(is_interface_texture(r"textures\Interface\icons\map.dds"));
+    assert!(!is_interface_texture("textures/myinterfacemod/map.dds"));
+    assert!(!is_interface_texture("textures/armor/interface.dds"));
+    assert!(!is_interface_texture("interface.dds"));
+
+    let info = metadata(DXGI_FORMAT_R8G8B8A8_UNORM, 64, 64, 1);
+    let request = TextureRequest {
+        compress: true,
+        mipmaps: true,
+        ..TextureRequest::default()
+    };
+    let mut profile = sse();
+    profile.compress_interface = false;
+    // The game path of a Texture in a Mod Root at C:/Interface Mods/Mod.
+    let decided = plan(&info, NAME, TextureVariant::Native, &profile, &request);
     assert!(decided.compress && decided.mipmaps, "{decided:?}");
 }
 
@@ -173,4 +201,62 @@ fn resizing_halves_both_sides_while_both_exceed_the_target() {
         "one side within the target stops the halving"
     );
     assert_eq!((decided.width, decided.height), (2048, 1024));
+}
+
+/// Audit BE-12: a ratio that takes a side to 0 counts as 1, so a 1×1
+/// Texture is never planned as 0×0, and a 2×2 one halves to 1×1 at most.
+#[test]
+fn a_target_side_of_zero_counts_as_one() {
+    let target = TextureRequest {
+        target: Some((0, 0)),
+        ..TextureRequest::default()
+    };
+    let decided = native(&metadata(DXGI_FORMAT_BC7_UNORM, 1, 1, 1), &target);
+    assert!(!decided.would_change(), "{decided:?}");
+    assert_eq!((decided.width, decided.height), (1, 1));
+
+    let decided = native(&metadata(DXGI_FORMAT_R8G8B8A8_UNORM, 2, 2, 1), &target);
+    assert!(decided.resize);
+    assert_eq!((decided.width, decided.height), (1, 1));
+}
+
+/// Audit BE-12: the planned size is the one Apply writes, each side rounded
+/// up to a power of two after halving, so Dry Run reports it.
+#[test]
+fn the_planned_size_is_rounded_up_to_powers_of_two() {
+    let target = TextureRequest {
+        target: Some((512, 512)),
+        ..TextureRequest::default()
+    };
+    // 1000×600 halves once to 500×300, which Apply writes as 512×512.
+    let decided = native(&metadata(DXGI_FORMAT_R8G8B8A8_UNORM, 1000, 600, 1), &target);
+    assert!(decided.resize);
+    assert_eq!((decided.width, decided.height), (512, 512));
+}
+
+/// Audit BE-12: mipmaps are decided for the size after the resize, which
+/// leaves one level, so a full chain resized is planned a new one.
+#[test]
+fn mipmaps_are_decided_for_the_resized_texture() {
+    let request = TextureRequest {
+        mipmaps: true,
+        target: Some((128, 128)),
+        ..TextureRequest::default()
+    };
+    let decided = native(&metadata(DXGI_FORMAT_BC7_UNORM, 256, 256, 9), &request);
+    assert!(decided.resize && decided.mipmaps, "{decided:?}");
+}
+
+/// Audit BE-12: a volume Texture gets no mipmaps, which DirectXTex's 2D
+/// mipmap generation would refuse.
+#[test]
+fn a_volume_texture_gets_no_mipmaps() {
+    let mut volume = metadata(DXGI_FORMAT_R8G8B8A8_UNORM, 64, 64, 1);
+    volume.depth = 4;
+    volume.dimension = TEX_DIMENSION_TEXTURE3D;
+    let request = TextureRequest {
+        mipmaps: true,
+        ..TextureRequest::default()
+    };
+    assert!(!native(&volume, &request).mipmaps);
 }

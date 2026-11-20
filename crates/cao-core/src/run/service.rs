@@ -1,17 +1,19 @@
 //! The Optimization Run Service, the Run Handle and the Run Worker.
 //!
-//! Ported from `src/Run/OptimizationRunService.h` (ADR-0001). The service
-//! validates a Run Request's structure, admits one active run per process,
-//! schedules its single Run Worker and hands the run back as an owning
-//! [`RunHandle`]. Dropping an active handle requests cancellation and joins
-//! the worker, so a run is never abandoned while it executes.
+//! The service validates a Run Request's structure, admits one active run per
+//! process, schedules its single Run Worker and hands the run back as an
+//! owning [`RunHandle`] (ADR-0001). Dropping an active handle requests
+//! cancellation and joins the worker, so a run is never abandoned while it
+//! executes.
 //!
-//! Run Events go to one adapter-supplied [`RunEventDispatcher`], called on the
-//! Run Worker in sequence order. State is published before its event is
-//! dispatched, so a dispatcher that reads a snapshot sees what the event
-//! describes. This replaces the C++ observer/dispatcher pair and its delivery
-//! bookkeeping (#468): the GUI's dispatcher forwards through
-//! `Weak::upgrade_in_event_loop` itself.
+//! Run Events go to one adapter-supplied [`RunEventDispatcher`], called in
+//! sequence order on the Run Worker, or, when no worker could be scheduled,
+//! on the thread that called [`OptimizationRunService::start`]. State is
+//! published before its event is dispatched, so a dispatcher that reads a
+//! snapshot sees what the event describes. The service does no thread
+//! marshalling of its own (#468): a dispatcher that must reach another thread
+//! forwards there itself, as the GUI's does through
+//! `Weak::upgrade_in_event_loop`.
 
 use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -26,11 +28,17 @@ use crate::run::{
     StandardRunScheduler, create_run_id, run_worker_panic_detail, take_panic_message,
 };
 
-/// Receives every Run Event of one run, in sequence order, on the Run Worker.
+/// Receives every Run Event of one run, in sequence order.
+///
+/// It is called on the Run Worker. When the scheduler cannot start a worker,
+/// the run fails at once and its few events are dispatched instead on the
+/// thread that called [`OptimizationRunService::start`], before `start`
+/// returns, so before the caller holds the run's [`RunHandle`].
 ///
 /// A dispatcher that panics is disabled: the run records a `DispatcherFailed`
 /// diagnostic and carries on without it. It is dropped once the terminal
-/// event has been dispatched.
+/// event has been dispatched; a panic while dropping it, or anything it
+/// captured, is recorded the same way.
 pub type RunEventDispatcher = Box<dyn Fn(RunEvent) + Send>;
 
 /// A structural request conflict or an active run that prevents a start.
@@ -130,7 +138,9 @@ impl SafetyCleanupService for TrackedCleanup {
 /// The injected Safety Cleanup Service of a production run.
 ///
 /// The Run Executor owns each run's Temporary Ownership registry and cleans it
-/// up itself, as C++ did, so nothing else is registered here.
+/// up itself, so a production run has nothing else to clean up. The
+/// executor's seam still takes a service, so scenarios can inject a failing
+/// cleanup pass and so a run that fails to schedule still performs one.
 struct NoTemporaryArtifacts;
 
 impl SafetyCleanupService for NoTemporaryArtifacts {
@@ -165,18 +175,44 @@ impl RunShared {
             return;
         };
         if let Err(payload) = catch_unwind(AssertUnwindSafe(|| dispatcher(event))) {
-            dispatch.dispatcher = None;
+            let failed = dispatch.dispatcher.take();
             drop(dispatch);
-            let detail = take_panic_message(payload);
-            log::warn!("The Run Event dispatcher failed and was disabled: {detail}");
-            let mut published = lock(&self.published);
-            let phase = published.phase;
-            published.diagnostics.push(RunDiagnostic::new(
-                RunDiagnosticCode::DispatcherFailed,
-                phase,
-                detail,
+            self.record_dispatcher_failure(format!(
+                "The Run Event dispatcher failed and was disabled: {}",
+                take_panic_message(payload)
+            ));
+            self.release_dispatcher(failed);
+        }
+    }
+
+    /// Drops `dispatcher` inside a containment boundary.
+    ///
+    /// The closure may capture anything, and dropping a capture can panic.
+    /// Unwinding from here would leave the Run Worker before
+    /// [`Self::commit`] releases its waiters, so every `RunHandle::wait`
+    /// would block forever; the panic is recorded as a `DispatcherFailed`
+    /// diagnostic instead, as the other payload drops are contained.
+    fn release_dispatcher(&self, dispatcher: Option<RunEventDispatcher>) {
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(dispatcher))) {
+            self.record_dispatcher_failure(format!(
+                "The Run Event dispatcher panicked while it was dropped: {}",
+                take_panic_message(payload)
             ));
         }
+    }
+
+    /// Logs a dispatcher failure and publishes it as a `DispatcherFailed`
+    /// diagnostic at the current phase, without dispatching it: the
+    /// dispatcher that would receive it is the one that failed.
+    fn record_dispatcher_failure(&self, detail: String) {
+        log::warn!("{detail}");
+        let mut published = lock(&self.published);
+        let phase = published.phase;
+        published.diagnostics.push(RunDiagnostic::new(
+            RunDiagnosticCode::DispatcherFailed,
+            phase,
+            detail,
+        ));
     }
 
     /// Runs the Optimization Run on the Run Worker and commits its one result.
@@ -259,9 +295,10 @@ impl RunShared {
         }
         self.dispatch(RunEventPayload::Terminal(result));
         // No event follows the terminal one. Dropping the dispatcher here also
-        // breaks any cycle through state it captured.
+        // breaks any cycle through state it captured. The drop is contained,
+        // so the waiters below are always released.
         let dispatcher = lock(&self.dispatch).dispatcher.take();
-        drop(dispatcher);
+        self.release_dispatcher(dispatcher);
         lock(&self.published).terminal_dispatched = true;
         self.committed.notify_all();
     }

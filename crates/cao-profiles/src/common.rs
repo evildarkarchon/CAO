@@ -9,7 +9,7 @@ use crate::ini::IniFile;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommonSettings {
     /// The selected profile's name (`profile`). It may name a profile that no longer
-    /// exists; [`crate::Profiles::resolve`] falls back to SSE for that.
+    /// exists; [`crate::Profiles::resolve`] falls back to another for that.
     pub profile: String,
     /// `bShowAdvancedSettings`.
     pub show_advanced_settings: bool,
@@ -22,9 +22,9 @@ pub struct CommonSettings {
 }
 
 impl CommonSettings {
-    /// Reads the model from `common.ini` as C++'s GUI reads it. A missing file reads
-    /// like an empty one.
-    pub fn read(ini: &IniFile) -> Self {
+    /// Reads the model from `common.ini`. A missing file reads like an empty one,
+    /// which is how a new install starts: CAO ships no `common.ini`.
+    pub(crate) fn read(ini: &IniFile) -> Self {
         Self {
             profile: ini.value("profile").to_qstring(),
             show_advanced_settings: ini.value("bShowAdvancedSettings").to_bool(),
@@ -37,10 +37,9 @@ impl CommonSettings {
         }
     }
 
-    /// Writes the model into `common.ini`, in the order C++ first writes the keys, so
-    /// a new file matches the shipped one. Keys the model does not hold are left
-    /// alone.
-    pub fn write(&self, ini: &mut IniFile) {
+    /// Writes the model into `common.ini`, in a fixed key order, so a new file
+    /// always reads the same way. Keys the model does not hold are left alone.
+    pub(crate) fn write(&self, ini: &mut IniFile) {
         ini.set("profile", self.profile.as_str());
         ini.set("bShowAdvancedSettings", self.show_advanced_settings);
         ini.set("bDarkMode", self.dark_mode);

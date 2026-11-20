@@ -106,6 +106,11 @@ fn settings_that_cannot_be_saved_show_the_save_error_and_start_no_run() {
     let _serial = serial();
     headless();
     let (app_dir, mods) = sse_app("run_settings_unsaved");
+    // A copy of SSE: a base profile's `profile.ini` is never written.
+    cao_profiles::Profiles::new(&app_dir)
+        .create("Custom", "SSE")
+        .unwrap();
+    edit_ini(&app_dir, "common.ini", "profile", "Custom");
     let (app, desktop) = open(&app_dir);
     let ui = app.window();
     ui.set_user_path(mods.display().to_string().into());
@@ -113,7 +118,7 @@ fn settings_that_cannot_be_saved_show_the_save_error_and_start_no_run() {
     // The window now differs from `profile.ini`, which holds `true`.
     ui.global::<cao_gui::ui::TexturesTab>()
         .set_tga_conversion(false);
-    let profile_ini = app_dir.join("profiles/SSE/profile.ini");
+    let profile_ini = app_dir.join("profiles/Custom/profile.ini");
     let on_disk = std::fs::read(&profile_ini).unwrap();
     set_readonly(&profile_ini, true);
 

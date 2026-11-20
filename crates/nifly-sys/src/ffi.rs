@@ -97,6 +97,14 @@ unsafe extern "C" {
     pub(crate) fn cao_nif_last_error(handle: *const CaoNif, ptr: *mut *const c_char) -> usize;
 }
 
+// The shim compiles these only when `build.rs` sees the `test-hooks` feature
+// (FFI-7), which this crate's dev-dependency on itself turns on for its own
+// tests. Without it they would fail to link, so say why at compile time.
+#[cfg(all(test, not(feature = "test-hooks")))]
+compile_error!(
+    "nifly-sys's tests need its `test-hooks` feature; its dev-dependency on itself enables it"
+);
+
 #[cfg(test)]
 unsafe extern "C" {
     /// Test support: loads `length` bytes through a stream that throws when

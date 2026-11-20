@@ -35,11 +35,12 @@ fn read(path: &Path) -> String {
 }
 
 /// A stand-in for the workspace's inputs: an exe, a profiles tree with a
-/// nested profile, a licence and a converter.
+/// nested profile, CAO's and nifly's licences and a converter.
 struct Inputs {
     exe: PathBuf,
     profiles: PathBuf,
     license: PathBuf,
+    nifly_license: PathBuf,
     hkxcmd: PathBuf,
 }
 
@@ -48,6 +49,7 @@ fn inputs(dir: &Path) -> Inputs {
         exe: dir.join("build").join(EXE),
         profiles: dir.join("profiles"),
         license: dir.join("LICENSE"),
+        nifly_license: dir.join("nifly").join("LICENSE"),
         hkxcmd: dir.join("bin").join(HKXCMD),
     };
     write(&inputs.exe, "exe");
@@ -57,6 +59,7 @@ fn inputs(dir: &Path) -> Inputs {
         "sse settings",
     );
     write(&inputs.license, "MPL");
+    write(&inputs.nifly_license, "GPL");
     write(&inputs.hkxcmd, "converter");
     inputs
 }
@@ -168,6 +171,7 @@ fn an_install_holds_the_exe_profiles_licence_and_converter() {
             exe: &inputs.exe,
             profiles: &inputs.profiles,
             license: &inputs.license,
+            nifly_license: &inputs.nifly_license,
             hkxcmd: Some(&inputs.hkxcmd),
         },
     )
@@ -180,6 +184,7 @@ fn an_install_holds_the_exe_profiles_licence_and_converter() {
         "sse settings"
     );
     assert_eq!(read(&folder.join("LICENSE")), "MPL");
+    assert_eq!(read(&folder.join("LICENSE-nifly")), "GPL");
     assert_eq!(read(&folder.join("bin").join(HKXCMD)), "converter");
 }
 
@@ -195,6 +200,7 @@ fn an_install_without_a_converter_has_no_bin_folder() {
             exe: &inputs.exe,
             profiles: &inputs.profiles,
             license: &inputs.license,
+            nifly_license: &inputs.nifly_license,
             hkxcmd: None,
         },
     )
@@ -214,6 +220,7 @@ fn an_install_refuses_a_non_empty_folder_and_missing_inputs() {
         exe: &inputs.exe,
         profiles: &inputs.profiles,
         license: &inputs.license,
+        nifly_license: &inputs.nifly_license,
         hkxcmd: Some(&inputs.hkxcmd),
     };
     let occupied = dir.join("occupied");
@@ -236,6 +243,30 @@ fn an_install_refuses_a_non_empty_folder_and_missing_inputs() {
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::NotFound);
     assert!(!fresh.exists());
+
+    let error = lay_out_install(
+        &fresh,
+        &Install {
+            nifly_license: &dir.join("missing-licence"),
+            ..install
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    assert!(!fresh.exists());
+}
+
+/// The exe links nifly statically, so dist must find nifly's GPL text where
+/// the vendored source keeps it; a move of the vendor tree breaks this first.
+#[test]
+fn the_workspace_names_nifly_s_vendored_licence() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+    let workspace = Workspace {
+        target: root.join("target"),
+        root,
+    };
+    let text = std::fs::read_to_string(workspace.nifly_license()).unwrap();
+    assert!(text.contains("GNU GENERAL PUBLIC LICENSE"), "{text:.80}");
 }
 
 /// The app edits its own profile files, so dev keeps them unless forced.

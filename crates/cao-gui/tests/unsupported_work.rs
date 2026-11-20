@@ -9,7 +9,7 @@
 mod common;
 
 use cao_gui::MessageLevel;
-use cao_profiles::{Options, Profiles};
+use cao_profiles::Profiles;
 use common::*;
 
 /// The last message box shown, as (level, title, text).
@@ -51,7 +51,7 @@ fn mesh_options_stay_saved_under_fo4_and_its_run_succeeds() {
     click(ui, "Run");
     let saved = Profiles::new(&app_dir)
         .open("FO4")
-        .load_options(&Options::default())
+        .load_options("")
         .unwrap();
     assert_eq!(saved.meshes_optimization_level, 3);
     assert!(saved.meshes_resave && saved.meshes_headparts);

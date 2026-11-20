@@ -17,10 +17,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use cao_core::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
-    ArchiveExtractionFailure, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
-    ArchiveNameKind, CancellationToken, ModSelection, OptimizationRunResult,
-    RunConfigurationProvider, RunDiagnostic, RunDiagnosticCode, RunFailureCode, RunOutcome,
-    RunPhase, RunPhaseRecord, RunPhaseStatus, RunRequest, RunToolset, SelectedProfile,
+    ArchiveExtractionFailure, ArchiveFinalizationFailure, ArchiveNameKind, CancellationToken,
+    ModSelection, OptimizationRunResult, RunConfigurationProvider, RunDiagnostic,
+    RunDiagnosticCode, RunFailureCode, RunOutcome, RunPhase, RunPhaseRecord, RunPhaseStatus,
+    RunRequest, RunToolset, SelectedProfile,
 };
 use cao_core::test_support::{
     CallbackConfiguration, CountingCleanup, FakeArchivePacker, FakeArchiveReader,
@@ -136,17 +136,14 @@ fn an_unscripted_provider_runs_requested_work_through_a_default_toolset() {
         );
         assert!(result.preparation().is_some(), "{name}");
         assert_eq!(result.asset_attempts().len(), 1, "{name}");
+        // The real phase ran; with nothing packed or extracted, this run
+        // emptied no folder, so the one the mod ships stays (audit FS-7).
         let finalization = result.archive_finalization().unwrap();
-        assert_eq!(
-            finalization
-                .mutations
-                .iter()
-                .map(|mutation| (mutation.kind, mutation.count))
-                .collect::<Vec<_>>(),
-            [(ArchiveFinalizationMutationKind::EmptyDirectoryPruning, 1)],
-            "{name}"
+        assert!(
+            finalization.mutations.is_empty(),
+            "{name}: {finalization:?}"
         );
-        assert!(!root.join("empty").exists(), "{name}: pruned");
+        assert!(root.join("empty").is_dir(), "{name}: never pruned");
         assert_eq!(cleanup.passes, 1, "{name}");
     }
 }

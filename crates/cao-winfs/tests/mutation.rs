@@ -135,6 +135,95 @@ fn delete_by_handle_removes_the_opened_object_not_its_path() {
     assert_eq!(std::fs::read(&source).unwrap(), b"substitute");
 }
 
+/// Marks `path` read-only, as a mod author's or an extractor's file can be.
+fn make_read_only(path: &Path) {
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(path, permissions).unwrap();
+}
+
+/// A read-only converted texture or extracted Archive is removed like any
+/// other file CAO owns (FFI-4).
+#[test]
+fn delete_by_handle_removes_a_read_only_file() {
+    let dir = scratch_dir("delete-read-only");
+    let path = dir.join("converted.tga");
+    write(&path, b"read-only");
+    make_read_only(&path);
+
+    let handle = Open::new(Access::DELETE | Access::READ_ATTRIBUTES, Share::READ)
+        .open(&path)
+        .unwrap();
+    delete_by_handle(&handle).unwrap();
+    drop(handle);
+
+    assert!(!path.exists());
+}
+
+/// A read-only original Mesh or Texture is replaced by its optimized output
+/// (FFI-4), and the published file is the staged one, read-only no more.
+#[test]
+fn replace_rename_replaces_a_read_only_destination() {
+    let dir = scratch_dir("rename-replace-read-only");
+    let staged = dir.join("staged.dds");
+    let published = dir.join("published.dds");
+    write(&staged, b"new");
+    write(&published, b"old");
+    make_read_only(&published);
+
+    let handle = publication_handle(&staged);
+    rename_by_handle(&handle, &published, RenameMode::Replace).unwrap();
+    drop(handle);
+
+    assert!(!staged.exists());
+    assert_eq!(std::fs::read(&published).unwrap(), b"new");
+    assert!(
+        !std::fs::metadata(&published)
+            .unwrap()
+            .permissions()
+            .readonly()
+    );
+}
+
+/// Ignoring read-only applies only to a replace: a no-replace rename onto a
+/// read-only file is refused as onto any occupied name.
+#[test]
+fn no_replace_rename_refuses_a_read_only_destination() {
+    let dir = scratch_dir("rename-occupied-read-only");
+    let staged = dir.join("staged.dds");
+    let published = dir.join("published.dds");
+    write(&staged, b"new");
+    write(&published, b"old");
+    make_read_only(&published);
+
+    let handle = publication_handle(&staged);
+    let error = rename_by_handle(&handle, &published, RenameMode::NoReplace).unwrap_err();
+    drop(handle);
+
+    assert_eq!(error.raw_os_error(), Some(ERROR_ALREADY_EXISTS), "{error}");
+    assert_eq!(std::fs::read(&published).unwrap(), b"old");
+}
+
+/// A read-only source is renamed too: the attribute guards a file's
+/// contents and existence, not its name.
+#[test]
+fn a_read_only_source_is_renamed() {
+    let dir = scratch_dir("rename-read-only-source");
+    let source = dir.join("source.ba2");
+    let backup = dir.join("source.ba2.bak");
+    write(&source, b"archive");
+    make_read_only(&source);
+
+    let handle = Open::new(Access::DELETE | Access::READ_ATTRIBUTES, Share::READ)
+        .open(&source)
+        .unwrap();
+    rename_by_handle(&handle, &backup, RenameMode::NoReplace).unwrap();
+    drop(handle);
+
+    assert!(!source.exists());
+    assert_eq!(std::fs::read(&backup).unwrap(), b"archive");
+}
+
 #[test]
 fn write_through_moves_replace_the_destination() {
     let dir = scratch_dir("move-replace");
@@ -177,10 +266,10 @@ fn hold_without_delete_sharing(path: &Path) -> std::fs::File {
         .unwrap()
 }
 
-/// Deviation 25: a scanner briefly holding the manifest a run just wrote
-/// made the replacing move fail with Access denied, failing the run, though
-/// a retry milliseconds later succeeds. The move waits a held destination
-/// out.
+/// A scanner briefly holding the manifest a run just wrote makes the
+/// replacing move fail with Access denied, though a retry milliseconds later
+/// succeeds; failing at once would fail the run. The move waits a held
+/// destination out.
 #[test]
 fn write_through_moves_wait_out_a_transient_hold_on_the_destination() {
     let dir = scratch_dir("move-transient-hold");

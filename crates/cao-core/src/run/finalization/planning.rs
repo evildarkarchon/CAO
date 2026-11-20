@@ -1,8 +1,7 @@
-//! Freezing Archive Finalization's outputs before any mutation.
-//!
-//! Ported from `src/Run/ArchiveFinalizationPlanning.cpp`: source selection,
-//! output naming, the planned Loading Plugin names and the capacity estimate.
-//! Classification, splitting and merging are the packer's.
+//! Freezing Archive Finalization's outputs before any mutation: source
+//! selection, output naming, the planned Loading Plugin names and the
+//! capacity estimate. Classification, splitting and merging are the
+//! packer's.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -13,7 +12,9 @@ use super::ArchiveFinalizationChoices;
 use super::plugins::{
     LoadingPluginStrength, existing_entry, find_loading_plugin, has_exact_dummy_bytes,
 };
+use crate::Error;
 use crate::run::staging::has_staging_component;
+use crate::run::work_error::{ArchiveWorkCause, ArchiveWorkError};
 use crate::run::{
     ArchiveMerge, ArchiveName, ArchiveNameKind, ArchiveNamingRules, ArchivePacker,
     PackedArchiveKind, PackedFile, PlannedArchive,
@@ -62,6 +63,19 @@ pub(super) struct FinalizationPlan {
     /// only in case, in run order. Planning goes on with them: they are only
     /// reported.
     pub case_twins: Vec<CaseTwins>,
+    /// The loose files left out because each is too large for any Archive
+    /// its game can load, in run order. They stay loose; the rest of their
+    /// Mod Root is planned as if they were not there (audit BE-16).
+    pub oversized: Vec<OversizedAsset>,
+}
+
+/// A loose file too large for any Archive its game can load, which planning
+/// leaves loose.
+pub(super) struct OversizedAsset {
+    pub path: PathBuf,
+    pub size: u64,
+    /// The game's Archive Size Cap the file is past.
+    pub cap: u64,
 }
 
 /// A Mod Root whose plugins or Archives include names that differ only in
@@ -106,6 +120,8 @@ struct RootPlan {
     unloadable: Vec<UnloadableOutput>,
     /// The root's plugin and Archive names that differ only in case.
     case_twins: Vec<Vec<String>>,
+    /// The root's files left loose as too large for any Archive.
+    oversized: Vec<OversizedAsset>,
 }
 
 /// Cancellation was observed between planning inputs; nothing was mutated
@@ -118,7 +134,16 @@ pub(super) enum PlanningStop {
     /// Cancellation was observed between inputs; nothing was mutated.
     Cancelled,
     /// An input could not be read or planned.
-    Failed(String),
+    Failed(ArchiveWorkError),
+}
+
+/// A `map_err` adapter: the failure of `action` on `path` stops planning.
+fn stop<E: Into<ArchiveWorkCause>>(
+    action: &'static str,
+    path: &Path,
+) -> impl FnOnce(E) -> PlanningStop {
+    let failed = ArchiveWorkError::of(action, path);
+    move |cause| PlanningStop::Failed(failed(cause))
 }
 
 /// The counters tried, from 0, when every plugin-derived output name is
@@ -161,7 +186,6 @@ pub(super) fn plan_finalization(
             Ok(())
         }
     };
-    let failed = |error: &dyn std::fmt::Display| PlanningStop::Failed(error.to_string());
     // Deviation 21: some games never merge Textures, whatever was asked.
     let merge = ArchiveMerge {
         incompressible: choices.merge_incompressible,
@@ -178,6 +202,7 @@ pub(super) fn plan_finalization(
         unplanned: Vec::new(),
         unloadable: Vec::new(),
         case_twins: Vec::new(),
+        oversized: Vec::new(),
     };
     let create_dummies = plan.create_dummies;
     let delete_sources = plan.delete_sources;
@@ -191,7 +216,7 @@ pub(super) fn plan_finalization(
     // outputs and the outputs nothing would load. An error leaves `plan`
     // untouched by this root.
     let mut plan_root = |input_root: &Path| -> Result<RootPlan, PlanningStop> {
-        let root = canonical(input_root).map_err(|error| failed(&error))?;
+        let root = canonical(input_root).map_err(stop("Resolve", input_root))?;
         let mut outputs = Vec::new();
         let mut unloadable = Vec::new();
         let mut dummy_capacity = 0u64;
@@ -201,15 +226,15 @@ pub(super) fn plan_finalization(
             check()?;
             let existing = packer
                 .list_names(&root, ArchiveNameKind::Archive)
-                .map_err(|error| failed(&error))?;
+                .map_err(stop("List the Archives of", &root))?;
             dummy_capacity = (existing.len() as u64).saturating_mul(dummy_len);
         }
 
         check()?;
-        let case_twins = case_twins(&root, &rules).map_err(|error| failed(&error))?;
+        let case_twins = case_twins(&root, &rules).map_err(stop("List", &root))?;
         let listed = packer
             .list_names(&root, ArchiveNameKind::Plugin)
-            .map_err(|error| failed(&error))?;
+            .map_err(stop("List the plugins of", &root))?;
         // Ignore only proven Dummy Plugin names while naming outputs; the
         // files themselves are never removed, so they keep loading the
         // Archives earlier runs packed.
@@ -226,9 +251,10 @@ pub(super) fn plan_finalization(
                 .file_name()
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| {
-                    PlanningStop::Failed(format!(
-                        "The Mod Root name of `{}` is not valid Unicode.",
-                        root.display()
+                    PlanningStop::Failed(ArchiveWorkError::refused(
+                        "Name the output Archives of",
+                        &root,
+                        "the Mod Root name is not valid Unicode",
                     ))
                 })?;
             plugins.push(ArchiveName {
@@ -240,11 +266,25 @@ pub(super) fn plan_finalization(
             });
         }
 
-        let sources = collect_sources(&root, files_to_not_pack, &check)?;
-        check()?;
-        let archives = packer
-            .partition(&root, sources, merge)
-            .map_err(|error| failed(&error))?;
+        let mut sources = collect_sources(&root, files_to_not_pack, &check)?;
+        let mut oversized = Vec::new();
+        // A file too large for any Archive fails only itself: it stays loose
+        // and the rest is partitioned again without it (audit BE-16). The
+        // packer names one file per refusal, and each retry drops one, so
+        // this ends.
+        let archives = loop {
+            check()?;
+            match packer.partition(&root, sources.clone(), merge) {
+                Ok(archives) => break archives,
+                Err(Error::AssetTooLarge { path, size, cap })
+                    if sources.iter().any(|source| source.path == path) =>
+                {
+                    sources.retain(|source| source.path != path);
+                    oversized.push(OversizedAsset { path, size, cap });
+                }
+                Err(error) => return Err(stop("Partition the Loose Assets of", &root)(error)),
+            }
+        };
         for archive in archives {
             check()?;
             let suffix = match archive.kind {
@@ -262,10 +302,7 @@ pub(super) fn plan_finalization(
                 match existing_entry(&path) {
                     Ok(Some(_)) => Ok(false),
                     Ok(None) => Ok(!reserved.contains(&OrdinalIgnoreCase(path))),
-                    Err(detail) => Err(PlanningStop::Failed(format!(
-                        "Cannot plan output Archive `{}`: {detail}",
-                        path.display()
-                    ))),
+                    Err(error) => Err(PlanningStop::Failed(error)),
                 }
             };
             let mut selected = None;
@@ -297,9 +334,11 @@ pub(super) fn plan_finalization(
                 }
             }
             let Some(selected) = selected else {
-                return Err(PlanningStop::Failed(
-                    "No available output Archive name.".to_owned(),
-                ));
+                return Err(PlanningStop::Failed(ArchiveWorkError::refused(
+                    "Name the output Archives of",
+                    &root,
+                    "every candidate name is taken",
+                )));
             };
             let archive_path = selected.full_path();
             let mut plugin_path = None;
@@ -361,6 +400,7 @@ pub(super) fn plan_finalization(
             outputs,
             unloadable,
             case_twins,
+            oversized,
         })
     };
     for input_root in roots {
@@ -374,7 +414,18 @@ pub(super) fn plan_finalization(
                 outputs,
                 unloadable,
                 case_twins,
+                oversized,
             }) => {
+                for asset in &oversized {
+                    log::warn!(
+                        "Archive creation leaves {} loose: at {} bytes it is past its game's \
+                         {}-byte Archive Size Cap",
+                        asset.path.display(),
+                        asset.size,
+                        asset.cap
+                    );
+                }
+                plan.oversized.extend(oversized);
                 if !case_twins.is_empty() {
                     log::warn!(
                         "{} holds plugins or Archives whose names differ only in case: {}",
@@ -400,7 +451,8 @@ pub(super) fn plan_finalization(
                 plan.unloadable.extend(unloadable);
             }
             Err(PlanningStop::Cancelled) => return Err(PlanningCancelled),
-            Err(PlanningStop::Failed(detail)) => {
+            Err(PlanningStop::Failed(error)) => {
+                let detail = error.to_string();
                 log::error!("Archive creation skips {}: {detail}", input_root.display());
                 plan.unplanned.push(UnplannedRoot {
                     root: input_root.clone(),
@@ -419,28 +471,23 @@ pub(super) fn plan_finalization(
 /// packed sources.
 ///
 /// Reserved staging, links and other reparse points are skipped without
-/// being descended into; files directly in the Mod Root are never packed
-/// (bethutil's `default_is_allowed_path`); and Packing Exclusions are
-/// matched against the path within the Mod Root (deviation 16). Each file
-/// carries the size splitting counts.
+/// being descended into. Files directly in the Mod Root are never packed:
+/// they are the mod's plugins, Archives and loose documents, none of which
+/// belongs in an Archive. Packing Exclusions are matched
+/// against the path within the Mod Root, so a rule never matches the folder
+/// the mods live in. Each file carries the size splitting counts.
 fn collect_sources(
     root: &Path,
     files_to_not_pack: &[String],
     check: &dyn Fn() -> Result<(), PlanningStop>,
 ) -> Result<Vec<PackedFile>, PlanningStop> {
-    let failed = |path: &Path, error: std::io::Error| {
-        PlanningStop::Failed(format!(
-            "Cannot inspect finalization input `{}`: {error}",
-            path.display()
-        ))
-    };
     let mut sources = Vec::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
-        let entries = std::fs::read_dir(&directory).map_err(|error| failed(&directory, error))?;
+        let entries = std::fs::read_dir(&directory).map_err(stop("List", &directory))?;
         for entry in entries {
             check()?;
-            let entry = entry.map_err(|error| failed(&directory, error))?;
+            let entry = entry.map_err(stop("List", &directory))?;
             let path = entry.path();
             let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
             // The directory entry's own metadata, which on Windows comes with
@@ -448,7 +495,7 @@ fn collect_sources(
             // costs no stat per file (audit FS-6). The attempt re-stats every
             // source before it writes, so a size the listing reports stale
             // for a file being written still cannot undercount its capacity.
-            let metadata = entry.metadata().map_err(|error| failed(&path, error))?;
+            let metadata = entry.metadata().map_err(stop("Inspect", &path))?;
             // Never descend into reserved staging or directory links just to
             // filter their files.
             if has_staging_component(&relative)
@@ -544,12 +591,7 @@ pub(super) fn estimate_packed_capacity(
         let size = match sizes {
             SourceSizes::Planned => source.size,
             SourceSizes::Current => std::fs::metadata(&source.path)
-                .map_err(|error| {
-                    PlanningStop::Failed(format!(
-                        "Cannot size packed source `{}`: {error}",
-                        source.path.display()
-                    ))
-                })?
+                .map_err(stop("Size packed source", &source.path))?
                 .len(),
         };
         let name = source

@@ -6,18 +6,28 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use cao_profiles::{Options, ProfileError, Profiles};
+use cao_profiles::{ProfileError, Profiles};
 use common::shipped_app_dir;
 
 #[test]
 fn discovers_the_shipped_fo4_sse_and_tes5_profiles() {
-    // `profiles/TES4` has only `isBase` and no `profile.ini`, so it is not a profile.
     let profiles = Profiles::new(&shipped_app_dir());
 
     assert_eq!(profiles.list(), ["FO4", "SSE", "TES5"]);
     assert!(profiles.exists("TES5"));
-    assert!(!profiles.exists("TES4"));
     assert!(!profiles.exists(""));
+}
+
+#[test]
+fn a_folder_without_profile_ini_is_not_a_profile() {
+    let app_dir = common::copy_of_shipped("folder-without-profile-ini");
+    let profiles = Profiles::new(&app_dir);
+    let shell = profiles.root().join("TES4");
+    fs::create_dir(&shell).unwrap();
+    fs::write(shell.join("isBase"), "").unwrap();
+
+    assert_eq!(profiles.list(), ["FO4", "SSE", "TES5"]);
+    assert!(!profiles.exists("TES4"));
 }
 
 #[test]
@@ -100,6 +110,9 @@ fn a_new_profile_never_takes_an_existing_name() {
     let app_dir = common::copy_of_shipped("create-existing-name");
     let profiles = Profiles::new(&app_dir);
     let before = common::read(&profiles.open("SSE").profile_ini());
+    let shell = profiles.root().join("TES4");
+    fs::create_dir(&shell).unwrap();
+    fs::write(shell.join("isBase"), "").unwrap();
 
     // `TES4` holds only `isBase`: not a profile, but its directory is taken.
     for name in ["SSE", "sse", "TES4"] {
@@ -192,8 +205,7 @@ fn deviation_10_dead_data_files_are_left_alone() {
     let dummy = common::read(&sse.directory().join("DummyPlugin.esp"));
 
     sse.save_settings(&sse.load_settings().unwrap()).unwrap();
-    sse.save_options(&sse.load_options(&Options::default()).unwrap())
-        .unwrap();
+    sse.save_options(&sse.load_options("").unwrap()).unwrap();
     // Only the reads matter here, to show they leave the dead files alone; the lists
     // themselves are pinned by the auxiliary-file tests below.
     let _ = (

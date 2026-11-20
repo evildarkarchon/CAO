@@ -1,8 +1,7 @@
 //! Opening pins and other file-safety handles through `std` (#463).
 //!
-//! Every `CreateFileW` call in the C++ staging and Archive code maps onto
-//! `std::fs::OpenOptions` plus `OpenOptionsExt`, which also adds `\\?\` to long
-//! paths and owns the handle. [`Open`] fixes the two traps found in std's
+//! Every file-safety open CAO makes maps onto `std::fs::OpenOptions` plus
+//! `OpenOptionsExt`, which also adds `\\?\` to long paths and owns the handle. [`Open`] fixes the two traps found in std's
 //! source: the share mode must always be explicit, because std's default
 //! includes `FILE_SHARE_DELETE` and so silently allows renames, and
 //! `create_new` needs `write(true)` even when an access mode is given.
@@ -13,6 +12,7 @@ use std::ops::BitOr;
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::Path;
 
+use crate::retry::retry_transient;
 use windows_sys::Win32::Foundation::{
     ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, GENERIC_READ, GENERIC_WRITE,
 };
@@ -158,6 +158,23 @@ impl Open {
             options.write(true).create_new(true);
         }
         options.open(path)
+    }
+
+    /// Opens `path` as [`Self::open`] does, but waits out a sharing
+    /// violation for about a second before returning it.
+    ///
+    /// Use it for an exclusive open of a file a run has just written, such as
+    /// a staged output: a real-time scanner often holds that file for a few
+    /// milliseconds without sharing, and refusing the open then would fail
+    /// the Asset or its cleanup for nothing. Only sharing and lock violations
+    /// are retried; any other error, such as a missing file, returns at once.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Self::open`]; a lasting hold returns its sharing violation
+    /// once the wait is spent.
+    pub fn open_retrying(&self, path: &Path) -> io::Result<File> {
+        retry_transient(|| self.open(path), is_sharing_violation)
     }
 }
 

@@ -1,7 +1,7 @@
 [package]
 name = "cao-gui-unsafe"
 description = "The `unsafe` calls cao-gui needs, behind documented safe wrappers, so cao-gui itself keeps `unsafe_code = \"forbid\"`."
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

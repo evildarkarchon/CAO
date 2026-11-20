@@ -75,7 +75,7 @@ fn a_dry_run_logs_each_planned_extraction() {
     assert!(
         !records
             .iter()
-            .any(|record| record.message.starts_with("BSA successfully extracted")),
+            .any(|record| record.message.starts_with("extracted ")),
         "{records:?}"
     );
 }

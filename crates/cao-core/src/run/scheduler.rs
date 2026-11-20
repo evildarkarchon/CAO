@@ -1,8 +1,9 @@
-//! The Run Scheduler seam and its production and inline schedulers.
+//! The Run Scheduler seam and its production scheduler.
 //!
-//! Ported from `src/Run/RunScheduler.h`. The scheduler starts the single Run
-//! Worker of one run; the run's lifetime owns that worker and joins it before
-//! the run could be abandoned (ADR-0001).
+//! The scheduler starts the single Run Worker of one run; the run's lifetime
+//! owns that worker and joins it before the run could be abandoned
+//! (ADR-0001). The `test-support` feature adds an inline scheduler for
+//! deterministic scenarios.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -111,29 +112,5 @@ impl RunScheduler for StandardRunScheduler {
             thread_id,
             finished,
         }))
-    }
-}
-
-/// Runs each worker inline before scheduling returns, so the run is already
-/// terminal when its Run Handle exists. Useful for deterministic callers.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct InlineRunScheduler;
-
-/// A worker whose work already ran, so there is nothing left to join.
-struct CompletedRunWorker;
-
-impl ScheduledRunWorker for CompletedRunWorker {
-    // The inline scheduler finished the work before returning this worker.
-    fn join(&self) {}
-
-    fn is_current_thread(&self) -> bool {
-        false
-    }
-}
-
-impl RunScheduler for InlineRunScheduler {
-    fn schedule(&self, work: RunWork) -> Result<Box<dyn ScheduledRunWorker>, Error> {
-        work();
-        Ok(Box::new(CompletedRunWorker))
     }
 }

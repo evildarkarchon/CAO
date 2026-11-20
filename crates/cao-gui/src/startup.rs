@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cao_optimizers::application_log::{self, ApplicationLog, LogError};
-use cao_profiles::{Options, ProfileError, Profiles};
+use cao_profiles::{DEFAULT_PROFILE, ProfileError, Profiles};
 
 /// Why the Application Log could not be bootstrapped.
 #[derive(Debug, thiserror::Error)]
@@ -40,7 +40,8 @@ pub fn app_directory() -> io::Result<PathBuf> {
 /// Opens and installs the process's Application Log for the CAO install in
 /// `app_dir`, as C++ `main` called `configureLogging` before the window: the
 /// file is stamped `logs/<profile>/yy.MM.dd.hh.mm.html` for the startup profile
-/// (the one `common.ini` remembers, or SSE), at that profile's debug-logging
+/// (the one `common.ini` remembers, or the one [`Profiles::resolve`] picks in
+/// its place, as the window does), at that profile's debug-logging
 /// choice. Every record from here on is kept for the Log tab, which replays
 /// them when [`App::attach_log`](crate::App::attach_log) subscribes.
 ///
@@ -52,12 +53,16 @@ pub fn app_directory() -> io::Result<PathBuf> {
 /// [`fail_startup`]'s critical box and exits with code 1.
 pub fn bootstrap_log(app_dir: &Path) -> Result<&'static ApplicationLog, BootstrapError> {
     let profiles = Profiles::new(app_dir);
-    let profile = profiles.resolve(&profiles.load_common()?.profile);
+    // With no profile at all the window refuses to start; the log, stamped for
+    // the default profile's name, still records why.
+    let profile = profiles
+        .resolve(&profiles.load_common()?.profile)
+        .unwrap_or_else(|| DEFAULT_PROFILE.to_owned());
     // An unreadable `settings.ini` is reported by the window when it loads the
     // profile; until then the log runs at the info level.
     let debug = profiles
         .open(&profile)
-        .load_options(&Options::default())
+        .load_options("")
         .map(|options| options.debug_log)
         .unwrap_or_default();
     let path = application_log::stamp_log_path(app_dir, &profile);

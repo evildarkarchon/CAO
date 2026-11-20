@@ -693,6 +693,53 @@ fn apply_necessary_textures(app: &Path, mod_root: &Path) -> Options {
     options
 }
 
+/// A Dry Run verifies Textures exactly as Apply does: a DDS whose header is
+/// sound but whose body is cut short fails its load in both modes, with the
+/// same verdict, so a Dry Run reports every load failure the matching Apply
+/// would meet. A Dry Run that read only headers would plan such a file.
+#[test]
+fn a_dry_run_fails_a_truncated_texture_as_apply_does() {
+    let _serial = serial();
+    let app = app_dir("truncated-texture");
+    let service = run_service(&app);
+    for dry_run in [true, false] {
+        let mod_root = app.join("mods").join(if dry_run { "Dry" } else { "Apply" });
+        let path = mod_root.join("textures/cut.dds");
+        write_dds(&path, DXGI_FORMAT_R8G8B8A8_UNORM, 64);
+        let whole = std::fs::read(&path).unwrap();
+        // The magic and the 124-byte legacy header, then a few pixel bytes.
+        std::fs::write(&path, &whole[..128 + 16]).unwrap();
+        let cut = std::fs::read(&path).unwrap();
+        let mut options = apply_necessary_textures(&app, &mod_root);
+        options.dry_run = dry_run;
+
+        let result = start_and_wait(&service, "SSE", &options);
+
+        assert_eq!(
+            result.outcome(),
+            RunOutcome::CompletedWithFailures,
+            "dry run {dry_run}: {:?}",
+            result.failures()
+        );
+        let [attempt] = result.asset_attempts() else {
+            panic!("dry run {dry_run}: {:?}", result.asset_attempts());
+        };
+        assert_eq!(
+            attempt.result.failure(),
+            Some(AssetExecutionFailure::LoadFailed),
+            "dry run {dry_run}"
+        );
+        assert_eq!(
+            attempt.result.operation(),
+            "load_texture",
+            "dry run {dry_run}"
+        );
+        if dry_run {
+            assert_eq!(std::fs::read(&path).unwrap(), cut);
+        }
+    }
+}
+
 /// Whether any attempt of `result` on a file named `name` carries `operation`.
 fn attempt_carries(result: &OptimizationRunResult, name: &str, operation: AssetOperation) -> bool {
     result.asset_attempts().iter().any(|attempt| {

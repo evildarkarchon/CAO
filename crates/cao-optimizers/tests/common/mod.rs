@@ -45,13 +45,11 @@ pub fn start_and_wait(
 
 /// A fresh, empty directory under the target directory for one scenario.
 pub fn scratch_dir(name: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("cao-optimizers")
-        .join(name);
-    // A missing directory is the expected case; anything else surfaces below.
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    cao_core::test_support::fresh_dir(
+        Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join("cao-optimizers")
+            .join(name),
+    )
 }
 
 /// The canonical form of a directory, as Preparing resolves it.
@@ -101,10 +99,7 @@ pub fn edit_profile(app: &Path, profile: &str, key: &str, value: &str) {
 
 /// The options a profile's `settings.ini` holds, as the GUI loads them.
 pub fn profile_options(app: &Path, profile: &str) -> Options {
-    Profiles::new(app)
-        .open(profile)
-        .load_options(&Options::default())
-        .unwrap()
+    Profiles::new(app).open(profile).load_options("").unwrap()
 }
 
 /// Dry Run options over the single Mod Root `mod_root`, with every Texture
