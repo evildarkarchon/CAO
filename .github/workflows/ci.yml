@@ -95,10 +95,17 @@ jobs:
           echo "No test was ignored."
 
       - name: Drop the tests' scratch files before the cache is saved
-        # rust-cache saves target/ after the job, and target/tmp holds only the
-        # tests' scratch trees: worthless to restore, and tar fails on an entry
-        # removed while it reads ("File removed before we read it"), which
-        # loses the whole cache. Best effort: a leftover only costs that save.
+        # rust-cache saves target/ with Git's tar, and target/tmp holds only the
+        # tests' scratch trees: worthless to restore, and a name that is not
+        # valid Unicode there (a test makes one on purpose) is one tar cannot
+        # read, which loses the whole cache. Remove-Item works in UTF-16, which
+        # Git's rm does not. Best effort: a leftover only costs that save.
         if: always()
-        shell: bash
-        run: rm -rf target/tmp || echo "::warning::target/tmp could not be removed fully"
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath target/tmp) {
+            Remove-Item -LiteralPath target/tmp -Recurse -Force -ErrorAction Continue
+          }
+          if (Test-Path -LiteralPath target/tmp) {
+            "::warning::target/tmp could not be removed fully"
+          }
