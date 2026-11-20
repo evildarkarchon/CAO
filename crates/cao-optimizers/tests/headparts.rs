@@ -2,10 +2,13 @@
 //! profile's `customHeadparts.txt`, from HDPT records in any plugin across the
 //! Mod Selection, and from facegen paths, with deviation 17's fixes.
 //!
-//! Every Mesh here is nifly's SSE fixture, which scans as good under the SSE
-//! profile. At the necessary level such a Mesh is left alone unless it is a
-//! Headpart Mesh, which is optimized as one and saved: a Committed Mutation
-//! marks exactly the Meshes recognised as Headpart Meshes.
+//! Every Mesh here is nifly's animated Skyrim LE fixture, which has no
+//! triangle strips and so scans as good under the SSE profile. At the
+//! necessary level such a Mesh is left alone unless it is a Headpart Mesh,
+//! which is converted to SSE as one and saved: a Committed Mutation marks
+//! exactly the Meshes recognised as Headpart Meshes. An SSE Mesh would not
+//! do: `OptimizeFor` cannot convert it to SSE, so even a Headpart Mesh is
+//! left alone (audit BE-6).
 
 mod common;
 
@@ -14,7 +17,7 @@ use std::sync::Arc;
 
 use cao_core::execution::MutationState;
 use cao_core::routing::{ExecutionMode, MeshVariant};
-use cao_core::run::{OptimizationRunResult, RunDiagnosticCode, RunOutcome, RunPhase};
+use cao_core::run::{MeshLevel, OptimizationRunResult, RunDiagnosticCode, RunOutcome, RunPhase};
 use cao_optimizers::composition::run_service;
 use cao_optimizers::meshes::{MeshOptimizer, MeshSettings};
 use cao_profiles::{OptimizationMode, Options};
@@ -22,14 +25,15 @@ use common::plugin::headpart_plugin;
 use common::{app_dir, profile_options, serial, start_and_wait, write};
 use nifly_sys::NifVersion;
 
-/// A Skyrim SE Mesh (stream 100), SSE-compatible.
-const SSE_MESH: &str = "TestNifFile_Static_SE.nif";
+/// A Skyrim LE Mesh (stream 83), SSE-compatible, which `OptimizeFor`
+/// converts to SSE.
+const LE_MESH: &str = "TestNifFile_Animated_LE.nif";
 
-/// The bytes of nifly's SSE fixture.
-fn sse_mesh() -> Vec<u8> {
+/// The bytes of nifly's animated LE fixture.
+fn le_mesh() -> Vec<u8> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../nifly-sys/vendor/nifly/tests")
-        .join(SSE_MESH);
+        .join(LE_MESH);
     std::fs::read(path).unwrap()
 }
 
@@ -54,10 +58,10 @@ fn apply_meshes(app: &Path, selection: &Path, mode: OptimizationMode) -> Options
     options
 }
 
-/// Writes the SSE fixture at each of `meshes` under `mod_root`.
+/// Writes the LE fixture at each of `meshes` under `mod_root`.
 fn write_meshes(mod_root: &Path, meshes: &[&str]) {
     for mesh in meshes {
-        write(mod_root, mesh, &sse_mesh());
+        write(mod_root, mesh, &le_mesh());
     }
 }
 
@@ -239,7 +243,7 @@ fn dry_run_applies_the_facegen_rule() {
     let facegen = "meshes/actors/character/facegendata/facegeom/facemod.esp/00000801.nif";
     write_meshes(&mod_root, &[facegen, "meshes/actors/character/plain.nif"]);
     let settings = MeshSettings {
-        level: 1,
+        level: MeshLevel::NECESSARY,
         headparts: true,
         resave: false,
     };

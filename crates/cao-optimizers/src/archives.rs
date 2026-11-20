@@ -257,6 +257,7 @@ impl ArchivePacker for GameArchivePacker {
         compress: bool,
         root: &Path,
         destination: &Path,
+        cancelled: &(dyn Fn() -> bool + Sync),
     ) -> Result<(), Error> {
         let mut data = ArchiveData::new(&self.settings, archive_type(archive.kind));
         for file in &archive.files {
@@ -272,8 +273,11 @@ impl ArchivePacker for GameArchivePacker {
         // write does.
         let staged = Open::new(Access::WRITE, Share::NONE).open(destination)?;
         let mut out = BufWriter::new(staged);
-        cao_archive::write_archive_into(compress, &data, root, &mut out, destination)
-            .map_err(archive_error)?;
+        cao_archive::write_archive_into(compress, &data, root, &mut out, destination, cancelled)
+            .map_err(|error| match error {
+                cao_archive::ArchiveError::Cancelled { .. } => Error::Cancelled,
+                error => archive_error(error),
+            })?;
         out.flush()?;
         // Close the staged file before it is published.
         drop(out);

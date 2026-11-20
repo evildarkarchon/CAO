@@ -32,6 +32,13 @@ use crate::settings::ArchiveVersion;
 ///   512x512 (`ba2`'s defaults would write no name table).
 /// - Files are read and compressed in parallel.
 ///
+/// Every file is read and compressed into memory before the first byte is
+/// written, so peak memory is about the stored size of the whole Archive,
+/// with every source mapped at once: for a BSA at most its game's Archive
+/// Size Cap ([`crate::Settings::size_cap`], 2 GiB), and for a BA2, which has
+/// no cap, up to its Archive Limit ([`crate::Settings::archive_limit`]) or
+/// more for a single file past it.
+///
 /// The output is created new, never overwriting an existing file. On any error
 /// after creating it, the partial output is removed. Every source mapping is
 /// released before this returns, so the sources can be deleted straight away.
@@ -59,7 +66,7 @@ pub fn write_archive(
     if data.is_empty() {
         return Ok(());
     }
-    let prepared = prepare(compress, data, root)?;
+    let prepared = prepare(compress, data, root, out_path, &|| false)?;
     write_new_file(out_path, |out| prepared.write(out, out_path))
 }
 
@@ -68,25 +75,40 @@ pub fn write_archive(
 /// Temporary Ownership. `out_path` only names the output in errors.
 ///
 /// Every file is read and compressed before the first byte reaches `out`, and
-/// every source mapping is released before this returns. Nothing is written
-/// for an Archive with no files. On an error, `out` may hold a partial
-/// Archive; removing it is the caller's.
+/// every source mapping is released before this returns; memory is bounded as
+/// [`write_archive`] describes. Nothing is written for an Archive with no
+/// files. On an error, `out` may hold a partial Archive; removing it is the
+/// caller's.
+///
+/// `cancelled` is asked before each file is read, from the threads that
+/// read them, and once more before anything is written. Once it answers yes,
+/// no further file is read and nothing is written (audit BE-8), so a cancel
+/// waits only for the files already being read, never for the whole Archive.
 ///
 /// # Errors
 ///
 /// As [`write_archive`], except that `out` is never created here, and a write
 /// to it fails as [`ArchiveError::Tes4`] or [`ArchiveError::Fo4`].
+/// [`ArchiveError::Cancelled`] when `cancelled` answered yes; `out` is then
+/// untouched.
 pub fn write_archive_into<W: Write>(
     compress: bool,
     data: &ArchiveData,
     root: &Path,
     out: &mut W,
     out_path: &Path,
+    cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<(), ArchiveError> {
     if data.is_empty() {
         return Ok(());
     }
-    prepare(compress, data, root)?.write(out, out_path)
+    let prepared = prepare(compress, data, root, out_path, cancelled)?;
+    if cancelled() {
+        return Err(ArchiveError::Cancelled {
+            path: out_path.to_path_buf(),
+        });
+    }
+    prepared.write(out, out_path)
 }
 
 /// An Archive read and compressed in memory, with the options it is written with.
@@ -123,11 +145,27 @@ impl PreparedArchive {
 
 /// Reads and compresses `data`'s files, which live under `root`, in parallel,
 /// and builds the Archive with every option set explicitly.
+///
+/// `cancelled` is asked before each file is read; a yes stops the read as
+/// [`ArchiveError::Cancelled`] for `out_path`. Rayon's collection into a
+/// `Result` stops handing out files once one fails, so the files still
+/// unread are skipped.
 fn prepare(
     compress: bool,
     data: &ArchiveData,
     root: &Path,
+    out_path: &Path,
+    cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<PreparedArchive, ArchiveError> {
+    let check = || {
+        if cancelled() {
+            Err(ArchiveError::Cancelled {
+                path: out_path.to_path_buf(),
+            })
+        } else {
+            Ok(())
+        }
+    };
     let version = data.version();
     let compressed = (compress && data.archive_type() != ArchiveType::Incompressible)
         || version == ArchiveVersion::Fo4Dx;
@@ -161,6 +199,7 @@ fn prepare(
             let files = sources
                 .into_par_iter()
                 .map(|(key, path)| {
+                    check()?;
                     let tes4_error = |source| ArchiveError::Tes4 {
                         path: path.to_path_buf(),
                         source,
@@ -207,6 +246,7 @@ fn prepare(
             let files = sources
                 .into_par_iter()
                 .map(|(key, path)| {
+                    check()?;
                     fo4::File::read(path, &read_options)
                         .map(|file| (key, file))
                         .map_err(|source| ArchiveError::Fo4 {

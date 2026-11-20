@@ -121,6 +121,20 @@ impl NifVersion {
     pub const fn is_sk(&self) -> bool {
         self.file == Self::V20_2_0_7 && self.stream == 83
     }
+
+    /// nifly's `NiVersion::IsSSE()` (`BasicTypes.hpp`): file 20.2.0.7 and
+    /// stream 100, whatever the user version.
+    pub const fn is_sse(&self) -> bool {
+        self.file == Self::V20_2_0_7 && self.stream == 100
+    }
+
+    /// Whether `OptimizeFor` converts a Mesh of this version towards
+    /// `target`: only Skyrim LE to SSE and SSE to LE do, as nifly's
+    /// `NifFile::OptimizeFor` decides. Any other pair is the no-op that sets
+    /// [`OptimizeReport::version_mismatch`].
+    pub const fn converts_to(&self, target: &Self) -> bool {
+        (self.is_sk() && target.is_sse()) || (self.is_sse() && target.is_sk())
+    }
 }
 
 /// nifly's `NifLoadOptions`.
@@ -294,6 +308,31 @@ impl Nif {
         let status = unsafe { ffi::cao_nif_is_sse_compatible(self.raw.as_ptr(), &mut compatible) };
         self.status(status)?;
         Ok(compatible)
+    }
+
+    /// The loaded Mesh's header version.
+    ///
+    /// # Errors
+    ///
+    /// [`NifError::NotLoaded`] for an empty handle.
+    pub fn version(&self) -> Result<NifVersion, NifError> {
+        let mut version = NifVersion {
+            file: 0,
+            user: 0,
+            stream: 0,
+        };
+        // SAFETY: `self.raw` is live; the three fields are valid places for
+        // the shim to write, and it only reads the handle.
+        let status = unsafe {
+            ffi::cao_nif_version(
+                self.raw.as_ptr(),
+                &mut version.file,
+                &mut version.user,
+                &mut version.stream,
+            )
+        };
+        self.status(status)?;
+        Ok(version)
     }
 
     /// Runs nifly's `OptimizeFor` and reports what it did.
@@ -564,6 +603,7 @@ mod tests {
         );
         assert!(!nif.is_valid());
         assert_eq!(nif.is_sse_compatible(), Err(NifError::NotLoaded));
+        assert_eq!(nif.version(), Err(NifError::NotLoaded));
         assert_eq!(nif.texture_paths().err(), Some(NifError::NotLoaded));
         assert_eq!(
             save_with_room_for(&mut nif, usize::MAX),

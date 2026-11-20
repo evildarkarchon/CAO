@@ -461,7 +461,8 @@ fn an_archive_written_into_an_open_output_round_trips() {
     let archives = plan(&root, &settings);
     let out = root.with_file_name("Staged.bsa");
     let mut file = std::fs::File::create_new(&out).unwrap();
-    cao_archive::write_archive_into(false, &archives[0], &root, &mut file, &out).unwrap();
+    cao_archive::write_archive_into(false, &archives[0], &root, &mut file, &out, &|| false)
+        .unwrap();
     drop(file);
     assert_eq!(
         assert_round_trips(&out, &root).len(),

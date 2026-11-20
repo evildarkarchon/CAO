@@ -188,6 +188,9 @@ struct HookBackend {
     save: Option<SaveHook>,
     remove: Option<RemoveHook>,
     animation: Option<AnimationHook>,
+    /// What `evaluate_animation` answers; `None` keeps the seam's default,
+    /// that every Animation would change.
+    evaluation: Option<OperationResult>,
     calls: Vec<String>,
     texture_variant: Option<TextureVariant>,
     texture_operations: Option<AssetOperations>,
@@ -206,6 +209,7 @@ impl Default for HookBackend {
             save: None,
             remove: None,
             animation: None,
+            evaluation: None,
             calls: Vec::new(),
             texture_variant: None,
             texture_operations: None,
@@ -317,6 +321,13 @@ impl AssetExecutionBackend for HookBackend {
 
     fn save_mesh(&mut self, path: &Path) -> Result<(), String> {
         self.save("save_mesh", path)
+    }
+
+    fn evaluate_animation(&mut self, _path: &Path) -> OperationResult {
+        self.enter("evaluate_animation");
+        self.evaluation
+            .clone()
+            .unwrap_or_else(OperationResult::changed)
     }
 
     fn optimize_animation(
@@ -446,6 +457,10 @@ impl AssetExecutionBackend for SharedBackend {
 
     fn save_mesh(&mut self, path: &Path) -> Result<(), String> {
         self.backend().save_mesh(path)
+    }
+
+    fn evaluate_animation(&mut self, path: &Path) -> OperationResult {
+        self.backend().evaluate_animation(path)
     }
 
     fn optimize_animation(
@@ -1424,6 +1439,134 @@ fn an_unchanged_apply_mesh_or_a_dry_run_mesh_is_never_staged() {
         assert_eq!(read(&source), "original");
         assert_eq!(names(&root), ["actor.nif"], "{mode:?}");
     }
+}
+
+/// Audit BE-6 and CORE-4: a staged output holding exactly the bytes of the
+/// file it would replace is abandoned, not published, so a run over an
+/// already optimized tree commits nothing. It applies to every in-place
+/// output: a Mesh, a native Texture and an Animation. The default backend
+/// saves `saved <name>` and converts an Animation to `converted`.
+#[test]
+fn an_output_identical_to_its_destination_is_never_published() {
+    let rows = [
+        (
+            "Meshes/Actor.nif",
+            "saved Actor.nif",
+            RequestedWork::StandardMeshOptimization,
+        ),
+        (
+            "Textures/Wall.dds",
+            "saved Wall.dds",
+            RequestedWork::NativeTextureOptimization,
+        ),
+        (
+            "Meshes/Walk.hkx",
+            "converted",
+            RequestedWork::AnimationOptimization,
+        ),
+    ];
+    for (index, (relative, output, requested)) in rows.into_iter().enumerate() {
+        let root = mod_root(&format!("identical-output-{index}"));
+        let source = root.join(relative);
+        write(&source, output);
+        let modified = std::fs::metadata(&source).unwrap().modified().unwrap();
+        let mut backend = HookBackend::default();
+        let asset = route(ExecutionMode::Apply, &[requested], &source);
+
+        let result = execute_and_clean(&asset, &mut backend, &root);
+
+        assert!(result.succeeded(), "{relative}: {result:?}");
+        assert_eq!(result.mutation_state(), MutationState::None, "{relative}");
+        assert_eq!(read(&source), output, "{relative}");
+        assert_eq!(
+            std::fs::metadata(&source).unwrap().modified().unwrap(),
+            modified,
+            "{relative}: never rewritten"
+        );
+        let staged = backend.saved.expect("the backend wrote its output");
+        assert!(
+            !staged.exists(),
+            "{relative}: the staged output is abandoned"
+        );
+    }
+}
+
+/// An output the same size as its destination but with other bytes is still
+/// published: only identical bytes count as no change.
+#[test]
+fn an_output_of_the_same_size_with_other_bytes_is_published() {
+    let root = mod_root("same-size-output");
+    let source = root.join("Meshes/Actor.nif");
+    // The same length as "saved Actor.nif", which the backend writes.
+    write(&source, "SAVED ACTOR.NIF");
+    let mut backend = HookBackend::default();
+    let asset = route(
+        ExecutionMode::Apply,
+        &[RequestedWork::StandardMeshOptimization],
+        &source,
+    );
+
+    let result = execute_and_clean(&asset, &mut backend, &root);
+
+    assert!(result.succeeded(), "{result:?}");
+    assert_eq!(result.mutation_state(), MutationState::Committed);
+    assert_eq!(read(&source), "saved Actor.nif");
+}
+
+/// Audit BE-7: an Animation the backend evaluates as unchanged is never
+/// captured, staged or handed to the converter, in either mode.
+#[test]
+fn an_animation_that_needs_no_work_is_never_staged() {
+    for mode in [ExecutionMode::Apply, ExecutionMode::DryRun] {
+        let root = mod_root(&format!("animation-unchanged-{mode:?}"));
+        let source = root.join("Walk.hkx");
+        write(&source, "already 64-bit");
+        let mut backend = HookBackend {
+            evaluation: Some(OperationResult::unchanged()),
+            ..HookBackend::default()
+        };
+        let asset = route(mode, &[RequestedWork::AnimationOptimization], &source);
+
+        let result = execute_and_clean(&asset, &mut backend, &root);
+
+        assert!(result.succeeded(), "{mode:?}: {result:?}");
+        assert_eq!(result.mutation_state(), MutationState::None);
+        assert_eq!(backend.count("evaluate_animation"), 1);
+        assert_eq!(backend.count("optimize_animation"), 0, "{mode:?}");
+        assert_eq!(read(&source), "already 64-bit");
+        assert_eq!(names(&root), ["Walk.hkx"], "{mode:?}: nothing staged");
+    }
+}
+
+/// An Animation the backend cannot evaluate is an Operation Failure that
+/// stages nothing and is safe to continue.
+#[test]
+fn an_animation_that_cannot_be_evaluated_fails_before_staging() {
+    let root = mod_root("animation-evaluation-failure");
+    let source = root.join("Walk.hkx");
+    write(&source, "original");
+    let mut backend = HookBackend {
+        evaluation: Some(OperationResult::failed("Cannot read Animation")),
+        ..HookBackend::default()
+    };
+    let asset = route(
+        ExecutionMode::Apply,
+        &[RequestedWork::AnimationOptimization],
+        &source,
+    );
+
+    let result = execute_and_clean(&asset, &mut backend, &root);
+
+    assert_eq!(
+        result.failure(),
+        Some(AssetExecutionFailure::OperationFailed)
+    );
+    assert_eq!(result.operation(), "evaluate_animation");
+    assert_eq!(result.service_detail(), "Cannot read Animation");
+    assert!(result.safe_to_continue());
+    assert_eq!(result.mutation_state(), MutationState::None);
+    assert_eq!(backend.count("optimize_animation"), 0);
+    assert_eq!(names(&root), ["Walk.hkx"]);
 }
 
 /// Origin: AssetExecutionTests::meshStagingFailure.

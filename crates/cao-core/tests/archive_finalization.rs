@@ -772,8 +772,11 @@ fn cancelled_planning_records_no_output_total() {
 
 /// Origin: finalizationFreezesTotalAndCancelsBetweenOutputs (all four rows).
 /// The output total is recorded before any mutation, each attempt before the
-/// next starts, and cancellation is observed only between outputs; pruning
-/// waits for the whole plan.
+/// next starts, and cancellation is observed between outputs and inside an
+/// attempt's Archive write, never after it; pruning waits for the whole plan.
+/// A cancellation during an attempt's capacity recheck therefore stops that
+/// attempt at its write, before any mutation (audit BE-8): C++, which had no
+/// cancellation inside an attempt, let it finish.
 #[test]
 fn the_total_is_frozen_and_cancellation_falls_between_outputs() {
     for cancel_after in [Some(0), Some(1), Some(2), None] {
@@ -802,7 +805,8 @@ fn the_total_is_frozen_and_cancellation_falls_between_outputs() {
         let (probe_roots, probe_log, stop) = (roots.clone(), log.clone(), finalizer.stop.clone());
         let probes = AtomicUsize::new(0);
         // One phase preflight per root, then one recheck per attempt.
-        // Stopping during an attempt's recheck lets that attempt finish.
+        // Stopping during an attempt's recheck stops that attempt at its
+        // write, before it publishes anything.
         finalizer.probe = capacity(move |_| {
             let probe = probes.fetch_add(1, Ordering::SeqCst) + 1;
             if probe == 1 {
@@ -831,7 +835,10 @@ fn the_total_is_frozen_and_cancellation_falls_between_outputs() {
 
         let label = format!("{cancel_after:?}");
         assert!(frozen_before_mutation.load(Ordering::SeqCst), "{label}");
-        let attempted = cancel_after.unwrap_or(2);
+        // `Some(0)` cancels during the second root's preflight, before any
+        // attempt; `Some(k)` otherwise cancels during attempt k's recheck, so
+        // the k - 1 attempts before it finish.
+        let attempted = cancel_after.map_or(2, |after| after.saturating_sub(1));
         if attempted == 2 {
             assert!(
                 first_recorded_before_second.load(Ordering::SeqCst),
@@ -872,7 +879,10 @@ fn the_total_is_frozen_and_cancellation_falls_between_outputs() {
 
 /// Origin: cancellationPreservesCommittedArchiveLoadingPlugin. A committed
 /// output keeps its Loading Plugin when cancellation leaves later outputs
-/// unattempted, and planning itself publishes none.
+/// unattempted, and planning itself publishes none. The cancel arrives once
+/// the first Archive is written: past its write an attempt observes no
+/// cancellation, so it publishes, creates its plugin and deletes its sources
+/// atomically (audit BE-8).
 #[test]
 fn cancellation_keeps_the_committed_archive_loadable() {
     let parent = scratch("cancel-keeps-plugin");
@@ -902,12 +912,10 @@ fn cancellation_keeps_the_committed_archive_loadable() {
                 Ordering::SeqCst,
             );
         }
-        // The third probe opens the first attempt, which must finish atomically.
-        if probe == 3 {
-            stop.cancel();
-        }
         Some(UNLIMITED)
     });
+    // Only the first output is written before the cancel is seen.
+    finalizer.packer.after_write = Some(Box::new(move |_| stop.cancel()));
     let run = finalizer.run(&roots);
 
     assert!(no_plugin_before_attempts.load(Ordering::SeqCst));
@@ -921,6 +929,50 @@ fn cancellation_keeps_the_committed_archive_loadable() {
     assert!(roots[1].join("textures/asset.dds").exists());
     assert!(archives_in(&roots[1]).is_empty());
     assert!(!root_plugin(&roots[1]).exists());
+    assert!(run.cleaned_up());
+}
+
+/// Audit BE-8: cancellation is observed inside an Archive write, between its
+/// sources, so Cancel no longer waits for a whole Archive to be read and
+/// compressed. The write stops before anything is published: its staged
+/// Archive is abandoned, no plugin is created, every source stays, and the
+/// output counts as never attempted, as one cancellation reached first does.
+#[test]
+fn cancellation_stops_an_archive_write_before_anything_is_published() {
+    let parent = scratch("cancel-inside-write");
+    let roots = [parent.join("mod-a"), parent.join("mod-b")];
+    for root in &roots {
+        write_file(&root.join("textures/one.dds"), b"first source");
+        write_file(&root.join("textures/two.dds"), b"second source");
+    }
+    let mut finalizer = Finalizer {
+        settings: ArchiveFinalizationChoices {
+            compress: false,
+            ..ArchiveFinalizationChoices::default()
+        },
+        ..Finalizer::default()
+    };
+    let stop = finalizer.stop.clone();
+    let reads = AtomicUsize::new(0);
+    // The first output's second source: its first has already been read.
+    finalizer.packer.before_source_read = Some(Box::new(move |_| {
+        if reads.fetch_add(1, Ordering::SeqCst) + 1 == 2 {
+            stop.cancel();
+        }
+    }));
+
+    let run = finalizer.run(&roots);
+
+    let result = run.finalization();
+    assert!(result.cancelled);
+    assert!(result.attempts.is_empty(), "{:?}", result.attempts);
+    assert!(result.safe_to_continue);
+    for root in &roots {
+        assert!(archives_in(root).is_empty(), "{}", root.display());
+        assert!(!root_plugin(root).exists());
+        assert!(root.join("textures/one.dds").exists());
+        assert!(root.join("textures/two.dds").exists());
+    }
     assert!(run.cleaned_up());
 }
 

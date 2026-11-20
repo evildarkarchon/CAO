@@ -6,6 +6,10 @@
 //! necessary level leaves them alone, the medium level only resaves them, and
 //! the full level converts them. The TES5 profile shows `scan()`'s
 //! target-version quirk, which makes every Mesh a critical issue.
+//!
+//! A Mesh changes only when `OptimizeFor` converted it or its level or the
+//! Resave option saves it again, and a save that reproduces the file on disk
+//! is not published (audit BE-6).
 
 mod common;
 
@@ -14,14 +18,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cao_core::execution::{AssetExecutionFailure, MutationState};
-use cao_core::run::{OptimizationRunResult, RunOutcome};
+use cao_core::routing::{ExecutionMode, MeshVariant};
+use cao_core::run::{MeshLevel, OptimizationRunResult, RunOutcome};
 use cao_optimizers::composition::run_service;
+use cao_optimizers::meshes::{MeshOptimizer, MeshSettings};
 use cao_profiles::Options;
 use common::{
     STAGING_CONTROL_FILES, app_dir, edit_profile, profile_options, scratch_dir, serial,
     snapshot_tree, staging_leftovers, start_and_wait, write,
 };
-use nifly_sys::{LoadOptions, Nif};
+use nifly_sys::{LoadOptions, Nif, NifVersion};
 
 /// A Skyrim LE Mesh (stream 83).
 const LE_MESH: &str = "TestNifFile_Optimize_LE_to_SE.nif";
@@ -263,12 +269,13 @@ fn resaving_alone_saves_every_mesh_again() {
     );
 }
 
-/// Ported as-is: `scan()` asks whether the profile's *target* version is
-/// Skyrim LE, not the Mesh's, so under TES5 every Mesh is a critical issue.
-/// The necessary level then converts an SSE Mesh to LE and resaves an LE one,
-/// for which `OptimizeFor` is a no-op.
+/// `scan()` asks whether the profile's *target* version is Skyrim LE, not
+/// the Mesh's, so under TES5 every Mesh is a critical issue (ported as-is).
+/// The necessary level then converts an SSE Mesh to LE. For an LE Mesh
+/// `OptimizeFor` is a no-op, so it is left alone: C++ saved it again on every
+/// run (audit BE-6).
 #[test]
-fn an_le_target_makes_every_mesh_a_critical_issue() {
+fn an_le_target_converts_sse_meshes_and_leaves_le_ones_alone() {
     let _serial = serial();
     let (app, mod_root) = mod_with_meshes(
         "mesh-le-target",
@@ -285,20 +292,75 @@ fn an_le_target_makes_every_mesh_a_critical_issue() {
     assert_eq!(
         mutations(&result),
         [
-            ("le.nif".to_owned(), MutationState::Committed),
+            ("le.nif".to_owned(), MutationState::None),
             ("sse.nif".to_owned(), MutationState::Committed)
         ]
     );
     assert_eq!(stream_version(&read(&mod_root, "meshes/sse.nif")), 83);
+    assert_eq!(read(&mod_root, "meshes/le.nif"), fixture(LE_MESH));
+}
+
+/// Audit BE-6: the medium level saves every valid Mesh again, so the first
+/// run commits each one nifly's save changes; the next run finds its save
+/// reproduces the file and publishes nothing. (nifly's save settles within
+/// two saves for every fixture, and within one for this one; see
+/// `nifly-sys`'s fixture tests.)
+#[test]
+fn a_second_run_at_the_medium_level_commits_nothing() {
+    let _serial = serial();
+    let (app, mod_root) = mod_with_meshes("mesh-medium-rerun", &[("meshes/sse.nif", SSE_MESH)]);
+    let options = apply_meshes(&app, "SSE", &mod_root, 2, false);
+
+    let first = run(&app, "SSE", &options);
+    assert_succeeded(&first);
     assert_eq!(
-        read(&mod_root, "meshes/le.nif"),
-        resaved(&fixture(LE_MESH), false)
+        mutations(&first),
+        [("sse.nif".to_owned(), MutationState::Committed)]
     );
+    let saved = read(&mod_root, "meshes/sse.nif");
+
+    let second = run(&app, "SSE", &options);
+    assert_succeeded(&second);
+    assert_eq!(
+        mutations(&second),
+        [("sse.nif".to_owned(), MutationState::None)]
+    );
+    assert_eq!(read(&mod_root, "meshes/sse.nif"), saved);
+    assert_eq!(staging_leftovers(&mod_root), STAGING_CONTROL_FILES);
+}
+
+/// Audit BE-6: Dry Run predicts from a Mesh's version what Apply's
+/// `OptimizeFor` call finds, so under TES5 at the necessary level it reports
+/// the SSE Mesh, which converts, and not the LE one, which cannot.
+#[test]
+fn a_dry_run_predicts_which_meshes_convert() {
+    let dir = scratch_dir("mesh-dry-run-prediction");
+    write(&dir, "le.nif", &fixture(LE_MESH));
+    write(&dir, "sse.nif", &fixture(SSE_MESH));
+    let optimizer = MeshOptimizer::new(
+        MeshSettings {
+            level: MeshLevel::NECESSARY,
+            headparts: true,
+            resave: false,
+        },
+        NifVersion::SK,
+    );
+    let changes = |name: &str, mode| {
+        let path = dir.join(name);
+        let mut nif = optimizer.load(&path, MeshVariant::Standard).unwrap();
+        optimizer.optimize(&mut nif, &path, &dir, mode).unwrap()
+    };
+
+    for (name, converts) in [("le.nif", false), ("sse.nif", true)] {
+        assert_eq!(changes(name, ExecutionMode::DryRun), converts, "{name}");
+        assert_eq!(changes(name, ExecutionMode::Apply), converts, "{name}");
+    }
 }
 
 /// Ported as-is: nifly's `OptimizeFor` converts only between LE and SSE, so
-/// with an FO4 target it changes nothing, and the version mismatch it reports
-/// is not logged. The full level still saves the Mesh again.
+/// with an FO4 target it changes nothing; CAO logs that version mismatch as a
+/// warning (audit BE-6). The full level includes the medium level, which
+/// saves every valid Mesh again, so the Mesh is still saved.
 #[test]
 fn an_fo4_target_resaves_without_converting() {
     let _serial = serial();
@@ -320,14 +382,15 @@ fn an_fo4_target_resaves_without_converting() {
 
 /// Spec (#504), C++ headparts: in Apply, a Mesh on a facegen path is a Headpart Mesh from
 /// the necessary level up, and is optimized as one even when its scan finds
-/// no critical issue.
+/// no critical issue. The facegen Mesh is an LE one, which `OptimizeFor`
+/// converts; an SSE one would be the no-op that changes nothing (audit BE-6).
 #[test]
 fn a_facegen_mesh_is_optimized_as_a_headpart() {
     let _serial = serial();
     let facegen = "meshes/actors/character/facegendata/facegeom/skyrim.esm/00000001.nif";
     let (app, mod_root) = mod_with_meshes(
         "mesh-facegen",
-        &[(facegen, SSE_MESH), ("meshes/sse.nif", SSE_MESH)],
+        &[(facegen, LE_MESH), ("meshes/sse.nif", SSE_MESH)],
     );
 
     let result = run(&app, "SSE", &apply_meshes(&app, "SSE", &mod_root, 1, false));
@@ -340,6 +403,7 @@ fn a_facegen_mesh_is_optimized_as_a_headpart() {
             ("sse.nif".to_owned(), MutationState::None)
         ]
     );
+    assert_eq!(stream_version(&read(&mod_root, facegen)), 100);
 }
 
 /// Spec (#504), Quarantine (Apply only): a Mesh nifly cannot load is renamed to `.caobad`,

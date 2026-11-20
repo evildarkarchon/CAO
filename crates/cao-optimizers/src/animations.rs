@@ -7,8 +7,12 @@
 //! the backend, because `hkxcmd` writes straight to the path it is given, and
 //! publishes it afterwards; a failed conversion is an Asset Failure that never
 //! reaches publication.
+//!
+//! An Animation already in SSE's 64-bit packfile format is recognised from its
+//! header ([`hkx_layout`]) and never handed to the converter (audit BE-7), so
+//! a second run, or a run over a native SSE mod, starts no process for it.
 
-use std::io::Read;
+use std::io::{self, Read};
 use std::os::windows::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -38,6 +42,59 @@ const FAILURE_MARKERS: [&str; 4] = [
     "failed to load file",
     "unexpected exception occurred",
 ];
+
+/// The two magic words that open a binary Havok packfile, as they lie on
+/// disk in a little-endian file: `0x57E0E057` then `0x10C0C010`.
+const PACKFILE_MAGIC: [u8; 8] = [0x57, 0xE0, 0xE0, 0x57, 0x10, 0xC0, 0xC0, 0x10];
+
+/// Where a packfile header keeps its pointer size: after the magic, the
+/// user tag and the file version, the first of its four layout-rule bytes.
+const POINTER_SIZE_OFFSET: usize = 16;
+
+/// What an Animation's header says about its layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HkxLayout {
+    /// A binary packfile with 8-byte pointers: SSE's 64-bit format, which
+    /// `-v AMD64` asks the converter to produce, so there is nothing to do.
+    Packfile64,
+    /// A binary packfile with 4-byte pointers: Skyrim LE's 32-bit format,
+    /// which the converter turns into SSE's.
+    Packfile32,
+    /// Anything else, such as an XML or tagfile Animation or a file too short
+    /// to hold a header. The converter decides what to make of it, as before.
+    Other,
+}
+
+/// Reads the layout of the Animation at `path` from its first 17 bytes.
+///
+/// Only the header is read, so this costs one small read where a conversion
+/// costs a process.
+///
+/// # Errors
+/// The file cannot be opened or read.
+pub fn hkx_layout(path: &Path) -> io::Result<HkxLayout> {
+    let mut header = [0u8; POINTER_SIZE_OFFSET + 1];
+    let mut file = std::fs::File::open(path)?;
+    let mut filled = 0;
+    // A short read is not the end of the file, so read until the header is
+    // whole or the file ends.
+    while filled < header.len() {
+        match file.read(&mut header[filled..]) {
+            Ok(0) => break,
+            Ok(count) => filled += count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    if filled < header.len() || header[..PACKFILE_MAGIC.len()] != PACKFILE_MAGIC {
+        return Ok(HkxLayout::Other);
+    }
+    Ok(match header[POINTER_SIZE_OFFSET] {
+        8 => HkxLayout::Packfile64,
+        4 => HkxLayout::Packfile32,
+        _ => HkxLayout::Other,
+    })
+}
 
 /// Why one Animation was not converted. None of them mutates the source, and
 /// none is published; the staged output is left to Safety Cleanup.
@@ -283,4 +340,51 @@ fn join(reader: Option<JoinHandle<Vec<u8>>>) -> Vec<u8> {
     reader
         .and_then(|reader| reader.join().ok())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Writes `bytes` to a fresh file and reads its layout.
+    fn layout_of(name: &str, bytes: &[u8]) -> HkxLayout {
+        let dir = std::env::temp_dir().join("cao-hkx-layout");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        hkx_layout(&path).unwrap()
+    }
+
+    /// The header with `pointer_size` at its layout-rule offset.
+    fn header(pointer_size: u8) -> Vec<u8> {
+        let mut bytes = PACKFILE_MAGIC.to_vec();
+        bytes.extend_from_slice(&[0; 8]);
+        bytes.push(pointer_size);
+        bytes
+    }
+
+    /// Audit BE-7: only a whole packfile header with a 4- or 8-byte pointer
+    /// size is recognised; anything else is left to the converter.
+    #[test]
+    fn the_pointer_size_byte_decides_the_layout() {
+        assert_eq!(layout_of("64.hkx", &header(8)), HkxLayout::Packfile64);
+        assert_eq!(layout_of("32.hkx", &header(4)), HkxLayout::Packfile32);
+        assert_eq!(layout_of("odd.hkx", &header(2)), HkxLayout::Other);
+        // One byte short of the pointer size.
+        assert_eq!(
+            layout_of("short.hkx", &header(8)[..POINTER_SIZE_OFFSET]),
+            HkxLayout::Other
+        );
+        let mut xml = b"<?xml version=\"1.0\"?>".to_vec();
+        xml.resize(32, b' ');
+        assert_eq!(layout_of("xml.hkx", &xml), HkxLayout::Other);
+        assert_eq!(layout_of("empty.hkx", b""), HkxLayout::Other);
+    }
+
+    /// A file that cannot be opened is an error, not a layout.
+    #[test]
+    fn a_missing_animation_is_an_error() {
+        let missing = std::env::temp_dir().join("cao-hkx-layout-missing.hkx");
+        assert!(hkx_layout(&missing).is_err());
+    }
 }

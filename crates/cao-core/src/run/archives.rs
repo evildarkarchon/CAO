@@ -15,7 +15,7 @@
 //! replacing an existing file.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Component, Path, PathBuf};
@@ -309,14 +309,19 @@ fn try_extract(
     }
 
     progress.merging = true;
+    // One listing per directory for the whole merge, kept up to date with
+    // what the merge itself creates (audit FS-6).
+    let mut listings = ChildListings::default();
     for entry in &plan.merge_entries {
         let receipt = staged.remove(entry).ok_or_else(changed)?;
-        let target = prepare_merge_target(&root, &join_game_path(&directory, entry))?;
+        let target =
+            prepare_merge_target(&root, &join_game_path(&directory, entry), &mut listings)?;
         // An error here precedes the destination mutation: the release that
         // could fail after it is deferred to the one below.
         receipt
             .publish_deferring_release(&target.path, PublicationPolicy::NoReplace)
             .map_err(|error| error.to_string())?;
+        listings.record(&target.path);
         progress.committed = true;
     }
     // One snapshot releases every published name, for the reason one
@@ -479,18 +484,24 @@ struct MergeTarget {
 }
 
 /// Resolves a destination in the existing game-path casing without following
-/// directory links, creating only missing parents.
+/// directory links, creating only missing parents, which it records in
+/// `listings`. The caller records the destination itself once it publishes
+/// there.
 ///
 /// # Errors
 /// An ambiguous name, a destination that appeared since preflight, a linked
 /// or non-directory parent, or a path outside the Mod Root.
-fn prepare_merge_target(root: &Path, destination: &Path) -> Result<MergeTarget, String> {
+fn prepare_merge_target(
+    root: &Path,
+    destination: &Path,
+    listings: &mut ChildListings,
+) -> Result<MergeTarget, String> {
     let parts = contained_parts(root, destination)
         .ok_or_else(|| "Archive destination is outside its Mod Root.".to_owned())?;
     let mut current = root.to_path_buf();
     let mut pins = Vec::new();
     for (index, part) in parts.iter().enumerate() {
-        let existing = matching_child(&current, part)?;
+        let existing = listings.matching_child(&current, part)?;
         let found = existing.is_some();
         current = existing.unwrap_or_else(|| current.join(part));
         if index + 1 == parts.len() {
@@ -501,6 +512,7 @@ fn prepare_merge_target(root: &Path, destination: &Path) -> Result<MergeTarget, 
         }
         if !found {
             std::fs::create_dir(&current).map_err(|error| error.to_string())?;
+            listings.record_new_directory(&current);
         }
         let metadata = std::fs::symlink_metadata(&current).map_err(|error| error.to_string())?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() || is_reparse_point(&metadata) {
@@ -522,12 +534,13 @@ fn validate_existing_destination(
     root: &Path,
     destination: &Path,
     has_loose_file: bool,
+    listings: &mut ChildListings,
 ) -> Result<(), String> {
     let parts = contained_parts(root, destination)
         .ok_or_else(|| "Archive destination is outside its Mod Root.".to_owned())?;
     let mut current = root.to_path_buf();
     for (index, part) in parts.iter().enumerate() {
-        let Some(existing) = matching_child(&current, part)? else {
+        let Some(existing) = listings.matching_child(&current, part)? else {
             return Ok(());
         };
         if index + 1 == parts.len() {
@@ -550,23 +563,90 @@ fn validate_existing_destination(
     Ok(())
 }
 
-/// The one entry of `directory` whose name is Windows-equivalent to `name`.
+/// The names in one directory, grouped by Windows equivalence: each group
+/// holds every spelling on disk, so a case-sensitive directory's twins share
+/// one key.
+type Listing = BTreeMap<OrdinalIgnoreCase<OsString>, Vec<OsString>>;
+
+/// Case-insensitive listings of the directories one preflight or one merge
+/// looks in, each read from disk at most once (audit FS-6).
 ///
-/// # Errors
-/// An unreadable directory, or two entries that differ only in case (a
-/// case-sensitive directory).
-fn matching_child(directory: &Path, name: &OsStr) -> Result<Option<PathBuf>, String> {
-    let mut found = None;
-    for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
-        if compare_ordinal_ignore_case(entry.file_name(), name).is_eq() {
-            if found.is_some() {
-                return Err("Archive destination has ambiguous casing.".to_owned());
+/// Listing a directory for every component of every Archive entry made a
+/// folder of K entries cost on the order of K² directory reads, and voice and
+/// facegen folders hold thousands. A preflight changes nothing on disk, so
+/// its listings stay exact. A merge records each directory it creates and
+/// each file it publishes, so its listings stay exact for its own changes; an
+/// entry another program creates after a listing was read is not seen, and
+/// for that the no-replace publication still refuses the exact name.
+#[derive(Default)]
+struct ChildListings {
+    directories: HashMap<PathBuf, Listing>,
+}
+
+impl ChildListings {
+    /// The one entry of `directory` whose name is Windows-equivalent to
+    /// `name`, listing `directory` on first use.
+    ///
+    /// # Errors
+    /// An unreadable directory, or two entries that differ only in case (a
+    /// case-sensitive directory).
+    fn matching_child(
+        &mut self,
+        directory: &Path,
+        name: &OsStr,
+    ) -> Result<Option<PathBuf>, String> {
+        let listing = match self.directories.entry(directory.to_path_buf()) {
+            std::collections::hash_map::Entry::Occupied(listing) => listing.into_mut(),
+            std::collections::hash_map::Entry::Vacant(vacant) => {
+                vacant.insert(read_listing(directory)?)
             }
-            found = Some(entry.path());
+        };
+        match listing
+            .get(&OrdinalIgnoreCase(name.to_os_string()))
+            .map(Vec::as_slice)
+        {
+            None | Some([]) => Ok(None),
+            Some([spelling]) => Ok(Some(directory.join(spelling))),
+            Some(_) => Err("Archive destination has ambiguous casing.".to_owned()),
         }
     }
-    Ok(found)
+
+    /// Records that `path` now exists, in its parent's listing if that was
+    /// read. A parent never listed is read whole when it is first asked.
+    fn record(&mut self, path: &Path) {
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+            return;
+        };
+        if let Some(listing) = self.directories.get_mut(parent) {
+            listing
+                .entry(OrdinalIgnoreCase(name.to_os_string()))
+                .or_default()
+                .push(name.to_os_string());
+        }
+    }
+
+    /// Records the directory just created at `path`: an entry of its parent,
+    /// and empty itself, so it is never read from disk.
+    fn record_new_directory(&mut self, path: &Path) {
+        self.record(path);
+        self.directories.insert(path.to_path_buf(), Listing::new());
+    }
+}
+
+/// Every name in `directory`, grouped by Windows equivalence.
+///
+/// # Errors
+/// `directory` or one of its entries cannot be read.
+fn read_listing(directory: &Path) -> Result<Listing, String> {
+    let mut listing = Listing::new();
+    for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
+        let name = entry.map_err(|error| error.to_string())?.file_name();
+        listing
+            .entry(OrdinalIgnoreCase(name.clone()))
+            .or_default()
+            .push(name);
+    }
+    Ok(listing)
 }
 
 /// The ordinary components of `path` beneath `root`, or `None` when it is the
@@ -734,6 +814,9 @@ pub(crate) fn preflight(
     let mut participants: Vec<BTreeMap<GamePathKey, Vec<PathBuf>>> = Vec::new();
     // Each plan with its root's index and each entry's game path, in entry order.
     let mut plans: Vec<(usize, ArchiveExtractionPlan, Vec<String>)> = Vec::new();
+    // Nothing on disk changes during the preflight, so each directory is
+    // listed once for every entry of every Archive (audit FS-6).
+    let mut listings = ChildListings::default();
     for (index, root) in roots.iter().enumerate() {
         let mut provided: BTreeMap<GamePathKey, Vec<PathBuf>> = BTreeMap::new();
         for archive in &root.archives {
@@ -807,6 +890,7 @@ pub(crate) fn preflight(
                     &root.root,
                     &destination,
                     root.loose.contains(&game_path),
+                    &mut listings,
                 ) {
                     return invalid(&detail);
                 }

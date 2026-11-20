@@ -137,6 +137,9 @@ impl MeshLevel {
     /// selection optimizes Meshes at this level at most.
     pub const NECESSARY: Self = Self(1);
 
+    /// Level 2: the necessary level, and every other valid Mesh saved again.
+    pub const MEDIUM: Self = Self(2);
+
     /// Level 3, the highest.
     pub const FULL: Self = Self(3);
 

@@ -2,13 +2,15 @@
 //!
 //! Ported from `src/Run/ArchiveFinalizationAttempt.cpp`: capacity recheck,
 //! Archive write and no-replace publication, its Loading Plugin, then packed
-//! source cleanup, with no cancellation inside.
+//! source cleanup. Cancellation is observed only inside the write, before
+//! anything is published (audit BE-8): a cancelled write abandons its staged
+//! Archive and the output counts as never attempted.
 
 use std::io::Read as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
-use super::planning::{FinalizationPlan, PlanningStop, estimate_packed_capacity};
+use super::planning::{FinalizationPlan, PlanningStop, SourceSizes, estimate_packed_capacity};
 use super::plugins::{
     LoadingPluginStrength, ensure_output_loading_plugin, existing_entry, find_loading_plugin,
 };
@@ -20,7 +22,7 @@ use crate::run::{
     ArchiveSeams, PublicationPolicy, PublicationState, TemporaryArtifactRegistry,
     take_panic_message,
 };
-use crate::{AttemptOutcome, CompletedMutation, OperationFailure};
+use crate::{AttemptOutcome, CompletedMutation, Error, OperationFailure};
 
 /// How far one attempt got, for classifying its failure. The in-flight
 /// mutation and continuation claim live here, step by step, and become the
@@ -39,6 +41,9 @@ struct AttemptProgress {
 
 /// Why an attempt stopped before finishing.
 enum AttemptStop {
+    /// The run was cancelled during the Archive write, before any mutation;
+    /// the staged Archive was abandoned.
+    Cancelled,
     /// A failure at the progress's current boundary, with its detail.
     Failed(String),
     /// The capacity recheck's shortage, found before any mutation. It is kept
@@ -53,7 +58,9 @@ impl From<String> for AttemptStop {
 }
 
 /// Runs output `index`'s atomic attempt, never failing outright: every
-/// failure is reported in the returned attempt.
+/// failure is reported in the returned attempt. `None` when `cancelled`
+/// stopped the Archive write: nothing was published or deleted, so there is
+/// no attempt to record, as for an output cancellation reached first.
 ///
 /// A capacity rejection returns `InsufficientCapacity` before any mutation.
 /// `dummy_demand` holds every Mod Root's Loading Plugin allowance, so the
@@ -66,6 +73,10 @@ impl From<String> for AttemptStop {
 /// Plugin publication facts are appended to `mutations` as they happen, so
 /// the caller keeps them even if the attempt then fails. A panic is an
 /// unsafe `UnexpectedException` that keeps any committed mutation.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the attempt's inputs, plus the mutation log its caller keeps and the run's cancel check"
+)]
 pub(super) fn attempt_output(
     plan: &FinalizationPlan,
     index: usize,
@@ -74,7 +85,8 @@ pub(super) fn attempt_output(
     capacity: &CapacityCheck<'_>,
     dummy_demand: &Demand,
     mutations: &mut Vec<ArchiveFinalizationMutation>,
-) -> ArchiveFinalizationAttempt {
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Option<ArchiveFinalizationAttempt> {
     let output = &plan.outputs[index];
     let mut progress = AttemptProgress {
         boundary: ArchiveFinalizationFailure::WriteFailed,
@@ -91,10 +103,12 @@ pub(super) fn attempt_output(
             capacity,
             dummy_demand,
             mutations,
+            cancelled,
             &mut progress,
         )
     }));
     let outcome = match attempted {
+        Ok(Err(AttemptStop::Cancelled)) => return None,
         Ok(Ok(())) => {
             // Reaching the end means publication committed and released the
             // Archive, so a finished attempt always holds a Committed
@@ -148,11 +162,11 @@ pub(super) fn attempt_output(
             false,
         ),
     };
-    ArchiveFinalizationAttempt::new(
+    Some(ArchiveFinalizationAttempt::new(
         output.archive_path.clone(),
         output.mod_root.clone(),
         outcome,
-    )
+    ))
 }
 
 /// Performs the attempt, recording in `progress` which failure an
@@ -172,6 +186,7 @@ fn try_attempt(
     capacity: &CapacityCheck<'_>,
     dummy_demand: &Demand,
     mutations: &mut Vec<ArchiveFinalizationMutation>,
+    cancelled: &(dyn Fn() -> bool + Sync),
     progress: &mut AttemptProgress,
 ) -> Result<(), AttemptStop> {
     let output = &plan.outputs[index];
@@ -183,12 +198,12 @@ fn try_attempt(
     } else {
         0
     };
-    let current = estimate_packed_capacity(output, dummy_allowance, &|| Ok(())).map_err(
-        |stop| match stop {
-            PlanningStop::Failed(detail) => detail,
-            PlanningStop::Cancelled => unreachable!("the recheck never polls cancellation"),
-        },
-    )?;
+    let current =
+        estimate_packed_capacity(output, dummy_allowance, SourceSizes::Current, &|| Ok(()))
+            .map_err(|stop| match stop {
+                PlanningStop::Failed(detail) => detail,
+                PlanningStop::Cancelled => unreachable!("the recheck never polls cancellation"),
+            })?;
     // The output joins every root's plugin allowance, so its volume is
     // charged with the output plus the allowance still needed there.
     let mut demand = dummy_demand.clone();
@@ -224,10 +239,24 @@ fn try_attempt(
         .path()
         .map_err(|error| error.to_string())?
         .to_path_buf();
-    seams
-        .packer
-        .write(&output.archive, plan.compress, &output.mod_root, &staged)
-        .map_err(|error| error.to_string())?;
+    match seams.packer.write(
+        &output.archive,
+        plan.compress,
+        &output.mod_root,
+        &staged,
+        cancelled,
+    ) {
+        Ok(()) => {}
+        Err(Error::Cancelled) => {
+            // Nothing was published: the staged Archive goes now, and Safety
+            // Cleanup removes whatever an abandonment that fails leaves.
+            if let Err(error) = receipt.abandon() {
+                log::warn!("{} is left for Safety Cleanup: {error}", staged.display());
+            }
+            return Err(AttemptStop::Cancelled);
+        }
+        Err(error) => return Err(AttemptStop::Failed(error.to_string())),
+    }
 
     progress.boundary = ArchiveFinalizationFailure::CommitFailed;
     // No-replace refuses the exact name natively, but in a case-sensitive

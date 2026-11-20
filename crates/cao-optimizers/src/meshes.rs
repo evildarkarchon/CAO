@@ -6,14 +6,25 @@
 //! `Send` but not `Sync`, and a nifly call cannot be interrupted, so
 //! cancellation waits for the Mesh in progress.
 //!
-//! Three C++ behaviours are ported as-is (#460):
+//! Two C++ behaviours are ported as-is (#460):
 //!
 //! - `scan()` asks whether the profile's *target* version is Skyrim LE, not
 //!   the Mesh's own, so under an LE target every valid Mesh is a critical
 //!   issue.
 //! - `OptimizeFor` converts only between Skyrim LE and SSE. For any other pair,
 //!   an FO4 target included, it changes nothing.
-//! - That version mismatch is never logged.
+//!
+//! What C++ did with that no-op is not ported (audit BE-6). C++ counted a
+//! Mesh as changed from its level and scan alone, so a Mesh `OptimizeFor` left
+//! alone was still saved again, and logged nothing. Here a Mesh changes when
+//! `OptimizeFor` converted it, when the medium level or above saves every
+//! valid Mesh again, or when Resave is on. A Mesh already in the target's
+//! version is left alone quietly; one in a version that cannot be converted
+//! at all is a warning. Dry Run predicts the same from the Mesh's version.
+//! A save that only reproduces the Mesh is then dropped by core. nifly's save
+//! reaches a fixed point within two saves (pinned by `nifly-sys`'s fixture
+//! tests), so a Mesh re-saved on every run is a change on the first run, at
+//! most once more on the second, and never after.
 //!
 //! A C++ exception inside nifly ([`NifError::Exception`]) is returned from
 //! here like any other nifly error; the backend reports it as the failure of
@@ -32,6 +43,7 @@
 use std::path::Path;
 
 use cao_core::routing::{ExecutionMode, MeshVariant};
+use cao_core::run::MeshLevel;
 use nifly_sys::{LoadOptions, Nif, NifError, NifVersion, OptimizeOptions, OptimizeReport};
 
 use crate::headparts::HeadpartList;
@@ -41,7 +53,7 @@ use crate::headparts::HeadpartList;
 pub struct MeshSettings {
     /// `iMeshesOptimizationLevel`: 0 (off), 1 (necessary), 2 (medium) or 3
     /// (full).
-    pub level: u8,
+    pub level: MeshLevel,
     /// `bMeshesHeadparts`: optimize Headpart Meshes as head parts.
     pub headparts: bool,
     /// `bMeshesResave`: save every loaded Mesh again, whatever the level.
@@ -52,7 +64,15 @@ impl MeshSettings {
     /// Whether Headpart Meshes get their own rule: from the necessary level
     /// up, as in C++. Below it a run needs no headpart list.
     pub fn recognises_headparts(&self) -> bool {
-        self.level >= 1
+        self.level >= MeshLevel::NECESSARY
+    }
+
+    /// Whether every valid Mesh is saved again whatever `OptimizeFor` does:
+    /// from the medium level up, or with Resave on. nifly's save itself
+    /// updates bounds, drops unreferenced blocks and sorts them, which is the
+    /// light optimization the medium level adds.
+    fn resaves(&self) -> bool {
+        self.resave || self.level >= MeshLevel::MEDIUM
     }
 }
 
@@ -147,19 +167,22 @@ impl MeshOptimizer {
         }
     }
 
-    /// Optimizes the loaded `nif` from `path` at the run's mesh level, as C++
-    /// `MeshesOptimizer::optimize` does, and reports whether the Mesh changed
-    /// (Apply) or would change (Dry Run), so whether it must be saved.
+    /// Optimizes the loaded `nif` from `path` at the run's mesh level and
+    /// reports whether the Mesh changed (Apply) or would change (Dry Run), so
+    /// whether it must be saved.
     ///
-    /// Apply runs `OptimizeFor` on a Headpart Mesh (with head-part options)
-    /// from the necessary level up, on a critical issue from the necessary
-    /// level up, and on any Mesh at the full level. The medium level runs it
-    /// on no other Mesh but still reports every Mesh as changed, so it is
-    /// saved again. With head parts off, a Headpart Mesh gets no `OptimizeFor`
-    /// but is still saved when its level says so, as in C++.
+    /// `OptimizeFor` is run on a Headpart Mesh (with head-part options) from
+    /// the necessary level up, on a critical issue from the necessary level
+    /// up, and on any Mesh at the full level; with head parts off, a Headpart
+    /// Mesh gets none. The Mesh changed when that call converted it, and also,
+    /// whatever the call did, from the medium level up or with Resave on
+    /// ([`MeshSettings::resaves`]). A call nifly answers with a version
+    /// mismatch changed nothing, so on its own it no longer saves the Mesh
+    /// (audit BE-6); see [`log_mismatch`] for what is logged.
     ///
-    /// Dry Run evaluates the same levels without touching `nif`, the facegen
-    /// rule included (deviation 17).
+    /// Dry Run evaluates the same rules without touching `nif`, the facegen
+    /// rule included (deviation 17), predicting the conversion from the Mesh's
+    /// version as nifly decides it ([`NifVersion::converts_to`]).
     ///
     /// `path` is matched by its game path within `mod_root`, the Mod Root the
     /// attempt is attributed to (deviation 17), and logged; see
@@ -186,62 +209,79 @@ impl MeshOptimizer {
             && (self.headparts.contains(&game_path)
                 || game_path.to_lowercase().contains("facegen"));
 
-        if mode == ExecutionMode::DryRun {
-            if is_headpart && self.settings.headparts {
-                log::info!(
-                    "{shown} would be optimized as an headpart due to necessary optimization"
-                );
-                return Ok(true);
-            }
-            let would_change = match scan {
-                Scan::Good if level >= 3 => {
-                    log::info!("{shown} would be optimized due to full optimization");
-                    true
-                }
-                Scan::Good if level >= 2 => {
-                    log::info!("{shown} would be optimized due to medium optimization");
-                    true
-                }
-                Scan::CriticalIssue if level >= 1 => {
-                    log::info!("{shown} would be optimized due to necessary optimization");
-                    true
-                }
-                _ => false,
-            };
-            return Ok(would_change || self.settings.resave);
-        }
-
-        let mut options = OptimizeOptions {
-            target: self.target,
-            head_parts: false,
-            remove_parallax: false,
-        };
-        let mut processed_headpart = false;
-        if is_headpart {
-            if self.settings.headparts {
-                options.head_parts = true;
-                log::info!("Optimizing: {shown} as an headpart due to necessary optimization");
-                log_report(&nif.optimize_for(&options)?);
-                processed_headpart = true;
-            } else {
+        // Why `OptimizeFor` runs, if it does: the same in both modes.
+        let reason = if is_headpart {
+            if !self.settings.headparts {
                 log::trace!("Headpart mesh ignored: {shown}");
             }
+            self.settings
+                .headparts
+                .then_some("as an headpart due to necessary optimization")
         } else {
             match scan {
-                Scan::Good if level >= 3 => {
-                    log::info!("Optimizing: {shown} due to full optimization");
-                    log_report(&nif.optimize_for(&options)?);
+                Scan::Good if level >= MeshLevel::FULL => Some("due to full optimization"),
+                Scan::CriticalIssue if level >= MeshLevel::NECESSARY => {
+                    Some("due to necessary optimization")
                 }
-                Scan::CriticalIssue if level >= 1 => {
-                    log::info!("Optimizing: {shown} due to necessary optimization");
-                    log_report(&nif.optimize_for(&options)?);
+                _ => None,
+            }
+        };
+        let version = nif.version()?;
+
+        if mode == ExecutionMode::DryRun {
+            let converts = reason.is_some() && version.converts_to(&self.target);
+            if let Some(reason) = reason.filter(|_| converts) {
+                log::info!("{shown} would be optimized {reason}");
+            } else {
+                if reason.is_some() {
+                    self.log_mismatch(&shown, version);
                 }
-                _ => {}
+                if level >= MeshLevel::MEDIUM {
+                    log::info!("{shown} would be optimized due to medium optimization");
+                }
+            }
+            return Ok(converts || self.settings.resaves());
+        }
+
+        let mut converted = false;
+        if let Some(reason) = reason {
+            let options = OptimizeOptions {
+                target: self.target,
+                head_parts: is_headpart,
+                remove_parallax: false,
+            };
+            log::info!("Optimizing: {shown} {reason}");
+            let report = nif.optimize_for(&options)?;
+            if report.version_mismatch {
+                self.log_mismatch(&shown, version);
+            } else {
+                log_report(&report);
+                converted = true;
             }
         }
-        let modified =
-            self.settings.resave || (level >= 1 && scan >= Scan::CriticalIssue) || level >= 2;
-        Ok(modified || processed_headpart)
+        Ok(converted || self.settings.resaves())
+    }
+
+    /// Logs an `OptimizeFor` call that could not convert the Mesh, whose
+    /// version is `version`.
+    ///
+    /// A Mesh already in the target's version is nothing to report beyond
+    /// the verbose log: under a Skyrim LE target every valid Mesh scans as a
+    /// critical issue, so each LE Mesh gets here on every run. Any other
+    /// version, such as a Fallout or Oblivion Mesh in a Skyrim mod, cannot be
+    /// converted at all, and the user is warned.
+    fn log_mismatch(&self, shown: &std::path::Display<'_>, version: NifVersion) {
+        let target = self.target;
+        if version.file == target.file && version.stream == target.stream {
+            log::trace!("{shown} is already in the target Mesh version");
+        } else {
+            log::warn!(
+                "{shown} was not converted: its Mesh version (stream {}) cannot be converted \
+                 to the target's (stream {}); only Skyrim LE and SSE Meshes convert",
+                version.stream,
+                target.stream
+            );
+        }
     }
 }
 
@@ -268,8 +308,9 @@ fn game_path(path: &Path, mod_root: &Path) -> String {
     relative.to_string_lossy().replace('\\', "/")
 }
 
-/// Logs what one `OptimizeFor` call did, as C++'s `print_res` did, at the
-/// verbose level. `version_mismatch` is left out, as in C++.
+/// Logs what one `OptimizeFor` call that converted a Mesh did, as C++'s
+/// `print_res` did, at the verbose level. A version mismatch, which changes
+/// nothing, is logged by [`MeshOptimizer::log_mismatch`] instead.
 fn log_report(report: &OptimizeReport) {
     let list = |names: &[String]| format!("[{}]", names.join(", "));
     log::trace!(

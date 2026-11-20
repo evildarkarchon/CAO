@@ -501,6 +501,35 @@ fn a_child_linking_inside_another_child_is_a_conflicting_mod_root() {
     }
 }
 
+/// Audit CORE-3: each child is checked against every root accepted before it
+/// at once, by identity sets, so an overlap with an earlier root that is not
+/// the one just before it is still found, and the failure names that root.
+#[test]
+fn an_overlap_with_an_earlier_root_names_that_root() {
+    let _serial = serial();
+    let base = scratch_dir("several-overlap-earlier");
+    let mods = base.join("selected");
+    let target = base.join("target");
+    std::fs::create_dir_all(target.join("nested")).unwrap();
+    children(&mods, &["b-plain", "d-plain"]);
+    junction(&mods.join("a-target"), &target);
+    junction(&mods.join("c-nested"), &target.join("nested"));
+
+    let (result, _handle, _events) =
+        run(ignoring(&[]), None, several(ExecutionMode::DryRun, &mods));
+
+    assert_eq!(result.outcome(), RunOutcome::Failed);
+    assert_eq!(result.failures().len(), 1);
+    let failure = &result.failures()[0];
+    assert_eq!(failure.code, RunFailureCode::ConflictingModRoots);
+    let target = canonical(&target).to_string_lossy().replace('\\', "/");
+    assert!(
+        failure.detail.contains(&format!("{target} and ")) && failure.detail.ends_with("c-nested"),
+        "{}",
+        failure.detail
+    );
+}
+
 /// Origin: RunExecutor's `resolveModRoots`, and
 /// RunExecutorTests::broadLinkedChildFailsPreparing (both rows). A child
 /// linking back to the mods directory, above it, or to the volume root would

@@ -14,7 +14,7 @@
 //! - Deviation 20: a separator is a child whose name *ends in*
 //!   [`SEPARATOR_SUFFIX`] (MO2's convention), not one containing a marker.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -79,21 +79,61 @@ fn directory_identity(path: &Path) -> io::Result<FileIdentity> {
     FileIdentity::of(&directory)
 }
 
-/// Reports whether `directory` is `boundary` or lies beneath it, by directory
-/// identity rather than text (C++ `containsDirectory`).
+/// The identities of the canonical directory `path` and of each of its
+/// ancestors, nearest first: `path` itself is the first.
 ///
-/// A text prefix would confuse siblings such as `Mod` and `Mod2`, and cannot
-/// recognize two paths to one directory, such as a volume mounted twice.
-/// Lookup errors propagate, so Preparing fails rather than accept uncertain
-/// containment.
-fn contains_directory(boundary: &Path, directory: &Path) -> io::Result<bool> {
-    let boundary = directory_identity(boundary)?;
-    for ancestor in directory.ancestors() {
-        if directory_identity(ancestor)? == boundary {
-            return Ok(true);
-        }
+/// Containment is decided by directory identity rather than text (C++
+/// `containsDirectory`). A text prefix would confuse siblings such as `Mod`
+/// and `Mod2`, and cannot recognize two paths to one directory, such as a
+/// volume mounted twice. Lookup errors propagate, so Preparing fails rather
+/// than accept uncertain containment.
+fn identity_chain(path: &Path) -> io::Result<Vec<FileIdentity>> {
+    path.ancestors().map(directory_identity).collect()
+}
+
+/// The accepted Several Mods roots, indexed so that each new child is checked
+/// for overlap against all of them at once (audit CORE-3).
+///
+/// Two roots overlap when one is the other or lies beneath it, so a new
+/// root's chain holding an accepted root's identity puts it beneath that
+/// root, and its own identity in an accepted root's chain puts that root
+/// beneath it. Each root's chain is read once, so the check costs one open
+/// per directory level per child rather than one per pair of children.
+#[derive(Default)]
+struct AcceptedRoots {
+    /// Each accepted root, in run order.
+    roots: Vec<PathBuf>,
+    /// The identity of each accepted root, with its index in `roots`.
+    identities: HashMap<FileIdentity, usize>,
+    /// The identity of every directory in some accepted root's chain, with
+    /// the index of the first root whose chain holds it.
+    chains: HashMap<FileIdentity, usize>,
+}
+
+impl AcceptedRoots {
+    /// The first accepted root that `chain`'s root overlaps, in run order.
+    fn overlap(&self, chain: &[FileIdentity]) -> Option<&Path> {
+        let beneath = chain
+            .iter()
+            .filter_map(|identity| self.identities.get(identity));
+        let above = chain.first().and_then(|identity| self.chains.get(identity));
+        beneath
+            .chain(above)
+            .min()
+            .map(|&index| self.roots[index].as_path())
     }
-    Ok(false)
+
+    /// Accepts `root`, whose identity chain is `chain`.
+    fn accept(&mut self, root: PathBuf, chain: Vec<FileIdentity>) {
+        let index = self.roots.len();
+        if let Some(&identity) = chain.first() {
+            self.identities.entry(identity).or_insert(index);
+        }
+        for identity in chain {
+            self.chains.entry(identity).or_insert(index);
+        }
+        self.roots.push(root);
+    }
 }
 
 /// The name of a child as `/`-separated generic text, for failure details.
@@ -209,7 +249,13 @@ pub(crate) fn resolve_mod_roots(
             .then_with(|| left.name.cmp(&right.name))
     });
 
-    let mut roots: Vec<PathBuf> = Vec::new();
+    // The mods directory's own chain, read once: a child whose identity is
+    // in it is the mods directory or one of its ancestors.
+    let root_chain: HashSet<FileIdentity> = identity_chain(&root)
+        .map_err(io_failure)?
+        .into_iter()
+        .collect();
+    let mut accepted = AcceptedRoots::default();
     for child in &children {
         if stop.is_cancelled() {
             return Ok(Vec::new());
@@ -219,29 +265,32 @@ pub(crate) fn resolve_mod_roots(
             continue;
         }
         let resolved = cao_winfs::canonical(&child.path).map_err(io_failure)?;
-        if resolved.parent().is_none()
-            || contains_directory(&resolved, &root).map_err(io_failure)?
+        if resolved.parent().is_none() {
+            return Err(resolution_failure(
+                "A child Mod Root cannot resolve to the selected mods directory or its ancestor",
+            ));
+        }
+        let chain = identity_chain(&resolved).map_err(io_failure)?;
+        if chain
+            .first()
+            .is_some_and(|identity| root_chain.contains(identity))
         {
             return Err(resolution_failure(
                 "A child Mod Root cannot resolve to the selected mods directory or its ancestor",
             ));
         }
-        for existing in &roots {
-            if contains_directory(existing, &resolved).map_err(io_failure)?
-                || contains_directory(&resolved, existing).map_err(io_failure)?
-            {
-                return Err(RunFailure::new(
-                    RunFailureCode::ConflictingModRoots,
-                    RunPhase::Preparing,
-                    format!(
-                        "The selected Mod Roots overlap: {} and {}",
-                        display_name(existing),
-                        display_name(&child.path)
-                    ),
-                ));
-            }
+        if let Some(existing) = accepted.overlap(&chain) {
+            return Err(RunFailure::new(
+                RunFailureCode::ConflictingModRoots,
+                RunPhase::Preparing,
+                format!(
+                    "The selected Mod Roots overlap: {} and {}",
+                    display_name(existing),
+                    display_name(&child.path)
+                ),
+            ));
         }
-        roots.push(resolved);
+        accepted.accept(resolved, chain);
     }
-    Ok(roots)
+    Ok(accepted.roots)
 }

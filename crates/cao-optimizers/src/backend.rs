@@ -30,7 +30,7 @@ use cao_core::routing::{
 
 use nifly_sys::{Nif, NifError};
 
-use crate::animations::Hkxcmd;
+use crate::animations::{HkxLayout, Hkxcmd, hkx_layout};
 use crate::device::{ComUnavailable, GpuDevice, initialize_com};
 use crate::mesh_references::{
     FailedTextureConversions, has_referenced_tga_texture, replace_referenced_tga_texture_names,
@@ -374,10 +374,29 @@ impl AssetExecutionBackend for OptimizerBackend {
         saved.map_err(|error| self.mesh_call_failed(&error).message().to_owned())
     }
 
-    /// As C++ `MainOptimizer::optimizeAnimation`: a Dry Run reports every
-    /// Animation as one that would change, without starting the converter;
-    /// Apply converts it into the staged `output_path`. The failure message
-    /// becomes the Asset Failure's service detail.
+    /// Reads the Animation's header: one already in SSE's 64-bit format is
+    /// unchanged, so neither mode stages anything or starts the converter for
+    /// it (audit BE-7). One that cannot be read fails, as the converter would
+    /// have in Apply. Anything else would change.
+    fn evaluate_animation(&mut self, path: &Path) -> OperationResult {
+        match hkx_layout(path) {
+            Ok(HkxLayout::Packfile64) => {
+                log::trace!("{} is already in SSE's 64-bit format.", path.display());
+                OperationResult::unchanged()
+            }
+            Ok(HkxLayout::Packfile32 | HkxLayout::Other) => OperationResult::changed(),
+            Err(error) => OperationResult::failed(format!(
+                "Cannot read Animation {}: {error}",
+                path.display()
+            )),
+        }
+    }
+
+    /// As C++ `MainOptimizer::optimizeAnimation`, for an Animation that
+    /// [`Self::evaluate_animation`] found would change: a Dry Run reports
+    /// that it would, without starting the converter; Apply converts it into
+    /// the staged `output_path`. The failure message becomes the Asset
+    /// Failure's service detail.
     fn optimize_animation(
         &mut self,
         path: &Path,

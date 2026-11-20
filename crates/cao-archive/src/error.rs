@@ -47,6 +47,10 @@ pub enum ArchiveError {
         path.display()
     )]
     ArchiveOverSizeCap { path: PathBuf, size: u64, cap: u64 },
+    /// The caller's cancel check answered yes while the Archive's files were
+    /// being read and compressed, so nothing was written (audit BE-8).
+    #[error("writing `{}` was cancelled", path.display())]
+    Cancelled { path: PathBuf },
     /// No Archived Asset of the Archive has the requested name.
     #[error("`{}` holds no asset named `{name}`", archive.display())]
     MissingArchivedAsset { archive: PathBuf, name: String },
