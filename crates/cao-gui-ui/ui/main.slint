@@ -243,6 +243,9 @@ export component MainWindow inherits Window {
     callback mode-activated(int);
     callback advanced-clicked(bool);
     callback move-tab(int, int);
+    // The tab bar's Left, Right, Home and End: select the enabled tab this many
+    // enabled tabs away from the current one (`CaoTabBar.step`).
+    callback step-tab(int);
     callback edit-unwanted();
     callback debug-log-toggled(bool);
     callback open-log();
@@ -258,6 +261,15 @@ export component MainWindow inherits Window {
     property <bool> ed: !root.running;
     // Advanced groups are read-only for base profiles (setAdvancedSettingsEnabled).
     property <bool> adv-ed: root.ed && !root.base-profile;
+
+    // The help of each HelpLabel, which is both the label's tip and the accessible
+    // description of the control beside it (GUI-5); one string, so the two cannot
+    // drift apart.
+    property <string> max-size-help: @tr("The maximum uncompressed size of the files in GB. Increasing it will increase the number of files stored per BSA, but you might reach the hard limit of BSA size, causing the game to crash.");
+    property <string> tga-help: @tr("Will convert TGAs to a compatible DDS format if option is selected.");
+    property <string> output-format-help: @tr("Output format for uncompressed textures, modified textures, and converted TGA files. BC7 should only be used for SSE or FO4.");
+    property <string> interface-help: @tr("Some games do not support compressed interface textures.");
+    property <string> unwanted-help: @tr("Textures using these formats will be converted to a supported format.");
 
     init => {
         Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
@@ -436,6 +448,9 @@ export component MainWindow inherits Window {
                 move-tab(from, to) => {
                     root.move-tab(from, to);
                 }
+                step(delta) => {
+                    root.step-tab(delta);
+                }
             }
 
             Rectangle {
@@ -548,12 +563,14 @@ export component MainWindow inherits Window {
                                 Row {
                                     HelpLabel {
                                         text: @tr("Maximum size");
-                                        help: @tr("The maximum uncompressed size of the files in GB. Increasing it will increase the number of files stored per BSA, but you might reach the hard limit of BSA size, causing the game to crash.");
+                                        help: root.max-size-help;
                                         enabled: root.adv-ed;
+                                        keyboard-focus: max-size.has-focus;
                                     }
 
-                                    DoubleSpinBox {
+                                    max-size := DoubleSpinBox {
                                         label: @tr("Maximum size");
+                                        accessible-description: root.max-size-help;
                                         enabled: root.adv-ed;
                                         value <=> BsaTab.archive-limit;
                                         // `profile.ini` refuses a size of 0, so the box never offers one.
@@ -733,13 +750,19 @@ export component MainWindow inherits Window {
                             GridLayout {
                                 spacing: 6px;
                                 Row {
-                                    HelpRadio {
+                                    // Two radios, so an arrow key in either direction
+                                    // moves to the other, as a native radio group wraps.
+                                    by-ratio := HelpRadio {
                                         text: @tr("By ratio");
                                         help: @tr("Resizes textures, dividing the current width and height by the values given. Must result in texture dimensions expressed in powers of two, no less than 4x4.");
                                         enabled: root.ed && TexturesTab.resize;
                                         checked: TexturesTab.resize-mode == 0;
                                         clicked => {
                                             TexturesTab.resize-mode = 0;
+                                        }
+                                        step => {
+                                            TexturesTab.resize-mode = 1;
+                                            by-size.focus();
                                         }
                                     }
 
@@ -771,13 +794,17 @@ export component MainWindow inherits Window {
                                 }
 
                                 Row {
-                                    HelpRadio {
+                                    by-size := HelpRadio {
                                         text: @tr("By fixed size");
                                         help: @tr("Resizes texture dimensions to the given sizes. Must result in texture dimensions expressed in powers of two, no less than 4x4.");
                                         enabled: root.ed && TexturesTab.resize;
                                         checked: TexturesTab.resize-mode == 1;
                                         clicked => {
                                             TexturesTab.resize-mode = 1;
+                                        }
+                                        step => {
+                                            TexturesTab.resize-mode = 0;
+                                            by-ratio.focus();
                                         }
                                     }
 
@@ -818,13 +845,15 @@ export component MainWindow inherits Window {
                                 Row {
                                     HelpLabel {
                                         text: @tr("TGA");
-                                        help: @tr("Will convert TGAs to a compatible DDS format if option is selected.");
+                                        help: root.tga-help;
                                         enabled: root.adv-ed;
+                                        keyboard-focus: tga-box.has-focus;
                                     }
 
-                                    CheckBox {
+                                    tga-box := CheckBox {
                                         colspan: 2;
                                         text: @tr("Enable TGA conversion");
+                                        accessible-description: root.tga-help;
                                         enabled: root.adv-ed;
                                         checked <=> TexturesTab.tga-conversion;
                                     }
@@ -833,13 +862,15 @@ export component MainWindow inherits Window {
                                 Row {
                                     HelpLabel {
                                         text: @tr("Output format");
-                                        help: @tr("Output format for uncompressed textures, modified textures, and converted TGA files. BC7 should only be used for SSE or FO4.");
+                                        help: root.output-format-help;
                                         enabled: root.adv-ed;
+                                        keyboard-focus: output-format.has-focus;
                                     }
 
-                                    ComboBox {
+                                    output-format := ComboBox {
                                         colspan: 2;
                                         accessible-label: @tr("Output format");
+                                        accessible-description: root.output-format-help;
                                         enabled: root.adv-ed;
                                         model: TexturesTab.output-formats;
                                         current-index <=> TexturesTab.output-format-index;
@@ -849,13 +880,15 @@ export component MainWindow inherits Window {
                                 Row {
                                     HelpLabel {
                                         text: @tr("Interface");
-                                        help: @tr("Some games do not support compressed interface textures.");
+                                        help: root.interface-help;
                                         enabled: root.adv-ed;
+                                        keyboard-focus: interface-box.has-focus;
                                     }
 
-                                    CheckBox {
+                                    interface-box := CheckBox {
                                         colspan: 2;
                                         text: @tr("Compress interface textures");
+                                        accessible-description: root.interface-help;
                                         enabled: root.adv-ed;
                                         checked <=> TexturesTab.compress-interface;
                                     }
@@ -864,8 +897,9 @@ export component MainWindow inherits Window {
                                 Row {
                                     HelpLabel {
                                         text: @tr("Unwanted formats");
-                                        help: @tr("Textures using these formats will be converted to a supported format.");
+                                        help: root.unwanted-help;
                                         enabled: root.adv-ed;
+                                        keyboard-focus: edit-unwanted-button.has-focus;
                                     }
 
                                     // texturesUnwantedFormatsList: read-only here; the Edit
@@ -878,6 +912,7 @@ export component MainWindow inherits Window {
                                         border-color: Palette.border;
                                         accessible-role: list;
                                         accessible-label: @tr("Unwanted formats");
+                                        accessible-description: root.unwanted-help;
                                         accessible-enabled: root.adv-ed;
                                         accessible-item-count: TexturesTab.unwanted.length;
                                         ListView {
@@ -893,8 +928,9 @@ export component MainWindow inherits Window {
 
                                     VerticalLayout {
                                         alignment: start;
-                                        Button {
+                                        edit-unwanted-button := Button {
                                             text: @tr("Edit");
+                                            accessible-description: root.unwanted-help;
                                             enabled: root.adv-ed;
                                             clicked => {
                                                 root.edit-unwanted();

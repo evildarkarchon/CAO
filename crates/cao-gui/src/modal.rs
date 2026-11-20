@@ -29,11 +29,12 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
+use cao_gui_unsafe::WorkArea;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::winit_030::WinitWindowAccessor;
 use slint::winit_030::winit::platform::windows::{WindowAttributesExtWindows, WindowExtWindows};
 use slint::winit_030::winit::window::{WindowAttributes, WindowButtons};
-use slint::{CloseRequestResponse, ComponentHandle, PhysicalPosition, PlatformError};
+use slint::{CloseRequestResponse, ComponentHandle, PhysicalPosition, PhysicalSize, PlatformError};
 
 use cao_gui_ui::MainWindow;
 
@@ -229,8 +230,10 @@ fn close_slot<D: ComponentHandle + 'static>(slot: &Weak<RefCell<Open<D>>>) {
     });
 }
 
-/// Centres `dialog` over the top third of `main` once its winit window exists;
-/// winit creates it asynchronously, after `show`.
+/// Centres `dialog` over the top third of `main` once its winit window exists,
+/// then moves it inside the work area of `main`'s monitor, so its buttons are
+/// never under the taskbar or off the screen when `main` sits low or near an
+/// edge (GUI-6). winit creates the window asynchronously, after `show`.
 fn center_when_created<D: ComponentHandle + 'static>(main: &MainWindow, dialog: &D) {
     let (dialog, main) = (dialog.as_weak(), main.as_weak());
     // `spawn_local` fails only without an event loop (headless), where there is
@@ -245,9 +248,99 @@ fn center_when_created<D: ComponentHandle + 'static>(main: &MainWindow, dialog: 
         let Some(main) = main.upgrade() else { return };
         let (position, size) = (main.window().position(), main.window().size());
         let own = dialog.window().size();
-        dialog.window().set_position(PhysicalPosition::new(
+        let centred = PhysicalPosition::new(
             position.x + (size.width as i32 - own.width as i32) / 2,
             position.y + (size.height as i32 - own.height as i32) / 3,
-        ));
+        );
+        // `set_position` places the frame, so the clamp needs the frame's size
+        // too; the client size stands in should winit not give it.
+        let frame = dialog
+            .window()
+            .with_winit_window(|window| {
+                let outer = window.outer_size();
+                PhysicalSize::new(outer.width, outer.height)
+            })
+            .unwrap_or(own);
+        let placed = match hwnd_of(main.window()).and_then(cao_gui_unsafe::monitor_work_area) {
+            Some(area) => clamp_to_work_area(centred, frame, area),
+            None => centred,
+        };
+        dialog.window().set_position(placed);
     });
+}
+
+/// Moves a window whose frame is `frame` and would sit at `position` the
+/// least distance that puts it inside `area`. A window larger than the area
+/// keeps its top left corner inside it, so its title bar stays reachable.
+fn clamp_to_work_area(
+    position: PhysicalPosition,
+    frame: PhysicalSize,
+    area: WorkArea,
+) -> PhysicalPosition {
+    // Lower bound last, so a frame wider or taller than the area is pinned to
+    // the area's left or top edge.
+    let clamp = |at: i32, extent: u32, low: i32, high: i32| {
+        let extent = i32::try_from(extent).unwrap_or(i32::MAX);
+        at.min(high.saturating_sub(extent)).max(low)
+    };
+    PhysicalPosition::new(
+        clamp(position.x, frame.width, area.left, area.right),
+        clamp(position.y, frame.height, area.top, area.bottom),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 1366×768 screen with a 40px taskbar along the bottom.
+    const LAPTOP: WorkArea = WorkArea {
+        left: 0,
+        top: 0,
+        right: 1366,
+        bottom: 728,
+    };
+
+    fn clamp(x: i32, y: i32, width: u32, height: u32, area: WorkArea) -> (i32, i32) {
+        let placed = clamp_to_work_area(
+            PhysicalPosition::new(x, y),
+            PhysicalSize::new(width, height),
+            area,
+        );
+        (placed.x, placed.y)
+    }
+
+    #[test]
+    fn a_dialog_inside_the_work_area_stays_where_it_was_centred() {
+        assert_eq!(clamp(400, 100, 340, 520, LAPTOP), (400, 100));
+    }
+
+    #[test]
+    fn a_dialog_reaching_under_the_taskbar_moves_up_just_enough() {
+        assert_eq!(clamp(400, 300, 340, 520, LAPTOP), (400, 208));
+    }
+
+    #[test]
+    fn a_dialog_past_a_side_moves_back_onto_the_screen() {
+        assert_eq!(clamp(1200, 100, 340, 520, LAPTOP), (1026, 100));
+        assert_eq!(clamp(-50, -20, 340, 520, LAPTOP), (0, 0));
+    }
+
+    #[test]
+    fn a_dialog_taller_than_the_work_area_keeps_its_title_bar_on_screen() {
+        assert_eq!(clamp(400, 300, 340, 800, LAPTOP), (400, 0));
+    }
+
+    /// A second monitor to the left of the primary one has negative
+    /// coordinates, and its taskbar may be at the top.
+    #[test]
+    fn a_monitor_left_of_the_primary_one_clamps_in_its_own_coordinates() {
+        let left = WorkArea {
+            left: -1920,
+            top: 48,
+            right: 0,
+            bottom: 1080,
+        };
+        assert_eq!(clamp(-200, 10, 340, 520, left), (-340, 48));
+    }
 }

@@ -17,11 +17,20 @@ export struct TabInfo {
 // reordering. Tabs are fixed-width so the drop slot is a simple division; reorder
 // happens on release (with an insertion marker while dragging) because a live reorder
 // would hand the grabbed TouchArea to a different repeater row mid-drag.
+//
+// Keyboard (GUI-5): the bar is one Tab stop, as a native tab control is. Left and
+// Right raise `step` with -1 and 1, Home and End with a step past either end; the
+// host moves the selection over the enabled tabs, which a .slint function cannot
+// loop over. The active tab shows a focus ring while the bar has focus. A click does
+// not take focus, as with the std widgets, whose focus scopes are zero-width.
 export component CaoTabBar inherits Rectangle {
     in property <[TabInfo]> tabs;
     in-out property <string> current-id;
     in property <bool> enabled: true;
     callback move-tab(from: int, to: int);
+    // Select the enabled tab `delta` enabled tabs away from the current one,
+    // stopping at the first or last.
+    callback step(delta: int);
 
     property <length> tab-width: 104px;
     property <int> drag-from: -1;
@@ -29,6 +38,32 @@ export component CaoTabBar inherits Rectangle {
 
     height: 32px;
     accessible-role: tab-list;
+    forward-focus: fs;
+
+    fs := FocusScope {
+        x: 0;
+        width: 0;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow {
+                root.step(-1);
+                return accept;
+            }
+            if event.text == Key.RightArrow {
+                root.step(1);
+                return accept;
+            }
+            if event.text == Key.Home {
+                root.step(-root.tabs.length);
+                return accept;
+            }
+            if event.text == Key.End {
+                root.step(root.tabs.length);
+                return accept;
+            }
+            return reject;
+        }
+    }
 
     Rectangle {
         y: parent.height - 1px;
@@ -67,6 +102,16 @@ export component CaoTabBar inherits Rectangle {
             width: parent.width - 2px;
             height: 1px;
             background: Palette.background;
+        }
+
+        if active && fs.has-focus: focus-ring := Rectangle {
+            x: 3px;
+            y: 3px;
+            width: parent.width - 6px;
+            height: parent.height - 6px;
+            border-width: 2px;
+            border-radius: 3px;
+            border-color: Palette.foreground;
         }
 
         Text {
@@ -162,9 +207,15 @@ export global HelpTip {
 
 // TouchArea with the help cursor that shows HelpTip after a hover delay, like QToolTip:
 // hidden on leave or press, and not re-shown until the pointer leaves and re-enters.
+//
+// The tip also shows, after the same delay, while the control it explains has
+// keyboard focus (`keyboard-focus`), placed under the area rather than at the
+// pointer, so the help reaches keyboard users too (GUI-5). It hides once neither the
+// pointer nor the focus is on the control.
 export component HelpArea inherits TouchArea {
     in property <string> help;
     in property <string> warning;
+    in property <bool> keyboard-focus;
 
     property <bool> shown;
     property <bool> dismissed;
@@ -180,8 +231,15 @@ export component HelpArea inherits TouchArea {
 
     changed has-hover => {
         if !self.has-hover {
-            root.hide-tip();
+            if !root.keyboard-focus {
+                root.hide-tip();
+            }
             root.dismissed = false;
+        }
+    }
+    changed keyboard-focus => {
+        if !root.keyboard-focus && !root.has-hover {
+            root.hide-tip();
         }
     }
     pointer-event(ev) => {
@@ -193,12 +251,18 @@ export component HelpArea inherits TouchArea {
 
     Timer {
         interval: 700ms;
-        running: root.has-hover && !root.shown && !root.dismissed && root.help != "";
+        running: ((root.has-hover && !root.dismissed) || root.keyboard-focus) && !root.shown && root.help != "";
         triggered => {
             HelpTip.text = root.help;
             HelpTip.warning = root.warning;
-            HelpTip.px = root.absolute-position.x + root.mouse-x;
-            HelpTip.py = root.absolute-position.y + root.mouse-y;
+            if root.has-hover {
+                HelpTip.px = root.absolute-position.x + root.mouse-x;
+                HelpTip.py = root.absolute-position.y + root.mouse-y;
+            } else {
+                // HelpTipLayer draws the tip 20px below the point it is given.
+                HelpTip.px = root.absolute-position.x;
+                HelpTip.py = root.absolute-position.y + root.height - 16px;
+            }
             HelpTip.visible = true;
             root.shown = true;
         }
@@ -253,6 +317,11 @@ export component HelpTipLayer {
 // mouse-cursor and the innermost TouchArea wins, so an overlay owns the pointer and
 // forwards clicks. Cost: the CheckBox loses its own hover/pressed visuals. The inner
 // CheckBox stays the accessible element, so its default action toggles it directly.
+//
+// The inner CheckBox is still a Tab stop and toggles on Space. The overlay takes
+// every click, so the box gains focus only from the keyboard, and `has-focus` is
+// keyboard focus: the help tip shows then too, and screen readers read the help as
+// the box's description (GUI-5).
 export component HelpCheckBox {
     in property <string> text;
     in property <string> help;
@@ -262,10 +331,11 @@ export component HelpCheckBox {
     callback toggled;
 
     HorizontalLayout {
-        CheckBox {
+        box := CheckBox {
             text: root.text;
             enabled: root.enabled;
             checked <=> root.checked;
+            accessible-description: root.warning == "" ? root.help : root.help + " " + root.warning;
             toggled => {
                 root.toggled();
             }
@@ -277,6 +347,7 @@ export component HelpCheckBox {
     HelpArea {
         help: root.help;
         warning: root.warning;
+        keyboard-focus: box.has-focus;
         clicked => {
             if root.enabled {
                 root.checked = !root.checked;
@@ -323,10 +394,14 @@ export component ChoiceCheckBox {
 }
 
 // QLabel with a tooltip and the help cursor. Slint Text doesn't grey out when disabled.
+// A label takes no focus; bind `keyboard-focus` to the control it labels so the tip
+// shows while that control has keyboard focus (GUI-5). The control should carry the
+// help as its own `accessible-description`, which screen readers read.
 export component HelpLabel {
     in property <string> text;
     in property <string> help;
     in property <bool> enabled: true;
+    in property <bool> keyboard-focus;
 
     HorizontalLayout {
         Text {
@@ -338,22 +413,31 @@ export component HelpLabel {
 
     HelpArea {
         help: root.help;
+        keyboard-focus: root.keyboard-focus;
     }
 }
 
 // Hand-drawn radio button for the Downsizing grid: a std RadioButton must be a direct
 // child of a RadioGroup that holds only RadioButtons, and those radios sit between
 // spin boxes.
+//
+// Keyboard (GUI-5): each radio is a Tab stop; Space or Enter selects it, and an arrow
+// key raises `step` (-1 for Up and Left, 1 for Down and Right), with which the host
+// selects and focuses the neighbouring radio. A focus ring shows while it has focus,
+// and the help shows as a tip and as the accessible description. A click does not
+// take focus, as with the std widgets.
 export component HelpRadio {
     in property <string> text;
     in property <string> help;
     in property <bool> enabled: true;
     in property <bool> checked;
     callback clicked;
+    callback step(delta: int);
 
     min-height: 28px;
     accessible-role: radio-button;
     accessible-label: root.text;
+    accessible-description: root.help;
     accessible-checkable: true;
     accessible-checked: root.checked;
     accessible-enabled: root.enabled;
@@ -361,6 +445,34 @@ export component HelpRadio {
         if root.enabled {
             root.clicked();
         }
+    }
+    forward-focus: fs;
+
+    fs := FocusScope {
+        x: 0;
+        width: 0;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            if event.text == Key.UpArrow || event.text == Key.LeftArrow {
+                root.step(-1);
+                return accept;
+            }
+            if event.text == Key.DownArrow || event.text == Key.RightArrow {
+                root.step(1);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if fs.has-focus: focus-ring := Rectangle {
+        border-width: 2px;
+        border-radius: 4px;
+        border-color: Palette.foreground;
     }
 
     HorizontalLayout {
@@ -393,6 +505,7 @@ export component HelpRadio {
 
     HelpArea {
         help: root.help;
+        keyboard-focus: fs.has-focus;
         clicked => {
             if root.enabled {
                 root.clicked();
@@ -445,6 +558,8 @@ export component DoubleSpinBox {
     // The user changed the value: typed a different one, or stepped it to
     // another. A value set from outside never raises it.
     callback edited();
+    // Whether the text field has keyboard focus, for a HelpLabel beside the box.
+    out property <bool> has-focus: le.has-focus;
 
     property <bool> editing: le.has-focus;
     // The value as the box shows it: within [minimum, maximum], at two decimals.
@@ -527,11 +642,37 @@ export component DoubleSpinBox {
 
     HorizontalLayout {
         spacing: 3px;
-        le := LineEdit {
-            enabled: root.enabled;
-            input-type: decimal;
-            accepted(t) => {
-                root.commit(t);
+        // Up and Down step the value, as the arrow buttons do (GUI-5), and as they
+        // do in QDoubleSpinBox. A capture handler, because the text field would
+        // take the keys itself to move its cursor. Disabled, so the scope is no
+        // Tab stop of its own; Slint still hands it the keys of its children.
+        // Text typed and not yet committed is committed first, so a step starts
+        // from what the box shows.
+        FocusScope {
+            enabled: false;
+            capture-key-pressed(event) => {
+                if !root.enabled {
+                    return reject;
+                }
+                if event.text == Key.UpArrow {
+                    root.commit(le.text);
+                    root.bump(root.step);
+                    return accept;
+                }
+                if event.text == Key.DownArrow {
+                    root.commit(le.text);
+                    root.bump(-root.step);
+                    return accept;
+                }
+                return reject;
+            }
+
+            le := LineEdit {
+                enabled: root.enabled;
+                input-type: decimal;
+                accepted(t) => {
+                    root.commit(t);
+                }
             }
         }
 

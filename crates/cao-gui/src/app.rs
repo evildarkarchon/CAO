@@ -74,6 +74,17 @@ impl Loaded {
     }
 }
 
+/// What one save of the window could not write, each failure as the sentence
+/// the user is shown.
+#[derive(Debug, Default)]
+struct SaveFailures {
+    /// Every failure, in the order the files were written.
+    messages: Vec<String>,
+    /// Whether `profile.ini` was among them. A run reads its settings from
+    /// that file, so a run must not start on a stale one (#545).
+    settings: bool,
+}
+
 /// The main window and its state. Create it with [`App::new`]; every callback
 /// holds it weakly, so dropping the last `Rc` drops the window too.
 pub struct App {
@@ -235,16 +246,19 @@ impl App {
         ui.on_run_clicked(with(Self::run_clicked));
         ui.on_edit_unwanted(with(Self::edit_unwanted));
         self.wire_rules();
+        ui.on_step_tab(self.with_arg(Self::step_tab));
         ui.window().on_close_requested({
             let app = app.clone();
             move || {
                 if let Some(app) = app.upgrade() {
                     // During a run the window stays open: the run is cancelled,
                     // and the window closes once it reports its outcome (#510).
-                    if !app.may_close() {
-                        return CloseRequestResponse::KeepWindowShown;
+                    if app.may_close() {
+                        // Hides the window itself, unless a save failed and
+                        // the user keeps it open (GUI-4).
+                        app.close_window();
                     }
-                    app.save();
+                    return CloseRequestResponse::KeepWindowShown;
                 }
                 // Fails only without an event loop (headless), where hiding the
                 // window is all closing means.
@@ -371,30 +385,68 @@ impl App {
         }
     }
 
+    /// The tab bar's arrow, Home and End keys (GUI-5): selects the enabled
+    /// tab `delta` enabled tabs after the current one, or before it for a
+    /// negative `delta`, stopping at the last or first enabled tab.
+    fn step_tab(&self, delta: i32) {
+        let tabs: Vec<TabInfo> = self.tabs.iter().collect();
+        let current = self.window.get_current_tab();
+        let Some(mut at) = tabs.iter().position(|tab| tab.id == current) else {
+            return;
+        };
+        let forward = delta > 0;
+        for _ in 0..delta.unsigned_abs() {
+            let next = if forward {
+                tabs[at + 1..]
+                    .iter()
+                    .position(|tab| tab.enabled)
+                    .map(|offset| at + 1 + offset)
+            } else {
+                tabs[..at].iter().rposition(|tab| tab.enabled)
+            };
+            match next {
+                Some(next) => at = next,
+                None => break,
+            }
+        }
+        self.window.set_current_tab(tabs[at].id.clone());
+    }
+
     /// C++ `saveUi`: saves the common settings, then, unless a run holds the
     /// controls, the options into `settings.ini` and the settings into
-    /// `profile.ini` of the current profile. A failure is shown, not raised.
+    /// `profile.ini` of the current profile. A failure is shown and logged,
+    /// not raised.
     ///
     /// Returns `false` when the window's settings could not be written to
     /// `profile.ini`, which then differs from what the window shows. The other
     /// failures are only shown: a run reads its settings from `profile.ini` but
     /// takes its options from memory (#545).
     pub fn save(&self) -> bool {
+        let failures = self.write_window();
+        for message in &failures.messages {
+            self.error("Save", message);
+        }
+        !failures.settings
+    }
+
+    /// The writes of [`App::save`], without showing anything: returns what
+    /// could not be written, so the caller decides how to tell the user.
+    fn write_window(&self) -> SaveFailures {
         let ui = &self.window;
+        let mut failures = SaveFailures::default();
         let mut loaded = self.loaded.borrow_mut();
         loaded.common.show_advanced_settings = ui.get_show_advanced();
         loaded.common.dark_mode = ui.get_dark();
         loaded.common.show_tutorial = ui.get_show_tutorials();
         if let Err(error) = self.profiles.save_common(&loaded.common) {
-            self.error(
-                "Save",
-                &format!("The common settings could not be saved: {error}"),
-            );
+            failures
+                .messages
+                .push(format!("The common settings could not be saved: {error}"));
         }
         // A run holds the controls, so the window still shows the settings
         // saved when it started.
         if self.locked.get() {
-            return true;
+            return failures;
         }
 
         // An unreadable `profile.ini` disables every tab, yet says nothing of
@@ -407,25 +459,71 @@ impl App {
         if loaded.options_read
             && let Err(error) = loaded.profile.save_options(&options)
         {
-            self.error(
-                "Save",
-                &format!("The profile's options could not be saved: {error}"),
-            );
+            failures
+                .messages
+                .push(format!("The profile's options could not be saved: {error}"));
         }
         loaded.options = options;
-        let mut settings_saved = true;
         if let Some(current) = &loaded.settings {
             let settings = form::read_settings(ui, current);
             if let Err(error) = loaded.profile.save_settings(&settings) {
-                self.error(
-                    "Save",
-                    &format!("The profile's settings could not be saved: {error}"),
-                );
-                settings_saved = false;
+                failures.messages.push(format!(
+                    "The profile's settings could not be saved: {error}"
+                ));
+                failures.settings = true;
             }
             loaded.settings = Some(settings);
         }
-        settings_saved
+        failures
+    }
+
+    /// Saves the window and closes it, once no run holds it open.
+    ///
+    /// When something could not be saved, the window stays open and asks
+    /// whether to close anyway or keep it open, naming what failed (GUI-4):
+    /// closing in the same turn would drop the session's settings with no
+    /// trace, because an error box is asynchronous and the event loop would end
+    /// before it shows. Each failure is logged either way. Keeping it open
+    /// leaves the window usable and, after a run whose end the close waited
+    /// for, unlocks its controls.
+    fn close_window(&self) {
+        let failures = self.write_window();
+        if failures.messages.is_empty() {
+            self.quit();
+            return;
+        }
+        for message in &failures.messages {
+            log::error!("Save: {message}");
+        }
+        let text = format!(
+            "{}\n\nClosing now loses what could not be saved.",
+            failures.messages.join("\n")
+        );
+        let app = self.weak();
+        self.desktop.ask(
+            self.window.window(),
+            MessageLevel::Warning,
+            "Close",
+            &text,
+            "Close anyway",
+            "Keep open",
+            Box::new(move |close| {
+                let Some(app) = app.upgrade() else { return };
+                if close {
+                    app.quit();
+                } else {
+                    app.close_declined();
+                }
+            }),
+        );
+    }
+
+    /// Hides the window and ends the event loop, which ends [`App::run`].
+    fn quit(&self) {
+        // Both fail only without a real window or event loop (headless),
+        // where hiding and quitting have nothing more to do.
+        let _ = self.window.hide();
+        let _ = slint::quit_event_loop();
     }
 
     /// C++ `createProfile`: a tutorial box, then the name, then the base profile;
@@ -648,8 +746,11 @@ impl App {
         }
     }
 
-    /// A critical box over the window.
+    /// A critical box over the window, also written to the Application Log:
+    /// the box is asynchronous, so a window closing in the same turn would
+    /// lose it, and the log keeps what the user may not have read (GUI-4).
     fn error(&self, title: &str, text: &str) {
+        log::error!("{title}: {text}");
         self.desktop.message(
             Some(self.window.window()),
             MessageLevel::Error,

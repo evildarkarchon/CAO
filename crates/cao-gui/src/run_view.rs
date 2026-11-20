@@ -138,6 +138,13 @@ impl RunView {
         false
     }
 
+    /// Forgets a close [`RunView::request_close`] recorded, once the window
+    /// has stayed open after all: the user kept it when its settings could not
+    /// be saved (GUI-4). Without this no run could start again.
+    pub fn withdraw_close(&mut self) {
+        self.state.close_requested = false;
+    }
+
     /// Whether a new run may start: none is active, and no close is pending,
     /// which keeps a run from starting between terminal delivery and the
     /// deferred close.

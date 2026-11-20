@@ -4,7 +4,7 @@
 
 #![allow(dead_code)] // Each test binary uses a different subset.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -90,16 +90,27 @@ pub enum Shown {
         title: String,
         text: String,
     },
+    /// A two-way question ([`Desktop::ask`]), with its button labels.
+    Question {
+        level: MessageLevel,
+        title: String,
+        text: String,
+        yes: String,
+        no: String,
+    },
     FolderPicker,
     Opened(String),
 }
 
 /// Stands in for the native dialogs: records each request and answers at
-/// once, as if the user pressed OK. `folder` is what the folder picker returns.
+/// once, as if the user pressed OK. `folder` is what the folder picker returns,
+/// and `answer` what a question gets: `true` for its `yes` button, `false`
+/// (the default) for its `no` button.
 #[derive(Default)]
 pub struct FakeDesktop {
     pub shown: RefCell<Vec<Shown>>,
     pub folder: RefCell<Option<PathBuf>>,
+    pub answer: Cell<bool>,
 }
 
 impl FakeDesktop {
@@ -110,6 +121,18 @@ impl FakeDesktop {
             .iter()
             .filter_map(|shown| match shown {
                 Shown::Message { title, .. } => Some(title.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The texts of the questions asked so far, in order.
+    pub fn questions(&self) -> Vec<String> {
+        self.shown
+            .borrow()
+            .iter()
+            .filter_map(|shown| match shown {
+                Shown::Question { text, .. } => Some(text.clone()),
                 _ => None,
             })
             .collect()
@@ -131,6 +154,26 @@ impl Desktop for FakeDesktop {
             text: text.to_owned(),
         });
         then();
+    }
+
+    fn ask(
+        &self,
+        _owner: &slint::Window,
+        level: MessageLevel,
+        title: &str,
+        text: &str,
+        yes: &str,
+        no: &str,
+        then: Box<dyn FnOnce(bool)>,
+    ) {
+        self.shown.borrow_mut().push(Shown::Question {
+            level,
+            title: title.to_owned(),
+            text: text.to_owned(),
+            yes: yes.to_owned(),
+            no: no.to_owned(),
+        });
+        then(self.answer.get());
     }
 
     fn pick_folder(
@@ -316,5 +359,19 @@ pub fn choose(component: &impl ComponentHandle, combo: &str, item: &str) {
         found.len()
     );
     found[0].mock_single_click(slint::platform::PointerEventButton::Left);
+    next_turn();
+}
+
+/// Presses and releases `key` in `component`'s window, as typing it would,
+/// then lets the turn end. The key goes to whatever has keyboard focus there.
+pub fn press(component: &impl ComponentHandle, key: slint::platform::Key) {
+    use slint::platform::WindowEvent;
+    let text: slint::SharedString = key.into();
+    component
+        .window()
+        .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+    component
+        .window()
+        .dispatch_event(WindowEvent::KeyReleased { text });
     next_turn();
 }

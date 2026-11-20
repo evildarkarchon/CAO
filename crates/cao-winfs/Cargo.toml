@@ -28,7 +28,7 @@ thiserror.workspace = true
 [dev-dependencies]
 # Manifest checks, plus a custom reparse tag, volume enumeration and the host's
 # `LongPathsEnabled` value in the tests.
-windows-sys = { workspace = true, features = ["Win32_Globalization", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Registry"] }
+windows-sys = { workspace = true, features = ["Win32_Globalization", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Registry", "Win32_UI_HiDpi", "Win32_System_SystemInformation"] }
 
 [build-dependencies]
 embed-resource.workspace = true

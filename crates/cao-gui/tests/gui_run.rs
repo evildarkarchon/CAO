@@ -415,6 +415,23 @@ fn a_close_during_a_run_waits_for_its_terminal_result() {
     assert!(!view.can_start());
 }
 
+/// A close the user withdraws, by keeping the window open when its settings
+/// could not be saved, no longer holds back the next run (GUI-4).
+#[test]
+fn a_withdrawn_close_lets_a_run_start_again() {
+    let mut view = RunView::default();
+    view.begin("run");
+    assert!(!view.request_close());
+    let result = classified_run(Scenario::Cancelled);
+    assert!(view.consume(&event("run", 1, RunEventPayload::Terminal(result))));
+    assert!(!view.can_start());
+
+    view.withdraw_close();
+
+    assert!(!view.state().close_requested);
+    assert!(view.can_start());
+}
+
 /// Opens `path` for reading, sharing only reads: while the handle lives, the
 /// file cannot be deleted, though other handles may still read it.
 fn hold_against_deletion(path: &Path) -> File {

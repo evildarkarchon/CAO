@@ -7,7 +7,7 @@ use cao_gui::modal_depth;
 use cao_gui::ui::MainWindow;
 use common::*;
 use slint::ComponentHandle;
-use slint::platform::{PointerEventButton, WindowEvent};
+use slint::platform::{Key, PointerEventButton, WindowEvent};
 
 /// How a dialog is closed.
 #[derive(Debug, Clone, Copy)]
@@ -15,6 +15,8 @@ enum Close {
     Ok,
     Cancel,
     TitleBar,
+    /// The Escape key, from the control the dialog focuses on opening (GUI-5).
+    Escape,
 }
 
 /// Clicks "Dry run" with the pointer and reports whether it toggled, then
@@ -51,18 +53,19 @@ fn close(dialog: &impl ComponentHandle, how: Close) {
         Close::Ok => control(dialog, "OK").invoke_accessible_default_action(),
         Close::Cancel => control(dialog, "Cancel").invoke_accessible_default_action(),
         Close::TitleBar => dialog.window().dispatch_event(WindowEvent::CloseRequested),
+        Close::Escape => press(dialog, Key::Escape),
     }
     next_turn();
 }
 
 #[test]
-fn about_slint_closes_with_ok_and_the_title_bar() {
+fn about_slint_closes_with_ok_escape_and_the_title_bar() {
     headless();
     let (app, _desktop) = open(&app_dir("about_slint"));
     let ui = app.window();
     assert_usable(ui);
 
-    for how in [Close::Ok, Close::TitleBar] {
+    for how in [Close::Ok, Close::TitleBar, Close::Escape] {
         click_menu(ui, "Help");
         click_menu(ui, "About Slint");
         let dialog = app.about_slint_dialog().expect("About Slint is open");
@@ -84,7 +87,7 @@ fn the_profile_name_dialog_closes_every_way() {
     let (app, _desktop) = open(&app_dir);
     let ui = app.window();
 
-    for how in [Close::Ok, Close::Cancel, Close::TitleBar] {
+    for how in [Close::Ok, Close::Cancel, Close::TitleBar, Close::Escape] {
         click(ui, "New");
         let dialog = app.name_dialog().expect("the name dialog is open");
         assert_blocked(ui);
@@ -148,7 +151,7 @@ fn the_base_profile_dialog_closes_every_way() {
     let (app, _desktop) = open(&app_dir);
     let ui = app.window();
 
-    for how in [Close::Ok, Close::Cancel, Close::TitleBar] {
+    for how in [Close::Ok, Close::Cancel, Close::TitleBar, Close::Escape] {
         click(ui, "New");
         let name = app.name_dialog().expect("the name dialog is open");
         name.set_value(format!("Custom {how:?}").into());
@@ -195,5 +198,31 @@ fn new_profile_creates_the_profile_from_its_base_and_selects_it() {
         Some("My FO4")
     );
     assert_eq!(profiles.load_common().unwrap().profile, "My FO4");
+    assert_usable(ui);
+}
+
+/// Escape reaches the dialog from whichever of its controls has the focus,
+/// its buttons included, and dismisses it without acting: no profile is
+/// created (GUI-5).
+#[test]
+fn escape_from_a_focused_button_dismisses_the_dialog() {
+    headless();
+    let app_dir = app_dir("escape_from_button");
+    edit_ini(&app_dir, "common.ini", "showTutorial", "false");
+    let (app, _desktop) = open(&app_dir);
+    let ui = app.window();
+
+    click(ui, "New");
+    let name = app.name_dialog().expect("the name dialog is open");
+    name.set_value("Mine".into());
+    close(&name, Close::Ok);
+    let base = app.base_dialog().expect("the base dialog is open");
+    // From the combo box, on to OK and then Cancel.
+    press(&base, Key::Tab);
+    press(&base, Key::Tab);
+    close(&base, Close::Escape);
+
+    assert!(app.base_dialog().is_none());
+    assert!(!cao_profiles::Profiles::new(&app_dir).exists("Mine"));
     assert_usable(ui);
 }

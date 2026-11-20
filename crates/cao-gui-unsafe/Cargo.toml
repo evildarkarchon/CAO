@@ -1,6 +1,6 @@
 [package]
 name = "cao-gui-unsafe"
-description = "The one `unsafe` call cao-gui needs, behind a documented safe wrapper, so cao-gui itself keeps `unsafe_code = \"forbid\"`."
+description = "The `unsafe` calls cao-gui needs, behind documented safe wrappers, so cao-gui itself keeps `unsafe_code = \"forbid\"`."
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -18,4 +18,7 @@ publish.workspace = true
 [lints.rust]
 unsafe_code = "allow"
 
-# No dependencies: `std` is all the wrapped calls need.
+[dependencies]
+# A monitor's work area, which winit does not expose, to keep dialogs clear of
+# the taskbar (GUI-6).
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi"] }

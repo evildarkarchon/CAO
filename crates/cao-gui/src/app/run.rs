@@ -223,11 +223,27 @@ impl App {
             return;
         }
 
+        self.unlock_after_run();
+    }
+
+    /// Unlocks the controls an ended run held, saves the window and shows the
+    /// Run Outcome.
+    fn unlock_after_run(&self) {
         self.window.set_running(false);
         self.window.set_cancelling(false);
         self.locked.set(false);
         self.save();
         self.show_outcome();
+    }
+
+    /// The user kept the window open when a save failed on close (GUI-4).
+    /// The close is withdrawn, so runs may start again, and controls an ended
+    /// run still held because the close waited for it are unlocked.
+    pub(super) fn close_declined(&self) {
+        self.runs.view.borrow_mut().withdraw_close();
+        if self.locked.get() {
+            self.unlock_after_run();
+        }
     }
 
     /// Shows the latest run's progress and detail rows (C++ `renderRun`): the
@@ -274,15 +290,6 @@ impl App {
         }
         self.cancel_run();
         false
-    }
-
-    /// Closes the window as its title-bar button would once no run holds it.
-    fn close_window(&self) {
-        self.save();
-        // Fails only without a real window or event loop (headless), where
-        // hiding and quitting have nothing more to do.
-        let _ = self.window.hide();
-        let _ = slint::quit_event_loop();
     }
 }
 

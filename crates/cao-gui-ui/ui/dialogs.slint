@@ -2,13 +2,59 @@
 // `modal.rs`, which owns the owner window, the depth-counted guard and the deferred
 // teardown; these components only raise `confirm` and `dismiss`.
 //
-// Gotchas (#466): a callback named `ok` would shadow `StandardButton { kind: ok }`,
-// and a Dialog's `title` must be re-exposed as an `in` property to be set from Rust.
+// Each is a plain Window holding its own OK and Cancel buttons rather than a
+// Dialog with StandardButtons (GUI-5). Escape dismisses a dialog, and a key reaches
+// a handler only by bubbling up from the focused control through its ancestors: a
+// Dialog's StandardButtons sit beside its content, so Escape pressed on a button
+// would reach no handler. Here one disabled FocusScope (`DialogKeys`) wraps the
+// content and the buttons; disabled, it is no Tab stop, yet Slint still hands it the
+// keys its children reject. Each dialog focuses a control on opening, so Escape works
+// before the first Tab or click.
+//
+// Gotcha (#466): a Window's `title` must be re-exposed as an `in` property to be set
+// from Rust.
 
-import { AboutSlint, CheckBox, ComboBox, LineEdit, ListView, StandardButton } from "std-widgets.slint";
+import { AboutSlint, Button, CheckBox, ComboBox, LineEdit, ListView } from "std-widgets.slint";
+
+// Wraps a dialog's content and buttons; raises `escape` for an Escape no child took.
+component DialogKeys inherits FocusScope {
+    callback escape();
+
+    enabled: false;
+    key-pressed(event) => {
+        if event.text == Key.Escape {
+            root.escape();
+            return accept;
+        }
+        return reject;
+    }
+}
+
+// The OK and Cancel row at the bottom right of a dialog, as Windows lays it out.
+component OkCancel inherits HorizontalLayout {
+    callback confirm();
+    callback dismiss();
+
+    alignment: end;
+    spacing: 6px;
+    Button {
+        text: @tr("OK");
+        primary: true;
+        clicked => {
+            root.confirm();
+        }
+    }
+
+    Button {
+        text: @tr("Cancel");
+        clicked => {
+            root.dismiss();
+        }
+    }
+}
 
 // QInputDialog::getText
-export component TextInputDialog inherits Dialog {
+export component TextInputDialog inherits Window {
     in property <string> dialog-title;
     title: root.dialog-title;
     preferred-width: 320px;
@@ -24,46 +70,47 @@ export component TextInputDialog inherits Dialog {
         le.focus();
     }
 
-    VerticalLayout {
-        padding: 9px;
-        spacing: 6px;
-        Text {
-            text: root.label;
-        }
-
-        le := LineEdit {
-            accessible-label: root.label;
-            text <=> root.value;
-            accepted => {
-                root.confirm();
-            }
-        }
-
-        if root.error != "": Text {
-            text: root.error;
-            wrap: word-wrap;
-            color: #c42b1c;
-            accessible-role: text;
-        }
-    }
-
-    StandardButton {
-        kind: ok;
-        clicked => {
-            root.confirm();
-        }
-    }
-
-    StandardButton {
-        kind: cancel;
-        clicked => {
+    DialogKeys {
+        escape => {
             root.dismiss();
+        }
+
+        VerticalLayout {
+            padding: 9px;
+            spacing: 6px;
+            Text {
+                text: root.label;
+            }
+
+            le := LineEdit {
+                accessible-label: root.label;
+                text <=> root.value;
+                accepted => {
+                    root.confirm();
+                }
+            }
+
+            if root.error != "": Text {
+                text: root.error;
+                wrap: word-wrap;
+                color: #c42b1c;
+                accessible-role: text;
+            }
+
+            OkCancel {
+                confirm => {
+                    root.confirm();
+                }
+                dismiss => {
+                    root.dismiss();
+                }
+            }
         }
     }
 }
 
 // QInputDialog::getItem
-export component ChoiceDialog inherits Dialog {
+export component ChoiceDialog inherits Window {
     in property <string> dialog-title;
     title: root.dialog-title;
     preferred-width: 320px;
@@ -73,31 +120,36 @@ export component ChoiceDialog inherits Dialog {
     callback confirm();
     callback dismiss();
 
-    VerticalLayout {
-        padding: 9px;
-        spacing: 6px;
-        Text {
-            text: root.label;
-        }
-
-        ComboBox {
-            accessible-label: root.label;
-            model: root.choices;
-            current-index <=> root.current-index;
-        }
+    init => {
+        combo.focus();
     }
 
-    StandardButton {
-        kind: ok;
-        clicked => {
-            root.confirm();
-        }
-    }
-
-    StandardButton {
-        kind: cancel;
-        clicked => {
+    DialogKeys {
+        escape => {
             root.dismiss();
+        }
+
+        VerticalLayout {
+            padding: 9px;
+            spacing: 6px;
+            Text {
+                text: root.label;
+            }
+
+            combo := ComboBox {
+                accessible-label: root.label;
+                model: root.choices;
+                current-index <=> root.current-index;
+            }
+
+            OkCancel {
+                confirm => {
+                    root.confirm();
+                }
+                dismiss => {
+                    root.dismiss();
+                }
+            }
         }
     }
 }
@@ -112,11 +164,15 @@ export struct FormatItem {
 // titled (an accepted visual deviation). Rust hands it a filter model over a scratch
 // copy of the formats: each checkbox's two-way binding writes through the filter to
 // the scratch row, so the search hides rows without losing their checked state. OK
-// commits the scratch copy; Cancel and the title bar discard it (deviation 2).
-export component FormatsDialog inherits Dialog {
+// commits the scratch copy; Cancel, Escape and the title bar discard it (deviation 2).
+//
+// The list scrolls, so the dialog asks only for a height that fits, with its title
+// bar, the work area of a 1366×768 screen or of a 1920×1080 one at 150% (GUI-6). It
+// once asked for 742px, which neither has room for.
+export component FormatsDialog inherits Window {
     title: @tr("Unwanted formats");
     preferred-width: 320px;
-    preferred-height: 742px;
+    preferred-height: 480px;
 
     in property <[FormatItem]> items;
     in-out property <string> search;
@@ -124,61 +180,84 @@ export component FormatsDialog inherits Dialog {
     callback confirm();
     callback dismiss();
 
-    VerticalLayout {
-        padding: 9px;
-        spacing: 6px;
-        Text {
-            text: @tr("Search");
+    init => {
+        search-box.focus();
+    }
+
+    DialogKeys {
+        escape => {
+            root.dismiss();
         }
 
-        LineEdit {
-            accessible-label: @tr("Search");
-            text <=> root.search;
-            edited(text) => {
-                root.search-edited(text);
+        VerticalLayout {
+            padding: 9px;
+            spacing: 6px;
+            Text {
+                text: @tr("Search");
             }
-        }
 
-        Rectangle {
-            vertical-stretch: 1;
-            accessible-role: list;
-            accessible-label: @tr("Formats");
-            accessible-item-count: root.items.length;
-            ListView {
-                for item in root.items: CheckBox {
-                    text: item.name;
-                    checked <=> item.checked;
+            search-box := LineEdit {
+                accessible-label: @tr("Search");
+                text <=> root.search;
+                edited(text) => {
+                    root.search-edited(text);
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+                accessible-role: list;
+                accessible-label: @tr("Formats");
+                accessible-item-count: root.items.length;
+                ListView {
+                    for item in root.items: CheckBox {
+                        text: item.name;
+                        checked <=> item.checked;
+                    }
+                }
+            }
+
+            OkCancel {
+                confirm => {
+                    root.confirm();
+                }
+                dismiss => {
+                    root.dismiss();
                 }
             }
         }
     }
-
-    StandardButton {
-        kind: ok;
-        clicked => {
-            root.confirm();
-        }
-    }
-
-    StandardButton {
-        kind: cancel;
-        clicked => {
-            root.dismiss();
-        }
-    }
 }
 
-// Replaces QMessageBox::aboutQt.
-export component AboutSlintDialog inherits Dialog {
+// Replaces QMessageBox::aboutQt. Escape closes it as OK does.
+export component AboutSlintDialog inherits Window {
     title: @tr("About Slint");
     callback confirm();
 
-    AboutSlint { }
+    init => {
+        ok.focus();
+    }
 
-    StandardButton {
-        kind: ok;
-        clicked => {
+    DialogKeys {
+        escape => {
             root.confirm();
+        }
+
+        VerticalLayout {
+            padding: 9px;
+            spacing: 6px;
+            AboutSlint { }
+
+            HorizontalLayout {
+                alignment: end;
+                ok := Button {
+                    text: @tr("OK");
+                    primary: true;
+                    clicked => {
+                        root.confirm();
+                    }
+                }
+            }
         }
     }
 }
