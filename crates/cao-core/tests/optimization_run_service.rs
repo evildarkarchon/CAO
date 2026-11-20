@@ -34,8 +34,8 @@ use cao_core::test_support::{
     ExhaustedScheduler, GatedScheduler, ScriptedToolset, ToolsetConfiguration,
 };
 use common::{
-    HandleSlot, no_work_request, reclaim, serial, test_mod_root, toolset_configuration,
-    unsupporting_configuration,
+    HandleSlot, no_work_request, reclaim, request, scratch_dir, serial, test_mod_root,
+    toolset_configuration, unsupporting_configuration,
 };
 
 /// A provider of the SSE-like configuration and an unscripted Run Toolset,
@@ -534,7 +534,15 @@ fn destroying_a_run_from_its_own_worker_is_diagnosed() {
 }
 
 /// The child half of the self-destruction scenario; never returns normally.
+///
+/// The child runs over a Mod Root of its own, never [`test_mod_root`]. The
+/// parent scenario holds no `serial` guard, so the parent's other scenarios
+/// run alongside its children, and a child that recreated the shared root
+/// (as `scratch_dir` does) or pinned it and then aborted made their Preparing
+/// fail with a sharing violation on the root.
 fn self_destruct(owner: &str) {
+    let mod_root = scratch_dir(&format!("self-destruction-{owner}"));
+    let no_work_request = || request(ExecutionMode::Apply, &mod_root, &[]);
     if owner == "joining-service" {
         // The deferred worker runs on the thread that joins it, so only the
         // run's execution scope, not a worker thread ID, identifies it. The

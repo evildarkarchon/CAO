@@ -89,8 +89,9 @@ fn rename_destinations_must_be_absolute() {
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
 }
 
-/// The destination goes to Win32 without a `\\?\` prefix, as in C++, so this
-/// also checks that the manifest's `longPathAware` reaches the test binary.
+/// The destination is longer than `MAX_PATH`, which `rename_by_handle`
+/// reaches through its extended-length form whatever the host's
+/// `LongPathsEnabled` setting (WS-1); CI runs this with the setting off.
 #[test]
 fn renames_reach_paths_longer_than_max_path() {
     let dir = scratch_dir("rename-long");
@@ -139,6 +140,26 @@ fn write_through_moves_replace_the_destination() {
     let dir = scratch_dir("move-replace");
     let scratch = dir.join("ownership.manifest.tmp");
     let manifest = dir.join("ownership.manifest");
+    write(&scratch, b"v3 new");
+    write(&manifest, b"v3 old");
+
+    move_file_write_through(&scratch, &manifest).unwrap();
+
+    assert!(!scratch.exists());
+    assert_eq!(std::fs::read(&manifest).unwrap(), b"v3 new");
+}
+
+/// The manifest move reaches a destination longer than `MAX_PATH` through
+/// its extended-length form whatever the host's `LongPathsEnabled` setting
+/// (WS-1).
+#[test]
+fn write_through_moves_reach_paths_longer_than_max_path() {
+    let dir = scratch_dir("move-long");
+    let deep = dir.join("d".repeat(120)).join("e".repeat(120));
+    std::fs::create_dir_all(&deep).unwrap();
+    let scratch = deep.join("ownership.manifest.tmp");
+    let manifest = deep.join("ownership.manifest");
+    assert!(manifest.as_os_str().len() > 260);
     write(&scratch, b"v3 new");
     write(&manifest, b"v3 old");
 

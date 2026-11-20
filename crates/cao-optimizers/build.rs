@@ -1,11 +1,12 @@
 //! Links CAO's application manifest into every artifact of this crate,
 //! including its `#[test]` binaries (#471).
 //!
-//! `longPathAware` and the UTF-8 active code page apply per process. Staged
-//! publication renames through raw Win32 calls, which only reach paths longer
-//! than `MAX_PATH` when the running executable declares them, so without the
-//! manifest this crate's Apply scenarios would fail on deep Texture paths that
-//! the app handles (deviation 5).
+//! `longPathAware` and the UTF-8 active code page apply per process, so the
+//! Apply scenarios run under the app's settings. Their deep Texture and Mesh
+//! paths (deviation 5) no longer depend on the manifest: staged publication's
+//! raw Win32 calls and Mesh saves pass a long path in its extended-length
+//! form, which needs neither `longPathAware` nor the host's
+//! `LongPathsEnabled` (WS-1).
 
 fn main() {
     const RESOURCE_SCRIPT: &str = "../../resources/cao-manifest.rc";

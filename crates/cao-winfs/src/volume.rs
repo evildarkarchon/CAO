@@ -14,7 +14,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     GetDiskFreeSpaceExW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
 };
 
-use crate::mutate::terminated;
+use crate::long_path::{plain_units, win32_path};
 
 /// `UNICODE_STRING` lengths cap native paths at 32,767 characters plus the
 /// terminator.
@@ -23,12 +23,20 @@ const NATIVE_PATH_LIMIT: usize = 32_768;
 /// Returns the mount point of the volume containing `path`, such as `C:\` or a
 /// mounted folder, with its trailing separator.
 ///
+/// A `path` longer than `MAX_PATH` is queried in its
+/// [`crate::extended_length_path`] form, so the query works whatever the
+/// host's `LongPathsEnabled` setting. Win32 answers that form with a
+/// `\\?\` mount point, which is returned without the prefix the conversion
+/// added: the same `C:\` a short path on that volume gives.
+///
 /// # Errors
 ///
 /// Returns the `GetVolumePathNameW` error, or [`io::ErrorKind::InvalidInput`]
 /// for a path with an interior NUL.
 pub fn volume_mount_point(path: &Path) -> io::Result<PathBuf> {
-    let path = terminated(path.as_os_str())?;
+    let given_verbatim = is_extended(path);
+    let path = win32_path(path)?;
+    let converted = !given_verbatim && path.starts_with(&EXTENDED_PREFIX);
     let mount = mount_point_with(&path, |buffer| {
         let size =
             u32::try_from(buffer.len()).expect("mount buffer is capped at NATIVE_PATH_LIMIT");
@@ -38,7 +46,21 @@ pub fn volume_mount_point(path: &Path) -> io::Result<PathBuf> {
         }
         Ok(())
     })?;
+    // A caller that passed `\\?\` itself gets Win32's answer as it is.
+    let mount = if converted { plain_units(mount) } else { mount };
     Ok(PathBuf::from(OsString::from_wide(&mount)))
+}
+
+/// The `\\?\` prefix, as UTF-16.
+const EXTENDED_PREFIX: [u16; 4] = [0x5C, 0x5C, 0x3F, 0x5C];
+
+/// Whether `path` already starts with `\\?\`.
+fn is_extended(path: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    path.as_os_str()
+        .encode_wide()
+        .take(EXTENDED_PREFIX.len())
+        .eq(EXTENDED_PREFIX)
 }
 
 /// Returns the volume GUID path (`\\?\Volume{GUID}\`) of the volume containing
@@ -49,7 +71,8 @@ pub fn volume_mount_point(path: &Path) -> io::Result<PathBuf> {
 /// Returns the [`volume_mount_point`] or `GetVolumeNameForVolumeMountPointW`
 /// error.
 pub fn volume_guid_path(path: &Path) -> io::Result<PathBuf> {
-    let mount = terminated(volume_mount_point(path)?.as_os_str())?;
+    // A mount point deeper than MAX_PATH needs the extended form again.
+    let mount = win32_path(&volume_mount_point(path)?)?;
     // Volume GUID paths have a fixed 49-character form however long the
     // mounted folder path is, so MAX_PATH exceeds the documented 50 units.
     let mut volume = [0u16; MAX_PATH as usize];
@@ -68,13 +91,14 @@ pub fn volume_guid_path(path: &Path) -> io::Result<PathBuf> {
 
 /// Returns the bytes available to this process on the volume containing the
 /// directory `path`, honouring quotas: `std::filesystem::space(path).available`.
+/// A deep `path` is queried in its [`crate::extended_length_path`] form.
 ///
 /// # Errors
 ///
 /// Returns the `GetDiskFreeSpaceExW` error, for example when `path` does not
 /// name an existing directory.
 pub fn available_space(path: &Path) -> io::Result<u64> {
-    let path = terminated(path.as_os_str())?;
+    let path = win32_path(path)?;
     let mut available = 0u64;
     // SAFETY: `path` is NUL-terminated, `available` is writable, and the two
     // optional outputs are null.

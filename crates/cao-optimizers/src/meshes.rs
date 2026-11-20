@@ -117,11 +117,19 @@ impl MeshOptimizer {
 
     /// Saves `nif` to `path`.
     ///
+    /// nifly's `std::ofstream` passes the path to Win32 as it is given, so a
+    /// path longer than `MAX_PATH` is handed over in its extended-length form,
+    /// which opens whatever the host's `LongPathsEnabled` setting (WS-1).
+    ///
     /// # Errors
     /// The [`NifError`] nifly's save reported; it is logged here.
     pub fn save(&self, nif: &mut Nif, path: &Path) -> Result<(), NifError> {
         log::trace!("Saving mesh: {}", path.display());
-        nif.save(path)
+        // Only an empty path or one holding NUL cannot be converted, and the
+        // shim's open refuses those as well, reporting NifError::Save, so the
+        // path as given is the right thing to pass on.
+        let target = cao_winfs::extended_length_path(path).unwrap_or_else(|_| path.to_path_buf());
+        nif.save(&target)
             .inspect_err(|_| log::error!("Cannot save mesh: {}", path.display()))
     }
 

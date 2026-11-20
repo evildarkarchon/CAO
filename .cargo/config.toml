@@ -1,0 +1,5 @@
+# `cargo xtask <task>` runs CAO's development tasks (WS-3): `dist` lays out an
+# install folder and `dev` prepares target/<profile>/ so `cargo run -p cao-gui`
+# starts. See crates/xtask, or run `cargo xtask help`.
+[alias]
+xtask = "run --quiet --package xtask --"

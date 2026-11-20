@@ -14,12 +14,31 @@ CAO is written in Rust with a Slint GUI ([ADR 0003](docs/adr/0003-port-cao-to-ru
 cargo build
 cargo test
 cargo clippy --all-targets
+cargo fmt --check
 ```
+
+CI runs the same four commands on every pull request ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). It turns `LongPathsEnabled` off, because CAO must handle Mod Roots deeper than `MAX_PATH` on a default Windows install, and it fails if any test is reported as ignored.
 
 - **Rust:** `rust-toolchain.toml` pins Rust 1.99.0 with rustfmt and clippy; rustup installs it on first use.
 - **MSVC and Windows SDK:** Visual Studio 2026 (v145) Build Tools and Windows SDK 10.0.26100 are the documented minimum. They are not enforced; the build uses whichever Visual Studio installation it finds, or the environment of a Developer Command Prompt.
 - **CRT:** the workspace links the dynamic CRT, so running CAO needs the Visual C++ redistributable.
+- **Long paths:** CAO reaches paths longer than `MAX_PATH` whatever the host's `LongPathsEnabled` setting: every raw Win32 path call converts a long path to its `\\?\` form, as std does. `hkxcmd.exe` is a separate program, so an Animation deeper than `MAX_PATH` converts only if `hkxcmd` itself handles long paths; otherwise that Animation fails on its own.
 - **DirectXTex:** the root `Cargo.toml` patches `directxtex` to CAO's fork, [evildarkarchon/directxtex-rs](https://github.com/evildarkarchon/directxtex-rs) (`cao` branch), pinned by commit. The fork builds DirectXTex `may2026`, and `ba2` links the same copy. Its `FORK.md` records the upstream base and delta. Cargo fetches the fork and its submodules with git on first build.
+
+# Running and packaging
+
+CAO's app directory is the directory of its exe: it reads `profiles/` and runs `bin/hkxcmd.exe` from there. `cargo xtask` (see `cargo xtask help`) puts them in place:
+
+```
+cargo xtask dev                 # copy profiles/ beside target/debug/cao-gui.exe
+cargo run -p cao-gui
+
+cargo xtask dist --release      # build and lay out target/dist/release/
+```
+
+- `dev` keeps profile files already beside the exe, since the app edits them; `--force` replaces them with the tracked ones.
+- `dist` lays out `cao-gui.exe`, `profiles/`, `bin/hkxcmd.exe` and `LICENSE`. It replaces its default folder under `target/dist/`; a folder given with `--out` must be absent or empty.
+- **hkxcmd:** `hkxcmd.exe` converts Animations and is not in this repository. Download it from [figment/hkxcmd's releases](https://github.com/figment/hkxcmd/releases) and put it at `bin/hkxcmd.exe` in the repository root (which `.gitignore` keeps untracked), or pass `--hkxcmd <path>`. `dist` refuses to lay out an install without it unless given `--without-hkxcmd`; such an install cannot convert Animations.
 
 # Features and use instructions
 
