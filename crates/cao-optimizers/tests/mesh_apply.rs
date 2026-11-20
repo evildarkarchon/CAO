@@ -174,6 +174,35 @@ fn the_medium_level_resaves_without_converting() {
     assert_eq!(staging_leftovers(&mod_root), STAGING_CONTROL_FILES);
 }
 
+/// A Mesh deeper than `MAX_PATH` is loaded, saved by nifly, published and
+/// resaved like a shallow one: the shim's `std::ofstream` gets the
+/// extended-length form of a long path, so the save does not depend on the
+/// host's `LongPathsEnabled` (WS-1). CI runs this with the setting off.
+#[test]
+fn a_mesh_deeper_than_max_path_is_resaved() {
+    let _serial = serial();
+    let mut relative = String::from("meshes");
+    while relative.len() <= 400 {
+        relative.push_str("/a-deliberately-long-folder-name-for-deep-mod-trees");
+    }
+    let relative = format!("{relative}/le.nif");
+    let (app, mod_root) = mod_with_meshes("mesh-deep", &[(relative.as_str(), LE_MESH)]);
+    assert!(mod_root.join(&relative).as_os_str().len() > 260);
+
+    let result = run(&app, "SSE", &apply_meshes(&app, "SSE", &mod_root, 2, false));
+
+    assert_succeeded(&result);
+    assert_eq!(
+        mutations(&result),
+        [("le.nif".to_owned(), MutationState::Committed)]
+    );
+    assert_eq!(
+        read(&mod_root, &relative),
+        resaved(&fixture(LE_MESH), false)
+    );
+    assert_eq!(staging_leftovers(&mod_root), STAGING_CONTROL_FILES);
+}
+
 /// Spec (#504), C++ levels: the full level runs `OptimizeFor` on every Mesh, converting an
 /// LE Mesh to SSE; an SSE Mesh is already at the target and is only resaved.
 #[test]
@@ -438,7 +467,11 @@ fn a_locked_mesh_under_apply_is_a_contained_capture_failure() {
     assert_eq!(failed.len(), 1, "{failed:?}");
     assert_eq!(failed[0].asset.execution_path(), locked);
     let failed = &failed[0].result;
-    assert_eq!(failed.failure(), Some(AssetExecutionFailure::StagingFailed));
+    assert_eq!(
+        failed.failure(),
+        Some(AssetExecutionFailure::StagingFailed),
+        "{failed:?}"
+    );
     assert_eq!(failed.operation(), "capture_mesh_destination");
     assert_eq!(failed.mutation_state(), MutationState::None);
     assert!(failed.safe_to_continue());

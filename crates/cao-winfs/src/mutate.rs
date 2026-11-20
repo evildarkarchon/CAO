@@ -14,6 +14,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
+
+use crate::long_path::{extended_length_path, win32_path};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_DISPOSITION_INFO, FILE_RENAME_INFO, FileDispositionInfo, FileRenameInfo,
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, SetFileInformationByHandle,
@@ -37,11 +39,17 @@ pub enum RenameMode {
 ///
 /// # Errors
 ///
+/// A destination longer than `MAX_PATH` is given in its
+/// [`extended_length_path`] form, so the rename reaches it whatever the
+/// host's `LongPathsEnabled` setting.
+///
+/// # Errors
+///
 /// Returns [`io::ErrorKind::InvalidInput`] for a relative destination (C++
 /// found `RootDirectory`-relative names rejected, so names are always
-/// absolute) or one too long for the rename buffer, and otherwise the Win32
-/// error: [`RenameMode::NoReplace`] onto an occupied name fails with
-/// `ERROR_ALREADY_EXISTS`.
+/// absolute), one with an interior NUL, or one too long for the rename buffer,
+/// and otherwise the Win32 error: [`RenameMode::NoReplace`] onto an occupied
+/// name fails with `ERROR_ALREADY_EXISTS`.
 pub fn rename_by_handle(file: &File, destination: &Path, mode: RenameMode) -> io::Result<()> {
     if !destination.is_absolute() {
         return Err(io::Error::new(
@@ -49,7 +57,10 @@ pub fn rename_by_handle(file: &File, destination: &Path, mode: RenameMode) -> io
             "a handle rename needs an absolute destination",
         ));
     }
-    let name: Vec<u16> = destination.as_os_str().encode_wide().collect();
+    let name: Vec<u16> = extended_length_path(destination)?
+        .as_os_str()
+        .encode_wide()
+        .collect();
     let name_bytes = name.len() * size_of::<u16>();
     // The header, the name, and a terminator the API does not need but std's
     // own implementation also leaves room for.
@@ -121,9 +132,9 @@ pub fn delete_by_handle(file: &File) -> io::Result<()> {
 ///
 /// Staging replaces `ownership.manifest` this way. `WRITE_THROUGH` mainly
 /// matters for copy-and-delete moves across volumes, where it keeps the
-/// manifest from being reported moved before its bytes are on disk. Paths go
-/// to Win32 as they are, so long ones rely on the
-/// `longPathAware` manifest.
+/// manifest from being reported moved before its bytes are on disk. Both
+/// paths go to Win32 in their [`extended_length_path`] form, so a deep Mod
+/// Root works whatever the host's `LongPathsEnabled` setting.
 ///
 /// A move refused with Access denied or a sharing violation is retried with
 /// backoff for about a second before that error is returned (deviation 25).
@@ -136,11 +147,12 @@ pub fn delete_by_handle(file: &File) -> io::Result<()> {
 /// # Errors
 ///
 /// Returns [`io::ErrorKind::InvalidInput`] for a path with an interior NUL,
+/// the [`extended_length_path`] error for a path that cannot be resolved,
 /// and otherwise the `MoveFileExW` error, of the last attempt when retried.
 /// The source is left in place on failure.
 pub fn move_file_write_through(from: &Path, to: &Path) -> io::Result<()> {
-    let from = terminated(from.as_os_str())?;
-    let to = terminated(to.as_os_str())?;
+    let from = win32_path(from)?;
+    let to = win32_path(to)?;
     let mut waits = TRANSIENT_REFUSAL_WAITS.iter();
     loop {
         // SAFETY: both buffers are NUL-terminated UTF-16 and outlive the call.

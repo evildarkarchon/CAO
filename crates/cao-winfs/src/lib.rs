@@ -19,8 +19,9 @@
 //!   exactly `FlushFileBuffers`.
 //! - Paths: [`canonical`], [`weakly_canonical`] and
 //!   [`generic_utf8`], CAO's canonical path text, which `CAO-STAGING`
-//!   manifests record; [`exe_directory`]; [`compare_ordinal_ignore_case`] and
-//!   [`OrdinalIgnoreCase`].
+//!   manifests record; [`extended_length_path`], the `\\?\` form every raw
+//!   Win32 path call here uses past `MAX_PATH`; [`exe_directory`];
+//!   [`compare_ordinal_ignore_case`] and [`OrdinalIgnoreCase`].
 //! - Volumes: [`volume_mount_point`], [`volume_guid_path`] and
 //!   [`available_space`].
 //! - [`random_nonce`] for staging nonces.
@@ -29,6 +30,7 @@ mod canonical;
 mod compare;
 mod exe_dir;
 mod facts;
+mod long_path;
 mod mutate;
 mod nonce;
 mod open;
@@ -39,6 +41,7 @@ pub use canonical::{canonical, generic_utf8, weakly_canonical};
 pub use compare::{OrdinalIgnoreCase, compare_ordinal_ignore_case};
 pub use exe_dir::exe_directory;
 pub use facts::{FileFacts, FileIdentity, is_reparse_point};
+pub use long_path::extended_length_path;
 pub use mutate::{RenameMode, delete_by_handle, move_file_write_through, rename_by_handle};
 pub use nonce::random_nonce;
 pub use open::{Access, Open, Share, is_sharing_violation};

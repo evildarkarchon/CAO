@@ -156,7 +156,11 @@ impl Hkxcmd {
         // Absolute, with native separators, as C++ passed them. An explicit
         // output keeps every converter write within the staged receipt;
         // passing only an input would let hkxcmd create an unregistered
-        // "-out" sibling.
+        // "-out" sibling. These stay plain paths: hkxcmd is a separate
+        // program, so CAO's extended-length conversion (WS-1) cannot reach
+        // its file calls, and a path past MAX_PATH works only if hkxcmd
+        // itself handles one. When it does not, the failure is this
+        // Animation's own, contained like any other converter failure.
         let absolute = |path: &Path| {
             std::path::absolute(path).map_err(|error| AnimationError::Path {
                 path: source.to_path_buf(),

@@ -1,0 +1,111 @@
+name: CI
+
+# The four validation commands AGENTS.md names, on every pull request and every
+# push to master (WS-2 of the 2026-11-13 codebase audit). Every test must run:
+# the job gives the host-dependent tests what they need and fails if any test
+# is reported as ignored, so a skipped file-safety test cannot pass silently.
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: fmt, clippy, build, test
+    # Windows Server 2025 with Visual Studio 2026 (v145), CAO's documented
+    # minimum. Named rather than windows-latest, so a change of image is a
+    # visible change to this file.
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        # With no argument, rustup installs the toolchain rust-toolchain.toml
+        # pins, with its rustfmt and clippy components.
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo --version
+
+      - name: Turn on Developer Mode
+        # cao-winfs's build script probes for file-symlink privilege and
+        # ignores the symlink tests without it. Developer Mode grants it, and
+        # it is set before the first build so the probe sees it.
+        shell: pwsh
+        run: |
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
+          New-Item -Path $key -Force | Out-Null
+          Set-ItemProperty -Path $key -Name AllowDevelopmentWithoutDevLicense -Value 1 -Type DWord
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy --all-targets
+        # -D warnings: the tree is warning-free, and CI keeps it so.
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo build
+        run: cargo build
+
+      - name: Build the tests
+        run: cargo test --no-run
+
+      - name: Turn long paths off
+        # A default Windows install has LongPathsEnabled off, and CAO must
+        # handle deep Mod Roots without it (WS-1). The tests therefore run that
+        # way: every long-path scenario then proves CAO's extended-length
+        # conversion, and cao-winfs's long_paths test proves the setting
+        # reached the test processes. The builds above ran with the image's
+        # setting; only the tests need the default.
+        shell: pwsh
+        run: |
+          $key = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
+          Set-ItemProperty -Path $key -Name LongPathsEnabled -Value 0 -Type DWord
+          "LongPathsEnabled = $(Get-ItemPropertyValue -Path $key -Name LongPathsEnabled)"
+
+      - name: cargo test
+        shell: bash
+        run: cargo test --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/test.log"
+
+      - name: Require every test to have run
+        # libtest prints "... ignored" per skipped test and "N ignored" in each
+        # binary's summary. A test that needs a skip on CI must instead be made
+        # to run here.
+        shell: bash
+        run: |
+          if grep -E '\.\.\. ignored|; [1-9][0-9]* ignored;' "$RUNNER_TEMP/test.log"; then
+            echo "::error::Tests were reported as ignored (listed above). CI requires every test to run."
+            exit 1
+          fi
+          echo "No test was ignored."
+
+      - name: Drop the tests' scratch files before the cache is saved
+        # rust-cache saves target/ with Git's tar, and target/tmp holds only the
+        # tests' scratch trees: worthless to restore, and a name that is not
+        # valid Unicode there (a test makes one on purpose) is one tar cannot
+        # read, which loses the whole cache. Remove-Item works in UTF-16, which
+        # Git's rm does not. Best effort: a leftover only costs that save.
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath target/tmp) {
+            Remove-Item -LiteralPath target/tmp -Recurse -Force -ErrorAction Continue
+          }
+          if (Test-Path -LiteralPath target/tmp) {
+            "::warning::target/tmp could not be removed fully"
+          }

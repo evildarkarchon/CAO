@@ -1,10 +1,11 @@
 //! Links CAO's application manifest into every artifact of this crate,
 //! including its `#[test]` binaries (#471).
 //!
-//! `longPathAware` and the UTF-8 active code page apply per process, and raw
-//! Win32 calls such as `MoveFileExW` and `GetVolumePathNameW` only handle long
-//! paths when the running executable declares them. Without the manifest, this
-//! crate's tests would exercise different path behaviour from the app.
+//! `longPathAware` and the UTF-8 active code page apply per process, so without
+//! the manifest this crate's tests would run under different process settings
+//! from the app. Deep paths no longer depend on it: the raw Win32 calls here
+//! pass a long path in its extended-length form (`extended_length_path`),
+//! which needs neither `longPathAware` nor the host's `LongPathsEnabled`.
 //!
 //! It also probes whether file symlinks can be created here, for the tests
 //! that need one; see `probe_symlink_privilege`.

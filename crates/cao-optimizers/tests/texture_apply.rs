@@ -193,7 +193,11 @@ fn a_locked_texture_under_apply_is_a_contained_capture_failure() {
     assert_eq!(failed.len(), 1, "{failed:?}");
     assert_eq!(failed[0].asset.execution_path(), locked);
     let failed = &failed[0].result;
-    assert_eq!(failed.failure(), Some(AssetExecutionFailure::StagingFailed));
+    assert_eq!(
+        failed.failure(),
+        Some(AssetExecutionFailure::StagingFailed),
+        "{failed:?}"
+    );
     assert_eq!(failed.operation(), "capture_texture_destination");
     assert_eq!(failed.mutation_state(), MutationState::None);
     assert!(failed.safe_to_continue());

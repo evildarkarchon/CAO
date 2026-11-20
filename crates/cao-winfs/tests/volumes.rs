@@ -37,6 +37,39 @@ fn available_space_reads_the_volume() {
     assert!(available_space(&dir.join("missing")).is_err());
 }
 
+/// A directory deeper than `MAX_PATH` answers every volume query as a short
+/// one on the same volume does: the mount point keeps its plain `C:\` form,
+/// though the query went to Win32 with a `\\?\` prefix (WS-1).
+#[test]
+fn deep_directories_answer_volume_queries_like_short_ones() {
+    let dir = scratch_dir("volume-deep");
+    let deep = dir.join("d".repeat(120)).join("e".repeat(120));
+    std::fs::create_dir_all(&deep).unwrap();
+    assert!(deep.as_os_str().len() > 260);
+
+    assert_eq!(
+        volume_mount_point(&deep).unwrap(),
+        volume_mount_point(&dir).unwrap()
+    );
+    assert_eq!(
+        volume_guid_path(&deep).unwrap(),
+        volume_guid_path(&dir).unwrap()
+    );
+    assert!(available_space(&deep).unwrap() > 0);
+}
+
+/// A caller that passes `\\?\` itself gets Win32's answer in that form.
+#[test]
+fn verbatim_queries_keep_their_verbatim_mount_point() {
+    let dir = scratch_dir("volume-verbatim");
+    let plain = volume_mount_point(&dir).unwrap();
+    let verbatim = PathBuf::from(format!(r"\\?\{}", dir.display()));
+    assert_eq!(
+        volume_mount_point(&verbatim).unwrap(),
+        PathBuf::from(format!(r"\\?\{}", plain.display()))
+    );
+}
+
 /// Each volume's GUID path with its DOS mount points.
 fn volumes() -> Vec<(PathBuf, Vec<String>)> {
     use windows_sys::Win32::Foundation::{ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE, MAX_PATH};

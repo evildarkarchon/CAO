@@ -1013,17 +1013,30 @@ pub(crate) fn probe_ineligibility(path: &Path) -> Option<StagingError> {
 ///
 /// Write and delete sharing are denied while the bytes are hashed, so one
 /// snapshot cannot mix two revisions and a rename cannot detach the file.
+///
+/// The leaf is opened without backup semantics. With them, an elevated
+/// administrator's open ignores other handles' share modes, so a file another
+/// program holds without sharing would be hashed and captured instead of
+/// refusing the capture (found on the CI runner; see [`Open::directory`]). A
+/// directory cannot be opened that way, so an access-denied leaf is looked at
+/// once more through an attribute-only open, which share modes never govern.
 fn destination_snapshot(path: &Path) -> Result<Option<DestinationSnapshot>, StagingError> {
     const ERROR_FILE_NOT_FOUND: i32 = 2;
+    const ERROR_ACCESS_DENIED: i32 = 5;
     let io = |context: &'static str| StagingError::io(context, path);
-    let mut leaf = match Open::new(Access::READ_DATA | Access::READ_ATTRIBUTES, Share::READ)
-        .directory()
-        .open(path)
-    {
-        Ok(leaf) => leaf,
-        Err(error) if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND) => return Ok(None),
-        Err(error) => return Err(io("Snapshot publication destination")(error)),
-    };
+    let mut leaf =
+        match Open::new(Access::READ_DATA | Access::READ_ATTRIBUTES, Share::READ).open(path) {
+            Ok(leaf) => leaf,
+            Err(error) if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND) => return Ok(None),
+            Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
+                return match directory_leaf(path) {
+                    Some(outcome) => outcome,
+                    // A file this process may not read: the refusal stands.
+                    None => Err(io("Snapshot publication destination")(error)),
+                };
+            }
+            Err(error) => return Err(io("Snapshot publication destination")(error)),
+        };
     let facts = FileFacts::of(&leaf).map_err(io("Inspect"))?;
     if let Some(ineligible) = ineligibility(path, &facts) {
         return Err(ineligible);
@@ -1043,6 +1056,26 @@ fn destination_snapshot(path: &Path) -> Result<Option<DestinationSnapshot>, Stag
         facts,
         fingerprint,
     }))
+}
+
+/// What [`destination_snapshot`] makes of a leaf its data open was denied:
+/// `Some(Ok(None))` for an eligible directory, `Some(Err(..))` for a link or
+/// reparse point (which a directory-like leaf such as a junction is), and
+/// `None` when the leaf is a file or cannot be inspected, so the denial is the
+/// answer.
+fn directory_leaf(path: &Path) -> Option<Result<Option<DestinationSnapshot>, StagingError>> {
+    let entry = Open::new(
+        Access::READ_ATTRIBUTES,
+        Share::READ | Share::WRITE | Share::DELETE,
+    )
+    .directory()
+    .open(path)
+    .ok()?;
+    let facts = FileFacts::of(&entry).ok()?;
+    if let Some(ineligible) = ineligibility(path, &facts) {
+        return Some(Err(ineligible));
+    }
+    facts.is_directory().then_some(Ok(None))
 }
 
 /// FNV-1a over every byte `reader` yields, with the byte count.
@@ -1095,7 +1128,89 @@ fn flush_staged_file(temporary: &Path, parent: &FileIdentity) -> Result<File, St
 
 #[cfg(test)]
 mod tests {
+    use std::os::windows::fs::OpenOptionsExt;
+
     use super::*;
+
+    /// A fresh, empty directory under the system temporary directory:
+    /// `CARGO_TARGET_TMPDIR` exists only for integration tests.
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join("cao-core-unit")
+            .join(format!("{name}-{}", std::process::id()));
+        // A missing directory is the expected case; anything else surfaces in create_dir_all.
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A file another program holds without sharing refuses the snapshot,
+    /// on any host: an elevated administrator's backup-semantics open would
+    /// have read it (audit CORE-2's capture relies on the refusal).
+    #[test]
+    fn an_exclusively_held_destination_refuses_the_snapshot() {
+        let dir = scratch_dir("snapshot-held");
+        let path = dir.join("held.nif");
+        std::fs::write(&path, b"held").unwrap();
+        let _holder = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+
+        let error = destination_snapshot(&path).unwrap_err();
+
+        assert!(
+            matches!(&error, StagingError::Io { source, .. } if cao_winfs::is_sharing_violation(source)),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_directory_destination_has_no_snapshot() {
+        let dir = scratch_dir("snapshot-directory");
+        let leaf = dir.join("textures");
+        std::fs::create_dir(&leaf).unwrap();
+
+        assert!(destination_snapshot(&leaf).unwrap().is_none());
+    }
+
+    /// A junction is directory-like, so its data open is denied as a
+    /// directory's is; it is still refused as a link, not taken for one.
+    #[test]
+    fn a_junction_destination_is_ineligible() {
+        let dir = scratch_dir("snapshot-junction");
+        let target = dir.join("target");
+        std::fs::create_dir(&target).unwrap();
+        let link = dir.join("link");
+        let made = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(&link)
+            .arg(&target)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+
+        let error = destination_snapshot(&link).unwrap_err();
+
+        assert!(
+            matches!(error, StagingError::Ineligible { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_file_destination_is_snapshotted() {
+        let dir = scratch_dir("snapshot-file");
+        let path = dir.join("plain.dds");
+        std::fs::write(&path, b"plain").unwrap();
+
+        let snapshot = destination_snapshot(&path).unwrap().unwrap();
+
+        assert_eq!(snapshot.facts.size(), 5);
+    }
 
     #[test]
     fn device_names_are_recognized_with_any_extension_and_trailing_spaces() {

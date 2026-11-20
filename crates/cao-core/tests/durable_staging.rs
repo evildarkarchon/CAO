@@ -1559,4 +1559,7 @@ fn a_bootstrap_that_fails_before_its_first_manifest_leaves_nothing() {
 
     assert!(recover(&root).is_none());
     assert!(std::fs::read_dir(&root).unwrap().next().is_none());
+    // Tools that convert names through UTF-8, such as Git's tar and rm,
+    // cannot address this name, so it is not left in target/tmp for them.
+    std::fs::remove_dir(&root).unwrap();
 }
