@@ -63,8 +63,8 @@ pub enum StagingError {
         path: PathBuf,
         detail: String,
     },
-    /// A path could not be resolved. C++ threw a `filesystem_error` here,
-    /// which producers treat as safe to continue.
+    /// A path could not be resolved. Resolution comes before staging touches
+    /// the ownership manifest, so producers treat it as safe to continue.
     #[error("{context} `{}`: {source}", .path.display())]
     Lookup {
         context: &'static str,
@@ -88,11 +88,18 @@ pub enum StagingError {
     /// outside its Mod Root or a changed destination.
     #[error("{0}")]
     Invalid(String),
+    /// The Asset at `path` is a link or a hard-linked file, which CAO never
+    /// replaces: publishing over a hard link would leave its other names on
+    /// the old bytes, and over a link would replace the link rather than the
+    /// file it names. Captures report it before anything is staged.
+    #[error("{reason}: `{}`", .path.display())]
+    Ineligible { path: PathBuf, reason: &'static str },
 }
 
 impl StagingError {
-    /// Whether C++ reported this as a `filesystem_error`, the one staging
-    /// failure its producers treated as safe to continue.
+    /// Whether this is a [`Self::Lookup`] failure, which comes before any
+    /// change to the ownership manifest: the one failure from staging onward
+    /// that producers treat as safe to continue.
     pub fn is_lookup(&self) -> bool {
         matches!(self, Self::Lookup { .. })
     }
@@ -185,8 +192,10 @@ impl StagingScope {
     /// `StagingOwnershipUnverified` when ownership cannot be proven, which
     /// deletes nothing. After deletion began, the remaining entries stay
     /// owned: an entry whose parent changed is `StagingOwnershipUnverified`,
-    /// and any other removal failure `StagingRecoveryFailed`. Cancellation
-    /// returns no failure; the executor observes the same token.
+    /// and any other removal failure `StagingRecoveryFailed`. A reserved
+    /// directory holding only its lock, which only an interrupted bootstrap
+    /// leaves, is `StagingOwnershipUnverified` with guidance of its own.
+    /// Cancellation returns no failure; the executor observes the same token.
     pub(crate) fn prepare_root(
         &mut self,
         mod_root: &Path,
@@ -215,6 +224,16 @@ impl StagingScope {
                     RunFailureCode::StagingOwnershipUnverified,
                     RunPhase::Preparing,
                     format!("{error}{REMAINING}"),
+                )
+                .with_path(staging),
+            ),
+            Err(Halt::NoManifest { staging }) => Some(
+                RunFailure::new(
+                    RunFailureCode::StagingOwnershipUnverified,
+                    RunPhase::Preparing,
+                    "The staging area holds only its ownership lock and no ownership.manifest: \
+                     a CAO run stopped while creating it, before it staged anything. If no \
+                     CAO run is using this Mod Root, delete .cao-staging and retry.",
                 )
                 .with_path(staging),
             ),
@@ -419,6 +438,30 @@ impl StagingScope {
         Ok(())
     }
 
+    /// Deletes a staged file that will not be published and releases its
+    /// registration, so a failed or unchanged attempt leaves neither its
+    /// empty sibling nor its manifest record for the rest of the run.
+    ///
+    /// The file is deleted through a handle that proves it is still the
+    /// ordinary single-link file staging created; a file already gone is
+    /// only released. Deleting before releasing keeps the protocol's rule:
+    /// a crash between the two leaves a registered, absent name, which
+    /// cleanup and recovery skip.
+    ///
+    /// # Errors
+    /// The deletion or the release failed. The registration then stays, so
+    /// Safety Cleanup or a later recovery removes whatever remains.
+    pub(crate) fn abandon_file(&mut self, temporary: &Path) -> Result<(), StagingError> {
+        if inspect(temporary)?.is_some() {
+            let file = open_temporary_file(temporary)?;
+            delete_by_handle(&file).map_err(StagingError::io("Remove", temporary))?;
+            // Closing the handle is what deletes the file, and the release
+            // below requires it gone.
+            drop(file);
+        }
+        self.release_file(temporary)
+    }
+
     /// Removes every registered entry that is still present, in reverse
     /// registration order, attempting all of them despite failures.
     ///
@@ -461,12 +504,15 @@ impl StagingScope {
     /// before any staged bytes exist.
     ///
     /// Only a directory this call creates is claimed: an existing one, even
-    /// empty, is never adopted. An interruption before the initial manifest
-    /// leaves only control files, and no Asset has been touched.
+    /// empty, is never adopted. If bootstrap fails before its first manifest
+    /// is published, everything this call created is removed again, so the
+    /// failure does not block later runs on this Mod Root. An interruption
+    /// in that window leaves only control files, and no Asset has been
+    /// touched; recovery then reports the missing manifest.
     fn prepare_area(&mut self, root: &Path) -> Result<(), StagingError> {
         // The manifest grammar admits 1-128 ASCII letters, digits or hyphens.
-        // C++ wrote a hex nonce here; a caller-supplied Run ID is checked, so
-        // a malformed one can never produce staging recovery would reject.
+        // A caller-supplied Run ID is checked, so a malformed one can never
+        // produce staging recovery would reject.
         let valid_run_id = (1..=128).contains(&self.run_id.len())
             && self
                 .run_id
@@ -486,7 +532,11 @@ impl StagingScope {
             });
         }
         let staging = root.join(STAGING_DIRECTORY);
+        // How many pins and locks this scope held before it created the
+        // reserved directory, so a failed bootstrap can give back its own.
+        let mut created = None;
         if !self.areas.contains_key(root) {
+            let held = (self.pins.len(), self.locks.len());
             let root_pin = pin_directory(root)?;
             std::fs::create_dir(&staging).map_err(|error| {
                 if error.kind() == io::ErrorKind::AlreadyExists {
@@ -497,12 +547,24 @@ impl StagingScope {
                     StagingError::io("Create", &staging)(error)
                 }
             })?;
-            let staging_pin = pin_directory(&staging)?;
-            let lock = claim_lock(&staging.join(OWNER_LOCK), OwnerLock::create)?;
+            let claimed = pin_directory(&staging).and_then(|staging_pin| {
+                claim_lock(&staging.join(OWNER_LOCK), OwnerLock::create)
+                    .map(|lock| (staging_pin, lock))
+            });
+            let (staging_pin, lock) = match claimed {
+                Ok(claimed) => claimed,
+                Err(error) => {
+                    // A lock this call failed to claim may not be its own,
+                    // so only the directory is removed, and only if empty.
+                    remove_bootstrap(&staging, &[]);
+                    return Err(error);
+                }
+            };
             self.pins.push(root_pin);
             self.pins.push(staging_pin);
             self.locks.push(lock);
             self.areas.insert(root.to_path_buf(), Area::default());
+            created = Some(held);
         }
         let area = self.areas.get_mut(root).expect("the area was just claimed");
         if !area.child.is_empty() && !area.ready {
@@ -511,14 +573,45 @@ impl StagingScope {
             ));
         }
         if area.child.is_empty() {
-            area.child = format!("run-{}-{}", self.run_id, nonce()?);
-            area.artifacts = vec![Artifact {
-                relative: area.child.clone(),
-                directory: true,
-                root_relative: false,
-            }];
-            // Bootstrap may leave only controls if interrupted here; no Asset bytes exist yet.
-            publish_manifest(root, &self.run_id, &area.child, &area.artifacts)?;
+            let run_id = &self.run_id;
+            let initial = nonce().and_then(|nonce| {
+                let child = format!("run-{run_id}-{nonce}");
+                let artifacts = vec![Artifact {
+                    relative: child.clone(),
+                    directory: true,
+                    root_relative: false,
+                }];
+                // Bootstrap may leave only controls if interrupted here; no
+                // Asset bytes exist yet.
+                publish_manifest(root, run_id, &child, &artifacts)?;
+                Ok((child, artifacts))
+            });
+            match initial {
+                Ok((child, artifacts)) => {
+                    area.child = child;
+                    area.artifacts = artifacts;
+                }
+                Err(error) => {
+                    if let Some((pins, locks)) = created {
+                        // No manifest names anything yet, so nothing else can
+                        // exist: drop this call's pins and lock, which deny
+                        // the deletions, then remove what it created. A
+                        // collision found a scratch file this call did not
+                        // write, which stays.
+                        self.areas.remove(root);
+                        self.locks.truncate(locks);
+                        self.pins.truncate(pins);
+                        if matches!(error, StagingError::Collision(_)) {
+                            remove_bootstrap(&staging, &[OWNER_LOCK]);
+                        } else {
+                            remove_bootstrap(&staging, &[MANIFEST_SCRATCH, OWNER_LOCK]);
+                        }
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        if !area.ready {
             let child = staging.join(&area.child);
             std::fs::create_dir(&child).map_err(StagingError::io("Create", &child))?;
             area.child_pin = Some(pin_directory(&child)?);
@@ -584,6 +677,27 @@ impl StagingScope {
         }
         Ok(paths)
     }
+}
+
+/// Removes what a failed bootstrap created before its first manifest:
+/// each of `controls` inside `staging`, only while it is still an ordinary
+/// single-link file, then the reserved directory itself, nonrecursively.
+///
+/// Best effort, because the bootstrap failure is what the caller reports.
+/// Nothing but bootstrap's own control files can be in a directory this run
+/// created moments ago; if anything else is, the directory removal fails and
+/// leaves it, and the next run's recovery reports what it finds.
+fn remove_bootstrap(staging: &Path, controls: &[&str]) {
+    for control in controls {
+        // An absent control, such as a scratch file that was never
+        // written, is the usual case; an unexpected entry is left alone.
+        if let Ok(file) = open_temporary_file(&staging.join(control)) {
+            // A failed delete leaves the file, and the directory with it.
+            let _ = delete_by_handle(&file);
+        }
+    }
+    // Nonrecursive: it fails, and keeps everything, unless empty.
+    let _ = std::fs::remove_dir(staging);
 }
 
 /// Removes one present registered entry, checking its parent and type first.

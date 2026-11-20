@@ -769,10 +769,15 @@ fn finalize_archives(
 /// logged, before the outputs; it neither fails the Dry Run nor drops any
 /// planned output.
 ///
+/// A Mod Root planning could not plan is recorded as a
+/// [`RunDiagnosticCode::ArchiveCreationUnplanned`] warning, and the other
+/// roots' outputs are still recorded: an Apply run would leave that root out
+/// the same way.
+///
 /// Cancellation is observed before planning and by planning itself; either
 /// stops with nothing planned, as an Apply run stops with no output total. A
-/// planning failure, or a contained planning panic, is recorded as the
-/// run's Run Failure. Both return `Break`.
+/// contained planning panic is recorded as the run's Run Failure. Both
+/// return `Break`.
 fn plan_archive_finalization(
     preparation: &RunPreparation,
     choices: &ArchiveFinalizationChoices,
@@ -790,11 +795,18 @@ fn plan_archive_finalization(
         CreationPlanning::Planned {
             outputs,
             capacity_warning,
+            unplanned,
         } => {
             // As at Discovering Archives, the warning neither fails the Dry
             // Run nor drops a planned output: every one is recorded below.
             if let Some(warning) = capacity_warning {
                 record_capacity_warning(evidence, warning);
+            }
+            // Planning already logged each root it left out; the evidence
+            // carries it as a warning, as an Apply run carries it as a
+            // contained PlanningFailed.
+            for warning in unplanned {
+                evidence.record_diagnostic(warning);
             }
             outputs
         }

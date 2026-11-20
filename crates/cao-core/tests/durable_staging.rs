@@ -18,9 +18,9 @@ use std::time::{Duration, Instant};
 use cao_core::execution::MutationState;
 use cao_core::run::{
     CancellationToken, PublicationPolicy, PublicationReceipt, PublicationState, RunFailure,
-    RunFailureCode, TemporaryArtifactRegistry, create_run_id,
+    RunFailureCode, StagingError, TemporaryArtifactRegistry, create_run_id,
 };
-use cao_winfs::{Access, Open, Share};
+use cao_winfs::{Access, Open, OwnerLock, Share};
 use common::{canonical, scratch_dir};
 
 /// A fresh registry with its own Run ID.
@@ -222,7 +222,7 @@ fn deferred_publications_are_released_together() {
 
 /// A deferred publication refuses an occupied destination before any
 /// mutation, like an immediate one: the competing file survives and the
-/// staged file stays owned for Safety Cleanup.
+/// refused staged file is abandoned with its record.
 #[test]
 fn a_deferred_publication_refuses_an_occupied_destination() {
     let root = mod_root("deferred-occupied");
@@ -243,11 +243,12 @@ fn a_deferred_publication_refuses_an_occupied_destination() {
 
     assert!(!error.to_string().is_empty());
     assert_eq!(read(&destination), "competing entry");
-    assert!(temporary.exists());
+    // The refused file was abandoned at once, its record with it.
+    assert!(!temporary.exists());
+    assert_eq!(registered(&root), 1);
     // Nothing was deferred, so there is nothing to release.
     registry.release_published().unwrap();
     assert!(registry.cleanup().is_empty());
-    assert!(!temporary.exists());
 }
 
 /// When the joint release cannot publish its snapshot, the destinations stay
@@ -647,7 +648,8 @@ fn both_publication_policies_preserve_destination_bytes() {
 }
 
 /// No-replace publication refuses a destination occupied after staging, and
-/// the competing file survives.
+/// the competing file survives. The refused staged file is abandoned at once,
+/// with its record, rather than left for Safety Cleanup.
 #[test]
 fn an_occupied_destination_is_not_published() {
     let root = mod_root("occupied");
@@ -665,14 +667,15 @@ fn an_occupied_destination_is_not_published() {
     assert!(!result.error_detail.is_empty());
     assert_eq!(result.mutation(), MutationState::None);
     assert!(result.safe_to_continue());
-    assert!(temporary.exists());
-    assert!(registry.cleanup().is_empty());
     assert!(!temporary.exists());
+    // Only the run child is still registered.
+    assert_eq!(registered(&root), 1);
+    assert!(registry.cleanup().is_empty());
     assert_eq!(read(&destination), "competing entry");
 }
 
-/// A missing staged file fails before any destination mutation, and a file
-/// recreated at the owned name afterwards is still cleaned up.
+/// A missing staged file fails before any destination mutation, and the
+/// failed publication releases the name it can no longer use.
 #[test]
 fn an_unavailable_staged_file_is_not_published() {
     let root = mod_root("unavailable-staged");
@@ -689,8 +692,8 @@ fn an_unavailable_staged_file_is_not_published() {
 
     assert_eq!(result.state, PublicationState::NotPublished);
     assert!(!result.error_detail.is_empty());
-    // The receipt is consumed; the type system rules out a second publish.
-    std::fs::write(&temporary, "late bytes").unwrap();
+    let name = temporary.file_name().unwrap().to_string_lossy();
+    assert!(!manifest(&root).contains(name.as_ref()));
     assert!(registry.cleanup().is_empty());
     assert!(!temporary.exists());
     assert_eq!(read(&destination), "original");
@@ -1302,6 +1305,8 @@ fn staging_crash_child() {
     let scratch = staging(&root).join("ownership.manifest.next");
     // The registry, and with it the ownership lock, lives until the kill.
     let mut registry = registry();
+    // A lock claimed by hand, held until the kill like the registry's.
+    let mut held = None;
     let message = match mode.as_str() {
         // Killed with half-written output in its staged sibling.
         "before-publication" => {
@@ -1339,6 +1344,14 @@ fn staging_crash_child() {
             assert_eq!(result.state, PublicationState::PublishedStillOwned);
             "published-still-owned".to_owned()
         }
+        // Killed between claiming the reserved directory and publishing its
+        // first manifest, the window bootstrap's own steps leave: the
+        // directory and a held `owner.lock`, nothing else.
+        "bootstrap-window" => {
+            std::fs::create_dir(staging(&root)).unwrap();
+            held = Some(OwnerLock::create(&staging(&root).join("owner.lock")).unwrap());
+            "claimed".to_owned()
+        }
         other => panic!("unknown child mode {other}"),
     };
     // A report file, renamed into place so the parent never reads it half
@@ -1350,6 +1363,7 @@ fn staging_crash_child() {
     // Bounded, so a parent that failed before killing it cannot leave it
     // running for long.
     std::thread::sleep(Duration::from_secs(60));
+    drop(held);
 }
 
 /// A producer process, killed when dropped so a failing parent never leaks it.
@@ -1486,4 +1500,63 @@ fn an_archive_publication_survives_producer_termination() {
         assert!(!entry.unwrap().file_type().unwrap().is_dir());
     }
     assert!(!staging(&root).join("ownership.manifest.next").exists());
+}
+
+/// Audit FS-3: a producer killed between claiming `.cao-staging` and
+/// publishing its first manifest leaves only the lock. While it lives the
+/// area is active. Once it is gone, recovery still cannot prove ownership and
+/// deletes nothing, but its failure says what that state is and what to do,
+/// rather than pointing at a manifest that does not exist.
+#[test]
+fn a_crash_in_the_bootstrap_window_gets_its_own_guidance() {
+    let root = mod_root("crash-bootstrap-window");
+
+    let (mut child, _) = crash_child("bootstrap-window", &root);
+    let active = recover(&root).expect("the live producer owns staging");
+    assert_eq!(active.code, RunFailureCode::StagingActive);
+    child.kill();
+
+    let failure = recover(&root).expect("ownership is still unproven");
+    assert_eq!(failure.code, RunFailureCode::StagingOwnershipUnverified);
+    assert_eq!(failure.path, staging(&root));
+    assert!(
+        failure.detail.contains("holds only its ownership lock")
+            && failure.detail.contains("delete .cao-staging"),
+        "{}",
+        failure.detail
+    );
+    assert!(staging(&root).join("owner.lock").is_file());
+    assert!(!staging(&root).join("ownership.manifest").exists());
+}
+
+/// Audit FS-3: a bootstrap that fails after creating `.cao-staging` but
+/// before its first manifest removes what it created, so the failure does
+/// not block every later run on the Mod Root. Here the first manifest cannot
+/// be written because the Mod Root's name is not valid Unicode, which the
+/// manifest's UTF-8 paths cannot spell.
+#[test]
+fn a_bootstrap_that_fails_before_its_first_manifest_leaves_nothing() {
+    use std::os::windows::ffi::OsStringExt as _;
+    let parent = mod_root("bootstrap-failure");
+    // "b" and an unpaired surrogate: a legal NTFS name with no UTF-8 form.
+    let root = parent.join(std::ffi::OsString::from_wide(&[0x62, 0xD800]));
+    std::fs::create_dir(&root).unwrap();
+    let root = canonical(&root);
+    let mut registry = registry();
+
+    for attempt in ["first", "second"] {
+        let error = registry
+            .stage_archive_file_for_publication(&root)
+            .expect_err("the manifest cannot name this Mod Root");
+        // Never "initialization did not complete": each attempt starts over.
+        assert!(
+            matches!(error, StagingError::Io { .. }),
+            "{attempt}: {error:?}"
+        );
+        assert!(!staging(&root).exists(), "{attempt}");
+    }
+    drop(registry);
+
+    assert!(recover(&root).is_none());
+    assert!(std::fs::read_dir(&root).unwrap().next().is_none());
 }

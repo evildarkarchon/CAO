@@ -85,6 +85,15 @@ each planned output Archive in the run child and publishes with `NoReplace`. A n
 plugin is staged and published separately with `NoReplace` after the Archive, unless the exact
 planned dummy is already present.
 
+An Asset producer captures its destination, and a Texture conversion pins its source, before the
+backend loads anything and before anything is staged. A failure there changes nothing, so the
+attempt is contained and safe to continue. A destination or source that is a link or has more than
+one hard link is never replaced: renaming output over a hard link would leave its other names on
+the old bytes, and a hardlink-deploying mod manager makes every file it deploys one. Its attempt is
+`Ineligible`, and Dry Run reports the same result by reading the same facts without capturing.
+From staging onward only a path lookup failure, which precedes any manifest change, is safe to
+continue; any other staging failure stops the run.
+
 The receipt's single publication attempt revalidates an absolute destination beneath its canonical
 Mod Root, outside reserved staging, on the same volume, through an ordinary parent. It flushes
 staged bytes before a native same-volume publication with no copy fallback; `NoReplace` also
@@ -99,9 +108,12 @@ source Assets, committed destinations, backups, and retained evidence are never 
 The receipt returns one of three states, which also describe the crash windows:
 
 - `NotPublished`: no destination mutation occurred in this attempt. A flushed registration may
-  name an absent file before creation; a save or preflight failure can leave partial staged bytes.
-  Safety Cleanup or later recovery removes only the registered temporary path and retains the
-  original Asset or occupied destination.
+  name an absent file before creation. The failed publication abandons its staged file: it deletes
+  the file through a handle proving its identity, then releases the record, so a crash between the
+  two leaves a registered, absent name. A producer that stops after staging, because its save or
+  converter failed or it found nothing to change, abandons its receipt the same way. Whatever an
+  abandonment cannot remove stays owned, and Safety Cleanup or later recovery removes only the
+  registered temporary path and retains the original Asset or occupied destination.
 - `PublishedStillOwned`: the native destination mutation succeeded, but the ownership snapshot
   could not release the old temporary name. That name may already be absent after a move; recovery
   skips an absent temporary and never follows it to the committed destination. The returned state
@@ -136,10 +148,14 @@ The Run Executor retains terminal mutation evidence, cancellation, Safety Cleanu
 precedence independently of the receipt state.
 
 Bootstrap claims only a newly created reserved directory. The initial complete manifest is
-published before any run child or staged Asset or Archive bytes are created. An interruption
-before that initial ownership proof is published can leave unverifiable control files; preparation preserves them
-for inspection. Existing empty directories, incomplete initial manifests, and other unproven
-collisions are never silently adopted. No Asset mutation has begun in that bootstrap window.
+published before any run child or staged Asset or Archive bytes are created. A bootstrap that
+fails before that initial ownership proof is published removes what it created: its scratch
+snapshot, its `owner.lock` and the reserved directory, each only while it is still the ordinary
+entry bootstrap made, and the directory only if empty. A bootstrap interrupted in that window
+leaves only `owner.lock` and perhaps the scratch snapshot. Preparation preserves them, and its
+`StagingOwnershipUnverified` failure says that this state means a run stopped before staging
+anything. Existing empty directories, incomplete initial manifests, and other unproven collisions
+are never silently adopted. No Asset mutation has begun in that bootstrap window.
 
 Recovery acquires the OS lock, pins the manifest against Windows writes/replacement while
 reading it, validates root and run-child identity, checks the entire control tree, and pins every
@@ -167,6 +183,9 @@ Failures expose the affected path and one of `StagingActive`, `StagingOwnershipU
 `StagingRecoveryFailed`. Active ownership calls for waiting for its run to finish. Unverifiable
 contents call for inspecting the manifest and moving unrecognized material out of the reserved
 namespace; recovery never advises deleting contents merely because their names resemble staging.
+The one exception is a reserved directory holding only its lock, perhaps with a scratch snapshot:
+only an interrupted bootstrap leaves that, so the failure says the directory can be deleted once
+no CAO run uses the Mod Root.
 
 Validation includes interrupted Asset and Archive publication with a committed destination still
 owned by an older snapshot, abandoned output, active locks, absent temporary paths, corrupt

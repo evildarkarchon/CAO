@@ -348,7 +348,8 @@ fn an_unloadable_mesh_is_quarantined() {
 /// on with the other Meshes.
 ///
 /// This runs as a Dry Run: under Apply the destination capture opens the
-/// Mesh before the load does and meets the lock first (audit CORE-2).
+/// Mesh before the load does and meets the lock first, which
+/// `a_locked_mesh_under_apply_is_a_contained_capture_failure` covers.
 #[test]
 fn a_mesh_that_cannot_be_read_is_a_read_failure() {
     let _serial = serial();
@@ -399,6 +400,51 @@ fn a_mesh_that_cannot_be_read_is_a_read_failure() {
         .find(|attempt| attempt.asset.execution_path().ends_with("le.nif"))
         .unwrap();
     assert!(le.result.succeeded(), "the other Mesh is still evaluated");
+}
+
+/// Audit CORE-2: under Apply, a Mesh another program holds without sharing
+/// fails at the destination capture, before anything is staged. That used to
+/// end the run; it is now a contained `StagingFailed`, never quarantined,
+/// and the run still optimizes the other Mesh.
+#[test]
+fn a_locked_mesh_under_apply_is_a_contained_capture_failure() {
+    let _serial = serial();
+    let (app, mod_root) = mod_with_meshes(
+        "mesh-locked-apply",
+        &[("meshes/le.nif", LE_MESH), ("meshes/locked.nif", SSE_MESH)],
+    );
+    let locked = mod_root.join("meshes/locked.nif");
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&locked)
+        .unwrap();
+    let options = apply_meshes(&app, "SSE", &mod_root, 3, false);
+
+    let result = run(&app, "SSE", &options);
+    drop(lock);
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::CompletedWithFailures,
+        "{:?}",
+        result.failures()
+    );
+    let failed: Vec<_> = result
+        .asset_attempts()
+        .iter()
+        .filter(|attempt| !attempt.result.succeeded())
+        .collect();
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0].asset.execution_path(), locked);
+    let failed = &failed[0].result;
+    assert_eq!(failed.failure(), Some(AssetExecutionFailure::StagingFailed));
+    assert_eq!(failed.operation(), "capture_mesh_destination");
+    assert_eq!(failed.mutation_state(), MutationState::None);
+    assert!(failed.safe_to_continue());
+    assert_eq!(read(&mod_root, "meshes/locked.nif"), fixture(SSE_MESH));
+    assert!(!mod_root.join("meshes/locked.nif.caobad").exists());
+    assert_eq!(stream_version(&read(&mod_root, "meshes/le.nif")), 100);
 }
 
 /// Spec (#504): Dry Run evaluates every Mesh, quarantines nothing and writes nothing.

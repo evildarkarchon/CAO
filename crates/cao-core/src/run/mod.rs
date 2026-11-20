@@ -27,11 +27,11 @@ pub(crate) use archives::ArchiveExtractionPlan;
 pub use archives::{
     ArchiveCollision, ArchiveExtractionFailure, ArchiveExtractionResult, SourceCleanup,
 };
-pub(crate) use artifacts::fingerprint;
 pub use artifacts::{
     PublicationPolicy, PublicationReceipt, PublicationResult, PublicationState, PublicationTarget,
     Registration, StagedFile, TemporaryArtifactRegistry,
 };
+pub(crate) use artifacts::{fingerprint, ineligibility, probe_ineligibility};
 pub use asset_attempt::{
     AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
 };

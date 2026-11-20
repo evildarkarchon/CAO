@@ -33,11 +33,11 @@ use crate::routing::{
     AssetIdentity, AssetOperation, AssetOperations, ExecutionMode, MeshVariant, OptimizerTarget,
     RoutedAsset, TextureVariant,
 };
-use crate::run::fingerprint;
 use crate::run::{
-    PublicationPolicy, PublicationResult, PublicationState, RunFailure, RunPhase, StagingError,
-    TemporaryArtifactRegistry,
+    PublicationPolicy, PublicationReceipt, PublicationResult, PublicationState, RunFailure,
+    RunPhase, StagingError, TemporaryArtifactRegistry,
 };
+use crate::run::{fingerprint, ineligibility, probe_ineligibility};
 
 /// Filesystem effects on durable Assets, excluding registry-owned temporary bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -64,6 +64,10 @@ pub enum AssetExecutionFailure {
     SaveFailed,
     SourceRemovalFailed,
     StagingFailed,
+    /// The Asset is a link or a hard-linked file, which CAO never replaces.
+    /// Found before anything is staged, in Apply and in Dry Run alike, so
+    /// nothing changed: it is never quarantined, and the run may continue.
+    Ineligible,
     CommitFailed,
     /// The backend panicked, or failed in a way that leaves mutation unknown.
     BackendException,
@@ -321,8 +325,8 @@ impl AssetExecutionResult {
             UnsupportedTarget | IdentityMismatch | BackendException => {
                 ExecutionFailureCategory::Contract
             }
-            ReadFailed | SaveFailed | SourceRemovalFailed | StagingFailed | CommitFailed
-            | CleanupFailed => ExecutionFailureCategory::Filesystem,
+            ReadFailed | SaveFailed | SourceRemovalFailed | StagingFailed | Ineligible
+            | CommitFailed | CleanupFailed => ExecutionFailureCategory::Filesystem,
             LoadFailed | OperationFailed => ExecutionFailureCategory::Backend,
         })
     }
@@ -429,11 +433,54 @@ pub trait AssetExecutionBackend {
     fn attempt_finished(&mut self, _asset: &RoutedAsset, _result: &AssetExecutionResult) {}
 }
 
-/// The `StagingFailed` result of a producer whose staging boundary failed.
+/// The result of a capture before anything is staged: pinning a converted
+/// Texture's source, or capturing a destination.
 ///
-/// C++ treated only a `filesystem_error` here as safe to continue; every other
-/// staging exception stopped the run. [`StagingError::is_lookup`] marks the
-/// same split.
+/// Nothing has been staged or changed, and the next Asset does not depend on
+/// this one, so it is safe to continue whatever the error. A link or a
+/// hard-linked file is [`AssetExecutionFailure::Ineligible`]; any other error,
+/// such as a sharing violation or a changed parent, is `StagingFailed`.
+/// Dry Run reports the same `Ineligible` result through
+/// [`probe_ineligibility`], so it predicts what Apply would refuse.
+fn capture_failed(
+    kind: &str,
+    boundary: &str,
+    path: &Path,
+    error: &StagingError,
+) -> AssetExecutionResult {
+    let (category, message) = match error {
+        StagingError::Ineligible { .. } => (
+            AssetExecutionFailure::Ineligible,
+            format!("{kind} is a link or a hard-linked file, which CAO does not replace."),
+        ),
+        _ => (
+            AssetExecutionFailure::StagingFailed,
+            format!("Failed to prepare {kind} staging."),
+        ),
+    };
+    AssetExecutionResult::failed(category, message)
+        .with_path(path)
+        .with_operation(boundary)
+        .with_service_detail(error.to_string())
+}
+
+/// Abandons a staged file the attempt will not publish, so its sibling and
+/// manifest record do not outlive the attempt. A failure only logs: what
+/// remains stays owned, for Safety Cleanup, and the attempt's own result is
+/// what the run needs.
+fn abandon(receipt: PublicationReceipt, staged: &Path) {
+    if let Err(error) = receipt.abandon() {
+        log::warn!("{} is left for Safety Cleanup: {error}", staged.display());
+    }
+}
+
+/// The `StagingFailed` result of a producer whose staging boundary failed,
+/// from staging onward.
+///
+/// Only a [`StagingError::is_lookup`] failure is safe to continue: it comes
+/// before the ownership manifest changes. Any other may leave the run's
+/// Temporary Ownership scope where the next staging operation would fail the
+/// same way, so it stops the run.
 fn staging_failed(
     kind: &str,
     boundary: &str,
@@ -578,6 +625,7 @@ struct PinnedSource {
 
 impl PinnedSource {
     /// Pins an ordinary, single-link, readable source and records its bytes.
+    /// A link or a hard-linked source is [`StagingError::Ineligible`].
     fn open(path: &Path) -> Result<Self, StagingError> {
         let io = |context: &'static str| StagingError::io(context, path);
         let file = Open::new(
@@ -587,6 +635,9 @@ impl PinnedSource {
         .open(path)
         .map_err(io("Pin Texture source"))?;
         let facts = FileFacts::of(&file).map_err(io("Inspect"))?;
+        if let Some(ineligible) = ineligibility(path, &facts) {
+            return Err(ineligible);
+        }
         let identity = FileIdentity::of(&file).map_err(io("Identify"))?;
         let bytes = Self::hash(&file);
         match bytes {
@@ -733,13 +784,7 @@ impl<'b> AssetExecutor<'b> {
                 match PinnedSource::open(path) {
                     Ok(pin) => source_pin = Some(pin),
                     Err(error) => {
-                        return staging_failed(
-                            "Texture",
-                            "pin_texture_source",
-                            path,
-                            MutationState::None,
-                            &error,
-                        );
+                        return capture_failed("Texture", "pin_texture_source", path, &error);
                     }
                 }
             }
@@ -752,18 +797,21 @@ impl<'b> AssetExecutor<'b> {
                 }
                 Ok(captured) => target = Some(captured),
                 Err(error) => {
-                    return staging_failed(
-                        "Texture",
-                        "capture_texture_destination",
-                        path,
-                        MutationState::None,
-                        &error,
-                    );
+                    return capture_failed("Texture", "capture_texture_destination", path, &error);
                 }
             }
-        } else if separate_output && file_stands_at(&output) {
-            // Dry Run reports what Apply would do, and Apply would withhold.
-            return conversion_withheld(path, &output);
+        } else {
+            // Dry Run reports what Apply would do, in the order Apply's pin
+            // and capture would find it.
+            if converting && let Some(error) = probe_ineligibility(path) {
+                return capture_failed("Texture", "pin_texture_source", path, &error);
+            }
+            if let Some(error) = probe_ineligibility(&output) {
+                return capture_failed("Texture", "capture_texture_destination", path, &error);
+            }
+            if separate_output && file_stands_at(&output) {
+                return conversion_withheld(path, &output);
+            }
         }
 
         if let Err(failure) = self.backend.load_texture(path, variant) {
@@ -802,6 +850,7 @@ impl<'b> AssetExecutor<'b> {
             .expect("the registry outlives this attempt")
             .to_path_buf();
         if let Err(detail) = self.backend.save_texture(&staged) {
+            abandon(receipt, &staged);
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::SaveFailed,
                 "Failed to save Texture.",
@@ -811,6 +860,7 @@ impl<'b> AssetExecutor<'b> {
             .with_service_detail(detail);
         }
         let Some(output_before) = asset_fingerprint(&staged) else {
+            abandon(receipt, &staged);
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::SaveFailed,
                 "Saved Texture is not a usable regular file.",
@@ -921,15 +971,12 @@ impl<'b> AssetExecutor<'b> {
             match artifacts.capture_publication_target(&root, &destination) {
                 Ok(captured) => target = Some(captured),
                 Err(error) => {
-                    return staging_failed(
-                        "Mesh",
-                        "capture_mesh_destination",
-                        path,
-                        MutationState::None,
-                        &error,
-                    );
+                    return capture_failed("Mesh", "capture_mesh_destination", path, &error);
                 }
             }
+        } else if let Some(error) = probe_ineligibility(&destination) {
+            // Dry Run reports what Apply's capture would refuse.
+            return capture_failed("Mesh", "capture_mesh_destination", path, &error);
         }
         if let Err(failure) = self.backend.load_mesh(path, variant) {
             return load_failed("Mesh", "load_mesh", path, failure);
@@ -984,6 +1031,7 @@ impl<'b> AssetExecutor<'b> {
             .expect("the registry outlives this attempt")
             .to_path_buf();
         if let Err(detail) = self.backend.save_mesh(&staged) {
+            abandon(receipt, &staged);
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::SaveFailed,
                 "Failed to save Mesh.",
@@ -993,6 +1041,7 @@ impl<'b> AssetExecutor<'b> {
             .with_service_detail(detail);
         }
         if asset_fingerprint(&staged).is_none() {
+            abandon(receipt, &staged);
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::SaveFailed,
                 "Saved Mesh is not a usable regular file.",
@@ -1047,7 +1096,20 @@ impl<'b> AssetExecutor<'b> {
         let mut receipt = None;
         if asset.execution_mode() == ExecutionMode::Apply {
             let root = publication_root(mod_root, &destination);
-            match artifacts.capture_and_stage_file(&root, &destination) {
+            // Captured and staged in two steps: a capture failure precedes
+            // staging and is contained, while a staging failure is not.
+            let target = match artifacts.capture_publication_target(&root, &destination) {
+                Ok(target) => target,
+                Err(error) => {
+                    return capture_failed(
+                        "Animation",
+                        "capture_animation_destination",
+                        path,
+                        &error,
+                    );
+                }
+            };
+            match artifacts.stage_file_for_publication(target) {
                 Ok(staged) => receipt = Some(staged),
                 Err(error) => {
                     return staging_failed(
@@ -1059,6 +1121,9 @@ impl<'b> AssetExecutor<'b> {
                     );
                 }
             }
+        } else if let Some(error) = probe_ineligibility(&destination) {
+            // Dry Run reports what Apply's capture would refuse.
+            return capture_failed("Animation", "capture_animation_destination", path, &error);
         }
         let staged = receipt.as_ref().map(|receipt| {
             receipt
@@ -1069,7 +1134,16 @@ impl<'b> AssetExecutor<'b> {
         let operation =
             self.backend
                 .optimize_animation(path, staged.as_deref(), asset.execution_mode());
+        // Apply stages before the converter runs, so every path below that
+        // does not publish abandons the staged file it may have written.
+        let (receipt, staged) = match (receipt, staged) {
+            (Some(receipt), Some(staged)) => (Some(receipt), staged),
+            _ => (None, PathBuf::new()),
+        };
         if !operation.succeeded() {
+            if let Some(receipt) = receipt {
+                abandon(receipt, &staged);
+            }
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::OperationFailed,
                 "Failed to optimize Animation.",
@@ -1078,14 +1152,16 @@ impl<'b> AssetExecutor<'b> {
             .with_operation("optimize_animation")
             .with_service_detail(operation.message());
         }
-        // An unpublished receipt leaves its empty sibling to Safety Cleanup.
-        let (Some(receipt), Some(staged)) = (receipt, staged) else {
+        let Some(receipt) = receipt else {
+            // Dry Run staged nothing.
             return AssetExecutionResult::success(CompletedMutation::None);
         };
         if !operation.would_change() {
+            abandon(receipt, &staged);
             return AssetExecutionResult::success(CompletedMutation::None);
         }
         if asset_fingerprint(&staged).is_none() {
+            abandon(receipt, &staged);
             return AssetExecutionResult::failed(
                 AssetExecutionFailure::SaveFailed,
                 "Animation output is not a usable regular file.",
