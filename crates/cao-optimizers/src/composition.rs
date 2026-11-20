@@ -146,8 +146,9 @@ impl ProfileConfigurationProvider {
     /// from.
     ///
     /// # Errors
-    /// [`Error::ConfigurationLoading`] when `profile.ini` or
-    /// `ignoredMods.txt` cannot be read.
+    /// [`Error::ConfigurationLoading`] when `profile.ini` cannot be read, or
+    /// `ignoredMods.txt`, `FilesToNotPack.txt` or `customHeadparts.txt`
+    /// exists but cannot be read.
     fn read_profile(
         &self,
         profile_identity: &str,
@@ -158,10 +159,11 @@ impl ProfileConfigurationProvider {
         // the run refuses exactly the Profiles the window reported.
         let settings = profile.load_settings().map_err(failed)?;
         let ignored_mods = profile.ignored_mods().map_err(failed)?;
-        // A missing or unreadable list is empty, as in C++; finalization logs it.
-        let files_to_not_pack = profile.files_to_not_pack();
-        // The same holds here; the headpart scan logs it.
-        let custom_headparts = profile.custom_headparts();
+        // A missing list is empty, and finalization logs a missing or empty
+        // `FilesToNotPack.txt`; one that exists but cannot be read refuses the
+        // run, as `ignoredMods.txt` does, rather than pack what it excludes.
+        let files_to_not_pack = profile.files_to_not_pack().map_err(failed)?;
+        let custom_headparts = profile.custom_headparts().map_err(failed)?;
         // Every Archive fact of the run comes from this one value: the
         // Archive extension routing compiles from here, and the packer and
         // the headpart scan's plugin extensions later.

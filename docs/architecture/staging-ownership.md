@@ -164,8 +164,12 @@ junctions, reparse points, hard links, unknown children, type
 mismatches, and inaccessible contents fail closed. Windows handles pin temporary files against
 replacement and delete those file identities. Windows also pins every ordinary ancestor of a
 present sibling before opening its file by name, then holds the ancestor pins through deletion.
-Production keeps sibling parent pins from stage creation through Safety Cleanup; the run child
-stays pinned until its staged Archive files have been removed. Directory removal is nonrecursive.
+Production pins a sibling's ordinary ancestors when it is staged and releases each pin with the
+last registered sibling beneath that directory, after the release snapshot is published: the
+pins deny deletion, so holding them to Safety Cleanup kept Archive Finalization from pruning
+folders whose packed sources it had deleted. A sibling still registered at Safety Cleanup keeps
+its ancestors pinned through cleanup. The run child stays pinned until its staged Archive files
+have been removed. Directory removal is nonrecursive.
 This protects staging from competing CAO processes, without claiming a sandbox against arbitrary
 filesystem changes by the same operating-system user.
 

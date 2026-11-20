@@ -644,3 +644,42 @@ fn an_unreadable_directory_fails_only_its_own_mod_root() {
         }
     }
 }
+
+/// A Dry Run reports a Mod Root whose plugin or Archive names differ only in
+/// case with the same warning an Apply run records, and changes nothing.
+#[test]
+fn a_dry_run_reports_names_that_differ_only_in_case() {
+    let Some(root) = common::case_sensitive_dir("dry-run-creation-case-twins") else {
+        return;
+    };
+    write_file(&root.join("meshes/a.nif"), b"twelve bytes");
+    for name in ["Mod.esp", "mod.ESP"] {
+        write_file(&root.join(name), b"a real plugin");
+    }
+    let before = snapshot_tree(&root);
+    let (result, _) = dry_run(
+        ArchiveRunRequest::new(&root),
+        FakeArchivePacker::default(),
+        &CancellationToken::new(),
+    );
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.failures()
+    );
+    let warnings: Vec<_> = result
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.code == RunDiagnosticCode::CaseTwinNames)
+        .collect();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].path, root);
+    assert!(
+        warnings[0].detail.contains("`Mod.esp` and `mod.ESP`"),
+        "{}",
+        warnings[0].detail
+    );
+    assert_eq!(snapshot_tree(&root), before);
+}

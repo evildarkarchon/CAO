@@ -14,6 +14,9 @@ export component TextInputDialog inherits Dialog {
     preferred-width: 320px;
     in property <string> label;
     in-out property <string> value;
+    // Why the last confirmed value was refused; empty while there is none. The
+    // dialog stays open so the user can correct the value in place.
+    in property <string> error;
     callback confirm();
     callback dismiss();
 
@@ -34,6 +37,13 @@ export component TextInputDialog inherits Dialog {
             accepted => {
                 root.confirm();
             }
+        }
+
+        if root.error != "": Text {
+            text: root.error;
+            wrap: word-wrap;
+            color: #c42b1c;
+            accessible-role: text;
         }
     }
 

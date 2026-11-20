@@ -468,6 +468,41 @@ fn a_missing_capability_or_texture_switch_loads_as_false() {
     }
 }
 
+/// A `settings.ini` without `bBsaCreateDummies` leaves Dummy Plugins on, as the
+/// options model's default has them; only an explicit `false` turns them off.
+#[test]
+fn a_missing_create_dummies_key_leaves_dummy_plugins_on() {
+    let app_dir = common::copy_of_shipped("settings-missing-create-dummies");
+    let profile = Profiles::new(&app_dir).open("SSE");
+    let text = String::from_utf8(common::read(&profile.settings_ini())).unwrap();
+    let without: Vec<&str> = text
+        .split("\r\n")
+        .filter(|line| !line.starts_with("bBsaCreateDummies="))
+        .collect();
+    assert_ne!(
+        without.len(),
+        text.split("\r\n").count(),
+        "the key is shipped"
+    );
+    std::fs::write(profile.settings_ini(), without.join("\r\n")).unwrap();
+    assert!(Options::default().bsa_create_dummies);
+    assert!(
+        profile
+            .load_options(&Options::default())
+            .unwrap()
+            .bsa_create_dummies
+    );
+
+    let off = text.replace("bBsaCreateDummies=true", "bBsaCreateDummies=false");
+    std::fs::write(profile.settings_ini(), off).unwrap();
+    assert!(
+        !profile
+            .load_options(&Options::default())
+            .unwrap()
+            .bsa_create_dummies
+    );
+}
+
 #[test]
 fn every_shipped_profile_loads_cleanly() {
     let profiles = shipped();

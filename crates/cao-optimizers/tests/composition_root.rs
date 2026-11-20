@@ -370,12 +370,27 @@ fn the_provider_loads_an_updated_selected_profile() {
     assert!(!second.prefers_conversion());
 }
 
+/// Each auxiliary list that exists but cannot be read refuses the run at
+/// Preparing, naming the file, rather than reading as empty: an empty
+/// `FilesToNotPack.txt` would pack, and then delete, the loose files it keeps
+/// out of Archives (GUI-2).
 #[test]
-fn the_provider_rejects_an_unreadable_ignored_mod_list() {
-    let app = app_dir("provider-unreadable-ignored");
-    std::fs::create_dir(app.join("profiles/FO4/ignoredMods.txt")).unwrap();
-    let provider = ProfileConfigurationProvider::new(&app);
-    assert!(provider.load(&saved_request(&app, "FO4", "FO4")).is_err());
+fn the_provider_rejects_an_unreadable_auxiliary_list() {
+    for name in [
+        "ignoredMods.txt",
+        "FilesToNotPack.txt",
+        "customHeadparts.txt",
+    ] {
+        let app = app_dir(&format!("provider-unreadable-{name}"));
+        // A directory under the file's name exists but cannot be read as a file.
+        std::fs::create_dir(app.join("profiles/FO4").join(name)).unwrap();
+        let provider = ProfileConfigurationProvider::new(&app);
+        let error = provider
+            .load(&saved_request(&app, "FO4", "FO4"))
+            .err()
+            .unwrap_or_else(|| panic!("{name}: the run was not refused"));
+        assert!(error.to_string().contains(name), "{name}: {error}");
+    }
 }
 
 #[test]

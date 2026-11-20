@@ -246,6 +246,7 @@
     <p><strong>Follow-up, same day.</strong> The three high findings below were fixed after the audit, in the same commit that adds this report. Each card now ends with a Resolution paragraph. After the fixes, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets</code> and <code>cargo build</code> pass and the suite is 993 tests, 0 failed (13 new). Everything else in this report describes commit 43dae05 as audited. One statement in the original <a href="#CORE-1">CORE-1</a> card was wrong and is corrected there.</p>
     <p><strong>Follow-up, 2026-11-18.</strong> Step 2 of the suggested order, the typed backend seam (<a href="#CORE-9">CORE-9</a>, <a href="#BE-2">BE-2</a>, <a href="#BE-1">BE-1</a>, <a href="#FFI-2">FFI-2</a>), was done in a second change, and those four cards also end with a Resolution paragraph. After it, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets</code> and <code>cargo build</code> pass and the suite is 1,002 tests, 0 failed (9 new). The <a href="#BE-2">BE-2</a> resolution notes one case that waits for <a href="#CORE-2">CORE-2</a> in step 3.</p>
     <p><strong>Follow-up, 2026-11-19.</strong> Step 3 of the suggested order, contained single-file failures (<a href="#CORE-2">CORE-2</a>, <a href="#BE-4">BE-4</a>, <a href="#FS-3">FS-3</a>, <a href="#FS-9">FS-9</a>, <a href="#CORE-6">CORE-6</a>), was done in a third change, and those five cards end with a Resolution paragraph. After it, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets</code> and <code>cargo build</code> pass and the suite is 1,014 tests, 0 failed (12 new). The case the <a href="#BE-2">BE-2</a> resolution left for step 3 is closed. <a href="#BE-4">BE-4</a> keeps one limit, by decision, which its resolution states.</p>
+    <p><strong>Follow-up, 2026-11-19 (second).</strong> Step 4 of the suggested order, the silent wrong outcomes (<a href="#BE-3">BE-3</a>, <a href="#GUI-2">GUI-2</a>, <a href="#GUI-1">GUI-1</a>, <a href="#GUI-3">GUI-3</a>, <a href="#FS-2">FS-2</a>, <a href="#BE-5">BE-5</a>, <a href="#FS-4">FS-4</a>), was done in a fourth change, and those seven cards end with a Resolution paragraph. The owner decided <a href="#FS-4">FS-4</a>: with Dummy Plugins off, no plugin is created or removed, and an Archive nothing would load is skipped with a warning. After it, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets</code> and <code>cargo build</code> pass and the suite is 1,024 tests (15 new, 5 removal tests retired), five of them in a case-sensitive directory (see <a href="#BE-3">BE-3</a>). <code>optimization_run_service</code> fails intermittently, one test at a time, and fails the same way on the commit before this change.</p>
   </div>
 
   <h4>The three high findings</h4>
@@ -649,7 +650,7 @@ publish_manifest(root, &amp;self.run_id, &amp;area.child, &amp;registered)?;</co
     <div class="f-head">
       <span class="fid">FS-2</span>
       <h3>Staging's parent pins silently defeat empty-directory pruning</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">correctness</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">correctness</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/staging.rs:149</code> · <code>:287</code> · <code>:693</code> · <code>crates/cao-core/src/run/finalization/mod.rs:859</code></p>
     <div class="f-body">
@@ -663,6 +664,7 @@ parent_pins: BTreeMap&lt;PathBuf, File&gt;,</code></pre>
       <p><strong>Why it matters.</strong> Pins are added whenever an Asset is staged and are never released before Safety Cleanup; each is a directory handle opened without delete sharing. After a run optimizes, packs and deletes sources, pruning tries to remove the now-empty directories, the pinned ones refuse, and <code>.is_ok()</code> hides the refusal. The mod keeps its empty folder tree with no diagnostic. The existing pruning test only prunes a folder whose Asset was never staged.</p>
       <p><strong>Suggested change.</strong> Release a directory's pin when the last staged sibling beneath it is released, and have pruning report refusals instead of filtering them out. Add an optimize, pack, prune test.</p>
       <p class="confidence">Confidence: high for the mechanism as read; not executed.</p>
+      <p><strong>Resolution.</strong> Fixed in step 4 of the suggested order. Staging now releases a directory's pin once no registered sibling lies beneath it, after the release snapshot is published. A sibling still registered keeps its ancestors pinned through Safety Cleanup, as before. Pruning reports refusals: "not empty" stays silent because it is how the walk works, and any other failure to remove an empty directory is logged as a warning naming it. A new run-level test optimizes a Texture through real staging and publication, packs it with its source deleted, and checks that both folders it emptied are pruned. With the release disabled the test fails. The staging-ownership architecture doc is updated.</p>
     </div>
   </article>
 
@@ -686,7 +688,7 @@ let lock = claim_lock(&amp;staging.join(OWNER_LOCK), OwnerLock::create)?;</code>
     <div class="f-head">
       <span class="fid">FS-4</span>
       <h3>With "create dummy plugins" off, sources are deleted with no loader check and existing Dummy Plugins are removed</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">design</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">design</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-core/src/run/finalization/attempt.rs:246</code> · <code>crates/cao-core/src/run/finalization/plugins.rs:272</code></p>
     <div class="f-body">
@@ -696,6 +698,7 @@ let lock = claim_lock(&amp;staging.join(OWNER_LOCK), OwnerLock::create)?;</code>
     Ok(remove_dummy_plugins(plan, root, packer, cancelled, account))</code></pre>
       <p><strong>Why it matters.</strong> The loading-plugin step, whose pin exists "because the Archive loads through this plugin", is skipped when the output has no loading plugin paths, which is the case with the option off. Packed Loose Assets are then deleted without anything proving the new Archive will load, and the same pass removes every byte-exact Dummy Plugin in the root, including ones loading older Archives. No bytes are lost, but the mod can stop loading; <a href="#BE-3">BE-3</a> makes the unloaded-Archive case easier to reach. The behaviour is documented, so this is a decision for the owner rather than a defect.</p>
       <p><strong>Suggested change.</strong> Decide whether "off" should mean "leave plugins alone". At minimum, require a plugin that loads the output before deleting sources, whatever the option says.</p>
+      <p><strong>Resolution.</strong> Decided and fixed in step 4 of the suggested order. The owner chose that "off" means "leave plugins alone". With Dummy Plugins off, Archive Finalization neither creates nor removes a plugin, and the guarded removal path, <code>PluginRemoval</code> and <code>PluginRemovalFailed</code> are gone. An output whose sources would be deleted is planned only when a plugin at one of its recognised names already loads it. Otherwise it is left out, its loose files stay, and Apply and Dry Run both record the new warning-level <code>ArchiveCreationSkipped</code> diagnostic, which names the Archive and the plugin that would load it. Re-running changes nothing. The attempt checks again before deleting sources: a plugin gone since planning leaves the committed Archive and every source as a <code>PluginCreationFailed</code> that stops later outputs. With source deletion off, packing needs no plugin, as before. Separately, at the owner's request, <code>bBsaCreateDummies</code> stays on when <code>settings.ini</code> lacks the key, matching the options model's default. The other options read a missing key as off. Finalization tests that switched Dummy Plugins off only to avoid plugin traffic now give their Mod Root a real plugin. ADR 0002 and the glossary record the change.</p>
     </div>
   </article>
 
@@ -1041,7 +1044,7 @@ keep_mta_alive()</code></pre>
     <div class="f-head">
       <span class="fid">BE-3</span>
       <h3>Plugin and Archive names are recognised by case-sensitive extension</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">correctness</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">correctness</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-archive/src/name.rs:49</code> · <code>:60</code> · <code>crates/cao-core/src/run/finalization/planning.rs:136</code> · <code>crates/cao-optimizers/src/headparts.rs:177</code></p>
     <div class="f-body">
@@ -1049,6 +1052,7 @@ keep_mta_alive()</code></pre>
 /// plugin), or its file name is missing or not Unicode.</code></pre>
       <p><strong>Why it matters.</strong> When a Mod Root lists no plugins, finalization planning names the Archive after the folder instead. A mod whose plugin is <code>MyMod.ESP</code> therefore gets <code>&lt;Folder&gt;.bsa</code> (and, with dummies on, a new <code>&lt;Folder&gt;.esp</code>) rather than an Archive its real plugin loads. With dummies off and "delete source files" on, which is the shipped default, the loose files are packed into an Archive nothing loads and then removed. An existing <code>Foo.BSA</code> is likewise invisible to Loading Plugin maintenance, while routing sees it. The head-part scanner in the same crate set already compares case-insensitively, with the comment "mods do ship <code>Plugin.ESP</code>".</p>
       <p><strong>Suggested change.</strong> Compare with <code>eq_ignore_ascii_case</code> in <code>FilePath::make</code>, keeping the on-disk spelling for round-trips, and replace the test that pins the current behaviour.</p>
+      <p><strong>Resolution.</strong> Fixed in step 4 of the suggested order. <code>FilePath::make</code> compares plugin and Archive extensions with <code>eq_ignore_ascii_case</code>, and <code>ext</code> keeps the spelling on disk, so <code>full_path</code> still names the parsed file. <code>MyMod.ESP</code> now names the Archive and loads it, and an existing <code>Foo.BSA</code> gets Loading Plugin maintenance. The test that pinned the case-sensitive rule now pins the new one, round trip included, and the listing test lists <code>Other.ESP</code>. Core's fake packer parses names the same way. Matching names regardless of case is right however the game runs: Windows ignores case, and so do Wine and Proton on Linux. That leaves two risks, both handled in the same change. First, in a case-sensitive directory CAO could create a twin: a Dummy Plugin <code>MyMod.esp</code> beside <code>MyMod.ESP</code>, or an Archive <code>MyMod.bsa</code> beside <code>MyMod.BSA</code>. Archive Finalization now matches every name it probes ignoring case, through <code>existing_entry</code>, and checks again just before publishing an Archive. Second, a Mod Root may already hold such pairs, for example from a Linux mod manager. Planning reports each root that does with the new warning-level <code>CaseTwinNames</code> diagnostic, under Apply and Dry Run, and goes on. Five tests run in a real case-sensitive directory and are skipped on a host that cannot make one.</p>
     </div>
   </article>
 
@@ -1073,7 +1077,7 @@ fn decode&lt;'name&gt;(&amp;self, name: &amp;'name ba2::BStr) -&gt; Result&lt;&a
     <div class="f-head">
       <span class="fid">BE-5</span>
       <h3>"Merge incompressible" turns compression off for the Standard Archive even when nothing incompressible exists</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">correctness</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">correctness</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-archive/src/data.rs:159</code> · <code>:263</code> · <code>crates/cao-archive/src/write.rs:132</code></p>
     <div class="f-body">
@@ -1081,6 +1085,7 @@ fn decode&lt;'name&gt;(&amp;self, name: &amp;'name ba2::BStr) -&gt; Result&lt;&a
 ///   Standard Archive Incompressible, so it is written uncompressed.</code></pre>
       <p><strong>Why it matters.</strong> A user with Compress and Merge incompressible both on gets uncompressed Standard Archives for every mod, including mods with no sound, strings or script files, and nothing in the log says so. When the partition is non-empty, one small incompressible file makes the whole merged Archive uncompressed, although the writer can already store individual files raw inside a compressed BSA. A test pins the empty-partition case.</p>
       <p><strong>Suggested change.</strong> At minimum, only take the Incompressible type when the absorbed partition is non-empty. Better, keep the merged Archive Standard and mark the incompressible members for raw storage.</p>
+      <p><strong>Resolution.</strong> Fixed in step 4 of the suggested order, with the minimal change. An empty Incompressible partition no longer joins, so a mod with nothing incompressible keeps a Standard, compressed Archive, and the test that pinned the old case now pins this one. When the partition is not empty, the merged Archive is still Incompressible and written uncompressed, which is what the option asks for. The better change, a compressed Standard Archive with raw-stored sound and script members, was not taken: whether the games play raw sound entries from a compressed Archive needs checking in game first.</p>
     </div>
   </article>
 
@@ -1299,7 +1304,7 @@ AllowedPath::new(".hkb", &amp;["meshes"]),</code></pre>
     <div class="f-head">
       <span class="fid">GUI-1</span>
       <h3>A new profile's name is not validated; typing an existing name strips that profile's base marker</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">correctness</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">correctness</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-gui/src/app.rs:442</code> · <code>crates/cao-profiles/src/profiles.rs:116</code></p>
     <div class="f-body">
@@ -1309,6 +1314,7 @@ let flag = profile.directory.join("isBase");
 match fs::remove_file(&amp;flag) {</code></pre>
       <p><strong>Why it matters.</strong> The window rejects only an empty name, and <code>create</code> documents that it validates nothing. Entering <code>SSE</code> (or <code>sse</code>, the same directory on NTFS) copies nothing because every file exists, then deletes <code>profiles/SSE/isBase</code>, so the shipped base profile silently becomes editable. <code>..</code> copies the profile files into the app directory, and a name with a separator creates a directory the profile list never shows.</p>
       <p><strong>Suggested change.</strong> Validate in <code>Profiles::create</code>, so every caller is covered: reject names that match an existing profile ignoring case, contain a separator or other reserved character, are <code>.</code> or <code>..</code>, end in a dot or space, or are device names. Remove <code>isBase</code> only from a directory this call created, and show the reason in the name dialog.</p>
+      <p><strong>Resolution.</strong> Fixed in step 4 of the suggested order. The new <code>Profiles::check_new_name</code> refuses a name that is empty, taken by any entry in <code>profiles/</code> ignoring case, holding a separator, another reserved or control character, ending in a dot or space, or a device name with or without an extension. <code>Profiles::create</code> runs the check first and then creates the profile's directory exclusively, so <code>isBase</code> is only ever removed from a directory that call created. The name dialog runs the check on OK and, on a refusal, stays open and shows the reason under the field, before the base dialog opens. New tests cover taken names (<code>SSE</code>, <code>sse</code>, the non-profile <code>TES4</code>), every rejected form with nothing created, and the dialog.</p>
     </div>
   </article>
 
@@ -1316,7 +1322,7 @@ match fs::remove_file(&amp;flag) {</code></pre>
     <div class="f-head">
       <span class="fid">GUI-2</span>
       <h3>An unreadable <code>FilesToNotPack.txt</code> becomes an empty exclusion list and the run proceeds</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">error-handling</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">error-handling</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-profiles/src/profiles.rs:196</code> · <code>crates/cao-optimizers/src/composition.rs:160</code> · <code>crates/cao-core/src/run/finalization/mod.rs:764</code></p>
     <div class="f-body">
@@ -1328,6 +1334,7 @@ fn optional_list(&amp;self, name: &amp;str) -&gt; Vec&lt;String&gt; {
         .unwrap_or_default()</code></pre>
       <p><strong>Why it matters.</strong> Packing Exclusions keep animation, behaviour and tool folders loose. If the file is locked or unreadable, the list is empty, finalization logs an error saying the file was "not found", and packing goes ahead with no exclusions: those files are packed and, with the default "delete source files", their loose copies removed. The code already makes the opposite choice for <code>ignoredMods.txt</code>, with the reason "ignoring it would process mods the profile means to exclude". The same message is logged for a file that exists and is empty.</p>
       <p><strong>Suggested change.</strong> Return <code>Result</code> from <code>files_to_not_pack()</code> and <code>custom_headparts()</code> as <code>ignored_mods()</code> does, and fail Preparing with the path and cause. Distinguish "missing", "empty" and "unreadable" in the message.</p>
+      <p><strong>Resolution.</strong> Fixed in step 4 of the suggested order. <code>files_to_not_pack()</code> and <code>custom_headparts()</code> return <code>Result</code>, as <code>ignored_mods()</code> does, through one reader, and the error, now <code>ProfileError::AuxiliaryList</code>, names the file. One that exists but cannot be read fails Preparing with its path and cause. A missing file is still an empty list. Since an unreadable file can no longer reach finalization, its log line says the file "is missing or lists no rules" instead of "not found". Missing and empty are not told apart there, because both mean no Packing Exclusion applies. New tests cover all three lists at the profile and at the provider.</p>
     </div>
   </article>
 
@@ -1335,7 +1342,7 @@ fn optional_list(&amp;self, name: &amp;str) -&gt; Vec&lt;String&gt; {
     <div class="f-head">
       <span class="fid">GUI-3</span>
       <h3>A failed options read on profile switch leaves the previous profile's options live, and the next save writes them into the new profile</h3>
-      <span class="sev sev-medium">Medium</span><span class="tag">error-handling</span><span class="tag pass">verified</span>
+      <span class="sev sev-medium">Medium</span><span class="tag">error-handling</span><span class="tag pass">verified</span><span class="tag pass">fixed</span>
     </div>
     <p class="where"><code>crates/cao-gui/src/app.rs:289</code> · <code>:392</code></p>
     <div class="f-body">
@@ -1348,6 +1355,7 @@ fn optional_list(&amp;self, name: &amp;str) -&gt; Vec&lt;String&gt; {
 }</code></pre>
       <p><strong>Why it matters.</strong> <code>profile.ini</code> has a guard for this case (an unreadable one is never written back), but <code>settings.ini</code> has none. After the error box, the window shows profile A's options under profile B. A save runs on close, on the next switch, on the debug-log toggle and at run start; if B's file is readable by then, A's options are merged over it. A transient sharing violation from a sync client or scanner is enough.</p>
       <p><strong>Suggested change.</strong> Give the loaded options a "not read" state and skip <code>save_options</code> while it is set, mirroring the <code>profile.ini</code> guard.</p>
+      <p><strong>Resolution.</strong> Fixed in step 4 of the suggested order, as suggested. The window's loaded state records whether the options came from the selected profile's <code>settings.ini</code>. While they did not, <code>save</code> writes <code>profile.ini</code> and <code>common.ini</code> as before but never <code>settings.ini</code>, mirroring the <code>profile.ini</code> guard, and the error box says changes are not saved into that profile until it is selected again. A new GUI test makes <code>settings.ini</code> unreadable for the switch only, then saves directly, through the debug-log toggle and on the next switch, and finds the file byte-for-byte unchanged.</p>
     </div>
   </article>
 
@@ -1751,7 +1759,7 @@ env!("CARGO_PKG_VERSION")</code></pre>
         <tr><td class="num">1</td><td>Close the three high findings</td><td><a href="#FFI-1">FFI-1</a>, <a href="#CORE-1">CORE-1</a>, <a href="#FS-1">FS-1</a></td><td><span class="tag pass">done</span> Each was contained: a shim change, one decided rule with tests, and batch registration and release.</td></tr>
         <tr><td class="num">2</td><td>Widen the backend seam from <code>bool</code> to typed results</td><td><a href="#CORE-9">CORE-9</a>, <a href="#BE-2">BE-2</a>, <a href="#BE-1">BE-1</a>, <a href="#FFI-2">FFI-2</a></td><td><span class="tag pass">done</span> One trait change fixes the missing Mesh cause, the wrong quarantines and the deliberate panic together.</td></tr>
         <tr><td class="num">3</td><td>Make single-file problems contained failures</td><td><a href="#CORE-2">CORE-2</a>, <a href="#BE-4">BE-4</a>, <a href="#FS-3">FS-3</a>, <a href="#FS-9">FS-9</a>, <a href="#CORE-6">CORE-6</a></td><td><span class="tag pass">done</span> Removes the cases where a real mod folder cannot be processed at all.</td></tr>
-        <tr><td class="num">4</td><td>Remove the silent wrong outcomes</td><td><a href="#BE-3">BE-3</a>, <a href="#GUI-2">GUI-2</a>, <a href="#GUI-1">GUI-1</a>, <a href="#GUI-3">GUI-3</a>, <a href="#FS-2">FS-2</a>, <a href="#BE-5">BE-5</a>, <a href="#FS-4">FS-4</a></td><td>Small changes, each with a test that pins the new behaviour; <a href="#FS-4">FS-4</a> needs a decision first.</td></tr>
+        <tr><td class="num">4</td><td>Remove the silent wrong outcomes</td><td><a href="#BE-3">BE-3</a>, <a href="#GUI-2">GUI-2</a>, <a href="#GUI-1">GUI-1</a>, <a href="#GUI-3">GUI-3</a>, <a href="#FS-2">FS-2</a>, <a href="#BE-5">BE-5</a>, <a href="#FS-4">FS-4</a></td><td><span class="tag pass">done</span> Small changes, each with a test that pins the new behaviour; <a href="#FS-4">FS-4</a> needs a decision first.</td></tr>
         <tr><td class="num">5</td><td>Add CI and settle the long-path approach</td><td><a href="#WS-2">WS-2</a>, <a href="#WS-1">WS-1</a>, <a href="#WS-3">WS-3</a></td><td>Protects steps 1 to 4 from regressing and makes a release reproducible.</td></tr>
         <tr><td class="num">6</td><td>Make runs idempotent and cut repeated I/O</td><td><a href="#BE-6">BE-6</a>, <a href="#BE-7">BE-7</a>, <a href="#CORE-4">CORE-4</a>, <a href="#CORE-3">CORE-3</a>, <a href="#FS-6">FS-6</a>, <a href="#BE-8">BE-8</a></td><td>Mostly independent of each other; measure before and after.</td></tr>
         <tr><td class="num">7</td><td>Keyboard access and dialog sizing</td><td><a href="#GUI-5">GUI-5</a>, <a href="#GUI-6">GUI-6</a>, <a href="#GUI-4">GUI-4</a></td><td>Confined to the <code>.slint</code> files and the close path.</td></tr>

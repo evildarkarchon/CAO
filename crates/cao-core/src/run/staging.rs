@@ -153,11 +153,41 @@ struct Area {
     artifacts: Vec<Artifact>,
     /// Pins the run child until its staged Archive files have been removed.
     child_pin: Option<File>,
-    /// Ordinary ancestors of staged siblings, pinned from staging through
-    /// Safety Cleanup so none can be renamed into a link.
+    /// Ordinary ancestors of staged siblings, pinned while a sibling beneath
+    /// them is registered so none can be renamed into a link. Each is
+    /// released with the last registered sibling beneath it: the handles
+    /// deny deletion, so a pin held to Safety Cleanup would stop Archive
+    /// Finalization pruning a folder its packed sources emptied (audit FS-2).
     parent_pins: BTreeMap<PathBuf, File>,
     /// Bootstrap finished: the initial manifest and the run child exist.
     ready: bool,
+}
+
+impl Area {
+    /// Drops the pin of every directory no registered sibling still lies
+    /// beneath. Called after a release snapshot is published, so a pin only
+    /// goes once nothing it protects is still owned; a sibling that is
+    /// registered keeps every ancestor up to the Mod Root pinned.
+    fn release_unneeded_parent_pins(&mut self, root: &Path) {
+        let mut needed = std::collections::BTreeSet::new();
+        for artifact in self
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.root_relative)
+        {
+            let path = artifact_path(root, artifact);
+            let mut parent = path.parent();
+            while let Some(directory) = parent
+                && directory != root
+                && directory.starts_with(root)
+            {
+                needed.insert(directory.to_path_buf());
+                parent = directory.parent();
+            }
+        }
+        self.parent_pins
+            .retain(|directory, _| needed.contains(directory));
+    }
 }
 
 /// The manifest-owned temporary entries of one run, across its Mod Roots.
@@ -253,7 +283,8 @@ impl StagingScope {
     ///
     /// The sibling's extension is the destination's, lowercased, and only
     /// DDS, NIF, BTR, BTO and HKX destinations can be staged. Its parent and
-    /// every ancestor below the Mod Root stay pinned until this scope drops.
+    /// every ancestor below the Mod Root stay pinned while it, or another
+    /// sibling beneath them, stays registered.
     pub(crate) fn stage_file(
         &mut self,
         mod_root: &Path,
@@ -434,6 +465,7 @@ impl StagingScope {
             }
             publish_manifest(root, &self.run_id, &area.child, &retained)?;
             area.artifacts = retained;
+            area.release_unneeded_parent_pins(root);
         }
         Ok(())
     }

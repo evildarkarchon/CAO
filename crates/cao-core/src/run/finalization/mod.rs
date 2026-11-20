@@ -48,7 +48,9 @@ use crate::run::{
 use crate::{AttemptOutcome, Error, OperationFailure};
 
 use attempt::attempt_output;
-use planning::{FinalizationPlan, PlanningCancelled, UnplannedRoot, plan_finalization};
+use planning::{
+    FinalizationPlan, PlanningCancelled, UnplannedRoot, describe_case_twins, plan_finalization,
+};
 use plugins::maintain_existing_loading_plugins;
 
 /// Why Archive Finalization, or one of its output attempts, failed.
@@ -62,8 +64,6 @@ pub enum ArchiveFinalizationFailure {
     CommitFailed,
     /// A Loading Plugin could not be found or created.
     PluginCreationFailed,
-    /// A Dummy Plugin could not be removed.
-    PluginRemovalFailed,
     /// A packed source could not be removed.
     SourceCleanupFailed,
     /// Planning could not plan one or more Mod Roots, such as one with a
@@ -124,15 +124,13 @@ pub enum ArchiveFinalizationMutationKind {
     EmptyDirectoryPruning,
     /// A Dummy Plugin published.
     PluginCreation,
-    /// An exact Dummy Plugin removed.
-    PluginRemoval,
 }
 
 /// One completed effect that no output attempt accounts for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveFinalizationMutation {
     pub mod_root: PathBuf,
-    /// The plugin created or removed, or the pruned Mod Root.
+    /// The plugin created, or the pruned Mod Root.
     pub path: PathBuf,
     pub kind: ArchiveFinalizationMutationKind,
     pub mutation: MutationState,
@@ -250,7 +248,9 @@ pub struct ArchiveFinalizationChoices {
     pub compress: bool,
     /// Delete packed Loose Assets once their Archive is loadable (`bBsaDeleteSource`).
     pub delete_sources: bool,
-    /// Create missing Dummy Plugins; otherwise remove exact ones (`bBsaCreateDummies`).
+    /// Create missing Dummy Plugins (`bBsaCreateDummies`). Off, no plugin is
+    /// created or removed, and an output whose sources would be deleted is
+    /// packed only when a plugin already loads it.
     pub create_dummy_plugins: bool,
     /// Merge Incompressible files into the Standard Archive (`bBsaMergeIncomp`).
     pub merge_incompressible: bool,
@@ -373,6 +373,9 @@ pub(crate) enum CreationPlanning {
         /// the roots an Apply run would leave out with
         /// [`ArchiveFinalizationFailure::PlanningFailed`].
         unplanned: Vec<RunDiagnostic>,
+        /// The plan's own warnings, as [`plan_warnings`] lists them: the
+        /// same ones an Apply run records over the same Mod Roots.
+        plan_warnings: Vec<RunDiagnostic>,
     },
     /// Cancellation was observed while planning; nothing was planned.
     Cancelled,
@@ -430,10 +433,15 @@ pub(crate) fn plan_archive_creation(
             CapacityStage::BeforeCreation,
             &creation_demand(capacity, &plan).phase,
         );
-        Ok((planned_outputs(&plan), verdict, unplanned_warnings(&plan)))
+        Ok((
+            planned_outputs(&plan),
+            verdict,
+            unplanned_warnings(&plan),
+            plan_warnings(&plan),
+        ))
     }));
     match planned {
-        Ok(Ok((outputs, verdict, unplanned))) => {
+        Ok(Ok((outputs, verdict, unplanned, plan_warnings))) => {
             // Matched outside the containment above, so an impossible arm
             // panics rather than passing as a planning failure.
             let capacity_warning = match verdict {
@@ -453,6 +461,7 @@ pub(crate) fn plan_archive_creation(
                 outputs,
                 capacity_warning,
                 unplanned,
+                plan_warnings,
             }
         }
         Ok(Err(PlanningCancelled)) => CreationPlanning::Cancelled,
@@ -484,6 +493,43 @@ fn unplanned_warnings(plan: &FinalizationPlan) -> Vec<RunDiagnostic> {
             .with_path(&root.root)
         })
         .collect()
+}
+
+/// The warnings `plan` records, Apply and Dry Run alike: one
+/// [`RunDiagnosticCode::CaseTwinNames`] per Mod Root holding plugin or
+/// Archive names that differ only in case, then one
+/// [`RunDiagnosticCode::ArchiveCreationSkipped`] per output left out because
+/// nothing would load it, each at its Mod Root and in plan order.
+fn plan_warnings(plan: &FinalizationPlan) -> Vec<RunDiagnostic> {
+    let case_twins = plan.case_twins.iter().map(|root| {
+        RunDiagnostic::new(
+            RunDiagnosticCode::CaseTwinNames,
+            RunPhase::ArchiveFinalization,
+            format!(
+                "These names differ only in case: {}. The game, under Windows, Wine or \
+                 Proton, sees each group as one name and loads only one of its files. Keep \
+                 one file of each group.",
+                describe_case_twins(&root.groups)
+            ),
+        )
+        .with_path(&root.mod_root)
+    });
+    let skipped = plan.unloadable.iter().map(|output| {
+        RunDiagnostic::new(
+            RunDiagnosticCode::ArchiveCreationSkipped,
+            RunPhase::ArchiveFinalization,
+            format!(
+                "{} was not created: Create Dummy Plugins is off and no plugin loads it, so \
+                     packing it and deleting its {} loose files could stop the mod loading \
+                     them. The files stay loose. Add {} or turn Create Dummy Plugins on.",
+                output.archive_path.display(),
+                output.file_count,
+                output.plugin_path.display()
+            ),
+        )
+        .with_path(&output.mod_root)
+    });
+    case_twins.chain(skipped).collect()
 }
 
 /// Archive creation's capacity demand over one frozen plan, as
@@ -585,6 +631,12 @@ fn run_phase(
             }
         };
         phase.plan(plan.outputs.len()).map_err(Escape::Evidence)?;
+        // Planning already logged each output it left out and each root
+        // with names that differ only in case; the evidence carries them as
+        // warnings, as a Dry Run's does.
+        for warning in plan_warnings(&plan) {
+            phase.retain_diagnostic(warning);
+        }
         finalize_plan(seams, capacity, &plan, artifacts, cancelled, phase, account)?;
         // Recorded after the other roots are finalized, and only when the
         // phase found no failure of its own: a shortage, plugin failure or
@@ -805,15 +857,20 @@ enum Escape {
 /// [`packing_exclusions`], logging an Application Log error when the
 /// Selected Profile has none. Called only where packing is planned, under
 /// Apply or Dry Run.
+///
+/// An empty list here means `FilesToNotPack.txt` was missing or listed no
+/// rules: one that exists but cannot be read already refused the run at
+/// Preparing, so the message never blames an unreadable file.
 fn checked_packing_exclusions(preparation: &RunPreparation) -> Vec<String> {
     let exclusions = packing_exclusions(preparation);
     // The list only filters packing, so its absence matters only when
     // packing runs or is planned.
     if exclusions.is_empty() {
         log::error!(
-            "FilesToNotPack.txt not found. This can cause a number of issues. For \
-             example, for Skyrim, animations will be packed to BSA, preventing them from \
-             being detected by FNIS and Nemesis."
+            "FilesToNotPack.txt is missing or lists no rules, so no Packing Exclusion \
+             applies. This can cause a number of issues. For example, for Skyrim, \
+             animations will be packed to BSA, preventing them from being detected by FNIS \
+             and Nemesis."
         );
     }
     exclusions
@@ -870,7 +927,8 @@ const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 /// Cleanup and is skipped, as are links and other reparse points, which are
 /// neither descended into nor removed, and hidden directories, as Qt skipped
 /// them. Removal is nonrecursive, so a directory that is not empty, or that
-/// cannot be listed, simply stays. **Deviation 20:** C++ also skipped any
+/// cannot be listed, simply stays; an empty one that cannot be removed stays
+/// too, with an Application Log warning naming it. **Deviation 20:** C++ also skipped any
 /// directory whose full path contained "separator", case-insensitively;
 /// that rule is gone.
 fn delete_empty_directories(root: &Path) -> usize {
@@ -904,8 +962,19 @@ fn delete_empty_directories(root: &Path) -> usize {
     // empties each child before its parent is tried, as C++'s length-keyed
     // map iterated from the back did.
     directories.sort_by_key(|path| std::cmp::Reverse(path.as_os_str().encode_wide().count()));
-    directories
-        .iter()
-        .filter(|directory| std::fs::remove_dir(directory).is_ok())
-        .count()
+    let mut pruned = 0;
+    for directory in &directories {
+        match std::fs::remove_dir(directory) {
+            Ok(()) => pruned += 1,
+            // Most candidates still hold files; trying them is the walk.
+            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
+            // An empty directory that stays, held open or denied, is the
+            // user's to know about: it used to vanish behind `is_ok` (FS-2).
+            Err(error) => log::warn!(
+                "Could not remove empty directory {}: {error}",
+                directory.display()
+            ),
+        }
+    }
+    pruned
 }

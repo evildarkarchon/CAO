@@ -56,8 +56,8 @@ use cao_core::routing::RequestedWork;
 use cao_core::run::{
     ArchiveFinalizationChoices, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
     ArchiveFinalizationResult, ArchiveNameKind, ArchiveReader, CancellationToken, MutationKind,
-    MutationSummary, OptimizationRunResult, PackedArchiveKind, RunDiagnostic, RunFailure,
-    RunObservationSink, RunOutcome, RunPhase, RunPhaseRecord, RunProgress,
+    MutationSummary, OptimizationRunResult, PackedArchiveKind, RunDiagnostic, RunDiagnosticCode,
+    RunFailure, RunObservationSink, RunOutcome, RunPhase, RunPhaseRecord, RunProgress,
 };
 use cao_core::test_support::{
     ArchiveRunRequest, FakeArchivePacker, FakeArchiveReader, FakeVolumeProbe, Observed,
@@ -297,6 +297,30 @@ fn root_plugin(root: &Path) -> PathBuf {
     root.join(format!("{name}.esp"))
 }
 
+/// Writes a real plugin at `root`'s own plugin name, so its Archives load
+/// without a Dummy Plugin: a scenario that turns Dummy Plugins off to keep
+/// plugin publication out of the picture still packs and deletes its
+/// sources (audit FS-4). The name is the one planning already gives the
+/// root's Archives, so they keep their names.
+fn real_plugin(root: &Path) {
+    write_file(&root_plugin(root), b"a real plugin");
+}
+
+/// The entries directly in `root` whose names differ only in case, which
+/// the game, under Windows, Wine or Proton, would see as one name.
+fn case_twins(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort_by_key(|name| name.to_lowercase());
+    names
+        .windows(2)
+        .filter(|pair| pair[0].eq_ignore_ascii_case(&pair[1]))
+        .map(|pair| format!("{} / {}", pair[0], pair[1]))
+        .collect()
+}
+
 /// Whether the fake reader can read `archive` back.
 fn reads_back(archive: &Path) -> bool {
     FakeArchiveReader::default().list_entries(archive).is_ok()
@@ -471,6 +495,7 @@ fn an_idle_root_of_unknown_volume_does_not_inflate_capacity() {
     ];
     for root in &roots[..2] {
         write_file(&root.join("textures/asset.dds"), b"source bytes");
+        real_plugin(root);
     }
     std::fs::create_dir(&roots[2]).unwrap();
     let mut finalizer = Finalizer {
@@ -756,6 +781,7 @@ fn the_total_is_frozen_and_cancellation_falls_between_outputs() {
         let roots = [parent.join("mod-a"), parent.join("mod-b")];
         for root in &roots {
             write_file(&root.join("textures/asset.dds"), b"source bytes");
+            real_plugin(root);
         }
         let log = Log::default();
         let sink = ProgressLog(log.clone());
@@ -935,64 +961,10 @@ fn cancellation_stops_plugin_maintenance_between_roots() {
     assert!(run.cleaned_up());
 }
 
-/// Origin: finalizationReportsGuardedPluginRemovalFailure. A Dummy Plugin
-/// whose deletion another handle blocks is a contained failure after the
-/// completed output.
-#[test]
-fn a_blocked_dummy_plugin_removal_is_a_contained_failure() {
-    let root = scratch("blocked-removal").join("mod");
-    write_file(&root.join("textures/asset.dds"), b"source bytes");
-    let plugin = root.join("existing.esp");
-    write_file(&plugin, &fake_dummy_plugin());
-    let held: Arc<Mutex<Option<File>>> = Arc::default();
-    let holder = Arc::clone(&held);
-    let probed = plugin.clone();
-    let finalizer = Finalizer {
-        settings: ArchiveFinalizationChoices {
-            create_dummy_plugins: false,
-            compress: false,
-            delete_sources: false,
-            ..ArchiveFinalizationChoices::default()
-        },
-        // After planning, block only the deletion; reads stay shared.
-        probe: capacity(move |_| {
-            holder
-                .lock()
-                .unwrap()
-                .get_or_insert_with(|| hold(&probed, SHARE_READ));
-            Some(UNLIMITED)
-        }),
-        ..Finalizer::default()
-    };
-    let run = finalizer.run(std::slice::from_ref(&root));
-    assert!(held.lock().unwrap().take().is_some());
-
-    let result = run.finalization();
-    assert_eq!(result.attempts.len(), 1);
-    assert!(
-        result.attempts[0].succeeded(),
-        "{:?}",
-        result.attempts[0].outcome
-    );
-    assert!(result.safe_to_continue);
-    assert_eq!(
-        result.failure_category(),
-        Some(ArchiveFinalizationFailure::PluginRemovalFailed)
-    );
-    assert!(result.mutations.is_empty());
-    assert!(
-        result
-            .failure
-            .as_ref()
-            .is_some_and(|failure| !failure.detail().is_empty())
-    );
-    assert!(result.attempts[0].archive_path.exists());
-    assert!(plugin.exists());
-    assert!(run.cleaned_up());
-}
-
-/// Origin: finalizationRetainsPluginMutations (both rows). Plugin actions for
-/// an existing Archive are mutation facts even with zero planned outputs.
+/// Origin: finalizationRetainsPluginMutations (the creating row). A Dummy
+/// Plugin created for an existing Archive is a mutation fact even with zero
+/// planned outputs; with Dummy Plugins off, the same root's exact Dummy
+/// Plugin is left alone and there is no fact at all (audit FS-4).
 #[test]
 fn plugin_actions_for_existing_archives_are_mutation_facts() {
     for create_dummies in [true, false] {
@@ -1015,51 +987,56 @@ fn plugin_actions_for_existing_archives_are_mutation_facts() {
         assert!(result.attempts.is_empty());
         assert_eq!(result.failure, None);
         assert!(result.safe_to_continue);
+        assert!(plugin.exists());
+        assert!(run.cleaned_up());
+        let progress = run.progress().unwrap();
+        assert_eq!(progress.total(), 0);
+        if !create_dummies {
+            assert!(result.mutations.is_empty(), "{:?}", result.mutations);
+            assert_eq!(std::fs::read(&plugin).unwrap(), fake_dummy_plugin());
+            continue;
+        }
         assert_eq!(result.mutations.len(), 1);
         let mutation = &result.mutations[0];
         assert_eq!(mutation.mod_root, root);
         assert_eq!(mutation.path, plugin);
         assert_eq!(
             mutation.kind,
-            if create_dummies {
-                ArchiveFinalizationMutationKind::PluginCreation
-            } else {
-                ArchiveFinalizationMutationKind::PluginRemoval
-            }
+            ArchiveFinalizationMutationKind::PluginCreation
         );
         assert_eq!(mutation.mutation, MutationState::Committed);
         assert_eq!(mutation.count, 1);
-        assert_eq!(plugin.exists(), create_dummies);
-        assert!(run.cleaned_up());
-
-        let progress = run.progress().unwrap();
-        assert_eq!(progress.total(), 0);
         let summaries = run.finalization_summaries();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].committed, 1);
     }
 }
 
-/// Origin: finalizationRemovesOnlyExactDummyPlugins. Only a plugin whose
-/// complete bytes are canonical is removed, one written outside CAO
-/// included; a same-size different plugin, a full plugin and a dummy outside
-/// the Mod Root stay.
+/// Audit FS-4. With Dummy Plugins off, no plugin is removed: an exact Dummy
+/// Plugin an earlier run made may be all that loads an Archive it packed.
+/// Exact, same-size, full, hard-linked and symlinked plugins all stay, and
+/// nothing fails.
 #[test]
-fn only_exact_dummy_plugins_are_removed() {
-    let parent = scratch("exact-dummies");
+fn without_dummy_plugins_no_plugin_is_removed() {
+    let parent = scratch("dummies-off-keeps-plugins");
     let root = parent.join("mod");
     write_file(&root.join("existing.bsa"), b"retained archive");
     let dummy = fake_dummy_plugin();
     let mut same_size = dummy.clone();
     same_size[0] ^= 0x5a;
-    let exact = root.join("external.esp");
+    let exact = root.join("existing.esp");
     let different = root.join("different.esp");
     let full = root.join("full.esm");
-    let unrelated = parent.join("outside.esp");
+    let target = parent.join("outside.bin");
+    let hard_linked = root.join("hard.esp");
+    let symlinked = root.join("soft.esp");
     write_file(&exact, &dummy);
     write_file(&different, &same_size);
     write_file(&full, b"full loading plugin");
-    write_file(&unrelated, &dummy);
+    write_file(&target, &dummy);
+    std::fs::hard_link(&target, &hard_linked).unwrap();
+    // A host without the symlink privilege still checks every other kind.
+    let has_symlink = symlink(&target, &symlinked);
     let finalizer = Finalizer {
         settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
@@ -1073,43 +1050,30 @@ fn only_exact_dummy_plugins_are_removed() {
     assert!(result.attempts.is_empty());
     assert_eq!(result.failure, None);
     assert!(result.safe_to_continue);
-    let progress = run.progress().unwrap();
-    assert_eq!((progress.completed(), progress.total()), (0, 0));
-    assert_eq!(result.mutations.len(), 1);
-    assert_eq!(result.mutations[0].mod_root, root);
-    assert_eq!(result.mutations[0].path, exact);
-    assert_eq!(
-        result.mutations[0].kind,
-        ArchiveFinalizationMutationKind::PluginRemoval
-    );
-    assert_eq!(result.mutations[0].mutation, MutationState::Committed);
-    assert!(!exact.exists());
+    assert!(result.mutations.is_empty(), "{:?}", result.mutations);
+    assert_eq!(std::fs::read(&exact).unwrap(), dummy);
     assert_eq!(std::fs::read(&different).unwrap(), same_size);
     assert_eq!(std::fs::read(&full).unwrap(), b"full loading plugin");
-    assert_eq!(std::fs::read(&unrelated).unwrap(), dummy);
+    assert_eq!(std::fs::read(&hard_linked).unwrap(), dummy);
+    if has_symlink {
+        assert!(std::fs::symlink_metadata(&symlinked).unwrap().is_symlink());
+    }
+    assert_eq!(std::fs::read(&target).unwrap(), dummy);
     assert!(run.cleaned_up());
 }
 
-/// Origin: finalizationRejectsLinkedDummyPlugins (both rows). A hard-linked
-/// or symlinked plugin with canonical bytes is never removed, nor its target.
+/// Audit FS-4. With Dummy Plugins off and sources to delete, an output that
+/// no plugin loads is not packed at all: its loose files stay, and the run
+/// warns with `ArchiveCreationSkipped` naming the Archive and the plugin
+/// that would load it. Re-running changes nothing either.
 #[test]
-fn linked_dummy_plugins_are_never_removed() {
-    for use_symlink in [false, true] {
-        let parent = scratch(&format!("linked-dummy-{use_symlink}"));
-        let root = parent.join("mod");
-        write_file(&root.join("existing.bsa"), b"retained archive");
-        let bytes = fake_dummy_plugin();
-        let target = parent.join("outside.bin");
-        let plugin = root.join("external.esp");
-        write_file(&target, &bytes);
-        if use_symlink {
-            if !symlink(&target, &plugin) {
-                eprintln!("skipped: file symlinks are unavailable on this host");
-                continue;
-            }
-        } else {
-            std::fs::hard_link(&target, &plugin).unwrap();
-        }
+fn without_dummy_plugins_an_archive_nothing_loads_is_skipped() {
+    let root = scratch("dummies-off-unloadable").join("mod");
+    let texture = root.join("textures/asset.dds");
+    let mesh = root.join("meshes/asset.nif");
+    write_file(&texture, b"texture bytes");
+    write_file(&mesh, b"mesh bytes");
+    for pass in ["first", "second"] {
         let finalizer = Finalizer {
             settings: ArchiveFinalizationChoices {
                 create_dummy_plugins: false,
@@ -1119,55 +1083,126 @@ fn linked_dummy_plugins_are_never_removed() {
         };
         let run = finalizer.run(std::slice::from_ref(&root));
 
+        assert_eq!(run.result.outcome(), RunOutcome::Succeeded, "{pass}");
         let result = run.finalization();
-        assert!(result.attempts.is_empty());
-        assert_eq!(
-            result.failure_category(),
-            Some(ArchiveFinalizationFailure::PluginRemovalFailed)
+        assert!(result.attempts.is_empty(), "{pass}: {:?}", result.attempts);
+        assert_eq!(result.failure, None, "{pass}");
+        assert!(
+            result.mutations.is_empty(),
+            "{pass}: {:?}",
+            result.mutations
         );
-        assert!(result.safe_to_continue);
-        assert!(result.mutations.is_empty());
-        assert_eq!(
-            std::fs::symlink_metadata(&plugin).unwrap().is_symlink(),
-            use_symlink
+        assert_eq!(run.progress().unwrap().total(), 0, "{pass}");
+        assert_eq!(std::fs::read(&texture).unwrap(), b"texture bytes", "{pass}");
+        assert_eq!(std::fs::read(&mesh).unwrap(), b"mesh bytes", "{pass}");
+        let skipped: Vec<_> = run
+            .result
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code == RunDiagnosticCode::ArchiveCreationSkipped)
+            .collect();
+        // One per planned output: the Standard and the Textures Archive.
+        assert_eq!(skipped.len(), 2, "{pass}: {skipped:?}");
+        for diagnostic in &skipped {
+            assert_eq!(diagnostic.path, root, "{pass}");
+            assert!(
+                diagnostic
+                    .detail
+                    .contains(&root.join("mod.esp").display().to_string()),
+                "{pass}: {}",
+                diagnostic.detail
+            );
+        }
+        let archives: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().ends_with(".bsa"))
+            .collect();
+        assert!(archives.is_empty(), "{pass}: {archives:?}");
+        assert!(run.cleaned_up(), "{pass}");
+    }
+}
+
+/// Audit FS-4. With Dummy Plugins off, a real plugin that loads the output
+/// still lets it be packed and its sources deleted, and the plugin is left
+/// as it was. Keeping the sources instead needs no plugin at all.
+#[test]
+fn without_dummy_plugins_a_loaded_archive_is_still_packed() {
+    for delete_sources in [true, false] {
+        let parent = scratch(&format!("dummies-off-loaded-{delete_sources}"));
+        let root = parent.join("mod");
+        let mesh = root.join("meshes/asset.nif");
+        write_file(&mesh, b"mesh bytes");
+        let plugin = root.join("Real.esp");
+        if delete_sources {
+            write_file(&plugin, b"a real plugin");
+        }
+        let finalizer = Finalizer {
+            settings: ArchiveFinalizationChoices {
+                create_dummy_plugins: false,
+                delete_sources,
+                ..ArchiveFinalizationChoices::default()
+            },
+            ..Finalizer::default()
+        };
+        let run = finalizer.run(std::slice::from_ref(&root));
+
+        let result = run.finalization();
+        assert_eq!(result.attempts.len(), 1, "{delete_sources}");
+        assert!(
+            result.attempts[0].succeeded(),
+            "{delete_sources}: {:?}",
+            result.attempts[0].outcome
         );
-        assert_eq!(std::fs::read(&target).unwrap(), bytes);
+        let expected = if delete_sources {
+            "Real.bsa"
+        } else {
+            "mod.bsa"
+        };
+        assert_eq!(result.attempts[0].archive_path, root.join(expected));
+        assert!(reads_back(&result.attempts[0].archive_path));
+        assert_eq!(mesh.exists(), !delete_sources);
+        assert!(
+            !root_plugin(&root).exists(),
+            "{delete_sources}: no Dummy Plugin"
+        );
+        if delete_sources {
+            assert_eq!(std::fs::read(&plugin).unwrap(), b"a real plugin");
+        }
+        assert!(
+            !run.result
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == RunDiagnosticCode::ArchiveCreationSkipped)
+        );
         assert!(run.cleaned_up());
     }
 }
 
-/// Origin: finalizationPreservesReplacedDummyPlugin. A plugin replaced with
-/// other bytes after planning is kept, and so is the displaced original.
+/// Audit FS-4. With Dummy Plugins off, the attempt checks again that a plugin
+/// loads the Archive before deleting its sources: one that disappears after
+/// planning leaves the committed Archive and every source, as a
+/// `PluginCreationFailed` that stops later outputs, and no Dummy Plugin is
+/// published in its place.
 #[test]
-fn a_dummy_plugin_replaced_after_planning_is_kept() {
-    let parent = scratch("replaced-dummy");
+fn without_dummy_plugins_a_plugin_gone_after_planning_keeps_the_sources() {
+    let parent = scratch("dummies-off-plugin-gone");
     let root = parent.join("mod");
-    write_file(&root.join("textures/asset.dds"), b"source bytes");
-    let bytes = fake_dummy_plugin();
-    let mut replacement = bytes.clone();
-    replacement[0] ^= 0x5a;
-    let plugin = root.join("external.esp");
-    let displaced = parent.join("displaced.bin");
-    write_file(&plugin, &bytes);
-    let replaced = Arc::new(AtomicBool::new(false));
-    let (flag, probed, moved, written) = (
-        Arc::clone(&replaced),
-        plugin.clone(),
-        displaced.clone(),
-        replacement.clone(),
-    );
+    let mesh = root.join("meshes/asset.nif");
+    write_file(&mesh, b"mesh bytes");
+    let plugin = root.join("Real.esp");
+    write_file(&plugin, b"a real plugin");
+    let moved = parent.join("Real.esp.moved");
+    let (probed, aside) = (plugin.clone(), moved.clone());
     let finalizer = Finalizer {
         settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
-            compress: false,
-            delete_sources: false,
             ..ArchiveFinalizationChoices::default()
         },
-        // Planning recognized the exact dummy; replace it before cleanup.
+        // The capacity check runs after planning and before the attempt.
         probe: capacity(move |_| {
-            if !flag.swap(true, Ordering::SeqCst) {
-                std::fs::rename(&probed, &moved).unwrap();
-                write_file(&probed, &written);
+            if probed.exists() {
+                std::fs::rename(&probed, &aside).unwrap();
             }
             Some(UNLIMITED)
         }),
@@ -1175,7 +1210,187 @@ fn a_dummy_plugin_replaced_after_planning_is_kept() {
     };
     let run = finalizer.run(std::slice::from_ref(&root));
 
-    assert!(replaced.load(Ordering::SeqCst));
+    let result = run.finalization();
+    assert_eq!(result.attempts.len(), 1);
+    let attempt = &result.attempts[0];
+    let failure = attempt.outcome.failure().expect("an Operation Failure");
+    assert_eq!(
+        failure.category(),
+        ArchiveFinalizationFailure::PluginCreationFailed
+    );
+    assert_eq!(attempt.outcome.mutation(), MutationState::Committed);
+    // A Loading Plugin failure after commit is never safe to continue: the
+    // Mod Root changed under the run.
+    assert!(!attempt.safe_to_continue());
+    assert!(reads_back(&attempt.archive_path));
+    assert_eq!(std::fs::read(&mesh).unwrap(), b"mesh bytes");
+    assert!(!plugin.exists(), "no Dummy Plugin replaced it");
+    assert!(moved.exists());
+    assert!(run.cleaned_up());
+}
+
+/// In a case-sensitive directory, `MyMod.ESP` still loads `MyMod.bsa`: the
+/// recognized names are matched ignoring case, so no Dummy Plugin
+/// `MyMod.esp` is published beside it, and with Dummy Plugins off the
+/// Archive is still packed and its source deleted.
+#[test]
+fn a_plugin_in_another_case_loads_its_archive_in_a_case_sensitive_directory() {
+    for create_dummies in [true, false] {
+        let Some(root) =
+            common::case_sensitive_dir(&format!("case-sensitive-plugin-{create_dummies}"))
+        else {
+            return;
+        };
+        let mesh = root.join("meshes/asset.nif");
+        write_file(&mesh, b"mesh bytes");
+        write_file(&root.join("MyMod.ESP"), b"a real plugin");
+        let finalizer = Finalizer {
+            settings: ArchiveFinalizationChoices {
+                create_dummy_plugins: create_dummies,
+                ..ArchiveFinalizationChoices::default()
+            },
+            ..Finalizer::default()
+        };
+        let run = finalizer.run(std::slice::from_ref(&root));
+
+        let label = format!("dummies {create_dummies}");
+        let result = run.finalization();
+        assert_eq!(result.attempts.len(), 1, "{label}");
+        let attempt = &result.attempts[0];
+        assert!(attempt.succeeded(), "{label}: {:?}", attempt.outcome);
+        assert_eq!(attempt.archive_path, root.join("MyMod.bsa"), "{label}");
+        assert!(!mesh.exists(), "{label}");
+        assert!(
+            !result
+                .mutations
+                .iter()
+                .any(|mutation| mutation.kind == ArchiveFinalizationMutationKind::PluginCreation),
+            "{label}: {:?}",
+            result.mutations
+        );
+        assert!(!root.join("MyMod.esp").exists(), "{label}");
+        assert_eq!(case_twins(&root), Vec::<String>::new(), "{label}");
+        assert!(run.cleaned_up());
+    }
+}
+
+/// In a case-sensitive directory, an existing `Foo.BSA` keeps the new
+/// output from being named `Foo.bsa`, and its plugin `Foo.ESP` keeps it
+/// from getting a Dummy Plugin `Foo.esp`: nothing CAO writes differs from
+/// an existing name only in case.
+#[test]
+fn an_archive_in_another_case_gets_no_twin_in_a_case_sensitive_directory() {
+    let Some(root) = common::case_sensitive_dir("case-sensitive-archive") else {
+        return;
+    };
+    let mesh = root.join("meshes/asset.nif");
+    write_file(&mesh, b"mesh bytes");
+    write_file(&root.join("Foo.BSA"), b"retained archive");
+    write_file(&root.join("Foo.ESP"), b"a real plugin");
+    let run = Finalizer::default().run(std::slice::from_ref(&root));
+
+    let result = run.finalization();
+    assert_eq!(result.attempts.len(), 1);
+    let attempt = &result.attempts[0];
+    assert!(attempt.succeeded(), "{:?}", attempt.outcome);
+    assert_eq!(attempt.archive_path, root.join("Foo0.bsa"));
+    assert_eq!(
+        std::fs::read(root.join("Foo.BSA")).unwrap(),
+        b"retained archive"
+    );
+    // Only the new Archive needs a Dummy Plugin; `Foo.ESP` loads `Foo.BSA`.
+    let created: Vec<_> = result
+        .mutations
+        .iter()
+        .filter(|mutation| mutation.kind == ArchiveFinalizationMutationKind::PluginCreation)
+        .map(|mutation| mutation.path.clone())
+        .collect();
+    assert_eq!(created, [root.join("Foo0.esp")]);
+    assert_eq!(case_twins(&root), Vec::<String>::new());
+    assert!(run.cleaned_up());
+}
+
+/// In a case-sensitive directory, an Archive spelled in another case that
+/// arrives after planning stops the output before publication, which
+/// no-replace alone would not: nothing is published, the sources stay, and
+/// the run may continue.
+#[test]
+fn a_late_archive_in_another_case_stops_publication_in_a_case_sensitive_directory() {
+    let Some(root) = common::case_sensitive_dir("case-sensitive-late-archive") else {
+        return;
+    };
+    let mesh = root.join("meshes/asset.nif");
+    write_file(&mesh, b"mesh bytes");
+    write_file(&root.join("MyMod.esp"), b"a real plugin");
+    let competitor = root.join("MyMod.BSA");
+    let late = competitor.clone();
+    let finalizer = Finalizer {
+        // The capacity check runs after planning and before the attempt.
+        probe: capacity(move |_| {
+            if !late.exists() {
+                write_file(&late, b"competing creator bytes");
+            }
+            Some(UNLIMITED)
+        }),
+        ..Finalizer::default()
+    };
+    let run = finalizer.run(std::slice::from_ref(&root));
+
+    let result = run.finalization();
+    assert_eq!(result.attempts.len(), 1);
+    let attempt = &result.attempts[0];
+    assert_eq!(attempt.archive_path, root.join("MyMod.bsa"));
+    assert_eq!(
+        attempt.outcome.failure_category(),
+        Some(ArchiveFinalizationFailure::CommitFailed)
+    );
+    assert_eq!(attempt.outcome.mutation(), MutationState::None);
+    assert!(attempt.safe_to_continue());
+    assert!(!root.join("MyMod.bsa").exists());
+    assert_eq!(
+        std::fs::read(&competitor).unwrap(),
+        b"competing creator bytes"
+    );
+    assert_eq!(std::fs::read(&mesh).unwrap(), b"mesh bytes");
+    assert_eq!(case_twins(&root), Vec::<String>::new());
+    assert!(run.cleaned_up());
+}
+
+/// A Mod Root holding plugins or Archives whose names differ only in case,
+/// as a Linux mod manager's case-sensitive directory can, is reported once
+/// with every group, and planning goes on: the output is still packed. On an
+/// ordinary directory no such names can exist, so other scenarios see none.
+#[test]
+fn names_that_differ_only_in_case_are_reported_and_planning_goes_on() {
+    let Some(root) = common::case_sensitive_dir("finalization-case-twins") else {
+        return;
+    };
+    write_file(&root.join("meshes/asset.nif"), b"mesh bytes");
+    for name in ["Foo.esp", "foo.ESP"] {
+        write_file(&root.join(name), b"a real plugin");
+    }
+    for name in ["Old.bsa", "OLD.BSA"] {
+        write_file(&root.join(name), b"an existing archive");
+    }
+    // A folder that happens to share a name is not a plugin.
+    std::fs::create_dir(root.join("FOO.esp")).unwrap();
+    let run = Finalizer::default().run(std::slice::from_ref(&root));
+
+    let warnings: Vec<_> = run
+        .result
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.code == RunDiagnosticCode::CaseTwinNames)
+        .collect();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].path, root);
+    assert!(
+        warnings[0]
+            .detail
+            .contains("`Foo.esp` and `foo.ESP`; `OLD.BSA` and `Old.bsa`"),
+        "{}",
+        warnings[0].detail
+    );
     let result = run.finalization();
     assert_eq!(result.attempts.len(), 1);
     assert!(
@@ -1183,56 +1398,6 @@ fn a_dummy_plugin_replaced_after_planning_is_kept() {
         "{:?}",
         result.attempts[0].outcome
     );
-    assert_eq!(result.failure, None);
-    assert!(result.mutations.is_empty());
-    assert_eq!(std::fs::read(&plugin).unwrap(), replacement);
-    assert_eq!(std::fs::read(&displaced).unwrap(), bytes);
-    assert!(run.cleaned_up());
-}
-
-/// Origin: finalizationRetainsRemovalPrefixOnGuardFailure. Removals in
-/// earlier roots stay recorded when a later one cannot proceed.
-#[test]
-fn earlier_removals_survive_a_later_guard_failure() {
-    let parent = scratch("removal-prefix");
-    let roots = [parent.join("mod-a"), parent.join("mod-b")];
-    let bytes = fake_dummy_plugin();
-    for root in &roots {
-        write_file(&root.join("existing.bsa"), b"retained archive");
-        write_file(&root.join("external.esp"), &bytes);
-    }
-    let blocked = roots[1].join("external.esp");
-    // Shared reads let planning recognize the dummy; deletion stays blocked.
-    let held = hold(&blocked, SHARE_READ);
-    let finalizer = Finalizer {
-        settings: ArchiveFinalizationChoices {
-            create_dummy_plugins: false,
-            ..ArchiveFinalizationChoices::default()
-        },
-        ..Finalizer::default()
-    };
-    let run = finalizer.run(&roots);
-    drop(held);
-
-    let result = run.finalization();
-    assert!(result.attempts.is_empty());
-    assert_eq!(
-        result.failure_category(),
-        Some(ArchiveFinalizationFailure::PluginRemovalFailed)
-    );
-    assert!(result.safe_to_continue);
-    assert_eq!(result.mutations.len(), 1);
-    assert_eq!(result.mutations[0].mod_root, roots[0]);
-    assert_eq!(result.mutations[0].path, roots[0].join("external.esp"));
-    assert_eq!(
-        result.mutations[0].kind,
-        ArchiveFinalizationMutationKind::PluginRemoval
-    );
-    assert_eq!(result.mutations[0].mutation, MutationState::Committed);
-    assert!(!roots[0].join("external.esp").exists());
-    assert!(blocked.exists());
-    let progress = run.progress().unwrap();
-    assert_eq!((progress.completed(), progress.total()), (0, 0));
     assert!(run.cleaned_up());
 }
 
@@ -1276,6 +1441,7 @@ fn staging_files_are_never_packed() {
     let nested = root.join("textures/.cao-staging-old/pending.dds");
     write_file(&nested, b"unverified temporary bytes");
     write_file(&root.join("textures/complete.dds"), b"committed bytes");
+    real_plugin(&root);
     // Ours: the run's own Asset attempt stages a temporary file through the
     // run's registry, which only Safety Cleanup removes, after the phase.
     let staged: Arc<Mutex<Option<PathBuf>>> = Arc::default();
@@ -1342,6 +1508,7 @@ fn packing_exclusions_are_neither_packed_nor_deleted() {
     let retained = root.join("textures/keep/asset.dds");
     write_file(&packed, b"packed bytes");
     write_file(&retained, b"retained bytes");
+    real_plugin(&root);
     let finalizer = Finalizer {
         settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
@@ -1383,6 +1550,7 @@ fn deviation_16_packing_exclusions_match_within_the_mod_root() {
     write_file(&packed, b"packed bytes");
     write_file(&excluded, b"excluded bytes");
     write_file(&backslashed, b"backslash rule bytes");
+    real_plugin(&root);
     let finalizer = Finalizer {
         settings: ArchiveFinalizationChoices {
             create_dummy_plugins: false,
@@ -1426,6 +1594,7 @@ fn a_failed_write_keeps_sources_and_existing_archives() {
     write_file(&available, b"available source bytes");
     write_file(&unavailable, b"unavailable source bytes");
     write_file(&existing, b"previous archive bytes");
+    real_plugin(&root);
     // Deny reads while allowing rename and delete.
     let locked = OpenOptions::new()
         .write(true)
@@ -1469,6 +1638,7 @@ fn a_source_parent_swapped_for_a_junction_fails_the_write() {
     );
     write_file(&outside_source, b"outside source bytes");
     write_file(&outside.join("marker.txt"), b"keep target directory");
+    real_plugin(&root);
     let swapped = Arc::new(AtomicBool::new(false));
     let (flag, link, target, moved) = (
         Arc::clone(&swapped),
@@ -1521,6 +1691,10 @@ fn planned_names_are_distinct_and_a_late_destination_wins() {
     let sound = root.join("sound/asset.wav");
     write_file(&mesh, b"mesh bytes");
     write_file(&sound, b"sound bytes");
+    // The Incompressible Archive is named `mod0.bsa`, which `mod.esp` does
+    // not load, so it gets a plugin of its own.
+    real_plugin(&root);
+    write_file(&root.join("mod0.esp"), b"a real plugin");
     let log = Log::default();
     let sink = ProgressLog(log.clone());
     // The Standard Archive takes the Mod Root's name; the Incompressible one
@@ -2056,6 +2230,8 @@ fn a_locked_source_after_commit_continues_only_while_readable() {
         write_file(&source, b"retained source bytes");
         let later_source = later_root.join("textures/later.dds");
         write_file(&later_source, b"later source bytes");
+        real_plugin(&root);
+        real_plugin(&later_root);
         let empty_directory = root.join("empty/nested");
         std::fs::create_dir_all(&empty_directory).unwrap();
         // Permit packing and verification reads, but deny deletion.
@@ -2297,14 +2473,14 @@ fn deviation_21_separate_texture_games_never_merge_textures() {
         let root = scratch(&format!("deviation-21-{separate}")).join("mod");
         write_file(&root.join("meshes/asset.nif"), b"mesh bytes");
         write_file(&root.join("textures/asset.dds"), b"texture bytes");
+        real_plugin(&root);
         let finalizer = Finalizer {
             packer: if separate {
                 FakeArchivePacker::fo4_like()
             } else {
                 FakeArchivePacker::default()
             },
-            // Merging even an empty Incompressible partition would make the
-            // Standard Archive Incompressible, so leave it out of the picture.
+            // Incompressible merging is not under test here.
             settings: ArchiveFinalizationChoices {
                 create_dummy_plugins: false,
                 merge_incompressible: false,
@@ -2438,6 +2614,8 @@ fn a_packer_panicking_after_its_write_is_an_unexpected_exception_that_stops_late
     write_file(&source, b"source bytes");
     let later_source = later_root.join("textures/later.dds");
     write_file(&later_source, b"later source bytes");
+    real_plugin(&root);
+    real_plugin(&later_root);
     let empty_directory = root.join("empty/nested");
     std::fs::create_dir_all(&empty_directory).unwrap();
     let finalizer = Finalizer {

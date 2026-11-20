@@ -24,6 +24,9 @@ use common::{canonical, scratch_dir, write_tree};
 fn an_archive_run_packs_loose_assets_with_its_profile_exclusions_and_settings() {
     let root = canonical(&scratch_dir("archive-run-request")).join("mod");
     write_tree(&root, &["meshes/packed.nif", "meshes/keep/kept.nif"]);
+    // A real plugin loads the Archive, so with Dummy Plugins off it is still
+    // packed and its source deleted (audit FS-4).
+    std::fs::write(root.join("mod.esp"), b"a real plugin").unwrap();
     let archive_run = ArchiveRunRequest::new(&root)
         .with_packing_exclusions(["MESHES/KEEP/"])
         .with_archive_finalization(ArchiveFinalizationChoices {
@@ -61,6 +64,10 @@ fn an_archive_run_packs_loose_assets_with_its_profile_exclusions_and_settings() 
     assert!(!writes[0].compress);
     assert!(!root.join("meshes/packed.nif").exists());
     assert!(root.join("meshes/keep/kept.nif").exists());
-    // The chosen settings create no Dummy Plugin for the new Archive.
-    assert!(!root.join("mod.esp").exists());
+    // The chosen settings create no Dummy Plugin for the new Archive, and
+    // leave the plugin that loads it as it was.
+    assert_eq!(
+        std::fs::read(root.join("mod.esp")).unwrap(),
+        b"a real plugin"
+    );
 }

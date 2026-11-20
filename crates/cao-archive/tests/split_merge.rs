@@ -400,9 +400,11 @@ fn incompressible_merges_only_when_the_total_is_strictly_under_the_limit() {
     assert_eq!(under[0].size(), 99);
 }
 
+/// A mod with no sound, strings or scripts has nothing incompressible to
+/// merge, so its Standard Archive stays Standard and is compressed as asked.
+/// bethutil merged the empty partition too, and `+=` took its type (BE-5).
 #[test]
-fn merging_an_empty_incompressible_partition_still_makes_standard_incompressible() {
-    // bethutil merges the empty partition too, and `+=` takes its type.
+fn merging_an_empty_incompressible_partition_keeps_standard_compressible() {
     let archives =
         split(&small(Game::Sse), vec![source(r"meshes\a.nif", 60)]).merge(MergeSettings {
             textures: false,
@@ -410,7 +412,7 @@ fn merging_an_empty_incompressible_partition_still_makes_standard_incompressible
         });
     assert_eq!(
         layout(&archives),
-        [(ArchiveType::Incompressible, files(&[r"meshes\a.nif"]))]
+        [(ArchiveType::Standard, files(&[r"meshes\a.nif"]))]
     );
 }
 

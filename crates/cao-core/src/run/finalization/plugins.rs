@@ -4,14 +4,13 @@
 //! Plugin is a plugin at one of the profile-recognized names that makes the
 //! game load an Archive; a Dummy Plugin is the profile's canonical 49-byte
 //! plugin CAO publishes when no other plugin does. Every Dummy Plugin is
-//! staged and published with no-replace, so a late occupant always wins, and
-//! only a file whose complete bytes are canonical is ever removed.
+//! staged and published with no-replace, so a late occupant always wins.
+//! CAO never removes a plugin.
 
-use std::collections::BTreeMap;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
-use cao_winfs::{Access, FileFacts, Open, Share, delete_by_handle};
+use cao_winfs::{Access, Open, Share, compare_ordinal_ignore_case};
 
 use super::planning::{FinalizationOutput, FinalizationPlan, loading_plugin_names};
 use super::{
@@ -20,7 +19,6 @@ use super::{
 };
 use crate::OperationFailure;
 use crate::execution::MutationState;
-use crate::run::source_pin::{absolute_normal, pin_directories};
 use crate::run::{
     ArchiveNameKind, ArchivePacker, PublicationPolicy, PublicationState, TemporaryArtifactRegistry,
 };
@@ -38,19 +36,62 @@ pub(super) enum LoadingPluginStrength {
     DurableForSourceDeletion,
 }
 
-/// Whether something, even a dangling link, occupies `path`.
+/// The entry, even a dangling link, that occupies `path` as Windows and the
+/// games match names, spelled as it is on disk; `None` when there is none.
+///
+/// The exact spelling is tried first. Otherwise the parent is listed and an
+/// entry whose name equals `path`'s ignoring case is the occupant, the first
+/// in ordinal order if several are. On an ordinary NTFS directory the exact
+/// lookup already ignores case, so the listing only ever confirms an absence.
+/// A case-sensitive directory, which WSL or `fsutil` can make, holds
+/// `MyMod.ESP` where the lookup asks for `MyMod.esp`: without the listing,
+/// CAO would publish a second plugin or Archive differing only in case,
+/// which the game, under Windows, Wine or Proton, sees as one name.
 ///
 /// # Errors
-/// The entry cannot be inspected for any reason but its absence.
-fn entry_exists(path: &Path) -> Result<bool, String> {
+/// The entry cannot be inspected, or its parent listed, for any reason but
+/// its absence.
+pub(super) fn existing_entry(path: &Path) -> Result<Option<PathBuf>, String> {
     match std::fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(format!("Cannot inspect `{}`: {error}", path.display())),
+        Ok(_) => return Ok(Some(path.to_path_buf())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Cannot inspect `{}`: {error}", path.display())),
     }
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Ok(None);
+    };
+    let listing_error =
+        |error: std::io::Error| format!("Cannot list `{}`: {error}", parent.display());
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(listing_error(error)),
+    };
+    let mut occupant: Option<std::ffi::OsString> = None;
+    for entry in entries {
+        let candidate = entry.map_err(listing_error)?.file_name();
+        if compare_ordinal_ignore_case(&candidate, name).is_eq()
+            && occupant
+                .as_ref()
+                .is_none_or(|first| candidate.as_os_str() < first.as_os_str())
+        {
+            occupant = Some(candidate);
+        }
+    }
+    Ok(occupant.map(|name| parent.join(name)))
 }
 
-/// Whether the recognized name `path` loads its Archive at `strength`.
+/// Whether something, even a dangling link, occupies `path` under any
+/// spelling ([`existing_entry`]).
+///
+/// # Errors
+/// As for [`existing_entry`].
+fn entry_exists(path: &Path) -> Result<bool, String> {
+    Ok(existing_entry(path)?.is_some())
+}
+
+/// Whether the entry at `path`, spelled as on disk, loads its Archive at
+/// `strength`.
 ///
 /// # Errors
 /// The entry cannot be inspected for any reason but its absence.
@@ -76,7 +117,9 @@ fn is_loading_plugin(path: &Path, strength: LoadingPluginStrength) -> Result<boo
 }
 
 /// The first of `names` that loads its Archive at `strength`, skipping every
-/// name equal to `excluded`; probing stops at the first match.
+/// name equal to `excluded`; probing stops at the first match. Each name is
+/// matched ignoring case ([`existing_entry`]), and the entry is returned as
+/// spelled on disk, so `MyMod.ESP` loads `MyMod.bsa` in any directory.
 ///
 /// Exclusion is by value: without an Archive suffix the Dummy Plugin
 /// destination appears twice.
@@ -89,8 +132,13 @@ pub(super) fn find_loading_plugin(
     excluded: Option<&Path>,
 ) -> Result<Option<PathBuf>, String> {
     for name in names {
-        if Some(name.as_path()) != excluded && is_loading_plugin(name, strength)? {
-            return Ok(Some(name.clone()));
+        if Some(name.as_path()) == excluded {
+            continue;
+        }
+        if let Some(entry) = existing_entry(name)?
+            && is_loading_plugin(&entry, strength)?
+        {
+            return Ok(Some(entry));
         }
     }
     Ok(None)
@@ -218,9 +266,11 @@ pub(super) fn ensure_output_loading_plugin(
         return Ok(loaded_elsewhere);
     }
     let mut destination = plugin.clone();
+    // Whatever holds the destination under any spelling, as on disk.
+    let occupant = existing_entry(plugin)?;
     if strength == LoadingPluginStrength::DurableForSourceDeletion
-        && entry_exists(plugin)?
-        && !is_loading_plugin(plugin, strength)?
+        && let Some(occupant) = &occupant
+        && !is_loading_plugin(occupant, strength)?
     {
         let mut free = None;
         for name in names {
@@ -232,14 +282,16 @@ pub(super) fn ensure_output_loading_plugin(
         destination =
             free.ok_or_else(|| "No ordinary loading plugin name is available.".to_owned())?;
     }
-    if destination == *plugin && entry_exists(plugin)? {
-        if output.plugin_path.is_some() && !has_exact_dummy_bytes(plugin, bytes) {
+    if destination == *plugin
+        && let Some(occupant) = occupant
+    {
+        if output.plugin_path.is_some() && !has_exact_dummy_bytes(&occupant, bytes) {
             return Err("The planned loading plugin is occupied.".to_owned());
         }
-        if !std::fs::metadata(plugin).is_ok_and(|metadata| metadata.is_file()) {
+        if !std::fs::metadata(&occupant).is_ok_and(|metadata| metadata.is_file()) {
             return Err("The planned loading plugin is not a file.".to_owned());
         }
-        return Ok(destination);
+        return Ok(occupant);
     }
     // Publication rechecks the leaf natively: a newcomer wins.
     let published =
@@ -251,16 +303,19 @@ pub(super) fn ensure_output_loading_plugin(
 }
 
 /// Maintains the Loading Plugins of every existing Archive in `root`: creates
-/// the missing Dummy Plugins when they are wanted, otherwise removes only
-/// exact Dummy Plugins. Each plugin action is a separate mutation fact,
-/// never an output attempt.
+/// the missing Dummy Plugins when they are wanted, and otherwise leaves every
+/// plugin alone. Each plugin creation is a separate mutation fact, never an
+/// output attempt.
+///
+/// "Off" never removes a Dummy Plugin: one an earlier run created may be all
+/// that loads an Archive it packed, and removing it would make the mod stop
+/// loading that Archive while its loose files are already gone (audit FS-4).
 ///
 /// Returns `Ok(false)` when finalization must stop without pruning, after
 /// recording a plugin failure or cancellation in `account`.
 ///
 /// # Errors
-/// When creating, a failure to list the root's Archives; removal records any
-/// listing failure as `PluginRemovalFailed` instead.
+/// When creating, a failure to list the root's Archives.
 pub(super) fn maintain_existing_loading_plugins(
     plan: &FinalizationPlan,
     root: &Path,
@@ -272,7 +327,7 @@ pub(super) fn maintain_existing_loading_plugins(
     if plan.create_dummies {
         create_missing_dummy_plugins(plan, root, packer, artifacts, cancelled, account)
     } else {
-        Ok(remove_dummy_plugins(plan, root, packer, cancelled, account))
+        Ok(true)
     }
 }
 
@@ -341,118 +396,4 @@ fn create_missing_dummy_plugins(
         }
     }
     Ok(true)
-}
-
-/// Removes every exact Dummy Plugin in `root` through the guarded removal.
-/// Returns false after recording a removal failure or cancellation.
-fn remove_dummy_plugins(
-    plan: &FinalizationPlan,
-    root: &Path,
-    packer: &dyn ArchivePacker,
-    cancelled: &dyn Fn() -> bool,
-    account: &mut ArchiveFinalizationAccount,
-) -> bool {
-    let failed = |account: &mut ArchiveFinalizationAccount, detail: String| {
-        account.fail(OperationFailure::new(
-            ArchiveFinalizationFailure::PluginRemovalFailed,
-            detail,
-        ));
-        account.cancelled = cancelled();
-        false
-    };
-    let plugins = match packer.list_names(root, ArchiveNameKind::Plugin) {
-        Ok(plugins) => plugins,
-        Err(error) => return failed(account, error.to_string()),
-    };
-    for plugin in plugins {
-        if cancelled() {
-            account.cancelled = true;
-            return false;
-        }
-        let path = plugin.full_path();
-        match remove_exact_dummy_plugin(&path, root, &plan.rules.dummy_plugin) {
-            Ok(DummyPluginRemoval::NotDummy) => {}
-            Ok(DummyPluginRemoval::Removed) => {
-                account.mutations.push(ArchiveFinalizationMutation {
-                    mod_root: root.to_path_buf(),
-                    path,
-                    kind: ArchiveFinalizationMutationKind::PluginRemoval,
-                    mutation: MutationState::Committed,
-                    count: 1,
-                });
-            }
-            Err(detail) => return failed(account, detail),
-        }
-    }
-    true
-}
-
-/// What the guarded removal found.
-enum DummyPluginRemoval {
-    /// The file is not an exact Dummy Plugin, so it was kept.
-    NotDummy,
-    /// The exact Dummy Plugin was deleted.
-    Removed,
-}
-
-/// Deletes `plugin` only if it is an exact Dummy Plugin, through one handle
-/// that pins it while its bytes are checked.
-///
-/// Its parents inside `mod_root` stay pinned, so the pathname cannot escape
-/// through a junction or switch parents during the delete. A hard-linked or
-/// changed file is refused: the same file could be reachable under another
-/// user's pathname. Every error happens before the delete, so it always
-/// describes a known no-mutation failure.
-///
-/// C++ also reported an uncertain removal when closing the deleted handle
-/// failed; dropping a Rust `File` reports no close error, so a disposition
-/// that succeeded is a removal.
-fn remove_exact_dummy_plugin(
-    plugin: &Path,
-    mod_root: &Path,
-    bytes: &[u8],
-) -> Result<DummyPluginRemoval, String> {
-    let path = absolute_normal(plugin).map_err(|error| error.to_string())?;
-    let root = absolute_normal(mod_root).map_err(|error| error.to_string())?;
-    let mut directories = BTreeMap::new();
-    pin_directories(&path, &root, Share::READ, &mut directories)
-        .map_err(|error| error.to_string())?;
-    let io_error =
-        |action: &str, error: std::io::Error| format!("{action} `{}`: {error}", path.display());
-    let mut entry = Open::new(Access::READ | Access::DELETE, Share::READ)
-        .open(&path)
-        .map_err(|error| io_error("Could not pin Dummy Plugin for removal", error))?;
-    let original =
-        FileFacts::of(&entry).map_err(|error| io_error("Could not inspect Dummy Plugin", error))?;
-    if !original.is_ordinary_file() {
-        return Err(format!(
-            "A Dummy Plugin is no longer an ordinary file: {}",
-            path.display()
-        ));
-    }
-    if original.link_count() != 1 {
-        return Err("A linked Dummy Plugin cannot be removed.".to_owned());
-    }
-    if original.size() != bytes.len() as u64 {
-        return Ok(DummyPluginRemoval::NotDummy);
-    }
-    let mut contents = Vec::with_capacity(bytes.len());
-    (&mut entry)
-        .take(bytes.len() as u64)
-        .read_to_end(&mut contents)
-        .map_err(|error| io_error("Could not read pinned Dummy Plugin", error))?;
-    if contents.len() != bytes.len() {
-        return Err("A Dummy Plugin changed during verification.".to_owned());
-    }
-    if contents != bytes {
-        return Ok(DummyPluginRemoval::NotDummy);
-    }
-    let verified =
-        FileFacts::of(&entry).map_err(|error| io_error("Could not inspect Dummy Plugin", error))?;
-    if verified.link_count() != 1 || !verified.unchanged_since(&original) {
-        return Err("A Dummy Plugin changed during verification.".to_owned());
-    }
-    delete_by_handle(&entry)
-        .map_err(|error| io_error("Could not remove pinned Dummy Plugin", error))?;
-    Ok(DummyPluginRemoval::Removed)
 }
