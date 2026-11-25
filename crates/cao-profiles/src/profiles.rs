@@ -12,8 +12,8 @@ use crate::ini::IniFile;
 use crate::options::Options;
 use crate::settings::ProfileSettings;
 
-/// The profile C++ CAO falls back to: for a remembered or requested profile that does
-/// not exist, and for auxiliary files a profile does not have.
+/// The profile CAO falls back to: for a remembered or requested profile that does
+/// not exist, when it is listed, and for auxiliary files a profile does not have.
 pub const DEFAULT_PROFILE: &str = "SSE";
 
 /// The `profiles/` directory of one CAO install.
@@ -66,15 +66,21 @@ impl Profiles {
         !name.is_empty() && self.list().iter().any(|profile| profile == name)
     }
 
-    /// `name` when it is a profile, otherwise [`DEFAULT_PROFILE`], as C++'s
-    /// `Profiles::loadProfile` resolves a remembered or requested profile.
-    pub fn resolve(&self, name: &str) -> String {
-        if self.exists(name) {
-            name
-        } else {
-            DEFAULT_PROFILE
+    /// The profile to use for a remembered or requested `name`: `name` when it is
+    /// a profile, otherwise [`DEFAULT_PROFILE`] when that is listed, otherwise the
+    /// first profile listed. `None` only when there is no profile at all.
+    ///
+    /// Only a listed profile is ever returned, so an install whose SSE profile
+    /// was deleted still opens on a profile that exists.
+    pub fn resolve(&self, name: &str) -> Option<String> {
+        let listed = self.list();
+        if !name.is_empty() && listed.iter().any(|profile| profile == name) {
+            return Some(name.to_owned());
         }
-        .to_owned()
+        if listed.iter().any(|profile| profile == DEFAULT_PROFILE) {
+            return Some(DEFAULT_PROFILE.to_owned());
+        }
+        listed.into_iter().next()
     }
 
     /// The path of `common.ini`.
@@ -83,7 +89,7 @@ impl Profiles {
     }
 
     /// Loads `common.ini` into the common settings model. A missing file reads as
-    /// empty, as in QSettings.
+    /// empty, so every setting takes its default: CAO ships no `common.ini`.
     ///
     /// # Errors
     /// [`ProfileError::Ini`] when the file exists but cannot be read.
@@ -140,8 +146,8 @@ impl Profiles {
         }
     }
 
-    /// Creates the profile `name` as a copy of `base`, or of `profiles/SSE` when `base`
-    /// is not a profile, as C++'s `Profiles::create` does. Every file is copied,
+    /// Creates the profile `name` as a copy of `base`, or of the profile
+    /// [`Profiles::resolve`] picks when `base` is not a profile. Every file is copied,
     /// subdirectories included, and then `isBase` is removed so the new profile is
     /// editable. Dead data such as `customLandscape.txt` is copied unchanged.
     ///
@@ -152,11 +158,20 @@ impl Profiles {
     ///
     /// # Errors
     /// [`ProfileError::InvalidName`] when `name` is refused, including when its
-    /// directory appears between the check and its creation. [`ProfileError::Create`]
+    /// directory appears between the check and its creation.
+    /// [`ProfileError::Unavailable`] when there is no profile to copy.
+    /// [`ProfileError::Create`]
     /// when a directory or file cannot be created or copied, or `isBase` cannot be
     /// removed. Files copied before the failure stay.
     pub fn create(&self, name: &str, base: &str) -> Result<Profile, ProfileError> {
         self.check_new_name(name)?;
+        // Resolved before anything is created, so no profile to copy leaves
+        // nothing behind.
+        let Some(base) = self.resolve(base) else {
+            return Err(ProfileError::Unavailable {
+                path: self.root.join(DEFAULT_PROFILE).join("profile.ini"),
+            });
+        };
         let profile = self.open(name);
         let create_error = |path: &Path| {
             let path = path.to_owned();
@@ -174,7 +189,7 @@ impl Profiles {
             }
             created => created.map_err(create_error(&profile.directory))?,
         }
-        copy_missing(&self.root.join(self.resolve(base)), &profile.directory)?;
+        copy_missing(&self.root.join(base), &profile.directory)?;
         let flag = profile.directory.join("isBase");
         match fs::remove_file(&flag) {
             Err(source) if source.kind() != io::ErrorKind::NotFound => {
@@ -280,23 +295,23 @@ impl Profile {
         self.directory.join("settings.ini")
     }
 
-    /// Loads `settings.ini` into the options model over `current`, the options in use
-    /// before this profile was selected, as C++'s GUI reloads its one live
-    /// `OptionsCAO` on every profile switch. Pass [`Options::default`] for the first
-    /// load.
+    /// Loads `settings.ini` into the options model. `carried_path` is the mod
+    /// folder in use before this profile was selected, or `""` for the first
+    /// load: it is the folder when the file's `userPath` is empty, as in every
+    /// shipped file, or when the file does not exist.
     ///
-    /// When the file does not exist, `current` is returned unchanged; otherwise
-    /// [`Options::read`] replaces it, keeping only `current`'s folder when the file's
-    /// `userPath` is empty.
+    /// Nothing else carries over from the profile before: a missing file gives
+    /// [`Options::default`], and a missing key its default, so a profile's
+    /// options never depend on which profile was selected before it.
     ///
     /// # Errors
     /// [`ProfileError::Ini`] when the file exists but cannot be read.
-    pub fn load_options(&self, current: &Options) -> Result<Options, ProfileError> {
-        let path = self.settings_ini();
-        if !path.exists() {
-            return Ok(current.clone());
-        }
-        Ok(Options::read(&IniFile::load(&path)?, current))
+    pub fn load_options(&self, carried_path: &str) -> Result<Options, ProfileError> {
+        // A missing file loads as empty, so every key takes its default.
+        Ok(Options::read(
+            &IniFile::load(&self.settings_ini())?,
+            carried_path,
+        ))
     }
 
     /// Saves the options model to `settings.ini`. The file is read again and only the
@@ -304,8 +319,9 @@ impl Profile {
     /// a missing file is created.
     ///
     /// # Errors
-    /// [`ProfileError::Ini`] when the file cannot be read or written. On error the
-    /// file is unchanged.
+    /// [`ProfileError::Ini`] when the file cannot be read or written, including
+    /// when the profile's directory no longer exists: a deleted profile is not
+    /// recreated. On error the file is unchanged.
     pub fn save_options(&self, options: &Options) -> Result<(), ProfileError> {
         update(&self.settings_ini(), |ini| options.write(ini))
     }

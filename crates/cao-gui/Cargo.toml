@@ -1,7 +1,7 @@
 [package]
 name = "cao-gui"
 description = "Cathedral Assets Optimizer's Slint main window over the composition root."
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -29,7 +29,9 @@ cao-gui-unsafe.workspace = true
 cao-gui-ui.workspace = true
 # The Run Events, Run Handle and terminal result the window presents (#510).
 cao-core.workspace = true
-# `exe_directory`, the app directory only `main` derives (deviation 1, #463).
+# `exe_directory`, the app directory only `main` derives: `profiles/`, the logs
+# and `bin/hkxcmd.exe` resolve beside the exe, whatever the working directory
+# (#463).
 cao-winfs.workspace = true
 # The Application Log sink the window bootstraps, stamps and shows (#470, #511),
 # and the composition root that starts runs (#510).

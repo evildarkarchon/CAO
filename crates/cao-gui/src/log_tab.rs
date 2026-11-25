@@ -8,7 +8,10 @@
 //! the current rotation chunk (deviation 24).
 //!
 //! The model holds the log's rows (at most [`MAX_FEED_ROWS`], newest kept),
-//! then the run-detail rows (#510), which are GUI-only and never dropped.
+//! then the run-detail rows (#510), which are never dropped. `LogTab.detail-count`
+//! says how many rows end the model, so neither side scans it to find the
+//! boundary (GUI-13). At a run's end its detail rows are written to the
+//! Application Log ([`AttachedLog::write_details`]) and come back as log rows.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, Weak};
@@ -17,6 +20,7 @@ use cao_gui_ui::{LogRow, LogSeverity, LogTab, MainWindow};
 use cao_optimizers::application_log::{
     self, ApplicationLog, FeedUpdate, LogError, LogFeed, LogLine, MAX_FEED_ROWS,
 };
+use log::Log as _;
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 /// The window's end of the Application Log: the sink, the install it stamps
@@ -102,6 +106,28 @@ impl AttachedLog {
     pub(crate) fn path(&self) -> PathBuf {
         self.sink.path()
     }
+
+    /// Writes an ended run's detail rows to the Application Log, one record
+    /// each, at the level [`detail_level`](crate::run_view::detail_level)
+    /// gives the row, so they can be copied from the file and are still there
+    /// after the next run starts (GUI-12). The feed then brings them back to the
+    /// Log tab as log rows.
+    ///
+    /// The rows go straight to the attached sink, which in the app is also the
+    /// `log` facade's: a sink attached without being installed (as in tests)
+    /// still receives them, so the tab never loses them.
+    pub(crate) fn write_details(&self, details: &[String]) {
+        for detail in details {
+            self.sink.log(
+                &log::Record::builder()
+                    .args(format_args!("{detail}"))
+                    .level(crate::run_view::detail_level(detail))
+                    .target(module_path!())
+                    .build(),
+            );
+        }
+        self.sink.flush();
+    }
 }
 
 /// Moves the feed's queued rows into the window's Log tab, on the UI thread.
@@ -114,31 +140,38 @@ fn drain(window: &slint::Weak<MainWindow>, feed: &Weak<OnceLock<LogFeed>>) {
         return;
     };
     let update = feed.drain();
-    with_rows(&window, |rows| apply(rows, update));
+    with_rows(&window, |rows, details| apply(rows, update, details));
 }
 
-/// Runs `action` over the Log tab's model, first installing a [`VecModel`] in
-/// place of the empty default.
-fn with_rows<R>(window: &MainWindow, action: impl FnOnce(&VecModel<LogRow>) -> R) -> R {
+/// Runs `action` over the Log tab's model and the number of run-detail rows
+/// that end it, first installing a [`VecModel`] in place of the empty default.
+fn with_rows<R>(window: &MainWindow, action: impl FnOnce(&VecModel<LogRow>, usize) -> R) -> R {
     let tab = window.global::<LogTab>();
     let mut model = tab.get_rows();
     if model.as_any().downcast_ref::<VecModel<LogRow>>().is_none() {
         model = ModelRc::new(VecModel::<LogRow>::default());
         tab.set_rows(model.clone());
+        // The new model holds no rows at all, detail rows included.
+        tab.set_detail_count(0);
     }
     let rows = model
         .as_any()
         .downcast_ref::<VecModel<LogRow>>()
         .expect("the Log tab's model was just made a VecModel");
-    action(rows)
+    // Clamped, so a count that ever ran ahead of the model cannot underflow.
+    let details = usize::try_from(tab.get_detail_count())
+        .unwrap_or_default()
+        .min(rows.row_count());
+    action(rows, details)
 }
 
-/// Applies one drain: a reset drops the log's rows first; the new rows go after
-/// the log's rows and before the run-detail rows; then the oldest log rows go
-/// beyond [`MAX_FEED_ROWS`].
-fn apply(rows: &VecModel<LogRow>, update: FeedUpdate) {
+/// Applies one drain to `rows`, which end in `details` run-detail rows: a
+/// reset drops the log's rows first; the new rows go after the log's rows and
+/// before the run-detail rows; then the oldest log rows go beyond
+/// [`MAX_FEED_ROWS`].
+fn apply(rows: &VecModel<LogRow>, update: FeedUpdate, details: usize) {
     let total = rows.row_count();
-    let logged = total - trailing_details(rows);
+    let logged = total - details;
     let new: Vec<LogRow> = update.lines.into_iter().map(row).collect();
 
     if !update.reset && logged + new.len() <= MAX_FEED_ROWS {
@@ -166,37 +199,54 @@ fn apply(rows: &VecModel<LogRow>, update: FeedUpdate) {
 
 /// Shows the latest run's detail rows pinned below the Log tab's log rows,
 /// replacing the previous run's. Rows only grow during a run, so only the new
-/// ones are appended; a run that has just begun has none, which clears the
-/// previous run's.
+/// ones are appended, all in one model change, which matters for the many rows
+/// a terminal result brings at once; a run that has just begun has none, which
+/// clears the previous run's.
 pub(crate) fn show_details(window: &MainWindow, details: &[String]) {
-    with_rows(window, |rows| {
-        let total = rows.row_count();
-        let mut shown = trailing_details(rows);
+    with_rows(window, |rows, mut shown| {
         if shown > details.len() {
-            for row in (total - shown..total).rev() {
-                rows.remove(row);
-            }
+            drop_details(rows, shown);
             shown = 0;
         }
-        for detail in &details[shown..] {
-            rows.push(LogRow {
-                text: detail.as_str().into(),
-                severity: LogSeverity::Detail,
-            });
-        }
+        rows.extend(details[shown..].iter().map(|detail| LogRow {
+            text: detail.as_str().into(),
+            severity: LogSeverity::Detail,
+        }));
+        set_detail_count(window, details.len());
     });
 }
 
-/// How many run-detail rows end the model: they always come after every log
-/// row.
-fn trailing_details(rows: &VecModel<LogRow>) -> usize {
-    (0..rows.row_count())
-        .rev()
-        .take_while(|&row| {
-            rows.row_data(row)
-                .is_some_and(|row| row.severity == LogSeverity::Detail)
-        })
-        .count()
+/// Removes the pinned run-detail rows, once they have been written to the
+/// Application Log and come back as log rows (GUI-12).
+pub(crate) fn clear_details(window: &MainWindow) {
+    with_rows(window, drop_details);
+    set_detail_count(window, 0);
+}
+
+/// Removes the last `count` rows of `rows`, the run-detail rows.
+fn drop_details(rows: &VecModel<LogRow>, count: usize) {
+    let total = rows.row_count();
+    match count {
+        0 => {}
+        // One removal is a single model change; more are one rebuild rather
+        // than a change per row.
+        1 => {
+            rows.remove(total - 1);
+        }
+        _ => {
+            let kept: Vec<LogRow> = (0..total - count)
+                .filter_map(|row| rows.row_data(row))
+                .collect();
+            rows.set_vec(kept);
+        }
+    }
+}
+
+/// Records how many run-detail rows end the Log tab's model.
+fn set_detail_count(window: &MainWindow, count: usize) {
+    // The model never holds anywhere near `i32::MAX` rows.
+    let count = i32::try_from(count).unwrap_or(i32::MAX);
+    window.global::<LogTab>().set_detail_count(count);
 }
 
 /// A sink row as the Log tab shows it.

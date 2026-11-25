@@ -9,9 +9,7 @@ use std::num::NonZeroU64;
 use cao_archive::Game;
 use cao_gui::ui::{MeshesTab, TexturesTab};
 use cao_profiles::ArchiveSize;
-use cao_profiles::{
-    MeshStreamVersion, OptimizationMode, Options, Profiles, TextureFormat, UnwantedFormat,
-};
+use cao_profiles::{MeshStreamVersion, OptimizationMode, Profiles, TextureFormat, UnwantedFormat};
 use common::*;
 use slint::ComponentHandle;
 use slint::platform::WindowEvent;
@@ -92,7 +90,7 @@ fn settings_saved_from_the_window_reload_identically() {
     // ---- What reached the files.
     let profiles = Profiles::new(&app_dir);
     let profile = profiles.open("Custom");
-    let options = profile.load_options(&Options::default()).unwrap();
+    let options = profile.load_options("").unwrap();
     assert_eq!(options.user_path, "C:/Mods/Some Mod", "QDir::cleanPath");
     assert_eq!(options.mode, OptimizationMode::SeveralMods);
     assert!(options.bsa_extract && options.bsa_create);
@@ -172,10 +170,7 @@ fn a_shipped_profile_saved_unchanged_reloads_identically() {
     headless();
     let app_dir = app_dir("shipped_round_trip");
     let profiles = Profiles::new(&app_dir);
-    let before_options = profiles
-        .open("SSE")
-        .load_options(&Options::default())
-        .unwrap();
+    let before_options = profiles.open("SSE").load_options("").unwrap();
     let before_settings = profiles.open("SSE").load_settings().unwrap();
     edit_ini(&app_dir, "common.ini", "profile", "SSE");
 
@@ -183,10 +178,7 @@ fn a_shipped_profile_saved_unchanged_reloads_identically() {
     close_window(&app);
 
     assert_eq!(
-        profiles
-            .open("SSE")
-            .load_options(&Options::default())
-            .unwrap(),
+        profiles.open("SSE").load_options("").unwrap(),
         before_options
     );
     assert_eq!(

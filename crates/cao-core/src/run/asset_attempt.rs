@@ -9,15 +9,15 @@
 //! notification and [`quarantine_failed_load`], so the ordering rule between
 //! the last two lives in one place.
 //!
-//! The adapter contains a factory error as an unsafe Operation Failure with
-//! unknown mutation; it does not catch panics, which the run contains at its
+//! The adapter contains a factory error as an unsafe Operation Failure that
+//! changed nothing; it does not catch panics, which the run contains at its
 //! Asset attempt boundary.
 
 use std::path::Path;
 
 use crate::execution::{
     AssetExecutionBackend, AssetExecutionFailure, AssetExecutionResult, AssetExecutor,
-    MutationState, quarantine_failed_load,
+    quarantine_failed_load,
 };
 use crate::routing::RoutedAsset;
 use crate::run::{
@@ -70,7 +70,10 @@ impl BackendCreationError {
 
 /// Creates the Asset Execution Backend of one run, on the Run Worker.
 ///
-/// The adapter calls it lazily, on the first Routed Asset. The two adapters
+/// The adapter calls it lazily, on the first Routed Asset. Creation may read
+/// the Mod Roots, such as their plugins, but never changes a durable file:
+/// those change only through the backend's own calls, at paths the executor
+/// supplies. The two adapters
 /// are the production optimizer backend in `cao-optimizers` and the fake
 /// backend of `test-support`.
 pub trait AssetBackendFactory {
@@ -82,8 +85,8 @@ pub trait AssetBackendFactory {
     ///
     /// # Errors
     /// A [`BackendCreationError`] when no backend can be created; the adapter
-    /// retains its Run Diagnostics and contains it as an unsafe Operation
-    /// Failure.
+    /// retains its Run Diagnostics and contains it as an unsafe
+    /// [`AssetExecutionFailure::BackendUnavailable`] Operation Failure.
     fn create(
         &mut self,
         stop: &CancellationToken,
@@ -138,20 +141,19 @@ impl<F: AssetBackendFactory> AssetAttemptPort for AssetAttemptAdapter<F> {
                 }
                 Ok(BackendCreation::Cancelled) => return Err(AssetInitializationCancelled),
                 // Without a backend the Asset was never loaded, so there is
-                // nothing to notify or quarantine. The failure cannot say what
-                // initialization touched, so it is unknown mutation that stops
-                // the run: the outcome the run gave the panic that signalled
-                // this failure before the factory returned errors.
+                // nothing to notify or quarantine, and creation changes no
+                // durable file, so nothing changed. Every later attempt would
+                // need the same backend, so the failure is not safe to
+                // continue and stops the run.
                 Err(BackendCreationError { error, diagnostics }) => {
                     // What creation observed before it failed is still true
                     // of the run, so it is retained before the failure that
                     // stops the run is recorded.
                     diagnostics.into_iter().for_each(&mut *retain);
                     return Ok(AssetExecutionResult::failed(
-                        AssetExecutionFailure::BackendException,
+                        AssetExecutionFailure::BackendUnavailable,
                         error.to_string(),
                     )
-                    .with_mutation(MutationState::PartialOrUnknown)
                     .with_safe_to_continue(false)
                     .with_path(asset.execution_path()));
                 }

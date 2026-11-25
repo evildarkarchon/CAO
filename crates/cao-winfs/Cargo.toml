@@ -1,7 +1,7 @@
 [package]
 name = "cao-winfs"
 description = "Windows file-safety primitives for CAO: the only home of file-safety unsafe code and windows-sys imports."
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

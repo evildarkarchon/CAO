@@ -15,7 +15,7 @@
 //! they only leave it out of what the request carries. It is neither a Policy
 //! Conflict nor a Start Error, and raises no Run Diagnostic.
 
-use crate::routing::{ProfileCapabilities, RequestedWork, work_capabilities};
+use crate::routing::{ProfileCapabilities, RequestedWork, work_bit, work_capabilities};
 use crate::run::{MeshLevel, WorkChoices};
 
 /// The Admission Rules of one run, answering which requested work and Work
@@ -24,8 +24,9 @@ use crate::run::{MeshLevel, WorkChoices};
 /// It says what is admitted, never which rule held a choice back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Admission {
-    /// The admitted [`RequestedWork`], one bit each ([`work_bit`]). Every
-    /// bit starts set, so work no rule holds back is admitted.
+    /// The admitted [`RequestedWork`], one bit each, as routing's
+    /// exhaustive [`work_bit`] maps them. Every bit starts set, so work no
+    /// rule holds back is admitted.
     work: u8,
     /// The highest Mesh level the request may carry.
     highest_mesh_level: MeshLevel,
@@ -88,22 +89,5 @@ impl Admission {
     pub fn admitted_work_choices(&self, mut choices: WorkChoices) -> WorkChoices {
         choices.meshes.level = choices.meshes.level.min(self.highest_mesh_level);
         choices
-    }
-}
-
-/// The bit of [`Admission`]'s set that stands for `work`.
-///
-/// The match has no wildcard arm, so a new [`RequestedWork`] does not compile
-/// until it is given a bit here; a ninth bit overflows `u8`, which the
-/// `arithmetic_overflow` lint also rejects at compile time. Indexing by
-/// discriminant would instead compile and panic at run time.
-const fn work_bit(work: RequestedWork) -> u8 {
-    match work {
-        RequestedWork::NativeTextureOptimization => 1 << 0,
-        RequestedWork::StandardMeshOptimization => 1 << 1,
-        RequestedWork::TerrainMeshOptimization => 1 << 2,
-        RequestedWork::AnimationOptimization => 1 << 3,
-        RequestedWork::ArchiveExtraction => 1 << 4,
-        RequestedWork::ArchiveCreation => 1 << 5,
     }
 }

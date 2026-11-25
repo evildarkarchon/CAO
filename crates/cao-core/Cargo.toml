@@ -1,7 +1,7 @@
 [package]
 name = "cao-core"
 description = "CAO's Optimization Run core: Asset Routing, asset execution, the Run lifecycle, Run Evidence, the Run Executor and the Optimization Run Service."
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

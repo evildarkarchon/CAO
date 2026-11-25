@@ -1,7 +1,7 @@
 [package]
 name = "nifly-sys"
 description = "nifly mesh operations for CAO: a plain C ABI shim over vendored nifly, and the safe Nif type over it."
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 # The shim and the Rust code are CAO's (MPL-2.0); `vendor/nifly` is nifly's own
@@ -19,6 +19,18 @@ unsafe_code = "allow"
 # `Nif` to core's traits rather than this crate knowing about them (#476).
 [dependencies]
 thiserror.workspace = true
+
+[features]
+# Compiles the shim's test-only entry points (FFI-7). Only this crate's own
+# tests turn it on, through the dev-dependency below, so the app never links
+# them.
+test-hooks = []
+
+[dev-dependencies]
+# The crate itself with its test hooks: Cargo enables a dev-dependency's
+# features for test builds only, which is how the build script learns it is
+# building for this crate's tests.
+nifly-sys = { path = ".", features = ["test-hooks"] }
 
 [build-dependencies]
 # nifly is built from source with `cc`, not CMake or vcpkg (#460).

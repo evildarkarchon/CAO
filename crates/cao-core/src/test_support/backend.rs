@@ -160,6 +160,8 @@ impl AssetExecutionBackend for FakeBackend {
     fn optimize_texture(
         &mut self,
         _operations: AssetOperations,
+        _path: &Path,
+        _mod_root: &Path,
         _mode: ExecutionMode,
     ) -> OperationResult {
         self.record("optimize_texture", &self.loaded.clone().unwrap());

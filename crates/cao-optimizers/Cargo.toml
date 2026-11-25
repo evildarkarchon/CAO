@@ -1,7 +1,7 @@
 [package]
 name = "cao-optimizers"
 description = "CAO's texture, mesh, animation and archive backends, plus the composition root."
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -49,8 +49,11 @@ embed-resource.workspace = true
 
 [dev-dependencies]
 # Builds raw TES3, TES4 and FO4 Archives with names `cao-archive` never writes,
-# as the C++ suite built them with `rsm-bsa` directly.
+# so the scenarios can feed extraction Archives CAO would not produce.
 ba2.workspace = true
+# `Settings::for_test`, so a scenario can reach the Archive Size Cap with
+# small files (audit BE-16); tests only, so no release build plans past it.
+cao-archive = { workspace = true, features = ["test-support"] }
 # The shared fakes of `cao-core`'s run seams (#547); tests only, so no fake
 # reaches a release build.
 cao-core = { workspace = true, features = ["test-support"] }

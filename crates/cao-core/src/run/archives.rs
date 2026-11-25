@@ -1,34 +1,32 @@
 //! Archive discovery's preflight and Archive extraction.
 //!
-//! Ported from `src/Run/ArchiveFirstAssetDiscovery.cpp`,
-//! `src/Run/ArchiveExtraction.cpp` and `src/Run/ArchiveCapacity.h`. Archives
-//! are read only through the [`ArchiveReader`] seam, and capacity and volume
-//! identity only through the Capacity Check over the
+//! Archives are read only through the [`ArchiveReader`] seam, and capacity
+//! and volume identity only through the Capacity Check over the
 //! [`VolumeProbe`](crate::run::VolumeProbe), so none of this needs `ba2`.
 //!
 //! The preflight runs before any extraction and is all-or-nothing: every
 //! selected Archive's manifest is read, every entry is checked for an Unsafe
 //! Game Path (shadowed entries included), Archive Precedence decides each game
 //! path's winner, and the Capacity Check runs per volume. Any failure is a Run
-//! Failure and no Archive is extracted. Extraction then stages every entry of
-//! one Archive and publishes only the entries that Archive won, never
-//! replacing an existing file.
+//! Failure and no Archive is extracted. Extraction then stages and publishes
+//! only the entries that Archive won, never replacing an existing file.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
-use std::fs::File;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Component, Path, PathBuf};
 
 use cao_winfs::{
-    OrdinalIgnoreCase, canonical, compare_ordinal_ignore_case, is_reparse_point, weakly_canonical,
+    OrdinalIgnoreCase, Share, canonical, compare_ordinal_ignore_case, is_reparse_point,
+    weakly_canonical,
 };
 
 use crate::execution::MutationState;
-use crate::run::artifacts::reserved_device_name;
 use crate::run::capacity::{CapacityCheck, CapacityStage, CapacityVerdict};
+use crate::run::path_safety::{DirectoryPins, pin_directory_chain, unsafe_windows_name};
 use crate::run::source_pin::SourceFilePin;
-use crate::run::staging::{has_staging_component, pin_directory};
+use crate::run::staging::has_staging_component;
+use crate::run::work_error::ArchiveWorkError;
 use crate::run::{
     ArchiveEntry, ArchivePrecedence, ArchiveReader, ArchiveSeams, CancellationToken,
     PublicationPolicy, PublicationReceipt, RunDiagnostic, RunFailure, RunFailureCode, RunPhase,
@@ -74,9 +72,10 @@ pub(crate) struct ArchiveExtractionPlan {
     /// Archive's directory, in manifest order.
     pub entries: Vec<String>,
     /// The entries this Archive wins: no Loose Asset and no Archive of higher
-    /// precedence provides them. Only these are published.
+    /// precedence provides them. Only these are staged and published.
     pub merge_entries: Vec<String>,
-    /// The staging bytes extraction is estimated to need, overhead included.
+    /// The staging bytes extraction is estimated to need for the entries it
+    /// merges, overhead included.
     pub estimated_capacity_bytes: u64,
 }
 
@@ -131,21 +130,23 @@ impl ArchiveExtractionResult {
     }
 }
 
-/// Stages a whole Archive by its frozen plan, then publishes only the
-/// entries it won, never failing outright: the step of [`extract_archive`]
-/// between pinning the source and cleaning it up.
+/// Stages the entries an Archive won by its frozen plan, then publishes
+/// them, never failing outright: the step of [`extract_archive`] between
+/// pinning the source and cleaning it up.
 ///
 /// The source Archive is never removed here: backing it up or deleting it
-/// belongs to [`extract_archive`] (C++ `BSAOptimizer::extract`).
+/// belongs to [`extract_archive`].
 ///
 /// The manifest and free space are rechecked first, since either can
 /// change after preflight; a shortage stops the attempt before any
 /// staging. A failure before the first published entry reports no
 /// mutation and stays safe to continue; one after it reports
 /// `PartialOrUnknown` and is unsafe. Publication never replaces an
-/// existing entry, so a Loose Asset that appeared after preflight wins.
-/// Staged entries that are not published stay registered, so Safety
-/// Cleanup removes them.
+/// existing entry: a file that appeared at a merge destination after
+/// preflight fails the merge, because the precedence frozen at preflight no
+/// longer describes that destination and the newcomer may be the user's.
+/// Entries the Archive lost are never staged, so a shadowed entry costs
+/// neither staging space nor a manifest record (audit FS-8).
 ///
 /// Reads go through `reader`, which is released before this returns, and
 /// the recheck through `capacity`, the run's Capacity Check.
@@ -161,10 +162,11 @@ fn extract_staged(
     let mut progress = ExtractionProgress::default();
     // A panicking reader is classified like any other failure, by how far
     // the attempt got: `progress` survives the unwind, so a panic while
-    // staging stays safe and one after a commit stays partial (C++
-    // `catch (...)`).
+    // staging stays safe and one after a commit stays partial. The Run
+    // Executor relies on extraction to own every panic of its attempt.
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         try_extract(reader, capacity, plan, artifacts, &mut progress)
+            .map_err(|error| error.to_string())
     }))
     .unwrap_or_else(|payload| Err(take_panic_message(payload)));
     // Whatever happened, nothing reads this Archive again in the attempt,
@@ -206,7 +208,7 @@ fn extract_staged(
 }
 
 /// Performs the attempt, recording how far it got in `progress` so the
-/// caller can classify an `Err` detail as an extraction or merge failure.
+/// caller can classify an `Err` as an extraction or merge failure.
 ///
 /// Returns `Ok(None)` once every winning entry is merged. A failed capacity
 /// recheck is not an `Err`: it returns `Ok` with its
@@ -218,9 +220,12 @@ fn try_extract(
     plan: &ArchiveExtractionPlan,
     artifacts: &mut TemporaryArtifactRegistry,
     progress: &mut ExtractionProgress,
-) -> Result<Option<OperationFailure<ArchiveExtractionFailure>>, String> {
-    let root = canonical(&plan.mod_root).map_err(|error| error.to_string())?;
-    let source = std::path::absolute(&plan.archive_path).map_err(|error| error.to_string())?;
+) -> Result<Option<OperationFailure<ArchiveExtractionFailure>>, ArchiveWorkError> {
+    const EXTRACT: &str = "Extract Archive";
+    let root =
+        canonical(&plan.mod_root).map_err(ArchiveWorkError::of("Resolve", &plan.mod_root))?;
+    let source = std::path::absolute(&plan.archive_path)
+        .map_err(ArchiveWorkError::of("Resolve", &plan.archive_path))?;
     let contained = source.strip_prefix(&root).is_ok_and(|relative| {
         !relative.as_os_str().is_empty()
             && relative
@@ -229,40 +234,41 @@ fn try_extract(
             && !has_staging_component(relative)
     });
     if !contained {
-        return Err("Archive source is outside its Mod Root.".to_owned());
+        return Err(ArchiveWorkError::refused(
+            EXTRACT,
+            &source,
+            "the Archive is outside its Mod Root",
+        ));
     }
     let directory = source.parent().unwrap_or(&root).to_path_buf();
 
     let entries = reader
         .list_entries(&source)
-        .map_err(|error| error.to_string())?;
-    let required = plan
-        .estimated_capacity_bytes
-        .max(estimated_capacity_bytes(&entries));
-    // Only this Archive's work is charged, at its canonical root. The
-    // Capacity Check samples inside its own containment: a panicking
-    // probe is unknown capacity, not an extraction failure from the
-    // attempt's boundary.
-    let mut demand = capacity.demand();
-    demand.add(&root, required);
-    if let Some(shortage) = capacity.recheck_at(&demand, &root) {
-        return Ok(Some(OperationFailure::from_capacity_shortage(
-            ArchiveExtractionFailure::InsufficientCapacity,
-            shortage,
-        )));
-    }
+        .map_err(ArchiveWorkError::of("List the entries of", &source))?;
 
     let expected: BTreeSet<&str> = plan.entries.iter().map(String::as_str).collect();
     if expected.len() != plan.entries.len() {
-        return Err("Archive manifest contains duplicate canonical entries.".to_owned());
+        return Err(ArchiveWorkError::refused(
+            EXTRACT,
+            &source,
+            "its plan holds duplicate canonical entries",
+        ));
     }
     let mut keys = BTreeSet::new();
     for entry in &expected {
         if canonical_archive_entry_path(entry).as_deref() != Ok(*entry) {
-            return Err("Archive plan contains a noncanonical entry.".to_owned());
+            return Err(ArchiveWorkError::refused(
+                EXTRACT,
+                &source,
+                "its plan holds a noncanonical entry",
+            ));
         }
         if !keys.insert(OrdinalIgnoreCase(*entry)) {
-            return Err("Archive manifest contains aliased entries.".to_owned());
+            return Err(ArchiveWorkError::refused(
+                EXTRACT,
+                &source,
+                "its plan holds aliased entries",
+            ));
         }
     }
     if plan
@@ -270,12 +276,17 @@ fn try_extract(
         .iter()
         .any(|entry| !expected.contains(entry.as_str()))
     {
-        return Err("Archive merge entry is absent from its manifest.".to_owned());
+        return Err(ArchiveWorkError::refused(
+            EXTRACT,
+            &source,
+            "a merge entry is absent from its plan",
+        ));
     }
 
     // The listing is checked against the frozen plan before anything is
     // staged, so a changed Archive costs no staging at all.
-    let changed = || "Archive manifest changed after preflight.".to_owned();
+    let changed =
+        || ArchiveWorkError::refused(EXTRACT, &source, "its manifest changed after preflight");
     let mut names = Vec::with_capacity(entries.len());
     let mut listed = HashSet::with_capacity(entries.len());
     for entry in &entries {
@@ -289,22 +300,51 @@ fn try_extract(
         return Err(changed());
     }
 
-    // Every entry is staged, shadowed ones too, before anything is published.
-    // One ownership snapshot registers them all: registering entry by entry
-    // rewrites a manifest that grows with each one, which is quadratic I/O
-    // and looked like a hang on an Archive of tens of thousands of entries.
+    // Only the entries this Archive won are staged: a shadowed entry is never
+    // published, so decompressing it would only cost staging space and a
+    // manifest record that every later snapshot of this root carries until
+    // Safety Cleanup (audit FS-8).
+    let merged: BTreeSet<&str> = plan.merge_entries.iter().map(String::as_str).collect();
+    let winners: Vec<(&ArchiveEntry, String)> = entries
+        .iter()
+        .zip(names)
+        .filter(|(_, canonical)| merged.contains(canonical.as_str()))
+        .collect();
+    let required = plan.estimated_capacity_bytes.max(estimated_capacity_bytes(
+        winners.iter().map(|(entry, _)| *entry),
+    ));
+    // Only this Archive's work is charged, at its canonical root. The
+    // Capacity Check samples inside its own containment: a panicking
+    // probe is unknown capacity, not an extraction failure from the
+    // attempt's boundary.
+    let mut demand = capacity.demand();
+    demand.add(&root, required);
+    if let Some(shortage) = capacity.recheck_at(&demand, &root) {
+        return Ok(Some(OperationFailure::from_capacity_shortage(
+            ArchiveExtractionFailure::InsufficientCapacity,
+            shortage,
+        )));
+    }
+
+    // One ownership snapshot registers every winning entry: registering
+    // entry by entry rewrites a manifest that grows with each one, which is
+    // quadratic I/O and looked like a hang on an Archive of tens of thousands
+    // of entries.
     let receipts = artifacts
-        .stage_archive_files_for_publication(&root, entries.len())
-        .map_err(|error| error.to_string())?;
-    let mut staged: HashMap<String, PublicationReceipt> = HashMap::with_capacity(entries.len());
-    for ((entry, canonical), receipt) in entries.iter().zip(names).zip(receipts) {
+        .stage_archive_files_for_publication(&root, winners.len())
+        .map_err(ArchiveWorkError::of("Stage the entries of", &source))?;
+    let mut staged: HashMap<String, PublicationReceipt> = HashMap::with_capacity(winners.len());
+    for ((entry, canonical), receipt) in winners.into_iter().zip(receipts) {
         let path = receipt
             .path()
-            .map_err(|error| error.to_string())?
+            .map_err(ArchiveWorkError::of("Stage the entries of", &source))?
             .to_path_buf();
         reader
             .extract_entry(&source, &entry.name, &path)
-            .map_err(|error| error.to_string())?;
+            .map_err(ArchiveWorkError::of(
+                "Extract Archive entry",
+                &join_game_path(&directory, &canonical),
+            ))?;
         staged.insert(canonical, receipt);
     }
 
@@ -320,7 +360,7 @@ fn try_extract(
         // could fail after it is deferred to the one below.
         receipt
             .publish_deferring_release(&target.path, PublicationPolicy::NoReplace)
-            .map_err(|error| error.to_string())?;
+            .map_err(ArchiveWorkError::of("Publish Archive entry", &target.path))?;
         listings.record(&target.path);
         progress.committed = true;
     }
@@ -328,9 +368,10 @@ fn try_extract(
     // registered them. Until it lands the names are owned and absent, which
     // recovery skips. `committed` is already set, so a failure here counts
     // as a partial merge, as a failed release of a single entry always did.
-    artifacts
-        .release_published()
-        .map_err(|error| error.to_string())?;
+    artifacts.release_published().map_err(ArchiveWorkError::of(
+        "Release the published entries of",
+        &source,
+    ))?;
     Ok(None)
 }
 
@@ -344,8 +385,8 @@ pub enum SourceCleanup {
 }
 
 /// Extracts one planned Archive, then backs up or removes its source with
-/// `cleanup`, as C++ `BSAOptimizer::extract` did. Archive extraction's only
-/// entry point: the Run Toolset calls it for each plan the preflight made.
+/// `cleanup`. Archive extraction's only entry point: the Run Toolset calls
+/// it for each plan the preflight made.
 ///
 /// It reads through `seams.reader` and rechecks free space through
 /// `capacity`, the run's Capacity Check. [`CapacityCheck`] is the only
@@ -353,19 +394,22 @@ pub enum SourceCleanup {
 /// itself, so its recheck groups Mod Roots by the volume identities the run
 /// froze.
 ///
-/// The source and its ancestors are pinned before the first read and
-/// until cleanup ends, so no read follows a substituted file or parent,
-/// and cleanup acts only on the very file object that was read, unchanged.
-/// The source keeps its name and bytes until the merge has succeeded, so a
-/// failed attempt leaves it recoverable. The reader is released before
-/// cleanup, since a memory-mapped source cannot be deleted.
+/// The source and the directories from its Mod Root down are pinned before
+/// the first read and until cleanup ends, so no read follows a substituted
+/// file or parent, and cleanup acts only on the very file object that was
+/// read, unchanged. The source keeps its name and bytes until the merge has
+/// succeeded, so a failed attempt leaves it recoverable. The reader is
+/// released before cleanup, since a memory-mapped source cannot be deleted.
+/// A removed source's folder is recorded in `artifacts` as vacated, so
+/// Archive Finalization may prune it if that left it empty.
 ///
 /// A pin that cannot be taken fails the attempt before anything is read.
-/// A failed cleanup is [`ArchiveExtractionFailure::SourceCleanupFailed`]
-/// and unsafe to continue, unless entries were committed and the source is
-/// still the same readable Archive: then the run may go on, because the
-/// retained source is still recovery material for what was extracted.
-/// Otherwise the mutation becomes unknown.
+/// A failed cleanup is [`ArchiveExtractionFailure::SourceCleanupFailed`].
+/// The run may go on after it only while the source is still the same
+/// readable Archive, whether or not entries were committed: it is then
+/// still the recovery material for what was extracted, or the untouched
+/// Archive when nothing was. Otherwise the mutation becomes unknown and the
+/// attempt is unsafe to continue.
 ///
 /// Never fails outright and never panics. Every panic is contained here,
 /// classified like [`extract_staged`]'s by how far the attempt got. One
@@ -411,29 +455,39 @@ pub(crate) fn extract_archive(
         SourceCleanup::Backup => pin.backup_if_unchanged().map(|_| ()),
     }));
     let outcome = match cleaned {
-        Ok(Ok(())) => AttemptOutcome::success(CompletedMutation::Committed),
+        Ok(Ok(())) => {
+            // A removed source may have left its folder empty, which this
+            // run then owns the pruning of; a backup stays in the folder.
+            if cleanup == SourceCleanup::Remove
+                && let Some(folder) = pin.path().parent()
+            {
+                artifacts.record_vacated(&plan.mod_root, folder);
+            }
+            AttemptOutcome::success(CompletedMutation::Committed)
+        }
         Ok(Err(error)) => {
             let mut mutation = staged.mutation();
-            let mut safe_to_continue = false;
             // Existence alone cannot prove the retained source is still
             // usable: reopen its manifest, through the same pin, before
-            // letting later phases proceed.
-            if mutation == MutationState::Committed {
-                // A panic while re-pinning or reading leaves the source's
-                // state unproven, so it counts as unreadable.
-                let readable = catch_unwind(AssertUnwindSafe(|| {
-                    if pin.pin_unchanged_for_recovery().is_err() {
-                        return false;
-                    }
-                    let listed = reader.list_entries(pin.path()).is_ok();
-                    reader.release();
-                    listed
-                }));
-                safe_to_continue = readable.unwrap_or_else(|payload| {
-                    take_panic_message(payload);
-                    false
-                });
-            }
+            // letting later phases proceed. That holds whether or not the
+            // merge committed anything: with entries merged the source is
+            // the recovery material for them, and with none it is the only
+            // copy of the Archive's content, so either way the run goes on
+            // only once it reads back (audit FS-11). A panic while
+            // re-pinning or reading leaves the source's state unproven, so
+            // it counts as unreadable.
+            let readable = catch_unwind(AssertUnwindSafe(|| {
+                if pin.pin_unchanged_for_recovery().is_err() {
+                    return false;
+                }
+                let listed = reader.list_entries(pin.path()).is_ok();
+                reader.release();
+                listed
+            }));
+            let safe_to_continue = readable.unwrap_or_else(|payload| {
+                take_panic_message(payload);
+                false
+            });
             // Extraction's own policy, stricter than the shared
             // safe-to-continue rule: a source cleanup that ends unsafe
             // leaves the mutation unknown, not merely unsafe.
@@ -480,13 +534,17 @@ struct ExtractionProgress {
 /// pinned against rename until publication finishes.
 struct MergeTarget {
     path: PathBuf,
-    _pins: Vec<File>,
+    _pins: DirectoryPins,
 }
 
 /// Resolves a destination in the existing game-path casing without following
 /// directory links, creating only missing parents, which it records in
 /// `listings`. The caller records the destination itself once it publishes
 /// there.
+///
+/// Each directory is pinned through the shared directory-chain pinner as soon
+/// as it is found or created, before anything beneath it is listed or
+/// created, so a parent cannot be swapped for a junction between those steps.
 ///
 /// # Errors
 /// An ambiguous name, a destination that appeared since preflight, a linked
@@ -495,30 +553,39 @@ fn prepare_merge_target(
     root: &Path,
     destination: &Path,
     listings: &mut ChildListings,
-) -> Result<MergeTarget, String> {
-    let parts = contained_parts(root, destination)
-        .ok_or_else(|| "Archive destination is outside its Mod Root.".to_owned())?;
+) -> Result<MergeTarget, ArchiveWorkError> {
+    const PREPARE: &str = "Prepare Archive destination";
+    let share = Share::READ | Share::WRITE;
+    let parts = contained_parts(root, destination).ok_or_else(|| {
+        ArchiveWorkError::refused(PREPARE, destination, "it is outside its Mod Root")
+    })?;
+    let mut pins = DirectoryPins::new();
+    pin_directory_chain(root, root, share, &mut pins)
+        .map_err(ArchiveWorkError::of(PREPARE, root))?;
     let mut current = root.to_path_buf();
-    let mut pins = Vec::new();
     for (index, part) in parts.iter().enumerate() {
         let existing = listings.matching_child(&current, part)?;
         let found = existing.is_some();
         current = existing.unwrap_or_else(|| current.join(part));
         if index + 1 == parts.len() {
             if found {
-                return Err("Archive destination appeared after preflight.".to_owned());
+                return Err(ArchiveWorkError::refused(
+                    PREPARE,
+                    &current,
+                    "the destination appeared after preflight",
+                ));
             }
             break;
         }
         if !found {
-            std::fs::create_dir(&current).map_err(|error| error.to_string())?;
+            std::fs::create_dir(&current).map_err(ArchiveWorkError::of(
+                "Create Archive destination folder",
+                &current,
+            ))?;
             listings.record_new_directory(&current);
         }
-        let metadata = std::fs::symlink_metadata(&current).map_err(|error| error.to_string())?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() || is_reparse_point(&metadata) {
-            return Err("Archive destination parent is not an ordinary directory.".to_owned());
-        }
-        pins.push(pin_directory(&current).map_err(|error| error.to_string())?);
+        pin_directory_chain(root, &current, share, &mut pins)
+            .map_err(ArchiveWorkError::of(PREPARE, &current))?;
     }
     Ok(MergeTarget {
         path: current,
@@ -535,9 +602,11 @@ fn validate_existing_destination(
     destination: &Path,
     has_loose_file: bool,
     listings: &mut ChildListings,
-) -> Result<(), String> {
-    let parts = contained_parts(root, destination)
-        .ok_or_else(|| "Archive destination is outside its Mod Root.".to_owned())?;
+) -> Result<(), ArchiveWorkError> {
+    const CHECK: &str = "Check Archive destination";
+    let parts = contained_parts(root, destination).ok_or_else(|| {
+        ArchiveWorkError::refused(CHECK, destination, "it is outside its Mod Root")
+    })?;
     let mut current = root.to_path_buf();
     for (index, part) in parts.iter().enumerate() {
         let Some(existing) = listings.matching_child(&current, part)? else {
@@ -546,16 +615,28 @@ fn validate_existing_destination(
         if index + 1 == parts.len() {
             // A contained file link is a Loose Asset; only the leaf is followed.
             if !has_loose_file || !existing.is_file() {
-                return Err("Archive destination is already occupied.".to_owned());
+                return Err(ArchiveWorkError::refused(
+                    CHECK,
+                    &existing,
+                    "it is already occupied",
+                ));
             }
         } else {
-            let metadata =
-                std::fs::symlink_metadata(&existing).map_err(|error| error.to_string())?;
+            let metadata = std::fs::symlink_metadata(&existing)
+                .map_err(ArchiveWorkError::of(CHECK, &existing))?;
             if is_reparse_point(&metadata) {
-                return Err("Archive destination parent is a reparse point.".to_owned());
+                return Err(ArchiveWorkError::refused(
+                    CHECK,
+                    &existing,
+                    "a parent folder is a reparse point",
+                ));
             }
             if !metadata.is_dir() || metadata.file_type().is_symlink() {
-                return Err("Archive destination parent is not an ordinary directory.".to_owned());
+                return Err(ArchiveWorkError::refused(
+                    CHECK,
+                    &existing,
+                    "a parent is not an ordinary folder",
+                ));
             }
             current = existing;
         }
@@ -594,7 +675,7 @@ impl ChildListings {
         &mut self,
         directory: &Path,
         name: &OsStr,
-    ) -> Result<Option<PathBuf>, String> {
+    ) -> Result<Option<PathBuf>, ArchiveWorkError> {
         let listing = match self.directories.entry(directory.to_path_buf()) {
             std::collections::hash_map::Entry::Occupied(listing) => listing.into_mut(),
             std::collections::hash_map::Entry::Vacant(vacant) => {
@@ -607,7 +688,11 @@ impl ChildListings {
         {
             None | Some([]) => Ok(None),
             Some([spelling]) => Ok(Some(directory.join(spelling))),
-            Some(_) => Err("Archive destination has ambiguous casing.".to_owned()),
+            Some(_) => Err(ArchiveWorkError::refused(
+                "Resolve Archive destination",
+                &directory.join(name),
+                "its folder holds names that differ only in case",
+            )),
         }
     }
 
@@ -637,10 +722,12 @@ impl ChildListings {
 ///
 /// # Errors
 /// `directory` or one of its entries cannot be read.
-fn read_listing(directory: &Path) -> Result<Listing, String> {
+fn read_listing(directory: &Path) -> Result<Listing, ArchiveWorkError> {
     let mut listing = Listing::new();
-    for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
-        let name = entry.map_err(|error| error.to_string())?.file_name();
+    for entry in std::fs::read_dir(directory).map_err(ArchiveWorkError::of("List", directory))? {
+        let name = entry
+            .map_err(ArchiveWorkError::of("List", directory))?
+            .file_name();
         listing
             .entry(OrdinalIgnoreCase(name.clone()))
             .or_default()
@@ -682,23 +769,18 @@ fn game_path_text(relative: &Path) -> String {
 /// Normalizes a raw manifest name into a contained game path in its original
 /// spelling, or rejects it as an Unsafe Game Path.
 ///
-/// Rejected: empty or absolute names, C0 control characters, `: * ? " < > |`,
-/// `.`/`..` escapes, a trailing separator, components ending in `.` or a
-/// space, staging-name components, and DOS device stems. Deviation 15: a
-/// device stem is compared with trailing spaces and dots trimmed, so
-/// `NUL .txt` is rejected too.
+/// Rejected: empty or absolute names, `.`/`..` escapes, a trailing
+/// separator, staging-name components, and any component the shared
+/// Windows-name rule refuses ([`unsafe_windows_name`]): a control or
+/// reserved character, a trailing dot or space, or a DOS device name.
 pub(crate) fn canonical_archive_entry_path(name: &str) -> Result<String, &'static str> {
     let name = name.replace('\\', "/");
-    if name.is_empty()
-        || name.starts_with('/')
-        || name.chars().any(|character| (character as u32) < 32)
-        || name.contains([':', '*', '?', '"', '<', '>', '|'])
-    {
+    if name.is_empty() || name.starts_with('/') {
         return Err("Archive entry has an invalid game path.");
     }
     let segments: Vec<&str> = name.split('/').collect();
-    // C++ `lexically_normal` leaves a trailing separator as an empty file
-    // name, which names a directory rather than an entry.
+    // A trailing separator, `.` or `..` names a directory rather than an
+    // entry.
     if matches!(segments.last(), Some(&("" | "." | ".."))) {
         return Err("Archive entry escapes its extraction directory.");
     }
@@ -711,31 +793,31 @@ pub(crate) fn canonical_archive_entry_path(name: &str) -> Result<String, &'stati
                     return Err("Archive entry escapes its extraction directory.");
                 }
             }
+            // Every named component is checked, even one a later `..` removes:
+            // a raw name holding an aliasing component is refused as a whole.
+            part if unsafe_windows_name(part) || is_staging_name(OsStr::new(part)) => {
+                return Err("Archive entry aliases an unsafe or reserved path.");
+            }
             part => parts.push(part),
         }
     }
     if parts.is_empty() {
         return Err("Archive entry escapes its extraction directory.");
     }
-    for part in &parts {
-        if part.ends_with(['.', ' '])
-            || is_staging_name(OsStr::new(part))
-            || reserved_device_name(part)
-        {
-            return Err("Archive entry aliases an unsafe or reserved path.");
-        }
-    }
     Ok(parts.join("/"))
 }
 
-/// The staging bytes an Archive's extraction is estimated to need.
+/// The staging bytes extracting `entries` is estimated to need: the
+/// entries an Archive merges, since only those are staged.
 ///
-/// Each staged payload and its ownership record consume space even when the
-/// entry is shadowed, so every entry counts, with a per-entry allowance for
-/// metadata and path overhead. The formula is internal; only conservatism is
-/// contract. Saturates rather than wrapping a huge Archive into a small one.
-pub(crate) fn estimated_capacity_bytes(entries: &[ArchiveEntry]) -> u64 {
-    entries.iter().fold(65_536, |total: u64, entry| {
+/// Each staged payload counts with a per-entry allowance for its ownership
+/// record, metadata and path overhead. The formula is internal; only
+/// conservatism is contract. Saturates rather than wrapping a huge Archive
+/// into a small one.
+pub(crate) fn estimated_capacity_bytes<'a>(
+    entries: impl IntoIterator<Item = &'a ArchiveEntry>,
+) -> u64 {
+    entries.into_iter().fold(65_536, |total: u64, entry| {
         let overhead = (entry.name.len() as u64)
             .saturating_mul(8)
             .saturating_add(65_536);
@@ -812,8 +894,9 @@ pub(crate) fn preflight(
     // Every game path an Archive provides, with its participants from high
     // to low precedence, per Mod Root.
     let mut participants: Vec<BTreeMap<GamePathKey, Vec<PathBuf>>> = Vec::new();
-    // Each plan with its root's index and each entry's game path, in entry order.
-    let mut plans: Vec<(usize, ArchiveExtractionPlan, Vec<String>)> = Vec::new();
+    // Each plan with its root's index, and each entry's game path and listed
+    // entry, in entry order.
+    let mut plans: Vec<(usize, ArchiveExtractionPlan, Vec<String>, Vec<ArchiveEntry>)> = Vec::new();
     // Nothing on disk changes during the preflight, so each directory is
     // listed once for every entry of every Archive (audit FS-6).
     let mut listings = ChildListings::default();
@@ -848,7 +931,8 @@ pub(crate) fn preflight(
                 mod_root: root.root.clone(),
                 entries: Vec::new(),
                 merge_entries: Vec::new(),
-                estimated_capacity_bytes: estimated_capacity_bytes(&entries),
+                // Set once the winners are frozen: only they are staged.
+                estimated_capacity_bytes: 0,
             };
             let directory = archive.parent().unwrap_or(&root.root);
             let mut own: BTreeSet<GamePathKey> = BTreeSet::new();
@@ -886,19 +970,19 @@ pub(crate) fn preflight(
                 if !own.insert(OrdinalIgnoreCase(game_path.0.clone())) {
                     return invalid("Archive manifest contains aliased entries.");
                 }
-                if let Err(detail) = validate_existing_destination(
+                if let Err(error) = validate_existing_destination(
                     &root.root,
                     &destination,
                     root.loose.contains(&game_path),
                     &mut listings,
                 ) {
-                    return invalid(&detail);
+                    return invalid(&error.to_string());
                 }
                 plan.entries.push(local);
                 game_paths.push(game_path.0.clone());
                 provided.entry(game_path).or_default().push(archive.clone());
             }
-            plans.push((index, plan, game_paths));
+            plans.push((index, plan, game_paths, entries));
         }
         participants.push(provided);
     }
@@ -906,9 +990,15 @@ pub(crate) fn preflight(
     // Freeze winners: an entry merges only when its Archive is the highest
     // participant and no Loose Asset holds the game path.
     let mut planned: Vec<BTreeSet<GamePathKey>> = vec![BTreeSet::new(); roots.len()];
-    for (index, plan, game_paths) in &mut plans {
+    for (index, plan, game_paths, listed) in &mut plans {
         let root = &roots[*index];
-        for (entry, game_path) in plan.entries.iter().zip(game_paths.iter()) {
+        let mut merged = Vec::new();
+        for ((entry, game_path), listed) in plan
+            .entries
+            .iter()
+            .zip(game_paths.iter())
+            .zip(listed.iter())
+        {
             let key = OrdinalIgnoreCase(game_path.clone());
             let wins = participants[*index][&key].first() == Some(&plan.archive_path);
             if !wins || root.loose.contains(&key) {
@@ -923,7 +1013,9 @@ pub(crate) fn preflight(
             }
             planned[*index].insert(key);
             plan.merge_entries.push(entry.clone());
+            merged.push(listed);
         }
+        plan.estimated_capacity_bytes = estimated_capacity_bytes(merged);
     }
 
     let mut collisions = Vec::new();
@@ -953,7 +1045,7 @@ pub(crate) fn preflight(
     // A volume must fit all of its roots before extraction begins. No credit
     // is taken for source deletion or for cleanup of shadowed staging.
     let mut demand = capacity.demand();
-    for (_, plan, _) in &plans {
+    for (_, plan, _, _) in &plans {
         demand.add(&plan.mod_root, plan.estimated_capacity_bytes);
     }
     // A probe that panics is unknown capacity, which never fails the check;
@@ -969,7 +1061,7 @@ pub(crate) fn preflight(
     };
 
     Preflight::Planned {
-        plans: plans.into_iter().map(|(_, plan, _)| plan).collect(),
+        plans: plans.into_iter().map(|(_, plan, _, _)| plan).collect(),
         collisions,
         capacity_warning,
     }

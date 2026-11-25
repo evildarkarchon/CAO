@@ -57,16 +57,18 @@ impl App {
     /// - `HoveredFile` shows the drop hint over the window.
     /// - `HoveredFileCancelled` hides it.
     /// - `DroppedFile` hides it and, for the first path of a drop only, sets
-    ///   the mod folder to that path when it exists. Like C++, which checked
-    ///   `QDir::exists`, a file is accepted as well as a folder.
+    ///   the mod folder to that path when it is a folder. A file is no mod
+    ///   folder, so it is ignored (GUI-11).
     ///
-    /// While a modal dialog is open the drop is ignored, as Qt ignores drops on
-    /// a window a modal dialog blocks.
+    /// While a modal dialog is open the drop is ignored, as a window a modal
+    /// dialog blocks takes no input. So it is while a run holds the controls
+    /// (GUI-9): the run has already read the mod folder, which is locked with
+    /// the rest, and the hint is not shown.
     ///
     /// Always returns [`EventResult::Propagate`], so Slint still sees every
     /// event.
     pub fn window_event(&self, event: &WindowEvent) -> EventResult {
-        let blocked = self.window.get_modal_blocked();
+        let blocked = self.window.get_modal_blocked() || self.locked.get();
         match event {
             WindowEvent::HoveredFile(_) if !blocked => {
                 // winit sends one `HoveredFile` per dragged path before the
@@ -78,9 +80,9 @@ impl App {
             WindowEvent::DroppedFile(path) => {
                 // Hiding the hint is always safe, even while blocked.
                 self.window.set_drop_hover(false);
-                // winit sends one `DroppedFile` per path; C++ used only the
-                // first URL of a drop, so the rest are ignored.
-                if !blocked && !self.drop_handled.replace(true) && path.exists() {
+                // winit sends one `DroppedFile` per path; a drop names one
+                // mod folder, its first path, so the rest are ignored.
+                if !blocked && !self.drop_handled.replace(true) && path.is_dir() {
                     self.window.set_user_path(path.display().to_string().into());
                 }
             }

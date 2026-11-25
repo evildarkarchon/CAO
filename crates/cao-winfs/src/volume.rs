@@ -1,4 +1,4 @@
-//! Volume identity and free space (#463), ported from C++'s `NativeVolume.h`.
+//! Volume identity and free space (#463).
 //!
 //! Archive capacity grouping and the same-volume staging check both need the
 //! volume that contains a path. CAO is `longPathAware`, so a mounted folder can
@@ -90,14 +90,79 @@ pub fn volume_guid_path(path: &Path) -> io::Result<PathBuf> {
 }
 
 /// Returns the bytes available to this process on the volume containing the
-/// directory `path`, honouring quotas: `std::filesystem::space(path).available`.
-/// A deep `path` is queried in its [`crate::extended_length_path`] form.
+/// directory `path`, honouring quotas. A deep `path` is queried in its
+/// [`crate::extended_length_path`] form.
+///
+/// A network Mod Root is supported (FFI-3). `GetDiskFreeSpaceExW` documents
+/// that a UNC name must end in a backslash, so when a UNC `path` is refused
+/// it is asked again with one, and then at its [`volume_mount_point`]
+/// (`\\server\share\`), before the first error is returned. Any other path
+/// is asked once, so a missing local directory is still an error.
 ///
 /// # Errors
 ///
-/// Returns the `GetDiskFreeSpaceExW` error, for example when `path` does not
-/// name an existing directory.
+/// Returns the `GetDiskFreeSpaceExW` error for `path` itself, for example
+/// when it does not name an existing directory.
 pub fn available_space(path: &Path) -> io::Result<u64> {
+    available_space_with(path, free_bytes_available, volume_mount_point)
+}
+
+/// [`available_space`] over a `GetDiskFreeSpaceExW`-shaped `query` and a
+/// `mount_point` lookup, so a test can play a share that answers only some
+/// forms of its path.
+fn available_space_with(
+    path: &Path,
+    mut query: impl FnMut(&Path) -> io::Result<u64>,
+    mount_point: impl FnOnce(&Path) -> io::Result<PathBuf>,
+) -> io::Result<u64> {
+    let error = match query(path) {
+        Ok(available) => return Ok(available),
+        Err(error) => error,
+    };
+    if !is_unc(path) {
+        return Err(error);
+    }
+    let text = path.as_os_str();
+    let separated = text
+        .to_str()
+        .is_some_and(|text| text.ends_with(['\\', '/']));
+    if !separated && !text.is_empty() {
+        let mut with_separator = text.to_os_string();
+        with_separator.push("\\");
+        if let Ok(available) = query(Path::new(&with_separator)) {
+            return Ok(available);
+        }
+    }
+    // The fallbacks only widen what is accepted; their own errors would hide
+    // why `path` itself was refused, so the first error is the one returned.
+    if let Ok(available) = mount_point(path).and_then(|mount| query(&mount)) {
+        return Ok(available);
+    }
+    Err(error)
+}
+
+/// Whether `path` names a share: `\\server\share`, in either separator, or
+/// `\\?\UNC\server\share`. Device paths (`\\?\`, `\\.\`) are not.
+fn is_unc(path: &Path) -> bool {
+    // Only the ASCII prefix matters, which a lossy conversion keeps intact.
+    let text = path.as_os_str().to_string_lossy();
+    if text
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(r"\\?\UNC\"))
+    {
+        return true;
+    }
+    let mut start = text.chars();
+    let slash = |character: Option<char>| matches!(character, Some('\\' | '/'));
+    slash(start.next())
+        && slash(start.next())
+        && start
+            .next()
+            .is_some_and(|third| !matches!(third, '?' | '.' | '\\' | '/'))
+}
+
+/// `GetDiskFreeSpaceExW`'s bytes available to the caller for `path`.
+fn free_bytes_available(path: &Path) -> io::Result<u64> {
     let path = win32_path(path)?;
     let mut available = 0u64;
     // SAFETY: `path` is NUL-terminated, `available` is writable, and the two
@@ -117,8 +182,7 @@ pub fn available_space(path: &Path) -> io::Result<u64> {
 }
 
 /// Runs a `GetVolumePathNameW`-shaped `query` with buffers that grow until the
-/// mount point fits, as C++'s `volumeMountPoint` does. `path` is
-/// NUL-terminated; the result is not.
+/// mount point fits. `path` is NUL-terminated; the result is not.
 fn mount_point_with(
     path: &[u16],
     mut query: impl FnMut(&mut [u16]) -> io::Result<()>,
@@ -156,7 +220,7 @@ fn mount_point_with(
 
 #[cfg(test)]
 mod tests {
-    use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_NAME};
 
     use super::*;
 
@@ -222,6 +286,124 @@ mod tests {
         let result = mount_point_with(&terminated_wide(r"C:\x"), fake_query(&mount, &mut sizes));
         assert_eq!(result.unwrap(), wide(&mount));
         assert_eq!(sizes, [MAX_PATH as usize, 2 * MAX_PATH as usize]);
+    }
+
+    const SHARE_ROOT: &str = r"\\nas\mods\";
+    const SHARE_DIRECTORY: &str = r"\\nas\mods\Skyrim";
+
+    /// Plays a share for `available_space_with`: only the forms of a path in
+    /// `accepted` answer, and every query is recorded in `asked`.
+    fn fake_share<'a>(
+        accepted: &'a [&'a str],
+        asked: &'a mut Vec<String>,
+    ) -> impl FnMut(&Path) -> io::Result<u64> + 'a {
+        move |path: &Path| {
+            let text = path.to_str().unwrap().to_owned();
+            let answer = if accepted.contains(&text.as_str()) {
+                Ok(42)
+            } else {
+                Err(io::Error::from_raw_os_error(ERROR_INVALID_NAME as i32))
+            };
+            asked.push(text);
+            answer
+        }
+    }
+
+    fn share_mount(_: &Path) -> io::Result<PathBuf> {
+        Ok(PathBuf::from(SHARE_ROOT))
+    }
+
+    #[test]
+    fn a_path_the_query_accepts_is_asked_once() {
+        let mut asked = Vec::new();
+        let available = available_space_with(
+            Path::new(SHARE_DIRECTORY),
+            fake_share(&[SHARE_DIRECTORY], &mut asked),
+            share_mount,
+        );
+        assert_eq!(available.unwrap(), 42);
+        assert_eq!(asked, [SHARE_DIRECTORY]);
+    }
+
+    /// GetDiskFreeSpaceExW documents a trailing backslash for UNC names.
+    #[test]
+    fn a_unc_directory_is_asked_again_with_a_trailing_separator() {
+        let separated = format!("{SHARE_DIRECTORY}\\");
+        let mut asked = Vec::new();
+        let available = available_space_with(
+            Path::new(SHARE_DIRECTORY),
+            fake_share(&[separated.as_str()], &mut asked),
+            share_mount,
+        );
+        assert_eq!(available.unwrap(), 42);
+        assert_eq!(asked, [SHARE_DIRECTORY, separated.as_str()]);
+    }
+
+    #[test]
+    fn a_share_that_answers_only_at_its_root_is_asked_there() {
+        let mut asked = Vec::new();
+        let available = available_space_with(
+            Path::new(SHARE_DIRECTORY),
+            fake_share(&[SHARE_ROOT], &mut asked),
+            share_mount,
+        );
+        assert_eq!(available.unwrap(), 42);
+        assert_eq!(
+            asked,
+            [SHARE_DIRECTORY, &format!("{SHARE_DIRECTORY}\\"), SHARE_ROOT]
+        );
+    }
+
+    /// When nothing answers, the error is the one for the path asked about,
+    /// and a failed mount-point lookup is not an error of its own.
+    #[test]
+    fn a_refused_path_returns_its_own_error() {
+        let mut asked = Vec::new();
+        let error = available_space_with(
+            Path::new(SHARE_DIRECTORY),
+            fake_share(&[], &mut asked),
+            |_| Err(io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32)),
+        )
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(ERROR_INVALID_NAME as i32));
+        assert_eq!(asked.len(), 2);
+    }
+
+    /// A local path is asked once: a missing directory stays an error rather
+    /// than borrowing its volume's answer.
+    #[test]
+    fn a_refused_local_path_is_asked_once() {
+        let mut asked = Vec::new();
+        let error = available_space_with(
+            Path::new(r"C:\Mods\missing"),
+            fake_share(&[r"C:\Mods\missing\", r"C:\"], &mut asked),
+            |_| Ok(PathBuf::from(r"C:\")),
+        )
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(ERROR_INVALID_NAME as i32));
+        assert_eq!(asked, [r"C:\Mods\missing"]);
+    }
+
+    #[test]
+    fn unc_paths_are_recognised_in_every_spelling() {
+        for unc in [
+            r"\\nas\mods",
+            "//nas/mods",
+            r"\\?\UNC\nas\mods",
+            r"\\?\unc\nas\mods",
+        ] {
+            assert!(is_unc(Path::new(unc)), "{unc}");
+        }
+        for other in [
+            r"C:\Mods",
+            r"\\?\C:\Mods",
+            r"\\.\pipe\x",
+            r"\Mods",
+            r"\\\x",
+            "",
+        ] {
+            assert!(!is_unc(Path::new(other)), "{other}");
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@ Cathedral Assets Optimizer is a tool aiming to automate asset conversion and opt
 
 # Documentation
 
-Documentation is incomplete. It is available [here](https://g_ka.gitlab.io/sse-assets-optimiser/).
+This fork has no documentation of its own yet. The original application's documentation, written for its C++ releases, is at [g_ka.gitlab.io/sse-assets-optimiser](https://g_ka.gitlab.io/sse-assets-optimiser/); the options it describes are largely the same, but details may differ.
 
 # Build instructions
 
@@ -17,7 +17,7 @@ cargo clippy --all-targets
 cargo fmt --check
 ```
 
-CI runs the same four commands on every pull request ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). It turns `LongPathsEnabled` off, because CAO must handle Mod Roots deeper than `MAX_PATH` on a default Windows install, and it fails if any test is reported as ignored.
+CI runs the same four commands on every pull request ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), and checks the dependency graph with [`cargo deny check`](https://github.com/EmbarkStudios/cargo-deny) against [`deny.toml`](deny.toml): advisories, licences, duplicate versions and sources. Run it after changing a dependency (`cargo install --locked cargo-deny`). It turns `LongPathsEnabled` off, because CAO must handle Mod Roots deeper than `MAX_PATH` on a default Windows install, and it fails if any test is reported as ignored.
 
 - **Rust:** `rust-toolchain.toml` pins Rust 1.99.0 with rustfmt and clippy; rustup installs it on first use.
 - **MSVC and Windows SDK:** Visual Studio 2026 (v145) Build Tools and Windows SDK 10.0.26100 are the documented minimum. They are not enforced; the build uses whichever Visual Studio installation it finds, or the environment of a Developer Command Prompt.
@@ -37,7 +37,7 @@ cargo xtask dist --release      # build and lay out target/dist/release/
 ```
 
 - `dev` keeps profile files already beside the exe, since the app edits them; `--force` replaces them with the tracked ones.
-- `dist` lays out `cao-gui.exe`, `profiles/`, `bin/hkxcmd.exe` and `LICENSE`. It replaces its default folder under `target/dist/`; a folder given with `--out` must be absent or empty.
+- `dist` lays out `cao-gui.exe`, `profiles/`, `bin/hkxcmd.exe`, `LICENSE` and `LICENSE-nifly` (nifly's GPL-3.0 text; see [License](#license)). It replaces its default folder under `target/dist/`; a folder given with `--out` must be absent or empty.
 - **hkxcmd:** `hkxcmd.exe` converts Animations and is not in this repository. Download it from [figment/hkxcmd's releases](https://github.com/figment/hkxcmd/releases) and put it at `bin/hkxcmd.exe` in the repository root (which `.gitignore` keeps untracked), or pass `--hkxcmd <path>`. `dist` refuses to lay out an install without it unless given `--without-hkxcmd`; such an install cannot convert Animations.
 
 # Features and use instructions
@@ -46,10 +46,18 @@ See [the NexusMods page](https://www.nexusmods.com/skyrimspecialedition/mods/233
 
 # Credits
 
-Zilav, for his assistance and [BSArch](https://github.com/TES5Edit/TES5Edit/tree/dev/Tools/BSArchive)
-Ousnius, for the [NIF Library](https://github.com/ousnius/BodySlide-and-Outfit-Studio/tree/dev/lib/NIF)
-Microsoft, for [DirectXTex](https://github.com/Microsoft/DirectXTex)
-Figment, for [hkxcmd](https://github.com/figment/hkxcmd)
-Deorder, for his assistance and [Libbsarch](https://github.com/deorder/libbsarch)
-Francesc M., for [QLogger](https://github.com/francescmm/QLogger)
-Feles Noctis, Hishy, Alsa, Aerisarn, and many others, for tests and advice
+- G'k, for the original Cathedral Assets Optimizer, which this fork ports to Rust
+- Ryan McKenzie, for [ba2](https://github.com/Ryan-rsm-McKenzie/bsa-rs), which reads and writes CAO's Archives, and [directxtex-rs](https://github.com/Ryan-rsm-McKenzie/directxtex-rs), the base of CAO's fork
+- Microsoft, for [DirectXTex](https://github.com/Microsoft/DirectXTex)
+- Ousnius, for [nifly](https://github.com/ousnius/nifly), which reads and writes Meshes
+- Figment, for [hkxcmd](https://github.com/figment/hkxcmd), which converts Animations
+- The [Slint](https://slint.dev) team, for the toolkit the window is built with
+- Zilav, Deorder, Feles Noctis, Hishy, Alsa, Aerisarn, and many others, for their assistance, tests and advice
+
+# License
+
+CAO's own code is under the Mozilla Public License 2.0 ([`LICENSE`](LICENSE)). The exception is [`crates/nifly-sys/vendor/nifly`](crates/nifly-sys/vendor/nifly), nifly's own source, which is under the GNU General Public License 3.0 only (its `LICENSE` is beside it).
+
+`cao-gui.exe` compiles nifly in statically, so the binary combines MPL-2.0 and GPL-3.0-only code. The MPL-2.0 permits that combination (its section 3.3), and the combined program is distributed under the GPL-3.0's terms: whoever passes the exe on must offer its complete source under the GPL-3.0. CAO's own files stay available under the MPL-2.0 on their own. [`deny.toml`](deny.toml) allows GPL code in `nifly-sys` alone, and records the licences of the other dependencies.
+
+Slint is used under its Royalty-free License 2.0, whose attribution Help > About Slint provides; Slint is also available under the GPL-3.0.

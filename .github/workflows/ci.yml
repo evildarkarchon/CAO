@@ -4,6 +4,7 @@ name: CI
 # push to master (WS-2 of the 2026-11-13 codebase audit). Every test must run:
 # the job gives the host-dependent tests what they need and fails if any test
 # is reported as ignored, so a skipped file-safety test cannot pass silently.
+# A second job checks the dependency graph against deny.toml (WS-11).
 
 on:
   pull_request:
@@ -19,6 +20,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dependencies:
+    name: dependency policy
+    # Reads Cargo.lock and the RustSec database and builds nothing, so it runs
+    # beside the validate job and reports within minutes. Windows, like the
+    # rest of CAO's CI, although deny.toml pins the target graph either way.
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        # cargo-deny resolves the graph with `cargo metadata`.
+        run: |
+          rustup toolchain install
+          cargo --version
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: cargo deny check
+        # Advisories, licences (nifly-sys's GPL-3.0 included), duplicate
+        # versions and sources, by deny.toml.
+        run: cargo deny check
+
+      - name: Slint and its test backend resolve to one version
+        # i-slint-backend-testing is Slint's unversioned internals, pinned with
+        # `=` in the root Cargo.toml; it must equal the resolved slint, which a
+        # routine `cargo update` can move. Checkout may give Cargo.lock CRLF
+        # endings, hence the tr.
+        shell: bash
+        run: |
+          version_of() {
+            tr -d '\r' < Cargo.lock |
+              awk -v name="$1" '$0 == "name = \"" name "\"" { getline; gsub(/version = |"/, ""); print }'
+          }
+          slint=$(version_of slint)
+          testing=$(version_of i-slint-backend-testing)
+          echo "slint $slint, i-slint-backend-testing $testing"
+          if [ -z "$slint" ] || [ "$slint" != "$testing" ]; then
+            echo "::error::Cargo.lock resolves slint $slint but i-slint-backend-testing $testing. Move the =pin in the root Cargo.toml to the resolved slint."
+            exit 1
+          fi
+
   validate:
     name: fmt, clippy, build, test
     # Windows Server 2025 with Visual Studio 2026 (v145), CAO's documented

@@ -2,8 +2,9 @@
 //!
 //! `CompareStringOrdinal` with `bIgnoreCase` uppercases through the OS table
 //! one UTF-16 unit at a time, which is how NTFS compares names. Rust has no
-//! equivalent: its full Unicode case mappings can expand a character
-//! (`ß` uppercases to `SS`), which C++ CAO explicitly avoids.
+//! equivalent: its full Unicode case mappings can expand a character (`ß`
+//! uppercases to `SS`), so it would call two names equal that NTFS keeps as
+//! two files.
 
 use std::cmp::Ordering;
 use std::ffi::OsStr;
@@ -17,7 +18,9 @@ use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
 /// # Panics
 ///
 /// Panics if either side exceeds `i32::MAX` UTF-16 units or Windows rejects
-/// the comparison; C++ throws in both cases.
+/// the comparison. Neither happens for a name Windows can hold, whose paths
+/// stop at 32,767 units, and an ordering has no error to return: going on
+/// with a guessed order could treat two different files as one.
 pub fn compare_ordinal_ignore_case(left: impl AsRef<OsStr>, right: impl AsRef<OsStr>) -> Ordering {
     let left: Vec<u16> = left.as_ref().encode_wide().collect();
     let right: Vec<u16> = right.as_ref().encode_wide().collect();

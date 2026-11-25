@@ -953,3 +953,60 @@ fn a_panicking_dispatcher_is_disabled_and_diagnosed_without_changing_the_outcome
     assert_eq!(diagnostics[0].code, RunDiagnosticCode::DispatcherFailed);
     assert!(diagnostics[0].detail.contains("view unavailable"));
 }
+
+/// A capture whose own drop panics, standing in for presentation state that
+/// fails as it is torn down.
+struct PanicsOnDrop;
+
+impl Drop for PanicsOnDrop {
+    fn drop(&mut self) {
+        panic!("the captured view panicked while it was dropped");
+    }
+}
+
+/// Audit CORE-8: the service drops its dispatcher once the terminal event is
+/// dispatched, or as soon as the dispatcher fails. A panic from that drop,
+/// in anything the dispatcher captured, is contained and diagnosed: the
+/// waiters are still released and the outcome is untouched.
+#[test]
+fn a_dispatcher_whose_drop_panics_still_releases_its_waiters() {
+    let _serial = serial();
+    for (row, fails) in [
+        ("dropped after the terminal event", false),
+        ("dropped as it is disabled", true),
+    ] {
+        let service = service_on(Arc::new(CountingInlineScheduler::default()));
+        let captured = PanicsOnDrop;
+        let dispatcher = Box::new(move |_event: cao_core::run::RunEvent| {
+            // Holds the capture for as long as the dispatcher lives.
+            let _captured = &captured;
+            if fails {
+                panic!("view unavailable");
+            }
+        });
+
+        let handle = service.start(no_work_request(), Some(dispatcher)).unwrap();
+
+        assert_eq!(handle.wait().outcome(), RunOutcome::Succeeded, "{row}");
+        let details: Vec<String> = handle
+            .diagnostics()
+            .into_iter()
+            .filter(|diagnostic| diagnostic.code == RunDiagnosticCode::DispatcherFailed)
+            .map(|diagnostic| diagnostic.detail)
+            .collect();
+        assert_eq!(details.len(), 1 + usize::from(fails), "{row}: {details:?}");
+        if fails {
+            assert!(
+                details[0].contains("view unavailable"),
+                "{row}: {details:?}"
+            );
+        }
+        assert!(
+            details
+                .last()
+                .unwrap()
+                .contains("the captured view panicked while it was dropped"),
+            "{row}: {details:?}"
+        );
+    }
+}

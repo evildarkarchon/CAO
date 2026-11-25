@@ -9,11 +9,12 @@ CAO targets Windows only. The Rust workspace carries no POSIX code paths; valida
 - If a build is blocked, diagnose and report the blocker rather than silently switching to another workflow.
 - CI (`.github/workflows/ci.yml`) runs those four commands on every pull request with `LongPathsEnabled` off, and fails if any test is ignored: make a host-dependent test runnable on CI rather than skipped.
 - A path handed to a raw Win32 call goes through `cao_winfs::extended_length_path` first, as std does internally, so deep Mod Roots work whatever the host's `LongPathsEnabled` setting.
+- After adding, removing or updating a dependency, run `cargo deny check`; CI runs it against `deny.toml` on every pull request.
 - `cargo xtask dev` puts `profiles/` beside `target/debug/cao-gui.exe`, which `cargo run -p cao-gui` needs to start; `cargo xtask dist` lays out an install folder.
 
 ## C++ parity
 
-C++ parity is no longer a priority. Design each change around what CAO needs now, and change behavior wherever that serves CAO better. Comments, tests, specs, and docs that cite the deleted C++ implementation record history, not requirements: ignore them as constraints, and when a change touches code justified only by C++ parity, remove or rewrite that justification.
+C++ parity is no longer a priority. Design each change around what CAO needs now, and change behavior wherever that serves CAO better. Comments, tests, specs, and docs that cite the deleted C++ implementation record history, not requirements: ignore them as constraints, and when a change touches code justified only by C++ parity, remove or rewrite that justification. "Deviation N" in a comment refers to the closed list in `docs/deviations.md`; when touching such a comment, restate its reason so it stands without the lookup.
 
 ## Agent skills
 

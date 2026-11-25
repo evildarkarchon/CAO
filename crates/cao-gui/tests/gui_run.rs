@@ -38,14 +38,12 @@ use cao_gui::RunView;
 
 /// A fresh, empty directory under the target directory for one scenario.
 fn scratch_dir(name: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("cao-gui")
-        .join("gui_run")
-        .join(name);
-    // A missing directory is the expected case; anything else surfaces below.
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    cao_core::test_support::fresh_dir(
+        Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join("cao-gui")
+            .join("gui_run")
+            .join(name),
+    )
 }
 
 /// Executes `request` through the real Run Executor under an SSE-like profile

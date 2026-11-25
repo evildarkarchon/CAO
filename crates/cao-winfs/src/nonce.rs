@@ -3,7 +3,7 @@
 use std::io;
 
 /// Returns 16 unpredictable bytes from the OS (`ProcessPrng` on Windows 10
-/// and later), replacing C++'s `std::random_device`.
+/// and later), so no other process can predict a staging name.
 ///
 /// # Errors
 ///

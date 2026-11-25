@@ -1,9 +1,8 @@
 //! Loading Plugins and Dummy Plugins for new and existing Archives.
 //!
-//! Ported from `src/Run/ArchiveFinalizationLoadingPlugins.cpp`. A Loading
-//! Plugin is a plugin at one of the profile-recognized names that makes the
-//! game load an Archive; a Dummy Plugin is the profile's canonical 49-byte
-//! plugin CAO publishes when no other plugin does. Every Dummy Plugin is
+//! A Loading Plugin is a plugin at one of the profile-recognized names that
+//! makes the game load an Archive; a Dummy Plugin is the profile's canonical
+//! 49-byte plugin CAO publishes when no other plugin does. Every Dummy Plugin is
 //! staged and published with no-replace, so a late occupant always wins.
 //! CAO never removes a plugin.
 
@@ -19,8 +18,9 @@ use super::{
 };
 use crate::OperationFailure;
 use crate::execution::MutationState;
+use crate::run::work_error::ArchiveWorkError;
 use crate::run::{
-    ArchiveNameKind, ArchivePacker, PublicationPolicy, PublicationState, TemporaryArtifactRegistry,
+    ArchiveNameKind, ArchivePacker, PublicationPolicy, PublicationResult, TemporaryArtifactRegistry,
 };
 
 /// How strong the evidence must be before a recognized name counts as
@@ -51,25 +51,25 @@ pub(super) enum LoadingPluginStrength {
 /// # Errors
 /// The entry cannot be inspected, or its parent listed, for any reason but
 /// its absence.
-pub(super) fn existing_entry(path: &Path) -> Result<Option<PathBuf>, String> {
+pub(super) fn existing_entry(path: &Path) -> Result<Option<PathBuf>, ArchiveWorkError> {
     match std::fs::symlink_metadata(path) {
         Ok(_) => return Ok(Some(path.to_path_buf())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("Cannot inspect `{}`: {error}", path.display())),
+        Err(error) => return Err(ArchiveWorkError::new("Inspect", path, error)),
     }
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
         return Ok(None);
     };
-    let listing_error =
-        |error: std::io::Error| format!("Cannot list `{}`: {error}", parent.display());
     let entries = match std::fs::read_dir(parent) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(listing_error(error)),
+        Err(error) => return Err(ArchiveWorkError::new("List", parent, error)),
     };
     let mut occupant: Option<std::ffi::OsString> = None;
     for entry in entries {
-        let candidate = entry.map_err(listing_error)?.file_name();
+        let candidate = entry
+            .map_err(ArchiveWorkError::of("List", parent))?
+            .file_name();
         if compare_ordinal_ignore_case(&candidate, name).is_eq()
             && occupant
                 .as_ref()
@@ -86,7 +86,7 @@ pub(super) fn existing_entry(path: &Path) -> Result<Option<PathBuf>, String> {
 ///
 /// # Errors
 /// As for [`existing_entry`].
-fn entry_exists(path: &Path) -> Result<bool, String> {
+fn entry_exists(path: &Path) -> Result<bool, ArchiveWorkError> {
     Ok(existing_entry(path)?.is_some())
 }
 
@@ -95,11 +95,14 @@ fn entry_exists(path: &Path) -> Result<bool, String> {
 ///
 /// # Errors
 /// The entry cannot be inspected for any reason but its absence.
-fn is_loading_plugin(path: &Path, strength: LoadingPluginStrength) -> Result<bool, String> {
+fn is_loading_plugin(
+    path: &Path,
+    strength: LoadingPluginStrength,
+) -> Result<bool, ArchiveWorkError> {
     let inspect = |metadata: std::io::Result<std::fs::Metadata>| match metadata {
         Ok(metadata) => Ok(Some(metadata)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("Cannot inspect `{}`: {error}", path.display())),
+        Err(error) => Err(ArchiveWorkError::new("Inspect", path, error)),
     };
     match strength {
         LoadingPluginStrength::DurableForSourceDeletion => Ok(inspect(std::fs::symlink_metadata(
@@ -130,7 +133,7 @@ pub(super) fn find_loading_plugin(
     names: &[PathBuf],
     strength: LoadingPluginStrength,
     excluded: Option<&Path>,
-) -> Result<Option<PathBuf>, String> {
+) -> Result<Option<PathBuf>, ArchiveWorkError> {
     for name in names {
         if Some(name.as_path()) == excluded {
             continue;
@@ -166,12 +169,11 @@ pub(super) fn has_exact_dummy_bytes(path: &Path, bytes: &[u8]) -> bool {
 
 /// One Dummy Plugin publication attempt after staging succeeded.
 struct DummyPluginPublication {
-    /// Whether the plugin was published and its Temporary Ownership released.
-    completed: bool,
+    /// Why the plugin was not published and its Temporary Ownership
+    /// released, or `None` when it was.
+    failure: Option<ArchiveWorkError>,
     /// The publication's continuation verdict.
     safe_to_continue: bool,
-    /// Why publication did not complete; empty when it did.
-    detail: String,
 }
 
 /// Stages the canonical Dummy Plugin bytes under Temporary Ownership and
@@ -189,18 +191,21 @@ fn publish_dummy_plugin(
     destination: &Path,
     bytes: &[u8],
     mutations: &mut Vec<ArchiveFinalizationMutation>,
-) -> Result<DummyPluginPublication, String> {
+) -> Result<DummyPluginPublication, ArchiveWorkError> {
+    const STAGE: &str = "Stage Dummy Plugin";
     let receipt = artifacts
         .stage_archive_file_for_publication(mod_root)
-        .map_err(|error| error.to_string())?;
-    let staged = receipt.path().map_err(|error| error.to_string())?;
+        .map_err(ArchiveWorkError::of(STAGE, destination))?;
+    let staged = receipt
+        .path()
+        .map_err(ArchiveWorkError::of(STAGE, destination))?;
     // Staging created the file empty; open it as it is, exclusively and never
     // through a link that replaced it, as every other staged write does.
-    let stage_failed = |_| "Could not stage the loading plugin.".to_owned();
     let mut file = Open::new(Access::WRITE, Share::NONE)
         .open(staged)
-        .map_err(stage_failed)?;
-    file.write_all(bytes).map_err(stage_failed)?;
+        .map_err(ArchiveWorkError::of("Open staged Dummy Plugin", staged))?;
+    file.write_all(bytes)
+        .map_err(ArchiveWorkError::of("Write staged Dummy Plugin", staged))?;
     // Close the handle before the staged file is renamed.
     drop(file);
 
@@ -217,17 +222,20 @@ fn publish_dummy_plugin(
             count: 1,
         });
     }
-    let completed = published.state == PublicationState::PublishedAndReleased;
+    let safe_to_continue = published.safe_to_continue();
+    let failure = match published {
+        PublicationResult::PublishedAndReleased => None,
+        PublicationResult::NotPublished(error) | PublicationResult::PublishedStillOwned(error) => {
+            Some(ArchiveWorkError::new(
+                "Publish Dummy Plugin",
+                destination,
+                error,
+            ))
+        }
+    };
     Ok(DummyPluginPublication {
-        completed,
-        safe_to_continue: published.safe_to_continue(),
-        detail: if completed {
-            String::new()
-        } else if published.error_detail.is_empty() {
-            "Loading plugin publication did not complete.".to_owned()
-        } else {
-            published.error_detail
-        },
+        failure,
+        safe_to_continue,
     })
 }
 
@@ -249,7 +257,8 @@ pub(super) fn ensure_output_loading_plugin(
     output: &FinalizationOutput,
     artifacts: &mut TemporaryArtifactRegistry,
     mutations: &mut Vec<ArchiveFinalizationMutation>,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, ArchiveWorkError> {
+    const CREATE: &str = "Create Dummy Plugin";
     let bytes = &plan.rules.dummy_plugin;
     let names = &output.loading_plugin_paths;
     let plugin = names
@@ -279,25 +288,34 @@ pub(super) fn ensure_output_loading_plugin(
                 break;
             }
         }
-        destination =
-            free.ok_or_else(|| "No ordinary loading plugin name is available.".to_owned())?;
+        destination = free.ok_or_else(|| {
+            ArchiveWorkError::refused(CREATE, plugin, "no ordinary Loading Plugin name is free")
+        })?;
     }
     if destination == *plugin
         && let Some(occupant) = occupant
     {
         if output.plugin_path.is_some() && !has_exact_dummy_bytes(&occupant, bytes) {
-            return Err("The planned loading plugin is occupied.".to_owned());
+            return Err(ArchiveWorkError::refused(
+                CREATE,
+                &occupant,
+                "another file holds the planned name",
+            ));
         }
         if !std::fs::metadata(&occupant).is_ok_and(|metadata| metadata.is_file()) {
-            return Err("The planned loading plugin is not a file.".to_owned());
+            return Err(ArchiveWorkError::refused(
+                CREATE,
+                &occupant,
+                "what holds the planned name is not a file",
+            ));
         }
         return Ok(occupant);
     }
     // Publication rechecks the leaf natively: a newcomer wins.
     let published =
         publish_dummy_plugin(artifacts, &output.mod_root, &destination, bytes, mutations)?;
-    if !published.completed {
-        return Err(published.detail);
+    if let Some(failure) = published.failure {
+        return Err(failure);
     }
     Ok(destination)
 }
@@ -323,7 +341,7 @@ pub(super) fn maintain_existing_loading_plugins(
     artifacts: &mut TemporaryArtifactRegistry,
     cancelled: &dyn Fn() -> bool,
     account: &mut ArchiveFinalizationAccount,
-) -> Result<bool, String> {
+) -> Result<bool, ArchiveWorkError> {
     if plan.create_dummies {
         create_missing_dummy_plugins(plan, root, packer, artifacts, cancelled, account)
     } else {
@@ -341,10 +359,10 @@ fn create_missing_dummy_plugins(
     artifacts: &mut TemporaryArtifactRegistry,
     cancelled: &dyn Fn() -> bool,
     account: &mut ArchiveFinalizationAccount,
-) -> Result<bool, String> {
+) -> Result<bool, ArchiveWorkError> {
     let archives = packer
         .list_names(root, ArchiveNameKind::Archive)
-        .map_err(|error| error.to_string())?;
+        .map_err(ArchiveWorkError::of("List the Archives of", root))?;
     for archive in archives {
         if cancelled() {
             account.cancelled = true;
@@ -352,14 +370,18 @@ fn create_missing_dummy_plugins(
         }
         let names = loading_plugin_names(&archive, &plan.rules);
         let destination = names.last().expect("every game has a plugin extension");
-        let created = (|| -> Result<Option<DummyPluginPublication>, String> {
+        let created = (|| -> Result<Option<DummyPluginPublication>, ArchiveWorkError> {
             if find_loading_plugin(&names, LoadingPluginStrength::Present, None)?.is_some() {
                 return Ok(None);
             }
             // A non-plugin entry at the chosen name must survive, even though
             // the read-only probe above did not recognize it.
             if entry_exists(destination)? {
-                return Err("The loading plugin name is occupied.".to_owned());
+                return Err(ArchiveWorkError::refused(
+                    "Create Dummy Plugin",
+                    destination,
+                    "the name is occupied",
+                ));
             }
             publish_dummy_plugin(
                 artifacts,
@@ -372,23 +394,26 @@ fn create_missing_dummy_plugins(
         })();
         match created {
             Ok(None) => {}
-            Ok(Some(published)) if published.completed => {}
-            Ok(Some(published)) => {
+            Ok(Some(DummyPluginPublication { failure: None, .. })) => {}
+            Ok(Some(DummyPluginPublication {
+                failure: Some(failure),
+                safe_to_continue,
+            })) => {
                 account.fail(OperationFailure::new(
                     ArchiveFinalizationFailure::PluginCreationFailed,
-                    published.detail,
+                    failure.to_string(),
                 ));
                 // Publication's verdict stands.
-                account.safe_to_continue = published.safe_to_continue;
+                account.safe_to_continue = safe_to_continue;
                 account.cancelled = cancelled();
                 return Ok(false);
             }
-            Err(detail) => {
+            Err(error) => {
                 // Staging and the checks above fail before publication, so
                 // nothing was mutated.
                 account.fail(OperationFailure::new(
                     ArchiveFinalizationFailure::PluginCreationFailed,
-                    detail,
+                    error.to_string(),
                 ));
                 account.cancelled = cancelled();
                 return Ok(false);

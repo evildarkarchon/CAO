@@ -69,7 +69,6 @@ fn startup_records_show_before_any_run(app: &App) {
     assert!(
         verbose
             .iter()
-            // TES4 ships without a `profile.ini`, so it is no profile.
             .any(|text| text.contains("VERB") && text.ends_with("Profiles found: FO4\nSSE\nTES5")),
         "the bootstrap's own record is missing: {verbose:?}"
     );

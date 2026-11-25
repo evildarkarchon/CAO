@@ -343,8 +343,8 @@ fn hold(path: &Path, share: u32) -> File {
 /// Origin: finalizationCapacityChecks (all four rows). Each output fits by
 /// itself, but the phase checks its shared volume as a whole, and each
 /// attempt rechecks its own estimate, grown sources included. A rejection
-/// keeps its sources, publishes no Dummy Plugin and stops pruning; unknown
-/// capacity proceeds.
+/// keeps its sources, publishes no Dummy Plugin and stops pruning, even of a
+/// folder an earlier output emptied; unknown capacity proceeds.
 #[test]
 fn capacity_shortages_stop_before_mutation() {
     for (scenario, name) in [
@@ -400,7 +400,10 @@ fn capacity_shortages_stop_before_mutation() {
             let done = index < committed;
             assert_eq!(archives_in(root).len(), usize::from(done), "{name} {index}");
             assert_eq!(root.join("meshes/asset.nif").exists(), !done, "{name}");
-            assert_eq!(root.join("empty").exists(), scenario != 1, "{name}");
+            // Only a phase that ran to the end prunes, and then only the
+            // folder its packing emptied, never one the mod shipped empty.
+            assert!(root.join("empty").is_dir(), "{name}");
+            assert_eq!(root.join("meshes").exists(), scenario != 1, "{name}");
             // The Dummy Plugin is published with its output, never before a
             // rejected one.
             assert_eq!(root_plugin(root).exists(), done, "{name}");
@@ -2325,7 +2328,10 @@ fn a_locked_source_after_commit_continues_only_while_readable() {
         assert!(reads_back(&first.archive_path));
         assert_eq!(later_source.exists(), deny_reads);
         assert_eq!(archives_in(&later_root).len(), usize::from(!deny_reads));
-        assert_eq!(empty_directory.exists(), deny_reads);
+        // Only a folder this run emptied is pruned, and only once the phase
+        // ends normally; the one the mod shipped empty always stays.
+        assert!(empty_directory.is_dir());
+        assert_eq!(later_root.join("textures").exists(), deny_reads);
         if !deny_reads {
             let last = result.attempts.last().unwrap();
             assert!(last.succeeded(), "{:?}", last.outcome);
@@ -2337,10 +2343,10 @@ fn a_locked_source_after_commit_continues_only_while_readable() {
 }
 
 /// Origin: packingRequiresArchiveCreationRequest. Without an Archive creation
-/// request nothing is packed and no Loading Plugin is touched, but empty
-/// directories are still pruned.
+/// request nothing is packed and no Loading Plugin is touched. Nothing was
+/// emptied either, so an empty folder the mod ships stays (audit FS-7).
 #[test]
-fn without_archive_creation_only_pruning_runs() {
+fn without_archive_creation_nothing_is_packed_or_pruned() {
     let root = scratch("no-archive-creation").join("mod");
     let source = root.join("textures/asset.dds");
     write_file(&source, b"source bytes");
@@ -2369,35 +2375,50 @@ fn without_archive_creation_only_pruning_runs() {
     assert_eq!(archives_in(&root), [root.join("existing.bsa")]);
     assert!(!root.join("existing.esp").exists());
     assert!(!root.join(".cao-staging").exists());
-    assert!(!root.join("empty").exists());
-    assert_eq!(result.mutations.len(), 1);
-    assert_eq!(
-        result.mutations[0].kind,
-        ArchiveFinalizationMutationKind::EmptyDirectoryPruning
-    );
-    assert_eq!(result.mutations[0].mutation, MutationState::Committed);
-    assert_eq!(result.mutations[0].count, 2);
+    assert!(root.join("empty/nested").is_dir());
+    assert!(result.mutations.is_empty(), "{:?}", result.mutations);
     assert!(run.cleaned_up());
 }
 
-/// **Deviation 20 (pruning).** An empty directory is pruned even when its
-/// path contains "separator": C++ skipped any such directory, so a mods
-/// folder below a mod-manager separator was never pruned at all.
+/// Pruning removes exactly the folders packing emptied (audit FS-7): each
+/// folder a packed source was deleted from, then each parent that left
+/// empty, up to the Mod Root. A folder the mod ships empty stays, and so
+/// does a parent that still holds one. A path containing "separator", as a
+/// mods folder below a mod-manager separator does, is pruned like any other.
 #[test]
-fn deviation_20_pruning_has_no_separator_rule() {
-    let root = scratch("deviation-20").join("Separator mods").join("mod");
+fn pruning_removes_only_the_folders_packing_emptied() {
+    let root = scratch("pruning-emptied")
+        .join("Separator mods")
+        .join("mod");
+    real_plugin(&root);
+    write_file(
+        &root.join("separator/textures/asset.dds"),
+        b"packed texture",
+    );
     std::fs::create_dir_all(root.join("separator/empty")).unwrap();
+    write_file(&root.join("deep/er/still/asset.nif"), b"packed mesh");
     std::fs::create_dir_all(root.join("other")).unwrap();
-    let finalizer = Finalizer {
-        no_archive_creation: true,
-        ..Finalizer::default()
-    };
-    let run = finalizer.run(std::slice::from_ref(&root));
+    let run = Finalizer::default().run(std::slice::from_ref(&root));
 
     let result = run.finalization();
-    assert!(std::fs::read_dir(&root).unwrap().next().is_none());
-    assert_eq!(result.mutations.len(), 1);
-    assert_eq!(result.mutations[0].count, 3);
+    assert!(
+        result.attempts.iter().all(|attempt| attempt.succeeded()),
+        "{:?}",
+        result.attempts
+    );
+    assert!(!root.join("separator/textures").exists());
+    assert!(root.join("separator/empty").is_dir());
+    assert!(!root.join("deep").exists());
+    assert!(root.join("other").is_dir());
+    let pruning: Vec<_> = result
+        .mutations
+        .iter()
+        .filter(|mutation| mutation.kind == ArchiveFinalizationMutationKind::EmptyDirectoryPruning)
+        .collect();
+    assert_eq!(pruning.len(), 1, "{:?}", result.mutations);
+    assert_eq!(pruning[0].mutation, MutationState::Committed);
+    // `separator/textures`, then `deep/er/still`, `deep/er` and `deep`.
+    assert_eq!(pruning[0].count, 4);
     assert!(run.cleaned_up());
 }
 

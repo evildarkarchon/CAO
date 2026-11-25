@@ -1,8 +1,7 @@
 //! The Optimization Run: its lifecycle, evidence, executor, scheduling and service.
 //!
-//! Ported from the C++ `cao::run` module (`src/Run`). The public entry point is
-//! [`OptimizationRunService`]; beneath it, [`RunExecutor`] is the synchronous,
-//! deterministic seam (ADR-0001).
+//! The public entry point is [`OptimizationRunService`]; beneath it,
+//! [`RunExecutor`] is the synchronous, deterministic seam (ADR-0001).
 
 mod archives;
 mod artifacts;
@@ -14,6 +13,7 @@ mod executor;
 mod finalization;
 mod lifecycle;
 mod mod_selection;
+mod path_safety;
 mod preparation;
 mod probes;
 mod scheduler;
@@ -22,6 +22,7 @@ mod source_pin;
 mod staging;
 mod toolset;
 mod work_choices;
+mod work_error;
 
 pub(crate) use archives::ArchiveExtractionPlan;
 pub use archives::{
@@ -29,8 +30,10 @@ pub use archives::{
 };
 pub use artifacts::{
     PublicationPolicy, PublicationReceipt, PublicationResult, PublicationState, PublicationTarget,
-    Registration, StagedFile, TemporaryArtifactRegistry,
+    TemporaryArtifactRegistry,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use artifacts::{Registration, StagedFile};
 pub(crate) use artifacts::{fingerprint, ineligibility, probe_ineligibility};
 pub use asset_attempt::{
     AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
@@ -39,7 +42,7 @@ pub use byte_size::ByteSize;
 pub use capacity::CapacityShortage;
 pub use evidence::{
     ArchiveDiscoveryEvidence, OutputPlanBasis, PlannedArchiveExtraction, PlannedArchiveWork,
-    PlannedOutputArchive, RoutedAssetAttempt, RunEvidence, RunObservationSink,
+    PlannedOutputArchive, PlannedPruning, RoutedAssetAttempt, RunEvidence, RunObservationSink,
 };
 pub use executor::{
     RunEvidenceInvariantPanic, RunExecutor, RunServices, SafetyCleanupService,
@@ -63,9 +66,7 @@ pub use probes::{
     ArchiveEntry, ArchiveMerge, ArchiveName, ArchiveNameKind, ArchiveNamingRules, ArchivePacker,
     ArchiveReader, PackedArchiveKind, PackedFile, PlannedArchive, VolumeProbe,
 };
-pub use scheduler::{
-    InlineRunScheduler, RunScheduler, RunWork, ScheduledRunWorker, StandardRunScheduler,
-};
+pub use scheduler::{RunScheduler, RunWork, ScheduledRunWorker, StandardRunScheduler};
 pub use service::{OptimizationRunService, RunEventDispatcher, RunHandle, StartError};
 pub use source_pin::{LoadingPluginPin, SourceDirectoryPins, SourceFilePin, SourcePinError};
 pub use staging::{StagingError, is_staging_name};

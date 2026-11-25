@@ -10,20 +10,22 @@ mod common;
 
 use cao_gui::MessageLevel;
 use common::*;
+use slint::ComponentHandle;
 
-/// Controls the run lock never touches, as in C++, which disabled only the
-/// tab widget, the profile combo and New.
-const NEVER_LOCKED: &[&str] = &[
+/// Controls the run lock never touches: showing the advanced settings
+/// changes only what the window shows, not what any run uses.
+const NEVER_LOCKED: &[&str] = &["Show advanced settings"];
+/// The controls the lock disables outside the tab pages. The mod folder, the
+/// mode and Dry run are among them: the run has already read them, so a
+/// change would show a state the run is not using and be saved at its end
+/// (GUI-9).
+const LOCKED: &[&str] = &[
+    "Profile",
+    "New",
     "Mod folder",
     "Open Directory",
     "Optimization mode",
     "Dry run",
-    "Show advanced settings",
-];
-/// The controls the lock disables outside the tab pages.
-const LOCKED: &[&str] = &[
-    "Profile",
-    "New",
     "BSA",
     "Meshes",
     "Textures",
@@ -120,6 +122,11 @@ fn a_run_locks_the_profile_new_and_tab_pages_until_it_reports_its_outcome() {
             .iter()
             .any(|row| row == "Final Phase: Archive Finalization"),
         "the terminal evidence reaches the Log tab's detail rows: {details:?}"
+    );
+    // The count the Log tab keeps in place of scanning its rows (GUI-13).
+    assert_eq!(
+        usize::try_from(ui.global::<cao_gui::ui::LogTab>().get_detail_count()).unwrap(),
+        details.len()
     );
 
     // A cancelled run: Cancel disables itself at once, and the lock holds

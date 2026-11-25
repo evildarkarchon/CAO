@@ -1,10 +1,11 @@
 //! Asset Routing: the Routing Policy, Routing Decisions and the Routing Ledger.
 //!
-//! Ported from the C++ `cao::routing` module (`src/AssetRouting`). Routing is
-//! filename-only: it never touches the filesystem and never normalizes the
-//! caller's path, so a decision is a pure function of the path and the policy.
+//! Routing is filename-only: it never touches the filesystem and never
+//! normalizes the caller's path, so a decision is a pure function of the path
+//! and the policy.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -168,6 +169,52 @@ pub(crate) fn work_capabilities() -> impl Iterator<Item = (RequestedWork, Profil
         .map(|(work, capability, _)| (work, capability))
 }
 
+/// The bit of a set of [`RequestedWork`] that stands for `work`, as the
+/// Routing Policy and the Admission Rules store their work sets.
+///
+/// The match has no wildcard arm, so a new [`RequestedWork`] does not compile
+/// until it is given a bit here; a ninth bit overflows `u8`, which the
+/// `arithmetic_overflow` lint also rejects at compile time. Indexing an
+/// array by discriminant would instead compile and panic at run time.
+pub(crate) const fn work_bit(work: RequestedWork) -> u8 {
+    match work {
+        RequestedWork::NativeTextureOptimization => 1 << 0,
+        RequestedWork::StandardMeshOptimization => 1 << 1,
+        RequestedWork::TerrainMeshOptimization => 1 << 2,
+        RequestedWork::AnimationOptimization => 1 << 3,
+        RequestedWork::ArchiveExtraction => 1 << 4,
+        RequestedWork::ArchiveCreation => 1 << 5,
+    }
+}
+
+/// The bit of a set of [`ProfileCapability`] that stands for `capability`.
+///
+/// Exhaustive for the reason [`work_bit`] is. Eight capabilities fill the
+/// `u8`, so a ninth does not compile until the set is widened.
+const fn capability_bit(capability: ProfileCapability) -> u8 {
+    match capability {
+        ProfileCapability::NativeTextureOptimization => 1 << 0,
+        ProfileCapability::ConvertibleTextureConversion => 1 << 1,
+        ProfileCapability::StandardMeshOptimization => 1 << 2,
+        ProfileCapability::TerrainMeshOptimization => 1 << 3,
+        ProfileCapability::AnimationOptimization => 1 << 4,
+        ProfileCapability::ArchiveExtraction => 1 << 5,
+        ProfileCapability::MeshReferenceMaintenance => 1 << 6,
+        ProfileCapability::ArchiveCreation => 1 << 7,
+    }
+}
+
+/// The bit of [`AssetOperations`] that stands for `operation`; exhaustive
+/// for the reason [`work_bit`] is.
+const fn operation_bit(operation: AssetOperation) -> u8 {
+    match operation {
+        AssetOperation::Extraction => 1 << 0,
+        AssetOperation::Optimization => 1 << 1,
+        AssetOperation::Conversion => 1 << 2,
+        AssetOperation::MeshReferenceMaintenance => 1 << 3,
+    }
+}
+
 /// The Asset Kind each Profile Capability belongs to.
 const fn capability_kind(capability: ProfileCapability) -> AssetKind {
     match capability {
@@ -195,22 +242,22 @@ const BUILT_IN_EXTENSIONS: [(&str, AssetKind); 6] = [
 
 /// The read-only closed set of work execution must perform for one Routed Asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
-pub struct AssetOperations([bool; 4]);
+pub struct AssetOperations(u8);
 
 impl AssetOperations {
     /// Reports whether the Routed Asset carries one closed operation.
     pub fn contains(&self, operation: AssetOperation) -> bool {
-        self.0[operation as usize]
+        self.0 & operation_bit(operation) != 0
     }
 
     /// Adds one operation while the router builds a Routed Asset.
     fn include(&mut self, operation: AssetOperation) {
-        self.0[operation as usize] = true;
+        self.0 |= operation_bit(operation);
     }
 
     /// Reports whether no operation applies to the recognized Asset.
     fn is_empty(&self) -> bool {
-        !self.0.iter().any(|included| *included)
+        self.0 == 0
     }
 }
 
@@ -221,7 +268,8 @@ impl AssetOperations {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoutingPolicyRequest {
     execution_mode: ExecutionMode,
-    work: [bool; 6],
+    /// The requested work, one [`work_bit`] each.
+    work: u8,
 }
 
 impl RoutingPolicyRequest {
@@ -230,15 +278,24 @@ impl RoutingPolicyRequest {
     pub fn for_work(execution_mode: ExecutionMode, work: &[RequestedWork]) -> Self {
         let mut request = Self {
             execution_mode,
-            work: [false; 6],
+            work: 0,
         };
         for choice in work {
-            request.work[*choice as usize] = true;
+            request.work |= work_bit(*choice);
         }
         request
     }
 
+    /// Reports whether the request carries one explicit work choice.
+    fn requests(&self, work: RequestedWork) -> bool {
+        self.work & work_bit(work) != 0
+    }
+
     /// The tracer's dedicated request: Apply-mode native Texture optimization.
+    ///
+    /// Only routing scenarios use it, so only the `test-support` feature
+    /// builds it.
+    #[cfg(feature = "test-support")]
     pub fn optimize_native_textures() -> Self {
         Self::for_work(
             ExecutionMode::Apply,
@@ -251,7 +308,8 @@ impl RoutingPolicyRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileCapabilities {
     archive_extension: Option<String>,
-    capabilities: [bool; 8],
+    /// The supported capabilities, one [`capability_bit`] each.
+    capabilities: u8,
 }
 
 impl ProfileCapabilities {
@@ -274,10 +332,10 @@ impl ProfileCapabilities {
     ) -> Self {
         let mut definition = Self {
             archive_extension,
-            capabilities: [false; 8],
+            capabilities: 0,
         };
         for capability in capabilities {
-            definition.capabilities[*capability as usize] = true;
+            definition.capabilities |= capability_bit(*capability);
         }
         definition
     }
@@ -286,7 +344,7 @@ impl ProfileCapabilities {
     /// extension plays no part: a missing or malformed one is reported only
     /// when a Routing Policy is compiled.
     pub fn supports(&self, capability: ProfileCapability) -> bool {
-        self.capabilities[capability as usize]
+        self.capabilities & capability_bit(capability) != 0
     }
 
     /// Reports whether the profile supports any behavior within an Asset Kind.
@@ -457,7 +515,8 @@ fn malformed_reason(extension: &str) -> Option<MalformedArchiveExtensionReason> 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoutingPolicy {
     execution_mode: ExecutionMode,
-    work: [bool; 6],
+    /// The requested work, one [`work_bit`] each.
+    work: u8,
     /// Whether convertible Textures are converted. Mesh Reference Maintenance
     /// is derived from this one fact, so it is not stored separately.
     converts_textures: bool,
@@ -509,7 +568,7 @@ impl RoutingPolicy {
         }
 
         for (work, capability, variant) in REQUESTED_WORK_DEFINITIONS {
-            if !request.work[work as usize] || capabilities.supports(capability) {
+            if !request.requests(work) || capabilities.supports(capability) {
                 continue;
             }
             let kind = capability_kind(capability);
@@ -532,7 +591,7 @@ impl RoutingPolicy {
         // A preference the profile cannot honour, or one with no Texture work
         // to attach to, is simply not applied: it is never a Policy Conflict.
         let converts_textures = prefers_conversion
-            && request.work[RequestedWork::NativeTextureOptimization as usize]
+            && request.requests(RequestedWork::NativeTextureOptimization)
             && capabilities.supports(ProfileCapability::ConvertibleTextureConversion);
 
         // Converted Textures change the names Meshes reference, so conversion
@@ -565,7 +624,7 @@ impl RoutingPolicy {
 
     /// Reports whether the compiled policy contains one explicit work choice.
     pub fn requests(&self, work: RequestedWork) -> bool {
-        self.work[work as usize]
+        self.work & work_bit(work) != 0
     }
 
     /// Reports whether this policy converts convertible Textures, a fact
@@ -729,6 +788,10 @@ impl RoutingLedger {
     }
 
     /// The Routed Assets of one Routed Asset Phase, in their original relative order.
+    ///
+    /// Only routing scenarios use it, so only the `test-support` feature
+    /// builds it.
+    #[cfg(feature = "test-support")]
     pub fn routed_assets_in_phase(&self, phase: RoutedAssetPhase) -> Vec<&RoutedAsset> {
         self.routed_assets
             .iter()
@@ -762,6 +825,20 @@ fn normalized_terminal_extension(path: &Path) -> String {
     }
 }
 
+/// Reports whether `path`'s terminal extension is `extension`, a validated,
+/// ASCII-lowercase extension with its period, ignoring ASCII case: the test
+/// [`normalized_terminal_extension`] makes, without allocating.
+fn has_extension(path: &Path, extension: &str) -> bool {
+    let Some(wanted) = extension.strip_prefix('.') else {
+        return false;
+    };
+    !wanted.is_empty()
+        && path
+            .extension()
+            .and_then(OsStr::to_str)
+            .is_some_and(|text| text.is_ascii() && text.eq_ignore_ascii_case(wanted))
+}
+
 /// Makes deterministic, filename-only Routing Decisions from one immutable policy.
 #[derive(Debug, Clone)]
 pub struct AssetRouter {
@@ -777,6 +854,17 @@ impl AssetRouter {
     /// The policy this router decides with.
     pub fn policy(&self) -> &RoutingPolicy {
         &self.policy
+    }
+
+    /// Reports whether `execution_path` names an Archive, enabled or not:
+    /// whether [`Self::route`] would decide it is one, from its terminal
+    /// extension alone and without building a Routing Decision.
+    ///
+    /// Discovery asks this of every file, so it allocates nothing. A policy
+    /// cannot compile with an Archive extension that is a built-in Asset
+    /// extension, so the extension alone decides.
+    pub fn names_archive(&self, execution_path: &Path) -> bool {
+        has_extension(execution_path, self.policy.archive_extension())
     }
 
     /// Routes one path without filesystem access or path normalization.

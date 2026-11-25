@@ -12,7 +12,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::{RunEvidenceInvariantPanic, RunExecutor, RunServices, RunWork, Stop};
+use super::{RunEvidenceInvariantPanic, RunExecutor, RunServices, RunWorkPhases, Stop};
 use crate::Error;
 use crate::routing::{ExecutionMode, RequestedWork, RoutingLedger};
 use crate::run::{
@@ -22,18 +22,14 @@ use crate::run::{
 };
 use crate::test_support::{
     CountingCleanup, Observed, RecordingSink, ScriptedToolset, ToolsetConfiguration,
+    unit_scratch_dir,
 };
 
-/// A fresh, empty directory for one scenario under the system temporary
-/// directory: `CARGO_TARGET_TMPDIR` exists only for integration tests.
+/// A fresh, empty directory for one scenario under the unit tests' scratch
+/// root in the target directory: `CARGO_TARGET_TMPDIR` exists only for
+/// integration tests.
 fn scratch_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join("cao-core-unit")
-        .join(format!("{name}-{}", std::process::id()));
-    // A missing directory is the expected case; anything else surfaces in create_dir_all.
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    unit_scratch_dir(&format!("executor/{name}"))
 }
 
 /// An Apply request for Native Texture Optimization over a Mod Root holding
@@ -62,7 +58,7 @@ fn provider() -> ToolsetConfiguration {
 fn execute(
     request: &RunRequest,
     cleanup: &mut CountingCleanup,
-    work: impl RunWork,
+    work: impl RunWorkPhases,
 ) -> OptimizationRunResult {
     execute_observed(request, cleanup, None, work)
 }
@@ -72,7 +68,7 @@ fn execute_observed(
     request: &RunRequest,
     cleanup: &mut CountingCleanup,
     observations: Option<&dyn RunObservationSink>,
-    work: impl RunWork,
+    work: impl RunWorkPhases,
 ) -> OptimizationRunResult {
     let provider = provider();
     RunExecutor.execute_with_work(
@@ -322,6 +318,56 @@ fn a_stop_reporting_backend_cancellation_is_recorded_at_safety_cleanup() {
         assert!(
             !stop.is_cancelled(),
             "{name}: the caller's token is untouched"
+        );
+        assert_eq!(cleanup.passes, 1, "{name}");
+    }
+}
+
+/// Audit CORE-7: a cancel that arrives once every work phase has finished
+/// stopped nothing, so the run keeps the outcome its work earned and
+/// observes no cancellation. The same cancel arriving as the work stops
+/// short is observed and cancels the run.
+#[test]
+fn a_cancel_after_the_work_finished_is_not_observed() {
+    for (name, finishes) in [("finished work", true), ("stopped work", false)] {
+        let (request, _root) = texture_request(&format!("late-cancel-{}", name.replace(' ', "-")));
+        let mut cleanup = CountingCleanup::default();
+        let provider = provider();
+        let stop = CancellationToken::new();
+        let result = RunExecutor.execute_with_work(
+            &request,
+            RunServices {
+                safety_cleanup: &mut cleanup,
+                observations: None,
+                configuration: Some(&provider),
+            },
+            &stop,
+            create_run_id(),
+            move |_preparation, _choices, _toolset, evidence, _artifacts, stop| {
+                evidence.record_phase(RunPhaseRecord::executed(
+                    RunPhase::DiscoveringArchives,
+                    None,
+                ))?;
+                // The user cancels just as the last work phase returns.
+                stop.cancel();
+                Ok(if finishes {
+                    ControlFlow::Continue(())
+                } else {
+                    ControlFlow::Break(Stop::Halted)
+                })
+            },
+        );
+
+        assert!(stop.is_cancelled(), "{name}");
+        assert_eq!(result.cancellation_observed(), !finishes, "{name}");
+        assert_eq!(
+            result.outcome(),
+            if finishes {
+                RunOutcome::Succeeded
+            } else {
+                RunOutcome::Cancelled
+            },
+            "{name}"
         );
         assert_eq!(cleanup.passes, 1, "{name}");
     }

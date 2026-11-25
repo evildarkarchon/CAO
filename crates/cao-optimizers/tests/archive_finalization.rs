@@ -26,10 +26,11 @@ use cao_archive::{ArchiveFormat, Fo4Container, Game, ReadArchive, Settings};
 use cao_core::execution::MutationState;
 use cao_core::run::{
     ArchiveFinalizationChoices, ArchiveFinalizationMutationKind, ArchiveFinalizationResult,
-    ArchiveNameKind, ArchivePacker, CancellationToken, MutationKind, RunOutcome, VolumeProbe,
+    ArchiveNameKind, ArchivePacker, ArchiveSeams, CancellationToken, MutationKind,
+    RunDiagnosticCode, RunOutcome, VolumeProbe,
 };
 use cao_core::test_support::ArchiveRunRequest;
-use cao_optimizers::archives::{GameArchivePacker, VolumeProbes};
+use cao_optimizers::archives::{ArchiveFileReader, GameArchivePacker, VolumeProbes};
 use cao_optimizers::composition::run_service;
 use common::archive_run::production_seams_for;
 use common::{
@@ -633,4 +634,63 @@ fn one_service_finalizes_each_run_with_its_own_archive_finalization_choices() {
         (r"meshes\thing.nif".to_owned(), false)
     );
     assert!(roots[1].join("meshes/thing.nif").exists());
+}
+
+/// Audit BE-16: a loose file too large for any Archive its game can load
+/// stays loose, with a warning naming it, and the rest of its Mod Root is
+/// packed. The packer's refusal used to reach core as a sentence, which left
+/// the whole Mod Root unplanned.
+#[test]
+fn a_file_past_the_archive_size_cap_stays_loose_and_the_rest_is_packed() {
+    let root = mod_root("oversized", "mod");
+    write(&root, "meshes/small.nif", b"small mesh");
+    let huge = vec![7; 8192];
+    write(&root, "meshes/huge.nif", &huge);
+    // A cap no game has, so a small file can pass it.
+    let settings = Settings::for_test(Game::Sse, 4096, Some(4096));
+    let archive_run = ArchiveRunRequest::new(&root)
+        .with_archive_extension(".bsa")
+        .with_archive_finalization(ArchiveFinalizationChoices::default());
+    let configuration = archive_run.seams_configuration(Box::new(move || ArchiveSeams {
+        reader: Arc::new(ArchiveFileReader::default()),
+        volume_probe: Arc::new(Capacity(Some(1 << 40))),
+        packer: Arc::new(GameArchivePacker::new(settings)),
+    }));
+
+    let result = archive_run.execute(&configuration, None, &CancellationToken::new());
+
+    assert_eq!(
+        result.outcome(),
+        RunOutcome::Succeeded,
+        "{:?}",
+        result.failures()
+    );
+    let finalization = result.archive_finalization().unwrap();
+    assert_eq!(finalization.failure, None);
+    assert_eq!(
+        finalization.attempts.len(),
+        1,
+        "{:?}",
+        finalization.attempts
+    );
+    let names: Vec<_> = open(&finalization.attempts[0].archive_path)
+        .archived_assets()
+        .unwrap()
+        .into_iter()
+        .map(|asset| asset.name.to_lowercase().replace('/', "\\"))
+        .collect();
+    assert_eq!(names, [r"meshes\small.nif"]);
+    assert_eq!(std::fs::read(root.join("meshes/huge.nif")).unwrap(), huge);
+    let skipped: Vec<_> = result
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.code == RunDiagnosticCode::ArchiveCreationSkipped)
+        .collect();
+    assert_eq!(skipped.len(), 1, "{skipped:?}");
+    assert_eq!(skipped[0].path, root.join("meshes/huge.nif"));
+    assert!(
+        skipped[0].detail.contains("8192 bytes"),
+        "{}",
+        skipped[0].detail
+    );
 }

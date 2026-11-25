@@ -24,17 +24,33 @@ pub fn serial() -> std::sync::MutexGuard<'static, ()> {
 
 /// A fresh, empty directory under the target directory for one test.
 pub fn scratch_dir(name: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("cao-gui")
-        .join(name);
-    // A missing directory is the expected case; anything else surfaces below.
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    cao_core::test_support::fresh_dir(
+        Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join("cao-gui")
+            .join(name),
+    )
 }
 
-/// An app directory holding a copy of the repository's shipped `profiles/`.
+/// The `common.ini` [`app_dir`] writes: a returning user's, on TES5 with the
+/// advanced settings shown and the first start done, so no welcome box opens.
+pub const RETURNING_USER_COMMON_INI: &str = "[General]\r\nprofile=TES5\r\nbShowAdvancedSettings=true\r\nbDarkMode=true\r\nshowTutorial=true\r\nnotFirstStart=true\r\n";
+
+/// An app directory holding a copy of the repository's shipped `profiles/`,
+/// and a returning user's `common.ini` ([`RETURNING_USER_COMMON_INI`]). CAO
+/// ships no `common.ini` (WS-8), so [`new_install`] is the install as shipped.
 pub fn app_dir(name: &str) -> PathBuf {
+    let app = new_install(name);
+    std::fs::write(
+        app.join("profiles").join("common.ini"),
+        RETURNING_USER_COMMON_INI,
+    )
+    .unwrap();
+    app
+}
+
+/// An app directory holding only a copy of the repository's shipped
+/// `profiles/`, as a new install has it.
+pub fn new_install(name: &str) -> PathBuf {
     let app = scratch_dir(name);
     let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles");
     copy_tree(&shipped, &app.join("profiles"));

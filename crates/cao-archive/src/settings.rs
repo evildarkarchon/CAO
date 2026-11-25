@@ -1,7 +1,9 @@
-//! bethutil's per-game archive tables (`btu::bsa::Settings`), hand-ported for the
-//! three shipped games, plus file-type classification by first path component.
+//! The per-game Archive tables for the three shipped games, plus file-type
+//! classification by first path component.
 //!
-//! Source: `include/btu/bsa/settings.hpp` at bethutil `81f882ed` (#461).
+//! The tables began as bethutil's `btu::bsa::Settings` (`settings.hpp` at
+//! `81f882ed`, #461); they are CAO's own now, and rows that served only
+//! bethutil fidelity are gone (audit BE-18).
 
 use std::path::{Component, Path};
 
@@ -60,7 +62,7 @@ pub struct AllowedPath {
     /// The extension, with its dot, in lowercase.
     pub extension: &'static str,
     /// The lowercase first path components, relative to the Mod Root, this rule
-    /// accepts. `root` stands for the Mod Root itself; see [`AllowedPath::check`].
+    /// accepts.
     pub directories: &'static [&'static str],
 }
 
@@ -74,11 +76,10 @@ impl AllowedPath {
 
     /// Whether `path`, inside the Mod Root `root`, matches this rule.
     ///
-    /// The extension is compared without regard to ASCII case. The directory is the
-    /// lowercased first component of `path` relative to `root`, or `root` when
-    /// `path` *is* `root`. A root-level file's first component is its own name, so
-    /// the `.jpg`/`root` rule only matches under a folder literally named `root`;
-    /// that quirk is bethutil's and is kept.
+    /// The extension is compared without regard to ASCII case, and so is the
+    /// first component of `path` relative to `root` against the rule's
+    /// directories. The Mod Root itself, which has no first component, matches
+    /// no rule.
     pub fn check(&self, path: &Path, root: &Path) -> bool {
         if !extension_of(path).eq_ignore_ascii_case(self.extension) {
             return false;
@@ -89,13 +90,13 @@ impl AllowedPath {
             return false;
         };
         match relative.components().next() {
-            None => self.directories.contains(&"root"),
             Some(Component::Normal(first)) => first.to_str().is_some_and(|first| {
                 self.directories
                     .iter()
                     .any(|directory| first.eq_ignore_ascii_case(directory))
             }),
-            Some(_) => false,
+            // The Mod Root itself, or a path that leaves it.
+            _ => false,
         }
     }
 }
@@ -165,53 +166,44 @@ mod dummy {
     ];
 }
 
-/// SSE's Standard files; every game starts from these.
-const STANDARD_SSE: &[AllowedPath] = &[
-    AllowedPath::new(".bgem", &["materials"]),
-    AllowedPath::new(".bgsm", &["materials"]),
-    AllowedPath::new(".bto", &["meshes"]),
-    AllowedPath::new(".btr", &["meshes"]),
-    AllowedPath::new(".btt", &["meshes"]),
-    AllowedPath::new(".cgid", &["grass"]),
-    AllowedPath::new(".dlodsettings", &["lodsettings"]),
-    AllowedPath::new(".dtl", &["meshes"]),
-    AllowedPath::new(".egm", &["meshes"]),
-    AllowedPath::new(".jpg", &["root"]),
-    // bethutil lists `.hkb` twice; the duplicate is harmless and kept.
-    AllowedPath::new(".hkb", &["meshes"]),
-    AllowedPath::new(".hkb", &["meshes"]),
-    AllowedPath::new(".hkx", &["meshes"]),
-    AllowedPath::new(".lst", &["meshes"]),
-    AllowedPath::new(".nif", &["meshes"]),
-    AllowedPath::new(".psc", &["scripts", "source"]),
-    AllowedPath::new(".tga", &["textures"]),
-    AllowedPath::new(".tri", &["meshes"]),
-];
+/// The Standard files every game shares, followed by `$extra` rows, so each
+/// game's table is built from this one list and the tables cannot drift
+/// apart. A `macro_rules!` rather than a `const fn` because `const` slices
+/// cannot be concatenated.
+///
+/// bethutil also listed `.hkb` twice and had a `.jpg` rule under a first
+/// component named `root`, which only ever matched a folder of that name:
+/// files directly in the Mod Root are never packed. Both rows are gone.
+macro_rules! standard_files {
+    ($($extra:expr),* $(,)?) => {
+        &[
+            AllowedPath::new(".bgem", &["materials"]),
+            AllowedPath::new(".bgsm", &["materials"]),
+            AllowedPath::new(".bto", &["meshes"]),
+            AllowedPath::new(".btr", &["meshes"]),
+            AllowedPath::new(".btt", &["meshes"]),
+            AllowedPath::new(".cgid", &["grass"]),
+            AllowedPath::new(".dlodsettings", &["lodsettings"]),
+            AllowedPath::new(".dtl", &["meshes"]),
+            AllowedPath::new(".egm", &["meshes"]),
+            AllowedPath::new(".hkb", &["meshes"]),
+            AllowedPath::new(".hkx", &["meshes"]),
+            AllowedPath::new(".lst", &["meshes"]),
+            AllowedPath::new(".nif", &["meshes"]),
+            AllowedPath::new(".psc", &["scripts", "source"]),
+            AllowedPath::new(".tga", &["textures"]),
+            AllowedPath::new(".tri", &["meshes"]),
+            $($extra,)*
+        ]
+    };
+}
 
-/// FO4's Standard files: SSE's, plus `.png` textures (FO4 has no PNG texture rule)
-/// and `.uvd` visibility data, appended in bethutil's order. Spelled out in full
-/// because `const` slices cannot be concatenated; keep it in step with
-/// [`STANDARD_SSE`].
-const STANDARD_FO4: &[AllowedPath] = &[
-    AllowedPath::new(".bgem", &["materials"]),
-    AllowedPath::new(".bgsm", &["materials"]),
-    AllowedPath::new(".bto", &["meshes"]),
-    AllowedPath::new(".btr", &["meshes"]),
-    AllowedPath::new(".btt", &["meshes"]),
-    AllowedPath::new(".cgid", &["grass"]),
-    AllowedPath::new(".dlodsettings", &["lodsettings"]),
-    AllowedPath::new(".dtl", &["meshes"]),
-    AllowedPath::new(".egm", &["meshes"]),
-    AllowedPath::new(".jpg", &["root"]),
-    // bethutil lists `.hkb` twice; the duplicate is harmless and kept.
-    AllowedPath::new(".hkb", &["meshes"]),
-    AllowedPath::new(".hkb", &["meshes"]),
-    AllowedPath::new(".hkx", &["meshes"]),
-    AllowedPath::new(".lst", &["meshes"]),
-    AllowedPath::new(".nif", &["meshes"]),
-    AllowedPath::new(".psc", &["scripts", "source"]),
-    AllowedPath::new(".tga", &["textures"]),
-    AllowedPath::new(".tri", &["meshes"]),
+/// SSE's (and TES5's) Standard files: the shared list alone.
+const STANDARD_SSE: &[AllowedPath] = standard_files![];
+
+/// FO4's Standard files: the shared list, plus `.png` textures (FO4 has no
+/// PNG texture rule) and `.uvd` visibility data.
+const STANDARD_FO4: &[AllowedPath] = standard_files![
     AllowedPath::new(".png", &["textures"]),
     AllowedPath::new(".uvd", &["vis"]),
 ];

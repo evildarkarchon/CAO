@@ -3,8 +3,8 @@
 //! Staging ownership is the share-mode-0 open itself: while one process holds
 //! it, every other open of `owner.lock` fails with a sharing violation, and the
 //! OS releases it when that process dies. `File::lock` is not a substitute. It
-//! is a `LockFileEx` byte-range lock, which neither a C++ run nor this open
-//! would see.
+//! is a `LockFileEx` byte-range lock, which another run's share-mode-0 open
+//! would not see.
 
 use std::fs::File;
 use std::io;
@@ -61,9 +61,8 @@ impl OwnerLock {
     /// `GENERIC_READ` with no sharing, never following a link.
     const OPEN: Open = Open::new(Access::READ, Share::NONE);
 
-    /// Opens `path` with `open`, then requires an ordinary single-link file,
-    /// as C++'s `NativeLock` does: a hard link would let another name share
-    /// the lock's identity.
+    /// Opens `path` with `open`, then requires an ordinary single-link file:
+    /// a hard link would let another name share the lock's identity.
     fn claim(path: &Path, open: Open) -> Result<Self, OwnerLockError> {
         let file = open.open(path).map_err(|error| {
             if is_sharing_violation(&error) {

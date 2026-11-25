@@ -256,8 +256,9 @@ export component MainWindow inherits Window {
     // A rule trigger (`rules.rs`), besides `mode-activated`.
     callback game-selected(int);
 
-    // Qt's QTabWidget::setEnabled(false) disables every descendant. Slint has no enabled
-    // cascade, so every control in the tab pages ANDs this in by hand.
+    // Whether the controls a run locks are editable: false from a run's start to its
+    // end. Slint has no enabled cascade, so every locked control, in the tab pages and
+    // above them, ANDs this in by hand.
     property <bool> ed: !root.running;
     // Advanced groups are read-only for base profiles (setAdvancedSettingsEnabled).
     property <bool> adv-ed: root.ed && !root.base-profile;
@@ -378,10 +379,13 @@ export component MainWindow inherits Window {
             }
         }
 
-        // userPathTextEdit
+        // userPathTextEdit. The mod folder, mode and Dry run are locked with the
+        // tab pages: a run has already read them, so a change made now would show
+        // a state the run is not using and be saved when it ends (GUI-9).
         LineEdit {
             accessible-label: @tr("Mod folder");
             text <=> root.user-path;
+            enabled: root.ed;
             placeholder-text: @tr("Mod folder (or drop a folder onto the window)");
         }
 
@@ -393,6 +397,7 @@ export component MainWindow inherits Window {
                 Row {
                     Button {
                         text: @tr("Open Directory");
+                        enabled: root.ed;
                         clicked => {
                             root.open-directory();
                         }
@@ -411,6 +416,7 @@ export component MainWindow inherits Window {
                         accessible-label: @tr("Optimization mode");
                         model: [@tr("One mod"), @tr("Several mods")];
                         current-index <=> root.mode-index;
+                        enabled: root.ed;
                         selected => {
                             root.mode-activated(self.current-index);
                         }
@@ -422,6 +428,7 @@ export component MainWindow inherits Window {
                         text: @tr("Dry run");
                         help: @tr("Will list all files that would be modified, without actually processing them. Will ignore files in BSAs.");
                         checked <=> root.dry-run;
+                        enabled: root.ed;
                     }
 
                     Rectangle { }

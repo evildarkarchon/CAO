@@ -26,15 +26,16 @@
 
 mod common;
 
+use std::os::windows::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 
 use cao_core::execution::MutationState;
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
-    ArchiveExtractionFailure, ArchiveExtractionResult, CancellationToken, CapacityShortage,
-    OptimizationRunResult, RunPhase, SourceCleanup,
+    ArchiveExtractionFailure, ArchiveExtractionResult, ArchiveFinalizationMutationKind,
+    CancellationToken, CapacityShortage, OptimizationRunResult, RunPhase, SourceCleanup,
 };
 use cao_core::test_support::{
     ArchiveRunRequest, FakeArchiveReader, FakeVolumeProbe, RecordingSink, ScriptedToolset, entry,
@@ -44,6 +45,10 @@ use common::{canonical, scratch_dir};
 
 /// More bytes than any scenario needs.
 const UNLIMITED: u64 = u64::MAX;
+
+/// `FILE_SHARE_READ`: another handle may read, but not write, rename or
+/// delete.
+const FILE_SHARE_READ: u32 = 1;
 
 /// An Apply run over `root` that requests only Archive extraction.
 fn extraction_run(root: &Path) -> ArchiveRunRequest {
@@ -506,4 +511,171 @@ fn an_archive_is_staged_by_one_ownership_snapshot_and_released_by_one() {
     }
     // The source keeps its name: its cleanup follows a completed merge only.
     assert!(archive.exists());
+}
+
+/// Audit FS-8: only the entries an Archive wins are staged. An entry a Loose
+/// Asset shadows is never read out of the Archive, so it costs neither
+/// staging space nor an ownership record, and the Loose Asset is untouched.
+#[test]
+fn only_the_entries_an_archive_wins_are_extracted() {
+    let root = canonical(&scratch_dir("extractor-winners-only"));
+    let archive = root.join("source.bsa");
+    write_archive(
+        &archive,
+        &[entry("textures/a.dds", b"A"), entry("textures/b.dds", b"B")],
+    );
+    std::fs::create_dir_all(root.join("textures")).unwrap();
+    std::fs::write(root.join("textures/b.dds"), b"loose winner").unwrap();
+    let extracted = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&extracted);
+    let toolset = ScriptedToolset {
+        reader: Arc::new(FakeArchiveReader {
+            on_extract: Some(Box::new(move |_, entry| {
+                seen.lock().unwrap().push(entry.to_owned());
+            })),
+            ..FakeArchiveReader::default()
+        }),
+        ..ScriptedToolset::default()
+    };
+
+    let (result, _) = run_extraction(&root, toolset, || {});
+
+    let attempt = only_attempt(&result);
+    assert!(attempt.succeeded(), "{:?}", attempt.outcome);
+    assert_eq!(*extracted.lock().unwrap(), ["textures/a.dds"]);
+    assert_eq!(std::fs::read(root.join("textures/a.dds")).unwrap(), b"A");
+    assert_eq!(
+        std::fs::read(root.join("textures/b.dds")).unwrap(),
+        b"loose winner"
+    );
+    assert!(result.cleanup_failures().is_empty());
+}
+
+/// Audit FS-11: a source cleanup that fails after a merge that published
+/// nothing gets the same readability check as one after a commit. The
+/// source still reads back, so the attempt is a safe failure with no
+/// mutation, not an unknown mutation that stops the run.
+#[test]
+fn a_failed_cleanup_after_merging_nothing_continues_while_the_source_reads_back() {
+    let root = canonical(&scratch_dir("extractor-cleanup-nothing-merged"));
+    let archive = root.join("source.bsa");
+    write_archive(&archive, &[entry("textures/a.dds", b"archived")]);
+    std::fs::create_dir_all(root.join("textures")).unwrap();
+    std::fs::write(root.join("textures/a.dds"), b"loose winner").unwrap();
+    // Shares only reading: extraction and the recovery check can read the
+    // Archive, but its removal is refused.
+    let holder = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(&archive)
+        .unwrap();
+    let run = extraction_run(&root).with_archive_extraction(SourceCleanup::Remove);
+    let configuration = run.configuration(ScriptedToolset::default());
+
+    let result = run.execute(&configuration, None, &CancellationToken::new());
+    drop(holder);
+
+    let attempt = only_attempt(&result);
+    assert_eq!(
+        attempt.outcome.failure_category(),
+        Some(ArchiveExtractionFailure::SourceCleanupFailed)
+    );
+    assert_eq!(attempt.outcome.mutation(), MutationState::None);
+    assert!(attempt.safe_to_continue());
+    assert!(archive.exists());
+    assert_eq!(
+        std::fs::read(root.join("textures/a.dds")).unwrap(),
+        b"loose winner"
+    );
+    assert!(result.cleanup_failures().is_empty());
+}
+
+/// Audit FS-7: removing an extracted source Archive can empty its folder,
+/// which Archive Finalization then prunes, even with no Archive creation
+/// requested. A folder the mod ships empty stays.
+#[test]
+fn a_folder_a_removed_source_emptied_is_pruned() {
+    let root = canonical(&scratch_dir("extractor-prunes-emptied-folder"));
+    let archive = root.join("optional").join("empty.bsa");
+    write_archive(&archive, &[]);
+    std::fs::create_dir(root.join("shipped-empty")).unwrap();
+    let run = extraction_run(&root).with_archive_extraction(SourceCleanup::Remove);
+    let configuration = run.configuration(ScriptedToolset::default());
+
+    let result = run.execute(&configuration, None, &CancellationToken::new());
+
+    let attempt = only_attempt(&result);
+    assert!(attempt.succeeded(), "{:?}", attempt.outcome);
+    assert!(!root.join("optional").exists());
+    assert!(root.join("shipped-empty").is_dir());
+    let pruned: Vec<_> = result
+        .archive_finalization()
+        .unwrap()
+        .mutations
+        .iter()
+        .map(|mutation| (mutation.kind, mutation.count))
+        .collect();
+    assert_eq!(
+        pruned,
+        [(ArchiveFinalizationMutationKind::EmptyDirectoryPruning, 1)]
+    );
+}
+
+/// A Dry Run reports exactly the folders the matching Apply run prunes after
+/// removing its extracted source Archives. An Archive that wins nothing sits
+/// alone two folders deep, so Apply empties its folder and then the parent;
+/// another sits alone in its folder but publishes its winning entry beneath
+/// it, so that folder stays; a folder the mod ships empty stays too.
+#[test]
+fn a_dry_run_plans_the_folders_extraction_would_empty_as_apply_prunes_them() {
+    let layout = |name: &str| {
+        let root = canonical(&scratch_dir(name));
+        write_archive(&root.join("optional/deep/lonely.bsa"), &[]);
+        write_archive(
+            &root.join("kept/winner.bsa"),
+            &[entry("Textures/b.dds", b"archived")],
+        );
+        std::fs::create_dir(root.join("shipped-empty")).unwrap();
+        root
+    };
+    let dry_root = layout("extraction-pruning-plan-dry");
+    let apply_root = layout("extraction-pruning-plan-apply");
+
+    let dry_run = extraction_run(&dry_root)
+        .with_archive_extraction(SourceCleanup::Remove)
+        .with_execution_mode(ExecutionMode::DryRun);
+    let configuration = dry_run.configuration(ScriptedToolset::default());
+    let planned = dry_run.execute(&configuration, None, &CancellationToken::new());
+    let apply = extraction_run(&apply_root).with_archive_extraction(SourceCleanup::Remove);
+    let configuration = apply.configuration(ScriptedToolset::default());
+    let applied = apply.execute(&configuration, None, &CancellationToken::new());
+
+    assert!(planned.failures().is_empty(), "{:?}", planned.failures());
+    assert!(applied.failures().is_empty(), "{:?}", applied.failures());
+    let planned: Vec<PathBuf> = planned
+        .planned_archive_work()
+        .pruning()
+        .iter()
+        .map(|pruned| {
+            assert_eq!(pruned.mod_root, dry_root);
+            pruned
+                .directory
+                .strip_prefix(&dry_root)
+                .unwrap()
+                .to_path_buf()
+        })
+        .collect();
+    // Deepest first, the order Apply removes them in.
+    let expected = [PathBuf::from("optional/deep"), PathBuf::from("optional")];
+    assert_eq!(planned, expected);
+    // Apply removed exactly those, and kept the rest.
+    for folder in &expected {
+        assert!(!apply_root.join(folder).exists(), "{}", folder.display());
+    }
+    assert!(apply_root.join("kept/Textures/b.dds").is_file());
+    assert!(!apply_root.join("kept/winner.bsa").exists());
+    assert!(apply_root.join("shipped-empty").is_dir());
+    // The Dry Run itself removed nothing.
+    assert!(dry_root.join("optional/deep/lonely.bsa").is_file());
+    assert!(dry_root.join("kept/winner.bsa").is_file());
 }

@@ -114,10 +114,10 @@ fn archive_cleanup_keeps_the_committed_entry() {
 
     let publication = committed.publish(&destination, PublicationPolicy::NoReplace);
     assert_eq!(
-        publication.state,
+        publication.state(),
         PublicationState::PublishedAndReleased,
-        "{}",
-        publication.error_detail
+        "{:?}",
+        publication.error()
     );
     drop(abandoned);
     assert!(registry.cleanup().is_empty());
@@ -339,10 +339,10 @@ fn cleanup_removes_the_run_child_and_keeps_committed_output() {
     std::fs::write(&staged_path, "committed").unwrap();
     let publication = receipt.publish(&destination, PublicationPolicy::Replace);
     assert_eq!(
-        publication.state,
+        publication.state(),
         PublicationState::PublishedAndReleased,
-        "{}",
-        publication.error_detail
+        "{:?}",
+        publication.error()
     );
     let uncommitted = registry
         .capture_and_stage_file(&root, &root.join("other.dds"))
@@ -625,8 +625,8 @@ fn both_publication_policies_preserve_destination_bytes() {
     let asset_temporary = staged(&asset);
     std::fs::write(&asset_temporary, "new asset").unwrap();
     let asset_result = asset.publish(&asset_destination, PublicationPolicy::Replace);
-    assert_eq!(asset_result.state, PublicationState::PublishedAndReleased);
-    assert!(asset_result.error_detail.is_empty());
+    assert_eq!(asset_result.state(), PublicationState::PublishedAndReleased);
+    assert!(asset_result.error().is_none());
     assert_eq!(asset_result.mutation(), MutationState::Committed);
     assert!(asset_result.safe_to_continue());
 
@@ -634,7 +634,10 @@ fn both_publication_policies_preserve_destination_bytes() {
     let archive_temporary = staged(&archive);
     std::fs::write(&archive_temporary, "new archive entry").unwrap();
     let archive_result = archive.publish(&archive_destination, PublicationPolicy::NoReplace);
-    assert_eq!(archive_result.state, PublicationState::PublishedAndReleased);
+    assert_eq!(
+        archive_result.state(),
+        PublicationState::PublishedAndReleased
+    );
     assert_eq!(archive_result.mutation(), MutationState::Committed);
     assert!(archive_result.safe_to_continue());
 
@@ -663,8 +666,8 @@ fn an_occupied_destination_is_not_published() {
 
     let result = receipt.publish(&destination, PublicationPolicy::NoReplace);
 
-    assert_eq!(result.state, PublicationState::NotPublished);
-    assert!(!result.error_detail.is_empty());
+    assert_eq!(result.state(), PublicationState::NotPublished);
+    assert!(result.error().is_some());
     assert_eq!(result.mutation(), MutationState::None);
     assert!(result.safe_to_continue());
     assert!(!temporary.exists());
@@ -690,8 +693,8 @@ fn an_unavailable_staged_file_is_not_published() {
 
     let result = receipt.publish(&destination, PublicationPolicy::Replace);
 
-    assert_eq!(result.state, PublicationState::NotPublished);
-    assert!(!result.error_detail.is_empty());
+    assert_eq!(result.state(), PublicationState::NotPublished);
+    assert!(result.error().is_some());
     let name = temporary.file_name().unwrap().to_string_lossy();
     assert!(!manifest(&root).contains(name.as_ref()));
     assert!(registry.cleanup().is_empty());
@@ -711,7 +714,7 @@ fn a_receipt_moves_and_publishes_once() {
     let receipt = original;
     std::fs::write(staged(&receipt), "once").unwrap();
     let result = receipt.publish(&destination, PublicationPolicy::Replace);
-    assert_eq!(result.state, PublicationState::PublishedAndReleased);
+    assert_eq!(result.state(), PublicationState::PublishedAndReleased);
     assert!(registry.cleanup().is_empty());
     assert_eq!(read(&destination), "once");
 }
@@ -733,8 +736,8 @@ fn an_ended_scope_cannot_publish() {
 
     let result = receipt.publish(&destination, PublicationPolicy::NoReplace);
 
-    assert_eq!(result.state, PublicationState::NotPublished);
-    assert!(!result.error_detail.is_empty());
+    assert_eq!(result.state(), PublicationState::NotPublished);
+    assert!(result.error().is_some());
     assert!(!destination.exists());
     assert!(temporary.exists());
     let relative = temporary.strip_prefix(staging(&root)).unwrap();
@@ -758,7 +761,7 @@ fn asset_publication_rejects_a_changed_destination() {
 
     let result = receipt.publish(&redirected, PublicationPolicy::Replace);
 
-    assert_eq!(result.state, PublicationState::NotPublished);
+    assert_eq!(result.state(), PublicationState::NotPublished);
     // A preflight rejection leaves every destination untouched.
     assert_eq!(result.mutation(), MutationState::None);
     assert!(result.safe_to_continue());
@@ -793,12 +796,12 @@ fn archive_publication_rejects_unsafe_destinations() {
         std::fs::write(&temporary, "staged").unwrap();
         let result = receipt.publish(destination, PublicationPolicy::NoReplace);
         assert_eq!(
-            result.state,
+            result.state(),
             PublicationState::NotPublished,
             "{}",
             destination.display()
         );
-        assert!(!result.error_detail.is_empty());
+        assert!(result.error().is_some());
         assert_eq!(result.mutation(), MutationState::None);
         assert!(result.safe_to_continue());
         temporaries.push(temporary);
@@ -823,7 +826,7 @@ fn archive_publication_rejects_a_linked_parent() {
 
     let result = receipt.publish(&linked.join("entry.pex"), PublicationPolicy::NoReplace);
 
-    assert_eq!(result.state, PublicationState::NotPublished);
+    assert_eq!(result.state(), PublicationState::NotPublished);
     assert!(!outside.join("entry.pex").exists());
     assert!(registry.cleanup().is_empty());
     assert!(!temporary.exists());
@@ -847,7 +850,7 @@ fn an_asset_parent_cannot_be_replaced_after_staging() {
     assert!(std::fs::rename(&parent, root.join("shifted-assets")).is_err());
 
     let result = receipt.publish(&destination, PublicationPolicy::Replace);
-    assert_eq!(result.state, PublicationState::PublishedAndReleased);
+    assert_eq!(result.state(), PublicationState::PublishedAndReleased);
     assert!(registry.cleanup().is_empty());
 }
 
@@ -869,8 +872,8 @@ fn asset_publication_rejects_a_replaced_destination() {
 
     let result = receipt.publish(&destination, PublicationPolicy::Replace);
 
-    assert_eq!(result.state, PublicationState::NotPublished);
-    assert!(!result.error_detail.is_empty());
+    assert_eq!(result.state(), PublicationState::NotPublished);
+    assert!(result.error().is_some());
     assert_eq!(read(&destination), "newcomer");
     assert_eq!(read(&old), "original");
     assert!(registry.cleanup().is_empty());
@@ -926,13 +929,13 @@ fn asset_publication_rejects_an_in_place_destination_edit() {
 
     let result = receipt.publish(&destination, PublicationPolicy::Replace);
 
-    assert_eq!(result.state, PublicationState::NotPublished);
+    assert_eq!(result.state(), PublicationState::NotPublished);
     assert!(
-        result
-            .error_detail
-            .contains("Publication destination changed after input capture"),
-        "{}",
-        result.error_detail
+        result.error().is_some_and(|error| error
+            .to_string()
+            .contains("Publication destination changed after input capture")),
+        "{:?}",
+        result.error()
     );
     assert!(registry.cleanup().is_empty());
     assert!(!temporary.exists());
@@ -957,12 +960,12 @@ fn a_release_failure_preserves_the_committed_destination() {
     let result = receipt.publish(&destination, PublicationPolicy::NoReplace);
 
     assert_eq!(
-        result.state,
+        result.state(),
         PublicationState::PublishedStillOwned,
-        "{}",
-        result.error_detail
+        "{:?}",
+        result.error()
     );
-    assert!(!result.error_detail.is_empty());
+    assert!(result.error().is_some());
     assert_eq!(result.mutation(), MutationState::Committed);
     assert!(!result.safe_to_continue());
     assert!(!temporary.exists());
@@ -1325,7 +1328,7 @@ fn staging_crash_child() {
             std::fs::write(staged(&receipt), "converted").unwrap();
             std::fs::write(&scratch, "occupied scratch").unwrap();
             let result = receipt.publish(&destination, PublicationPolicy::Replace);
-            assert_eq!(result.state, PublicationState::PublishedStillOwned);
+            assert_eq!(result.state(), PublicationState::PublishedStillOwned);
             "published-still-owned".to_owned()
         }
         // Killed after one Archive entry was published but not released,
@@ -1341,7 +1344,7 @@ fn staging_crash_child() {
                 &root.join("scripts").join("entry.pex"),
                 PublicationPolicy::NoReplace,
             );
-            assert_eq!(result.state, PublicationState::PublishedStillOwned);
+            assert_eq!(result.state(), PublicationState::PublishedStillOwned);
             "published-still-owned".to_owned()
         }
         // Killed between claiming the reserved directory and publishing its

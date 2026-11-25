@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use cao_archive::Settings;
 use cao_core::Error;
-use cao_core::routing::ExecutionMode;
+use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
     ArchiveSeams, AssetAttemptAdapter, AssetBackendFactory, BackendCreation, BackendCreationError,
     CancellationToken, MeshChoices, OptimizationRunService, RunConfigurationProvider,
@@ -110,8 +110,7 @@ struct PreparedProfile {
     custom_headparts: Vec<String>,
 }
 
-/// The Run Configuration Provider over a `profiles/` directory, ported from C++
-/// `ApplicationRunConfigurationProvider`.
+/// The Run Configuration Provider over a `profiles/` directory.
 ///
 /// Each load re-reads the profile the run's Run Request names
 /// (`profile.ini`, `ignoredMods.txt`, `FilesToNotPack.txt` and
@@ -124,7 +123,7 @@ pub struct ProfileConfigurationProvider {
     profiles: Profiles,
     /// The app directory's `bin/hkxcmd.exe`. It is never used to convert:
     /// each run's backend gets a fresh copy, so each run checks for the exe
-    /// once, as each C++ run did.
+    /// once.
     hkxcmd: Hkxcmd,
 }
 
@@ -197,6 +196,8 @@ impl RunConfigurationProvider for ProfileConfigurationProvider {
         let work = RunWorkSettings {
             textures: texture_settings(&choices.textures),
             meshes: mesh_settings(&choices.meshes),
+            meshes_requested: request.requests(RequestedWork::StandardMeshOptimization)
+                || request.requests(RequestedWork::TerrainMeshOptimization),
             selected_folder: request.mod_selection().directory().to_path_buf(),
             hkxcmd: self.hkxcmd.clone(),
         };
@@ -209,19 +210,23 @@ impl RunConfigurationProvider for ProfileConfigurationProvider {
 }
 
 /// One run's backend settings, built at load from its Run Request, that the
-/// production Run Toolset is built with, ported from what C++
-/// `ApplicationRunWork` held.
+/// production Run Toolset is built with.
 #[derive(Clone)]
 struct RunWorkSettings {
     /// The backend's Texture settings, from the request's Texture choices.
     textures: TextureSettings,
     /// The backend's Mesh settings, from the request's Mesh choices.
     meshes: MeshSettings,
-    /// The selected folder, which the headpart scan walks whole: C++ scanned
-    /// `userPath`, so mods with a Mod Exclusion are scanned too.
+    /// Whether the request asks for any Mesh optimization. Mesh choices are
+    /// set whether or not it does, so only this tells whether a run will
+    /// consult the Headpart Meshes (audit BE-14).
+    meshes_requested: bool,
+    /// The selected folder, which the headpart scan walks whole, so mods
+    /// with a Mod Exclusion are scanned too: their plugins can still name
+    /// Headpart Meshes other mods ship.
     selected_folder: PathBuf,
     /// The app directory's `bin/hkxcmd.exe`; each run's backend gets a fresh
-    /// copy, so each run checks for the exe once, as each C++ run did.
+    /// copy, so each run checks for the exe once.
     hkxcmd: Hkxcmd,
 }
 
@@ -247,6 +252,7 @@ impl RunWorkSettings {
             Box::new(AssetAttemptAdapter::new(OptimizerBackendFactory {
                 work: self.clone(),
                 profile,
+                mode,
             })),
             seams,
             mode,
@@ -267,27 +273,27 @@ struct OptimizerBackendFactory {
     /// The profile Preparing read, which the backend's `TextureProfile`, Mesh
     /// Target and custom Headpart Meshes come from.
     profile: Arc<PreparedProfile>,
+    /// The run's Execution Mode, which the backend reads Textures for.
+    mode: ExecutionMode,
 }
 
 impl OptimizerBackendFactory {
     /// The run's Headpart Meshes, from the profile's `customHeadparts.txt` and
-    /// every plugin under the selected folder, as C++ `listHeadparts` gathered
-    /// them.
+    /// every plugin under the selected folder.
     ///
-    /// Only the necessary mesh level and above consult the list, so a run
-    /// below it scans nothing; C++ scanned regardless, which no run fact
-    /// showed. Each plugin that cannot be read is returned as a
+    /// Only a run that requests Mesh optimization, at the necessary mesh level
+    /// or above, consults the list, so any other run scans nothing (audit
+    /// BE-14). Each plugin that cannot be read is returned as a
     /// `PluginUnreadable` Run Diagnostic for the run to retain, and the scan
     /// carries on (deviation 17).
     ///
     /// # Errors
-    /// [`ScanCancelled`] when `stop` is cancelled during the scan, as C++'s
-    /// scan threw it.
+    /// [`ScanCancelled`] when `stop` is cancelled during the scan.
     fn list_headparts(
         &self,
         stop: &CancellationToken,
     ) -> Result<(HeadpartList, Vec<RunDiagnostic>), ScanCancelled> {
-        if !self.work.meshes.recognises_headparts() {
+        if !self.work.meshes_requested || !self.work.meshes.recognises_headparts() {
             return Ok((HeadpartList::default(), Vec::new()));
         }
         let profile = &self.profile;
@@ -325,8 +331,8 @@ impl AssetBackendFactory for OptimizerBackendFactory {
         &mut self,
         stop: &CancellationToken,
     ) -> Result<BackendCreation<OptimizerBackend>, BackendCreationError> {
-        // C++ listed Headpart Meshes as it built its MainOptimizer for the
-        // first Asset, so the scan sees any plugin extraction produced.
+        // Listed for the first Asset, after Archive extraction, so the scan
+        // sees any plugin extraction produced.
         let Ok((headparts, diagnostics)) = self.list_headparts(stop) else {
             return Ok(BackendCreation::Cancelled);
         };
@@ -334,15 +340,15 @@ impl AssetBackendFactory for OptimizerBackendFactory {
         let meshes =
             MeshOptimizer::new(self.work.meshes, mesh_target(settings)).with_headparts(headparts);
         // The adapter calls this on the Run Worker, the thread that must join
-        // COM. C++'s texture optimizer threw when it could not, and its run
-        // contained the exception as an unsafe Operation Failure; the adapter
-        // contains this error the same way. The scan's diagnostics travel with
+        // COM, and contains a failure to join as an unsafe Operation Failure:
+        // no Texture could be processed. The scan's diagnostics travel with
         // the error, so the run still retains the plugins it could not read.
         let backend = match OptimizerBackend::new(
             self.work.textures,
             texture_profile(settings),
             meshes,
             self.work.hkxcmd.clone(),
+            self.mode,
         ) {
             Ok(backend) => backend,
             Err(error) => {
@@ -399,6 +405,7 @@ mod tests {
             work: RunWorkSettings {
                 textures: texture_settings(&TextureChoices::default()),
                 meshes: mesh_settings(&meshes),
+                meshes_requested: true,
                 selected_folder: selection.clone(),
                 hkxcmd: Hkxcmd::in_app_dir(&app_dir),
             },
@@ -410,6 +417,7 @@ mod tests {
                     custom_headparts: Vec::new(),
                 }
             }),
+            mode: ExecutionMode::Apply,
         };
 
         // The thread exits after the attempt, leaving its apartment; neither
@@ -437,5 +445,52 @@ mod tests {
                 selection.join("Broken.esp")
             )]
         );
+    }
+    /// Audit BE-14: a run whose request asks for no Mesh optimization scans
+    /// no plugin, even with a Mesh level set, so its unreadable plugins go
+    /// unreported and the backend is still created.
+    #[test]
+    fn a_run_without_mesh_work_scans_no_plugin() {
+        let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let profile = Profiles::new(&app_dir).open("SSE");
+        let selection = std::env::temp_dir().join("cao-optimizers-unit/no-mesh-work");
+        // A missing directory is the expected case; anything else surfaces below.
+        let _ = std::fs::remove_dir_all(&selection);
+        std::fs::create_dir_all(&selection).unwrap();
+        std::fs::write(selection.join("Broken.esp"), truncated_headpart_plugin()).unwrap();
+        let meshes = MeshChoices {
+            level: MeshLevel::new(1).unwrap(),
+            ..MeshChoices::default()
+        };
+        let mut factory = OptimizerBackendFactory {
+            work: RunWorkSettings {
+                textures: texture_settings(&TextureChoices::default()),
+                meshes: mesh_settings(&meshes),
+                meshes_requested: false,
+                selected_folder: selection,
+                hkxcmd: Hkxcmd::in_app_dir(&app_dir),
+            },
+            profile: Arc::new({
+                let settings = profile.load_settings().unwrap();
+                PreparedProfile {
+                    archive_rules: crate::profile::archive_rules(&settings),
+                    settings: Arc::new(settings),
+                    custom_headparts: Vec::new(),
+                }
+            }),
+            mode: ExecutionMode::DryRun,
+        };
+
+        // On a thread of its own, which leaves its COM apartment as it exits.
+        let diagnostics =
+            std::thread::spawn(move || match factory.create(&CancellationToken::new()) {
+                Ok(BackendCreation::Created { diagnostics, .. }) => diagnostics,
+                Ok(BackendCreation::Cancelled) => panic!("nothing cancelled the scan"),
+                Err(failure) => panic!("{}", failure.error),
+            })
+            .join()
+            .unwrap();
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 }

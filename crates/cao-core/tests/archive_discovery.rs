@@ -48,11 +48,10 @@ use std::sync::{Arc, Mutex};
 use cao_core::execution::MutationState;
 use cao_core::routing::{ExecutionMode, RequestedWork};
 use cao_core::run::{
-    ArchiveExtractionFailure, ArchiveFinalizationFailure, ArchiveFinalizationMutationKind,
-    ArchivePrecedence, CancellationToken, CapacityShortage, ModSelection, MutationKind,
-    MutationSummary, OptimizationRunResult, RunDiagnosticCode, RunDiagnosticSeverity,
-    RunFailureCode, RunObservationSink, RunOutcome, RunPhase, RunPhaseStatus, RunRequest,
-    SourceCleanup, WorkChoices,
+    ArchiveExtractionFailure, ArchiveFinalizationFailure, ArchivePrecedence, CancellationToken,
+    CapacityShortage, ModSelection, MutationKind, MutationSummary, OptimizationRunResult,
+    RunDiagnosticCode, RunDiagnosticSeverity, RunFailureCode, RunObservationSink, RunOutcome,
+    RunPhase, RunPhaseStatus, RunRequest, SourceCleanup, WorkChoices,
 };
 use cao_core::test_support::{
     CountingCleanup, FakeArchivePacker, FakeArchiveReader, FakeEntry, FakeVolumeProbe, Observed,
@@ -450,37 +449,52 @@ fn a_panicking_volume_probe_in_the_preflight_keeps_the_whole_batch_estimate() {
     );
 }
 
-/// Origin: ArchiveFirstAssetDiscoveryTests::compressedShadowedEntryRequiresCapacity.
-/// A compressed entry a Loose Asset shadows still needs its full decompressed
-/// size staged.
+/// A compressed entry needs its full decompressed size staged, but only when
+/// it is merged: an entry a Loose Asset shadows is never staged, so it needs
+/// no staging capacity at all (audit FS-8). The same Archive and free space
+/// block the batch when its entry wins and pass when it is shadowed.
 #[test]
-fn a_compressed_shadowed_entry_still_needs_its_decompressed_capacity() {
-    let root = canonical(&scratch_dir("archive-capacity-shadowed"));
-    write_archive(
-        &root.join("source.bsa"),
-        &[FakeEntry {
-            name: "textures/large.dds",
-            payload: b"small on disk",
-            declared_size: 512 * 1024,
-        }],
-    );
-    std::fs::create_dir_all(root.join("textures")).unwrap();
-    std::fs::write(root.join("textures/large.dds"), "loose winner").unwrap();
-    let toolset = Arc::new(with_capacity(|_| Some(400_000)));
+fn only_a_merged_entry_needs_its_decompressed_capacity() {
+    for shadowed in [false, true] {
+        let root = canonical(&scratch_dir(&format!(
+            "archive-capacity-shadowed-{shadowed}"
+        )));
+        write_archive(
+            &root.join("source.bsa"),
+            &[FakeEntry {
+                name: "textures/large.dds",
+                payload: b"small on disk",
+                declared_size: 512 * 1024,
+            }],
+        );
+        if shadowed {
+            std::fs::create_dir_all(root.join("textures")).unwrap();
+            std::fs::write(root.join("textures/large.dds"), "loose winner").unwrap();
+        }
+        let toolset = Arc::new(with_capacity(|_| Some(400_000)));
 
-    let result = execute(&archives_and_textures(&root), &toolset);
+        let result = execute(&archives_and_textures(&root), &toolset);
 
-    assert_blocked_before_extraction(
-        &result,
-        &toolset,
-        RunFailureCode::ArchiveInsufficientCapacity,
-        &root,
-    );
-    assert_eq!(
-        std::fs::read(root.join("textures/large.dds")).unwrap(),
-        b"loose winner"
-    );
-    assert!(!root.join(".cao-staging").exists());
+        if shadowed {
+            assert!(result.failures().is_empty(), "{:?}", result.failures());
+            let attempts = result.archive_extraction_attempts();
+            assert_eq!(attempts.len(), 1);
+            assert!(attempts[0].succeeded(), "{:?}", attempts[0].outcome);
+            assert_eq!(
+                std::fs::read(root.join("textures/large.dds")).unwrap(),
+                b"loose winner"
+            );
+        } else {
+            assert_blocked_before_extraction(
+                &result,
+                &toolset,
+                RunFailureCode::ArchiveInsufficientCapacity,
+                &root,
+            );
+            assert!(!root.join("textures").exists());
+            assert!(!root.join(".cao-staging").exists());
+        }
+    }
 }
 
 /// Origin: ArchiveFirstAssetDiscoveryTests::windowsDeviceNamesBlockBatch (all
@@ -1538,9 +1552,10 @@ fn frozen_precedence_survives_a_failed_winner_or_a_vanished_loose_asset() {
             cao_core::execution::MutationState::Committed
         );
         assert!(!root.join("textures/a.dds").exists());
-        // Removing the Loose Asset left `textures` empty, so Archive
-        // Finalization prunes it; without one, `textures` never existed.
-        assert!(!root.join("textures").exists());
+        // Another program removing the Loose Asset left `textures` empty,
+        // but this run emptied nothing, so Archive Finalization prunes
+        // nothing (audit FS-7); without one, `textures` never existed.
+        assert_eq!(root.join("textures").is_dir(), loose);
         let pruned: Vec<_> = result
             .archive_finalization()
             .unwrap()
@@ -1548,22 +1563,12 @@ fn frozen_precedence_survives_a_failed_winner_or_a_vanished_loose_asset() {
             .iter()
             .map(|mutation| (mutation.kind, mutation.mod_root.clone(), mutation.count))
             .collect();
-        let expected_pruning = if loose {
-            vec![(
-                ArchiveFinalizationMutationKind::EmptyDirectoryPruning,
-                root.clone(),
-                1,
-            )]
-        } else {
-            Vec::new()
-        };
-        assert_eq!(pruned, expected_pruning);
-        assert_eq!(
-            result
+        assert_eq!(pruned, []);
+        assert!(
+            !result
                 .mutation_summaries()
                 .iter()
-                .any(|summary| summary.kind == MutationKind::ArchiveFinalization),
-            loose
+                .any(|summary| summary.kind == MutationKind::ArchiveFinalization)
         );
         assert!(backup_of(&root.join("b.bsa")).exists());
         // A failed winner keeps its source; a winner shadowed by the vanished

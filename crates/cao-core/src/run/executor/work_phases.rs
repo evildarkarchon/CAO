@@ -1,7 +1,6 @@
 //! The Run Executor's work phases: Archive-first discovery, definitive routing,
 //! Asset attempts and Archive Finalization.
 //!
-//! Ported from `src/Run/AssetRun.h` and `src/Run/ArchiveFirstAssetDiscovery.h`.
 //! The executor calls [`run_work_phases`] with its Run Toolset; the
 //! function walks each Mod Root for Archives, extracts the enabled ones in
 //! Apply through [`RunToolset::extract_archive`] or, in a Dry Run, records
@@ -23,75 +22,195 @@
 //! warning-level Run Diagnostic and the Dry Run goes on to plan.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::fs::Metadata;
+use std::io;
 use std::ops::ControlFlow;
+use std::os::windows::fs::FileTypeExt as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::Stop;
 use crate::Error;
 use crate::execution::{AssetExecutionFailure, AssetExecutionResult, MutationState};
 use crate::routing::{
-    AssetKind, AssetRouter, ExecutionMode, OptimizerTarget, RoutingDecision, RoutingLedger,
-    SkipReason,
+    AssetRouter, ExecutionMode, OptimizerTarget, RoutingDecision, RoutingLedger, SkipReason,
 };
 use crate::run::archives::{Preflight, RootArchives, archive_order_key, relative_game_path};
-use crate::run::finalization::CreationPlanning;
+use crate::run::finalization::{CreationPlanning, PlannedExtractionEffects};
 use crate::run::{
     ArchiveExtractionPlan, ArchiveFinalizationChoices, AssetInitializationCancelled, ByteSize,
     CancellationToken, MutableRunEvidence, OutputPlanBasis, PlannedArchiveExtraction,
-    PlannedOutputArchive, RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode, RunFailure,
-    RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunToolset, SourceCleanup,
-    TemporaryArtifactRegistry, WorkChoices, is_staging_name, take_panic_message,
+    PlannedOutputArchive, PlannedPruning, RoutedAssetAttempt, RunDiagnostic, RunDiagnosticCode,
+    RunFailure, RunFailureCode, RunPhase, RunPhaseRecord, RunPreparation, RunToolset,
+    SourceCleanup, TemporaryArtifactRegistry, WorkChoices, is_staging_name, take_panic_message,
 };
 
 /// Walks Mod Roots for regular files under the scope rules both discovery passes share.
 ///
 /// It holds no evidence of its own: each walk is lent the run's evidence for
-/// its linked-entry exclusion diagnostics, since other work phases record
-/// between the two passes.
+/// its exclusion and unreadable-directory diagnostics, since other work
+/// phases record between the two passes.
 struct Discovery<'r> {
     /// The run's token, polled per entry. The discovery phases read it from
     /// here rather than taking it again beside their walker.
     stop: &'r CancellationToken,
-    /// The phase linked-entry diagnostics are attributed to.
+    /// The phase discovery diagnostics are attributed to.
     phase: RunPhase,
-    /// Each excluded linked entry is diagnosed once, across both passes.
+    /// Each excluded linked entry and each unreadable directory is diagnosed
+    /// once, across both passes.
     diagnosed: HashSet<PathBuf>,
 }
 
-impl Discovery<'_> {
-    /// Retains one linked-entry exclusion in `evidence` the first time it is observed.
-    fn exclude(&mut self, evidence: &mut MutableRunEvidence<'_>, path: &Path, detail: &str) {
-        if self.diagnosed.insert(path.to_path_buf()) {
-            evidence.retain_diagnostic(
-                RunDiagnostic::new(RunDiagnosticCode::LinkedEntryExcluded, self.phase, detail)
-                    .with_path(path),
-            );
+/// What discovery does with an entry in scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Visit {
+    /// Hands the file to the pass's visitor.
+    File,
+    /// Walks the directory.
+    Directory,
+}
+
+/// What discovery makes of one directory entry, judged from its attributes
+/// read without following links.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryScope {
+    /// A file to visit as it stands.
+    File,
+    /// A directory to walk.
+    Directory,
+    /// A link to a directory, which discovery never follows.
+    DirectoryLink,
+    /// A reparse-point file, a file link above all, visited only once it
+    /// resolves inside the Mod Root and outside CAO staging.
+    LinkedFile,
+}
+
+impl EntryScope {
+    /// Classifies an entry from its attributes: whether it is a reparse
+    /// point, whether it carries the directory attribute, and whether its
+    /// reparse tag is a name surrogate, the tag bit of symlinks, junctions
+    /// and mounted folders, which stand for another named object.
+    ///
+    /// Only a name-surrogate directory is a directory link. A directory with
+    /// any other reparse tag, such as a cloud-sync placeholder, is the
+    /// directory itself and is walked like any other; excluding it as a link
+    /// would quietly leave its whole subtree out of the run. Every
+    /// reparse-point file is still resolved before it is visited.
+    fn classify(reparse_point: bool, directory: bool, name_surrogate: bool) -> Self {
+        match (reparse_point, directory) {
+            (false, false) => Self::File,
+            (false, true) => Self::Directory,
+            (true, true) if name_surrogate => Self::DirectoryLink,
+            (true, true) => Self::Directory,
+            (true, false) => Self::LinkedFile,
         }
     }
 
-    /// Rejects directory links, and file links not provably inside the Mod Root.
-    /// Entries that vanish or cannot be read are silently absent.
+    /// Classifies the entry `metadata` describes, read without following
+    /// links, as a directory entry's own metadata is.
+    fn of(metadata: &Metadata) -> Self {
+        let file_type = metadata.file_type();
+        // std reports a name-surrogate reparse point as a symlink and never
+        // as a directory, so the directory attribute is read through
+        // `is_symlink_dir` for those and `is_dir` for every other entry.
+        Self::classify(
+            cao_winfs::is_reparse_point(metadata),
+            file_type.is_dir() || file_type.is_symlink_dir(),
+            file_type.is_symlink(),
+        )
+    }
+}
+
+impl Discovery<'_> {
+    /// Retains one discovery diagnostic about `path` in `evidence` the first
+    /// time it is observed.
+    fn diagnose_once(
+        &mut self,
+        evidence: &mut MutableRunEvidence<'_>,
+        code: RunDiagnosticCode,
+        path: &Path,
+        detail: impl Into<String>,
+    ) {
+        if self.diagnosed.insert(path.to_path_buf()) {
+            evidence
+                .retain_diagnostic(RunDiagnostic::new(code, self.phase, detail).with_path(path));
+        }
+    }
+
+    /// Retains one linked-entry exclusion in `evidence` the first time it is observed.
+    fn exclude(&mut self, evidence: &mut MutableRunEvidence<'_>, path: &Path, detail: &str) {
+        self.diagnose_once(
+            evidence,
+            RunDiagnosticCode::LinkedEntryExcluded,
+            path,
+            detail,
+        );
+    }
+
+    /// Notes that the directory at `path` could not be read with `error`.
+    ///
+    /// A directory that vanished while work ran is simply absent, as the
+    /// tree can change during a run. Any other error, such as access being
+    /// denied, leaves a subtree out of the run, so it is retained as a
+    /// warning-level [`RunDiagnosticCode::DirectoryUnreadable`], once per
+    /// directory, rather than letting the run succeed with fewer Assets and
+    /// no word of why.
+    fn unreadable(
+        &mut self,
+        evidence: &mut MutableRunEvidence<'_>,
+        path: &Path,
+        error: &io::Error,
+    ) {
+        if error.kind() == io::ErrorKind::NotFound {
+            return;
+        }
+        self.diagnose_once(
+            evidence,
+            RunDiagnosticCode::DirectoryUnreadable,
+            path,
+            format!(
+                "The directory could not be read, so nothing beneath it was discovered: {error}"
+            ),
+        );
+    }
+
+    /// Decides whether the entry at `path`, which `metadata` describes
+    /// without following links, is visited, walked or excluded.
+    ///
+    /// Rejects directory links, and file links not provably inside the Mod
+    /// Root or that lead into CAO staging, retaining each exclusion once.
+    /// Returns `None` for an excluded entry.
     fn within_scope(
         &mut self,
         evidence: &mut MutableRunEvidence<'_>,
         path: &Path,
+        metadata: &Metadata,
         canonical_root: &Path,
-    ) -> bool {
-        let Ok(metadata) = std::fs::symlink_metadata(path) else {
-            return false;
+    ) -> Option<Visit> {
+        let scope = EntryScope::of(metadata);
+        // A file link can name a directory too; following it would walk
+        // into a tree the Mod Root does not hold, so it counts as a
+        // directory link. Only reparse-point files pay for this second query.
+        let scope = if scope == EntryScope::LinkedFile
+            && std::fs::metadata(path).is_ok_and(|followed| followed.is_dir())
+        {
+            EntryScope::DirectoryLink
+        } else {
+            scope
         };
-        // Reparse points are rejected by attribute: junctions are not always symlinks.
-        if !metadata.file_type().is_symlink() && !cao_winfs::is_reparse_point(&metadata) {
-            return true;
-        }
-        if path.is_dir() {
-            self.exclude(
-                evidence,
-                path,
-                "Directory links and reparse points are not followed during discovery.",
-            );
-            return false;
+        match scope {
+            EntryScope::File => return Some(Visit::File),
+            EntryScope::Directory => return Some(Visit::Directory),
+            EntryScope::DirectoryLink => {
+                self.exclude(
+                    evidence,
+                    path,
+                    "Directory links are not followed during discovery.",
+                );
+                return None;
+            }
+            EntryScope::LinkedFile => {}
         }
         let Ok(resolved) = cao_winfs::canonical(path) else {
             self.exclude(
@@ -99,7 +218,7 @@ impl Discovery<'_> {
                 path,
                 "Linked entry could not be resolved within the Mod Root.",
             );
-            return false;
+            return None;
         };
         let Ok(relative) = resolved.strip_prefix(canonical_root) else {
             self.exclude(
@@ -107,7 +226,7 @@ impl Discovery<'_> {
                 path,
                 "Linked entry resolves outside the Mod Root.",
             );
-            return false;
+            return None;
         };
         // A contained alias can still point into staging; its own name would hide that.
         if relative
@@ -119,14 +238,14 @@ impl Discovery<'_> {
                 path,
                 "Linked entry resolves into excluded CAO staging.",
             );
-            return false;
+            return None;
         }
-        true
+        Some(Visit::File)
     }
 
     /// Visits each regular file beneath `root` depth-first, in enumeration
-    /// order, retaining linked-entry exclusions in `evidence`. Returns
-    /// `false` as soon as cancellation is observed.
+    /// order, retaining linked-entry exclusions and unreadable directories in
+    /// `evidence`. Returns `false` as soon as cancellation is observed.
     fn visit(
         &mut self,
         evidence: &mut MutableRunEvidence<'_>,
@@ -139,6 +258,13 @@ impl Discovery<'_> {
         self.visit_directory(evidence, root, root, visitor)
     }
 
+    /// Visits each regular file beneath `directory`, a directory within
+    /// `root`, depth-first, as [`Self::visit`] does. Returns `false` as soon
+    /// as cancellation is observed.
+    ///
+    /// Each entry's attributes come from the directory listing itself, so
+    /// deciding its scope costs no query of its own, except for a
+    /// reparse-point file, which is resolved.
     fn visit_directory(
         &mut self,
         evidence: &mut MutableRunEvidence<'_>,
@@ -146,10 +272,15 @@ impl Discovery<'_> {
         root: &Path,
         visitor: &mut dyn FnMut(&Path),
     ) -> bool {
-        // A tree can change while work runs: unreadable or vanished directories
-        // are absent from this pass rather than failing the run.
-        let Ok(entries) = std::fs::read_dir(directory) else {
-            return true;
+        // A tree can change while work runs, so an unreadable directory is
+        // absent from this pass rather than failing the run; `unreadable`
+        // decides whether that deserves a diagnostic.
+        let entries = match std::fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) => {
+                self.unreadable(evidence, directory, &error);
+                return true;
+            }
         };
         for entry in entries {
             // Poll for every entry: directories and unsupported files may be the
@@ -157,15 +288,34 @@ impl Discovery<'_> {
             if self.stop.is_cancelled() {
                 return false;
             }
-            let Ok(entry) = entry else { continue };
-            let path = entry.path();
-            if is_staging_name(&entry.file_name()) || !self.within_scope(evidence, &path, root) {
+            // An enumeration that fails part way leaves the rest of this
+            // directory unread, as a failed open leaves all of it.
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    self.unreadable(evidence, directory, &error);
+                    return true;
+                }
+            };
+            if is_staging_name(&entry.file_name()) {
                 continue;
             }
-            if path.is_file() {
-                visitor(&path);
-            } else if path.is_dir() && !self.visit_directory(evidence, &path, root, visitor) {
-                return false;
+            // On Windows the listing already carries the entry's attributes,
+            // so this asks nothing more of the filesystem; an entry that
+            // still cannot be described has vanished.
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            let path = entry.path();
+            match self.within_scope(evidence, &path, &metadata, root) {
+                Some(Visit::File) => visitor(&path),
+                // A walk that observed cancellation stops this one too.
+                Some(Visit::Directory) if !self.visit_directory(evidence, &path, root, visitor) => {
+                    return false;
+                }
+                // A directory walked to its end, or an excluded entry, which
+                // `within_scope` has diagnosed.
+                Some(Visit::Directory) | None => {}
             }
         }
         true
@@ -313,6 +463,7 @@ pub(super) fn run_work_phases(
         preparation,
         mode,
         &choices.archive_finalization,
+        (&archives.plans, choices.archive_extraction),
         toolset,
         evidence,
         artifacts,
@@ -351,7 +502,8 @@ fn discover_archives(
         let mut selected: Vec<PathBuf> = Vec::new();
         let mut loose = BTreeSet::new();
         archive_pass_complete = discovery.visit(evidence, root, &mut |path| {
-            if !names_an_archive(router, path) {
+            // The extension alone tells Archives apart, so only they are routed here.
+            if !router.names_archive(path) {
                 loose.insert(cao_winfs::OrdinalIgnoreCase(relative_game_path(root, path)));
                 return;
             }
@@ -363,7 +515,7 @@ fn discover_archives(
                 RoutingDecision::Skipped(asset) => {
                     *skipped_archive_counts.entry(asset.reason()).or_default() += 1
                 }
-                // `names_an_archive` already confirmed routing recognizes it.
+                // `names_archive` already confirmed routing recognizes it.
                 RoutingDecision::Unsupported => {}
             }
         });
@@ -577,7 +729,8 @@ fn build_effective_asset_tree(
     let mut complete = true;
     for root in preparation.mod_roots() {
         complete = discovery.visit(evidence, root, &mut |path| {
-            if names_an_archive(router, path) {
+            // Each other file is routed once, by `route_all` below.
+            if router.names_archive(path) {
                 if !recognized.contains(path) {
                     nested_archives.insert(path.to_path_buf());
                 }
@@ -619,8 +772,10 @@ fn process_assets(
     stop: &CancellationToken,
 ) -> PhaseFlow {
     // The evidence retains the ledger it opens Processing Assets with; this
-    // copy lets the loop iterate it while the handle records attempts.
-    let mut assets = evidence.open_processing_assets(ledger.clone())?;
+    // shared handle on it lets the loop iterate it while the phase's handle
+    // records attempts, without copying every Routed Asset.
+    let ledger = Arc::new(ledger);
+    let mut assets = evidence.open_processing_assets(Arc::clone(&ledger))?;
     for target in [
         OptimizerTarget::Texture,
         OptimizerTarget::Mesh,
@@ -632,13 +787,14 @@ fn process_assets(
             }
             let path = asset.execution_path();
             let attempt = match attributed_mod_root(path, preparation.mod_roots()) {
+                // The Asset is never opened, so nothing changed; but the tree
+                // is no longer the one discovery saw, so the run stops.
                 None => (
                     PathBuf::new(),
                     AssetExecutionResult::failed(
-                        AssetExecutionFailure::BackendException,
+                        AssetExecutionFailure::OutsideModRoots,
                         "Routed Asset is outside prepared Mod Roots",
                     )
-                    .with_mutation(MutationState::PartialOrUnknown)
                     .with_safe_to_continue(false)
                     .with_path(path),
                 ),
@@ -707,16 +863,23 @@ fn process_assets(
 /// far are published. Apply executes it over `toolset`'s seams with
 /// `choices`, the Run Request's Archive Finalization choices, through the
 /// handle its executed record opens; Dry Run plans it with the same choices
-/// ([`plan_archive_finalization`]).
+/// ([`plan_archive_finalization`]), and with `extractions`, the run's
+/// Archive extraction plans and source cleanup, whose source removals an
+/// Apply run would prune after.
 ///
 /// Cancellation is observed after that publication, before the phase is
 /// recorded, and again before Apply finalizes or Dry Run plans. As the last
 /// work phase it returns `Break` only to report that finalization or its
 /// planning did not finish.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the phase's inputs; the extraction plans matter only to a Dry Run's pruning plan"
+)]
 fn finalize_archives(
     preparation: &RunPreparation,
     mode: ExecutionMode,
     choices: &ArchiveFinalizationChoices,
+    extractions: (&[ArchiveExtractionPlan], SourceCleanup),
     toolset: &RunToolset,
     evidence: &mut MutableRunEvidence<'_>,
     artifacts: &mut TemporaryArtifactRegistry,
@@ -734,7 +897,9 @@ fn finalize_archives(
     // Run plans it. The immutable policy decides: Dry Run never finalizes,
     // whatever the Toolset holds.
     if mode == ExecutionMode::DryRun {
-        return plan_archive_finalization(preparation, choices, toolset, evidence, stop);
+        let (plans, cleanup) = extractions;
+        let effects = PlannedExtractionEffects::of(plans, cleanup);
+        return plan_archive_finalization(preparation, choices, &effects, toolset, evidence, stop);
     }
     let finalization = evidence.open_archive_finalization()?;
     // Archive Finalization is a separate mutation boundary: observe
@@ -762,7 +927,11 @@ fn finalize_archives(
 ///
 /// Without an Archive creation request the phase is still Planned, with no
 /// planned output. Nothing is packed, committed or cleaned, no Loading
-/// Plugin is maintained and no directory pruned.
+/// Plugin is maintained and no directory pruned. Each folder the planned
+/// packing or the planned Archive extractions (`extractions`) would empty is
+/// recorded after the outputs, with a "would remove" line, since an Apply
+/// run would prune it; with no Archive creation request those folders are
+/// the phase's only record.
 ///
 /// A shortage the Apply run's Capacity Check would fail Archive creation on
 /// is recorded as a [`RunDiagnosticCode::CapacityShortage`] warning, and
@@ -781,6 +950,7 @@ fn finalize_archives(
 fn plan_archive_finalization(
     preparation: &RunPreparation,
     choices: &ArchiveFinalizationChoices,
+    extractions: &PlannedExtractionEffects,
     toolset: &RunToolset,
     evidence: &mut MutableRunEvidence<'_>,
     stop: &CancellationToken,
@@ -789,14 +959,22 @@ fn plan_archive_finalization(
     if stop.is_cancelled() {
         return Ok(ControlFlow::Break(Stop::Halted));
     }
-    let outputs = match toolset.plan_archive_creation(preparation, choices, &|| stop.is_cancelled())
+    // What the planned packing would empty, kept from the plan below; every
+    // other arm returns before it is read.
+    let pruning;
+    let outputs = match toolset
+        .plan_archive_creation(preparation, choices, extractions, &|| stop.is_cancelled())
     {
-        CreationPlanning::NotRequested => return Ok(ControlFlow::Continue(())),
+        CreationPlanning::NotRequested { pruning } => {
+            record_planned_pruning(evidence, pruning)?;
+            return Ok(ControlFlow::Continue(()));
+        }
         CreationPlanning::Planned {
             outputs,
             capacity_warning,
             unplanned,
             plan_warnings,
+            pruning: planned_pruning,
         } => {
             // As at Discovering Archives, the warning neither fails the Dry
             // Run nor drops a planned output: every one is recorded below.
@@ -815,6 +993,7 @@ fn plan_archive_finalization(
             for warning in plan_warnings {
                 evidence.record_diagnostic(warning);
             }
+            pruning = planned_pruning;
             outputs
         }
         CreationPlanning::Cancelled => return Ok(ControlFlow::Break(Stop::Halted)),
@@ -845,7 +1024,24 @@ fn plan_archive_finalization(
             log::info!("would create Dummy Plugin {}", plugin.display());
         }
     }
+    record_planned_pruning(evidence, pruning)?;
     Ok(ControlFlow::Continue(()))
+}
+
+/// Records each of a Dry Run's `pruning` folders as Planned Archive Work, in
+/// order, and logs a "would remove" line for each. Each is recorded before
+/// it is reported, as each planned output is, so the log never names a
+/// folder the evidence refused.
+fn record_planned_pruning(
+    evidence: &mut MutableRunEvidence<'_>,
+    pruning: Vec<PlannedPruning>,
+) -> Result<(), Error> {
+    for pruned in pruning {
+        let directory = pruned.directory.clone();
+        evidence.record_planned_pruning(pruned)?;
+        log::info!("would remove empty folder {}", directory.display());
+    }
+    Ok(())
 }
 
 /// Records a Dry Run's capacity `warning`, the
@@ -857,11 +1053,96 @@ fn record_capacity_warning(evidence: &mut MutableRunEvidence<'_>, warning: RunDi
     evidence.record_diagnostic(warning);
 }
 
-/// Reports whether routing recognizes the path as an Archive, enabled or not.
-fn names_an_archive(router: &AssetRouter, path: &Path) -> bool {
-    match router.route(path) {
-        RoutingDecision::Routed(asset) => asset.kind() == AssetKind::Archive,
-        RoutingDecision::Skipped(asset) => asset.kind() == AssetKind::Archive,
-        RoutingDecision::Unsupported => false,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::unit_scratch_dir;
+
+    /// Audit CORE-12: only a name-surrogate directory is a link that
+    /// discovery refuses to follow. A directory with any other reparse tag,
+    /// such as a cloud-sync placeholder, is walked; every reparse-point file
+    /// is resolved before it is visited.
+    #[test]
+    fn only_a_name_surrogate_directory_is_a_directory_link() {
+        // ((reparse point, directory, name surrogate), scope, example)
+        let rows = [
+            ((false, false, false), EntryScope::File, "an ordinary file"),
+            (
+                (false, true, false),
+                EntryScope::Directory,
+                "an ordinary directory",
+            ),
+            (
+                (true, true, true),
+                EntryScope::DirectoryLink,
+                "a junction, directory symlink or mounted folder",
+            ),
+            (
+                (true, true, false),
+                EntryScope::Directory,
+                "a cloud placeholder directory",
+            ),
+            (
+                (true, false, true),
+                EntryScope::LinkedFile,
+                "a file symlink",
+            ),
+            (
+                (true, false, false),
+                EntryScope::LinkedFile,
+                "a deduplicated or placeholder file",
+            ),
+        ];
+        for ((reparse_point, directory, name_surrogate), expected, example) in rows {
+            assert_eq!(
+                EntryScope::classify(reparse_point, directory, name_surrogate),
+                expected,
+                "{example}"
+            );
+        }
+    }
+
+    /// A directory listing's own metadata, which discovery classifies
+    /// without a query per entry, tells a file, a directory and a junction
+    /// apart as [`EntryScope::classify`] expects.
+    #[test]
+    fn listing_metadata_classifies_files_directories_and_junctions() {
+        let dir = unit_scratch_dir("work_phases/entry-scope");
+        std::fs::write(dir.join("file.dds"), b"").unwrap();
+        std::fs::create_dir(dir.join("directory")).unwrap();
+        // Junctions need no privilege, unlike symlinks, so this runs anywhere.
+        let created = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(dir.join("junction"))
+            .arg(dir.join("directory"))
+            .output()
+            .expect("cmd runs");
+        assert!(
+            created.status.success(),
+            "mklink /J failed: {}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+
+        let mut scopes: Vec<(String, EntryScope)> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (
+                    entry.file_name().to_string_lossy().into_owned(),
+                    EntryScope::of(&entry.metadata().unwrap()),
+                )
+            })
+            .collect();
+        scopes.sort_by(|left, right| left.0.cmp(&right.0));
+        std::fs::remove_dir(dir.join("junction")).unwrap();
+
+        assert_eq!(
+            scopes,
+            [
+                ("directory".to_owned(), EntryScope::Directory),
+                ("file.dds".to_owned(), EntryScope::File),
+                ("junction".to_owned(), EntryScope::DirectoryLink),
+            ]
+        );
     }
 }

@@ -6,9 +6,10 @@
 //! A run's events are dispatched on its Run Worker. Each is posted to the UI
 //! thread with `slint::Weak::upgrade_in_event_loop`; an event posted after the
 //! event loop has ended is dropped. On the UI thread, [`RunView`] orders them
-//! and the window renders the result.
+//! and the window renders the result: once per batch of queued events rather
+//! than once per event (GUI-13), and at once for the terminal result.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Weak;
@@ -44,6 +45,10 @@ pub(super) struct Runs {
     active: RefCell<Option<RunHandle>>,
     /// What the window shows of the latest run.
     view: RefCell<RunView>,
+    /// Whether a render of `view` is queued on the event loop and not yet run.
+    /// Events that arrive meanwhile only update `view`; the queued render
+    /// shows them all.
+    render_pending: Cell<bool>,
 }
 
 impl Runs {
@@ -55,6 +60,7 @@ impl Runs {
             log_path: RefCell::default(),
             active: RefCell::default(),
             view: RefCell::default(),
+            render_pending: Cell::new(false),
         }
     }
 }
@@ -200,9 +206,30 @@ impl App {
             }
             was_active && view.state().outcome.is_some()
         };
-        self.render_run();
         if ended {
+            // The final state and every terminal detail row show before the
+            // outcome box, in one render.
+            self.render_run();
             self.end_run();
+        } else {
+            self.schedule_render();
+        }
+    }
+
+    /// Queues one render of the run's view behind the events already posted
+    /// to the event loop, unless one is queued already (GUI-13). A run over a
+    /// large mods directory posts an event per Asset attempt, and rendering
+    /// each would rebuild the progress text and the Log tab's rows that many
+    /// times. Renders at once where there is no event loop to queue on.
+    fn schedule_render(&self) {
+        if self.runs.render_pending.replace(true) {
+            return;
+        }
+        // The closure must be `Send`, so it names the run, not the window;
+        // `render_queued` finds the window as `deliver` does.
+        let run_id = self.runs.view.borrow().state().run_id.clone();
+        if slint::invoke_from_event_loop(move || render_queued(&run_id)).is_err() {
+            self.render_run();
         }
     }
 
@@ -215,6 +242,7 @@ impl App {
             // The worker has dispatched its last event, so this join is brief.
             drop(handle);
         }
+        self.log_details();
 
         if self.runs.view.borrow().state().close_requested {
             // The controls stay locked, so nothing can start another run or
@@ -246,9 +274,23 @@ impl App {
         }
     }
 
-    /// Shows the latest run's progress and detail rows (C++ `renderRun`): the
-    /// same text in the progress bar and the status bar.
+    /// Writes the ended run's detail rows to the Application Log (GUI-12), so
+    /// they can be copied from the file and survive the next run. The Log tab
+    /// then shows them as log rows, so its pinned copies are dropped. Without
+    /// an attached log they stay pinned until the next run.
+    fn log_details(&self) {
+        let Some(log) = self.log.get() else {
+            return;
+        };
+        log.write_details(&self.runs.view.borrow().state().details);
+        log_tab::clear_details(&self.window);
+    }
+
+    /// Shows the latest run's progress and detail rows: the same text in the
+    /// progress bar and the status bar. Any render still queued is then
+    /// redundant, so it is withdrawn.
     fn render_run(&self) {
+        self.runs.render_pending.set(false);
         let view = self.runs.view.borrow();
         let ui = &self.window;
         let text = SharedString::from(view.text());
@@ -300,6 +342,18 @@ fn deliver(event: RunEvent) {
         RUN_WINDOWS.with(|windows| windows.borrow().get(&event.run_id).and_then(Weak::upgrade));
     if let Some(app) = app {
         app.on_run_event(&event);
+    }
+}
+
+/// Runs the render [`App::schedule_render`] queued for run `run_id`, unless
+/// the window has rendered since. Does nothing once the run has ended: its
+/// end rendered the final state.
+fn render_queued(run_id: &RunId) {
+    let app = RUN_WINDOWS.with(|windows| windows.borrow().get(run_id).and_then(Weak::upgrade));
+    if let Some(app) = app
+        && app.runs.render_pending.get()
+    {
+        app.render_run();
     }
 }
 

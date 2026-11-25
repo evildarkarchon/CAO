@@ -3,7 +3,9 @@
 //!
 //! nifly's own build is one static library of 13 sources with no configure
 //! step, so `cc` reproduces it from an explicit file list. The flags mirror
-//! nifly's CMake options; see `vendor/nifly/VENDORED.md` for the pin and patch.
+//! nifly's CMake options for a Release build; see `vendor/nifly/VENDORED.md`
+//! for the pin and patch. CAO's shim is a second library, compiled with
+//! warnings on, since it is CAO's own code.
 
 use std::path::Path;
 
@@ -29,7 +31,8 @@ fn main() {
     embed_manifest();
 }
 
-/// Compiles nifly and `shim/cao_nif.cpp` into one static library.
+/// Compiles nifly into one static library and `shim/cao_nif.cpp` into a
+/// second.
 fn build_nifly() {
     const SHIM: &str = "shim/cao_nif.cpp";
     let nifly = Path::new("vendor/nifly");
@@ -38,19 +41,54 @@ fn build_nifly() {
     println!("cargo:rerun-if-changed={SHIM}");
     println!("cargo:rerun-if-changed={}", nifly.display());
 
-    cc::Build::new()
+    // nifly is third-party code we never edit; its warnings are noise here.
+    common_build(nifly)
+        .files(
+            NIFLY_SOURCES
+                .iter()
+                .map(|name| nifly.join("src").join(format!("{name}.cpp"))),
+        )
+        .warnings(false)
+        .compile("nifly");
+
+    // The shim is CAO's, so its warnings are on (FFI-7). nifly's headers are
+    // included as external headers at warning level 0, so only the shim's
+    // own code is held to them. `cc` keeps the compiler's output in the
+    // build script's log rather than passing it on as Cargo warnings, so a
+    // warning would go unseen: it fails the build instead.
+    let mut shim = common_build(nifly);
+    shim.file(SHIM)
+        .warnings(true)
+        .warnings_into_errors(true)
+        .flag("/external:W0")
+        .flag(format!("/external:I{}", nifly.join("include").display()))
+        .flag(format!("/external:I{}", nifly.join("external").display()));
+    // The test-only entry points are compiled in only for this crate's own
+    // tests, which turn the feature on through their dev-dependency on the
+    // crate itself, so no shipped binary carries them.
+    if std::env::var_os("CARGO_FEATURE_TEST_HOOKS").is_some() {
+        shim.define("CAO_NIF_TEST_HOOKS", None);
+    }
+    shim.compile("cao_nif");
+}
+
+/// The options nifly and the shim share. They must agree: the shim compiles
+/// nifly's inline and template code from the same headers, and mismatched
+/// `NDEBUG` or language options would give one function two definitions.
+fn common_build(nifly: &Path) -> cc::Build {
+    let mut build = cc::Build::new();
+    build
         .cpp(true)
         // nifly's declared standard (its CMakeLists.txt); the patch makes C++20
         // compile too, but C++17 is what nifly is tested with.
         .std("c++17")
         .include(nifly.join("include"))
         .include(nifly.join("external"))
-        .files(
-            NIFLY_SOURCES
-                .iter()
-                .map(|name| nifly.join("src").join(format!("{name}.cpp"))),
-        )
-        .file(SHIM)
+        // What a CMake Release build defines. Without it the asserts in the
+        // vendored Miniball.hpp stay live, and a failed CRT assert shows a
+        // dialog and aborts the process, which the shim's exception guard
+        // cannot turn into an error (FFI-7).
+        .define("NDEBUG", None)
         // `cc` passes no exception model. Without /EHsc MSVC does not unwind, so
         // the shim's catch-all would leak destructors (C4530). /EHsc also lets
         // the compiler assume `extern "C"` functions never throw, which holds
@@ -58,10 +96,8 @@ fn build_nifly() {
         // /Zc:inline are nifly's own MSVC options.
         .flag("/EHsc")
         .flag("/bigobj")
-        .flag("/Zc:inline")
-        // nifly is third-party code we never edit; its warnings are noise here.
-        .warnings(false)
-        .compile("nifly_cao");
+        .flag("/Zc:inline");
+    build
 }
 
 /// Links CAO's application manifest into every artifact of this crate.

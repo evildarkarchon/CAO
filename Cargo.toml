@@ -16,6 +16,10 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
+# The application's one version, which every member inherits: the About and
+# welcome boxes show it, and cao-gui's build script writes it into the exe's
+# VERSIONINFO. This fork starts at 1.0.0.
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MPL-2.0"
@@ -29,7 +33,15 @@ publish = false
 # lowered by an `#[allow]` in source (E0453), so an overriding crate declares its
 # own `[lints]` table instead and must copy every other lint from here. The same
 # rule means the D3D11 module cannot opt out by attribute while its crate
-# inherits `forbid`.
+# inherits `forbid`. Cargo 1.99 still rejects a local key beside
+# `workspace = true` ("cannot override `workspace.lints` in `lints`"), so the
+# copying stays until Cargo allows it. Setting `unsafe_code` by `#![forbid]` in
+# each crate root instead would let every crate inherit this table, but a crate
+# attribute does not reach the crate's build script or its integration tests,
+# which the table does. While this table holds `unsafe_code` alone there is
+# nothing to copy; whoever adds a lint here adds it to the five tables that
+# replace it too (cao-winfs, nifly-sys, cao-optimizers, cao-gui-unsafe and
+# cao-gui-ui).
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
@@ -56,8 +68,9 @@ windows = "0.62"
 windows-sys = "0.61"
 getrandom = "0.3"
 dunce = "1"
-# Compressed HDPT records in plugins (#505, deviation 17). The `zlib` backend is
-# the one `ba2` already builds, so the graph keeps one zlib.
+# Decompresses the compressed HDPT records a plugin may hold, which the
+# Headpart Mesh scan must read (#505). The `zlib` backend is the one `ba2`
+# already builds, so the graph keeps one zlib.
 flate2 = { version = "1", default-features = false, features = ["zlib"] }
 # GUI (#462, #466). `~1.18` because `unstable-winit-030` and the undocumented
 # `SLINT_NO_MUDA` may change in any minor release.
@@ -65,7 +78,8 @@ slint = { version = "~1.18", features = ["unstable-winit-030", "raw-window-handl
 # Compiles `cao-gui`'s `.slint` files; same minor as `slint` (#508).
 slint-build = "~1.18"
 # `cao-gui`'s headless test backend (#508). It is unversioned internals, so it
-# must equal the resolved `slint` exactly; move both together.
+# must equal the resolved `slint` exactly; move both together. CI fails when
+# the two versions in Cargo.lock differ (WS-11).
 i-slint-backend-testing = "=1.18.1"
 # `common-controls-v6` draws message boxes with `TaskDialogIndirect`, which can label
 # its buttons. It needs the manifest's ComCtl32 v6 entry: without it the exe fails

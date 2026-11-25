@@ -74,6 +74,8 @@ fn a_close_whose_save_fails_stays_open_until_the_user_closes_anyway() {
     let (app, desktop) = open(&app_dir);
     let ui = app.window();
     block_common_ini(&app_dir);
+    // Only a changed file is written, so the theme changes.
+    ui.set_dark(!ui.get_dark());
 
     // Keep open: the window stays, and the failure is in the question itself
     // rather than in an error box the closing window could drop.
@@ -133,7 +135,7 @@ fn a_close_whose_save_succeeds_closes_without_asking() {
                 .unwrap()
                 .profile,
         )
-        .load_options(&cao_profiles::Options::default())
+        .load_options("")
         .unwrap();
     assert!(options.dry_run, "the close saved the window");
 }
@@ -144,6 +146,8 @@ fn an_error_box_is_also_written_to_the_log() {
     let app_dir = quiet_app("error_box_logged");
     let (app, desktop) = open(&app_dir);
     block_common_ini(&app_dir);
+    // Only a changed file is written, so the theme changes.
+    app.window().set_dark(!app.window().get_dark());
 
     app.save();
 
